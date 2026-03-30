@@ -89,8 +89,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             )
 
             if signal.action in ("BUY_YES", "BUY_NO"):
-                side = "YES" if signal.action == "BUY_YES" else "NO"
-                price = contract["price_yes"] if side == "YES" else contract["price_no"]
+                side = "Up" if signal.action == "BUY_YES" else "Down"
+                price = contract["price_up"] if side == "Up" else contract["price_down"]
                 bankroll = await db.get_bankroll()
                 size = decision_table.position_size(abs(signal.score), price, bankroll)
                 if size < 1.0:
