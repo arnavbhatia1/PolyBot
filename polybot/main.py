@@ -197,7 +197,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 price = contract["price_up"] if side == "Up" else contract["price_down"]
                 bankroll = await db.get_bankroll()
                 size = decision_table.position_size(abs(signal.score), price, bankroll)
-                if size < 1.0:
+                size = max(size, 1.0)  # Minimum $1 trade
+                if size > bankroll * 0.80:
                     await asyncio.sleep(1)
                     continue
 

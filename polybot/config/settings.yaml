@@ -58,8 +58,8 @@ indicators:
     session_minutes: 5
   atr:
     period: 14
-    low_percentile: 25
-    high_percentile: 90
+    low_percentile: 5     # Only block truly dead markets
+    high_percentile: 95   # Only block extreme chaos
     history_periods: 100
 
 signal:

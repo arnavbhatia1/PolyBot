@@ -114,6 +114,9 @@ Daily at 2 AM UTC, three agents run in sequence:
 - Don't use CLOB `/markets` for 5-min crypto markets — only Gamma API slugs work.
 - Don't use "Yes"/"No" for crypto markets — they use "Up"/"Down".
 - Don't use old field names (claude_probability, etc.) — use signal_score, signal_strength, weight_version.
+- Outcome records use: signal_score, profitable (bool), weight_version, indicator_snapshot. NOT predicted_probability/prompt_version.
+- Positions that aren't scalped get auto-closed when contract expires.
+- Bias detector analyzes per-indicator accuracy from indicator_snapshot, not category-level probabilities.
 
 ## Always Update
 
