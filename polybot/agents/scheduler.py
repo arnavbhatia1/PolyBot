@@ -64,7 +64,7 @@ class AgentScheduler:
     async def run_outcome_loop(self):
         while self._running:
             try:
-                logger.info("Running outcome reviewer")
+                logger.debug("Running outcome reviewer")
             except Exception as e:
                 logger.error(f"Outcome reviewer error: {e}")
             await asyncio.sleep(self.outcome_interval_seconds)

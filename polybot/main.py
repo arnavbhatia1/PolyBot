@@ -24,14 +24,16 @@ from polybot.discord_bot.bot import create_bot
 from polybot.discord_bot.alerts import AlertManager
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
         logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="w"),
     ],
 )
+# Only polybot logger shows INFO (trades, startup). Everything else (httpx, discord, websockets) stays quiet.
 logger = logging.getLogger("polybot")
+logger.setLevel(logging.INFO)
 
 
 async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,

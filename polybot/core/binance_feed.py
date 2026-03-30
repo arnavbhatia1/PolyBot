@@ -82,7 +82,7 @@ class BinanceFeed:
                 timestamp=int(k[0]), open=float(k[1]), high=float(k[2]),
                 low=float(k[3]), close=float(k[4]), volume=float(k[5]),
             ))
-        logger.info(f"Backfilled {len(klines)} candles")
+        logger.debug(f"Backfilled {len(klines)} candles")
 
     async def _connect_ws(self):
         import websockets
@@ -93,7 +93,7 @@ class BinanceFeed:
                 async with websockets.connect(stream) as ws:
                     self._ws = ws
                     backoff = 1
-                    logger.info(f"Binance WebSocket connected: {stream}")
+                    logger.debug(f"Binance WebSocket connected: {stream}")
                     async for msg in ws:
                         if not self._running:
                             break

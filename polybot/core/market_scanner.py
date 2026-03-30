@@ -138,7 +138,7 @@ class BTCMarketScanner:
             if contract and contract["seconds_remaining"] > self.min_time_remaining:
                 self._cached_contract = contract
                 self._cache_time = now
-                logger.info(f"Found active contract: {contract['question']} "
+                logger.debug(f"Found active contract: {contract['question']} "
                            f"({contract['seconds_remaining']:.0f}s remaining)")
                 return contract
 
