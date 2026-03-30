@@ -18,7 +18,8 @@ class PaperTrader:
         return sum(p["size"] for p in positions)
 
     async def open_trade(self, market_id, question, side, price, size, signal_score,
-                         signal_strength, ev_at_entry, exit_target, stop_loss, weight_version) -> TradeResult:
+                         signal_strength, ev_at_entry, exit_target, stop_loss, weight_version,
+                         indicator_snapshot: str = "") -> TradeResult:
         if await self.db.has_position_for_market(market_id):
             return TradeResult(success=False, reason="Duplicate market — already have position")
         if await self.db.get_open_position_count() >= self.max_concurrent_positions:
@@ -33,6 +34,7 @@ class PaperTrader:
             entry_price=price, size=size, signal_score=signal_score,
             signal_strength=signal_strength, ev_at_entry=ev_at_entry, exit_target=exit_target,
             stop_loss=stop_loss, weight_version=weight_version,
+            indicator_snapshot=indicator_snapshot,
         )
         await self.db.set_bankroll(bankroll - size)
         logger.info(f"[PAPER] Opened {side} on '{question}' at {price} size={size}")

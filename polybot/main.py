@@ -74,11 +74,40 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 await asyncio.sleep(1)
                 continue
 
-            # --- SCALP EXIT CHECK: monitor open positions for profit/loss ---
+            # --- SCALP EXIT CHECK: monitor open positions for profit/loss/expiry ---
             positions = await db.get_open_positions()
             for pos in positions:
                 live = await _get_contract_prices(market_scanner, pos["condition_id"])
-                if not live:
+
+                # If contract no longer active (expired/resolved), close at resolution price
+                if not live or live["seconds_remaining"] <= 0:
+                    # Contract resolved — close at final price (1.0 for winner, 0.0 for loser)
+                    # Since we can't know resolution, use last known price or assume loss
+                    exit_price = 0.0 if not live else (live["price_up"] if pos["side"] == "Up" else live["price_down"])
+                    result = await trader.close_trade(pos["id"], exit_price)
+                    if result.success:
+                        entry_price = pos["entry_price"]
+                        gain_pct = (exit_price - entry_price) / entry_price if entry_price > 0 else 0
+                        logger.info(f"CONTRACT EXPIRED: {pos['question'][:50]} | "
+                                    f"entry={entry_price:.3f} exit={exit_price:.3f}")
+                        if alert_manager:
+                            await alert_manager.send_trade_closed(
+                                question=pos["question"], exit_price=exit_price,
+                                log_return=result.log_return or 0, hold_hours=0)
+                        outcome_reviewer.record_outcome(
+                            position_id=pos["id"],
+                            market_id=pos["condition_id"],
+                            question=pos["question"],
+                            side=pos["side"],
+                            signal_score=pos["signal_score"],
+                            profitable=gain_pct > 0,
+                            entry_price=entry_price,
+                            exit_price=exit_price,
+                            log_return=result.log_return or 0,
+                            weight_version=pos.get("weight_version", ""),
+                            category="crypto-5min",
+                            indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}"))
+                        )
                     continue
 
                 side = pos["side"]
@@ -107,12 +136,12 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             market_id=pos["condition_id"],
                             question=pos["question"],
                             side=pos["side"],
-                            predicted_probability=abs(pos["signal_score"]),
-                            actual_outcome=gain_pct > 0,
+                            signal_score=pos["signal_score"],
+                            profitable=gain_pct > 0,
                             entry_price=entry_price,
                             exit_price=current_price,
                             log_return=result.log_return or 0,
-                            prompt_version=pos.get("weight_version", ""),
+                            weight_version=pos.get("weight_version", ""),
                             category="crypto-5min",
                             indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}"))
                         )
@@ -134,12 +163,12 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             market_id=pos["condition_id"],
                             question=pos["question"],
                             side=pos["side"],
-                            predicted_probability=abs(pos["signal_score"]),
-                            actual_outcome=gain_pct > 0,
+                            signal_score=pos["signal_score"],
+                            profitable=gain_pct > 0,
                             entry_price=entry_price,
                             exit_price=current_price,
                             log_return=result.log_return or 0,
-                            prompt_version=pos.get("weight_version", ""),
+                            weight_version=pos.get("weight_version", ""),
                             category="crypto-5min",
                             indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}"))
                         )

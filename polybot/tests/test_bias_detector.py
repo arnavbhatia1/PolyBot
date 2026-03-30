@@ -4,18 +4,6 @@ from pathlib import Path
 from polybot.agents.bias_detector import BiasDetector
 
 @pytest.fixture
-def outcomes():
-    return [
-        {"category": "politics", "predicted_probability": 0.80, "actual_outcome": True, "error": 0.20, "correct": True},
-        {"category": "politics", "predicted_probability": 0.75, "actual_outcome": False, "error": 0.75, "correct": False},
-        {"category": "politics", "predicted_probability": 0.85, "actual_outcome": True, "error": 0.15, "correct": True},
-        {"category": "politics", "predicted_probability": 0.70, "actual_outcome": False, "error": 0.70, "correct": False},
-        {"category": "crypto", "predicted_probability": 0.60, "actual_outcome": True, "error": 0.40, "correct": True},
-        {"category": "crypto", "predicted_probability": 0.55, "actual_outcome": True, "error": 0.45, "correct": True},
-        {"category": "crypto", "predicted_probability": 0.50, "actual_outcome": True, "error": 0.50, "correct": True},
-    ]
-
-@pytest.fixture
 def biases_path(tmp_path):
     return tmp_path / "biases.json"
 
@@ -23,28 +11,46 @@ def biases_path(tmp_path):
 def detector(biases_path):
     return BiasDetector(biases_path=str(biases_path))
 
-def test_detect_biases_returns_dict(detector, outcomes):
+def _make_outcome(ind_scores, correct):
+    return {
+        "correct": correct,
+        "indicator_snapshot": {
+            "rsi": {"score": ind_scores.get("rsi", 0)},
+            "macd": {"score": ind_scores.get("macd", 0)},
+            "stochastic": {"score": ind_scores.get("stochastic", 0)},
+            "obv": {"score": ind_scores.get("obv", 0)},
+            "vwap": {"score": ind_scores.get("vwap", 0)},
+        }
+    }
+
+def test_detect_returns_dict(detector):
+    outcomes = [
+        _make_outcome({"rsi": 0.5, "macd": 0.5}, correct=True),
+        _make_outcome({"rsi": 0.5, "macd": 0.5}, correct=True),
+        _make_outcome({"rsi": 0.5, "macd": 0.5}, correct=False),
+    ]
     biases = detector.detect(outcomes)
     assert isinstance(biases, dict)
 
-def test_detect_politics_overestimation(detector, outcomes):
+def test_useful_indicator_gets_positive_bias(detector):
+    outcomes = [_make_outcome({"rsi": 0.8}, correct=True) for _ in range(5)]
     biases = detector.detect(outcomes)
-    assert "politics" in biases
-    assert biases["politics"] < 0
+    assert "rsi" in biases
+    assert biases["rsi"] > 0
 
-def test_detect_crypto_underestimation(detector, outcomes):
+def test_misleading_indicator_gets_negative_bias(detector):
+    outcomes = [_make_outcome({"macd": 0.8}, correct=False) for _ in range(5)]
     biases = detector.detect(outcomes)
-    assert "crypto" in biases
-    assert biases["crypto"] > 0
+    assert "macd" in biases
+    assert biases["macd"] < 0
 
-def test_save_biases_writes_file(detector, outcomes, biases_path):
-    biases = detector.detect(outcomes)
-    detector.save(biases)
+def test_skips_with_few_samples(detector):
+    outcomes = [_make_outcome({"rsi": 0.5}, correct=True)]
+    biases = detector.detect(outcomes, min_samples=3)
+    assert len(biases) == 0
+
+def test_save_biases_writes_file(detector, biases_path):
+    detector.save({"rsi": 0.15, "macd": -0.1})
     assert biases_path.exists()
     saved = json.loads(biases_path.read_text())
-    assert "politics" in saved
-
-def test_detect_skips_categories_with_few_samples(detector):
-    outcomes = [{"category": "sports", "predicted_probability": 0.80, "actual_outcome": True, "error": 0.20, "correct": True}]
-    biases = detector.detect(outcomes, min_samples=3)
-    assert "sports" not in biases
+    assert saved["rsi"] == 0.15

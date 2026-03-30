@@ -10,19 +10,48 @@ class BiasDetector:
         self.biases_path = Path(biases_path)
 
     def detect(self, outcomes: list[dict], min_samples: int = 3) -> dict[str, float]:
-        by_category: dict[str, list[dict]] = defaultdict(list)
-        for outcome in outcomes:
-            cat = outcome.get("category", "unknown")
-            if cat:
-                by_category[cat].append(outcome)
+        """Detect per-indicator accuracy biases from trade outcomes.
+
+        For each indicator, computes win rate when that indicator's score
+        was strongly positive vs strongly negative. Identifies indicators
+        that mislead more than they help.
+        """
+        if len(outcomes) < min_samples:
+            return {}
+
+        indicator_names = ["rsi", "macd", "stochastic", "obv", "vwap"]
         biases = {}
-        for category, records in by_category.items():
-            if len(records) < min_samples:
+
+        for ind in indicator_names:
+            bullish_wins = 0
+            bullish_total = 0
+            bearish_wins = 0
+            bearish_total = 0
+
+            for o in outcomes:
+                snap = o.get("indicator_snapshot", {})
+                score = snap.get(ind, {}).get("score", 0)
+                correct = o.get("correct", False)
+
+                if score > 0.1:  # Indicator said bullish
+                    bullish_total += 1
+                    if correct:
+                        bullish_wins += 1
+                elif score < -0.1:  # Indicator said bearish
+                    bearish_total += 1
+                    if correct:
+                        bearish_wins += 1
+
+            # Compute accuracy when this indicator has a strong opinion
+            total = bullish_total + bearish_total
+            if total < min_samples:
                 continue
-            avg_predicted = sum(r["predicted_probability"] for r in records) / len(records)
-            avg_actual = sum(1.0 if r["actual_outcome"] else 0.0 for r in records) / len(records)
-            bias = avg_actual - avg_predicted
-            biases[category] = round(bias, 4)
+
+            accuracy = (bullish_wins + bearish_wins) / total if total > 0 else 0
+            # Bias: how much this indicator's accuracy deviates from 50% (coin flip)
+            # Positive = indicator is useful, negative = indicator is misleading
+            biases[ind] = round(accuracy - 0.5, 4)
+
         return biases
 
     def save(self, biases: dict[str, float]):
