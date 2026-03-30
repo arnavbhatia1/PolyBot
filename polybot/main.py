@@ -77,7 +77,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             # --- SCALP EXIT CHECK: monitor open positions for profit/loss/expiry ---
             positions = await db.get_open_positions()
             for pos in positions:
-                live = await _get_contract_prices(market_scanner, pos["condition_id"])
+                live = await _get_contract_prices(market_scanner, pos["market_id"])
 
                 # If contract no longer active (expired/resolved), close at resolution price
                 if not live or live["seconds_remaining"] <= 0:
@@ -96,7 +96,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                                 log_return=result.log_return or 0, hold_hours=0)
                         outcome_reviewer.record_outcome(
                             position_id=pos["id"],
-                            market_id=pos["condition_id"],
+                            market_id=pos["market_id"],
                             question=pos["question"],
                             side=pos["side"],
                             signal_score=pos["signal_score"],
@@ -133,7 +133,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         # Record outcome for learning pipeline
                         outcome_reviewer.record_outcome(
                             position_id=pos["id"],
-                            market_id=pos["condition_id"],
+                            market_id=pos["market_id"],
                             question=pos["question"],
                             side=pos["side"],
                             signal_score=pos["signal_score"],
@@ -160,7 +160,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         # Record outcome for learning pipeline
                         outcome_reviewer.record_outcome(
                             position_id=pos["id"],
-                            market_id=pos["condition_id"],
+                            market_id=pos["market_id"],
                             question=pos["question"],
                             side=pos["side"],
                             signal_score=pos["signal_score"],
