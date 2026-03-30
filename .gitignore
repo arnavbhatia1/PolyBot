@@ -14,6 +14,10 @@ polybot/config/.env
 # Database
 *.db
 
+# Logs
+polybot.log
+polybot.log.*
+
 # IDE
 .vscode/
 .idea/
