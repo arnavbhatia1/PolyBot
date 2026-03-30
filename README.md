@@ -8,7 +8,7 @@ Automated micro-trader for Polymarket's 5-minute BTC Up/Down markets. Uses 7 tec
 # Install dependencies
 pip install -r requirements.txt
 
-# Set up secrets
+# Set up secrets in .env
 cp polybot/config/.env.example polybot/config/.env
 # Edit .env with your keys (minimum: ANTHROPIC_API_KEY, DISCORD_BOT_TOKEN)
 
