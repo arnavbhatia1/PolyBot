@@ -75,7 +75,7 @@ indicators:
   ema:
     fast_period: 9
     slow_period: 21
-    chop_threshold: 0.001
+    chop_threshold: 0.0001  # 0.01% — loosened for 1-min candle granularity
   obv:
     slope_period: 5
   vwap:
@@ -87,7 +87,7 @@ indicators:
     history_periods: 100
 
 signal:
-  entry_threshold: 0.60
+  entry_threshold: 0.40  # Loosened for paper trading — learning agents will tighten
   weights:
     rsi: 0.20
     macd: 0.25

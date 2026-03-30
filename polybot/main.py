@@ -28,7 +28,7 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=3),
+        logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="w"),
     ],
 )
 logger = logging.getLogger("polybot")
@@ -164,9 +164,31 @@ async def main():
     # Indicator engine
     signal_cfg = config.get("signal", {})
     weights_dir = str(base_dir / "memory" / "weights")
+    ind_cfg = config.get("indicators", {})
+    indicator_params = {
+        "rsi": {"period": ind_cfg.get("rsi", {}).get("period", 14),
+                "overbought": ind_cfg.get("rsi", {}).get("overbought", 70),
+                "oversold": ind_cfg.get("rsi", {}).get("oversold", 30)},
+        "macd": {"fast": ind_cfg.get("macd", {}).get("fast_period", 12),
+                 "slow": ind_cfg.get("macd", {}).get("slow_period", 26),
+                 "signal_period": ind_cfg.get("macd", {}).get("signal_period", 9)},
+        "stochastic": {"k_period": ind_cfg.get("stochastic", {}).get("k_period", 14),
+                       "d_smoothing": ind_cfg.get("stochastic", {}).get("d_smoothing", 3),
+                       "overbought": ind_cfg.get("stochastic", {}).get("overbought", 80),
+                       "oversold": ind_cfg.get("stochastic", {}).get("oversold", 20)},
+        "ema": {"fast_period": ind_cfg.get("ema", {}).get("fast_period", 9),
+                "slow_period": ind_cfg.get("ema", {}).get("slow_period", 21),
+                "chop_threshold": ind_cfg.get("ema", {}).get("chop_threshold", 0.0001)},
+        "obv": {"slope_period": ind_cfg.get("obv", {}).get("slope_period", 5)},
+        "atr": {"period": ind_cfg.get("atr", {}).get("period", 14),
+                "low_pct": ind_cfg.get("atr", {}).get("low_percentile", 25),
+                "high_pct": ind_cfg.get("atr", {}).get("high_percentile", 90),
+                "history": ind_cfg.get("atr", {}).get("history_periods", 100)},
+    }
     indicator_engine = IndicatorEngine(
         weights_dir=weights_dir,
         active_version=signal_cfg.get("active_weights_version", "weights_v001"),
+        params=indicator_params,
     )
 
     # Signal engine
