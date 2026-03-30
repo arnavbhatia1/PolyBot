@@ -24,22 +24,50 @@ from polybot.discord_bot.bot import create_bot
 from polybot.discord_bot.alerts import AlertManager
 
 logging.basicConfig(
-    level=logging.WARNING,
+    level=logging.ERROR,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
         logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="w"),
     ],
 )
-# Only polybot logger shows INFO (trades, startup). Everything else (httpx, discord, websockets) stays quiet.
+# Only polybot and discord bot loggers show INFO. Everything else (httpx, discord.client, websockets) is silent.
 logger = logging.getLogger("polybot")
 logger.setLevel(logging.INFO)
+logging.getLogger("polybot.discord_bot.bot").setLevel(logging.INFO)
+
+
+async def _get_contract_prices(market_scanner, condition_id: str) -> dict | None:
+    """Fetch current Up/Down prices for an active contract via Gamma API."""
+    try:
+        import httpx
+        # Re-fetch the event to get latest prices
+        async with httpx.AsyncClient(timeout=5) as client:
+            # Use the cached slug or reconstruct
+            import time
+            window_ts = int(time.time() // 300) * 300
+            for ts in [window_ts, window_ts + 300, window_ts - 300]:
+                slug = market_scanner._make_slug(ts)
+                resp = await client.get(f"{market_scanner.GAMMA_API}/events",
+                                        params={"slug": slug})
+                data = resp.json()
+                if data:
+                    event = data[0] if isinstance(data, list) else data
+                    contract = market_scanner.parse_contract(event)
+                    if contract and contract["condition_id"] == condition_id:
+                        return contract
+    except Exception:
+        pass
+    return None
 
 
 async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,
                        decision_table, trader, exit_monitor, alert_manager, db, config, is_paused_fn):
     math_config = config["math"]
     signal_config = config["signal"]
+    scalp_config = config.get("scalping", {})
+    take_profit_pct = scalp_config.get("take_profit_pct", 0.10)
+    stop_loss_pct = scalp_config.get("stop_loss_pct", 0.08)
 
     while True:
         try:
@@ -47,31 +75,47 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 await asyncio.sleep(1)
                 continue
 
-            # Exit monitoring for open positions
+            # --- SCALP EXIT CHECK: monitor open positions for profit/loss ---
             positions = await db.get_open_positions()
-            if positions:
-                async def get_price(market_id):
-                    import httpx
-                    async with httpx.AsyncClient(timeout=10) as client:
-                        resp = await client.get(
-                            f"{BTCMarketScanner.CLOB_BASE_URL}/markets/{market_id}")
-                        data = resp.json()
-                        for t in data.get("tokens", []):
-                            if t.get("outcome", "").lower() == "yes":
-                                return float(t.get("price", 0))
-                    return 0.0
+            for pos in positions:
+                live = await _get_contract_prices(market_scanner, pos["condition_id"])
+                if not live:
+                    continue
 
-                async def on_exit(position_id, exit_price, reason):
-                    result = await trader.close_trade(position_id, exit_price)
-                    if result.success and alert_manager:
-                        pos = next((p for p in positions if p["id"] == position_id), {})
-                        await alert_manager.send_trade_closed(
-                            question=pos.get("question", ""), exit_price=exit_price,
-                            log_return=result.log_return or 0, hold_hours=0)
+                side = pos["side"]
+                entry_price = pos["entry_price"]
+                if side == "Up":
+                    current_price = live["price_up"]
+                else:
+                    current_price = live["price_down"]
 
-                await exit_monitor.monitor_positions(positions, get_price, on_exit)
+                gain_pct = (current_price - entry_price) / entry_price
 
-            # Find active BTC 5-min contract
+                if gain_pct >= take_profit_pct:
+                    # Take profit
+                    result = await trader.close_trade(pos["id"], current_price)
+                    if result.success:
+                        logger.info(f"SCALP TAKE PROFIT: {pos['question'][:50]} | "
+                                    f"entry={entry_price:.3f} exit={current_price:.3f} "
+                                    f"gain={gain_pct:.1%}")
+                        if alert_manager:
+                            await alert_manager.send_trade_closed(
+                                question=pos["question"], exit_price=current_price,
+                                log_return=result.log_return or 0, hold_hours=0)
+
+                elif gain_pct <= -stop_loss_pct:
+                    # Stop loss
+                    result = await trader.close_trade(pos["id"], current_price)
+                    if result.success:
+                        logger.info(f"SCALP STOP LOSS: {pos['question'][:50]} | "
+                                    f"entry={entry_price:.3f} exit={current_price:.3f} "
+                                    f"loss={gain_pct:.1%}")
+                        if alert_manager:
+                            await alert_manager.send_trade_closed(
+                                question=pos["question"], exit_price=current_price,
+                                log_return=result.log_return or 0, hold_hours=0)
+
+            # --- ENTRY: find contract and evaluate signal ---
             contract = await market_scanner.find_active_contract()
             if not contract:
                 await asyncio.sleep(1)

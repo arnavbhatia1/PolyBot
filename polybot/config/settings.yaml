@@ -98,6 +98,11 @@ signal:
 
 market:
   contract_type: "btc_5min"
-  entry_window_seconds: 120
+  entry_window_seconds: 240
   min_time_remaining_seconds: 30
   scan_cache_seconds: 5
+
+scalping:
+  take_profit_pct: 0.10    # Sell when contract price rises 10% above entry
+  stop_loss_pct: 0.08      # Cut when contract price drops 8% below entry
+  trailing_profit: false    # Future: trail the profit instead of fixed target
