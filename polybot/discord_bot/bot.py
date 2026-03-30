@@ -20,6 +20,27 @@ def create_bot(db, trader, scanner, scheduler, config):
     async def on_ready():
         logger.info(f"Discord bot connected as {bot.user}")
 
+    @bot.command(name="commands")
+    async def commands_list(ctx):
+        await ctx.send(
+            "**PolyBot Commands**\n\n"
+            "**Trading**\n"
+            "`!status` — Mode, bankroll, open positions, 24h P&L\n"
+            "`!positions` — All open positions with entry price, targets\n"
+            "`!history [n]` — Last n closed trades (default 10)\n"
+            "`!performance` — Sharpe ratio, win rate, total P&L\n"
+            "`!pause` — Pause trading (keeps scanning)\n"
+            "`!resume` — Resume trading\n"
+            "`!mode` — Show current mode (paper/live)\n\n"
+            "**Config**\n"
+            "`!filters` — Show current filter settings\n"
+            "`!setfilter <param> <value>` — Change a filter at runtime\n\n"
+            "**Learning**\n"
+            "`!agents` — Learning agent status and schedule\n"
+            "`!lessons` — Top learnings from the memory system\n\n"
+            "`!commands` — Show this message"
+        )
+
     @bot.command(name="status")
     async def status(ctx):
         from polybot.discord_bot.commands import format_status
