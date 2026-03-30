@@ -17,8 +17,8 @@ class PaperTrader:
         positions = await self.db.get_open_positions()
         return sum(p["size"] for p in positions)
 
-    async def open_trade(self, market_id, question, side, price, size, claude_probability,
-                         claude_confidence, ev_at_entry, exit_target, stop_loss, prompt_version) -> TradeResult:
+    async def open_trade(self, market_id, question, side, price, size, signal_score,
+                         signal_strength, ev_at_entry, exit_target, stop_loss, weight_version) -> TradeResult:
         if await self.db.has_position_for_market(market_id):
             return TradeResult(success=False, reason="Duplicate market — already have position")
         if await self.db.get_open_position_count() >= self.max_concurrent_positions:
@@ -30,9 +30,9 @@ class PaperTrader:
             return TradeResult(success=False, reason=f"Bankroll limit — deployed {deployed:.2f}, max {max_deployable:.2f}")
         pos_id = await self.db.open_position(
             market_id=market_id, question=question, side=side,
-            entry_price=price, size=size, claude_probability=claude_probability,
-            claude_confidence=claude_confidence, ev_at_entry=ev_at_entry, exit_target=exit_target,
-            stop_loss=stop_loss, prompt_version=prompt_version,
+            entry_price=price, size=size, signal_score=signal_score,
+            signal_strength=signal_strength, ev_at_entry=ev_at_entry, exit_target=exit_target,
+            stop_loss=stop_loss, weight_version=weight_version,
         )
         await self.db.set_bankroll(bankroll - size)
         logger.info(f"[PAPER] Opened {side} on '{question}' at {price} size={size}")

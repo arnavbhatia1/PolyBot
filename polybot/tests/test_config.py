@@ -11,7 +11,7 @@ def test_load_config_returns_dict(sample_config):
     assert config["mode"] == "paper"
 
 def test_load_config_has_all_sections(loaded_config):
-    for section in ["scanner", "filters", "brain", "math", "execution", "agents", "discord", "database"]:
+    for section in ["math", "execution", "agents", "discord", "database"]:
         assert section in loaded_config
 
 def test_get_config_returns_cached(loaded_config):

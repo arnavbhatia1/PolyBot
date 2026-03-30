@@ -63,9 +63,9 @@ async def test_full_ta_flow(db, weights_dir):
         side = "YES" if signal.action == "BUY_YES" else "NO"
         result = await trader.open_trade(
             market_id="0xbtc5min", question="BTC 5min Up?", side=side,
-            price=0.55, size=5.0, claude_probability=abs(signal.score),
-            claude_confidence="high", ev_at_entry=0.10, exit_target=0.90,
-            stop_loss=0.40, prompt_version="ta_v001")
+            price=0.55, size=5.0, signal_score=abs(signal.score),
+            signal_strength="high", ev_at_entry=0.10, exit_target=0.90,
+            stop_loss=0.40, weight_version="ta_v001")
         assert result.success is True
         bankroll = await db.get_bankroll()
         assert bankroll == pytest.approx(95.0, abs=0.01)

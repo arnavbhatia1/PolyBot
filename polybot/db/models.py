@@ -17,18 +17,17 @@ class Database:
                 side TEXT NOT NULL,
                 entry_price REAL NOT NULL,
                 size REAL NOT NULL,
-                claude_probability REAL NOT NULL,
-                claude_confidence TEXT NOT NULL,
+                signal_score REAL NOT NULL,
+                signal_strength TEXT NOT NULL,
                 ev_at_entry REAL NOT NULL,
                 exit_target REAL NOT NULL,
                 stop_loss REAL NOT NULL,
-                time_stop TEXT,
                 entry_timestamp TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'open',
                 exit_price REAL,
                 exit_timestamp TEXT,
                 log_return REAL,
-                prompt_version TEXT NOT NULL,
+                weight_version TEXT NOT NULL,
                 indicator_snapshot TEXT
             );
 
@@ -41,11 +40,11 @@ class Database:
                 entry_price REAL NOT NULL,
                 exit_price REAL NOT NULL,
                 size REAL NOT NULL,
-                claude_probability REAL NOT NULL,
-                claude_confidence TEXT NOT NULL,
+                signal_score REAL NOT NULL,
+                signal_strength TEXT NOT NULL,
                 ev_at_entry REAL NOT NULL,
                 log_return REAL NOT NULL,
-                prompt_version TEXT NOT NULL,
+                weight_version TEXT NOT NULL,
                 entry_timestamp TEXT NOT NULL,
                 exit_timestamp TEXT NOT NULL
             );
@@ -75,24 +74,24 @@ class Database:
         side: str,
         entry_price: float,
         size: float,
-        claude_probability: float,
-        claude_confidence: str,
+        signal_score: float,
+        signal_strength: str,
         ev_at_entry: float,
         exit_target: float,
         stop_loss: float,
-        prompt_version: str,
+        weight_version: str,
         indicator_snapshot: str = "",
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
             """INSERT INTO positions
-            (market_id, question, side, entry_price, size, claude_probability,
-             claude_confidence, ev_at_entry, exit_target, stop_loss,
-             entry_timestamp, status, prompt_version, indicator_snapshot)
+            (market_id, question, side, entry_price, size, signal_score,
+             signal_strength, ev_at_entry, exit_target, stop_loss,
+             entry_timestamp, status, weight_version, indicator_snapshot)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
-            (market_id, question, side, entry_price, size, claude_probability,
-             claude_confidence, ev_at_entry, exit_target, stop_loss,
-             now, prompt_version, indicator_snapshot),
+            (market_id, question, side, entry_price, size, signal_score,
+             signal_strength, ev_at_entry, exit_target, stop_loss,
+             now, weight_version, indicator_snapshot),
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -117,13 +116,13 @@ class Database:
         await self.conn.execute(
             """INSERT INTO trade_history
             (position_id, market_id, question, side, entry_price, exit_price, size,
-             claude_probability, claude_confidence, ev_at_entry, log_return,
-             prompt_version, entry_timestamp, exit_timestamp)
+             signal_score, signal_strength, ev_at_entry, log_return,
+             weight_version, entry_timestamp, exit_timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (pos["id"], pos["market_id"], pos["question"], pos["side"],
              pos["entry_price"], exit_price, pos["size"],
-             pos["claude_probability"], pos["claude_confidence"], pos["ev_at_entry"],
-             log_return, pos["prompt_version"], pos["entry_timestamp"], now),
+             pos["signal_score"], pos["signal_strength"], pos["ev_at_entry"],
+             log_return, pos["weight_version"], pos["entry_timestamp"], now),
         )
         await self.conn.commit()
 

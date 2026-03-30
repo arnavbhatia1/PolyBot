@@ -32,9 +32,6 @@ def create_bot(db, trader, scanner, scheduler, config):
             "`!pause` — Pause trading (keeps scanning)\n"
             "`!resume` — Resume trading\n"
             "`!mode` — Show current mode (paper/live)\n\n"
-            "**Config**\n"
-            "`!filters` — Show current filter settings\n"
-            "`!setfilter <param> <value>` — Change a filter at runtime\n\n"
             "**Learning**\n"
             "`!agents` — Learning agent status and schedule\n"
             "`!lessons` — Top learnings from the memory system\n\n"
@@ -83,28 +80,6 @@ def create_bot(db, trader, scanner, scheduler, config):
     @bot.command(name="mode")
     async def mode_cmd(ctx):
         await ctx.send(f"Current mode: `{bot.config.get('mode', 'paper')}`")
-
-    @bot.command(name="filters")
-    async def filters_cmd(ctx):
-        f = bot.config.get("filters", {})
-        lines = ["**Current Filters**\n"]
-        for k, v in f.items():
-            lines.append(f"  `{k}`: {v}")
-        await ctx.send("\n".join(lines))
-
-    @bot.command(name="setfilter")
-    async def setfilter(ctx, param: str, value: str):
-        try:
-            if "." in value:
-                typed_value = float(value)
-            elif value.isdigit():
-                typed_value = int(value)
-            else:
-                typed_value = value
-            bot.scanner.filter.update(param, typed_value)
-            await ctx.send(f"Filter `{param}` set to `{typed_value}`")
-        except ValueError as e:
-            await ctx.send(f"Error: {e}")
 
     @bot.command(name="lessons")
     async def lessons(ctx):

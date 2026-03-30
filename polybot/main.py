@@ -9,7 +9,6 @@ from polybot.config.loader import load_config, get_secret
 from polybot.db.models import Database
 from polybot.core.binance_feed import BinanceFeed
 from polybot.core.market_scanner import BTCMarketScanner
-from polybot.core.websocket_monitor import ExitMonitor
 from polybot.indicators.engine import IndicatorEngine
 from polybot.core.signal_engine import SignalEngine
 from polybot.math_engine.decision_table import DecisionTable
@@ -62,7 +61,7 @@ async def _get_contract_prices(market_scanner, condition_id: str) -> dict | None
 
 
 async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,
-                       decision_table, trader, exit_monitor, alert_manager, db, config, is_paused_fn):
+                       decision_table, trader, alert_manager, db, config, outcome_reviewer, is_paused_fn):
     math_config = config["math"]
     signal_config = config["signal"]
     scalp_config = config.get("scalping", {})
@@ -102,6 +101,21 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             await alert_manager.send_trade_closed(
                                 question=pos["question"], exit_price=current_price,
                                 log_return=result.log_return or 0, hold_hours=0)
+                        # Record outcome for learning pipeline
+                        outcome_reviewer.record_outcome(
+                            position_id=pos["id"],
+                            market_id=pos["condition_id"],
+                            question=pos["question"],
+                            side=pos["side"],
+                            predicted_probability=abs(pos["signal_score"]),
+                            actual_outcome=gain_pct > 0,
+                            entry_price=entry_price,
+                            exit_price=current_price,
+                            log_return=result.log_return or 0,
+                            prompt_version=pos.get("weight_version", ""),
+                            category="crypto-5min",
+                            indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}"))
+                        )
 
                 elif gain_pct <= -stop_loss_pct:
                     # Stop loss
@@ -114,6 +128,21 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             await alert_manager.send_trade_closed(
                                 question=pos["question"], exit_price=current_price,
                                 log_return=result.log_return or 0, hold_hours=0)
+                        # Record outcome for learning pipeline
+                        outcome_reviewer.record_outcome(
+                            position_id=pos["id"],
+                            market_id=pos["condition_id"],
+                            question=pos["question"],
+                            side=pos["side"],
+                            predicted_probability=abs(pos["signal_score"]),
+                            actual_outcome=gain_pct > 0,
+                            entry_price=entry_price,
+                            exit_price=current_price,
+                            log_return=result.log_return or 0,
+                            prompt_version=pos.get("weight_version", ""),
+                            category="crypto-5min",
+                            indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}"))
+                        )
 
             # --- ENTRY: find contract and evaluate signal ---
             contract = await market_scanner.find_active_contract()
@@ -150,12 +179,12 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     side=side,
                     price=price,
                     size=size,
-                    claude_probability=abs(signal.score),
-                    claude_confidence="high",
+                    signal_score=abs(signal.score),
+                    signal_strength="high",
                     ev_at_entry=signal.score,
                     exit_target=math_config["exit_target"],
                     stop_loss=price * (1 - math_config["stop_loss_pct"]),
-                    prompt_version=signal_config.get("active_weights_version", "weights_v001"),
+                    weight_version=signal_config.get("active_weights_version", "weights_v001"),
                     indicator_snapshot=snapshot_str,
                 )
 
@@ -244,12 +273,8 @@ async def main():
                                             "obv": 0.15, "vwap": 0.20}),
     )
 
-    # Exit monitor
-    exit_monitor = ExitMonitor(time_stop_hours=math_cfg["time_stop_hours"],
-                               time_stop_min_gain=math_cfg["time_stop_min_gain"])
-
     # Brain (Claude client kept for TA evolver analysis calls)
-    claude = ClaudeClient(api_key=get_secret("ANTHROPIC_API_KEY"), model=config["brain"]["model"])
+    claude = ClaudeClient(api_key=get_secret("ANTHROPIC_API_KEY"), model="claude-sonnet-4-6")
 
     # Execution
     exec_cfg = config["execution"]
@@ -295,7 +320,7 @@ async def main():
     tasks = [
         asyncio.create_task(trading_loop(
             binance_feed, market_scanner, indicator_engine, signal_engine,
-            decision_table, trader, exit_monitor, alert_manager, db, config,
+            decision_table, trader, alert_manager, db, config, outcome_reviewer,
             is_paused_fn=lambda: discord_bot.is_paused)),
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
