@@ -50,3 +50,54 @@ discord:
 
 database:
   path: "polybot/db/polybot.db"
+
+# TA Strategy Configuration
+binance:
+  symbol: "btcusdt"
+  ws_url: "wss://stream.binance.com:9443/ws"
+  rest_url: "https://api.binance.com/api/v3"
+  candle_buffer_size: 200
+
+indicators:
+  rsi:
+    period: 14
+    overbought: 70
+    oversold: 30
+  macd:
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+  stochastic:
+    k_period: 14
+    d_smoothing: 3
+    overbought: 80
+    oversold: 20
+  ema:
+    fast_period: 9
+    slow_period: 21
+    chop_threshold: 0.001
+  obv:
+    slope_period: 5
+  vwap:
+    session_minutes: 5
+  atr:
+    period: 14
+    low_percentile: 25
+    high_percentile: 90
+    history_periods: 100
+
+signal:
+  entry_threshold: 0.60
+  weights:
+    rsi: 0.20
+    macd: 0.25
+    stochastic: 0.20
+    obv: 0.15
+    vwap: 0.20
+  active_weights_version: "weights_v001"
+
+market:
+  contract_type: "btc_5min"
+  entry_window_seconds: 120
+  min_time_remaining_seconds: 30
+  scan_cache_seconds: 5

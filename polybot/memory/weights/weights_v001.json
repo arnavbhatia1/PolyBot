@@ -1,0 +1,9 @@
+{
+  "rsi": 0.20,
+  "macd": 0.25,
+  "stochastic": 0.20,
+  "obv": 0.15,
+  "vwap": 0.20,
+  "entry_threshold": 0.60,
+  "version": "weights_v001"
+}
