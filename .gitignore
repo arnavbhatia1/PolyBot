@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# Secrets
+.env
+polybot/config/.env
+
+# Database
+*.db
+
+# IDE
+.vscode/
+.idea/
+
+# Memory (runtime generated)
+polybot/memory/outcomes/*.json
+
+# OS
+.DS_Store
+Thumbs.db
