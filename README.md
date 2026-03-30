@@ -1,0 +1,2 @@
+# PolyBot
+PolyMarket Automated Trader
