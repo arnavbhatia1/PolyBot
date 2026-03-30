@@ -25,13 +25,15 @@ Binance WebSocket (live BTC price)
         |
   7 indicators computed every 1 second
         |
-  Hard gates: ATR volatility + EMA trend + entry window
+  [OPEN POSITIONS?] --> Check take-profit (10%) / stop-loss (8%) --> Sell if hit
+        |
+  Hard gates: ATR volatility + EMA trend + entry window (first 4 min)
         |
   Weighted score from RSI, MACD, Stochastic, OBV, VWAP
         |
   Score > threshold? --> Place trade on Polymarket 5-min BTC contract
         |
-  Wait for 5-min resolution --> Log outcome --> Learning agents tune weights
+  Active scalping within window --> Log outcome --> Learning agents tune weights
 ```
 
 ## Architecture
@@ -56,7 +58,8 @@ All parameters in `polybot/config/settings.yaml`:
 - **Gate thresholds** (ATR percentiles, EMA chop detection)
 - **Entry threshold** (minimum signal score to trade)
 - **Indicator weights** (how much each indicator contributes)
-- **Entry window** (first 2 minutes of each 5-min contract)
+- **Entry window** (first 4 minutes of each 5-min contract)
+- **Scalping** (take-profit 10%, stop-loss 8% within the window)
 - **Kelly fraction** (position sizing conservatism)
 
 ## Learning Pipeline

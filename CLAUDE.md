@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-PolyBot is a 5-minute BTC Up/Down micro-trader for Polymarket. It uses technical indicators (not an LLM) for trading decisions. Claude is only used in the daily learning pipeline to analyze trade patterns.
+PolyBot is a 5-minute BTC Up/Down micro-trader for Polymarket. It uses 7 technical indicators for trading decisions and actively scalps within the 5-min window. Claude is only used in the daily learning pipeline to analyze trade patterns.
 
 ## Key Architecture Decisions
 
@@ -11,14 +11,15 @@ PolyBot is a 5-minute BTC Up/Down micro-trader for Polymarket. It uses technical
 - **5-min markets use Gamma API with deterministic slugs.** The CLOB `/markets` endpoint does NOT list these. Use `gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}` where `window_ts = int(time.time() // 300) * 300`.
 - **Outcomes are "Up"/"Down", not "Yes"/"No".** The contract fields are `price_up`, `price_down`, `token_id_up`, `token_id_down`.
 - **Binance.US, not Binance.com.** Binance.com returns HTTP 451 for US IPs. All endpoints use `api.binance.us` and `stream.binance.us`.
-- **1-second decision loop.** Every second: check for active contract, compute indicators from candle buffer, evaluate gates + score, trade if strong.
-- **No manual exits.** 5-min markets resolve automatically. The bot enters and waits.
+- **1-second decision loop.** Every second: check open positions for scalp exit, then check for new entry signals.
+- **Active scalping, not hold-to-resolution.** The bot monitors open positions every second and sells when take-profit (10%) or stop-loss (8%) is hit. It does NOT just wait for the 5-min market to resolve.
+- **Entry window is 4 minutes.** Bot can enter during the first 240 seconds of each 5-min contract. Last 30 seconds are blocked.
 
 ## Project Structure
 
 ```
 polybot/
-  main.py                    # Entry point, async trading loop
+  main.py                    # Entry point, async trading loop with scalp exits
   config/settings.yaml       # ALL tunable parameters
   core/
     binance_feed.py          # WebSocket + candle buffer (data ingestion)
@@ -50,9 +51,10 @@ polybot/
 
 Everything tunable lives in `polybot/config/settings.yaml`. Key sections:
 - `indicators:` -- periods, thresholds for each of the 7 indicators
-- `signal:` -- entry threshold, indicator weights, active weight version
-- `market:` -- entry window (120s), min time remaining (30s)
-- `binance:` -- symbol, WebSocket/REST URLs, buffer size
+- `signal:` -- entry threshold (0.40 for paper trading), indicator weights, active weight version
+- `market:` -- entry window (240s), min time remaining (30s)
+- `scalping:` -- take_profit_pct (0.10), stop_loss_pct (0.08)
+- `binance:` -- symbol, WebSocket/REST URLs (binance.us), buffer size
 
 ## Running
 
@@ -61,12 +63,20 @@ python -m polybot.main          # From the PolyBot/PolyBot directory
 python -m pytest polybot/tests/ # Run all tests
 ```
 
+## Logging
+
+- Base log level is ERROR (suppresses httpx, discord, websockets noise)
+- `polybot` logger is INFO -- only shows startup, trades, and errors
+- Log file resets on each startup (no growing log)
+- PyNaCl/davey Discord warnings are suppressed
+
 ## Common Issues
 
-- **No trades happening:** Check EMA trend (chop = no trades), ATR gate (too quiet/volatile = no trades), entry threshold (lower it in settings.yaml for paper trading). Run diagnostic: check indicator values and gate results.
+- **No trades happening:** Check EMA trend (chop = no trades), ATR gate (too quiet/volatile = no trades), entry threshold (lower it in settings.yaml for paper trading). The bot is designed to be selective.
 - **Binance 451 error:** Using binance.com instead of binance.us. Check `binance.rest_url` and `binance.ws_url` in settings.yaml.
 - **No market found:** 5-min BTC markets use deterministic slugs via Gamma API, not the CLOB markets listing. Check `market_scanner.py`.
 - **Discord token error:** Use the Bot Token (Bot tab), not the Client Secret. No quotes in .env.
+- **Config not taking effect:** `main.py` must pass indicator params from settings.yaml to `IndicatorEngine(params=...)`. Check that config values are being read, not hardcoded defaults.
 
 ## Learning Pipeline
 
@@ -86,4 +96,8 @@ Weight versions: `weights_v001.json` (initial), `weights_v002.json` (first evolu
 - Don't put Claude in the trading loop. Indicators are faster and cheaper.
 - Don't switch back to Binance.com -- US IPs are blocked.
 - Don't use CLOB `/markets` for 5-min crypto markets -- they only exist via Gamma API slugs.
-- Don't add manual exit logic -- 5-min markets self-resolve.
+- Don't use "Yes"/"No" for crypto markets -- they use "Up"/"Down".
+
+## Always Update
+
+When making changes, update BOTH this file and README.md to reflect the current state. Documentation must stay in sync with the code.
