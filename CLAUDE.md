@@ -68,9 +68,10 @@ Everything tunable lives in `polybot/config/settings.yaml`:
 - `signal:` — entry threshold (0.40 for paper trading), indicator weights, active weight version
 - `market:` — entry window (300s / full window), min time remaining (5s)
 - `scalping:` — take_profit_pct (0.10), stop_loss_pct (0.08)
+- `signal.entry_threshold:` — 0.15 for paper trading data collection. Learning agents will tighten.
 - `binance:` — symbol, WebSocket/REST URLs (binance.us), buffer size
 - `math:` — EV threshold, Kelly fraction, exit target, stop loss
-- `execution:` — max slippage, bankroll limits, position limits
+- `execution:` — max slippage, bankroll limits ($1,000 paper), position limits
 
 ## Running
 
@@ -87,7 +88,7 @@ python -m pytest polybot/tests/ # Run all tests (148 tests)
 
 ## Common Issues
 
-- **No trades happening:** Check EMA trend (chop = no trades), ATR gate, entry threshold (lower in settings.yaml). BTC needs to be moving directionally.
+- **No trades happening:** Check EMA trend (chop = no trades), ATR gate (low_percentile=5 is loose, if still blocking BTC is truly dead), entry threshold (0.15 is loose). Minimum trade size is $1. Delete polybot.db and restart if bankroll is stale.
 - **Binance 451 error:** Using binance.com instead of binance.us.
 - **No market found:** 5-min BTC markets use deterministic slugs via Gamma API, not CLOB.
 - **Discord token error:** Use the Bot Token (Bot tab), not the Client Secret. No quotes in .env.

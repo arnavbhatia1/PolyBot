@@ -14,7 +14,7 @@ execution:
   max_slippage: 0.02
   max_bankroll_deployed: 0.80
   max_concurrent_positions: 5
-  initial_bankroll: 100.0
+  initial_bankroll: 1000.0
 
 agents:
   outcome_reviewer_interval_seconds: 3600
