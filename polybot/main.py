@@ -290,23 +290,28 @@ async def main():
     weight_optimizer = WeightOptimizer(
         weights_dir=weights_dir,
         scores_path=str(base_dir / "memory" / "weight_scores.json"),
-        min_improvement=agents_cfg.get("prompt_optimizer_min_improvement", 0.03),
+        min_improvement=0.03,
     )
+
+    # Discord (created before scheduler so alert_manager can be passed in)
+    discord_bot = create_bot(db, trader, market_scanner, None, config)
+    alert_manager = AlertManager(bot=discord_bot,
+        trade_channel_name=config["discord"]["trade_channel_name"],
+        control_channel_name=config["discord"]["control_channel_name"])
+
     scheduler = AgentScheduler(
         outcome_reviewer=outcome_reviewer,
         bias_detector=bias_detector,
         ta_evolver=ta_evolver,
         weight_optimizer=weight_optimizer,
+        indicator_engine=indicator_engine,
+        signal_engine=signal_engine,
+        alert_manager=alert_manager,
         outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
         daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
         math_config=math_cfg,
     )
-
-    # Discord
-    discord_bot = create_bot(db, trader, market_scanner, scheduler, config)
-    alert_manager = AlertManager(bot=discord_bot,
-        trade_channel_name=config["discord"]["trade_channel_name"],
-        control_channel_name=config["discord"]["control_channel_name"])
+    discord_bot.scheduler = scheduler
 
     await scheduler.start()
     await binance_feed.start()

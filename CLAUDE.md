@@ -99,7 +99,13 @@ python -m pytest polybot/tests/ # Run all tests (148 tests)
 Daily at 2 AM UTC, three agents run in sequence:
 1. BiasDetector reads `memory/outcomes/`, writes `memory/biases.json`
 2. TAEvolver reads outcomes + biases, recommends weight changes, writes `memory/strategy_log.md`
-3. WeightOptimizer backtests, saves new version to `memory/weights/` if Sharpe improves >= 3%
+3. WeightOptimizer backtests recommended weights against historical trades. If Sharpe improves >= 3%, **auto-adopts** new weights — hot-swaps indicator_engine and signal_engine at runtime. No manual intervention needed.
+
+**Discord alerts from pipeline:**
+- Weights adopted: posts new Sharpe, win rate, and weight values to `#polybot-trades`
+- No change: posts current vs candidate Sharpe
+- Negative Sharpe (<-0.5): posts WARNING to `#polybot-control` suggesting `!pause`
+- Pipeline error: posts error to `#polybot-control`
 
 ## What NOT to Change
 

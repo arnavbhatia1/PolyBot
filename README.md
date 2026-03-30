@@ -68,9 +68,9 @@ Runs daily at 2 AM UTC:
 
 1. **Bias Detector** -- finds indicator-level accuracy patterns
 2. **TA Strategy Evolver** -- recommends weight/threshold adjustments using Claude
-3. **Weight Optimizer** -- backtests and adopts improved weight configurations
+3. **Weight Optimizer** -- backtests and **auto-adopts** improved weights if Sharpe improves >= 3%. Hot-swaps at runtime. Posts results to Discord.
 
-Outcomes logged after every scalp exit to `memory/outcomes/`.
+Outcomes logged after every scalp exit. Negative Sharpe warnings posted to `#polybot-control`.
 
 ## Discord Commands
 
