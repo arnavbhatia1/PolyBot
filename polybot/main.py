@@ -36,27 +36,29 @@ logger.setLevel(logging.INFO)
 logging.getLogger("polybot.discord_bot.bot").setLevel(logging.INFO)
 
 
-async def _get_contract_prices(market_scanner, condition_id: str) -> dict | None:
+async def _get_contract_prices(market_scanner, market_id: str) -> dict | None:
     """Fetch current Up/Down prices for an active contract via Gamma API."""
-    try:
-        import httpx
-        # Re-fetch the event to get latest prices
-        async with httpx.AsyncClient(timeout=5) as client:
-            # Use the cached slug or reconstruct
-            import time
-            window_ts = int(time.time() // 300) * 300
-            for ts in [window_ts, window_ts + 300, window_ts - 300]:
-                slug = market_scanner._make_slug(ts)
+    import httpx
+    import time
+    window_ts = int(time.time() // 300) * 300
+    for ts in [window_ts, window_ts + 300, window_ts - 300]:
+        slug = market_scanner._make_slug(ts)
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.get(f"{market_scanner.GAMMA_API}/events",
                                         params={"slug": slug})
+                resp.raise_for_status()
                 data = resp.json()
                 if data:
                     event = data[0] if isinstance(data, list) else data
                     contract = market_scanner.parse_contract(event)
-                    if contract and contract["condition_id"] == condition_id:
+                    if contract and contract["condition_id"] == market_id:
                         return contract
-    except Exception:
-        pass
+        except httpx.TimeoutException:
+            continue  # Try next slug
+        except Exception as e:
+            logger.warning(f"Price fetch error for {slug}: {e}")
+            continue
     return None
 
 
@@ -79,11 +81,13 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             for pos in positions:
                 live = await _get_contract_prices(market_scanner, pos["market_id"])
 
-                # If contract no longer active (expired/resolved), close at resolution price
-                if not live or live["seconds_remaining"] <= 0:
-                    # Contract resolved — close at final price (1.0 for winner, 0.0 for loser)
-                    # Since we can't know resolution, use last known price or assume loss
-                    exit_price = 0.0 if not live else (live["price_up"] if pos["side"] == "Up" else live["price_down"])
+                # If we can't fetch prices, skip this cycle (don't close at 0)
+                if not live:
+                    continue
+
+                # If contract expired, close at last known price
+                if live["seconds_remaining"] <= 0:
+                    exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
                     result = await trader.close_trade(pos["id"], exit_price)
                     if result.success:
                         entry_price = pos["entry_price"]
@@ -286,8 +290,8 @@ async def main():
                 "chop_threshold": ind_cfg.get("ema", {}).get("chop_threshold", 0.0001)},
         "obv": {"slope_period": ind_cfg.get("obv", {}).get("slope_period", 5)},
         "atr": {"period": ind_cfg.get("atr", {}).get("period", 14),
-                "low_pct": ind_cfg.get("atr", {}).get("low_percentile", 25),
-                "high_pct": ind_cfg.get("atr", {}).get("high_percentile", 90),
+                "low_pct": ind_cfg.get("atr", {}).get("low_percentile", 5),
+                "high_pct": ind_cfg.get("atr", {}).get("high_percentile", 95),
                 "history": ind_cfg.get("atr", {}).get("history_periods", 100)},
     }
     indicator_engine = IndicatorEngine(
