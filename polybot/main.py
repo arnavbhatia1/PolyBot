@@ -1,22 +1,24 @@
 # polybot/main.py
 import asyncio
+import json
 import logging
 import logging.handlers
 from pathlib import Path
 
 from polybot.config.loader import load_config, get_secret
 from polybot.db.models import Database
-from polybot.core.filters import MarketFilter
-from polybot.core.scanner import MarketScanner
+from polybot.core.binance_feed import BinanceFeed
+from polybot.core.market_scanner import BTCMarketScanner
 from polybot.core.websocket_monitor import ExitMonitor
+from polybot.indicators.engine import IndicatorEngine
+from polybot.core.signal_engine import SignalEngine
 from polybot.math_engine.decision_table import DecisionTable
 from polybot.brain.claude_client import ClaudeClient
-from polybot.brain.prompt_builder import PromptBuilder
 from polybot.execution.paper_trader import PaperTrader
 from polybot.agents.outcome_reviewer import OutcomeReviewer
 from polybot.agents.bias_detector import BiasDetector
-from polybot.agents.strategy_evolver import StrategyEvolver
-from polybot.agents.prompt_optimizer import PromptOptimizer
+from polybot.agents.ta_evolver import TAEvolver
+from polybot.agents.weight_optimizer import WeightOptimizer
 from polybot.agents.scheduler import AgentScheduler
 from polybot.discord_bot.bot import create_bot
 from polybot.discord_bot.alerts import AlertManager
@@ -31,16 +33,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("polybot")
 
-async def trading_loop(scanner, claude, prompt_builder, decision_table, trader,
-                       exit_monitor, alert_manager, db, config, is_paused_fn):
-    brain_config = config["brain"]
+
+async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,
+                       decision_table, trader, exit_monitor, alert_manager, db, config, is_paused_fn):
     math_config = config["math"]
-    scan_interval = config["scanner"]["interval_seconds"]
+    signal_config = config["signal"]
 
     while True:
         try:
             if is_paused_fn():
-                await asyncio.sleep(10)
+                await asyncio.sleep(1)
                 continue
 
             # Exit monitoring for open positions
@@ -49,7 +51,8 @@ async def trading_loop(scanner, claude, prompt_builder, decision_table, trader,
                 async def get_price(market_id):
                     import httpx
                     async with httpx.AsyncClient(timeout=10) as client:
-                        resp = await client.get(f"{scanner.CLOB_BASE_URL}/markets/{market_id}")
+                        resp = await client.get(
+                            f"{BTCMarketScanner.CLOB_BASE_URL}/markets/{market_id}")
                         data = resp.json()
                         for t in data.get("tokens", []):
                             if t.get("outcome", "").lower() == "yes":
@@ -66,62 +69,63 @@ async def trading_loop(scanner, claude, prompt_builder, decision_table, trader,
 
                 await exit_monitor.monitor_positions(positions, get_price, on_exit)
 
-            # Scan for new opportunities
-            markets = await scanner.fetch_and_filter()
-            logger.info(f"Found {len(markets)} markets after filtering")
+            # Find active BTC 5-min contract
+            contract = await market_scanner.find_active_contract()
+            if not contract:
+                await asyncio.sleep(1)
+                continue
 
-            for market in markets:
-                if is_paused_fn():
-                    break
-                if await db.has_position_for_market(market["condition_id"]):
-                    continue
+            in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
+            has_position = await db.has_position_for_market(contract["condition_id"])
 
-                prompt = prompt_builder.build(version=brain_config["active_prompt_version"],
-                                              category=market.get("category", ""))
-                try:
-                    analysis = await claude.analyze_market(
-                        question=market["question"], price=market["price_yes"],
-                        volume=market["volume_24h"], liquidity=market["liquidity"],
-                        spread=market["spread"], days_to_expiry=market["days_to_expiry"],
-                        prompt=prompt)
-                except Exception as e:
-                    logger.error(f"Claude analysis failed for {market['question'][:50]}: {e}")
-                    continue
+            # Compute indicators from Binance candle buffer
+            indicators = indicator_engine.compute_all(binance_feed.buffer)
+            signal = signal_engine.evaluate(indicators, has_position, in_window)
 
-                if not analysis.passes_gate(min_confidence=brain_config["min_confidence"],
-                                            min_probability=brain_config["min_probability"]):
-                    continue
+            logger.debug(
+                f"Signal: {signal.action} score={signal.score:.3f} "
+                f"contract={contract['question'][:50]} "
+                f"in_window={in_window} has_pos={has_position}"
+            )
 
-                if not decision_table.should_buy(analysis.probability, market["price_yes"]):
-                    continue
-
+            if signal.action in ("BUY_YES", "BUY_NO"):
+                side = "YES" if signal.action == "BUY_YES" else "NO"
+                price = contract["price_yes"] if side == "YES" else contract["price_no"]
                 bankroll = await db.get_bankroll()
-                size = decision_table.position_size(analysis.probability, market["price_yes"], bankroll)
+                size = decision_table.position_size(abs(signal.score), price, bankroll)
                 if size < 1.0:
+                    await asyncio.sleep(1)
                     continue
 
-                decision = decision_table.lookup(analysis.probability)
-                ev = decision_table.calculate_ev(analysis.probability, market["price_yes"])
-
+                snapshot_str = json.dumps(indicator_engine.get_snapshot(indicators))
                 result = await trader.open_trade(
-                    market_id=market["condition_id"], question=market["question"], side="YES",
-                    price=market["price_yes"], size=size, claude_probability=analysis.probability,
-                    claude_confidence=analysis.confidence, ev_at_entry=ev,
-                    exit_target=decision["exit_price"],
-                    stop_loss=market["price_yes"] * (1 - math_config["stop_loss_pct"]),
-                    prompt_version=brain_config["active_prompt_version"])
+                    market_id=contract["condition_id"],
+                    question=contract["question"],
+                    side=side,
+                    price=price,
+                    size=size,
+                    claude_probability=abs(signal.score),
+                    claude_confidence="high",
+                    ev_at_entry=signal.score,
+                    exit_target=math_config["exit_target"],
+                    stop_loss=price * (1 - math_config["stop_loss_pct"]),
+                    prompt_version=signal_config.get("active_weights_version", "weights_v001"),
+                    indicator_snapshot=snapshot_str,
+                )
 
                 if result.success and alert_manager:
                     await alert_manager.send_trade_opened(
-                        question=market["question"], side="YES", size=size,
-                        entry_price=market["price_yes"], ev=ev, exit_target=decision["exit_price"])
+                        question=contract["question"], side=side, size=size,
+                        entry_price=price, ev=signal.score,
+                        exit_target=math_config["exit_target"])
 
         except Exception as e:
             logger.error(f"Trading loop error: {e}", exc_info=True)
             if alert_manager:
                 await alert_manager.send_error(str(e))
 
-        await asyncio.sleep(scan_interval)
+        await asyncio.sleep(1)  # 1-second decision cycle
+
 
 async def main():
     config = load_config()
@@ -140,21 +144,44 @@ async def main():
         exit_target=math_cfg["exit_target"], stop_loss_pct=math_cfg["stop_loss_pct"])
     decision_table.build()
 
-    # Core
-    filter_cfg = config["filters"]
-    market_filter = MarketFilter(min_volume_24h=filter_cfg["min_volume_24h"],
-        min_liquidity=filter_cfg["min_liquidity"], min_days_to_expiry=filter_cfg["min_days_to_expiry"],
-        max_days_to_expiry=filter_cfg["max_days_to_expiry"], max_spread=filter_cfg["max_spread"],
-        category_whitelist=filter_cfg["category_whitelist"], category_blacklist=filter_cfg["category_blacklist"])
-    scanner = MarketScanner(filter=market_filter, max_markets=config["scanner"]["max_markets_per_cycle"])
+    # Binance feed
+    binance_cfg = config.get("binance", {})
+    binance_feed = BinanceFeed(
+        symbol=binance_cfg.get("symbol", "btcusdt"),
+        buffer_size=binance_cfg.get("candle_buffer_size", 200),
+        ws_url=binance_cfg.get("ws_url", "wss://stream.binance.com:9443/ws"),
+        rest_url=binance_cfg.get("rest_url", "https://api.binance.com/api/v3"),
+    )
+
+    # BTC market scanner
+    market_cfg = config.get("market", {})
+    market_scanner = BTCMarketScanner(
+        entry_window_seconds=market_cfg.get("entry_window_seconds", 120),
+        min_time_remaining=market_cfg.get("min_time_remaining_seconds", 30),
+        cache_seconds=market_cfg.get("scan_cache_seconds", 5),
+    )
+
+    # Indicator engine
+    signal_cfg = config.get("signal", {})
+    weights_dir = str(base_dir / "memory" / "weights")
+    indicator_engine = IndicatorEngine(
+        weights_dir=weights_dir,
+        active_version=signal_cfg.get("active_weights_version", "weights_v001"),
+    )
+
+    # Signal engine
+    signal_engine = SignalEngine(
+        entry_threshold=signal_cfg.get("entry_threshold", 0.60),
+        weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
+                                            "obv": 0.15, "vwap": 0.20}),
+    )
+
+    # Exit monitor
     exit_monitor = ExitMonitor(time_stop_hours=math_cfg["time_stop_hours"],
                                time_stop_min_gain=math_cfg["time_stop_min_gain"])
 
-    # Brain
+    # Brain (Claude client kept for TA evolver analysis calls)
     claude = ClaudeClient(api_key=get_secret("ANTHROPIC_API_KEY"), model=config["brain"]["model"])
-    prompt_builder = PromptBuilder(prompts_dir=str(base_dir / "brain" / "prompts"),
-        biases_path=str(base_dir / "memory" / "biases.json"),
-        lessons_path=str(base_dir / "memory" / "lessons.json"))
 
     # Execution
     exec_cfg = config["execution"]
@@ -163,24 +190,33 @@ async def main():
         max_concurrent_positions=exec_cfg["max_concurrent_positions"])
 
     # Agents
+    agents_cfg = config["agents"]
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
     bias_detector = BiasDetector(biases_path=str(base_dir / "memory" / "biases.json"))
-    strategy_evolver = StrategyEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"))
-    prompt_optimizer = PromptOptimizer(prompts_dir=str(base_dir / "brain" / "prompts"),
-        scores_path=str(base_dir / "memory" / "prompt_scores.json"),
-        min_improvement=config["agents"]["prompt_optimizer_min_improvement"])
-    scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=bias_detector,
-        strategy_evolver=strategy_evolver, prompt_optimizer=prompt_optimizer,
-        outcome_interval_seconds=config["agents"]["outcome_reviewer_interval_seconds"],
-        daily_pipeline_hour=config["agents"]["daily_pipeline_hour"], math_config=math_cfg)
+    ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"))
+    weight_optimizer = WeightOptimizer(
+        weights_dir=weights_dir,
+        scores_path=str(base_dir / "memory" / "weight_scores.json"),
+        min_improvement=agents_cfg.get("prompt_optimizer_min_improvement", 0.03),
+    )
+    scheduler = AgentScheduler(
+        outcome_reviewer=outcome_reviewer,
+        bias_detector=bias_detector,
+        ta_evolver=ta_evolver,
+        weight_optimizer=weight_optimizer,
+        outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
+        daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
+        math_config=math_cfg,
+    )
 
     # Discord
-    discord_bot = create_bot(db, trader, scanner, scheduler, config)
+    discord_bot = create_bot(db, trader, market_scanner, scheduler, config)
     alert_manager = AlertManager(bot=discord_bot,
         trade_channel_name=config["discord"]["trade_channel_name"],
         control_channel_name=config["discord"]["control_channel_name"])
 
     await scheduler.start()
+    await binance_feed.start()
 
     async def run_discord():
         try:
@@ -189,13 +225,15 @@ async def main():
             logger.error(f"Discord bot error: {e}")
 
     tasks = [
-        asyncio.create_task(trading_loop(scanner, claude, prompt_builder, decision_table, trader,
-            exit_monitor, alert_manager, db, config, is_paused_fn=lambda: discord_bot.is_paused)),
+        asyncio.create_task(trading_loop(
+            binance_feed, market_scanner, indicator_engine, signal_engine,
+            decision_table, trader, exit_monitor, alert_manager, db, config,
+            is_paused_fn=lambda: discord_bot.is_paused)),
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(run_discord()),
     ]
-    logger.info("PolyBot started — all systems running")
+    logger.info("PolyBot started — all systems running (1-second TA decision loop)")
 
     try:
         await asyncio.gather(*tasks)
@@ -203,8 +241,10 @@ async def main():
         logger.info("Shutting down...")
     finally:
         await scheduler.stop()
+        await binance_feed.stop()
         await db.close()
         await discord_bot.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
