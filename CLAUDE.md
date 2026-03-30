@@ -13,7 +13,7 @@ PolyBot is a 5-minute BTC Up/Down micro-trader for Polymarket. It uses 7 technic
 - **Binance.US, not Binance.com.** Binance.com returns HTTP 451 for US IPs. All endpoints use `api.binance.us` and `stream.binance.us`.
 - **1-second decision loop.** Every second: check open positions for scalp exit, then check for new entry signals.
 - **Active scalping, not hold-to-resolution.** The bot monitors open positions every second and sells when take-profit (10%) or stop-loss (8%) is hit. It does NOT just wait for the 5-min market to resolve.
-- **Entry window is 4 minutes.** Bot can enter during the first 240 seconds of each 5-min contract. Last 30 seconds are blocked.
+- **Entry window is the full 5 minutes.** Bot can enter anytime except the last 5 seconds (to avoid unfillable orders). With active scalping, there's no reason to restrict entry timing.
 
 ## Project Structure
 
@@ -52,7 +52,7 @@ polybot/
 Everything tunable lives in `polybot/config/settings.yaml`. Key sections:
 - `indicators:` -- periods, thresholds for each of the 7 indicators
 - `signal:` -- entry threshold (0.40 for paper trading), indicator weights, active weight version
-- `market:` -- entry window (240s), min time remaining (30s)
+- `market:` -- entry window (300s / full window), min time remaining (5s)
 - `scalping:` -- take_profit_pct (0.10), stop_loss_pct (0.08)
 - `binance:` -- symbol, WebSocket/REST URLs (binance.us), buffer size
 

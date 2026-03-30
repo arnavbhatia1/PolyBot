@@ -98,8 +98,8 @@ signal:
 
 market:
   contract_type: "btc_5min"
-  entry_window_seconds: 240
-  min_time_remaining_seconds: 30
+  entry_window_seconds: 300
+  min_time_remaining_seconds: 5
   scan_cache_seconds: 5
 
 scalping:

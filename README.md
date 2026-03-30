@@ -27,7 +27,7 @@ Binance WebSocket (live BTC price)
         |
   [OPEN POSITIONS?] --> Check take-profit (10%) / stop-loss (8%) --> Sell if hit
         |
-  Hard gates: ATR volatility + EMA trend + entry window (first 4 min)
+  Hard gates: ATR volatility + EMA trend + entry window (full 5 min)
         |
   Weighted score from RSI, MACD, Stochastic, OBV, VWAP
         |
@@ -58,7 +58,7 @@ All parameters in `polybot/config/settings.yaml`:
 - **Gate thresholds** (ATR percentiles, EMA chop detection)
 - **Entry threshold** (minimum signal score to trade)
 - **Indicator weights** (how much each indicator contributes)
-- **Entry window** (first 4 minutes of each 5-min contract)
+- **Entry window** (full 5-min contract, last 5s blocked)
 - **Scalping** (take-profit 10%, stop-loss 8% within the window)
 - **Kelly fraction** (position sizing conservatism)
 
