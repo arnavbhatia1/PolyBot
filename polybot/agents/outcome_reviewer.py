@@ -17,13 +17,15 @@ class OutcomeReviewer:
         return {"correct": correct, "error": round(error, 4)}
 
     def record_outcome(self, position_id, market_id, question, side, predicted_probability,
-                       actual_outcome, entry_price, exit_price, log_return, prompt_version, category=""):
+                       actual_outcome, entry_price, exit_price, log_return, prompt_version,
+                       category="", indicator_snapshot: dict | None = None):
         evaluation = self._evaluate(predicted_probability, actual_outcome)
         record = {"position_id": position_id, "market_id": market_id, "question": question,
                   "side": side, "predicted_probability": predicted_probability,
                   "actual_outcome": actual_outcome, "entry_price": entry_price,
                   "exit_price": exit_price, "log_return": log_return,
                   "prompt_version": prompt_version, "category": category,
+                  "indicator_snapshot": indicator_snapshot or {},
                   "correct": evaluation["correct"], "error": evaluation["error"],
                   "timestamp": datetime.now(timezone.utc).isoformat()}
         filename = f"{position_id}_{market_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.json"

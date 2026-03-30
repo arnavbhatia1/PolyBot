@@ -28,7 +28,8 @@ class Database:
                 exit_price REAL,
                 exit_timestamp TEXT,
                 log_return REAL,
-                prompt_version TEXT NOT NULL
+                prompt_version TEXT NOT NULL,
+                indicator_snapshot TEXT
             );
 
             CREATE TABLE IF NOT EXISTS trade_history (
@@ -80,17 +81,18 @@ class Database:
         exit_target: float,
         stop_loss: float,
         prompt_version: str,
+        indicator_snapshot: str = "",
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
             """INSERT INTO positions
             (market_id, question, side, entry_price, size, claude_probability,
              claude_confidence, ev_at_entry, exit_target, stop_loss,
-             entry_timestamp, status, prompt_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
+             entry_timestamp, status, prompt_version, indicator_snapshot)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
             (market_id, question, side, entry_price, size, claude_probability,
              claude_confidence, ev_at_entry, exit_target, stop_loss,
-             now, prompt_version),
+             now, prompt_version, indicator_snapshot),
         )
         await self.conn.commit()
         return cursor.lastrowid

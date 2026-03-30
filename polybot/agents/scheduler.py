@@ -5,12 +5,12 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 class AgentScheduler:
-    def __init__(self, outcome_reviewer, bias_detector, strategy_evolver, prompt_optimizer,
+    def __init__(self, outcome_reviewer, bias_detector, ta_evolver, weight_optimizer,
                  outcome_interval_seconds=3600, daily_pipeline_hour=2, math_config=None):
         self.outcome_reviewer = outcome_reviewer
         self.bias_detector = bias_detector
-        self.strategy_evolver = strategy_evolver
-        self.prompt_optimizer = prompt_optimizer
+        self.ta_evolver = ta_evolver
+        self.weight_optimizer = weight_optimizer
         self.outcome_interval_seconds = outcome_interval_seconds
         self.daily_pipeline_hour = daily_pipeline_hour
         self.math_config = math_config or {"ev_threshold": 0.05, "exit_target": 0.90,
@@ -26,32 +26,39 @@ class AgentScheduler:
         self.bias_detector.save(biases)
         return biases
 
-    async def _run_strategy_evolver(self, biases: dict) -> list:
+    async def _run_ta_evolver(self, biases: dict) -> dict:
         outcomes = self.outcome_reviewer.load_all_outcomes()
         if not outcomes:
-            return []
-        analysis = self.strategy_evolver.analyze_local(outcomes, current_config=self.math_config)
-        recs = self.strategy_evolver.generate_recommendations(analysis, current_config=self.math_config)
-        self.strategy_evolver.save_log(recs, analysis)
-        return recs
+            return {}
+        current_weights = self.weight_optimizer.get_scores()
+        analysis = self.ta_evolver.analyze(outcomes)
+        recommended_weights = self.ta_evolver.recommend_weight_adjustments(outcomes, current_weights)
+        self.ta_evolver.save_log(analysis, recommended_weights)
+        return recommended_weights
 
-    async def _run_prompt_optimizer(self, recommendations: list):
+    async def _run_weight_optimizer(self, recommended_weights: dict):
         outcomes = self.outcome_reviewer.load_all_outcomes()
         if not outcomes:
-            logger.info("No outcomes for prompt optimization")
+            logger.info("No outcomes for weight optimization")
             return
-        current_version = self.prompt_optimizer.get_best_version()
+        current_version = self.weight_optimizer.get_best_version()
         version_outcomes = [o for o in outcomes if o.get("prompt_version") == current_version]
         if version_outcomes:
-            accuracy = sum(1 for o in version_outcomes if o["correct"]) / len(version_outcomes)
-            self.prompt_optimizer.record_score(current_version, accuracy, len(version_outcomes))
-        logger.info("Prompt optimizer scoring complete")
+            returns = [o.get("log_return", 0) for o in version_outcomes]
+            avg_return = sum(returns) / len(returns)
+            import math
+            variance = sum((r - avg_return) ** 2 for r in returns) / len(returns) if len(returns) > 1 else 1
+            std = math.sqrt(variance) if variance > 0 else 1
+            sharpe = avg_return / std
+            win_rate = sum(1 for o in version_outcomes if o.get("correct", False)) / len(version_outcomes)
+            self.weight_optimizer.record_score(current_version, sharpe, len(version_outcomes), win_rate)
+        logger.info("Weight optimizer scoring complete")
 
     async def run_daily_pipeline(self):
         logger.info("Starting daily learning pipeline")
         biases = await self._run_bias_detector()
-        recommendations = await self._run_strategy_evolver(biases)
-        await self._run_prompt_optimizer(recommendations)
+        recommended_weights = await self._run_ta_evolver(biases)
+        await self._run_weight_optimizer(recommended_weights)
         logger.info("Daily learning pipeline complete")
 
     async def run_outcome_loop(self):
