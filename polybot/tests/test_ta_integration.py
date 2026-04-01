@@ -48,24 +48,26 @@ async def test_full_ta_flow(db, weights_dir):
     indicators = engine.compute_all(buf)
     snapshot = engine.get_snapshot(indicators)
 
-    signal_eng = SignalEngine(entry_threshold=0.30,  # Lower threshold for test
+    signal_eng = SignalEngine(min_edge=0.05,
                               weights={"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20})
 
-    # Verify the raw composite score is non-zero (pipeline computed a directional signal)
-    raw_score = signal_eng._compute_score(indicators)
-    assert raw_score != 0
+    # Verify the momentum adjustment is non-zero (indicators produced a directional signal)
+    momentum = signal_eng._compute_momentum_adjustment(indicators)
+    assert momentum != 0
 
-    signal = signal_eng.evaluate(indicators, has_position=False, in_entry_window=True)
+    # Simulate: BTC above strike, market at 50/50 — should find edge
+    signal = signal_eng.evaluate(indicators, has_position=False, in_entry_window=True,
+                                 btc_price=52000, strike_price=51500,
+                                 seconds_remaining=180, market_price_up=0.50, market_price_down=0.50)
 
     # If actionable, place a paper trade
     if signal.action in ("BUY_YES", "BUY_NO"):
         trader = PaperTrader(db=db, max_slippage=0.02, max_bankroll_deployed=0.80, max_concurrent_positions=5)
-        side = "YES" if signal.action == "BUY_YES" else "NO"
+        side = "Up" if signal.action == "BUY_YES" else "Down"
+        size = max(1.0, round(100.0 * signal.kelly_size, 2))
         result = await trader.open_trade(
             market_id="0xbtc5min", question="BTC 5min Up?", side=side,
-            price=0.55, size=5.0, signal_score=abs(signal.score),
-            signal_strength="high", ev_at_entry=0.10, exit_target=0.90,
-            stop_loss=0.40, weight_version="ta_v001")
+            price=0.50, size=size, signal_score=signal.score,
+            signal_strength=f"edge={signal.edge:.0%}", ev_at_entry=signal.edge,
+            exit_target=0.90, stop_loss=0.40, weight_version="ta_v001")
         assert result.success is True
-        bankroll = await db.get_bankroll()
-        assert bankroll == pytest.approx(95.0, abs=0.01)

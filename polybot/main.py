@@ -85,15 +85,17 @@ async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pc
 
 
 async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,
-                       decision_table, trader, alert_manager, db, config, outcome_reviewer, is_paused_fn):
+                       trader, alert_manager, db, config, outcome_reviewer, is_paused_fn):
     signal_config = config["signal"]
     scalp_config = config.get("scalping", {})
-    take_profit_pct = scalp_config.get("take_profit_pct", 0.10)
-    stop_loss_pct = scalp_config.get("stop_loss_pct", 0.08)
+    take_profit_pct = scalp_config.get("take_profit_pct", 0.04)
+    stop_loss_pct = scalp_config.get("stop_loss_pct", 0.04)
+    max_bankroll_pct = config["execution"]["max_bankroll_deployed"]
 
-    # Track which contracts we've already traded (prevents re-entry after stop loss)
-    # Maps condition_id -> window_ts so we can clean up old entries
+    # Track which contracts we've already traded
     traded_contracts: dict[str, int] = {}
+    # Track BTC price at the start of each 5-min window (the "strike")
+    window_strike: dict[str, float] = {}  # condition_id -> BTC opening price
 
     while True:
         try:
@@ -187,33 +189,51 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             price_up = contract["price_up"]
             price_down = contract["price_down"]
             if price_up < 0.10 or price_up > 0.90:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0)
                 continue
 
-            # Compute indicators and evaluate signal
+            # Track the BTC "strike" price at window open
+            cid = contract["condition_id"]
+            if cid not in window_strike:
+                latest_candle = binance_feed.buffer.latest()
+                if latest_candle:
+                    window_strike[cid] = latest_candle.close
+            # Clean old strikes
+            window_strike = {k: v for k, v in window_strike.items() if k in traded_contracts or k == cid}
+
+            strike = window_strike.get(cid, 0)
+            btc_price = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+
+            # Compute indicators and evaluate signal with probability model
             indicators = indicator_engine.compute_all(binance_feed.buffer)
-            signal = signal_engine.evaluate(indicators, False, in_window)
+            signal = signal_engine.evaluate(
+                indicators, has_position=False, in_entry_window=in_window,
+                btc_price=btc_price, strike_price=strike,
+                seconds_remaining=contract["seconds_remaining"],
+                market_price_up=price_up, market_price_down=price_down,
+            )
 
             if signal.action in ("BUY_YES", "BUY_NO"):
                 side = "Up" if signal.action == "BUY_YES" else "Down"
                 price = price_up if side == "Up" else price_down
                 bankroll = await db.get_bankroll()
-                size = decision_table.position_size(abs(signal.score), price, bankroll)
+                # Kelly sizing from the signal engine (proper binary Kelly)
+                size = round(bankroll * signal.kelly_size, 2)
                 size = max(size, 1.0)  # Minimum $1 trade
-                if size > bankroll * 0.80:
-                    await asyncio.sleep(1)
+                if size > bankroll * max_bankroll_pct:
+                    await asyncio.sleep(0)
                     continue
 
                 snapshot_str = json.dumps(indicator_engine.get_snapshot(indicators))
                 result = await trader.open_trade(
-                    market_id=contract["condition_id"],
+                    market_id=cid,
                     question=contract["question"],
                     side=side,
                     price=price,
                     size=size,
-                    signal_score=abs(signal.score),
-                    signal_strength="high",
-                    ev_at_entry=signal.score,
+                    signal_score=signal.score,
+                    signal_strength=f"edge={signal.edge:.0%}",
+                    ev_at_entry=signal.edge,
                     exit_target=0.90,
                     stop_loss=price * (1 - stop_loss_pct),
                     weight_version=signal_config.get("active_weights_version", "weights_v001"),
@@ -221,12 +241,13 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 )
 
                 if result.success:
-                    traded_contracts[contract["condition_id"]] = int(time.time())
-                    logger.info(f"OPEN {side} @ {price:.3f} | size=${size:.2f} | signal={signal.score:+.3f}")
+                    traded_contracts[cid] = int(time.time())
+                    logger.info(f"OPEN {side} @ {price:.3f} | size=${size:.2f} | "
+                                f"model={signal.score:.0%} market={price:.0%} edge={signal.edge:+.0%}")
                     if alert_manager:
                         await alert_manager.send_trade_opened(
                             question=contract["question"], side=side, size=size,
-                            entry_price=price, ev=signal.score, exit_target=0.90)
+                            entry_price=price, ev=signal.edge, exit_target=0.90)
 
         except Exception as e:
             logger.error(f"Trading loop error: {e}", exc_info=True)
@@ -300,9 +321,11 @@ async def main():
         params=indicator_params,
     )
 
-    # Signal engine
+    # Signal engine — probability model with edge-based entry
     signal_engine = SignalEngine(
-        entry_threshold=signal_cfg.get("entry_threshold", 0.60),
+        min_edge=signal_cfg.get("entry_threshold", 0.10),  # min mispricing to trade
+        kelly_fraction=config["math"]["kelly_fraction"],
+        momentum_weight=signal_cfg.get("momentum_weight", 0.15),
         weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                             "obv": 0.15, "vwap": 0.20}),
     )
@@ -359,7 +382,7 @@ async def main():
     tasks = [
         asyncio.create_task(trading_loop(
             binance_feed, market_scanner, indicator_engine, signal_engine,
-            decision_table, trader, alert_manager, db, config, outcome_reviewer,
+            trader, alert_manager, db, config, outcome_reviewer,
             is_paused_fn=lambda: discord_bot.is_paused)),
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),

@@ -63,7 +63,8 @@ indicators:
     history_periods: 100
 
 signal:
-  entry_threshold: 0.23  # Loose for data collection — learning agents will tighten
+  entry_threshold: 0.10  # Minimum edge (mispricing) required to trade — 10% edge
+  momentum_weight: 0.15  # How much indicators adjust the base probability (0-1)
   weights:
     rsi: 0.20
     macd: 0.25
