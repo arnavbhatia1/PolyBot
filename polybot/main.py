@@ -115,8 +115,9 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     result = await trader.close_trade(pos["id"], exit_price)
                     if result.success:
                         gain_pct = (exit_price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0
-                        logger.info(f"EXPIRED: {pos['question'][:50]} | "
-                                    f"{pos['entry_price']:.3f}->{exit_price:.3f} ({gain_pct:+.1%})")
+                        shares = pos["size"] / pos["entry_price"]
+                        pnl = shares * exit_price - pos["size"]
+                        logger.info(f"CLOSE EXPIRED {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question=pos["question"], exit_price=exit_price,
@@ -132,8 +133,9 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 if gain_pct >= take_profit_pct:
                     result = await trader.close_trade(pos["id"], current_price)
                     if result.success:
-                        logger.info(f"TAKE PROFIT: {pos['question'][:50]} | "
-                                    f"{pos['entry_price']:.3f}->{current_price:.3f} ({gain_pct:+.1%})")
+                        shares = pos["size"] / pos["entry_price"]
+                        pnl = shares * current_price - pos["size"]
+                        logger.info(f"CLOSE PROFIT {pos['side']} | {pos['entry_price']:.3f}->{current_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question=pos["question"], exit_price=current_price,
@@ -144,8 +146,9 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 elif gain_pct <= -stop_loss_pct:
                     result = await trader.close_trade(pos["id"], current_price)
                     if result.success:
-                        logger.info(f"STOP LOSS: {pos['question'][:50]} | "
-                                    f"{pos['entry_price']:.3f}->{current_price:.3f} ({gain_pct:+.1%})")
+                        shares = pos["size"] / pos["entry_price"]
+                        pnl = shares * current_price - pos["size"]
+                        logger.info(f"CLOSE LOSS {pos['side']} | {pos['entry_price']:.3f}->{current_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question=pos["question"], exit_price=current_price,
@@ -215,8 +218,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 )
 
                 if result.success:
-                    # Mark as traded so we don't re-enter this contract
                     traded_contracts[contract["condition_id"]] = int(time.time())
+                    logger.info(f"OPEN {side} @ {price:.3f} | size=${size:.2f} | signal={signal.score:+.3f}")
                     if alert_manager:
                         await alert_manager.send_trade_opened(
                             question=contract["question"], side=side, size=size,

@@ -37,7 +37,6 @@ class PaperTrader:
             indicator_snapshot=indicator_snapshot,
         )
         await self.db.set_bankroll(bankroll - size)
-        logger.info(f"[PAPER] Opened {side} on '{question}' at {price} size={size}")
         return TradeResult(success=True, position_id=pos_id)
 
     async def close_trade(self, position_id: int, exit_price: float) -> TradeResult:
@@ -51,5 +50,4 @@ class PaperTrader:
         await self.db.close_position(position_id, exit_price=exit_price, log_return=lr)
         bankroll = await self.db.get_bankroll()
         await self.db.set_bankroll(bankroll + revenue)
-        logger.info(f"[PAPER] Closed position {position_id} at {exit_price} log_return={lr:.4f} revenue={revenue:.2f}")
         return TradeResult(success=True, position_id=position_id, log_return=lr)
