@@ -1,4 +1,3 @@
-# polybot/discord_bot/alerts.py
 import logging
 import discord
 
@@ -21,18 +20,18 @@ class AlertManager:
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
-        await channel.send(f"**Trade Opened**\n{question}\n"
-            f"Side: `{side}` | Entry: `{entry_price:.2f}` | Size: `${size:.2f}`\n"
-            f"EV: `{ev:.2%}` | Target: `{exit_target:.2f}`")
+        await channel.send(
+            f"**OPEN {side}** @ `{entry_price:.3f}` | Size: `${size:.2f}` | Signal: `{ev:+.3f}`")
 
-    async def send_trade_closed(self, question, exit_price, log_return, hold_hours):
+    async def send_trade_closed(self, question, exit_price, log_return, hold_hours,
+                                side="", entry_price=0.0, pnl=0.0, gain_pct=0.0, reason=""):
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
-        pnl_sign = "+" if log_return >= 0 else ""
-        result = "profit" if log_return >= 0 else "loss"
-        await channel.send(f"**Trade Closed ({result})**\n{question}\n"
-            f"Exit: `{exit_price:.2f}` | P&L: `{pnl_sign}{log_return:.4f}` | Held: `{hold_hours:.1f}h`")
+        tag = "PROFIT" if pnl >= 0 else "LOSS"
+        await channel.send(
+            f"**CLOSE {tag} {side}** | `{entry_price:.3f}`->`{exit_price:.3f}` | "
+            f"`{gain_pct:+.1%}` | `${pnl:+.2f}` | {reason}")
 
     async def send_pipeline_summary(self, summary):
         channel = self._get_channel(self.trade_channel_name)

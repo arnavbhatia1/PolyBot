@@ -120,8 +120,9 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         logger.info(f"CLOSE EXPIRED {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
-                                question=pos["question"], exit_price=exit_price,
-                                log_return=result.log_return or 0, hold_hours=0)
+                                question="", exit_price=exit_price, log_return=0, hold_hours=0,
+                                side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
+                                gain_pct=gain_pct, reason="expired")
                         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct)
                         traded_contracts[pos["market_id"]] = int(time.time())
                     continue
@@ -138,8 +139,9 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         logger.info(f"CLOSE PROFIT {pos['side']} | {pos['entry_price']:.3f}->{current_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
-                                question=pos["question"], exit_price=current_price,
-                                log_return=result.log_return or 0, hold_hours=0)
+                                question="", exit_price=current_price, log_return=0, hold_hours=0,
+                                side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
+                                gain_pct=gain_pct, reason="take profit")
                         await _record_outcome(outcome_reviewer, pos, current_price, result.log_return or 0, gain_pct)
                         traded_contracts[pos["market_id"]] = int(time.time())
 
@@ -151,8 +153,9 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         logger.info(f"CLOSE LOSS {pos['side']} | {pos['entry_price']:.3f}->{current_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
-                                question=pos["question"], exit_price=current_price,
-                                log_return=result.log_return or 0, hold_hours=0)
+                                question="", exit_price=current_price, log_return=0, hold_hours=0,
+                                side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
+                                gain_pct=gain_pct, reason="stop loss")
                         await _record_outcome(outcome_reviewer, pos, current_price, result.log_return or 0, gain_pct)
                         traded_contracts[pos["market_id"]] = int(time.time())
 
