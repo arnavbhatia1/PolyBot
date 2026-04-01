@@ -3,6 +3,8 @@ import numpy as np
 
 
 def log_return(entry_price: float, exit_price: float) -> float:
+    if exit_price <= 0 or entry_price <= 0:
+        return -10.0  # Total loss in binary market (avoids math.log(0))
     return math.log(exit_price / entry_price)
 
 

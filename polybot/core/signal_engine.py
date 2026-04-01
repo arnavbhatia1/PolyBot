@@ -70,12 +70,12 @@ class SignalEngine:
 
         # Small momentum nudge from indicators (±8% max)
         if indicators:
-            momentum = self._compute_momentum(indicators)
+            momentum = self.compute_momentum(indicators)
             prob_up += momentum * self.momentum_weight
 
         return max(0.03, min(0.97, prob_up))
 
-    def _compute_momentum(self, indicators: dict) -> float:
+    def compute_momentum(self, indicators: dict) -> float:
         w = self.weights
         return max(-1.0, min(1.0,
             indicators.get("rsi", {}).get("score", 0) * w.get("rsi", 0.20) +
@@ -129,6 +129,35 @@ class SignalEngine:
             best = max(edge_up, edge_down)
             return TradeSignal("SKIP", max(prob_up, prob_down), best, 0,
                                f"No edge: best={best:+.0%} < min={self.min_edge:.0%}")
+
+    def evaluate_hold(self, indicators: dict, btc_price: float, strike_price: float,
+                      seconds_remaining: float, market_price_for_side: float,
+                      side: str, exit_threshold: float = -0.05) -> tuple[str, float, float, str]:
+        """Continuously evaluate whether to hold or exit an existing position.
+
+        Uses the same Brownian motion probability model as entry. Compares the
+        model's current probability for our side against the current market price.
+        If the market has moved beyond what the model supports, exit.
+
+        Returns: (action, model_prob, holding_edge, reason)
+          action: "HOLD" or "EXIT"
+          model_prob: current model probability for our side
+          holding_edge: model_prob - market_price (negative = should exit)
+          reason: human-readable explanation
+        """
+        atr = indicators.get("atr", {}).get("atr", 0)
+        prob_up = self.compute_probability(btc_price, strike_price,
+                                           seconds_remaining, atr, indicators)
+        model_prob = prob_up if side == "Up" else 1.0 - prob_up
+        holding_edge = model_prob - market_price_for_side
+
+        if holding_edge <= exit_threshold:
+            return ("EXIT", model_prob, holding_edge,
+                    f"Exit {side}: model={model_prob:.0%} mkt={market_price_for_side:.0%} "
+                    f"edge={holding_edge:+.0%} BTC={btc_price:,.0f} strike={strike_price:,.0f}")
+        return ("HOLD", model_prob, holding_edge,
+                f"Hold {side}: model={model_prob:.0%} mkt={market_price_for_side:.0%} "
+                f"edge={holding_edge:+.0%}")
 
     def _kelly(self, prob: float, market_price: float) -> float:
         """Quarter Kelly for binary outcome."""

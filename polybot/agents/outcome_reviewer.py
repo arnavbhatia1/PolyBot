@@ -12,13 +12,15 @@ class OutcomeReviewer:
 
     def record_outcome(self, position_id, market_id, question, side, signal_score,
                        profitable, entry_price, exit_price, log_return, weight_version,
-                       category="", indicator_snapshot: dict | None = None):
+                       category="", indicator_snapshot: dict | None = None,
+                       exit_reason: str = "resolution"):
         record = {"position_id": position_id, "market_id": market_id, "question": question,
                   "side": side, "signal_score": signal_score,
                   "correct": profitable, "entry_price": entry_price,
                   "exit_price": exit_price, "log_return": log_return,
                   "weight_version": weight_version, "category": category,
                   "indicator_snapshot": indicator_snapshot or {},
+                  "exit_reason": exit_reason,
                   "timestamp": datetime.now(timezone.utc).isoformat()}
         filename = f"{position_id}_{market_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.json"
         filepath = self.outcomes_dir / filename

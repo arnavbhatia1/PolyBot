@@ -97,3 +97,49 @@ def test_no_edge_when_momentum_alone(engine):
         seconds_remaining=180, market_price_up=0.50, market_price_down=0.50)
     # With momentum_weight=0.08, max nudge is 0.08. Edge = 0.58 - 0.50 = 0.08 < 0.10 min_edge
     assert signal.action == "SKIP"
+
+
+# --- evaluate_hold tests ---
+
+def test_hold_when_model_confident(engine):
+    """Model at 90%, market at 70% → edge=+20% → HOLD (still underpriced, ride to $1)."""
+    # BTC well above strike with little time = high P(Up)
+    action, prob, edge, _ = engine.evaluate_hold(
+        _make_indicators(atr_value=30), btc_price=66600, strike_price=66400,
+        seconds_remaining=60, market_price_for_side=0.70, side="Up", exit_threshold=-0.05)
+    assert action == "HOLD"
+    assert edge > 0
+
+def test_exit_when_conditions_flip(engine):
+    """Bought Up but BTC fell below strike → model says Down likely → EXIT."""
+    action, prob, edge, _ = engine.evaluate_hold(
+        _make_indicators(atr_value=30), btc_price=66200, strike_price=66400,
+        seconds_remaining=120, market_price_for_side=0.60, side="Up", exit_threshold=-0.05)
+    assert action == "EXIT"
+    assert edge < -0.05
+
+def test_exit_when_edge_evaporates(engine):
+    """Model says 75% but market is at 85% → market overpricing our side → EXIT."""
+    # Moderate BTC above strike, but market has run ahead
+    action, prob, edge, _ = engine.evaluate_hold(
+        _make_indicators(atr_value=50), btc_price=66450, strike_price=66400,
+        seconds_remaining=180, market_price_for_side=0.85, side="Up", exit_threshold=-0.05)
+    assert action == "EXIT"
+    assert edge < 0
+
+def test_hold_at_boundary(engine):
+    """Small positive edge → still HOLD."""
+    # BTC above strike, model says ~60%, market at 55%
+    action, prob, edge, _ = engine.evaluate_hold(
+        _make_indicators(atr_value=30), btc_price=66450, strike_price=66400,
+        seconds_remaining=180, market_price_for_side=0.50, side="Up", exit_threshold=-0.05)
+    assert action == "HOLD"
+    assert edge > -0.05
+
+def test_hold_down_side(engine):
+    """Hold Down when BTC is below strike and model supports it."""
+    action, prob, edge, _ = engine.evaluate_hold(
+        _make_indicators(atr_value=30), btc_price=66200, strike_price=66400,
+        seconds_remaining=60, market_price_for_side=0.70, side="Down", exit_threshold=-0.05)
+    assert action == "HOLD"
+    assert edge > 0

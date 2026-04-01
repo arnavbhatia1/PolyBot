@@ -51,3 +51,17 @@ def test_load_all_outcomes(reviewer, outcomes_dir):
             exit_price=0.68, log_return=0.2, weight_version="weights_v001", category="crypto-5min")
     outcomes = reviewer.load_all_outcomes()
     assert len(outcomes) == 3
+
+def test_exit_reason_recorded(reviewer, outcomes_dir):
+    reviewer.record_outcome(position_id=1, market_id="m1", question="Q?",
+        side="Up", signal_score=0.7, profitable=True, entry_price=0.50,
+        exit_price=0.80, log_return=0.47, weight_version="v001", exit_reason="scalp")
+    data = json.loads(list(Path(outcomes_dir).glob("*.json"))[0].read_text())
+    assert data["exit_reason"] == "scalp"
+
+def test_exit_reason_defaults_to_resolution(reviewer, outcomes_dir):
+    reviewer.record_outcome(position_id=2, market_id="m2", question="Q?",
+        side="Down", signal_score=0.6, profitable=False, entry_price=0.55,
+        exit_price=0.0, log_return=-10.0, weight_version="v001")
+    data = json.loads(list(Path(outcomes_dir).glob("*.json"))[0].read_text())
+    assert data["exit_reason"] == "resolution"

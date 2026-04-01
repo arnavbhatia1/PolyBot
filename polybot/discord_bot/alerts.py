@@ -1,4 +1,7 @@
 import logging
+import uuid
+from datetime import datetime, timezone
+
 import discord
 
 logger = logging.getLogger(__name__)
@@ -8,6 +11,7 @@ class AlertManager:
         self.bot = bot
         self.trade_channel_name = trade_channel_name
         self.control_channel_name = control_channel_name
+        self.session_id = uuid.uuid4().hex[:8]
 
     def _get_channel(self, name):
         for guild in self.bot.guilds:
@@ -56,3 +60,37 @@ class AlertManager:
         if not channel:
             return
         await channel.send(f"**Error**\n```{error_message}```")
+
+    async def send_session_banner(self, mode: str, bankroll: float):
+        """Send a session start banner to both channels to mark a new bot run."""
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        banner = (
+            f"\n{'━' * 38}\n"
+            f"**POLYBOT SESSION STARTED**\n"
+            f"`{now}` | Session `{self.session_id}`\n"
+            f"Mode: `{mode}` | Bankroll: `${bankroll:,.2f}`\n"
+            f"{'━' * 38}"
+        )
+        for name in [self.trade_channel_name, self.control_channel_name]:
+            channel = self._get_channel(name)
+            if channel:
+                try:
+                    await channel.send(banner)
+                except Exception as e:
+                    logger.warning(f"Failed to send session banner to #{name}: {e}")
+
+    async def purge_channel(self, channel_name: str, limit: int = 200) -> int:
+        """Delete up to `limit` messages from a channel. Returns count deleted, or -1 on error."""
+        channel = self._get_channel(channel_name)
+        if not channel:
+            logger.warning(f"Channel #{channel_name} not found for purge")
+            return -1
+        try:
+            deleted = await channel.purge(limit=limit)
+            return len(deleted)
+        except discord.Forbidden:
+            logger.error(f"Missing 'Manage Messages' permission for #{channel_name}")
+            return -1
+        except Exception as e:
+            logger.error(f"Failed to purge #{channel_name}: {e}")
+            return -1

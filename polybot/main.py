@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import logging.handlers
+import time
 from pathlib import Path
 
 from polybot.config.loader import load_config, get_secret
@@ -11,7 +12,6 @@ from polybot.core.binance_feed import BinanceFeed
 from polybot.core.market_scanner import BTCMarketScanner
 from polybot.indicators.engine import IndicatorEngine
 from polybot.core.signal_engine import SignalEngine
-from polybot.math_engine.decision_table import DecisionTable
 from polybot.brain.claude_client import ClaudeClient
 from polybot.execution.paper_trader import PaperTrader
 from polybot.agents.outcome_reviewer import OutcomeReviewer
@@ -63,7 +63,8 @@ async def _get_contract_prices(market_scanner, market_id: str) -> dict | None:
     return None
 
 
-async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pct):
+async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pct,
+                          exit_reason="resolution"):
     """Record a trade outcome for the learning pipeline."""
     try:
         outcome_reviewer.record_outcome(
@@ -78,7 +79,8 @@ async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pc
             log_return=log_return,
             weight_version=pos.get("weight_version", ""),
             category="crypto-5min",
-            indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}"))
+            indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}")),
+            exit_reason=exit_reason,
         )
     except Exception as e:
         logger.error(f"Failed to record outcome: {e}")
@@ -88,6 +90,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                        trader, alert_manager, db, config, outcome_reviewer, is_paused_fn):
     signal_config = config["signal"]
     max_bankroll_pct = config["execution"]["max_bankroll_deployed"]
+    exit_threshold = signal_config.get("exit_edge_threshold", -0.05)
 
     traded_contracts: dict[str, int] = {}      # condition_id -> timestamp (one trade per contract)
     window_strikes: dict[int, float] = {}      # window_ts -> BTC price at window open
@@ -98,12 +101,13 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 await asyncio.sleep(1)
                 continue
 
-            # --- RESOLUTION CHECK: close positions on expired contracts ---
+            # --- POSITION MANAGEMENT: resolution check + active re-evaluation ---
             positions = await db.get_open_positions()
             for pos in positions:
                 live = await _get_contract_prices(market_scanner, pos["market_id"])
                 if not live:
                     continue
+
                 if live["seconds_remaining"] <= 0:
                     # Contract resolved — close at final market price
                     exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
@@ -119,8 +123,44 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                                 question="", exit_price=exit_price, log_return=0, hold_hours=0,
                                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
                                 gain_pct=gain_pct, reason=won.lower())
-                        await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct)
+                        await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
+                                              exit_reason="resolution")
                         traded_contracts[pos["market_id"]] = int(time.time())
+                else:
+                    # Active position — re-evaluate using probability model
+                    btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+                    if btc_now <= 0:
+                        continue
+
+                    # Get strike from the position's stored trade_context (correct for this contract)
+                    pos_ctx = json.loads(pos.get("indicator_snapshot", "{}")).get("trade_context", {})
+                    strike_now = pos_ctx.get("strike_price", 0)
+                    if strike_now <= 0:
+                        continue
+
+                    indicators = indicator_engine.compute_all(binance_feed.buffer)
+                    market_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
+
+                    action, model_prob, holding_edge, reason = signal_engine.evaluate_hold(
+                        indicators, btc_now, strike_now, live["seconds_remaining"],
+                        market_price, pos["side"], exit_threshold)
+
+                    if action == "EXIT":
+                        result = await trader.close_trade(pos["id"], market_price)
+                        if result.success:
+                            gain_pct = (market_price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0
+                            shares = pos["size"] / pos["entry_price"]
+                            pnl = shares * market_price - pos["size"]
+                            won = "WIN" if pnl > 0 else "LOSS"
+                            logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{market_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | {reason}")
+                            if alert_manager:
+                                await alert_manager.send_trade_closed(
+                                    question="", exit_price=market_price, log_return=0, hold_hours=0,
+                                    side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
+                                    gain_pct=gain_pct, reason=f"scalp {won.lower()}")
+                            await _record_outcome(outcome_reviewer, pos, market_price, result.log_return or 0, gain_pct,
+                                                  exit_reason="scalp")
+                            traded_contracts[pos["market_id"]] = int(time.time())
 
             # --- ENTRY: find contract and evaluate for edge ---
             # Skip if we already have an open position (one at a time)
@@ -199,7 +239,19 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 if size > bankroll * max_bankroll_pct:
                     size = round(bankroll * max_bankroll_pct, 2)
 
-                snapshot_str = json.dumps(indicator_engine.get_snapshot(indicators))
+                snapshot = indicator_engine.get_snapshot(indicators)
+                snapshot["trade_context"] = {
+                    "btc_price": btc_price,
+                    "strike_price": strike,
+                    "seconds_remaining": contract["seconds_remaining"],
+                    "market_price_up": price_up,
+                    "market_price_down": price_down,
+                    "model_probability": signal.prob,
+                    "edge": signal.edge,
+                    "momentum_score": signal_engine.compute_momentum(indicators),
+                    "atr": indicators.get("atr", {}).get("atr", 0),
+                }
+                snapshot_str = json.dumps(snapshot)
                 result = await trader.open_trade(
                     market_id=cid,
                     question=contract["question"],
@@ -241,12 +293,8 @@ async def main():
     if await db.get_bankroll() == 0:
         await db.set_bankroll(config["execution"]["initial_bankroll"])
 
-    # Math
+    # Math config
     math_cfg = config["math"]
-    decision_table = DecisionTable(ev_threshold=math_cfg["ev_threshold"],
-        kelly_fraction=math_cfg["kelly_fraction"], entry_discount=math_cfg["entry_discount"],
-        exit_target=math_cfg["exit_target"], stop_loss_pct=math_cfg["stop_loss_pct"])
-    decision_table.build()
 
     # Binance feed
     binance_cfg = config.get("binance", {})
@@ -317,7 +365,8 @@ async def main():
     agents_cfg = config["agents"]
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
     bias_detector = BiasDetector(biases_path=str(base_dir / "memory" / "biases.json"))
-    ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"))
+    ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"),
+                          claude_client=claude)
     weight_optimizer = WeightOptimizer(
         weights_dir=weights_dir,
         scores_path=str(base_dir / "memory" / "weight_scores.json"),
@@ -329,6 +378,7 @@ async def main():
     alert_manager = AlertManager(bot=discord_bot,
         trade_channel_name=config["discord"]["trade_channel_name"],
         control_channel_name=config["discord"]["control_channel_name"])
+    discord_bot.alert_manager = alert_manager
 
     scheduler = AgentScheduler(
         outcome_reviewer=outcome_reviewer,
@@ -362,7 +412,7 @@ async def main():
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(run_discord()),
     ]
-    logger.info("PolyBot started — all systems running (1-second TA decision loop)")
+    logger.info("PolyBot started — all systems running")
 
     try:
         await asyncio.gather(*tasks)

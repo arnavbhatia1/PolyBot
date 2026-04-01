@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class PaperTrader:
-    def __init__(self, db: Database, max_slippage=0.02, max_bankroll_deployed=0.80, max_concurrent_positions=5):
+    def __init__(self, db: Database, max_slippage=0.02, max_bankroll_deployed=0.80, max_concurrent_positions=1):
         self.db = db
         self.max_slippage = max_slippage
         self.max_bankroll_deployed = max_bankroll_deployed
