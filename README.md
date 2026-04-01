@@ -60,7 +60,7 @@ All parameters in `polybot/config/settings.yaml`:
 - **One trade per contract** (no re-entry after stop loss on same 5-min window)
 - **Extreme price filter** (won't enter when contract is < 0.10 or > 0.90)
 - **Indicator weights** (how much each indicator contributes)
-- **Scalping** (take-profit 10%, stop-loss 8% within the window)
+- **Scalping** (take-profit 4%, stop-loss 4% — tight for 5-min contracts)
 - **Entry window** (full 5-min contract, last 5s blocked)
 - **Kelly fraction** (position sizing conservatism)
 

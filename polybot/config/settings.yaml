@@ -79,6 +79,6 @@ market:
   scan_cache_seconds: 5
 
 scalping:
-  take_profit_pct: 0.10    # Sell when contract price rises 10% above entry
-  stop_loss_pct: 0.08      # Cut when contract price drops 8% below entry
+  take_profit_pct: 0.04    # Sell when contract price rises 4% above entry
+  stop_loss_pct: 0.04      # Cut when contract price drops 4% below entry
   trailing_profit: false    # Future: trail the profit instead of fixed target
