@@ -121,8 +121,34 @@ def test_validate_enforces_min_weight():
         "recommended_min_edge": 0.10,
         "recommended_kelly_fraction": 0.15,
     }
-    result = _validate_strategy_response(data)
+    result = _validate_strategy_response(data, current_weights=None, total_trades=50)
     assert result["recommended_weights"]["rsi"] >= 0.05
+
+def test_validate_caps_weight_change_per_cycle():
+    current = {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20}
+    data = {
+        "recommended_weights": {"rsi": 0.50, "macd": 0.10, "stochastic": 0.15, "obv": 0.10, "vwap": 0.15},
+        "recommended_momentum_weight": 0.08,
+        "recommended_min_edge": 0.10,
+        "recommended_kelly_fraction": 0.15,
+    }
+    result = _validate_strategy_response(data, current_weights=current, total_trades=50)
+    # RSI wanted to jump from 0.20 to 0.50 — cap + renormalization prevents radical change
+    # The raw 0.30 jump gets capped, then renormalization distributes residuals
+    assert result["recommended_weights"]["rsi"] < 0.40  # Far less than the 0.50 requested
+
+def test_validate_no_changes_with_few_trades():
+    current = {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20}
+    data = {
+        "recommended_weights": {"rsi": 0.50, "macd": 0.10, "stochastic": 0.15, "obv": 0.10, "vwap": 0.15},
+        "recommended_momentum_weight": 0.08,
+        "recommended_min_edge": 0.10,
+        "recommended_kelly_fraction": 0.15,
+    }
+    result = _validate_strategy_response(data, current_weights=current, total_trades=5)
+    # Should keep current weights since < 20 trades
+    assert result["recommended_weights"]["rsi"] == 0.20
+    assert "insufficient data" in result.get("risk_warnings", [""])[0].lower()
 
 def test_format_strategy_context_includes_sections():
     context = {

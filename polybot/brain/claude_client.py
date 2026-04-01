@@ -123,12 +123,21 @@ class ClaudeClient:
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
         data = json.loads(text)
-        return _validate_strategy_response(data)
+        current_weights = context.get("current_config", {}).get("weights", {})
+        total_trades = context.get("analysis", {}).get("overall", {}).get("total_trades", 0)
+        return _validate_strategy_response(data, current_weights, total_trades)
 
 
-def _validate_strategy_response(data: dict) -> dict:
+def _validate_strategy_response(data: dict, current_weights: dict | None = None,
+                                total_trades: int = 0) -> dict:
     """Enforce parameter constraints on Claude's recommendations."""
     indicators = ["rsi", "macd", "stochastic", "obv", "vwap"]
+
+    # Insufficient data — return no changes
+    if total_trades < 20 and current_weights:
+        data["recommended_weights"] = {k: current_weights.get(k, 0.20) for k in indicators}
+        data.setdefault("risk_warnings", []).append(f"Only {total_trades} trades — insufficient data, no changes applied")
+
     weights = data.get("recommended_weights", {})
 
     # Floor, renormalize, then final floor (to handle rounding)
@@ -148,6 +157,25 @@ def _validate_strategy_response(data: dict) -> dict:
         if k != largest:
             weights[k] = round(weights[k], 4)
     weights[largest] = round(1.0 - sum(v for k, v in weights.items() if k != largest), 4)
+
+    # Enforce max 0.05 change per cycle if we have current weights
+    if current_weights:
+        changed = False
+        for k in indicators:
+            old = current_weights.get(k, 0.20)
+            new = weights.get(k, old)
+            if abs(new - old) > 0.05:
+                weights[k] = old + 0.05 * (1 if new > old else -1)
+                changed = True
+        if changed:
+            total = sum(weights[k] for k in indicators)
+            if total > 0:
+                weights = {k: weights[k] / total for k in indicators}
+            largest = max(weights, key=weights.get)
+            for k in indicators:
+                if k != largest:
+                    weights[k] = round(weights[k], 4)
+            weights[largest] = round(1.0 - sum(v for k, v in weights.items() if k != largest), 4)
 
     data["recommended_weights"] = weights
 

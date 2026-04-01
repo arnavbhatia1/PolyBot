@@ -123,5 +123,5 @@ Binance API is free and needs no key.
 ## Tests
 
 ```bash
-python -m pytest polybot/tests/ -v   # 173 tests
+python -m pytest polybot/tests/ -v   # 176 tests
 ```

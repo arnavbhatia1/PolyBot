@@ -7,19 +7,13 @@ import yaml
 SAMPLE_CONFIG = {
     "mode": "paper",
     "math": {
-        "ev_threshold": 0.05,
-        "kelly_fraction": 0.25,
-        "entry_discount": 0.85,
-        "exit_target": 0.90,
-        "stop_loss_pct": 0.15,
-        "time_stop_hours": 24,
-        "time_stop_min_gain": 0.02,
+        "kelly_fraction": 0.15,
     },
     "execution": {
         "max_slippage": 0.02,
         "max_bankroll_deployed": 0.80,
-        "max_concurrent_positions": 5,
-        "initial_bankroll": 100.0,
+        "max_concurrent_positions": 1,
+        "initial_bankroll": 1000.0,
     },
     "agents": {
         "outcome_reviewer_interval_seconds": 3600,
@@ -30,6 +24,25 @@ SAMPLE_CONFIG = {
         "control_channel_name": "polybot-control",
     },
     "database": {"path": ":memory:"},
+    "signal": {
+        "entry_threshold": 0.10,
+        "exit_edge_threshold": -0.05,
+        "momentum_weight": 0.08,
+        "weights": {
+            "rsi": 0.20,
+            "macd": 0.25,
+            "stochastic": 0.20,
+            "obv": 0.15,
+            "vwap": 0.20,
+        },
+        "active_weights_version": "weights_v001",
+    },
+    "market": {
+        "contract_type": "btc_5min",
+        "entry_window_seconds": 300,
+        "min_time_remaining_seconds": 5,
+        "scan_cache_seconds": 5,
+    },
 }
 
 @pytest.fixture

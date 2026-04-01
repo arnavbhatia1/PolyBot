@@ -74,7 +74,7 @@ polybot/
 ```bash
 rm polybot/db/polybot.db              # Fresh bankroll
 python -m polybot.main                # Run the bot
-python -m pytest polybot/tests/       # 173 tests
+python -m pytest polybot/tests/       # 176 tests
 ```
 
 ## How the Probability Model Works

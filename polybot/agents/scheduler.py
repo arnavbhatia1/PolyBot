@@ -229,11 +229,9 @@ class AgentScheduler:
         logger.info("Daily learning pipeline complete")
 
     async def run_outcome_loop(self):
+        """Periodic outcome review — outcomes are recorded inline by the trading loop.
+        This loop exists for future periodic analysis tasks."""
         while self._running:
-            try:
-                logger.debug("Running outcome reviewer")
-            except Exception as e:
-                logger.error(f"Outcome reviewer error: {e}")
             await asyncio.sleep(self.outcome_interval_seconds)
 
     async def run_daily_loop(self):

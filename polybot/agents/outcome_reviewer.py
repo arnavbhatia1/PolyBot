@@ -22,7 +22,7 @@ class OutcomeReviewer:
                   "indicator_snapshot": indicator_snapshot or {},
                   "exit_reason": exit_reason,
                   "timestamp": datetime.now(timezone.utc).isoformat()}
-        filename = f"{position_id}_{market_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.json"
+        filename = f"{position_id}_{market_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}.json"
         filepath = self.outcomes_dir / filename
         filepath.write_text(json.dumps(record, indent=2))
         logger.info(f"Recorded outcome for position {position_id}: profitable={profitable}")
