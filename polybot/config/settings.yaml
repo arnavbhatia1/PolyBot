@@ -2,18 +2,12 @@
 mode: "paper"  # "paper" or "live"
 
 math:
-  ev_threshold: 0.05
-  kelly_fraction: 0.25
-  entry_discount: 0.85
-  exit_target: 0.90
-  stop_loss_pct: 0.15
-  time_stop_hours: 24
-  time_stop_min_gain: 0.02
+  kelly_fraction: 0.15  # Fraction of Kelly to use (0.15 = conservative)
 
 execution:
   max_slippage: 0.02
   max_bankroll_deployed: 0.80
-  max_concurrent_positions: 5
+  max_concurrent_positions: 1  # One position at a time — full Kelly on best edge
   initial_bankroll: 1000.0
 
 agents:
@@ -79,7 +73,5 @@ market:
   min_time_remaining_seconds: 5
   scan_cache_seconds: 5
 
-scalping:
-  take_profit_pct: 0.04    # Sell when contract price rises 4% above entry
-  stop_loss_pct: 0.04      # Cut when contract price drops 4% below entry
-  trailing_profit: false    # Future: trail the profit instead of fixed target
+# No scalping — hold to resolution. Binary markets resolve to 0 or 1.
+# Kelly sizing already accounts for the risk. Partial exits destroy edge.

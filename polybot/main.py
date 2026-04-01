@@ -87,15 +87,10 @@ async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pc
 async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,
                        trader, alert_manager, db, config, outcome_reviewer, is_paused_fn):
     signal_config = config["signal"]
-    scalp_config = config.get("scalping", {})
-    take_profit_pct = scalp_config.get("take_profit_pct", 0.04)
-    stop_loss_pct = scalp_config.get("stop_loss_pct", 0.04)
     max_bankroll_pct = config["execution"]["max_bankroll_deployed"]
 
-    # Track which contracts we've already traded
-    traded_contracts: dict[str, int] = {}
-    # Track BTC price at the start of each 5-min window (the "strike")
-    window_strike: dict[str, float] = {}  # condition_id -> BTC opening price
+    traded_contracts: dict[str, int] = {}      # condition_id -> timestamp (one trade per contract)
+    window_strikes: dict[int, float] = {}      # window_ts -> BTC price at window open
 
     while True:
         try:
@@ -103,108 +98,90 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 await asyncio.sleep(1)
                 continue
 
-            # --- SCALP EXIT CHECK: monitor open positions ---
+            # --- RESOLUTION CHECK: close positions on expired contracts ---
             positions = await db.get_open_positions()
             for pos in positions:
                 live = await _get_contract_prices(market_scanner, pos["market_id"])
-
                 if not live:
                     continue
-
-                # Contract expired — close at last known price
                 if live["seconds_remaining"] <= 0:
+                    # Contract resolved — close at final market price
                     exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
                     result = await trader.close_trade(pos["id"], exit_price)
                     if result.success:
                         gain_pct = (exit_price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0
                         shares = pos["size"] / pos["entry_price"]
                         pnl = shares * exit_price - pos["size"]
-                        logger.info(f"CLOSE EXPIRED {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
+                        won = "WIN" if pnl > 0 else "LOSS"
+                        logger.info(f"RESOLVED {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question="", exit_price=exit_price, log_return=0, hold_hours=0,
                                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                                gain_pct=gain_pct, reason="expired")
+                                gain_pct=gain_pct, reason=won.lower())
                         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct)
                         traded_contracts[pos["market_id"]] = int(time.time())
-                    continue
 
-                side = pos["side"]
-                current_price = live["price_up"] if side == "Up" else live["price_down"]
-                gain_pct = (current_price - pos["entry_price"]) / pos["entry_price"]
+            # --- ENTRY: find contract and evaluate for edge ---
+            # Skip if we already have an open position (one at a time)
+            if await db.get_open_position_count() > 0:
+                await asyncio.sleep(0)
+                continue
 
-                if gain_pct >= take_profit_pct:
-                    result = await trader.close_trade(pos["id"], current_price)
-                    if result.success:
-                        shares = pos["size"] / pos["entry_price"]
-                        pnl = shares * current_price - pos["size"]
-                        logger.info(f"CLOSE PROFIT {pos['side']} | {pos['entry_price']:.3f}->{current_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
-                        if alert_manager:
-                            await alert_manager.send_trade_closed(
-                                question="", exit_price=current_price, log_return=0, hold_hours=0,
-                                side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                                gain_pct=gain_pct, reason="take profit")
-                        await _record_outcome(outcome_reviewer, pos, current_price, result.log_return or 0, gain_pct)
-                        traded_contracts[pos["market_id"]] = int(time.time())
-
-                elif gain_pct <= -stop_loss_pct:
-                    result = await trader.close_trade(pos["id"], current_price)
-                    if result.success:
-                        shares = pos["size"] / pos["entry_price"]
-                        pnl = shares * current_price - pos["size"]
-                        logger.info(f"CLOSE LOSS {pos['side']} | {pos['entry_price']:.3f}->{current_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
-                        if alert_manager:
-                            await alert_manager.send_trade_closed(
-                                question="", exit_price=current_price, log_return=0, hold_hours=0,
-                                side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                                gain_pct=gain_pct, reason="stop loss")
-                        await _record_outcome(outcome_reviewer, pos, current_price, result.log_return or 0, gain_pct)
-                        traded_contracts[pos["market_id"]] = int(time.time())
-
-            # --- ENTRY: find contract and evaluate signal ---
             contract = await market_scanner.find_active_contract()
             if not contract:
                 await asyncio.sleep(1)
                 continue
 
-            # Clean up entries older than 10 minutes
+            cid = contract["condition_id"]
+
+            # Clean old entries
             now_ts = int(time.time())
-            traded_contracts = {cid: ts for cid, ts in traded_contracts.items()
-                                if now_ts - ts < 600}
+            traded_contracts = {k: v for k, v in traded_contracts.items() if now_ts - v < 600}
 
-            # ONE trade per contract — if we already traded this one, skip
-            if contract["condition_id"] in traded_contracts:
-                await asyncio.sleep(1)
-                continue
-
-            in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
-            has_position = await db.has_position_for_market(contract["condition_id"])
-
-            # Skip if we already have a position on this contract
-            if has_position:
-                await asyncio.sleep(1)
-                continue
-
-            # Don't enter if contract price is extreme (already resolved basically)
-            price_up = contract["price_up"]
-            price_down = contract["price_down"]
-            if price_up < 0.10 or price_up > 0.90:
+            # One trade per contract
+            if cid in traded_contracts:
                 await asyncio.sleep(0)
                 continue
 
-            # Track the BTC "strike" price at window open
-            cid = contract["condition_id"]
-            if cid not in window_strike:
-                latest_candle = binance_feed.buffer.latest()
-                if latest_candle:
-                    window_strike[cid] = latest_candle.close
+            # Don't enter if market already decided (extreme prices)
+            price_up = contract["price_up"]
+            price_down = contract["price_down"]
+            if price_up < 0.15 or price_up > 0.85:
+                await asyncio.sleep(0)
+                continue
+
+            # Compute strike: BTC price at the 5-min window boundary
+            # Use the candle that opened at the window start
+            window_ts = int(now_ts // 300) * 300
+            if window_ts not in window_strikes:
+                # Best approximation: BTC price from the candle buffer at window open
+                candles = binance_feed.buffer.get_last_n(10)
+                for c in candles:
+                    # Find the candle closest to the window open
+                    if abs(c.timestamp / 1000 - window_ts) < 60:
+                        window_strikes[window_ts] = c.open
+                        break
+                else:
+                    # Fallback: use the oldest recent candle's open
+                    if candles:
+                        window_strikes[window_ts] = candles[0].open
             # Clean old strikes
-            window_strike = {k: v for k, v in window_strike.items() if k in traded_contracts or k == cid}
+            window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
 
-            strike = window_strike.get(cid, 0)
+            strike = window_strikes.get(window_ts, 0)
+            if strike <= 0:
+                await asyncio.sleep(0)
+                continue
+
             btc_price = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+            if btc_price <= 0:
+                await asyncio.sleep(0)
+                continue
 
-            # Compute indicators and evaluate signal with probability model
+            in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
+
+            # Compute indicators and evaluate probability model
             indicators = indicator_engine.compute_all(binance_feed.buffer)
             signal = signal_engine.evaluate(
                 indicators, has_position=False, in_entry_window=in_window,
@@ -217,12 +194,10 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 side = "Up" if signal.action == "BUY_YES" else "Down"
                 price = price_up if side == "Up" else price_down
                 bankroll = await db.get_bankroll()
-                # Kelly sizing from the signal engine (proper binary Kelly)
                 size = round(bankroll * signal.kelly_size, 2)
-                size = max(size, 1.0)  # Minimum $1 trade
+                size = max(size, 1.0)
                 if size > bankroll * max_bankroll_pct:
-                    await asyncio.sleep(0)
-                    continue
+                    size = round(bankroll * max_bankroll_pct, 2)
 
                 snapshot_str = json.dumps(indicator_engine.get_snapshot(indicators))
                 result = await trader.open_trade(
@@ -231,23 +206,22 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     side=side,
                     price=price,
                     size=size,
-                    signal_score=signal.score,
+                    signal_score=signal.prob,
                     signal_strength=f"edge={signal.edge:.0%}",
                     ev_at_entry=signal.edge,
-                    exit_target=0.90,
-                    stop_loss=price * (1 - stop_loss_pct),
+                    exit_target=1.0,
+                    stop_loss=0.0,
                     weight_version=signal_config.get("active_weights_version", "weights_v001"),
                     indicator_snapshot=snapshot_str,
                 )
 
                 if result.success:
-                    traded_contracts[cid] = int(time.time())
-                    logger.info(f"OPEN {side} @ {price:.3f} | size=${size:.2f} | "
-                                f"model={signal.score:.0%} market={price:.0%} edge={signal.edge:+.0%}")
+                    traded_contracts[cid] = now_ts
+                    logger.info(f"OPEN {side} @ {price:.3f} | ${size:.2f} | {signal.reason}")
                     if alert_manager:
                         await alert_manager.send_trade_opened(
                             question=contract["question"], side=side, size=size,
-                            entry_price=price, ev=signal.edge, exit_target=0.90)
+                            entry_price=price, ev=signal.edge, exit_target=1.0)
 
         except Exception as e:
             logger.error(f"Trading loop error: {e}", exc_info=True)
@@ -323,9 +297,9 @@ async def main():
 
     # Signal engine — probability model with edge-based entry
     signal_engine = SignalEngine(
-        min_edge=signal_cfg.get("entry_threshold", 0.10),  # min mispricing to trade
-        kelly_fraction=config["math"]["kelly_fraction"],
-        momentum_weight=signal_cfg.get("momentum_weight", 0.15),
+        min_edge=signal_cfg.get("entry_threshold", 0.10),
+        kelly_fraction=config["math"].get("kelly_fraction", 0.15),
+        momentum_weight=signal_cfg.get("momentum_weight", 0.08),
         weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                             "obv": 0.15, "vwap": 0.20}),
     )

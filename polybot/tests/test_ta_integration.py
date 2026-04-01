@@ -52,7 +52,7 @@ async def test_full_ta_flow(db, weights_dir):
                               weights={"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20})
 
     # Verify the momentum adjustment is non-zero (indicators produced a directional signal)
-    momentum = signal_eng._compute_momentum_adjustment(indicators)
+    momentum = signal_eng._compute_momentum(indicators)
     assert momentum != 0
 
     # Simulate: BTC above strike, market at 50/50 — should find edge
@@ -67,7 +67,7 @@ async def test_full_ta_flow(db, weights_dir):
         size = max(1.0, round(100.0 * signal.kelly_size, 2))
         result = await trader.open_trade(
             market_id="0xbtc5min", question="BTC 5min Up?", side=side,
-            price=0.50, size=size, signal_score=signal.score,
+            price=0.50, size=size, signal_score=signal.prob,
             signal_strength=f"edge={signal.edge:.0%}", ev_at_entry=signal.edge,
             exit_target=0.90, stop_loss=0.40, weight_version="ta_v001")
         assert result.success is True
