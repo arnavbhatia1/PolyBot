@@ -2,129 +2,120 @@
 
 ## Project Overview
 
-PolyBot is a 5-minute BTC Up/Down scalper for Polymarket. It uses 7 technical indicators for trading decisions and actively scalps within each 5-min window. Claude is only used in the daily learning pipeline to analyze trade patterns.
+PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathematical probability that BTC finishes above/below the opening strike price, compares that to the market's price, and trades when mispricing exceeds 10%. Hold to resolution — no scalping.
 
 ## Key Architecture Decisions
 
-- **Probability model, not indicator score.** The bot computes actual probability that BTC stays above/below the strike using: distance from strike, time remaining, ATR volatility, and indicator momentum. Only trades when model disagrees with market price by >= 10% (min_edge). This is the alpha.
-- **Gates before probability.** ATR and EMA are hard gates. Only if both pass does the probability model run.
-- **Kelly sizing from actual edge.** Position size = Quarter Kelly from model probability vs market price. Bigger edge = bigger bet.
-- **Active scalping.** Monitors positions every cycle. Take-profit 4%, stop-loss 4%.
-- **Indicators are inputs, not the brain.** RSI/MACD/Stochastic/OBV/VWAP adjust the base probability by ±15% (momentum_weight). They don't directly decide trades. Claude only runs daily in the TA Evolver.
-- **5-min markets use Gamma API with deterministic slugs.** The CLOB `/markets` endpoint does NOT list these. Use `gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}` where `window_ts = int(time.time() // 300) * 300`.
-- **Outcomes are "Up"/"Down", not "Yes"/"No".** Contract fields: `price_up`, `price_down`, `token_id_up`, `token_id_down`.
-- **Binance.US, not Binance.com.** Binance.com returns HTTP 451 for US IPs.
-- **1-second decision loop.** Every second: check open positions for scalp exit, then check for new entry signals.
-- **Entry window is the full 5 minutes.** Last 5 seconds blocked to avoid unfillable orders.
-- **Outcomes recorded after every exit.** Both take-profit and stop-loss exits log to `memory/outcomes/` for the learning pipeline.
+- **Probability model, not indicators.** The bot computes P(Up) using Brownian motion: z = (BTC - strike) / (ATR * sqrt(time)), then P = logistic(1.7z). Indicators provide a small momentum nudge (±8%). The edge is: model probability - market price.
+- **Hold to resolution.** Binary markets resolve to 0 or 1. Scalping throws away edge. Kelly sizing already accounts for total loss risk.
+- **Single position at a time.** Full Kelly on the best edge, no capital dilution.
+- **One trade per 5-min contract.** After any exit, that contract is blacklisted.
+- **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
+- **Minimum edge = 10%.** Only trade when model disagrees with market by 10%+.
+- **Momentum weight = 0.08.** Indicators nudge probability by max ±8%. This ensures indicators alone (without BTC movement from strike) cannot trigger a trade.
+- **5-min markets use Gamma API with deterministic slugs.** `gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}` where `window_ts = int(time.time() // 300) * 300`.
+- **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
+- **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
+- **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
 
 ## Project Structure
 
 ```
 polybot/
-  main.py                    # Entry point, 1-second trading loop with scalp exits
+  main.py                    # Entry point, trading loop (hold to resolution)
   config/settings.yaml       # ALL tunable parameters
   core/
-    binance_feed.py          # WebSocket + candle buffer (data ingestion)
+    binance_feed.py          # WebSocket + candle buffer
     market_scanner.py        # Gamma API slug-based contract discovery
-    signal_engine.py         # Gates + weighted scoring
+    signal_engine.py         # Probability model: P(Up) from BTC vs strike + time + vol
   indicators/
     ema.py, rsi.py, macd.py, stochastic.py, obv.py, vwap.py, atr.py
     engine.py                # Combines all 7, manages weight versions
   execution/
     base.py                  # TradeResult dataclass
-    paper_trader.py          # Simulated trades (live_trader.py is Phase 2)
+    paper_trader.py          # Simulated trades
   agents/
-    scheduler.py             # Orchestrates daily learning pipeline
-    outcome_reviewer.py      # Logs resolved trades with indicator snapshots
-    bias_detector.py         # Finds indicator-level biases
-    ta_evolver.py            # Recommends weight/threshold adjustments
-    weight_optimizer.py      # Versions and adopts weight configs
+    scheduler.py             # Daily learning pipeline
+    outcome_reviewer.py      # Logs resolved trades
+    bias_detector.py         # Per-indicator accuracy
+    ta_evolver.py            # Recommends weight adjustments
+    weight_optimizer.py      # Versions and auto-adopts weights
   brain/
-    claude_client.py         # ONLY used by ta_evolver, NOT in trading loop
-    prompt_builder.py        # Builds prompts for ta_evolver analysis
+    claude_client.py         # Used by ta_evolver only
   memory/
-    outcomes/                # One JSON per trade (learning data)
-    weights/                 # Versioned weight configs (weights_v001.json, etc.)
+    outcomes/                # One JSON per trade
+    weights/                 # Versioned weight configs
     biases.json              # Indicator correction factors
   discord_bot/
     bot.py, commands.py, alerts.py
   db/models.py               # SQLite: positions, trade_history, bankroll
   math_engine/
-    decision_table.py        # Kelly fraction position sizing
+    decision_table.py        # Legacy — not used in main trading loop
     returns.py               # Log returns, Sharpe ratio
 ```
 
-## DB Schema Field Names
-
-Fields use TA-specific names (not the old Claude-era names):
-- `signal_score` — indicator weighted score (0-1)
-- `signal_strength` — confidence level
-- `weight_version` — which weight config was used (e.g. "weights_v001")
-- `indicator_snapshot` — JSON blob of all 7 indicator values at entry
-
 ## Config
 
-Everything tunable lives in `polybot/config/settings.yaml`:
-- `indicators:` — periods, thresholds for each of the 7 indicators
-- `signal:` — entry threshold (0.40 for paper trading), indicator weights, active weight version
-- `market:` — entry window (300s / full window), min time remaining (5s)
-- `scalping:` — take_profit_pct (0.04), stop_loss_pct (0.04). Tighter targets for 5-min contracts where price moves are small.
-- `signal.entry_threshold:` — 0.10 (minimum 10% edge/mispricing to trade). Learning agents tune this.
-- `signal.momentum_weight:` — 0.15 (how much indicators adjust base probability, 0-1)
-- `binance:` — symbol, WebSocket/REST URLs (binance.us), buffer size
-- `math:` — EV threshold, Kelly fraction, exit target, stop loss
-- `execution:` — max slippage, bankroll limits ($1,000 paper), position limits
+`polybot/config/settings.yaml`:
+- `math.kelly_fraction:` — 0.15 (fraction of full Kelly)
+- `signal.entry_threshold:` — 0.10 (minimum 10% edge to trade)
+- `signal.momentum_weight:` — 0.08 (max ±8% indicator adjustment to probability)
+- `signal.weights:` — per-indicator weights for momentum calculation
+- `execution.max_concurrent_positions:` — 1 (single position, full focus)
+- `execution.max_bankroll_deployed:` — 0.80
+- `market.entry_window_seconds:` — 300 (full 5-min window)
+- `market.min_time_remaining_seconds:` — 5
 
 ## Running
 
 ```bash
-python -m polybot.main          # From the PolyBot/PolyBot directory
-python -m pytest polybot/tests/ # Run all tests (148 tests)
+rm polybot/db/polybot.db              # Fresh bankroll
+python -m polybot.main                # Run the bot
+python -m pytest polybot/tests/       # 150 tests
 ```
 
-## Logging
+## How the Probability Model Works
 
-- Base log level is ERROR (suppresses httpx, discord, websockets noise)
-- `polybot` logger is INFO — only shows startup, trades, and errors
-- Log file resets on each startup
+```
+Strike = BTC price at 5-min window open (from candle buffer)
+Distance = current BTC price - strike
+Vol = ATR (average true range from 1-min candles)
+Time = minutes remaining in the window
+
+z = distance / (vol * sqrt(time))
+P(Up) = 1 / (1 + exp(-1.7 * z))
+
+Momentum nudge: P(Up) += indicator_score * 0.08
+
+Edge = P(Up) - market_price_up    [or P(Down) - market_price_down]
+If edge >= 10%: TRADE, size = Kelly(probability, market_price) * 0.15
+If edge < 10%: SKIP
+```
 
 ## Common Issues
 
-- **No trades happening:** Check EMA trend (chop = no trades), ATR gate (low_percentile=5 is loose, if still blocking BTC is truly dead), entry threshold (0.30). Minimum trade size is $1. Delete polybot.db and restart if bankroll is stale.
-- **Re-entering same contract after stop loss:** Fixed — `traded_contracts` set prevents re-entry after any exit on the same 5-min window.
-- **Buying at extreme prices (0.01, 0.07):** Fixed — entry blocked when contract price is outside 0.10-0.90 range.
-- **Multiple trades per contract:** Fixed — one trade per 5-min contract, period.
-- **Binance 451 error:** Using binance.com instead of binance.us.
-- **No market found:** 5-min BTC markets use deterministic slugs via Gamma API, not CLOB.
-- **Discord token error:** Use the Bot Token (Bot tab), not the Client Secret. No quotes in .env.
-- **Config not taking effect:** main.py must pass indicator params from settings.yaml to IndicatorEngine(params=...).
-- **Learning pipeline empty:** Outcomes are recorded after scalp exits. If no trades happen, no learning data accumulates.
+- **No trades:** BTC is near the strike (no edge) or market is efficiently priced. This is correct behavior — no edge means no trade.
+- **Binance 451:** Using .com instead of .us.
+- **Wrong strike:** Strike is derived from candle buffer at window boundary. If buffer is empty on startup, first few windows may have wrong strike.
+- **All trades losing:** Check if model is systematically miscalibrated. Lower kelly_fraction or raise min_edge.
 
 ## Learning Pipeline
 
-Daily at 2 AM UTC, three agents run in sequence:
-1. BiasDetector reads `memory/outcomes/`, writes `memory/biases.json`
-2. TAEvolver reads outcomes + biases, recommends weight changes, writes `memory/strategy_log.md`
-3. WeightOptimizer backtests recommended weights against historical trades. If Sharpe improves >= 3%, **auto-adopts** new weights — hot-swaps indicator_engine and signal_engine at runtime. No manual intervention needed.
+Daily at 2 AM UTC:
+1. BiasDetector: per-indicator accuracy from outcomes
+2. TAEvolver: recommends weight adjustments
+3. WeightOptimizer: backtests, auto-adopts if Sharpe improves >= 3%
 
-**Discord alerts from pipeline:**
-- Weights adopted: posts new Sharpe, win rate, and weight values to `#polybot-trades`
-- No change: posts current vs candidate Sharpe
-- Negative Sharpe (<-0.5): posts WARNING to `#polybot-control` suggesting `!pause`
-- Pipeline error: posts error to `#polybot-control`
+Hot-swaps weights at runtime. Discord alerts for all pipeline events.
 
 ## What NOT to Change
 
-- Don't put Claude in the trading loop. Indicators are faster and cheaper.
-- Don't switch back to Binance.com — US IPs are blocked.
-- Don't use CLOB `/markets` for 5-min crypto markets — only Gamma API slugs work.
-- Don't use "Yes"/"No" for crypto markets — they use "Up"/"Down".
-- Don't use old field names (claude_probability, etc.) — use signal_score, signal_strength, weight_version.
-- Outcome records use: signal_score, profitable (bool), weight_version, indicator_snapshot. NOT predicted_probability/prompt_version.
-- Positions that aren't scalped get auto-closed when contract expires.
-- Bias detector analyzes per-indicator accuracy from indicator_snapshot, not category-level probabilities.
+- Don't add scalping/stop-losses — binary markets resolve to 0 or 1. Hold to resolution.
+- Don't increase momentum_weight above 0.10 — indicators alone should not trigger trades.
+- Don't use CLOB `/markets` for 5-min markets — Gamma API slugs only.
+- Don't use Binance.com — use Binance.us.
+- Don't allow multiple concurrent positions — one at a time, full Kelly.
 
 ## Always Update
 
-When making changes, update BOTH this file and README.md to reflect the current state.
+Update this file and README.md with every behavioral change.
