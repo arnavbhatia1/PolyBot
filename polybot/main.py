@@ -225,7 +225,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             if alert_manager:
                 await alert_manager.send_error(str(e))
 
-        await asyncio.sleep(1)  # 1-second decision cycle
+        await asyncio.sleep(0.5)  # 500ms decision cycle
 
 
 async def main():
