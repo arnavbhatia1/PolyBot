@@ -36,24 +36,16 @@ logger.setLevel(logging.INFO)
 logging.getLogger("polybot.discord_bot.bot").setLevel(logging.INFO)
 
 
-_price_cache: dict = {"data": None, "time": 0, "market_id": ""}
-_PRICE_CACHE_TTL = 1.5  # Refresh prices every 1.5 seconds
-
 async def _get_contract_prices(market_scanner, market_id: str) -> dict | None:
-    """Fetch current Up/Down prices, cached for 1.5s to avoid rate limiting."""
+    """Fetch current Up/Down prices for an active contract via Gamma API."""
     import httpx
     import time as _time
 
-    now = _time.time()
-    if (_price_cache["data"] and _price_cache["market_id"] == market_id
-            and (now - _price_cache["time"]) < _PRICE_CACHE_TTL):
-        return _price_cache["data"]
-
-    window_ts = int(now // 300) * 300
+    window_ts = int(_time.time() // 300) * 300
     for ts in [window_ts, window_ts + 300, window_ts - 300]:
         slug = market_scanner._make_slug(ts)
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(timeout=3) as client:
                 resp = await client.get(f"{market_scanner.GAMMA_API}/events",
                                         params={"slug": slug})
                 resp.raise_for_status()
@@ -62,9 +54,6 @@ async def _get_contract_prices(market_scanner, market_id: str) -> dict | None:
                     event = data[0] if isinstance(data, list) else data
                     contract = market_scanner.parse_contract(event)
                     if contract and contract["condition_id"] == market_id:
-                        _price_cache["data"] = contract
-                        _price_cache["time"] = now
-                        _price_cache["market_id"] = market_id
                         return contract
         except httpx.TimeoutException:
             continue
@@ -237,7 +226,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             if alert_manager:
                 await alert_manager.send_error(str(e))
 
-        await asyncio.sleep(0.1)  # 100ms decision cycle (API cached at 1.5s)
+        await asyncio.sleep(0)  # Yield control, then loop immediately — speed limited only by API latency
 
 
 async def main():
