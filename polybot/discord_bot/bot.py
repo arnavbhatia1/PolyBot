@@ -20,6 +20,8 @@ def create_bot(db, trader, scanner, scheduler, config):
     async def on_ready():
         logger.info(f"Discord bot connected as {bot.user}")
         if hasattr(bot, 'alert_manager') and bot.alert_manager:
+            await bot.alert_manager.purge_channel("trades")
+            await bot.alert_manager.purge_channel("control")
             bankroll = await bot.db.get_bankroll()
             await bot.alert_manager.send_session_banner(
                 mode=bot.config.get("mode", "paper"),
@@ -53,7 +55,13 @@ def create_bot(db, trader, scanner, scheduler, config):
         bankroll = await bot.db.get_bankroll()
         positions = await bot.db.get_open_position_count()
         history = await bot.db.get_trade_history(limit=100)
-        pnl_24h = sum(t.get("log_return", 0) for t in history[:10])
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        pnl_24h = sum(
+            t.get("size", 0) / t["entry_price"] * t.get("exit_price", 0) - t.get("size", 0)
+            for t in history
+            if t.get("exit_timestamp", "") >= cutoff and t.get("entry_price", 0) > 0
+        )
         msg = format_status(mode=bot.config.get("mode", "paper"), is_paused=bot.is_paused,
                            open_positions=positions, bankroll=bankroll, pnl_24h=pnl_24h)
         await ctx.send(msg)

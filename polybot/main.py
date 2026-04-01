@@ -195,17 +195,14 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             # Use the candle that opened at the window start
             window_ts = int(now_ts // 300) * 300
             if window_ts not in window_strikes:
-                # Best approximation: BTC price from the candle buffer at window open
+                # Find the candle closest to the 5-min window boundary
                 candles = binance_feed.buffer.get_last_n(10)
                 for c in candles:
-                    # Find the candle closest to the window open
                     if abs(c.timestamp / 1000 - window_ts) < 60:
                         window_strikes[window_ts] = c.open
                         break
-                else:
-                    # Fallback: use the oldest recent candle's open
-                    if candles:
-                        window_strikes[window_ts] = candles[0].open
+                # No fallback — if we can't find the window-open candle, skip this window.
+                # Using current price as strike creates distance=0 and false edge.
             # Clean old strikes
             window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
 
@@ -287,7 +284,11 @@ async def main():
     config = load_config()
     base_dir = Path(__file__).parent
 
-    # Database
+    # Database — fresh start every run
+    db_path = Path(config["database"]["path"])
+    if db_path.exists():
+        db_path.unlink()
+        logger.info("Deleted old database — fresh start")
     db = Database(config["database"]["path"])
     await db.initialize()
     if await db.get_bankroll() == 0:

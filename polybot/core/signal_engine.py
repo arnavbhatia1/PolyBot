@@ -116,14 +116,14 @@ class SignalEngine:
             return TradeSignal(
                 "BUY_YES", prob_up, edge_up, kelly,
                 f"Up: model={prob_up:.0%} mkt={market_price_up:.0%} edge={edge_up:+.0%} "
-                f"BTC={btc_price:,.0f} strike={strike_price:,.0f} Δ={btc_price-strike_price:+,.0f}")
+                f"BTC={btc_price:,.0f} strike={strike_price:,.0f} d={btc_price-strike_price:+,.0f}")
 
         elif edge_down > edge_up and edge_down >= self.min_edge:
             kelly = self._kelly(prob_down, market_price_down)
             return TradeSignal(
                 "BUY_NO", prob_down, edge_down, kelly,
                 f"Down: model={prob_down:.0%} mkt={market_price_down:.0%} edge={edge_down:+.0%} "
-                f"BTC={btc_price:,.0f} strike={strike_price:,.0f} Δ={btc_price-strike_price:+,.0f}")
+                f"BTC={btc_price:,.0f} strike={strike_price:,.0f} d={btc_price-strike_price:+,.0f}")
 
         else:
             best = max(edge_up, edge_down)
