@@ -73,16 +73,24 @@ class BinanceFeed:
     async def backfill(self):
         url = f"{self.rest_url}/klines"
         params = {"symbol": self.symbol.upper(), "interval": "1m", "limit": self.buffer.max_size}
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, params=params)
-            resp.raise_for_status()
-            klines = resp.json()
-        for k in klines:
-            self.buffer.add(Candle(
-                timestamp=int(k[0]), open=float(k[1]), high=float(k[2]),
-                low=float(k[3]), close=float(k[4]), volume=float(k[5]),
-            ))
-        logger.debug(f"Backfilled {len(klines)} candles")
+        for attempt in range(5):
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.get(url, params=params)
+                    resp.raise_for_status()
+                    klines = resp.json()
+                for k in klines:
+                    self.buffer.add(Candle(
+                        timestamp=int(k[0]), open=float(k[1]), high=float(k[2]),
+                        low=float(k[3]), close=float(k[4]), volume=float(k[5]),
+                    ))
+                logger.debug(f"Backfilled {len(klines)} candles")
+                return
+            except Exception as e:
+                wait = 2 ** attempt
+                logger.warning(f"Backfill attempt {attempt+1}/5 failed: {e}, retrying in {wait}s")
+                await asyncio.sleep(wait)
+        raise ConnectionError("Failed to backfill candles after 5 attempts")
 
     async def _connect_ws(self):
         import websockets
