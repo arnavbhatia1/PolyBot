@@ -62,13 +62,36 @@ async def _get_contract_prices(market_scanner, market_id: str) -> dict | None:
     return None
 
 
+async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pct):
+    """Record a trade outcome for the learning pipeline."""
+    try:
+        outcome_reviewer.record_outcome(
+            position_id=pos["id"],
+            market_id=pos["market_id"],
+            question=pos["question"],
+            side=pos["side"],
+            signal_score=pos["signal_score"],
+            profitable=gain_pct > 0,
+            entry_price=pos["entry_price"],
+            exit_price=exit_price,
+            log_return=log_return,
+            weight_version=pos.get("weight_version", ""),
+            category="crypto-5min",
+            indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}"))
+        )
+    except Exception as e:
+        logger.error(f"Failed to record outcome: {e}")
+
+
 async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,
                        decision_table, trader, alert_manager, db, config, outcome_reviewer, is_paused_fn):
-    math_config = config["math"]
     signal_config = config["signal"]
     scalp_config = config.get("scalping", {})
     take_profit_pct = scalp_config.get("take_profit_pct", 0.10)
     stop_loss_pct = scalp_config.get("stop_loss_pct", 0.08)
+
+    # Track which contracts we've already traded (prevents re-entry after stop loss)
+    traded_contracts: set[str] = set()
 
     while True:
         try:
@@ -76,106 +99,56 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 await asyncio.sleep(1)
                 continue
 
-            # --- SCALP EXIT CHECK: monitor open positions for profit/loss/expiry ---
+            # --- SCALP EXIT CHECK: monitor open positions ---
             positions = await db.get_open_positions()
             for pos in positions:
                 live = await _get_contract_prices(market_scanner, pos["market_id"])
 
-                # If we can't fetch prices, skip this cycle (don't close at 0)
                 if not live:
                     continue
 
-                # If contract expired, close at last known price
+                # Contract expired — close at last known price
                 if live["seconds_remaining"] <= 0:
                     exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
                     result = await trader.close_trade(pos["id"], exit_price)
                     if result.success:
-                        entry_price = pos["entry_price"]
-                        gain_pct = (exit_price - entry_price) / entry_price if entry_price > 0 else 0
-                        logger.info(f"CONTRACT EXPIRED: {pos['question'][:50]} | "
-                                    f"entry={entry_price:.3f} exit={exit_price:.3f}")
+                        gain_pct = (exit_price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0
+                        logger.info(f"EXPIRED: {pos['question'][:50]} | "
+                                    f"{pos['entry_price']:.3f}->{exit_price:.3f} ({gain_pct:+.1%})")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question=pos["question"], exit_price=exit_price,
                                 log_return=result.log_return or 0, hold_hours=0)
-                        outcome_reviewer.record_outcome(
-                            position_id=pos["id"],
-                            market_id=pos["market_id"],
-                            question=pos["question"],
-                            side=pos["side"],
-                            signal_score=pos["signal_score"],
-                            profitable=gain_pct > 0,
-                            entry_price=entry_price,
-                            exit_price=exit_price,
-                            log_return=result.log_return or 0,
-                            weight_version=pos.get("weight_version", ""),
-                            category="crypto-5min",
-                            indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}"))
-                        )
+                        await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct)
                     continue
 
                 side = pos["side"]
-                entry_price = pos["entry_price"]
-                if side == "Up":
-                    current_price = live["price_up"]
-                else:
-                    current_price = live["price_down"]
-
-                gain_pct = (current_price - entry_price) / entry_price
+                current_price = live["price_up"] if side == "Up" else live["price_down"]
+                gain_pct = (current_price - pos["entry_price"]) / pos["entry_price"]
 
                 if gain_pct >= take_profit_pct:
-                    # Take profit
                     result = await trader.close_trade(pos["id"], current_price)
                     if result.success:
-                        logger.info(f"SCALP TAKE PROFIT: {pos['question'][:50]} | "
-                                    f"entry={entry_price:.3f} exit={current_price:.3f} "
-                                    f"gain={gain_pct:.1%}")
+                        logger.info(f"TAKE PROFIT: {pos['question'][:50]} | "
+                                    f"{pos['entry_price']:.3f}->{current_price:.3f} ({gain_pct:+.1%})")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question=pos["question"], exit_price=current_price,
                                 log_return=result.log_return or 0, hold_hours=0)
-                        # Record outcome for learning pipeline
-                        outcome_reviewer.record_outcome(
-                            position_id=pos["id"],
-                            market_id=pos["market_id"],
-                            question=pos["question"],
-                            side=pos["side"],
-                            signal_score=pos["signal_score"],
-                            profitable=gain_pct > 0,
-                            entry_price=entry_price,
-                            exit_price=current_price,
-                            log_return=result.log_return or 0,
-                            weight_version=pos.get("weight_version", ""),
-                            category="crypto-5min",
-                            indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}"))
-                        )
+                        await _record_outcome(outcome_reviewer, pos, current_price, result.log_return or 0, gain_pct)
 
                 elif gain_pct <= -stop_loss_pct:
-                    # Stop loss
                     result = await trader.close_trade(pos["id"], current_price)
                     if result.success:
-                        logger.info(f"SCALP STOP LOSS: {pos['question'][:50]} | "
-                                    f"entry={entry_price:.3f} exit={current_price:.3f} "
-                                    f"loss={gain_pct:.1%}")
+                        logger.info(f"STOP LOSS: {pos['question'][:50]} | "
+                                    f"{pos['entry_price']:.3f}->{current_price:.3f} ({gain_pct:+.1%})")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question=pos["question"], exit_price=current_price,
                                 log_return=result.log_return or 0, hold_hours=0)
-                        # Record outcome for learning pipeline
-                        outcome_reviewer.record_outcome(
-                            position_id=pos["id"],
-                            market_id=pos["market_id"],
-                            question=pos["question"],
-                            side=pos["side"],
-                            signal_score=pos["signal_score"],
-                            profitable=gain_pct > 0,
-                            entry_price=entry_price,
-                            exit_price=current_price,
-                            log_return=result.log_return or 0,
-                            weight_version=pos.get("weight_version", ""),
-                            category="crypto-5min",
-                            indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}"))
-                        )
+                        await _record_outcome(outcome_reviewer, pos, current_price, result.log_return or 0, gain_pct)
+                        # Mark this contract as traded — don't re-enter after stop loss
+                        traded_contracts.add(pos["market_id"])
 
             # --- ENTRY: find contract and evaluate signal ---
             contract = await market_scanner.find_active_contract()
@@ -183,22 +156,39 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 await asyncio.sleep(1)
                 continue
 
+            # Clean up stale entries (contracts from previous windows)
+            import time
+            current_window = int(time.time() // 300) * 300
+            traded_contracts = {c for c in traded_contracts
+                                if str(current_window) in c or str(current_window + 300) in c}
+
+            # ONE trade per contract — if we already traded this one, skip
+            if contract["condition_id"] in traded_contracts:
+                await asyncio.sleep(1)
+                continue
+
             in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
             has_position = await db.has_position_for_market(contract["condition_id"])
 
-            # Compute indicators from Binance candle buffer
-            indicators = indicator_engine.compute_all(binance_feed.buffer)
-            signal = signal_engine.evaluate(indicators, has_position, in_window)
+            # Skip if we already have a position on this contract
+            if has_position:
+                await asyncio.sleep(1)
+                continue
 
-            logger.debug(
-                f"Signal: {signal.action} score={signal.score:.3f} "
-                f"contract={contract['question'][:50]} "
-                f"in_window={in_window} has_pos={has_position}"
-            )
+            # Don't enter if contract price is extreme (already resolved basically)
+            price_up = contract["price_up"]
+            price_down = contract["price_down"]
+            if price_up < 0.10 or price_up > 0.90:
+                await asyncio.sleep(1)
+                continue
+
+            # Compute indicators and evaluate signal
+            indicators = indicator_engine.compute_all(binance_feed.buffer)
+            signal = signal_engine.evaluate(indicators, False, in_window)
 
             if signal.action in ("BUY_YES", "BUY_NO"):
                 side = "Up" if signal.action == "BUY_YES" else "Down"
-                price = contract["price_up"] if side == "Up" else contract["price_down"]
+                price = price_up if side == "Up" else price_down
                 bankroll = await db.get_bankroll()
                 size = decision_table.position_size(abs(signal.score), price, bankroll)
                 size = max(size, 1.0)  # Minimum $1 trade
@@ -216,17 +206,19 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     signal_score=abs(signal.score),
                     signal_strength="high",
                     ev_at_entry=signal.score,
-                    exit_target=math_config["exit_target"],
-                    stop_loss=price * (1 - math_config["stop_loss_pct"]),
+                    exit_target=0.90,
+                    stop_loss=price * (1 - stop_loss_pct),
                     weight_version=signal_config.get("active_weights_version", "weights_v001"),
                     indicator_snapshot=snapshot_str,
                 )
 
-                if result.success and alert_manager:
-                    await alert_manager.send_trade_opened(
-                        question=contract["question"], side=side, size=size,
-                        entry_price=price, ev=signal.score,
-                        exit_target=math_config["exit_target"])
+                if result.success:
+                    # Mark as traded so we don't re-enter this contract
+                    traded_contracts.add(contract["condition_id"])
+                    if alert_manager:
+                        await alert_manager.send_trade_opened(
+                            question=contract["question"], side=side, size=size,
+                            entry_price=price, ev=signal.score, exit_target=0.90)
 
         except Exception as e:
             logger.error(f"Trading loop error: {e}", exc_info=True)

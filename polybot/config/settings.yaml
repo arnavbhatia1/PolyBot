@@ -63,7 +63,7 @@ indicators:
     history_periods: 100
 
 signal:
-  entry_threshold: 0.15  # Very loose for paper trading data collection — learning agents will tighten
+  entry_threshold: 0.30  # Moderate — requires at least 3 indicators to agree
   weights:
     rsi: 0.20
     macd: 0.25

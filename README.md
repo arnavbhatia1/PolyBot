@@ -56,7 +56,9 @@ All parameters in `polybot/config/settings.yaml`:
 
 - **Indicator periods** (RSI 14, MACD 12/26/9, etc.)
 - **Gate thresholds** (ATR percentiles, EMA chop detection)
-- **Entry threshold** (minimum signal score to trade, 0.15 for paper trading)
+- **Entry threshold** (minimum signal score to trade, 0.30)
+- **One trade per contract** (no re-entry after stop loss on same 5-min window)
+- **Extreme price filter** (won't enter when contract is < 0.10 or > 0.90)
 - **Indicator weights** (how much each indicator contributes)
 - **Scalping** (take-profit 10%, stop-loss 8% within the window)
 - **Entry window** (full 5-min contract, last 5s blocked)
