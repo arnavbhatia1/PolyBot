@@ -68,7 +68,7 @@ Everything tunable lives in `polybot/config/settings.yaml`:
 - `signal:` — entry threshold (0.40 for paper trading), indicator weights, active weight version
 - `market:` — entry window (300s / full window), min time remaining (5s)
 - `scalping:` — take_profit_pct (0.10), stop_loss_pct (0.08)
-- `signal.entry_threshold:` — 0.30 (requires at least 3 indicators to agree). Learning agents tune this.
+- `signal.entry_threshold:` — 0.23 (loose for data collection). Learning agents tune this.
 - `binance:` — symbol, WebSocket/REST URLs (binance.us), buffer size
 - `math:` — EV threshold, Kelly fraction, exit target, stop loss
 - `execution:` — max slippage, bankroll limits ($1,000 paper), position limits

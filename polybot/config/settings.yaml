@@ -63,7 +63,7 @@ indicators:
     history_periods: 100
 
 signal:
-  entry_threshold: 0.30  # Moderate — requires at least 3 indicators to agree
+  entry_threshold: 0.23  # Loose for data collection — learning agents will tighten
   weights:
     rsi: 0.20
     macd: 0.25
