@@ -92,7 +92,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
     stop_loss_pct = scalp_config.get("stop_loss_pct", 0.08)
 
     # Track which contracts we've already traded (prevents re-entry after stop loss)
-    traded_contracts: set[str] = set()
+    # Maps condition_id -> window_ts so we can clean up old entries
+    traded_contracts: dict[str, int] = {}
 
     while True:
         try:
@@ -121,6 +122,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                                 question=pos["question"], exit_price=exit_price,
                                 log_return=result.log_return or 0, hold_hours=0)
                         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct)
+                        traded_contracts[pos["market_id"]] = int(time.time())
                     continue
 
                 side = pos["side"]
@@ -137,6 +139,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                                 question=pos["question"], exit_price=current_price,
                                 log_return=result.log_return or 0, hold_hours=0)
                         await _record_outcome(outcome_reviewer, pos, current_price, result.log_return or 0, gain_pct)
+                        traded_contracts[pos["market_id"]] = int(time.time())
 
                 elif gain_pct <= -stop_loss_pct:
                     result = await trader.close_trade(pos["id"], current_price)
@@ -148,8 +151,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                                 question=pos["question"], exit_price=current_price,
                                 log_return=result.log_return or 0, hold_hours=0)
                         await _record_outcome(outcome_reviewer, pos, current_price, result.log_return or 0, gain_pct)
-                        # Mark this contract as traded — don't re-enter after stop loss
-                        traded_contracts.add(pos["market_id"])
+                        traded_contracts[pos["market_id"]] = int(time.time())
 
             # --- ENTRY: find contract and evaluate signal ---
             contract = await market_scanner.find_active_contract()
@@ -157,11 +159,10 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 await asyncio.sleep(1)
                 continue
 
-            # Clean up stale entries (contracts from previous windows)
-            import time
-            current_window = int(time.time() // 300) * 300
-            traded_contracts = {c for c in traded_contracts
-                                if str(current_window) in c or str(current_window + 300) in c}
+            # Clean up entries older than 10 minutes
+            now_ts = int(time.time())
+            traded_contracts = {cid: ts for cid, ts in traded_contracts.items()
+                                if now_ts - ts < 600}
 
             # ONE trade per contract — if we already traded this one, skip
             if contract["condition_id"] in traded_contracts:
@@ -215,7 +216,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
                 if result.success:
                     # Mark as traded so we don't re-enter this contract
-                    traded_contracts.add(contract["condition_id"])
+                    traded_contracts[contract["condition_id"]] = int(time.time())
                     if alert_manager:
                         await alert_manager.send_trade_opened(
                             question=contract["question"], side=side, size=size,
