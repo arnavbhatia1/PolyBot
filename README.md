@@ -21,19 +21,19 @@ python -m polybot.main
 ```
 Binance WebSocket (live BTC price)
         |
-  200-candle buffer (1-min candles)
+  200-candle buffer (1-min candles) + track BTC strike price at window open
         |
-  7 indicators computed every 1 second
+  Hard gates: ATR volatility + EMA trend
         |
-  [OPEN POSITIONS?] --> Check take-profit (10%) / stop-loss (8%) --> Sell if hit
+  Probability model: P(Up) from BTC vs strike + time remaining + volatility
         |
-  Hard gates: ATR volatility + EMA trend + entry window (full 5 min)
+  Momentum adjustment: indicators nudge probability ±15%
         |
-  Weighted score from RSI, MACD, Stochastic, OBV, VWAP
+  Edge = model probability - market price
         |
-  Score > threshold? --> Place trade on Polymarket 5-min BTC contract
+  Edge >= 10%? --> Kelly size from edge --> Place trade
         |
-  Active scalping within window --> Log outcome --> Learning agents tune weights
+  Monitor position: take-profit 4% / stop-loss 4% --> Log outcome --> Learn
 ```
 
 ## Architecture
@@ -43,7 +43,7 @@ Binance WebSocket (live BTC price)
 | `core/binance_feed.py` | WebSocket price stream + rolling candle buffer |
 | `indicators/` | 7 pure-function indicators (RSI, MACD, Stochastic, EMA, OBV, VWAP, ATR) |
 | `indicators/engine.py` | Combines all 7, manages weight versions |
-| `core/signal_engine.py` | Hard gates + weighted scoring --> trade signals |
+| `core/signal_engine.py` | Probability model: BTC vs strike + time + vol + momentum --> edge detection |
 | `core/market_scanner.py` | Finds active 5-min BTC contracts via Gamma API deterministic slugs |
 | `execution/paper_trader.py` | Simulated trading with bankroll management |
 | `agents/` | Self-learning pipeline (bias detector, TA evolver, weight optimizer) |
@@ -56,7 +56,8 @@ All parameters in `polybot/config/settings.yaml`:
 
 - **Indicator periods** (RSI 14, MACD 12/26/9, etc.)
 - **Gate thresholds** (ATR percentiles, EMA chop detection)
-- **Entry threshold** (minimum signal score to trade, 0.30)
+- **Minimum edge** (10% mispricing between model and market required to trade)
+- **Momentum weight** (indicators adjust base probability by ±15%)
 - **One trade per contract** (no re-entry after stop loss on same 5-min window)
 - **Extreme price filter** (won't enter when contract is < 0.10 or > 0.90)
 - **Indicator weights** (how much each indicator contributes)

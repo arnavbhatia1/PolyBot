@@ -6,9 +6,11 @@ PolyBot is a 5-minute BTC Up/Down scalper for Polymarket. It uses 7 technical in
 
 ## Key Architecture Decisions
 
-- **Indicators are the brain, not Claude.** The 7 indicators (RSI, MACD, Stochastic, EMA, OBV, VWAP, ATR) produce the trading signal. Claude only runs once daily in the TA Strategy Evolver.
-- **Gates before scoring.** ATR and EMA are hard gates (pass/fail). Only if both pass do the remaining 5 indicators produce a weighted score.
-- **Active scalping.** Bot monitors open positions every second. Sells on take-profit (10%) or stop-loss (8%). Does NOT just wait for resolution.
+- **Probability model, not indicator score.** The bot computes actual probability that BTC stays above/below the strike using: distance from strike, time remaining, ATR volatility, and indicator momentum. Only trades when model disagrees with market price by >= 10% (min_edge). This is the alpha.
+- **Gates before probability.** ATR and EMA are hard gates. Only if both pass does the probability model run.
+- **Kelly sizing from actual edge.** Position size = Quarter Kelly from model probability vs market price. Bigger edge = bigger bet.
+- **Active scalping.** Monitors positions every cycle. Take-profit 4%, stop-loss 4%.
+- **Indicators are inputs, not the brain.** RSI/MACD/Stochastic/OBV/VWAP adjust the base probability by ±15% (momentum_weight). They don't directly decide trades. Claude only runs daily in the TA Evolver.
 - **5-min markets use Gamma API with deterministic slugs.** The CLOB `/markets` endpoint does NOT list these. Use `gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}` where `window_ts = int(time.time() // 300) * 300`.
 - **Outcomes are "Up"/"Down", not "Yes"/"No".** Contract fields: `price_up`, `price_down`, `token_id_up`, `token_id_down`.
 - **Binance.US, not Binance.com.** Binance.com returns HTTP 451 for US IPs.
@@ -68,7 +70,8 @@ Everything tunable lives in `polybot/config/settings.yaml`:
 - `signal:` — entry threshold (0.40 for paper trading), indicator weights, active weight version
 - `market:` — entry window (300s / full window), min time remaining (5s)
 - `scalping:` — take_profit_pct (0.04), stop_loss_pct (0.04). Tighter targets for 5-min contracts where price moves are small.
-- `signal.entry_threshold:` — 0.23 (loose for data collection). Learning agents tune this.
+- `signal.entry_threshold:` — 0.10 (minimum 10% edge/mispricing to trade). Learning agents tune this.
+- `signal.momentum_weight:` — 0.15 (how much indicators adjust base probability, 0-1)
 - `binance:` — symbol, WebSocket/REST URLs (binance.us), buffer size
 - `math:` — EV threshold, Kelly fraction, exit target, stop loss
 - `execution:` — max slippage, bankroll limits ($1,000 paper), position limits
