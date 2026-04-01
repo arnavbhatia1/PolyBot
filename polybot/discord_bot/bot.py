@@ -20,9 +20,9 @@ def create_bot(db, trader, scanner, scheduler, config):
     async def on_ready():
         logger.info(f"Discord bot connected as {bot.user}")
         if hasattr(bot, 'alert_manager') and bot.alert_manager:
-            await bot.alert_manager.purge_channel("trades")
-            await bot.alert_manager.purge_channel("control")
-            bankroll = await bot.db.get_bankroll()
+            await bot.alert_manager.purge_channel(bot.alert_manager.trade_channel_name)
+            await bot.alert_manager.purge_channel(bot.alert_manager.control_channel_name)
+            bankroll = getattr(bot, 'initial_bankroll', None) or await bot.db.get_bankroll()
             await bot.alert_manager.send_session_banner(
                 mode=bot.config.get("mode", "paper"),
                 bankroll=bankroll,

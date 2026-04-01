@@ -394,6 +394,7 @@ async def main():
         math_config=math_cfg,
     )
     discord_bot.scheduler = scheduler
+    discord_bot.initial_bankroll = config["execution"]["initial_bankroll"]
 
     await scheduler.start()
     await binance_feed.start()
