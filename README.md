@@ -12,11 +12,11 @@ pip install -r requirements.txt
 cp polybot/config/.env.example polybot/config/.env
 # Edit .env with your keys (minimum: ANTHROPIC_API_KEY, DISCORD_BOT_TOKEN)
 
-# Fresh bankroll (optional — resets to $1,000)
-rm polybot/db/polybot.db
+# Paper trading (simulated, fresh $1,000 bankroll each run)
+python -m polybot.main --mode paper
 
-# Run
-python -m polybot.main
+# Live trading (real USDC on Polymarket — requires all secrets)
+python -m polybot.main --mode live
 ```
 
 ## How It Works
@@ -52,6 +52,7 @@ Binance.US WebSocket (live BTC 1-min candles)
 | `indicators/` | 7 indicators (RSI, MACD, Stochastic, EMA, OBV, VWAP, ATR) |
 | `indicators/engine.py` | Combines all 7, manages weight versions |
 | `execution/paper_trader.py` | Simulated trading with bankroll management |
+| `execution/live_trader.py` | Real trading via Polymarket CLOB (py-clob-client) |
 | `agents/` | Self-learning pipeline (bias detector, TA evolver, weight optimizer) |
 | `discord_bot/` | Commands, trade alerts, session management |
 | `db/models.py` | SQLite for positions, trade history, bankroll |
@@ -110,18 +111,19 @@ Use `!clear` before or after a run to wipe channel history clean.
 | `DISCORD_BOT_TOKEN` | Always (monitoring) |
 | `POLYMARKET_API_KEY` | Live trading only |
 | `POLYMARKET_SECRET` | Live trading only |
-| `ALCHEMY_RPC_URL` | Live trading only |
+| `POLYMARKET_PASSPHRASE` | Live trading only |
 | `PRIVATE_KEY` | Live trading only |
 
 Binance API is free and needs no key.
 
 ## Deployment
 
-- **Phase 1 (current):** `python -m polybot.main` on local machine, paper trading
-- **Phase 2:** `docker build -t polybot . && docker run -d --restart=always polybot` on a $5/month VPS
+- **Paper:** `python -m polybot.main --mode paper` (simulated, fresh $1K bankroll each run)
+- **Live:** `python -m polybot.main --mode live` (real USDC via Polymarket CLOB)
+- **VPS:** `docker build -t polybot . && docker run -d --restart=always polybot`
 
 ## Tests
 
 ```bash
-python -m pytest polybot/tests/ -v   # 176 tests
+python -m pytest polybot/tests/ -v   # 191 tests
 ```

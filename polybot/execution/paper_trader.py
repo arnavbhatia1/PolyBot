@@ -19,7 +19,7 @@ class PaperTrader:
 
     async def open_trade(self, market_id, question, side, price, size, signal_score,
                          signal_strength, ev_at_entry, exit_target, stop_loss, weight_version,
-                         indicator_snapshot: str = "") -> TradeResult:
+                         indicator_snapshot: str = "", token_id: str = "") -> TradeResult:
         if await self.db.has_position_for_market(market_id):
             return TradeResult(success=False, reason="Duplicate market — already have position")
         if await self.db.get_open_position_count() >= self.max_concurrent_positions:
@@ -39,7 +39,7 @@ class PaperTrader:
         await self.db.set_bankroll(bankroll - size)
         return TradeResult(success=True, position_id=pos_id)
 
-    async def close_trade(self, position_id: int, exit_price: float) -> TradeResult:
+    async def close_trade(self, position_id: int, exit_price: float, token_id: str = "") -> TradeResult:
         positions = await self.db.get_open_positions()
         position = next((p for p in positions if p["id"] == position_id), None)
         if not position:

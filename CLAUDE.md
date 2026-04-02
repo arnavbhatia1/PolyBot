@@ -17,6 +17,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
+- **`--mode paper|live` CLI flag.** Overrides `settings.yaml`. Paper mode auto-deletes DB for fresh bankroll. Live mode uses `py-clob-client` with FOK market orders on Polymarket's CLOB. Both traders share the same interface — trading loop doesn't know the difference.
 
 ## Project Structure
 
@@ -33,7 +34,8 @@ polybot/
     engine.py                # Combines all 7, manages weight versions
   execution/
     base.py                  # TradeResult dataclass
-    paper_trader.py          # Simulated trades
+    paper_trader.py          # Simulated trades (paper mode)
+    live_trader.py           # Real trades via Polymarket CLOB (live mode)
   agents/
     scheduler.py             # Daily learning pipeline
     outcome_reviewer.py      # Logs resolved trades
@@ -72,9 +74,10 @@ polybot/
 ## Running
 
 ```bash
-rm polybot/db/polybot.db              # Fresh bankroll
-python -m polybot.main                # Run the bot
-python -m pytest polybot/tests/       # 176 tests
+python -m polybot.main --mode paper   # Paper trading (fresh $1K bankroll each run)
+python -m polybot.main --mode live    # Live trading (real USDC on Polymarket)
+python -m polybot.main                # Defaults to mode in settings.yaml
+python -m pytest polybot/tests/       # 191 tests
 ```
 
 ## How the Probability Model Works
@@ -142,6 +145,8 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't use CLOB `/markets` for 5-min markets — Gamma API slugs only.
 - Don't use Binance.com — use Binance.us.
 - Don't allow multiple concurrent positions — one at a time, full Kelly.
+- Don't auto-delete the DB in live mode — it has real position state.
+- Don't use limit orders in LiveTrader — FOK market orders for 5-min contract speed.
 
 ## Always Update
 

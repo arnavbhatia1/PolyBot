@@ -1,4 +1,5 @@
 # polybot/main.py
+import argparse
 import asyncio
 import json
 import logging
@@ -14,6 +15,7 @@ from polybot.indicators.engine import IndicatorEngine
 from polybot.core.signal_engine import SignalEngine
 from polybot.brain.claude_client import ClaudeClient
 from polybot.execution.paper_trader import PaperTrader
+from polybot.execution.live_trader import LiveTrader
 from polybot.agents.outcome_reviewer import OutcomeReviewer
 from polybot.agents.bias_detector import BiasDetector
 from polybot.agents.ta_evolver import TAEvolver
@@ -111,7 +113,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 if live["seconds_remaining"] <= 0:
                     # Contract resolved — close at final market price
                     exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
-                    result = await trader.close_trade(pos["id"], exit_price)
+                    sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
+                    result = await trader.close_trade(pos["id"], exit_price, token_id=sell_token)
                     if result.success:
                         gain_pct = (exit_price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0
                         shares = pos["size"] / pos["entry_price"]
@@ -146,7 +149,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         market_price, pos["side"], exit_threshold)
 
                     if action == "EXIT":
-                        result = await trader.close_trade(pos["id"], market_price)
+                        sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
+                        result = await trader.close_trade(pos["id"], market_price, token_id=sell_token)
                         if result.success:
                             gain_pct = (market_price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0
                             shares = pos["size"] / pos["entry_price"]
@@ -249,6 +253,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     "atr": indicators.get("atr", {}).get("atr", 0),
                 }
                 snapshot_str = json.dumps(snapshot)
+                token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
                 result = await trader.open_trade(
                     market_id=cid,
                     question=contract["question"],
@@ -262,6 +267,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     stop_loss=0.0,
                     weight_version=signal_config.get("active_weights_version", "weights_v001"),
                     indicator_snapshot=snapshot_str,
+                    token_id=token_id,
                 )
 
                 if result.success:
@@ -280,15 +286,25 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
         await asyncio.sleep(0)  # Yield control, then loop immediately — speed limited only by API latency
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="PolyBot — 5-min BTC Up/Down trader")
+    parser.add_argument("--mode", choices=["paper", "live"], default=None,
+                        help="Trading mode (overrides settings.yaml)")
+    return parser.parse_args()
+
+
 async def main():
+    args = parse_args()
     config = load_config()
+    mode = args.mode or config.get("mode", "paper")
+    config["mode"] = mode
     base_dir = Path(__file__).parent
 
-    # Database — fresh start every run
+    # Database — fresh start in paper mode only
     db_path = Path(config["database"]["path"])
-    if db_path.exists():
+    if mode == "paper" and db_path.exists():
         db_path.unlink()
-        logger.info("Deleted old database — fresh start")
+        logger.info("Deleted old database — fresh start (paper mode)")
     db = Database(config["database"]["path"])
     await db.initialize()
     if await db.get_bankroll() == 0:
@@ -356,11 +372,31 @@ async def main():
     # Brain (Claude client kept for TA evolver analysis calls)
     claude = ClaudeClient(api_key=get_secret("ANTHROPIC_API_KEY"), model="claude-sonnet-4-6")
 
-    # Execution
+    # Execution — route based on mode
     exec_cfg = config["execution"]
-    trader = PaperTrader(db=db, max_slippage=exec_cfg["max_slippage"],
-        max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
-        max_concurrent_positions=exec_cfg["max_concurrent_positions"])
+    if mode == "live":
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import ApiCreds
+        clob = ClobClient(
+            host="https://clob.polymarket.com",
+            chain_id=137,
+            key=get_secret("PRIVATE_KEY"),
+            creds=ApiCreds(
+                api_key=get_secret("POLYMARKET_API_KEY"),
+                api_secret=get_secret("POLYMARKET_SECRET"),
+                api_passphrase=get_secret("POLYMARKET_PASSPHRASE"),
+            ),
+        )
+        trader = LiveTrader(db=db, clob=clob,
+            max_slippage=exec_cfg["max_slippage"],
+            max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
+            max_concurrent_positions=exec_cfg["max_concurrent_positions"])
+        logger.info(f"LIVE MODE — wallet: {clob.get_address()}")
+    else:
+        trader = PaperTrader(db=db, max_slippage=exec_cfg["max_slippage"],
+            max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
+            max_concurrent_positions=exec_cfg["max_concurrent_positions"])
+        logger.info("PAPER MODE — simulated trading")
 
     # Agents
     agents_cfg = config["agents"]
@@ -394,7 +430,13 @@ async def main():
         math_config=math_cfg,
     )
     discord_bot.scheduler = scheduler
-    discord_bot.initial_bankroll = config["execution"]["initial_bankroll"]
+    if mode == "live":
+        live_balance = await trader.get_usdc_balance()
+        await db.set_bankroll(live_balance)
+        discord_bot.initial_bankroll = live_balance
+        logger.info(f"USDC balance: ${live_balance:,.2f}")
+    else:
+        discord_bot.initial_bankroll = config["execution"]["initial_bankroll"]
 
     await scheduler.start()
     await binance_feed.start()
