@@ -62,14 +62,15 @@ polybot/
 
 `polybot/config/settings.yaml`:
 - `math.kelly_fraction:` — 0.15 (fraction of full Kelly)
-- `signal.entry_threshold:` — 0.10 (minimum 10% edge to trade)
-- `signal.exit_edge_threshold:` — -0.05 (exit when holding edge drops below -5%)
+- `signal.entry_threshold:` — 0.20 (minimum 20% edge to trade)
+- `signal.exit_edge_threshold:` — -0.10 (exit when holding edge drops below -10%)
+- `signal.min_model_probability:` — 0.65 (skip coin-flip trades — model must be ≥65% confident)
 - `signal.momentum_weight:` — 0.08 (max ±8% indicator adjustment to probability)
 - `signal.weights:` — per-indicator weights for momentum calculation
 - `execution.max_concurrent_positions:` — 1 (single position, full focus)
 - `execution.max_bankroll_deployed:` — 0.80
 - `market.entry_window_seconds:` — 300 (full 5-min window)
-- `market.min_time_remaining_seconds:` — 5
+- `market.min_time_remaining_seconds:` — 0 (tunable by learning pipeline)
 
 ## Running
 

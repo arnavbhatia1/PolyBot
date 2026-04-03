@@ -34,10 +34,12 @@ class SignalEngine:
     """
 
     def __init__(self, min_edge: float = 0.10, kelly_fraction: float = 0.15,
-                 momentum_weight: float = 0.08, weights: dict | None = None):
+                 momentum_weight: float = 0.08, weights: dict | None = None,
+                 min_model_probability: float = 0.0):
         self.min_edge = min_edge
         self.kelly_fraction = kelly_fraction
         self.momentum_weight = momentum_weight
+        self.min_model_probability = min_model_probability
         self.weights = weights or {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                    "obv": 0.15, "vwap": 0.20}
         self.entry_threshold = min_edge  # backward compat for learning pipeline
@@ -55,7 +57,7 @@ class SignalEngine:
             return 0.5
 
         distance = btc_price - strike_price
-        minutes_remaining = max(seconds_remaining / 60.0, 0.1)
+        minutes_remaining = max(seconds_remaining / 60.0, 0.01)
 
         # Scale volatility by sqrt(time) — standard Brownian motion
         vol_scaled = atr * math.sqrt(minutes_remaining)
@@ -105,6 +107,12 @@ class SignalEngine:
         prob_up = self.compute_probability(btc_price, strike_price,
                                            seconds_remaining, atr, indicators)
         prob_down = 1.0 - prob_up
+
+        # Gate: model must be confident enough (not a coin flip)
+        best_prob = max(prob_up, prob_down)
+        if best_prob < self.min_model_probability:
+            return TradeSignal("SKIP", best_prob, 0, 0,
+                               f"Low confidence: model={best_prob:.0%} < min={self.min_model_probability:.0%}")
 
         # Compute edge for each side
         edge_up = prob_up - market_price_up

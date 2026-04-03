@@ -61,16 +61,16 @@ Binance.US WebSocket (live BTC 1-min candles)
 
 All parameters in `polybot/config/settings.yaml`:
 
-- **Minimum edge** — 10% mispricing between model and market required to trade
+- **Minimum edge** — 20% mispricing between model and market required to trade
+- **Min model probability** — 0.65, skip coin-flip trades (model must be confident)
 - **Momentum weight** — 0.08, indicators nudge base probability by max ±8% (below min edge so indicators alone can't trigger trades)
 - **Kelly fraction** — 0.15 (conservative for binary outcomes where losses are total)
 - **Single position** — one trade at a time, full Kelly on the best edge
 - **One trade per contract** — no re-entry after exit on same 5-min window
-- **Active position management** — hold to $1 when model is confident, exit early when holding edge drops below -5%
-- **Exit edge threshold** — -0.05 (same probability model for entry AND exit decisions)
-- **Extreme price filter** — won't enter when market is < 0.15 or > 0.85
-- **Entry window** — full 5-min contract, last 5 seconds blocked
+- **Active position management** — hold to $1 when model is confident, exit early when holding edge drops below -10%
+- **Exit edge threshold** — -0.10 (same probability model for entry AND exit decisions)
 - **Indicator weights** — RSI 0.20, MACD 0.25, Stochastic 0.20, OBV 0.15, VWAP 0.20
+- All signal/entry params tunable by the learning pipeline (Claude recommends, optimizer backtests)
 
 ## Learning Pipeline
 

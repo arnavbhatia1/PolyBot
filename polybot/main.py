@@ -89,10 +89,11 @@ async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pc
 
 
 async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,
-                       trader, alert_manager, db, config, outcome_reviewer, is_paused_fn):
+                       trader, alert_manager, db, config, outcome_reviewer, is_paused_fn,
+                       scheduler=None):
     signal_config = config["signal"]
     max_bankroll_pct = config["execution"]["max_bankroll_deployed"]
-    exit_threshold = signal_config.get("exit_edge_threshold", -0.05)
+    default_exit_threshold = signal_config.get("exit_edge_threshold", -0.05)
 
     traded_contracts: dict[str, int] = {}      # condition_id -> timestamp (one trade per contract)
     window_strikes: dict[int, float] = {}      # window_ts -> BTC price at window open
@@ -144,6 +145,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     indicators = indicator_engine.compute_all(binance_feed.buffer)
                     market_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
 
+                    exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
+                                      else default_exit_threshold)
                     action, model_prob, holding_edge, reason = signal_engine.evaluate_hold(
                         indicators, btc_now, strike_now, live["seconds_remaining"],
                         market_price, pos["side"], exit_threshold)
@@ -236,7 +239,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 price = price_up if side == "Up" else price_down
                 bankroll = await db.get_bankroll()
                 size = round(bankroll * signal.kelly_size, 2)
-                size = max(size, 1.0)
+                if size < 1.0:
+                    continue  # Kelly says don't trade — respect it
                 if size > bankroll * max_bankroll_pct:
                     size = round(bankroll * max_bankroll_pct, 2)
 
@@ -326,7 +330,7 @@ async def main():
     market_cfg = config.get("market", {})
     market_scanner = BTCMarketScanner(
         entry_window_seconds=market_cfg.get("entry_window_seconds", 120),
-        min_time_remaining=market_cfg.get("min_time_remaining_seconds", 30),
+        min_time_remaining=market_cfg.get("min_time_remaining_seconds", 20),
         cache_seconds=market_cfg.get("scan_cache_seconds", 5),
     )
 
@@ -367,6 +371,7 @@ async def main():
         momentum_weight=signal_cfg.get("momentum_weight", 0.08),
         weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                             "obv": 0.15, "vwap": 0.20}),
+        min_model_probability=signal_cfg.get("min_model_probability", 0.0),
     )
 
     # Brain (Claude client kept for TA evolver analysis calls)
@@ -428,7 +433,10 @@ async def main():
         outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
         daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
         math_config=math_cfg,
+        market_scanner=market_scanner,
     )
+    scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", -0.05)
+    scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 0)
     discord_bot.scheduler = scheduler
     if mode == "live":
         live_balance = await trader.get_usdc_balance()
@@ -451,7 +459,8 @@ async def main():
         asyncio.create_task(trading_loop(
             binance_feed, market_scanner, indicator_engine, signal_engine,
             trader, alert_manager, db, config, outcome_reviewer,
-            is_paused_fn=lambda: discord_bot.is_paused)),
+            is_paused_fn=lambda: discord_bot.is_paused,
+            scheduler=scheduler)),
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(run_discord()),

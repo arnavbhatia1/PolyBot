@@ -57,7 +57,10 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - Each indicator weight must be >= 0.05
 - momentum_weight MUST be < min_edge (so indicators alone cannot trigger trades)
 - kelly_fraction: 0.05 to 0.25 range (binary outcomes = total loss risk)
-- min_edge: 0.05 to 0.25 range
+- min_edge: 0.05 to 0.35 range
+- min_model_probability: 0.55 to 0.85 range (skip coin-flip trades)
+- exit_edge_threshold: -0.25 to 0.0 range (when to exit held positions)
+- min_time_remaining: 0 to 120 seconds (don't enter too late)
 - Be conservative — no single weight should change by more than 0.05 per cycle
 - If fewer than 20 trades in the dataset, recommend NO CHANGES (insufficient data)
 
@@ -68,6 +71,9 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
   "recommended_momentum_weight": 0.XX,
   "recommended_min_edge": 0.XX,
   "recommended_kelly_fraction": 0.XX,
+  "recommended_min_model_probability": 0.XX,
+  "recommended_exit_edge_threshold": -0.XX,
+  "recommended_min_time_remaining": XX,
   "key_findings": ["finding 1", "finding 2", ...],
   "risk_warnings": ["warning 1", ...],
   "reasoning": "Detailed multi-paragraph analysis of what the data shows and why you recommend these changes...",
@@ -182,10 +188,16 @@ def _validate_strategy_response(data: dict, current_weights: dict | None = None,
     # Clamp ranges
     data["recommended_kelly_fraction"] = max(0.05, min(0.25,
         data.get("recommended_kelly_fraction", 0.15)))
-    data["recommended_min_edge"] = max(0.05, min(0.25,
-        data.get("recommended_min_edge", 0.10)))
+    data["recommended_min_edge"] = max(0.05, min(0.35,
+        data.get("recommended_min_edge", 0.20)))
     data["recommended_momentum_weight"] = max(0.02, min(0.20,
         data.get("recommended_momentum_weight", 0.08)))
+    data["recommended_min_model_probability"] = max(0.55, min(0.85,
+        data.get("recommended_min_model_probability", 0.65)))
+    data["recommended_exit_edge_threshold"] = max(-0.25, min(0.0,
+        data.get("recommended_exit_edge_threshold", -0.10)))
+    data["recommended_min_time_remaining"] = max(0, min(120,
+        int(data.get("recommended_min_time_remaining", 0))))
 
     # Enforce momentum_weight < min_edge
     if data["recommended_momentum_weight"] >= data["recommended_min_edge"]:

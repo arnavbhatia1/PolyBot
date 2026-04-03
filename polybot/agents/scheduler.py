@@ -10,7 +10,7 @@ class AgentScheduler:
     def __init__(self, outcome_reviewer, bias_detector, ta_evolver, weight_optimizer,
                  indicator_engine=None, signal_engine=None, alert_manager=None,
                  outcome_interval_seconds=3600, daily_pipeline_hour=2, math_config=None,
-                 claude_client=None):
+                 claude_client=None, market_scanner=None):
         self.outcome_reviewer = outcome_reviewer
         self.bias_detector = bias_detector
         self.ta_evolver = ta_evolver
@@ -22,6 +22,9 @@ class AgentScheduler:
         self.daily_pipeline_hour = daily_pipeline_hour
         self.math_config = math_config or {}
         self.claude_client = claude_client
+        self.market_scanner = market_scanner
+        self._exit_edge_threshold = None  # Set by main.py, updated by pipeline
+        self._min_time_remaining = None   # Set by main.py, updated by pipeline
         self._running = False
 
         # Inject claude_client into ta_evolver if not already set
@@ -48,8 +51,11 @@ class AgentScheduler:
             "weights": {k: v for k, v in current_weights.items()
                         if k in ["rsi", "macd", "stochastic", "obv", "vwap"]},
             "momentum_weight": getattr(self.signal_engine, 'momentum_weight', 0.08),
-            "min_edge": getattr(self.signal_engine, 'min_edge', 0.10),
+            "min_edge": getattr(self.signal_engine, 'min_edge', 0.20),
             "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
+            "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.65),
+            "exit_edge_threshold": getattr(self, '_exit_edge_threshold', -0.10),
+            "min_time_remaining": getattr(self, '_min_time_remaining', 0),
             "active_weights_version": getattr(self.indicator_engine, 'active_version', 'weights_v001')
                                       if self.indicator_engine else "weights_v001",
         }
@@ -162,6 +168,14 @@ class AgentScheduler:
                     self.signal_engine.entry_threshold = recommendations["recommended_min_edge"]
                 if "recommended_kelly_fraction" in recommendations:
                     self.signal_engine.kelly_fraction = recommendations["recommended_kelly_fraction"]
+                if "recommended_min_model_probability" in recommendations:
+                    self.signal_engine.min_model_probability = recommendations["recommended_min_model_probability"]
+                if "recommended_exit_edge_threshold" in recommendations:
+                    self._exit_edge_threshold = recommendations["recommended_exit_edge_threshold"]
+                if "recommended_min_time_remaining" in recommendations:
+                    self._min_time_remaining = recommendations["recommended_min_time_remaining"]
+                    if self.market_scanner:
+                        self.market_scanner.min_time_remaining = recommendations["recommended_min_time_remaining"]
 
             logger.info(f"AUTO-ADOPTED {new_version}: Sharpe {current_sharpe:.3f} -> {candidate_sharpe:.3f}, "
                         f"win rate {candidate_win_rate:.0%}")
@@ -182,6 +196,12 @@ class AgentScheduler:
                     msg += f"\nmomentum_weight: `{recommendations['recommended_momentum_weight']}`"
                 if "recommended_min_edge" in recommendations:
                     msg += f"\nmin_edge: `{recommendations['recommended_min_edge']}`"
+                if "recommended_min_model_probability" in recommendations:
+                    msg += f"\nmin_model_prob: `{recommendations['recommended_min_model_probability']}`"
+                if "recommended_exit_edge_threshold" in recommendations:
+                    msg += f"\nexit_threshold: `{recommendations['recommended_exit_edge_threshold']}`"
+                if "recommended_min_time_remaining" in recommendations:
+                    msg += f"\nmin_time_remaining: `{recommendations['recommended_min_time_remaining']}s`"
                 if findings_str:
                     msg += f"\n\n**Key Findings:**\n{findings_str}"
                 if reasoning_preview:

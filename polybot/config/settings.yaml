@@ -57,8 +57,9 @@ indicators:
     history_periods: 100
 
 signal:
-  entry_threshold: 0.10  # Minimum edge (mispricing) required to trade — 10% edge
-  exit_edge_threshold: -0.05  # Exit when holding edge drops below -5% (model says market overprices our side)
+  entry_threshold: 0.10  # Minimum edge — tunable by learning pipeline (range: 0.05-0.35)
+  exit_edge_threshold: -0.05  # Exit when holding edge drops — tunable by pipeline (range: -0.25 to 0.0)
+  min_model_probability: 0.0  # Min confidence to enter — tunable by pipeline (range: 0.55-0.85)
   momentum_weight: 0.08  # Max ±8% indicator nudge — must stay below entry_threshold so indicators alone can't trigger trades
   weights:
     rsi: 0.20
@@ -71,7 +72,7 @@ signal:
 market:
   contract_type: "btc_5min"
   entry_window_seconds: 300
-  min_time_remaining_seconds: 5
+  min_time_remaining_seconds: 20  # Tunable by learning pipeline (range: 0-120)
   scan_cache_seconds: 5
 
 # Active position management: hold to $1 when model is confident,
