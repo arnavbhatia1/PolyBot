@@ -29,7 +29,7 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="w"),
+        logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=3, mode="a"),
     ],
 )
 # Only polybot and discord bot loggers show INFO. Everything else (httpx, discord.client, websockets) is silent.
@@ -38,25 +38,28 @@ logger.setLevel(logging.INFO)
 logging.getLogger("polybot.discord_bot.bot").setLevel(logging.INFO)
 
 
-async def _get_contract_prices(market_scanner, market_id: str) -> dict | None:
+async def _get_contract_prices(market_scanner, market_id: str, http_client=None) -> dict | None:
     """Fetch current Up/Down prices for an active contract via Gamma API."""
     import httpx
-    import time as _time
 
-    window_ts = int(_time.time() // 300) * 300
+    window_ts = int(time.time() // 300) * 300
     for ts in [window_ts, window_ts + 300, window_ts - 300]:
         slug = market_scanner._make_slug(ts)
         try:
-            async with httpx.AsyncClient(timeout=3) as client:
-                resp = await client.get(f"{market_scanner.GAMMA_API}/events",
-                                        params={"slug": slug})
-                resp.raise_for_status()
-                data = resp.json()
-                if data:
-                    event = data[0] if isinstance(data, list) else data
-                    contract = market_scanner.parse_contract(event)
-                    if contract and contract["condition_id"] == market_id:
-                        return contract
+            if http_client:
+                resp = await http_client.get(f"{market_scanner.GAMMA_API}/events",
+                                             params={"slug": slug})
+            else:
+                async with httpx.AsyncClient(timeout=3) as client:
+                    resp = await client.get(f"{market_scanner.GAMMA_API}/events",
+                                            params={"slug": slug})
+            resp.raise_for_status()
+            data = resp.json()
+            if data:
+                event = data[0] if isinstance(data, list) else data
+                contract = market_scanner.parse_contract(event)
+                if contract and contract["condition_id"] == market_id:
+                    return contract
         except httpx.TimeoutException:
             continue
         except Exception as e:
@@ -83,6 +86,7 @@ async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pc
             category="crypto-5min",
             indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}")),
             exit_reason=exit_reason,
+            size=pos.get("size", 0.0),
         )
     except Exception as e:
         logger.error(f"Failed to record outcome: {e}")
@@ -91,23 +95,74 @@ async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pc
 async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,
                        trader, alert_manager, db, config, outcome_reviewer, is_paused_fn,
                        scheduler=None):
+    import httpx
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    ET = ZoneInfo("America/New_York")
+
     signal_config = config["signal"]
     max_bankroll_pct = config["execution"]["max_bankroll_deployed"]
     default_exit_threshold = signal_config.get("exit_edge_threshold", -0.05)
 
+    # Trading schedule in ET (handles EST/EDT automatically)
+    sched = config.get("schedule", {})
+    sched_start_et = (sched.get("trading_start_hour_et", 8), sched.get("trading_start_minute", 0))
+    sched_end_et = (sched.get("trading_end_hour_et", 16), sched.get("trading_end_minute", 30))
+
     traded_contracts: dict[str, int] = {}      # condition_id -> timestamp (one trade per contract)
     window_strikes: dict[int, float] = {}      # window_ts -> BTC price at window open
 
+    # Shared HTTP client — one connection pool for all Gamma API calls
+    http_client = httpx.AsyncClient(timeout=5)
+
+    # Day tracking for open/close banners
+    current_trading_day: str | None = None
+    day_open_bankroll: float = 0.0
+    day_wins: int = 0
+    day_losses: int = 0
+
     while True:
+        await asyncio.sleep(0.5)  # 500ms tick — fast enough for 5-min contracts, doesn't burn CPU
         try:
             if is_paused_fn():
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
                 continue
+
+            # --- DAY OPEN / CLOSE ---
+            now_et = datetime.now(ET)
+            now_time_et = (now_et.hour, now_et.minute)
+            active_start = scheduler._trading_start if scheduler and scheduler._trading_start else sched_start_et
+            active_end = scheduler._trading_end if scheduler and scheduler._trading_end else sched_end_et
+            today_str = now_et.strftime("%Y-%m-%d")
+            in_trading_hours = now_time_et >= active_start and now_time_et < active_end
+
+            if in_trading_hours and current_trading_day != today_str:
+                # New trading day — send day open banner
+                if current_trading_day is not None and alert_manager:
+                    # Close previous day first (if bot ran overnight)
+                    bankroll = await db.get_bankroll()
+                    day_pnl = bankroll - day_open_bankroll
+                    await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses)
+                current_trading_day = today_str
+                day_open_bankroll = await db.get_bankroll()
+                day_wins = 0
+                day_losses = 0
+                if alert_manager:
+                    await alert_manager.send_day_open(config.get("mode", "paper"), day_open_bankroll)
+
+            if not in_trading_hours and current_trading_day is not None:
+                # Trading hours ended — send day close banner
+                if alert_manager:
+                    bankroll = await db.get_bankroll()
+                    day_pnl = bankroll - day_open_bankroll
+                    await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses)
+                current_trading_day = None
 
             # --- POSITION MANAGEMENT: resolution check + active re-evaluation ---
             positions = await db.get_open_positions()
             for pos in positions:
-                live = await _get_contract_prices(market_scanner, pos["market_id"])
+                live = await _get_contract_prices(market_scanner, pos["market_id"], http_client)
                 if not live:
                     continue
 
@@ -121,6 +176,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         shares = pos["size"] / pos["entry_price"]
                         pnl = shares * exit_price - pos["size"]
                         won = "WIN" if pnl > 0 else "LOSS"
+                        if pnl > 0: day_wins += 1
+                        else: day_losses += 1
                         logger.info(f"RESOLVED {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
@@ -134,6 +191,10 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     # Active position — re-evaluate using probability model
                     btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
                     if btc_now <= 0:
+                        continue
+                    # Don't make exit decisions on stale data — hold until fresh
+                    candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
+                    if candle_age > 120:
                         continue
 
                     # Get strike from the position's stored trade_context (correct for this contract)
@@ -159,6 +220,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             shares = pos["size"] / pos["entry_price"]
                             pnl = shares * market_price - pos["size"]
                             won = "WIN" if pnl > 0 else "LOSS"
+                            if pnl > 0: day_wins += 1
+                            else: day_losses += 1
                             logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{market_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | {reason}")
                             if alert_manager:
                                 await alert_manager.send_trade_closed(
@@ -170,9 +233,12 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             traded_contracts[pos["market_id"]] = int(time.time())
 
             # --- ENTRY: find contract and evaluate for edge ---
+            # Skip new entries outside trading hours (positions still managed above)
+            if not in_trading_hours:
+                continue
+
             # Skip if we already have an open position (one at a time)
             if await db.get_open_position_count() > 0:
-                await asyncio.sleep(0)
                 continue
 
             contract = await market_scanner.find_active_contract()
@@ -188,14 +254,12 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
             # One trade per contract
             if cid in traded_contracts:
-                await asyncio.sleep(0)
                 continue
 
             # Don't enter if market already decided (extreme prices)
             price_up = contract["price_up"]
             price_down = contract["price_down"]
             if price_up < 0.15 or price_up > 0.85:
-                await asyncio.sleep(0)
                 continue
 
             # Compute strike: BTC price at the 5-min window boundary
@@ -215,12 +279,16 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
             strike = window_strikes.get(window_ts, 0)
             if strike <= 0:
-                await asyncio.sleep(0)
                 continue
 
             btc_price = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
             if btc_price <= 0:
-                await asyncio.sleep(0)
+                continue
+
+            # Skip if candle data is stale (WebSocket may have disconnected)
+            latest_candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
+            if latest_candle_age > 120:  # >2 minutes old = stale
+                logger.warning(f"Stale candle data: {latest_candle_age:.0f}s old, skipping entry")
                 continue
 
             in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
@@ -255,6 +323,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     "edge": signal.edge,
                     "momentum_score": signal_engine.compute_momentum(indicators),
                     "atr": indicators.get("atr", {}).get("atr", 0),
+                    "size": size,
                 }
                 snapshot_str = json.dumps(snapshot)
                 token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
@@ -287,8 +356,6 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             if alert_manager:
                 await alert_manager.send_error(str(e))
 
-        await asyncio.sleep(0)  # Yield control, then loop immediately — speed limited only by API latency
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="PolyBot — 5-min BTC Up/Down trader")
@@ -304,11 +371,7 @@ async def main():
     config["mode"] = mode
     base_dir = Path(__file__).parent
 
-    # Database — fresh start in paper mode only
-    db_path = Path(config["database"]["path"])
-    if mode == "paper" and db_path.exists():
-        db_path.unlink()
-        logger.info("Deleted old database — fresh start (paper mode)")
+    # Database — persistent across sessions (both paper and live)
     db = Database(config["database"]["path"])
     await db.initialize()
     if await db.get_bankroll() == 0:
@@ -322,8 +385,8 @@ async def main():
     binance_feed = BinanceFeed(
         symbol=binance_cfg.get("symbol", "btcusdt"),
         buffer_size=binance_cfg.get("candle_buffer_size", 200),
-        ws_url=binance_cfg.get("ws_url", "wss://stream.binance.com:9443/ws"),
-        rest_url=binance_cfg.get("rest_url", "https://api.binance.com/api/v3"),
+        ws_url=binance_cfg.get("ws_url", "wss://stream.binance.us:9443/ws"),
+        rest_url=binance_cfg.get("rest_url", "https://api.binance.us/api/v3"),
     )
 
     # BTC market scanner
@@ -419,7 +482,8 @@ async def main():
     discord_bot = create_bot(db, trader, market_scanner, None, config)
     alert_manager = AlertManager(bot=discord_bot,
         trade_channel_name=config["discord"]["trade_channel_name"],
-        control_channel_name=config["discord"]["control_channel_name"])
+        control_channel_name=config["discord"]["control_channel_name"],
+        daily_channel_name=config["discord"].get("daily_channel_name", "polybot-daily"))
     discord_bot.alert_manager = alert_manager
 
     scheduler = AgentScheduler(
@@ -432,6 +496,7 @@ async def main():
         alert_manager=alert_manager,
         outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
         daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
+        daily_pipeline_minute=agents_cfg.get("daily_pipeline_minute", 0),
         math_config=math_cfg,
         market_scanner=market_scanner,
     )
@@ -441,10 +506,7 @@ async def main():
     if mode == "live":
         live_balance = await trader.get_usdc_balance()
         await db.set_bankroll(live_balance)
-        discord_bot.initial_bankroll = live_balance
         logger.info(f"USDC balance: ${live_balance:,.2f}")
-    else:
-        discord_bot.initial_bankroll = config["execution"]["initial_bankroll"]
 
     await scheduler.start()
     await binance_feed.start()

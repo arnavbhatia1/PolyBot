@@ -12,11 +12,13 @@ execution:
 
 agents:
   outcome_reviewer_interval_seconds: 3600
-  daily_pipeline_hour: 21  # 5 PM EST (21 UTC)
+  daily_pipeline_hour: 20  # 4:45 PM EST (20:45 UTC)
+  daily_pipeline_minute: 45
 
 discord:
   trade_channel_name: "polybot-trades"
   control_channel_name: "polybot-control"
+  daily_channel_name: "polybot-daily"
 
 database:
   path: "polybot/db/polybot.db"
@@ -74,6 +76,12 @@ market:
   entry_window_seconds: 300
   min_time_remaining_seconds: 20  # Tunable by learning pipeline (range: 0-120)
   scan_cache_seconds: 5
+
+schedule:
+  trading_start_hour_et: 8    # 8 AM ET (auto-adjusts for EST/EDT)
+  trading_start_minute: 0
+  trading_end_hour_et: 16     # 4:30 PM ET
+  trading_end_minute: 30
 
 # Active position management: hold to $1 when model is confident,
 # exit early when holding_edge drops below exit_edge_threshold.

@@ -70,12 +70,16 @@ polybot/
 - `execution.max_concurrent_positions:` — 1 (single position, full focus)
 - `execution.max_bankroll_deployed:` — 0.80
 - `market.entry_window_seconds:` — 300 (full 5-min window)
-- `market.min_time_remaining_seconds:` — 0 (tunable by learning pipeline)
+- `market.min_time_remaining_seconds:` — 20 (tunable by learning pipeline)
+- `schedule.trading_start_hour:` — 12 (8 AM EST in UTC)
+- `schedule.trading_end_hour:` — 20, `trading_end_minute:` — 30 (4:30 PM EST in UTC)
+- `agents.daily_pipeline_hour:` — 20, `daily_pipeline_minute:` — 45 (4:45 PM EST)
+- `discord.daily_channel_name:` — "polybot-daily" (end-of-day reports)
 
 ## Running
 
 ```bash
-python -m polybot.main --mode paper   # Paper trading (fresh $1K bankroll each run)
+python -m polybot.main --mode paper   # Paper trading (persistent bankroll across sessions)
 python -m polybot.main --mode live    # Live trading (real USDC on Polymarket)
 python -m polybot.main                # Defaults to mode in settings.yaml
 python -m pytest polybot/tests/       # 191 tests
@@ -137,7 +141,7 @@ Daily at 2 AM UTC (configurable via `agents.daily_pipeline_hour`):
    - Hot-swaps indicator weights, momentum_weight, min_edge, kelly_fraction at runtime
    - Discord alerts include Claude's key findings and reasoning
 
-Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, strike_price, seconds_remaining, market prices, model_probability, edge, momentum_score, ATR.
+Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, strike_price, seconds_remaining, market prices, model_probability, edge, momentum_score, ATR, size.
 
 ## What NOT to Change
 
@@ -146,7 +150,7 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't use CLOB `/markets` for 5-min markets — Gamma API slugs only.
 - Don't use Binance.com — use Binance.us.
 - Don't allow multiple concurrent positions — one at a time, full Kelly.
-- Don't auto-delete the DB in live mode — it has real position state.
+- Don't auto-delete the DB — bankroll persists across sessions in both modes.
 - Don't use limit orders in LiveTrader — FOK market orders for 5-min contract speed.
 
 ## Always Update

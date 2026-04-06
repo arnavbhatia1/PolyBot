@@ -75,24 +75,32 @@ class LiveTrader:
             return TradeResult(success=False,
                                reason=f"Bankroll limit — deployed {deployed:.2f}, max {max_deployable:.2f}")
 
-        # Place FOK market buy order
-        try:
-            order_args = MarketOrderArgs(
-                token_id=token_id,
-                amount=size,
-                side=BUY,
-                price=price,
-            )
-            signed_order = self.clob.create_market_order(order_args)
-            resp = self.clob.post_order(signed_order, order_type=OrderType.FOK)
-        except Exception as e:
-            logger.error(f"CLOB order failed: {e}")
-            return TradeResult(success=False, reason=f"CLOB error: {e}")
+        # Place FOK market buy order (retry once on failure)
+        resp = None
+        last_error = None
+        for attempt in range(2):
+            try:
+                order_args = MarketOrderArgs(
+                    token_id=token_id,
+                    amount=size,
+                    side=BUY,
+                    price=price,
+                )
+                signed_order = self.clob.create_market_order(order_args)
+                resp = self.clob.post_order(signed_order, order_type=OrderType.FOK)
+                if resp and resp.get("status") in ("matched", "MATCHED"):
+                    break
+                last_error = f"Order not filled: {resp}"
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"CLOB order attempt {attempt+1} failed: {e}")
+                if attempt == 0:
+                    import asyncio
+                    await asyncio.sleep(0.5)
 
-        # Check if the order was filled
         if not resp or resp.get("status") not in ("matched", "MATCHED"):
-            logger.warning(f"Order not filled: {resp}")
-            return TradeResult(success=False, reason=f"Order not filled: {resp}")
+            logger.warning(f"Order not filled after retries: {last_error}")
+            return TradeResult(success=False, reason=f"Order not filled: {last_error}")
 
         # Extract fill details
         fill_price = self._extract_fill_price(resp, price)
@@ -138,23 +146,32 @@ class LiveTrader:
 
         shares = position["size"] / position["entry_price"]
 
-        # Place FOK market sell order
-        try:
-            order_args = MarketOrderArgs(
-                token_id=token_id,
-                amount=round(shares, 2),
-                side=SELL,
-                price=exit_price,
-            )
-            signed_order = self.clob.create_market_order(order_args)
-            resp = self.clob.post_order(signed_order, order_type=OrderType.FOK)
-        except Exception as e:
-            logger.error(f"CLOB sell failed: {e}")
-            return TradeResult(success=False, reason=f"CLOB sell error: {e}")
+        # Place FOK market sell order (retry once on failure)
+        resp = None
+        last_error = None
+        for attempt in range(2):
+            try:
+                order_args = MarketOrderArgs(
+                    token_id=token_id,
+                    amount=round(shares, 2),
+                    side=SELL,
+                    price=exit_price,
+                )
+                signed_order = self.clob.create_market_order(order_args)
+                resp = self.clob.post_order(signed_order, order_type=OrderType.FOK)
+                if resp and resp.get("status") in ("matched", "MATCHED"):
+                    break
+                last_error = f"Sell not filled: {resp}"
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"CLOB sell attempt {attempt+1} failed: {e}")
+                if attempt == 0:
+                    import asyncio
+                    await asyncio.sleep(0.5)
 
         if not resp or resp.get("status") not in ("matched", "MATCHED"):
-            logger.warning(f"Sell not filled: {resp}")
-            return TradeResult(success=False, reason=f"Sell not filled: {resp}")
+            logger.warning(f"Sell not filled after retries: {last_error}")
+            return TradeResult(success=False, reason=f"Sell not filled: {last_error}")
 
         fill_price = self._extract_fill_price(resp, exit_price)
         lr = log_return(position["entry_price"], fill_price)

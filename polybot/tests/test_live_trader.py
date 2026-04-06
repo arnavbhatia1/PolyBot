@@ -77,7 +77,7 @@ async def test_open_trade_clob_error(trader, mock_clob):
         ev_at_entry=0.25, exit_target=1.0, stop_loss=0.0,
         weight_version="v1", token_id="token123")
     assert not result.success
-    assert "CLOB error" in result.reason
+    assert "network error" in result.reason
 
 
 @pytest.mark.asyncio

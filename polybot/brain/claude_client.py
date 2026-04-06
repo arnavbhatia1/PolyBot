@@ -61,6 +61,10 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - min_model_probability: 0.55 to 0.85 range (skip coin-flip trades)
 - exit_edge_threshold: -0.25 to 0.0 range (when to exit held positions)
 - min_time_remaining: 0 to 120 seconds (don't enter too late)
+- trading_start_hour_et: 0 to 23 (ET hour to start trading, e.g. 8 = 8 AM ET)
+- trading_end_hour_et: 0 to 23 (ET hour to stop trading, e.g. 16 = 4 PM ET)
+- trading_end_minute: 0 to 59 (minute component of end time)
+- Only recommend schedule changes if there's clear evidence from time-of-day patterns (e.g. consistently losing in early/late hours)
 - Be conservative — no single weight should change by more than 0.05 per cycle
 - If fewer than 20 trades in the dataset, recommend NO CHANGES (insufficient data)
 
@@ -74,6 +78,9 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
   "recommended_min_model_probability": 0.XX,
   "recommended_exit_edge_threshold": -0.XX,
   "recommended_min_time_remaining": XX,
+  "recommended_trading_start_hour_et": XX,
+  "recommended_trading_end_hour_et": XX,
+  "recommended_trading_end_minute": XX,
   "key_findings": ["finding 1", "finding 2", ...],
   "risk_warnings": ["warning 1", ...],
   "reasoning": "Detailed multi-paragraph analysis of what the data shows and why you recommend these changes...",
@@ -198,6 +205,15 @@ def _validate_strategy_response(data: dict, current_weights: dict | None = None,
         data.get("recommended_exit_edge_threshold", -0.10)))
     data["recommended_min_time_remaining"] = max(0, min(120,
         int(data.get("recommended_min_time_remaining", 0))))
+    if "recommended_trading_start_hour_et" in data:
+        data["recommended_trading_start_hour_et"] = max(0, min(23,
+            int(data.get("recommended_trading_start_hour_et", 8))))
+    if "recommended_trading_end_hour_et" in data:
+        data["recommended_trading_end_hour_et"] = max(0, min(23,
+            int(data.get("recommended_trading_end_hour_et", 16))))
+    if "recommended_trading_end_minute" in data:
+        data["recommended_trading_end_minute"] = max(0, min(59,
+            int(data.get("recommended_trading_end_minute", 30))))
 
     # Enforce momentum_weight < min_edge
     if data["recommended_momentum_weight"] >= data["recommended_min_edge"]:
@@ -217,7 +233,10 @@ def _format_strategy_context(context: dict) -> str:
         f"Indicator weights: {json.dumps(cfg.get('weights', {}))}\n"
         f"momentum_weight: {cfg.get('momentum_weight', 0.08)}\n"
         f"min_edge (entry_threshold): {cfg.get('min_edge', 0.10)}\n"
-        f"kelly_fraction: {cfg.get('kelly_fraction', 0.15)}"
+        f"kelly_fraction: {cfg.get('kelly_fraction', 0.15)}\n"
+        f"trading_start_hour (ET): {cfg.get('trading_start_hour_et', 8)}\n"
+        f"trading_end_hour (ET): {cfg.get('trading_end_hour_et', 16)}\n"
+        f"trading_end_minute: {cfg.get('trading_end_minute', 30)}"
     )
 
     # Performance analysis from BiasDetector

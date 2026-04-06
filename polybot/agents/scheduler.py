@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class AgentScheduler:
     def __init__(self, outcome_reviewer, bias_detector, ta_evolver, weight_optimizer,
                  indicator_engine=None, signal_engine=None, alert_manager=None,
-                 outcome_interval_seconds=3600, daily_pipeline_hour=2, math_config=None,
+                 outcome_interval_seconds=3600, daily_pipeline_hour=2, daily_pipeline_minute=0, math_config=None,
                  claude_client=None, market_scanner=None):
         self.outcome_reviewer = outcome_reviewer
         self.bias_detector = bias_detector
@@ -20,11 +20,14 @@ class AgentScheduler:
         self.alert_manager = alert_manager
         self.outcome_interval_seconds = outcome_interval_seconds
         self.daily_pipeline_hour = daily_pipeline_hour
+        self.daily_pipeline_minute = daily_pipeline_minute
         self.math_config = math_config or {}
-        self.claude_client = claude_client
+        self.claude_client = claude_client  # stored for future use + passed to ta_evolver
         self.market_scanner = market_scanner
         self._exit_edge_threshold = None  # Set by main.py, updated by pipeline
         self._min_time_remaining = None   # Set by main.py, updated by pipeline
+        self._trading_start = None        # (hour, minute) UTC — updated by pipeline
+        self._trading_end = None          # (hour, minute) UTC — updated by pipeline
         self._running = False
 
         # Inject claude_client into ta_evolver if not already set
@@ -56,6 +59,9 @@ class AgentScheduler:
             "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.65),
             "exit_edge_threshold": getattr(self, '_exit_edge_threshold', -0.10),
             "min_time_remaining": getattr(self, '_min_time_remaining', 0),
+            "trading_start_hour_et": self._trading_start[0] if self._trading_start else 8,
+            "trading_end_hour_et": self._trading_end[0] if self._trading_end else 16,
+            "trading_end_minute": self._trading_end[1] if self._trading_end else 30,
             "active_weights_version": getattr(self.indicator_engine, 'active_version', 'weights_v001')
                                       if self.indicator_engine else "weights_v001",
         }
@@ -176,6 +182,13 @@ class AgentScheduler:
                     self._min_time_remaining = recommendations["recommended_min_time_remaining"]
                     if self.market_scanner:
                         self.market_scanner.min_time_remaining = recommendations["recommended_min_time_remaining"]
+                if "recommended_trading_start_hour_et" in recommendations:
+                    start_h = recommendations["recommended_trading_start_hour_et"]
+                    self._trading_start = (start_h, 0)
+                if "recommended_trading_end_hour_et" in recommendations:
+                    end_h = recommendations["recommended_trading_end_hour_et"]
+                    end_m = recommendations.get("recommended_trading_end_minute", 30)
+                    self._trading_end = (end_h, end_m)
 
             logger.info(f"AUTO-ADOPTED {new_version}: Sharpe {current_sharpe:.3f} -> {candidate_sharpe:.3f}, "
                         f"win rate {candidate_win_rate:.0%}")
@@ -202,6 +215,11 @@ class AgentScheduler:
                     msg += f"\nexit_threshold: `{recommendations['recommended_exit_edge_threshold']}`"
                 if "recommended_min_time_remaining" in recommendations:
                     msg += f"\nmin_time_remaining: `{recommendations['recommended_min_time_remaining']}s`"
+                if "recommended_trading_start_hour_et" in recommendations or "recommended_trading_end_hour_et" in recommendations:
+                    start_h = recommendations.get("recommended_trading_start_hour_et", self._trading_start[0] if self._trading_start else 8)
+                    end_h = recommendations.get("recommended_trading_end_hour_et", self._trading_end[0] if self._trading_end else 16)
+                    end_m = recommendations.get("recommended_trading_end_minute", self._trading_end[1] if self._trading_end else 30)
+                    msg += f"\ntrading_hours: `{start_h}:00-{end_h}:{end_m:02d} ET`"
                 if findings_str:
                     msg += f"\n\n**Key Findings:**\n{findings_str}"
                 if reasoning_preview:
@@ -243,9 +261,52 @@ class AgentScheduler:
 
     async def run_daily_pipeline(self):
         logger.info("Starting daily learning pipeline")
+
+        # Snapshot current config before changes
+        old_config = {}
+        if self.signal_engine:
+            old_config = {
+                "min_edge": getattr(self.signal_engine, 'min_edge', 0.10),
+                "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
+                "momentum_weight": getattr(self.signal_engine, 'momentum_weight', 0.08),
+                "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.0),
+                "exit_edge_threshold": self._exit_edge_threshold,
+                "min_time_remaining": self._min_time_remaining,
+                "trading_start": self._trading_start,
+                "trading_end": self._trading_end,
+            }
+
         analysis = await self._run_bias_detector()
         recommendations = await self._run_ta_evolver(analysis)
         await self._run_weight_optimizer(recommendations)
+
+        # Compute config diff
+        config_changes = {}
+        if self.signal_engine and old_config:
+            new_vals = {
+                "min_edge": getattr(self.signal_engine, 'min_edge', 0.10),
+                "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
+                "momentum_weight": getattr(self.signal_engine, 'momentum_weight', 0.08),
+                "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.0),
+                "exit_edge_threshold": self._exit_edge_threshold,
+                "min_time_remaining": self._min_time_remaining,
+                "trading_start": self._trading_start,
+                "trading_end": self._trading_end,
+            }
+            for k, old_v in old_config.items():
+                new_v = new_vals.get(k)
+                if old_v != new_v:
+                    config_changes[k] = {"old": old_v, "new": new_v}
+
+        # Send daily report
+        if self.alert_manager:
+            outcomes = self.outcome_reviewer.load_all_outcomes()
+            try:
+                await self.alert_manager.send_daily_report(
+                    outcomes, analysis, recommendations, config_changes)
+            except Exception as e:
+                logger.error(f"Failed to send daily report: {e}")
+
         logger.info("Daily learning pipeline complete")
 
     async def run_outcome_loop(self):
@@ -257,7 +318,7 @@ class AgentScheduler:
     async def run_daily_loop(self):
         while self._running:
             now = datetime.now(timezone.utc)
-            if now.hour == self.daily_pipeline_hour and now.minute < 5:
+            if now.hour == self.daily_pipeline_hour and self.daily_pipeline_minute <= now.minute < self.daily_pipeline_minute + 5:
                 try:
                     await self.run_daily_pipeline()
                 except Exception as e:
