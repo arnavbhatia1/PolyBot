@@ -52,13 +52,10 @@ def sample_config(tmp_path):
         yaml.dump(SAMPLE_CONFIG, f)
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "ANTHROPIC_API_KEY=test-key\n"
-        "DISCORD_BOT_TOKEN=test-token\n"
         "POLYMARKET_API_KEY=test-pm-key\n"
         "POLYMARKET_SECRET=test-pm-secret\n"
-        "POLYMARKET_PASSPHRASE=test-pm-pass\n"
-        "ALCHEMY_RPC_URL=https://test-rpc\n"
-        "PRIVATE_KEY=0xdeadbeef\n"
+        "ANTHROPIC_API_KEY=test-key\n"
+        "DISCORD_BOT_TOKEN=test-token\n"
     )
     return {"config_path": str(config_file), "env_path": str(env_file)}
 

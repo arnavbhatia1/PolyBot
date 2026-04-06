@@ -127,7 +127,7 @@ class ClaudeClient:
 
         response = await self.client.messages.create(
             model=self.model,
-            max_tokens=1500,
+            max_tokens=4096,
             system=STRATEGY_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )

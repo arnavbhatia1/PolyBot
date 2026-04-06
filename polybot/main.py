@@ -58,7 +58,7 @@ async def _get_contract_prices(market_scanner, market_id: str, http_client=None)
             if data:
                 event = data[0] if isinstance(data, list) else data
                 contract = market_scanner.parse_contract(event)
-                if contract and contract["condition_id"] == market_id:
+                if contract and contract.get("slug", "") == market_id:
                     return contract
         except httpx.TimeoutException:
             continue
@@ -246,7 +246,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 await asyncio.sleep(1)
                 continue
 
-            cid = contract["condition_id"]
+            cid = contract["slug"]  # Use slug as market_id — US API needs marketSlug, not condition_id
 
             # Clean old entries
             now_ts = int(time.time())
@@ -445,23 +445,29 @@ async def main():
     # Execution — route based on mode
     exec_cfg = config["execution"]
     if mode == "live":
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiCreds
-        clob = ClobClient(
-            host="https://clob.polymarket.com",
-            chain_id=137,
-            key=get_secret("PRIVATE_KEY"),
-            creds=ApiCreds(
-                api_key=get_secret("POLYMARKET_API_KEY"),
-                api_secret=get_secret("POLYMARKET_SECRET"),
-                api_passphrase=get_secret("POLYMARKET_PASSPHRASE"),
-            ),
+        from polybot.execution.polymarket_us import PolymarketUSClient
+        us_client = PolymarketUSClient(
+            api_key=get_secret("POLYMARKET_API_KEY"),
+            secret_key=get_secret("POLYMARKET_SECRET"),
         )
-        trader = LiveTrader(db=db, clob=clob,
+        trader = LiveTrader(db=db, us_client=us_client,
             max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
             max_concurrent_positions=exec_cfg["max_concurrent_positions"])
-        logger.info(f"LIVE MODE — wallet: {clob.get_address()}")
+        # Verify API credentials before trading real money
+        logger.info("LIVE MODE — verifying Polymarket US API credentials...")
+        try:
+            live_balance = await trader.get_balance()
+            logger.info(f"LIVE MODE — API connection: OK")
+            logger.info(f"LIVE MODE — balance: ${live_balance:,.2f}")
+            if live_balance > 0:
+                await db.set_bankroll(live_balance)
+            else:
+                logger.warning("LIVE MODE — balance is $0.00. Fund your account before trading.")
+        except Exception as e:
+            logger.error(f"LIVE MODE — API verification FAILED: {e}")
+            logger.error("LIVE MODE — cannot trade with invalid credentials. Exiting.")
+            return
     else:
         trader = PaperTrader(db=db, max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],

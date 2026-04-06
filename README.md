@@ -109,21 +109,19 @@ Use `!clear` before or after a run to wipe channel history clean.
 |-----|-------------|
 | `ANTHROPIC_API_KEY` | Always (daily learning analysis) |
 | `DISCORD_BOT_TOKEN` | Always (monitoring) |
-| `POLYMARKET_API_KEY` | Live trading only |
-| `POLYMARKET_SECRET` | Live trading only |
-| `POLYMARKET_PASSPHRASE` | Live trading only |
-| `PRIVATE_KEY` | Live trading only |
+| `POLYMARKET_API_KEY` | Live trading only (from polymarket.us/developer) |
+| `POLYMARKET_SECRET` | Live trading only (Ed25519 secret) |
 
 Binance API is free and needs no key.
 
 ## Deployment
 
 - **Paper:** `python -m polybot.main --mode paper` (simulated, fresh $1K bankroll each run)
-- **Live:** `python -m polybot.main --mode live` (real USDC via Polymarket CLOB)
+- **Live:** `python -m polybot.main --mode live` (real money via Polymarket US API, Ed25519 auth)
 - **VPS:** `docker build -t polybot . && docker run -d --restart=always polybot`
 
 ## Tests
 
 ```bash
-python -m pytest polybot/tests/ -v   # 191 tests
+python -m pytest polybot/tests/ -v   # 186 tests
 ```
