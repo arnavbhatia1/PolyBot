@@ -123,7 +123,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
     day_losses: int = 0
 
     while True:
-        await asyncio.sleep(0.5)  # 500ms tick — fast enough for 5-min contracts, doesn't burn CPU
+        await asyncio.sleep(0.25)  # 250ms tick — fast detection, ~4 req/sec to Gamma API
         try:
             if is_paused_fn():
                 await asyncio.sleep(0.5)
@@ -194,7 +194,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         continue
                     # Don't make exit decisions on stale data — hold until fresh
                     candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
-                    if candle_age > 120:
+                    if candle_age > 180:
                         continue
 
                     # Get strike from the position's stored trade_context (correct for this contract)
@@ -286,8 +286,10 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 continue
 
             # Skip if candle data is stale (WebSocket may have disconnected)
+            # Threshold 180s: candle timestamps are open-time, so a normal 1-min candle
+            # can be up to ~120s old by design. 180s catches real outages without false triggers.
             latest_candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
-            if latest_candle_age > 120:  # >2 minutes old = stale
+            if latest_candle_age > 180:
                 logger.warning(f"Stale candle data: {latest_candle_age:.0f}s old, skipping entry")
                 continue
 
