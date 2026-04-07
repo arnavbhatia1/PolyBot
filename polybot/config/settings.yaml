@@ -76,6 +76,8 @@ market:
   entry_window_seconds: 300
   min_time_remaining_seconds: 20  # Tunable by learning pipeline (range: 0-120)
   scan_cache_seconds: 5
+  clob_url: "https://clob.polymarket.com"  # Real order book API (Gamma outcomePrices are stale)
+  min_book_depth_usd: 50  # Skip trades if total ask depth < $50 (no real liquidity)
 
 schedule:
   trading_start_hour_et: 8    # 8 AM ET (auto-adjusts for EST/EDT)

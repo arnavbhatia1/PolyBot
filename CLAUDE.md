@@ -13,7 +13,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
 - **Minimum edge = 10%.** Only trade when model disagrees with market by 10%+.
 - **Momentum weight = 0.08.** Indicators nudge probability by max ±8%. This ensures indicators alone (without BTC movement from strike) cannot trigger a trade.
-- **5-min markets use Gamma API with deterministic slugs.** `gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}` where `window_ts = int(time.time() // 300) * 300`.
+- **5-min markets use Gamma API for discovery, CLOB API for real prices.** Gamma API (`gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}`) finds contracts. CLOB API (`clob.polymarket.com/book?token_id=TOKEN`) provides real order book bid/ask. Gamma `outcomePrices` are stale — NEVER use them for edge calculation or fills.
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
@@ -158,7 +158,8 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 
 - Don't add fixed take-profit/stop-loss percentages — use the probability model for exit decisions (evaluate_hold).
 - Don't increase momentum_weight above 0.10 — indicators alone should not trigger trades.
-- Don't use CLOB `/markets` for 5-min markets — Gamma API slugs only.
+- Don't use CLOB `/markets` for 5-min market discovery — Gamma API slugs only. DO use CLOB `/book` for real order book prices.
+- Don't use Gamma API `outcomePrices` for edge calculation — they're stale/initial prices, not live order book.
 - Don't use Binance.com — use Binance.us.
 - Don't allow multiple concurrent positions — one at a time, full Kelly.
 - Don't auto-delete the DB — bankroll persists across sessions in both modes. Never delete `polybot/db/polybot.db` between runs.

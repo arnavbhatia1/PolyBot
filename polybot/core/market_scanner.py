@@ -13,19 +13,30 @@ class BTCMarketScanner:
       btc-updown-5m-{window_ts}
     where window_ts is floored to the nearest 300-second boundary.
     Outcomes are "Up"/"Down" (not "Yes"/"No").
+
+    IMPORTANT: Gamma API outcomePrices are stale/indicative — they reflect
+    the last trade price or initial 50/50, NOT the live order book.
+    Always use fetch_order_book() for real bid/ask prices before trading.
     """
 
     GAMMA_API = "https://gamma-api.polymarket.com"
+    CLOB_API = "https://clob.polymarket.com"
     WINDOW_SECONDS = 300  # 5 minutes
 
     def __init__(self, entry_window_seconds: int = 120, min_time_remaining: int = 30,
-                 cache_seconds: int = 5, symbol: str = "btc"):
+                 cache_seconds: int = 5, symbol: str = "btc",
+                 clob_url: str = "https://clob.polymarket.com",
+                 min_book_depth_usd: float = 50.0):
         self.entry_window_seconds = entry_window_seconds
         self.min_time_remaining = min_time_remaining
         self.cache_seconds = cache_seconds
         self.symbol = symbol
+        self.CLOB_API = clob_url
+        self.min_book_depth_usd = min_book_depth_usd
         self._cached_contract = None
         self._cache_time = 0
+        self._book_cache: dict[str, tuple[float, dict]] = {}  # token_id -> (timestamp, book)
+        self._book_cache_seconds = 2  # Books refresh every 2s
 
     def _current_window_ts(self) -> int:
         return int(time.time() // self.WINDOW_SECONDS) * self.WINDOW_SECONDS
@@ -95,6 +106,82 @@ class BTCMarketScanner:
         seconds_elapsed = self.WINDOW_SECONDS - seconds_remaining
         return (seconds_elapsed <= self.entry_window_seconds and
                 seconds_remaining >= self.min_time_remaining)
+
+    # --- CLOB Order Book ---
+
+    async def fetch_order_book(self, token_id: str, http_client=None) -> dict:
+        """Fetch live order book from CLOB API for a token.
+
+        Returns {"bids": [{"price": "0.45", "size": "100"}, ...],
+                 "asks": [{"price": "0.55", "size": "50"}, ...]}
+        or empty dict on failure.
+        """
+        if not token_id:
+            return {}
+
+        # Check cache
+        now = time.time()
+        cached = self._book_cache.get(token_id)
+        if cached and (now - cached[0]) < self._book_cache_seconds:
+            return cached[1]
+
+        try:
+            if http_client:
+                resp = await http_client.get(
+                    f"{self.CLOB_API}/book", params={"token_id": token_id})
+            else:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    resp = await client.get(
+                        f"{self.CLOB_API}/book", params={"token_id": token_id})
+            resp.raise_for_status()
+            book = resp.json()
+            self._book_cache[token_id] = (now, book)
+            return book
+        except Exception as e:
+            logger.warning(f"CLOB book fetch failed for {token_id[:16]}...: {e}")
+            return {}
+
+    @staticmethod
+    def best_ask(book: dict) -> tuple[float, float]:
+        """Best ask price and total ask depth in shares. (0, 0) if empty."""
+        asks = book.get("asks", [])
+        if not asks:
+            return 0.0, 0.0
+        best = float(asks[0]["price"])
+        depth = sum(float(a["size"]) for a in asks)
+        return best, depth
+
+    @staticmethod
+    def best_bid(book: dict) -> tuple[float, float]:
+        """Best bid price and total bid depth in shares. (0, 0) if empty."""
+        bids = book.get("bids", [])
+        if not bids:
+            return 0.0, 0.0
+        best = float(bids[0]["price"])
+        depth = sum(float(b["size"]) for b in bids)
+        return best, depth
+
+    @staticmethod
+    def walk_book(levels: list[dict], shares_needed: float) -> float:
+        """Walk order book levels to compute volume-weighted avg fill price.
+
+        Returns 0.0 if book can't fill the order.
+        """
+        if not levels or shares_needed <= 0:
+            return 0.0
+        filled = 0.0
+        cost = 0.0
+        for level in levels:
+            price = float(level["price"])
+            size = float(level["size"])
+            take = min(size, shares_needed - filled)
+            cost += take * price
+            filled += take
+            if filled >= shares_needed:
+                break
+        if filled < shares_needed * 0.90:  # Can't fill 90%+ of order
+            return 0.0
+        return cost / filled
 
     async def find_active_contract(self) -> dict | None:
         now = time.time()

@@ -298,7 +298,13 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         continue
 
                     indicators = indicator_engine.compute_all(binance_feed.buffer)
-                    market_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
+
+                    # Use real CLOB bid price for exit evaluation (what we'd actually get selling)
+                    hold_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
+                    hold_book = await market_scanner.fetch_order_book(hold_token, http_client)
+                    bid_price, _ = market_scanner.best_bid(hold_book)
+                    gamma_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
+                    market_price = bid_price if bid_price > 0 else gamma_price
 
                     exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
                                       else default_exit_threshold)
@@ -352,9 +358,41 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             if cid in traded_contracts:
                 continue
 
+            # --- Fetch REAL order book prices from CLOB ---
+            book_up = await market_scanner.fetch_order_book(contract["token_id_up"], http_client)
+            book_down = await market_scanner.fetch_order_book(contract["token_id_down"], http_client)
+
+            ask_up, depth_up = market_scanner.best_ask(book_up)
+            ask_down, depth_down = market_scanner.best_ask(book_down)
+
+            # Fall back to Gamma prices ONLY if CLOB is completely unavailable
+            gamma_up = contract["price_up"]
+            gamma_down = contract["price_down"]
+            has_book = ask_up > 0 or ask_down > 0
+
+            if has_book:
+                price_up = ask_up if ask_up > 0 else gamma_up
+                price_down = ask_down if ask_down > 0 else gamma_down
+                # Log divergence between Gamma (stale) and CLOB (real)
+                if abs(price_up - gamma_up) > 0.03 or abs(price_down - gamma_down) > 0.03:
+                    logger.info(f"CLOB vs Gamma: Up ask={price_up:.3f} (gamma={gamma_up:.3f}) "
+                                f"Down ask={price_down:.3f} (gamma={gamma_down:.3f})")
+            else:
+                price_up = gamma_up
+                price_down = gamma_down
+                logger.warning("CLOB unavailable — using Gamma prices (may be stale)")
+
+            # Skip if no real liquidity to trade against
+            min_depth = market_scanner.min_book_depth_usd
+            if has_book:
+                depth_usd_up = depth_up * ask_up if ask_up > 0 else 0
+                depth_usd_down = depth_down * ask_down if ask_down > 0 else 0
+                if depth_usd_up < min_depth and depth_usd_down < min_depth:
+                    logger.debug(f"Thin book: Up ${depth_usd_up:.0f} Down ${depth_usd_down:.0f} "
+                                 f"(min ${min_depth:.0f})")
+                    continue
+
             # Don't enter if market already decided (extreme prices)
-            price_up = contract["price_up"]
-            price_down = contract["price_down"]
             if price_up < 0.15 or price_up > 0.85:
                 continue
 
@@ -409,6 +447,19 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     continue  # Kelly says don't trade — respect it
                 if size > bankroll * max_bankroll_pct:
                     size = round(bankroll * max_bankroll_pct, 2)
+
+                # Walk the book to get realistic VWAP fill price
+                if has_book:
+                    shares_needed = size / price
+                    book = book_up if side == "Up" else book_down
+                    vwap_fill = market_scanner.walk_book(book.get("asks", []), shares_needed)
+                    if vwap_fill <= 0:
+                        logger.info(f"SKIP: book can't fill {shares_needed:.0f} shares of {side}")
+                        continue
+                    if vwap_fill > price * 1.05:  # >5% slippage from best ask
+                        logger.info(f"SKIP: slippage too high — best ask={price:.3f} vwap={vwap_fill:.3f}")
+                        continue
+                    price = vwap_fill  # Use realistic fill price
 
                 snapshot = indicator_engine.get_snapshot(indicators)
                 snapshot["trade_context"] = {
@@ -494,6 +545,8 @@ async def main():
         entry_window_seconds=market_cfg.get("entry_window_seconds", 120),
         min_time_remaining=market_cfg.get("min_time_remaining_seconds", 20),
         cache_seconds=market_cfg.get("scan_cache_seconds", 5),
+        clob_url=market_cfg.get("clob_url", "https://clob.polymarket.com"),
+        min_book_depth_usd=market_cfg.get("min_book_depth_usd", 50.0),
     )
 
     # Indicator engine

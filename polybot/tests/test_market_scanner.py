@@ -48,6 +48,41 @@ def test_make_slug():
     scanner = BTCMarketScanner(symbol="btc")
     assert scanner._make_slug(1774898700) == "btc-updown-5m-1774898700"
 
+def test_best_ask_returns_price_and_depth():
+    book = {"asks": [{"price": "0.55", "size": "100"}, {"price": "0.60", "size": "200"}]}
+    price, depth = BTCMarketScanner.best_ask(book)
+    assert price == 0.55
+    assert depth == 300.0
+
+def test_best_ask_empty_book():
+    assert BTCMarketScanner.best_ask({}) == (0.0, 0.0)
+    assert BTCMarketScanner.best_ask({"asks": []}) == (0.0, 0.0)
+
+def test_best_bid_returns_price_and_depth():
+    book = {"bids": [{"price": "0.45", "size": "150"}, {"price": "0.40", "size": "50"}]}
+    price, depth = BTCMarketScanner.best_bid(book)
+    assert price == 0.45
+    assert depth == 200.0
+
+def test_walk_book_single_level():
+    levels = [{"price": "0.55", "size": "100"}]
+    assert BTCMarketScanner.walk_book(levels, 50) == 0.55
+
+def test_walk_book_multiple_levels():
+    levels = [{"price": "0.55", "size": "100"}, {"price": "0.60", "size": "100"}]
+    # Need 150 shares: 100 @ 0.55 + 50 @ 0.60 = 55 + 30 = 85 / 150 = 0.5667
+    vwap = BTCMarketScanner.walk_book(levels, 150)
+    assert abs(vwap - 0.5667) < 0.001
+
+def test_walk_book_insufficient_depth():
+    levels = [{"price": "0.55", "size": "10"}]
+    # Need 100 shares but only 10 available (<90% fill)
+    assert BTCMarketScanner.walk_book(levels, 100) == 0.0
+
+def test_walk_book_empty():
+    assert BTCMarketScanner.walk_book([], 50) == 0.0
+
+
 def test_parse_contract_handles_list_outcomes():
     event = SAMPLE_EVENT.copy()
     event["markets"] = [{
