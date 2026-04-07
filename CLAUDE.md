@@ -17,7 +17,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
-- **`--mode paper|live` CLI flag.** Overrides `settings.yaml`. Paper mode auto-deletes DB for fresh bankroll. Live mode uses `py-clob-client` with FOK market orders on Polymarket's CLOB. Both traders share the same interface — trading loop doesn't know the difference.
+- **`--mode paper|live` CLI flag.** Overrides `settings.yaml`. Paper mode uses persistent SQLite bankroll (not auto-deleted). Live mode uses Ed25519-authenticated Polymarket US API (`polymarket_us.py`) with FOK market orders. Both traders share the same interface — trading loop doesn't know the difference.
 
 ## Project Structure
 
@@ -35,7 +35,8 @@ polybot/
   execution/
     base.py                  # TradeResult dataclass
     paper_trader.py          # Simulated trades (paper mode)
-    live_trader.py           # Real trades via Polymarket CLOB (live mode)
+    live_trader.py           # Real trades via Polymarket US API, Ed25519 auth (live mode)
+    polymarket_us.py         # Polymarket US API client (Ed25519 signing, orders, balance)
   agents/
     scheduler.py             # Daily learning pipeline
     outcome_reviewer.py      # Logs resolved trades
@@ -111,10 +112,12 @@ WHILE HOLDING (active position management):
   Same Brownian motion model — continuously re-evaluates.
 
 RESOLUTION (contract expired, seconds_remaining <= 0):
-  Determine winner from BTC price vs strike (binary outcome).
-  If BTC >= strike: Up won. If BTC < strike: Down won.
+  1. Prefer on-chain resolution from Gamma API (closed=true, outcomePrices near $1/$0)
+  2. Fallback: determine winner from BTC price vs strike (binary outcome)
+     If BTC >= strike: Up won. If BTC < strike: Down won.
+  3. Orphaned positions (contract not findable after 10 min): same BTC fallback
   Winning side pays $1.00/share, losing side pays $0.00/share.
-  Paper trader uses this binary resolution (not Gamma API market prices).
+  Resolution fee is always $0 (fee formula: Θ × shares × p × (1-p) = 0 at p=0 or p=1).
 ```
 
 ## Common Issues
@@ -126,7 +129,7 @@ RESOLUTION (contract expired, seconds_remaining <= 0):
 
 ## Learning Pipeline
 
-Daily at 2 AM UTC (configurable via `agents.daily_pipeline_hour`):
+Daily at 4:45 PM ET / 20:45 UTC (configurable via `agents.daily_pipeline_hour` and `daily_pipeline_minute`):
 
 1. **BiasDetector** — Rich multi-dimensional analysis of all outcomes:
    - Per-indicator accuracy (bullish/bearish breakdown, sample sizes)
@@ -158,7 +161,7 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't use CLOB `/markets` for 5-min markets — Gamma API slugs only.
 - Don't use Binance.com — use Binance.us.
 - Don't allow multiple concurrent positions — one at a time, full Kelly.
-- Don't auto-delete the DB — bankroll persists across sessions in both modes.
+- Don't auto-delete the DB — bankroll persists across sessions in both modes. Never delete `polybot/db/polybot.db` between runs.
 - Don't use limit orders in LiveTrader — FOK market orders for 5-min contract speed.
 
 ## Always Update

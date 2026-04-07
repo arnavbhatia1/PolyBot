@@ -12,7 +12,7 @@ pip install -r requirements.txt
 cp polybot/config/.env.example polybot/config/.env
 # Edit .env with your keys (minimum: ANTHROPIC_API_KEY, DISCORD_BOT_TOKEN)
 
-# Paper trading (simulated, fresh $1,000 bankroll each run)
+# Paper trading (simulated, persistent bankroll across sessions)
 python -m polybot.main --mode paper
 
 # Live trading (real USDC on Polymarket — requires all secrets)
@@ -55,7 +55,7 @@ Binance.US WebSocket (live BTC 1-min candles)
 | `indicators/` | 7 indicators (RSI, MACD, Stochastic, EMA, OBV, VWAP, ATR) |
 | `indicators/engine.py` | Combines all 7, manages weight versions |
 | `execution/paper_trader.py` | Simulated trading with bankroll management |
-| `execution/live_trader.py` | Real trading via Polymarket CLOB (py-clob-client) |
+| `execution/live_trader.py` | Real trading via Polymarket US API (Ed25519 auth) |
 | `agents/` | Self-learning pipeline (bias detector, TA evolver, weight optimizer) |
 | `discord_bot/` | Commands, trade alerts, session management |
 | `db/models.py` | SQLite for positions, trade history, bankroll |
@@ -77,13 +77,13 @@ All parameters in `polybot/config/settings.yaml`:
 
 ## Learning Pipeline
 
-Runs daily at 2 AM UTC:
+Runs daily at 4:45 PM ET (20:45 UTC):
 
 1. **Bias Detector** — Multi-dimensional analysis: per-indicator accuracy, side bias, edge calibration, time/volatility patterns
 2. **TA Strategy Evolver** — Sends full analysis + recent trades to Claude API as a quant strategist. Returns weight adjustments, parameter recommendations, reasoning, and risk warnings. Falls back to local math if API is unavailable.
 3. **Weight Optimizer** — Backtests recommendations against historical edge data, auto-adopts if Sharpe improves >= 3%, hot-swaps all parameters at runtime **and persists them to settings.yaml** so they survive restarts
 
-Outcomes enriched with full trade context (BTC price, strike, time remaining, model probability, edge). Claude's analysis and key findings posted to `#polybot-trades`. Negative Sharpe warnings posted to `#polybot-control`.
+Outcomes enriched with full trade context (BTC price, strike, time remaining, model probability, edge). Claude's analysis and key findings posted to `#polybot-daily`. Negative Sharpe warnings posted to `#polybot-control`.
 
 ## Discord Commands
 
@@ -119,7 +119,7 @@ Binance API is free and needs no key.
 
 ## Deployment
 
-- **Paper:** `python -m polybot.main --mode paper` (simulated, persistent bankroll)
+- **Paper:** `python -m polybot.main --mode paper` (simulated, bankroll persists in SQLite across sessions)
 - **Live:** `python -m polybot.main --mode live` (real money via Polymarket US API, Ed25519 auth)
 - **VPS:** `docker build -t polybot . && docker run -d --restart=always polybot`
 

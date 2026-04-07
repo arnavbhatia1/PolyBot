@@ -66,6 +66,26 @@ async def _get_contract_prices(market_scanner, market_id: str, http_client=None)
         except Exception as e:
             logger.warning(f"Price fetch error for {slug}: {e}")
             continue
+
+    # Fallback: fetch directly by stored slug (handles expired contracts outside ±1 window)
+    try:
+        if http_client:
+            resp = await http_client.get(f"{market_scanner.GAMMA_API}/events",
+                                         params={"slug": market_id})
+        else:
+            async with httpx.AsyncClient(timeout=3) as client:
+                resp = await client.get(f"{market_scanner.GAMMA_API}/events",
+                                        params={"slug": market_id})
+        resp.raise_for_status()
+        data = resp.json()
+        if data:
+            event = data[0] if isinstance(data, list) else data
+            contract = market_scanner.parse_contract(event)
+            if contract:
+                return contract
+    except Exception as e:
+        logger.debug(f"Direct slug lookup failed for {market_id}: {e}")
+
     return None
 
 
@@ -164,7 +184,42 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             positions = await db.get_open_positions()
             for pos in positions:
                 live = await _get_contract_prices(market_scanner, pos["market_id"], http_client)
+
                 if not live:
+                    # Contract not findable — resolve orphaned positions older than 10 min
+                    try:
+                        entry_dt = datetime.fromisoformat(pos.get("entry_timestamp", ""))
+                        age = (datetime.now(timezone.utc) - entry_dt).total_seconds()
+                    except (ValueError, TypeError):
+                        age = 0
+                    if age < 600:
+                        continue
+                    pos_ctx = json.loads(pos.get("indicator_snapshot", "{}")).get("trade_context", {})
+                    strike = pos_ctx.get("strike_price", 0)
+                    btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+                    if strike <= 0 or btc_now <= 0:
+                        continue
+                    up_won = btc_now >= strike
+                    exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
+                    result = await trader.resolve_position(pos["id"], exit_price)
+                    if result.success:
+                        shares = pos["size"] / pos["entry_price"]
+                        entry_fee = _taker_fee(shares, pos["entry_price"])
+                        exit_fee = _taker_fee(shares, exit_price)
+                        pnl = shares * exit_price - pos["size"] - entry_fee - exit_fee
+                        gain_pct = pnl / pos["size"] if pos["size"] > 0 else 0
+                        won = "WIN" if pnl > 0 else "LOSS"
+                        if pnl > 0: day_wins += 1
+                        else: day_losses += 1
+                        logger.info(f"RESOLVED {won} {pos['side']} (orphaned) | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
+                        if alert_manager:
+                            await alert_manager.send_trade_closed(
+                                question="", exit_price=exit_price, log_return=0, hold_hours=0,
+                                side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
+                                gain_pct=gain_pct, reason=won.lower())
+                        await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
+                                              exit_reason="resolution")
+                        traded_contracts[pos["market_id"]] = int(time.time())
                     continue
 
                 if live["seconds_remaining"] <= 0:
@@ -175,9 +230,15 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         # Polymarket has resolved: use the actual outcome prices
                         exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
                     else:
-                        # Not resolved yet — wait before re-checking (avoid hammering Gamma API)
-                        await asyncio.sleep(5)
-                        continue
+                        # Gamma API hasn't resolved yet — determine binary outcome from BTC vs strike
+                        pos_ctx = json.loads(pos.get("indicator_snapshot", "{}")).get("trade_context", {})
+                        strike = pos_ctx.get("strike_price", 0)
+                        btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+                        if strike <= 0 or btc_now <= 0:
+                            await asyncio.sleep(5)
+                            continue
+                        up_won = btc_now >= strike
+                        exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
 
                     result = await trader.resolve_position(pos["id"], exit_price)
                     if result.success:
