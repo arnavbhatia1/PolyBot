@@ -13,6 +13,8 @@ polybot/config/.env
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 
 # Logs
 polybot.log

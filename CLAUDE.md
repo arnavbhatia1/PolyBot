@@ -100,14 +100,21 @@ Momentum nudge: P(Up) += indicator_score * 0.08
 
 ENTRY:
   Edge = P(Up) - market_price_up    [or P(Down) - market_price_down]
-  If edge >= 10%: TRADE, size = Kelly(probability, market_price) * 0.15
-  If edge < 10%: SKIP
+  If model_prob < 65%: SKIP (coin-flip filter)
+  If edge >= 20%: TRADE, size = Kelly(probability, market_price) * 0.15
+  If edge < 20%: SKIP
 
 WHILE HOLDING (active position management):
   holding_edge = model_prob_for_our_side - current_market_price_for_our_side
-  If holding_edge > -5%: HOLD (model still supports the position)
-  If holding_edge ≤ -5%: EXIT (market overpricing our side, take profit or cut loss)
+  If holding_edge > -10%: HOLD (model still supports the position)
+  If holding_edge ≤ -10%: EXIT (market overpricing our side, take profit or cut loss)
   Same Brownian motion model — continuously re-evaluates.
+
+RESOLUTION (contract expired, seconds_remaining <= 0):
+  Determine winner from BTC price vs strike (binary outcome).
+  If BTC >= strike: Up won. If BTC < strike: Down won.
+  Winning side pays $1.00/share, losing side pays $0.00/share.
+  Paper trader uses this binary resolution (not Gamma API market prices).
 ```
 
 ## Common Issues
@@ -139,6 +146,7 @@ Daily at 2 AM UTC (configurable via `agents.daily_pipeline_hour`):
    - Recomputes hypothetical edge with new weights/parameters
    - Auto-adopts if Sharpe improves >= 3%
    - Hot-swaps indicator weights, momentum_weight, min_edge, kelly_fraction at runtime
+   - **Persists all tuned parameters to settings.yaml** — values survive restarts
    - Discord alerts include Claude's key findings and reasoning
 
 Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, strike_price, seconds_remaining, market prices, model_probability, edge, momentum_score, ATR, size.

@@ -1,6 +1,6 @@
 # PolyBot
 
-Automated 5-minute BTC Up/Down trader for Polymarket. Computes the mathematical probability that BTC finishes above/below the opening strike price using Brownian motion, compares that to the market's price, and trades when mispricing exceeds 10%. Hold to resolution — no scalping.
+Automated 5-minute BTC Up/Down trader for Polymarket. Computes the mathematical probability that BTC finishes above/below the opening strike price using Brownian motion, compares that to the market's price, and trades when mispricing exceeds 20%. Hold to resolution — no scalping.
 
 ## Quick Start
 
@@ -33,13 +33,16 @@ Binance.US WebSocket (live BTC 1-min candles)
         |
   Edge = model probability - market price
         |
-  Edge >= 10%? --> Kelly size (0.15 fraction) --> Place trade
+  Model confidence >= 65%? Edge >= 20%? --> Kelly size (0.15 fraction) --> Place trade
         |
   While holding: continuously re-evaluate with same model
   holding_edge = model_prob - market_price for our side
-  If holding_edge > -5%: HOLD (ride to $1 resolution)
-  If holding_edge ≤ -5%: EXIT (take profit or cut loss)
-  On resolution or exit --> Log outcome --> Learn
+  If holding_edge > -10%: HOLD (ride to $1 resolution)
+  If holding_edge ≤ -10%: EXIT (take profit or cut loss)
+        |
+  On resolution: binary outcome from BTC vs strike ($1 win / $0 loss)
+  On early exit: market price at time of exit
+  --> Log outcome --> Learn
 ```
 
 ## Architecture
@@ -78,7 +81,7 @@ Runs daily at 2 AM UTC:
 
 1. **Bias Detector** — Multi-dimensional analysis: per-indicator accuracy, side bias, edge calibration, time/volatility patterns
 2. **TA Strategy Evolver** — Sends full analysis + recent trades to Claude API as a quant strategist. Returns weight adjustments, parameter recommendations, reasoning, and risk warnings. Falls back to local math if API is unavailable.
-3. **Weight Optimizer** — Backtests recommendations against historical edge data, auto-adopts if Sharpe improves >= 3%, hot-swaps all parameters (weights, momentum_weight, min_edge, kelly_fraction) at runtime
+3. **Weight Optimizer** — Backtests recommendations against historical edge data, auto-adopts if Sharpe improves >= 3%, hot-swaps all parameters at runtime **and persists them to settings.yaml** so they survive restarts
 
 Outcomes enriched with full trade context (BTC price, strike, time remaining, model probability, edge). Claude's analysis and key findings posted to `#polybot-trades`. Negative Sharpe warnings posted to `#polybot-control`.
 
@@ -116,7 +119,7 @@ Binance API is free and needs no key.
 
 ## Deployment
 
-- **Paper:** `python -m polybot.main --mode paper` (simulated, fresh $1K bankroll each run)
+- **Paper:** `python -m polybot.main --mode paper` (simulated, persistent bankroll)
 - **Live:** `python -m polybot.main --mode live` (real money via Polymarket US API, Ed25519 auth)
 - **VPS:** `docker build -t polybot . && docker run -d --restart=always polybot`
 

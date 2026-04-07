@@ -33,9 +33,9 @@ class SignalEngine:
     throw away edge. Kelly already accounts for the risk of total loss.
     """
 
-    def __init__(self, min_edge: float = 0.10, kelly_fraction: float = 0.15,
+    def __init__(self, min_edge: float = 0.20, kelly_fraction: float = 0.15,
                  momentum_weight: float = 0.08, weights: dict | None = None,
-                 min_model_probability: float = 0.0):
+                 min_model_probability: float = 0.65):
         self.min_edge = min_edge
         self.kelly_fraction = kelly_fraction
         self.momentum_weight = momentum_weight

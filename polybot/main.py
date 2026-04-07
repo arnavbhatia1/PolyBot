@@ -103,7 +103,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
     signal_config = config["signal"]
     max_bankroll_pct = config["execution"]["max_bankroll_deployed"]
-    default_exit_threshold = signal_config.get("exit_edge_threshold", -0.05)
+    default_exit_threshold = signal_config.get("exit_edge_threshold", -0.10)
 
     # Trading schedule in ET (handles EST/EDT automatically)
     sched = config.get("schedule", {})
@@ -167,8 +167,25 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     continue
 
                 if live["seconds_remaining"] <= 0:
-                    # Contract resolved — close at final market price
-                    exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
+                    # Contract resolved — determine binary outcome from BTC vs strike.
+                    # On Polymarket, winning side pays $1/share, losing side pays $0.
+                    # Use BTC price vs strike to determine winner (matches on-chain Chainlink resolution).
+                    pos_ctx = json.loads(pos.get("indicator_snapshot", "{}")).get("trade_context", {})
+                    strike = pos_ctx.get("strike_price", 0)
+                    btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+                    candle_fresh = False
+                    if binance_feed.buffer.latest():
+                        candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
+                        candle_fresh = candle_age < 180  # Same 3-min staleness threshold as active management
+
+                    if strike > 0 and btc_now > 0 and candle_fresh:
+                        outcome_side = "Up" if btc_now >= strike else "Down"
+                        exit_price = 1.0 if pos["side"] == outcome_side else 0.0
+                    else:
+                        # Fallback: stale/missing data — use Gamma API price (better than wrong binary call)
+                        exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
+                        logger.warning(f"Binary resolution fallback: strike={strike}, btc={btc_now}, fresh={candle_fresh} — using market price {exit_price}")
+
                     sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
                     result = await trader.close_trade(pos["id"], exit_price, token_id=sell_token)
                     if result.success:
@@ -431,12 +448,12 @@ async def main():
 
     # Signal engine — probability model with edge-based entry
     signal_engine = SignalEngine(
-        min_edge=signal_cfg.get("entry_threshold", 0.10),
+        min_edge=signal_cfg.get("entry_threshold", 0.20),
         kelly_fraction=config["math"].get("kelly_fraction", 0.15),
         momentum_weight=signal_cfg.get("momentum_weight", 0.08),
         weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                             "obv": 0.15, "vwap": 0.20}),
-        min_model_probability=signal_cfg.get("min_model_probability", 0.0),
+        min_model_probability=signal_cfg.get("min_model_probability", 0.65),
     )
 
     # Brain (Claude client kept for TA evolver analysis calls)
@@ -507,9 +524,10 @@ async def main():
         daily_pipeline_minute=agents_cfg.get("daily_pipeline_minute", 0),
         math_config=math_cfg,
         market_scanner=market_scanner,
+        config=config,
     )
-    scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", -0.05)
-    scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 0)
+    scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", -0.10)
+    scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
     discord_bot.scheduler = scheduler
     if mode == "live":
         live_balance = await trader.get_usdc_balance()

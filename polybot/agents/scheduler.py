@@ -3,6 +3,8 @@ import math
 import logging
 from datetime import datetime, timezone
 
+from polybot.config.loader import save_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -10,7 +12,7 @@ class AgentScheduler:
     def __init__(self, outcome_reviewer, bias_detector, ta_evolver, weight_optimizer,
                  indicator_engine=None, signal_engine=None, alert_manager=None,
                  outcome_interval_seconds=3600, daily_pipeline_hour=2, daily_pipeline_minute=0, math_config=None,
-                 claude_client=None, market_scanner=None):
+                 claude_client=None, market_scanner=None, config=None):
         self.outcome_reviewer = outcome_reviewer
         self.bias_detector = bias_detector
         self.ta_evolver = ta_evolver
@@ -24,6 +26,7 @@ class AgentScheduler:
         self.math_config = math_config or {}
         self.claude_client = claude_client  # stored for future use + passed to ta_evolver
         self.market_scanner = market_scanner
+        self._config = config  # Full config dict — written back to settings.yaml after pipeline adoption
         self._exit_edge_threshold = None  # Set by main.py, updated by pipeline
         self._min_time_remaining = None   # Set by main.py, updated by pipeline
         self._trading_start = None        # (hour, minute) UTC — updated by pipeline
@@ -117,7 +120,7 @@ class AgentScheduler:
                 rec_mw = recommendations.get("recommended_momentum_weight",
                             getattr(self.signal_engine, 'momentum_weight', 0.08))
                 rec_me = recommendations.get("recommended_min_edge",
-                            getattr(self.signal_engine, 'min_edge', 0.10))
+                            getattr(self.signal_engine, 'min_edge', 0.20))
 
                 # Original model_probability already includes old momentum
                 # Approximate: would the trade still have enough edge with new params?
@@ -189,6 +192,41 @@ class AgentScheduler:
                     end_h = recommendations["recommended_trading_end_hour_et"]
                     end_m = recommendations.get("recommended_trading_end_minute", 30)
                     self._trading_end = (end_h, end_m)
+
+            # Persist tuned parameters to settings.yaml so they survive restarts
+            if self._config:
+                sig = self._config.setdefault("signal", {})
+                mkt = self._config.setdefault("market", {})
+                sched = self._config.setdefault("schedule", {})
+                math_sec = self._config.setdefault("math", {})
+
+                sig["active_weights_version"] = new_version
+                sig["weights"] = {k: v for k, v in new_weights.items()
+                                  if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
+                if "recommended_momentum_weight" in recommendations:
+                    sig["momentum_weight"] = recommendations["recommended_momentum_weight"]
+                if "recommended_min_edge" in recommendations:
+                    sig["entry_threshold"] = recommendations["recommended_min_edge"]
+                if "recommended_kelly_fraction" in recommendations:
+                    math_sec["kelly_fraction"] = recommendations["recommended_kelly_fraction"]
+                if "recommended_min_model_probability" in recommendations:
+                    sig["min_model_probability"] = recommendations["recommended_min_model_probability"]
+                if "recommended_exit_edge_threshold" in recommendations:
+                    sig["exit_edge_threshold"] = recommendations["recommended_exit_edge_threshold"]
+                if "recommended_min_time_remaining" in recommendations:
+                    mkt["min_time_remaining_seconds"] = recommendations["recommended_min_time_remaining"]
+                if "recommended_trading_start_hour_et" in recommendations:
+                    sched["trading_start_hour_et"] = recommendations["recommended_trading_start_hour_et"]
+                if "recommended_trading_end_hour_et" in recommendations:
+                    sched["trading_end_hour_et"] = recommendations["recommended_trading_end_hour_et"]
+                if "recommended_trading_end_minute" in recommendations:
+                    sched["trading_end_minute"] = recommendations["recommended_trading_end_minute"]
+
+                try:
+                    save_config(self._config)
+                    logger.info("Pipeline parameters persisted to settings.yaml")
+                except Exception as e:
+                    logger.error(f"Failed to persist config: {e}")
 
             logger.info(f"AUTO-ADOPTED {new_version}: Sharpe {current_sharpe:.3f} -> {candidate_sharpe:.3f}, "
                         f"win rate {candidate_win_rate:.0%}")
@@ -266,10 +304,10 @@ class AgentScheduler:
         old_config = {}
         if self.signal_engine:
             old_config = {
-                "min_edge": getattr(self.signal_engine, 'min_edge', 0.10),
+                "min_edge": getattr(self.signal_engine, 'min_edge', 0.20),
                 "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
                 "momentum_weight": getattr(self.signal_engine, 'momentum_weight', 0.08),
-                "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.0),
+                "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.65),
                 "exit_edge_threshold": self._exit_edge_threshold,
                 "min_time_remaining": self._min_time_remaining,
                 "trading_start": self._trading_start,
@@ -284,10 +322,10 @@ class AgentScheduler:
         config_changes = {}
         if self.signal_engine and old_config:
             new_vals = {
-                "min_edge": getattr(self.signal_engine, 'min_edge', 0.10),
+                "min_edge": getattr(self.signal_engine, 'min_edge', 0.20),
                 "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
                 "momentum_weight": getattr(self.signal_engine, 'momentum_weight', 0.08),
-                "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.0),
+                "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.65),
                 "exit_edge_threshold": self._exit_edge_threshold,
                 "min_time_remaining": self._min_time_remaining,
                 "trading_start": self._trading_start,

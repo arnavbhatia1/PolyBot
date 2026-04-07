@@ -43,7 +43,7 @@ class AlertManager:
             f"`{gain_pct:+.1%}` | `${pnl:+.2f}` | {reason}")
 
     async def send_pipeline_summary(self, summary):
-        channel = self._get_channel(self.trade_channel_name)
+        channel = self._get_channel(self.daily_channel_name)
         if not channel:
             return
         await channel.send(f"**Learning Pipeline Complete**\n{summary}")
@@ -76,7 +76,7 @@ class AlertManager:
             f"Mode: `{mode}` | Bankroll: `${bankroll:,.2f}`\n"
             f"{'━' * 38}"
         )
-        for name in [self.trade_channel_name, self.control_channel_name]:
+        for name in [self.trade_channel_name, self.daily_channel_name]:
             channel = self._get_channel(name)
             if channel:
                 try:
@@ -85,28 +85,27 @@ class AlertManager:
                     logger.warning(f"Failed to send session banner to #{name}: {e}")
 
     async def send_day_open(self, mode: str, bankroll: float):
-        """Log start of trading day to trade channel."""
+        """Log start of trading day to trade and daily channels."""
         now = datetime.now(ET)
-        channel = self._get_channel(self.trade_channel_name)
-        if not channel:
-            return
         msg = (
             f"\n{'─' * 38}\n"
             f"**TRADING DAY OPEN** — {now.strftime('%A, %B %d %Y')}\n"
             f"Mode: `{mode}` | Bankroll: `${bankroll:,.2f}`\n"
             f"{'─' * 38}"
         )
-        await channel.send(msg)
+        for name in [self.trade_channel_name, self.daily_channel_name]:
+            channel = self._get_channel(name)
+            if channel:
+                try:
+                    await channel.send(msg)
+                except Exception as e:
+                    logger.warning(f"Failed to send day open to #{name}: {e}")
 
     async def send_day_close(self, bankroll: float, day_pnl: float, wins: int, losses: int):
-        """Log end of trading day to trade channel."""
+        """Log end of trading day to trade and daily channels."""
         now = datetime.now(ET)
         total = wins + losses
         wr = wins / total if total > 0 else 0
-        tag = "+" if day_pnl >= 0 else ""
-        channel = self._get_channel(self.trade_channel_name)
-        if not channel:
-            return
         msg = (
             f"\n{'─' * 38}\n"
             f"**TRADING DAY CLOSE** — {now.strftime('%A, %B %d %Y')}\n"
@@ -114,7 +113,13 @@ class AlertManager:
             f"Trades: `{total}` ({wins}W / {losses}L) | Win Rate: `{wr:.0%}`\n"
             f"{'─' * 38}"
         )
-        await channel.send(msg)
+        for name in [self.trade_channel_name, self.daily_channel_name]:
+            channel = self._get_channel(name)
+            if channel:
+                try:
+                    await channel.send(msg)
+                except Exception as e:
+                    logger.warning(f"Failed to send day close to #{name}: {e}")
 
     async def purge_channel(self, channel_name: str, limit: int = 200) -> int:
         """Delete up to `limit` messages from a channel. Returns count deleted, or -1 on error."""
