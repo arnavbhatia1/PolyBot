@@ -89,6 +89,28 @@ async def _get_contract_prices(market_scanner, market_id: str, http_client=None)
     return None
 
 
+def _btc_at_expiry(binance_feed, market_id: str) -> float:
+    """Get BTC price at contract expiry from candle buffer.
+
+    Parses window_ts from the slug (btc-updown-5m-{window_ts}),
+    computes expiry = window_ts + 300, finds the 1-min candle
+    covering that moment. Falls back to latest price if not in buffer.
+    """
+    try:
+        window_ts = int(market_id.rsplit("-", 1)[-1])
+    except (ValueError, IndexError):
+        latest = binance_feed.buffer.latest()
+        return latest.close if latest else 0
+
+    expiry_ms = (window_ts + 300) * 1000
+    for c in reversed(binance_feed.buffer.get_last_n(30)):
+        if c.timestamp <= expiry_ms < c.timestamp + 60_000:
+            return c.close
+
+    latest = binance_feed.buffer.latest()
+    return latest.close if latest else 0
+
+
 async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pct,
                           exit_reason="resolution"):
     """Record a trade outcome for the learning pipeline."""
@@ -196,7 +218,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         continue
                     pos_ctx = json.loads(pos.get("indicator_snapshot", "{}")).get("trade_context", {})
                     strike = pos_ctx.get("strike_price", 0)
-                    btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+                    btc_now = _btc_at_expiry(binance_feed, pos["market_id"])
                     if strike <= 0 or btc_now <= 0:
                         continue
                     up_won = btc_now >= strike
@@ -233,7 +255,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         # Gamma API hasn't resolved yet — determine binary outcome from BTC vs strike
                         pos_ctx = json.loads(pos.get("indicator_snapshot", "{}")).get("trade_context", {})
                         strike = pos_ctx.get("strike_price", 0)
-                        btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+                        btc_now = _btc_at_expiry(binance_feed, pos["market_id"])
                         if strike <= 0 or btc_now <= 0:
                             await asyncio.sleep(5)
                             continue
