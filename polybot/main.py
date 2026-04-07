@@ -16,7 +16,6 @@ from polybot.indicators.engine import IndicatorEngine
 from polybot.core.signal_engine import SignalEngine
 from polybot.brain.claude_client import ClaudeClient
 from polybot.execution.paper_trader import PaperTrader
-from polybot.execution.live_trader import LiveTrader
 from polybot.agents.outcome_reviewer import OutcomeReviewer
 from polybot.agents.bias_detector import BiasDetector
 from polybot.agents.ta_evolver import TAEvolver
@@ -299,12 +298,11 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
                     indicators = indicator_engine.compute_all(binance_feed.buffer)
 
-                    # Use real CLOB bid price for exit evaluation if available
+                    # Fetch real CLOB bid price for hold evaluation (what we'd get selling)
                     hold_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
-                    hold_book = await market_scanner.fetch_order_book(hold_token, http_client)
-                    bid_price, _ = market_scanner.best_bid(hold_book)
+                    hold_book = await market_scanner.fetch_clob_book(hold_token, http_client)
+                    bid_price, _ = market_scanner.clob_best_bid(hold_book)
                     gamma_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
-                    # Only use CLOB bid if it's sane (not 0.99 from wrong platform)
                     market_price = bid_price if 0.01 < bid_price < 0.99 else gamma_price
 
                     exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
@@ -359,56 +357,36 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             if cid in traded_contracts:
                 continue
 
-            # --- Fetch REAL order book prices from CLOB ---
-            book_up = await market_scanner.fetch_order_book(contract["token_id_up"], http_client)
-            book_down = await market_scanner.fetch_order_book(contract["token_id_down"], http_client)
+            # Fetch real order books from polymarket.com CLOB (no auth, public)
+            book_up = await market_scanner.fetch_clob_book(contract["token_id_up"], http_client)
+            book_down = await market_scanner.fetch_clob_book(contract["token_id_down"], http_client)
 
-            ask_up, depth_up = market_scanner.best_ask(book_up)
-            ask_down, depth_down = market_scanner.best_ask(book_down)
+            # Best ask = what you'd actually pay to buy each side
+            ask_up, depth_up = market_scanner.clob_best_ask(book_up)
+            ask_down, depth_down = market_scanner.clob_best_ask(book_down)
 
-            gamma_up = contract["price_up"]
-            gamma_down = contract["price_down"]
-
-            # Validate CLOB data: both asks > 0.85 on a binary contract is nonsensical
-            # (happens when CLOB is for a different platform, e.g. global vs US)
-            book_valid = (ask_up > 0 and ask_down > 0 and (ask_up + ask_down) < 1.50)
-
-            if book_valid:
-                price_up = ask_up
-                price_down = ask_down
-                has_book = True
-                # Log divergence once per contract slug (not every tick)
-                if cid not in traded_contracts and abs(price_up - gamma_up) > 0.03:
-                    logger.info(f"CLOB vs Gamma: Up ask={price_up:.3f} (gamma={gamma_up:.3f}) "
-                                f"Down ask={price_down:.3f} (gamma={gamma_down:.3f})")
+            if ask_up > 0 or ask_down > 0:
+                price_up = ask_up if ask_up > 0 else contract["price_up"]
+                price_down = ask_down if ask_down > 0 else contract["price_down"]
+                price_source = "clob"
             else:
-                # No valid book — use Gamma prices with staleness filter
-                has_book = False
-                price_up = gamma_up
-                price_down = gamma_down
-
-                # Staleness filter: if both Gamma prices are near 50/50, nobody has
-                # traded this contract — the prices are initial/meaningless.
-                # Contracts with real trading show price movement (e.g. 0.38/0.62).
-                up_movement = abs(gamma_up - 0.50)
-                down_movement = abs(gamma_down - 0.50)
-                if up_movement < 0.04 and down_movement < 0.04:
-                    logger.debug(f"Stale prices: Up={gamma_up:.3f} Down={gamma_down:.3f} "
-                                 f"(no movement from 50/50, contract likely untouched)")
-                    continue
-
-            # Skip if valid book but no real liquidity
-            if has_book:
-                min_depth = market_scanner.min_book_depth_usd
-                depth_usd_up = depth_up * ask_up if ask_up > 0 else 0
-                depth_usd_down = depth_down * ask_down if ask_down > 0 else 0
-                if depth_usd_up < min_depth and depth_usd_down < min_depth:
-                    logger.debug(f"Thin book: Up ${depth_usd_up:.0f} Down ${depth_usd_down:.0f}")
-                    continue
+                # CLOB unavailable — fall back to Gamma (stale but better than nothing)
+                price_up = contract["price_up"]
+                price_down = contract["price_down"]
+                price_source = "gamma"
 
             # Don't enter if market already decided (extreme prices)
             if price_up < 0.15 or price_up > 0.85:
                 continue
+
+            # Skip if no real depth to fill against
+            if price_source == "clob":
+                min_depth = market_scanner.min_book_depth_usd
+                depth_usd_up = depth_up * ask_up if ask_up > 0 else 0
+                depth_usd_down = depth_down * ask_down if ask_down > 0 else 0
+                if depth_usd_up < min_depth and depth_usd_down < min_depth:
+                    logger.debug(f"Thin CLOB: Up ${depth_usd_up:.0f} Down ${depth_usd_down:.0f}")
+                    continue
 
             # Compute strike: BTC price at the 5-min window boundary
             # Use the candle that opened at the window start
@@ -462,18 +440,16 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 if size > bankroll * max_bankroll_pct:
                     size = round(bankroll * max_bankroll_pct, 2)
 
-                # Walk the book to get realistic VWAP fill price
-                if has_book:
-                    shares_needed = size / price
+                # Simulate realistic fill by walking CLOB order book
+                if price_source == "clob":
                     book = book_up if side == "Up" else book_down
-                    vwap_fill = market_scanner.walk_book(book.get("asks", []), shares_needed)
-                    if vwap_fill <= 0:
-                        logger.info(f"SKIP: book can't fill {shares_needed:.0f} shares of {side}")
+                    shares_needed = size / price
+                    vwap = market_scanner.clob_walk_asks(book, shares_needed)
+                    if vwap > 0:
+                        price = vwap
+                    elif shares_needed > 0:
+                        logger.info(f"SKIP: CLOB can't fill {shares_needed:.0f} shares of {side}")
                         continue
-                    if vwap_fill > price * 1.05:  # >5% slippage from best ask
-                        logger.info(f"SKIP: slippage too high — best ask={price:.3f} vwap={vwap_fill:.3f}")
-                        continue
-                    price = vwap_fill  # Use realistic fill price
 
                 snapshot = indicator_engine.get_snapshot(indicators)
                 snapshot["trade_context"] = {
@@ -509,7 +485,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 if result.success:
                     traded_contracts[cid] = now_ts
                     entry_fee = _taker_fee(size / price, price)
-                    logger.info(f"OPEN {side} @ {price:.3f} | ${size:.2f} | fee=${entry_fee:.2f} | {signal.reason}")
+                    logger.info(f"OPEN {side} @ {price:.3f} | ${size:.2f} | fee=${entry_fee:.2f} | src={price_source} | {signal.reason}")
                     if alert_manager:
                         await alert_manager.send_trade_opened(
                             question=contract["question"], side=side, size=size,
@@ -559,7 +535,6 @@ async def main():
         entry_window_seconds=market_cfg.get("entry_window_seconds", 120),
         min_time_remaining=market_cfg.get("min_time_remaining_seconds", 20),
         cache_seconds=market_cfg.get("scan_cache_seconds", 5),
-        clob_url=market_cfg.get("clob_url", "https://clob.polymarket.com"),
         min_book_depth_usd=market_cfg.get("min_book_depth_usd", 50.0),
     )
 
@@ -609,29 +584,8 @@ async def main():
     # Execution — route based on mode
     exec_cfg = config["execution"]
     if mode == "live":
-        from polybot.execution.polymarket_us import PolymarketUSClient
-        us_client = PolymarketUSClient(
-            api_key=get_secret("POLYMARKET_API_KEY"),
-            secret_key=get_secret("POLYMARKET_SECRET"),
-        )
-        trader = LiveTrader(db=db, us_client=us_client,
-            max_slippage=exec_cfg["max_slippage"],
-            max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
-            max_concurrent_positions=exec_cfg["max_concurrent_positions"])
-        # Verify API credentials before trading real money
-        logger.info("LIVE MODE — verifying Polymarket US API credentials...")
-        try:
-            live_balance = await trader.get_balance()
-            logger.info(f"LIVE MODE — API connection: OK")
-            logger.info(f"LIVE MODE — balance: ${live_balance:,.2f}")
-            if live_balance > 0:
-                await db.set_bankroll(live_balance)
-            else:
-                logger.warning("LIVE MODE — balance is $0.00. Fund your account before trading.")
-        except Exception as e:
-            logger.error(f"LIVE MODE — API verification FAILED: {e}")
-            logger.error("LIVE MODE — cannot trade with invalid credentials. Exiting.")
-            return
+        logger.error("LIVE MODE not yet available for polymarket.com. Use --mode paper.")
+        return
     else:
         trader = PaperTrader(db=db, max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],

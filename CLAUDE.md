@@ -13,11 +13,11 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
 - **Minimum edge = 10%.** Only trade when model disagrees with market by 10%+.
 - **Momentum weight = 0.08.** Indicators nudge probability by max ±8%. This ensures indicators alone (without BTC movement from strike) cannot trigger a trade.
-- **5-min markets use Gamma API for discovery, CLOB API for real prices.** Gamma API (`gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}`) finds contracts. CLOB API (`clob.polymarket.com/book?token_id=TOKEN`) provides real order book bid/ask. Gamma `outcomePrices` are stale — NEVER use them for edge calculation or fills.
+- **Gamma API for discovery, polymarket.com CLOB for real prices.** Gamma API (`gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}`) finds contracts and extracts `token_id_up`/`token_id_down`. CLOB API (`clob.polymarket.com/book?token_id=TOKEN`) provides real order book. Each token has its OWN book — to buy Up, walk Up token asks; to buy Down, walk Down token asks. Gamma `outcomePrices` are stale fallback only.
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
-- **`--mode paper|live` CLI flag.** Overrides `settings.yaml`. Paper mode uses persistent SQLite bankroll (not auto-deleted). Live mode uses Ed25519-authenticated Polymarket US API (`polymarket_us.py`) with FOK market orders. Both traders share the same interface — trading loop doesn't know the difference.
+- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Live mode on polymarket.com (EIP-712 signed CLOB orders) is future work.
 
 ## Project Structure
 
@@ -35,8 +35,7 @@ polybot/
   execution/
     base.py                  # TradeResult dataclass
     paper_trader.py          # Simulated trades (paper mode)
-    live_trader.py           # Real trades via Polymarket US API, Ed25519 auth (live mode)
-    polymarket_us.py         # Polymarket US API client (Ed25519 signing, orders, balance)
+    live_trader.py           # Stub — polymarket.com live trading is future work (EIP-712)
   agents/
     scheduler.py             # Daily learning pipeline
     outcome_reviewer.py      # Logs resolved trades
@@ -158,8 +157,8 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 
 - Don't add fixed take-profit/stop-loss percentages — use the probability model for exit decisions (evaluate_hold).
 - Don't increase momentum_weight above 0.10 — indicators alone should not trigger trades.
-- Don't use CLOB `/markets` for 5-min market discovery — Gamma API slugs only. DO use CLOB `/book` for real order book prices.
-- Don't use Gamma API `outcomePrices` for edge calculation — they're stale/initial prices, not live order book.
+- Don't use Gamma API `outcomePrices` for edge calculation — they're stale/initial prices, not live order book. Use `clob.polymarket.com/book?token_id=X` for real prices.
+- Don't use polymarket.us for crypto — US platform has sports only. All crypto trading is on polymarket.com.
 - Don't use Binance.com — use Binance.us.
 - Don't allow multiple concurrent positions — one at a time, full Kelly.
 - Don't auto-delete the DB — bankroll persists across sessions in both modes. Never delete `polybot/db/polybot.db` between runs.

@@ -48,39 +48,103 @@ def test_make_slug():
     scanner = BTCMarketScanner(symbol="btc")
     assert scanner._make_slug(1774898700) == "btc-updown-5m-1774898700"
 
-def test_best_ask_returns_price_and_depth():
+
+# --- clob_best_ask ---
+
+def test_clob_best_ask_single():
+    book = {"asks": [{"price": "0.55", "size": "150"}]}
+    price, depth = BTCMarketScanner.clob_best_ask(book)
+    assert price == 0.55
+    assert depth == 150.0
+
+def test_clob_best_ask_multiple_levels():
     book = {"asks": [{"price": "0.55", "size": "100"}, {"price": "0.60", "size": "200"}]}
-    price, depth = BTCMarketScanner.best_ask(book)
+    price, depth = BTCMarketScanner.clob_best_ask(book)
     assert price == 0.55
     assert depth == 300.0
 
-def test_best_ask_empty_book():
-    assert BTCMarketScanner.best_ask({}) == (0.0, 0.0)
-    assert BTCMarketScanner.best_ask({"asks": []}) == (0.0, 0.0)
+def test_clob_best_ask_empty_book():
+    assert BTCMarketScanner.clob_best_ask({}) == (0.0, 0.0)
 
-def test_best_bid_returns_price_and_depth():
-    book = {"bids": [{"price": "0.45", "size": "150"}, {"price": "0.40", "size": "50"}]}
-    price, depth = BTCMarketScanner.best_bid(book)
+def test_clob_best_ask_empty_asks():
+    assert BTCMarketScanner.clob_best_ask({"asks": []}) == (0.0, 0.0)
+
+
+# --- clob_best_bid ---
+
+def test_clob_best_bid_single():
+    book = {"bids": [{"price": "0.45", "size": "200"}]}
+    price, depth = BTCMarketScanner.clob_best_bid(book)
     assert price == 0.45
     assert depth == 200.0
 
-def test_walk_book_single_level():
-    levels = [{"price": "0.55", "size": "100"}]
-    assert BTCMarketScanner.walk_book(levels, 50) == 0.55
+def test_clob_best_bid_multiple_levels():
+    book = {"bids": [{"price": "0.45", "size": "100"}, {"price": "0.40", "size": "50"}]}
+    price, depth = BTCMarketScanner.clob_best_bid(book)
+    assert price == 0.45
+    assert depth == 150.0
 
-def test_walk_book_multiple_levels():
-    levels = [{"price": "0.55", "size": "100"}, {"price": "0.60", "size": "100"}]
-    # Need 150 shares: 100 @ 0.55 + 50 @ 0.60 = 55 + 30 = 85 / 150 = 0.5667
-    vwap = BTCMarketScanner.walk_book(levels, 150)
+def test_clob_best_bid_empty_book():
+    assert BTCMarketScanner.clob_best_bid({}) == (0.0, 0.0)
+
+def test_clob_best_bid_empty_bids():
+    assert BTCMarketScanner.clob_best_bid({"bids": []}) == (0.0, 0.0)
+
+
+# --- clob_walk_asks ---
+
+def test_clob_walk_asks_single_level_full_fill():
+    book = {"asks": [{"price": "0.55", "size": "100"}]}
+    assert BTCMarketScanner.clob_walk_asks(book, 50) == 0.55
+
+def test_clob_walk_asks_multiple_levels_vwap():
+    book = {"asks": [{"price": "0.55", "size": "100"}, {"price": "0.60", "size": "100"}]}
+    vwap = BTCMarketScanner.clob_walk_asks(book, 150)
+    # 100 * 0.55 + 50 * 0.60 = 55 + 30 = 85; 85 / 150 ≈ 0.5667
     assert abs(vwap - 0.5667) < 0.001
 
-def test_walk_book_insufficient_depth():
-    levels = [{"price": "0.55", "size": "10"}]
-    # Need 100 shares but only 10 available (<90% fill)
-    assert BTCMarketScanner.walk_book(levels, 100) == 0.0
+def test_clob_walk_asks_insufficient_depth():
+    book = {"asks": [{"price": "0.55", "size": "10"}]}
+    assert BTCMarketScanner.clob_walk_asks(book, 100) == 0.0
 
-def test_walk_book_empty():
-    assert BTCMarketScanner.walk_book([], 50) == 0.0
+def test_clob_walk_asks_empty_book():
+    assert BTCMarketScanner.clob_walk_asks({}, 50) == 0.0
+
+def test_clob_walk_asks_zero_shares():
+    book = {"asks": [{"price": "0.55", "size": "100"}]}
+    assert BTCMarketScanner.clob_walk_asks(book, 0) == 0.0
+
+def test_clob_walk_asks_exactly_90_pct():
+    # 90 out of 100 needed — filled == 90% threshold exactly (not < 90%), so it passes
+    book = {"asks": [{"price": "0.55", "size": "90"}]}
+    assert BTCMarketScanner.clob_walk_asks(book, 100) == 0.55
+    # 89 out of 100 needed — 89 < 90, so it fails the 90% check
+    book2 = {"asks": [{"price": "0.55", "size": "89"}]}
+    assert BTCMarketScanner.clob_walk_asks(book2, 100) == 0.0
+
+
+# --- clob_walk_bids ---
+
+def test_clob_walk_bids_single_level_full_fill():
+    book = {"bids": [{"price": "0.45", "size": "100"}]}
+    assert BTCMarketScanner.clob_walk_bids(book, 50) == 0.45
+
+def test_clob_walk_bids_multiple_levels_vwap():
+    book = {"bids": [{"price": "0.45", "size": "100"}, {"price": "0.40", "size": "100"}]}
+    vwap = BTCMarketScanner.clob_walk_bids(book, 150)
+    # 100 * 0.45 + 50 * 0.40 = 45 + 20 = 65; 65 / 150 ≈ 0.4333
+    assert abs(vwap - 0.4333) < 0.001
+
+def test_clob_walk_bids_insufficient_depth():
+    book = {"bids": [{"price": "0.45", "size": "10"}]}
+    assert BTCMarketScanner.clob_walk_bids(book, 100) == 0.0
+
+def test_clob_walk_bids_empty_book():
+    assert BTCMarketScanner.clob_walk_bids({}, 50) == 0.0
+
+def test_clob_walk_bids_zero_shares():
+    book = {"bids": [{"price": "0.45", "size": "100"}]}
+    assert BTCMarketScanner.clob_walk_bids(book, 0) == 0.0
 
 
 def test_parse_contract_handles_list_outcomes():

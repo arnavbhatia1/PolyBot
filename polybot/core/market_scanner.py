@@ -16,7 +16,7 @@ class BTCMarketScanner:
 
     IMPORTANT: Gamma API outcomePrices are stale/indicative — they reflect
     the last trade price or initial 50/50, NOT the live order book.
-    Always use fetch_order_book() for real bid/ask prices before trading.
+    Always use fetch_clob_book() for real bid/ask prices before trading.
     """
 
     GAMMA_API = "https://gamma-api.polymarket.com"
@@ -25,18 +25,16 @@ class BTCMarketScanner:
 
     def __init__(self, entry_window_seconds: int = 120, min_time_remaining: int = 30,
                  cache_seconds: int = 5, symbol: str = "btc",
-                 clob_url: str = "https://clob.polymarket.com",
                  min_book_depth_usd: float = 50.0):
         self.entry_window_seconds = entry_window_seconds
         self.min_time_remaining = min_time_remaining
         self.cache_seconds = cache_seconds
         self.symbol = symbol
-        self.CLOB_API = clob_url
         self.min_book_depth_usd = min_book_depth_usd
         self._cached_contract = None
         self._cache_time = 0
         self._book_cache: dict[str, tuple[float, dict]] = {}  # token_id -> (timestamp, book)
-        self._book_cache_seconds = 2  # Books refresh every 2s
+        self._book_cache_seconds = 2
 
     def _current_window_ts(self) -> int:
         return int(time.time() // self.WINDOW_SECONDS) * self.WINDOW_SECONDS
@@ -107,81 +105,116 @@ class BTCMarketScanner:
         return (seconds_elapsed <= self.entry_window_seconds and
                 seconds_remaining >= self.min_time_remaining)
 
-    # --- CLOB Order Book ---
+    # --- Polymarket CLOB API (real order book, no auth required) ---
 
-    async def fetch_order_book(self, token_id: str, http_client=None) -> dict:
-        """Fetch live order book from CLOB API for a token.
+    async def fetch_clob_book(self, token_id: str, http_client=None) -> dict:
+        """Fetch full order book from Polymarket CLOB API.
 
-        Returns {"bids": [{"price": "0.45", "size": "100"}, ...],
-                 "asks": [{"price": "0.55", "size": "50"}, ...]}
-        or empty dict on failure.
+        No auth required. Caches result for _book_cache_seconds (2s).
+        Returns the raw book dict on success, or {} on failure.
+
+        Book format:
+          {
+            "bids": [{"price": "0.45", "size": "200"}, ...],  # price desc
+            "asks": [{"price": "0.55", "size": "150"}, ...],  # price asc
+            "last_trade_price": "0.50",
+            "tick_size": "0.01",
+            "min_order_size": "5"
+          }
         """
-        if not token_id:
-            return {}
-
-        # Check cache
         now = time.time()
         cached = self._book_cache.get(token_id)
         if cached and (now - cached[0]) < self._book_cache_seconds:
             return cached[1]
 
         try:
+            url = f"{self.CLOB_API}/book"
             if http_client:
-                resp = await http_client.get(
-                    f"{self.CLOB_API}/book", params={"token_id": token_id})
+                resp = await http_client.get(url, params={"token_id": token_id})
             else:
                 async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(
-                        f"{self.CLOB_API}/book", params={"token_id": token_id})
+                    resp = await client.get(url, params={"token_id": token_id})
             resp.raise_for_status()
             book = resp.json()
             self._book_cache[token_id] = (now, book)
             return book
         except Exception as e:
-            logger.warning(f"CLOB book fetch failed for {token_id[:16]}...: {e}")
+            logger.debug(f"CLOB book failed for {token_id}: {e}")
             return {}
 
     @staticmethod
-    def best_ask(book: dict) -> tuple[float, float]:
-        """Best ask price and total ask depth in shares. (0, 0) if empty."""
+    def clob_best_ask(book: dict) -> tuple[float, float]:
+        """Return (best_ask_price, total_ask_depth) from a CLOB book dict.
+
+        Asks are sorted price ascending — first entry is the best ask.
+        Returns (0.0, 0.0) if book is empty or asks are missing.
+        """
         asks = book.get("asks", [])
         if not asks:
-            return 0.0, 0.0
-        best = float(asks[0]["price"])
-        depth = sum(float(a["size"]) for a in asks)
-        return best, depth
+            return (0.0, 0.0)
+        best_price = float(asks[0]["price"])
+        total_depth = sum(float(a["size"]) for a in asks)
+        return (best_price, total_depth)
 
     @staticmethod
-    def best_bid(book: dict) -> tuple[float, float]:
-        """Best bid price and total bid depth in shares. (0, 0) if empty."""
+    def clob_best_bid(book: dict) -> tuple[float, float]:
+        """Return (best_bid_price, total_bid_depth) from a CLOB book dict.
+
+        Bids are sorted price descending — first entry is the best bid.
+        Returns (0.0, 0.0) if book is empty or bids are missing.
+        """
         bids = book.get("bids", [])
         if not bids:
-            return 0.0, 0.0
-        best = float(bids[0]["price"])
-        depth = sum(float(b["size"]) for b in bids)
-        return best, depth
+            return (0.0, 0.0)
+        best_price = float(bids[0]["price"])
+        total_depth = sum(float(b["size"]) for b in bids)
+        return (best_price, total_depth)
 
     @staticmethod
-    def walk_book(levels: list[dict], shares_needed: float) -> float:
-        """Walk order book levels to compute volume-weighted avg fill price.
+    def clob_walk_asks(book: dict, shares_needed: float) -> float:
+        """Walk ask levels to compute VWAP buy price for shares_needed shares.
 
-        Returns 0.0 if book can't fill the order.
+        Asks are sorted price ascending (cheapest first).
+        Returns 0.0 if the book cannot fill 90%+ of the order.
         """
-        if not levels or shares_needed <= 0:
+        asks = book.get("asks", [])
+        if not asks or shares_needed <= 0:
             return 0.0
         filled = 0.0
         cost = 0.0
-        for level in levels:
-            price = float(level["price"])
-            size = float(level["size"])
-            take = min(size, shares_needed - filled)
-            cost += take * price
+        for level in asks:
+            available = float(level["size"])
+            take = min(available, shares_needed - filled)
+            cost += take * float(level["price"])
             filled += take
             if filled >= shares_needed:
                 break
-        if filled < shares_needed * 0.90:  # Can't fill 90%+ of order
+        if filled < shares_needed * 0.90:
             return 0.0
         return cost / filled
+
+    @staticmethod
+    def clob_walk_bids(book: dict, shares_needed: float) -> float:
+        """Walk bid levels to compute VWAP sell price for shares_needed shares.
+
+        Bids are sorted price descending (highest first).
+        Returns 0.0 if the book cannot fill 90%+ of the order.
+        """
+        bids = book.get("bids", [])
+        if not bids or shares_needed <= 0:
+            return 0.0
+        filled = 0.0
+        proceeds = 0.0
+        for level in bids:
+            available = float(level["size"])
+            take = min(available, shares_needed - filled)
+            proceeds += take * float(level["price"])
+            filled += take
+            if filled >= shares_needed:
+                break
+        if filled < shares_needed * 0.90:
+            return 0.0
+        return proceeds / filled
 
     async def find_active_contract(self) -> dict | None:
         now = time.time()
