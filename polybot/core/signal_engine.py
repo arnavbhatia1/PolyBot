@@ -42,7 +42,14 @@ class SignalEngine:
         self.min_model_probability = min_model_probability
         self.weights = weights or {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                    "obv": 0.15, "vwap": 0.20}
-        self.entry_threshold = min_edge  # backward compat for learning pipeline
+
+    @property
+    def entry_threshold(self):
+        return self.min_edge
+
+    @entry_threshold.setter
+    def entry_threshold(self, value):
+        self.min_edge = value
 
     def compute_probability(self, btc_price: float, strike_price: float,
                             seconds_remaining: float, atr: float,
@@ -140,7 +147,7 @@ class SignalEngine:
 
     def evaluate_hold(self, indicators: dict, btc_price: float, strike_price: float,
                       seconds_remaining: float, market_price_for_side: float,
-                      side: str, exit_threshold: float = -0.05) -> tuple[str, float, float, str]:
+                      side: str, exit_threshold: float = -0.10) -> tuple[str, float, float, str]:
         """Continuously evaluate whether to hold or exit an existing position.
 
         Uses the same Brownian motion probability model as entry. Compares the

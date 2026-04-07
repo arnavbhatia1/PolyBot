@@ -55,7 +55,7 @@ async def test_open_trade_buy_long(trader, mock_us_client):
     mock_us_client.place_order.assert_called_once()
     call_kwargs = mock_us_client.place_order.call_args.kwargs
     assert call_kwargs["intent"] == "ORDER_INTENT_BUY_LONG"
-    assert call_kwargs["quantity"] == 90  # int(50 / 0.55)
+    assert call_kwargs["quantity"] == 91  # round(50 / 0.55)
 
 
 @pytest.mark.asyncio

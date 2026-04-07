@@ -87,6 +87,7 @@ class BTCMarketScanner:
             "seconds_remaining": seconds_remaining,
             "end_date": end_date_str,
             "neg_risk": neg_risk,
+            "closed": event.get("closed", False) or market.get("closed", False),
             "active": event.get("active", False),
         }
 

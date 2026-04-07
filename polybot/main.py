@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from polybot.config.loader import load_config, get_secret
+from polybot.execution.paper_trader import _taker_fee
 from polybot.db.models import Database
 from polybot.core.binance_feed import BinanceFeed
 from polybot.core.market_scanner import BTCMarketScanner
@@ -167,35 +168,28 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     continue
 
                 if live["seconds_remaining"] <= 0:
-                    # Contract resolved — determine binary outcome from BTC vs strike.
-                    # On Polymarket, winning side pays $1/share, losing side pays $0.
-                    # Use BTC price vs strike to determine winner (matches on-chain Chainlink resolution).
-                    pos_ctx = json.loads(pos.get("indicator_snapshot", "{}")).get("trade_context", {})
-                    strike = pos_ctx.get("strike_price", 0)
-                    btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
-                    candle_fresh = False
-                    if binance_feed.buffer.latest():
-                        candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
-                        candle_fresh = candle_age < 180  # Same 3-min staleness threshold as active management
-
-                    if strike > 0 and btc_now > 0 and candle_fresh:
-                        outcome_side = "Up" if btc_now >= strike else "Down"
-                        exit_price = 1.0 if pos["side"] == outcome_side else 0.0
-                    else:
-                        # Fallback: stale/missing data — use Gamma API price (better than wrong binary call)
+                    # Contract expired — check if Polymarket has resolved it.
+                    # Resolved contracts show outcomePrices ["1","0"] or ["0","1"].
+                    # This is the actual on-chain Chainlink resolution — no guessing.
+                    if live.get("closed") and (live["price_up"] >= 0.99 or live["price_up"] <= 0.01):
+                        # Polymarket has resolved: use the actual outcome prices
                         exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
-                        logger.warning(f"Binary resolution fallback: strike={strike}, btc={btc_now}, fresh={candle_fresh} — using market price {exit_price}")
+                    else:
+                        # Not resolved yet — wait before re-checking (avoid hammering Gamma API)
+                        await asyncio.sleep(5)
+                        continue
 
-                    sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
-                    result = await trader.close_trade(pos["id"], exit_price, token_id=sell_token)
+                    result = await trader.resolve_position(pos["id"], exit_price)
                     if result.success:
-                        gain_pct = (exit_price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0
                         shares = pos["size"] / pos["entry_price"]
-                        pnl = shares * exit_price - pos["size"]
+                        entry_fee = _taker_fee(shares, pos["entry_price"])
+                        exit_fee = _taker_fee(shares, exit_price)
+                        pnl = shares * exit_price - pos["size"] - entry_fee - exit_fee
+                        gain_pct = pnl / pos["size"] if pos["size"] > 0 else 0
                         won = "WIN" if pnl > 0 else "LOSS"
                         if pnl > 0: day_wins += 1
                         else: day_losses += 1
-                        logger.info(f"RESOLVED {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
+                        logger.info(f"RESOLVED {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${entry_fee + exit_fee:.2f}")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question="", exit_price=exit_price, log_return=0, hold_hours=0,
@@ -233,13 +227,15 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
                         result = await trader.close_trade(pos["id"], market_price, token_id=sell_token)
                         if result.success:
-                            gain_pct = (market_price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0
                             shares = pos["size"] / pos["entry_price"]
-                            pnl = shares * market_price - pos["size"]
+                            entry_fee = _taker_fee(shares, pos["entry_price"])
+                            exit_fee = _taker_fee(shares, market_price)
+                            pnl = shares * market_price - pos["size"] - entry_fee - exit_fee
+                            gain_pct = pnl / pos["size"] if pos["size"] > 0 else 0
                             won = "WIN" if pnl > 0 else "LOSS"
                             if pnl > 0: day_wins += 1
                             else: day_losses += 1
-                            logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{market_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | {reason}")
+                            logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{market_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${entry_fee + exit_fee:.2f} | {reason}")
                             if alert_manager:
                                 await alert_manager.send_trade_closed(
                                     question="", exit_price=market_price, log_return=0, hold_hours=0,
@@ -364,7 +360,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
                 if result.success:
                     traded_contracts[cid] = now_ts
-                    logger.info(f"OPEN {side} @ {price:.3f} | ${size:.2f} | {signal.reason}")
+                    entry_fee = _taker_fee(size / price, price)
+                    logger.info(f"OPEN {side} @ {price:.3f} | ${size:.2f} | fee=${entry_fee:.2f} | {signal.reason}")
                     if alert_manager:
                         await alert_manager.send_trade_opened(
                             question=contract["question"], side=side, size=size,
@@ -530,7 +527,7 @@ async def main():
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
     discord_bot.scheduler = scheduler
     if mode == "live":
-        live_balance = await trader.get_usdc_balance()
+        live_balance = await trader.get_balance()
         await db.set_bankroll(live_balance)
         logger.info(f"USDC balance: ${live_balance:,.2f}")
 

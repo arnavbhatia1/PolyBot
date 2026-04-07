@@ -73,7 +73,7 @@ class LiveTrader:
             return TradeResult(success=False, reason=f"Unknown side: {side}")
 
         # Compute share quantity from USD size
-        quantity = max(1, int(size / price))
+        quantity = max(1, round(size / price))
 
         # Place FOK market order (retry once on failure)
         resp = None
@@ -139,7 +139,7 @@ class LiveTrader:
         if not intent:
             return TradeResult(success=False, reason=f"Unknown side: {position['side']}")
 
-        shares = max(1, int(position["size"] / position["entry_price"]))
+        shares = max(1, round(position["size"] / position["entry_price"]))
 
         # Place FOK sell order (retry once)
         resp = None
@@ -176,6 +176,24 @@ class LiveTrader:
         await self.db.set_bankroll(new_balance)
 
         logger.info(f"LIVE SELL {position['side']} @ {fill_price:.4f} | lr={lr:.4f}")
+        return TradeResult(success=True, position_id=position_id, log_return=lr)
+
+    async def resolve_position(self, position_id: int, exit_price: float) -> TradeResult:
+        """Handle on-chain resolution — no sell order needed, just sync balance and close in DB."""
+        positions = await self.db.get_open_positions()
+        position = next((p for p in positions if p["id"] == position_id), None)
+        if not position:
+            return TradeResult(success=False,
+                               reason=f"Position {position_id} not found or already closed")
+
+        lr = log_return(position["entry_price"], exit_price)
+        await self.db.close_position(position_id, exit_price=exit_price, log_return=lr)
+
+        # Sync balance from exchange (resolution payout already credited on-chain)
+        new_balance = await self.get_balance()
+        await self.db.set_bankroll(new_balance)
+
+        logger.info(f"LIVE RESOLVED {position['side']} @ {exit_price:.4f} | lr={lr:.4f}")
         return TradeResult(success=True, position_id=position_id, log_return=lr)
 
     async def _get_deployed_capital(self) -> float:

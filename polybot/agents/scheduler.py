@@ -167,24 +167,28 @@ class AgentScheduler:
                 self.indicator_engine.set_active_version(new_version)
 
             # Hot-swap signal engine parameters (weights + Claude's parameter recommendations)
+            # Clamp all values to safe ranges to prevent runaway pipeline recommendations
+            def _clamp(val, lo, hi): return max(lo, min(hi, val))
+
             if self.signal_engine:
                 self.signal_engine.weights = {k: v for k, v in new_weights.items()
                                                if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
                 if "recommended_momentum_weight" in recommendations:
-                    self.signal_engine.momentum_weight = recommendations["recommended_momentum_weight"]
+                    self.signal_engine.momentum_weight = _clamp(recommendations["recommended_momentum_weight"], 0.02, 0.10)
                 if "recommended_min_edge" in recommendations:
-                    self.signal_engine.min_edge = recommendations["recommended_min_edge"]
-                    self.signal_engine.entry_threshold = recommendations["recommended_min_edge"]
+                    val = _clamp(recommendations["recommended_min_edge"], 0.05, 0.35)
+                    self.signal_engine.min_edge = val
+                    self.signal_engine.entry_threshold = val
                 if "recommended_kelly_fraction" in recommendations:
-                    self.signal_engine.kelly_fraction = recommendations["recommended_kelly_fraction"]
+                    self.signal_engine.kelly_fraction = _clamp(recommendations["recommended_kelly_fraction"], 0.05, 0.25)
                 if "recommended_min_model_probability" in recommendations:
-                    self.signal_engine.min_model_probability = recommendations["recommended_min_model_probability"]
+                    self.signal_engine.min_model_probability = _clamp(recommendations["recommended_min_model_probability"], 0.55, 0.85)
                 if "recommended_exit_edge_threshold" in recommendations:
-                    self._exit_edge_threshold = recommendations["recommended_exit_edge_threshold"]
+                    self._exit_edge_threshold = _clamp(recommendations["recommended_exit_edge_threshold"], -0.25, 0.0)
                 if "recommended_min_time_remaining" in recommendations:
-                    self._min_time_remaining = recommendations["recommended_min_time_remaining"]
+                    self._min_time_remaining = _clamp(recommendations["recommended_min_time_remaining"], 0, 120)
                     if self.market_scanner:
-                        self.market_scanner.min_time_remaining = recommendations["recommended_min_time_remaining"]
+                        self.market_scanner.min_time_remaining = self._min_time_remaining
                 if "recommended_trading_start_hour_et" in recommendations:
                     start_h = recommendations["recommended_trading_start_hour_et"]
                     self._trading_start = (start_h, 0)
@@ -223,7 +227,8 @@ class AgentScheduler:
                     sched["trading_end_minute"] = recommendations["recommended_trading_end_minute"]
 
                 try:
-                    save_config(self._config)
+                    config_to_save = {k: v for k, v in self._config.items() if k != "mode"}
+                    save_config(config_to_save)
                     logger.info("Pipeline parameters persisted to settings.yaml")
                 except Exception as e:
                     logger.error(f"Failed to persist config: {e}")

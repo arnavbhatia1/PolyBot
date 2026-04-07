@@ -19,11 +19,24 @@ class AlertManager:
         self.session_id = uuid.uuid4().hex[:8]
 
     def _get_channel(self, name):
-        for guild in self.bot.guilds:
-            for channel in guild.text_channels:
-                if channel.name == name:
-                    return channel
-        return None
+        if not hasattr(self, '_channel_cache'):
+            self._channel_cache = {}
+        if name not in self._channel_cache:
+            for guild in self.bot.guilds:
+                for channel in guild.text_channels:
+                    if channel.name == name:
+                        self._channel_cache[name] = channel
+                        break
+        return self._channel_cache.get(name)
+
+    async def _send_to_channels(self, msg: str, channels: list[str]):
+        for name in channels:
+            channel = self._get_channel(name)
+            if channel:
+                try:
+                    await channel.send(msg)
+                except Exception as e:
+                    logger.warning(f"Failed to send to #{name}: {e}")
 
     async def send_trade_opened(self, question, side, size, entry_price, ev, exit_target):
         channel = self._get_channel(self.trade_channel_name)
@@ -76,13 +89,7 @@ class AlertManager:
             f"Mode: `{mode}` | Bankroll: `${bankroll:,.2f}`\n"
             f"{'━' * 38}"
         )
-        for name in [self.trade_channel_name, self.daily_channel_name]:
-            channel = self._get_channel(name)
-            if channel:
-                try:
-                    await channel.send(banner)
-                except Exception as e:
-                    logger.warning(f"Failed to send session banner to #{name}: {e}")
+        await self._send_to_channels(banner, [self.trade_channel_name, self.daily_channel_name])
 
     async def send_day_open(self, mode: str, bankroll: float):
         """Log start of trading day to trade and daily channels."""
@@ -93,13 +100,7 @@ class AlertManager:
             f"Mode: `{mode}` | Bankroll: `${bankroll:,.2f}`\n"
             f"{'─' * 38}"
         )
-        for name in [self.trade_channel_name, self.daily_channel_name]:
-            channel = self._get_channel(name)
-            if channel:
-                try:
-                    await channel.send(msg)
-                except Exception as e:
-                    logger.warning(f"Failed to send day open to #{name}: {e}")
+        await self._send_to_channels(msg, [self.trade_channel_name, self.daily_channel_name])
 
     async def send_day_close(self, bankroll: float, day_pnl: float, wins: int, losses: int):
         """Log end of trading day to trade and daily channels."""
@@ -113,13 +114,7 @@ class AlertManager:
             f"Trades: `{total}` ({wins}W / {losses}L) | Win Rate: `{wr:.0%}`\n"
             f"{'─' * 38}"
         )
-        for name in [self.trade_channel_name, self.daily_channel_name]:
-            channel = self._get_channel(name)
-            if channel:
-                try:
-                    await channel.send(msg)
-                except Exception as e:
-                    logger.warning(f"Failed to send day close to #{name}: {e}")
+        await self._send_to_channels(msg, [self.trade_channel_name, self.daily_channel_name])
 
     async def purge_channel(self, channel_name: str, limit: int = 200) -> int:
         """Delete up to `limit` messages from a channel. Returns count deleted, or -1 on error."""

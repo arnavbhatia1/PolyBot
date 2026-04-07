@@ -1,7 +1,7 @@
 import pytest
 import pytest_asyncio
 from polybot.execution.base import TradeResult
-from polybot.execution.paper_trader import PaperTrader
+from polybot.execution.paper_trader import PaperTrader, _taker_fee
 from polybot.db.models import Database
 
 
@@ -38,7 +38,9 @@ async def test_open_trade_reduces_bankroll(trader, db):
         exit_target=0.68, stop_loss=0.47, weight_version="v001",
     )
     bankroll = await db.get_bankroll()
-    assert bankroll == pytest.approx(90.0, abs=0.01)
+    shares = 10.0 / 0.55
+    expected = 100.0 - 10.0 - _taker_fee(shares, 0.55)
+    assert bankroll == pytest.approx(expected, abs=0.01)
 
 
 @pytest.mark.asyncio

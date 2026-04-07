@@ -232,7 +232,7 @@ def _format_strategy_context(context: dict) -> str:
         "## Current Configuration\n"
         f"Indicator weights: {json.dumps(cfg.get('weights', {}))}\n"
         f"momentum_weight: {cfg.get('momentum_weight', 0.08)}\n"
-        f"min_edge (entry_threshold): {cfg.get('min_edge', 0.10)}\n"
+        f"min_edge (entry_threshold): {cfg.get('min_edge', 0.20)}\n"
         f"kelly_fraction: {cfg.get('kelly_fraction', 0.15)}\n"
         f"trading_start_hour (ET): {cfg.get('trading_start_hour_et', 8)}\n"
         f"trading_end_hour (ET): {cfg.get('trading_end_hour_et', 16)}\n"
