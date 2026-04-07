@@ -299,12 +299,13 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
                     indicators = indicator_engine.compute_all(binance_feed.buffer)
 
-                    # Use real CLOB bid price for exit evaluation (what we'd actually get selling)
+                    # Use real CLOB bid price for exit evaluation if available
                     hold_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
                     hold_book = await market_scanner.fetch_order_book(hold_token, http_client)
                     bid_price, _ = market_scanner.best_bid(hold_book)
                     gamma_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
-                    market_price = bid_price if bid_price > 0 else gamma_price
+                    # Only use CLOB bid if it's sane (not 0.99 from wrong platform)
+                    market_price = bid_price if 0.01 < bid_price < 0.99 else gamma_price
 
                     exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
                                       else default_exit_threshold)
@@ -365,31 +366,44 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             ask_up, depth_up = market_scanner.best_ask(book_up)
             ask_down, depth_down = market_scanner.best_ask(book_down)
 
-            # Fall back to Gamma prices ONLY if CLOB is completely unavailable
             gamma_up = contract["price_up"]
             gamma_down = contract["price_down"]
-            has_book = ask_up > 0 or ask_down > 0
 
-            if has_book:
-                price_up = ask_up if ask_up > 0 else gamma_up
-                price_down = ask_down if ask_down > 0 else gamma_down
-                # Log divergence between Gamma (stale) and CLOB (real)
-                if abs(price_up - gamma_up) > 0.03 or abs(price_down - gamma_down) > 0.03:
+            # Validate CLOB data: both asks > 0.85 on a binary contract is nonsensical
+            # (happens when CLOB is for a different platform, e.g. global vs US)
+            book_valid = (ask_up > 0 and ask_down > 0 and (ask_up + ask_down) < 1.50)
+
+            if book_valid:
+                price_up = ask_up
+                price_down = ask_down
+                has_book = True
+                # Log divergence once per contract slug (not every tick)
+                if cid not in traded_contracts and abs(price_up - gamma_up) > 0.03:
                     logger.info(f"CLOB vs Gamma: Up ask={price_up:.3f} (gamma={gamma_up:.3f}) "
                                 f"Down ask={price_down:.3f} (gamma={gamma_down:.3f})")
             else:
+                # No valid book — use Gamma prices with staleness filter
+                has_book = False
                 price_up = gamma_up
                 price_down = gamma_down
-                logger.warning("CLOB unavailable — using Gamma prices (may be stale)")
 
-            # Skip if no real liquidity to trade against
-            min_depth = market_scanner.min_book_depth_usd
+                # Staleness filter: if both Gamma prices are near 50/50, nobody has
+                # traded this contract — the prices are initial/meaningless.
+                # Contracts with real trading show price movement (e.g. 0.38/0.62).
+                up_movement = abs(gamma_up - 0.50)
+                down_movement = abs(gamma_down - 0.50)
+                if up_movement < 0.04 and down_movement < 0.04:
+                    logger.debug(f"Stale prices: Up={gamma_up:.3f} Down={gamma_down:.3f} "
+                                 f"(no movement from 50/50, contract likely untouched)")
+                    continue
+
+            # Skip if valid book but no real liquidity
             if has_book:
+                min_depth = market_scanner.min_book_depth_usd
                 depth_usd_up = depth_up * ask_up if ask_up > 0 else 0
                 depth_usd_down = depth_down * ask_down if ask_down > 0 else 0
                 if depth_usd_up < min_depth and depth_usd_down < min_depth:
-                    logger.debug(f"Thin book: Up ${depth_usd_up:.0f} Down ${depth_usd_down:.0f} "
-                                 f"(min ${min_depth:.0f})")
+                    logger.debug(f"Thin book: Up ${depth_usd_up:.0f} Down ${depth_usd_down:.0f}")
                     continue
 
             # Don't enter if market already decided (extreme prices)
