@@ -354,32 +354,11 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
                     indicators = indicator_engine.compute_all(binance_feed.buffer)
 
-                    # Read CLOB bid book — WebSocket (instant) or HTTP fallback
+                    # NegRisk execution sell price via /price endpoint
                     hold_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
-                    if clob_ws and clob_ws.connected:
-                        hold_book = clob_ws.get_book(hold_token)
-                        if not hold_book:
-                            hold_book = await market_scanner.fetch_clob_book(hold_token, http_client)
-                    else:
-                        hold_book = await market_scanner.fetch_clob_book(hold_token, http_client)
-                    shares_held = pos.get("shares_held") or pos["size"] / pos["entry_price"]
-
-                    # Walk bid book for realistic VWAP sell price (same as entry walks asks)
-                    sell_vwap = market_scanner.clob_walk_bids(hold_book, shares_held)
-                    if sell_vwap <= 0:
-                        # Book can't fill full order — try available depth
-                        avail_bids = market_scanner.clob_bid_depth(hold_book)
-                        if avail_bids > 0:
-                            sell_vwap = market_scanner.clob_walk_bids(hold_book, avail_bids)
-                    bid_price, _ = market_scanner.clob_best_bid(hold_book)
+                    exec_sell = await market_scanner.fetch_market_price(hold_token, "SELL", http_client)
                     gamma_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
-                    # Use VWAP from bid walk if available, else best bid, else Gamma
-                    if sell_vwap > 0 and 0.01 < sell_vwap < 0.99:
-                        market_price = sell_vwap
-                    elif 0.01 < bid_price < 0.99:
-                        market_price = bid_price
-                    else:
-                        market_price = gamma_price
+                    market_price = exec_sell if exec_sell > 0 else gamma_price
 
                     exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
                                       else default_exit_threshold)
@@ -466,40 +445,26 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 book_up = await market_scanner.fetch_clob_book(token_up, http_client)
                 book_down = await market_scanner.fetch_clob_book(token_down, http_client)
 
-            # Best ask = what you'd actually pay to buy each side
-            ask_up, depth_up = market_scanner.clob_best_ask(book_up)
-            ask_down, depth_down = market_scanner.clob_best_ask(book_down)
+            # NegRisk execution prices: GET /price accounts for cross-matching
+            # across complementary tokens. The raw token book (GET /book) only
+            # shows direct orders — misses all synthetic liquidity from negRisk.
+            # Example: raw book shows asks at $0.99, but /price shows $0.50.
+            exec_up = await market_scanner.fetch_market_price(token_up, "BUY", http_client)
+            exec_down = await market_scanner.fetch_market_price(token_down, "BUY", http_client)
 
-            # Complementary pricing: in negRisk binary markets, buying Down is
-            # economically equivalent to selling Up at bid. Use the cheaper of:
-            # (a) direct ask on this side, or (b) 1 - bid on the opposite side.
-            bid_up_price, _ = market_scanner.clob_best_bid(book_up)
-            bid_down_price, _ = market_scanner.clob_best_bid(book_down)
-
-            if ask_up > 0 or ask_down > 0 or bid_up_price > 0 or bid_down_price > 0:
-                # Direct ask prices (0 if no asks available)
-                direct_up = ask_up if ask_up > 0 else 999.0
-                direct_down = ask_down if ask_down > 0 else 999.0
-
-                # Complementary prices: 1 - bid of opposite side
-                comp_up = (1.0 - bid_down_price) if bid_down_price > 0.01 else 999.0
-                comp_down = (1.0 - bid_up_price) if bid_up_price > 0.01 else 999.0
-
-                # Use the cheaper path for each side
-                price_up = min(direct_up, comp_up)
-                price_down = min(direct_down, comp_down)
-
-                # Sanity: clamp to valid range, fall back to Gamma if both paths fail
-                if price_up >= 999.0:
-                    price_up = contract["price_up"]
-                if price_down >= 999.0:
-                    price_down = contract["price_down"]
-
+            if exec_up > 0 or exec_down > 0:
+                price_up = exec_up if exec_up > 0 else contract["price_up"]
+                price_down = exec_down if exec_down > 0 else contract["price_down"]
                 price_source = "clob"
             else:
+                # /price endpoint unavailable — fall back to Gamma (stale but usable)
                 price_up = contract["price_up"]
                 price_down = contract["price_down"]
                 price_source = "gamma"
+
+            # Also grab raw book depth for minimum depth filter below
+            ask_up, depth_up = market_scanner.clob_best_ask(book_up)
+            ask_down, depth_down = market_scanner.clob_best_ask(book_down)
 
             eval_window = int(now_ts // 300) * 300
 
@@ -618,42 +583,12 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 fee_rate = await market_scanner.fetch_fee_rate(token_id, http_client)
                 tick_size = await market_scanner.fetch_tick_size(token_id, http_client)
 
-                # Simulate realistic fill by walking CLOB order book
-                if price_source == "clob":
-                    book = book_up if side == "Up" else book_down
-                    # If book has no asks, try a fresh HTTP fetch (WS snapshot may be stale)
-                    if not book.get("asks"):
-                        book = await market_scanner.fetch_clob_book(token_id, http_client)
-                    min_order = market_scanner.book_min_order_size(book)
-                    shares_needed = size / price
-                    if shares_needed < min_order:
-                        if eval_window != last_eval_log_window:
-                            logger.info(f"SKIP: {shares_needed:.0f} shares < min_order_size {min_order:.0f} for {side}")
-                        continue
-                    vwap = market_scanner.clob_walk_asks(book, shares_needed)
-                    if vwap > 0:
-                        price = market_scanner.snap_to_tick(vwap, tick_size)
-                    else:
-                        # Book can't fill full order — scale down to available depth
-                        available = market_scanner.clob_ask_depth(book)
-                        if available < min_order:
-                            if eval_window != last_eval_log_window:
-                                logger.info(f"SKIP: CLOB depth {available:.0f} < min_order {min_order:.0f} for {side} (edge={signal.edge:+.0%})")
-                            continue
-                        min_shares = market_scanner.min_book_depth_usd / price if price > 0 else 0
-                        if available < min_shares:
-                            if eval_window != last_eval_log_window:
-                                logger.info(f"SKIP: CLOB depth {available:.0f} < min ${market_scanner.min_book_depth_usd:.0f} for {side}")
-                            continue
-                        vwap = market_scanner.clob_walk_asks(book, available)
-                        if vwap > 0:
-                            price = market_scanner.snap_to_tick(vwap, tick_size)
-                            size = round(available * price, 2)
-                            logger.info(f"CLOB: scaled order to {available:.0f} shares (wanted {shares_needed:.0f}) for {side}")
-                        elif shares_needed > 0:
-                            if eval_window != last_eval_log_window:
-                                logger.info(f"SKIP: CLOB can't fill {shares_needed:.0f} shares of {side}")
-                            continue
+                # Execution price: /price endpoint gives the real negRisk cross-matched price
+                # (the price already reflects the merged book, not just the raw token asks)
+                exec_price = await market_scanner.fetch_market_price(token_id, "BUY", http_client)
+                if exec_price > 0:
+                    price = market_scanner.snap_to_tick(exec_price, tick_size)
+                # If /price fails, keep the price from the evaluation (already from /price)
 
                 snapshot = indicator_engine.get_snapshot(indicators)
                 snapshot["trade_context"] = {

@@ -309,6 +309,38 @@ class BTCMarketScanner:
         """Total shares available on the bid side."""
         return sum(float(l["size"]) for l in book.get("bids", []))
 
+    # --- NegRisk execution prices (accounts for cross-matching) ---
+
+    async def fetch_market_price(self, token_id: str, side: str = "BUY",
+                                  http_client=None) -> float:
+        """GET /price — actual execution price accounting for negRisk cross-matching.
+
+        The raw token book (GET /book) only shows direct token orders.
+        In negRisk binary markets, the CLOB engine cross-matches orders
+        across complementary tokens, so the real executable price is often
+        much better than the raw best ask/bid.
+
+        Args:
+            token_id: The token to price
+            side: "BUY" or "SELL"
+
+        Returns: execution price as float, or 0.0 on error.
+        """
+        try:
+            url = f"{self.CLOB_API}/price"
+            params = {"token_id": token_id, "side": side}
+            if http_client:
+                resp = await http_client.get(url, params=params)
+            else:
+                async with httpx.AsyncClient(timeout=3) as client:
+                    resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            return float(data.get("price", 0))
+        except Exception as e:
+            logger.debug(f"Market price fetch failed for {token_id} {side}: {e}")
+            return 0.0
+
     # --- Lightweight HTTP helpers (public, no auth) ---
 
     DATA_API = "https://data-api.polymarket.com"
