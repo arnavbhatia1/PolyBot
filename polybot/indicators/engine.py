@@ -13,12 +13,12 @@ from polybot.indicators.atr import compute_atr_gate
 logger = logging.getLogger(__name__)
 
 DEFAULT_PARAMS = {
-    "rsi": {"period": 14, "overbought": 70, "oversold": 30},
-    "macd": {"fast": 12, "slow": 26, "signal_period": 9},
-    "stochastic": {"k_period": 14, "d_smoothing": 3, "overbought": 80, "oversold": 20},
-    "ema": {"fast_period": 9, "slow_period": 21, "chop_threshold": 0.001},
-    "obv": {"slope_period": 5},
-    "atr": {"period": 14, "low_pct": 25, "high_pct": 90, "history": 100},
+    "rsi": {"period": 5, "overbought": 70, "oversold": 30},
+    "macd": {"fast": 5, "slow": 13, "signal_period": 4},
+    "stochastic": {"k_period": 5, "d_smoothing": 2, "overbought": 80, "oversold": 20},
+    "ema": {"fast_period": 3, "slow_period": 8, "chop_threshold": 0.001},
+    "obv": {"slope_period": 3},
+    "atr": {"period": 7, "low_pct": 5, "high_pct": 95, "history": 100},
 }
 
 class IndicatorEngine:

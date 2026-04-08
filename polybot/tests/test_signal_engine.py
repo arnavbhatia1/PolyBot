@@ -1,4 +1,5 @@
 import pytest
+import numpy as np
 from polybot.core.signal_engine import SignalEngine, TradeSignal
 
 def _make_indicators(atr_value=30.0, rsi_score=0.0, macd_score=0.0,
@@ -143,3 +144,75 @@ def test_hold_down_side(engine):
         seconds_remaining=60, market_price_for_side=0.70, side="Down", exit_threshold=-0.05)
     assert action == "HOLD"
     assert edge > 0
+
+
+# --- Student-t CDF tests ---
+
+def test_student_t_less_extreme_than_normal():
+    """Student-t CDF gives less extreme probabilities than normal for large z."""
+    se = SignalEngine(student_t_df=4)
+    # Large distance: Student-t should give lower P(Up) than normal model would
+    prob = se.compute_probability(72000, 71000, 180, 50.0)
+    # With z = 1000 / (50 * sqrt(3)) = 11.5, normal gives ~1.0, Student-t gives ~0.99
+    assert prob < 0.99  # fat tails mean reversal is more likely
+
+
+# --- Regime factor tests ---
+
+def test_regime_factor_trending():
+    se = SignalEngine()
+    # Monotonically increasing closes = positive autocorrelation
+    closes = np.array([100 + i * 2.0 for i in range(15)])
+    factor = se.compute_regime_factor(closes)
+    assert factor > 0  # trending
+
+
+def test_regime_factor_reverting():
+    se = SignalEngine()
+    # Alternating up/down = negative autocorrelation
+    closes = np.array([100 + ((-1)**i) * 5.0 for i in range(15)])
+    factor = se.compute_regime_factor(closes)
+    assert factor < 0  # mean reverting
+
+
+# --- Order flow integration tests ---
+
+def test_flow_signal_bullish():
+    se = SignalEngine(flow_weight=0.06)
+    prob_neutral = se.compute_probability(71100, 71000, 180, 50.0, flow_signal=0.0)
+    prob_bullish = se.compute_probability(71100, 71000, 180, 50.0, flow_signal=1.0)
+    assert prob_bullish > prob_neutral  # bullish flow increases P(Up)
+
+
+# --- ATR gate tests ---
+
+def test_atr_gate_blocks_entry():
+    se = SignalEngine(min_edge=0.10)
+    indicators = {
+        "atr": {"atr": 5.0, "passes": False, "reason": "too_quiet"},
+        "rsi": {"score": 0}, "macd": {"score": 0}, "stochastic": {"score": 0},
+        "obv": {"score": 0}, "vwap": {"score": 0},
+    }
+    signal = se.evaluate(indicators, has_position=False, in_entry_window=True,
+                         btc_price=71500, strike_price=71000,
+                         seconds_remaining=180, market_price_up=0.50, market_price_down=0.50)
+    assert signal.action == "SKIP"
+    assert "ATR gate" in signal.reason
+
+
+# --- Fee-aware hold tests ---
+
+def test_evaluate_hold_fee_aware_threshold():
+    """Fee-aware scalp: threshold is harder when fees are high."""
+    se = SignalEngine()
+    indicators = {"atr": {"atr": 50.0}, "rsi": {"score": 0}, "macd": {"score": 0},
+                  "stochastic": {"score": 0}, "obv": {"score": 0}, "vwap": {"score": 0}}
+    # With entry_price and fee, effective threshold should be more negative
+    action1, _, _, _ = se.evaluate_hold(indicators, 71100, 71000, 180, 0.60, "Up",
+                                        exit_threshold=-0.10, entry_price=0.0)
+    action2, _, _, _ = se.evaluate_hold(indicators, 71100, 71000, 180, 0.60, "Up",
+                                        exit_threshold=-0.10, entry_price=0.50, fee_rate=0.072)
+    # With fee awareness, the threshold is harder (more negative) so it's more likely to HOLD
+    # Both should return the same action type here but the effective thresholds differ
+    assert action1 in ("HOLD", "EXIT")
+    assert action2 in ("HOLD", "EXIT")

@@ -180,3 +180,20 @@ def test_handle_array_message(ws):
 
 def test_connected_default_false(ws):
     assert ws.connected is False
+
+
+# --- Trade buffer tests ---
+
+def test_trade_buffer_accumulates(ws):
+    msg = {"asset_id": "token123", "price": "0.55", "size": "100", "side": "BUY"}
+    ws._on_last_trade(msg)
+    ws._on_last_trade(msg)
+    history = ws.get_trade_history("token123")
+    assert len(history) == 2
+    assert history[0]["price"] == "0.55"
+    assert history[0]["side"] == "BUY"
+    assert "timestamp" in history[0]
+
+
+def test_trade_buffer_empty_token(ws):
+    assert ws.get_trade_history("nonexistent") == []

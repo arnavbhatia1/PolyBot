@@ -32,37 +32,40 @@ binance:
 
 indicators:
   rsi:
-    period: 14
+    period: 5          # was 14 — 5 minutes = current window
     overbought: 70
     oversold: 30
   macd:
-    fast_period: 12
-    slow_period: 26
-    signal_period: 9
+    fast_period: 5     # was 12 — scaled for 1-min candles
+    slow_period: 13    # was 26 — ~40% of standard
+    signal_period: 4   # was 9
   stochastic:
-    k_period: 14
-    d_smoothing: 3
+    k_period: 5        # was 14 — 5-minute lookback
+    d_smoothing: 2     # was 3 — faster smoothing
     overbought: 80
     oversold: 20
   ema:
-    fast_period: 9
-    slow_period: 21
-    chop_threshold: 0.0001  # 0.01% — loosened for 1-min candle granularity
+    fast_period: 3     # was 9 — react within window
+    slow_period: 8     # was 21
+    chop_threshold: 0.0001
   obv:
-    slope_period: 5
+    slope_period: 3    # was 5 — 3-minute trend
   vwap:
     session_minutes: 5
   atr:
-    period: 14
-    low_percentile: 5     # Only block truly dead markets
-    high_percentile: 95   # Only block extreme chaos
+    period: 7          # was 14 — 7-minute vol window
+    low_percentile: 5
+    high_percentile: 95
     history_periods: 100
 
 signal:
   entry_threshold: 0.10  # Minimum edge — tunable by learning pipeline (range: 0.05-0.35)
   exit_edge_threshold: -0.10  # Exit when holding edge drops — tunable by pipeline (range: -0.25 to 0.0)
   min_model_probability: 0.65  # Min confidence to enter — tunable by pipeline (range: 0.55-0.85)
-  momentum_weight: 0.08  # Max ±8% indicator nudge — must stay below entry_threshold so indicators alone can't trigger trades
+  momentum_weight: 0.04       # was 0.08 — demoted to Layer 4 (weakest signal)
+  regime_weight: 0.05         # NEW — max ±5% regime adjustment (Layer 2)
+  flow_weight: 0.06           # NEW — max ±6% order flow adjustment (Layer 3)
+  student_t_df: 4             # NEW — degrees of freedom for fat-tailed CDF
   weights:
     rsi: 0.20
     macd: 0.25

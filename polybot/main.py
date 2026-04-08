@@ -15,6 +15,7 @@ from polybot.core.market_scanner import BTCMarketScanner
 from polybot.core.clob_ws import ClobWebSocket
 from polybot.indicators.engine import IndicatorEngine
 from polybot.core.signal_engine import SignalEngine
+from polybot.core.order_flow import compute_flow_signal
 from polybot.brain.claude_client import ClaudeClient
 from polybot.execution.paper_trader import PaperTrader
 from polybot.agents.outcome_reviewer import OutcomeReviewer
@@ -382,9 +383,23 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
                     exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
                                       else default_exit_threshold)
+                    closes = binance_feed.buffer.get_closes()
+
+                    # Compute order flow for hold evaluation
+                    hold_trades_up = clob_ws.get_trade_history(live.get("token_id_up", "")) if clob_ws else []
+                    hold_trades_down = clob_ws.get_trade_history(live.get("token_id_down", "")) if clob_ws else []
+                    hold_flow = compute_flow_signal(
+                        clob_ws.get_book(live.get("token_id_up", "")) if clob_ws else {},
+                        clob_ws.get_book(live.get("token_id_down", "")) if clob_ws else {},
+                        hold_trades_up, hold_trades_down,
+                    )
+
                     action, model_prob, holding_edge, reason = signal_engine.evaluate_hold(
                         indicators, btc_now, strike_now, live["seconds_remaining"],
-                        market_price, pos["side"], exit_threshold)
+                        market_price, pos["side"], exit_threshold,
+                        entry_price=pos["entry_price"],
+                        fee_rate=pos.get("fee_rate") or DEFAULT_FEE_RATE,
+                        closes=closes, flow_signal=hold_flow["flow_score"])
 
                     if action == "EXIT":
                         sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
@@ -436,14 +451,16 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 await clob_ws.subscribe(new_tokens)
                 ws_subscribed_tokens.extend(new_tokens)
 
-            # Read order books — WebSocket state (instant) or HTTP fallback
+            # Read order books — WebSocket state (instant) with HTTP fallback
+            # WS book snapshots can go stale (asks emptied after fills) while
+            # best_bid_ask keeps updating. Fall back to HTTP if WS book has no depth.
             if clob_ws and clob_ws.connected:
                 book_up = clob_ws.get_book(token_up)
                 book_down = clob_ws.get_book(token_down)
-                # If WS has no book yet (just subscribed), fall back to HTTP
-                if not book_up:
+                # Fall back to HTTP if WS book is empty or has no asks
+                if not book_up or not book_up.get("asks"):
                     book_up = await market_scanner.fetch_clob_book(token_up, http_client)
-                if not book_down:
+                if not book_down or not book_down.get("asks"):
                     book_down = await market_scanner.fetch_clob_book(token_down, http_client)
             else:
                 book_up = await market_scanner.fetch_clob_book(token_up, http_client)
@@ -453,19 +470,42 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             ask_up, depth_up = market_scanner.clob_best_ask(book_up)
             ask_down, depth_down = market_scanner.clob_best_ask(book_down)
 
-            if ask_up > 0 or ask_down > 0:
-                price_up = ask_up if ask_up > 0 else contract["price_up"]
-                price_down = ask_down if ask_down > 0 else contract["price_down"]
+            # Complementary pricing: in negRisk binary markets, buying Down is
+            # economically equivalent to selling Up at bid. Use the cheaper of:
+            # (a) direct ask on this side, or (b) 1 - bid on the opposite side.
+            bid_up_price, _ = market_scanner.clob_best_bid(book_up)
+            bid_down_price, _ = market_scanner.clob_best_bid(book_down)
+
+            if ask_up > 0 or ask_down > 0 or bid_up_price > 0 or bid_down_price > 0:
+                # Direct ask prices (0 if no asks available)
+                direct_up = ask_up if ask_up > 0 else 999.0
+                direct_down = ask_down if ask_down > 0 else 999.0
+
+                # Complementary prices: 1 - bid of opposite side
+                comp_up = (1.0 - bid_down_price) if bid_down_price > 0.01 else 999.0
+                comp_down = (1.0 - bid_up_price) if bid_up_price > 0.01 else 999.0
+
+                # Use the cheaper path for each side
+                price_up = min(direct_up, comp_up)
+                price_down = min(direct_down, comp_down)
+
+                # Sanity: clamp to valid range, fall back to Gamma if both paths fail
+                if price_up >= 999.0:
+                    price_up = contract["price_up"]
+                if price_down >= 999.0:
+                    price_down = contract["price_down"]
+
                 price_source = "clob"
             else:
-                # CLOB unavailable — fall back to Gamma (stale but better than nothing)
                 price_up = contract["price_up"]
                 price_down = contract["price_down"]
                 price_source = "gamma"
 
-            # Don't enter if market already decided (extreme prices)
-            if price_up < 0.15 or price_up > 0.85:
-                continue
+            eval_window = int(now_ts // 300) * 300
+
+            # No extreme price filter — the model's min_edge (10%) and
+            # min_model_probability (65%) already prevent bad trades.
+            # Both Up AND Down sides are evaluated by the signal engine.
 
             # Skip if no real depth to fill against
             if price_source == "clob":
@@ -473,7 +513,9 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 depth_usd_up = depth_up * ask_up if ask_up > 0 else 0
                 depth_usd_down = depth_down * ask_down if ask_down > 0 else 0
                 if depth_usd_up < min_depth and depth_usd_down < min_depth:
-                    logger.debug(f"Thin CLOB: Up ${depth_usd_up:.0f} Down ${depth_usd_down:.0f}")
+                    if eval_window != last_eval_log_window:
+                        last_eval_log_window = eval_window
+                        logger.info(f"EVAL: thin CLOB depth Up=${depth_usd_up:.0f} Dn=${depth_usd_down:.0f} — skipping window")
                     continue
 
             # Skip if spread too wide (illiquid market)
@@ -493,12 +535,11 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             # Compute strike: BTC price at the 5-min window boundary
             # Use the candle that opened at the window start
             window_ts = int(now_ts // 300) * 300
-            eval_window = window_ts
             if window_ts not in window_strikes:
                 # Find the candle closest to the 5-min window boundary
                 candles = binance_feed.buffer.get_last_n(10)
                 for c in candles:
-                    if abs(c.timestamp / 1000 - window_ts) < 60:
+                    if abs(c.timestamp / 1000 - window_ts) <= 60:
                         window_strikes[window_ts] = c.open
                         break
                 # No fallback — if we can't find the window-open candle, skip this window.
@@ -516,6 +557,9 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
             btc_price = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
             if btc_price <= 0:
+                if eval_window != last_eval_log_window:
+                    last_eval_log_window = eval_window
+                    logger.info(f"EVAL: no BTC price — Binance feed not ready")
                 continue
 
             # Skip if candle data is stale (WebSocket may have disconnected)
@@ -530,15 +574,25 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
             # Compute indicators and evaluate probability model
             indicators = indicator_engine.compute_all(binance_feed.buffer)
+
+            # Compute order flow signal from CLOB data
+            trades_up = clob_ws.get_trade_history(token_up) if clob_ws else []
+            trades_down = clob_ws.get_trade_history(token_down) if clob_ws else []
+            flow_data = compute_flow_signal(book_up, book_down, trades_up, trades_down)
+            flow_score = flow_data["flow_score"]
+
+            # Get closes array for regime detection
+            closes = binance_feed.buffer.get_closes()
+
             signal = signal_engine.evaluate(
                 indicators, has_position=False, in_entry_window=in_window,
                 btc_price=btc_price, strike_price=strike,
                 seconds_remaining=contract["seconds_remaining"],
                 market_price_up=price_up, market_price_down=price_down,
+                closes=closes, flow_signal=flow_score,
             )
 
             # Log signal evaluation once per window so we can see what the model sees
-            eval_window = int(now_ts // 300) * 300
             if eval_window != last_eval_log_window:
                 last_eval_log_window = eval_window
                 buf_len = len(binance_feed.buffer) if binance_feed.buffer else 0
@@ -546,7 +600,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     f"EVAL: {signal.action} | BTC={btc_price:,.0f} strike={strike:,.0f} "
                     f"d={btc_price-strike:+,.0f} | mkt Up={price_up:.2f} Dn={price_down:.2f} "
                     f"| prob={signal.prob:.0%} edge={signal.edge:+.0%} | {contract['seconds_remaining']:.0f}s left "
-                    f"| buf={buf_len} | {signal.reason}")
+                    f"| flow={flow_score:+.2f} | buf={buf_len} | {signal.reason}")
 
             if signal.action in ("BUY_YES", "BUY_NO"):
                 side = "Up" if signal.action == "BUY_YES" else "Down"
@@ -555,7 +609,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 bankroll = await db.get_bankroll()
                 size = round(bankroll * signal.kelly_size, 2)
                 if size < 1.0:
-                    continue  # Kelly says don't trade — respect it
+                    logger.info(f"SKIP: Kelly size ${size:.2f} < $1 — edge too small to trade")
+                    continue
                 if size > bankroll * max_bankroll_pct:
                     size = round(bankroll * max_bankroll_pct, 2)
 
@@ -566,10 +621,14 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 # Simulate realistic fill by walking CLOB order book
                 if price_source == "clob":
                     book = book_up if side == "Up" else book_down
+                    # If book has no asks, try a fresh HTTP fetch (WS snapshot may be stale)
+                    if not book.get("asks"):
+                        book = await market_scanner.fetch_clob_book(token_id, http_client)
                     min_order = market_scanner.book_min_order_size(book)
                     shares_needed = size / price
                     if shares_needed < min_order:
-                        logger.info(f"SKIP: {shares_needed:.0f} shares < min_order_size {min_order:.0f} for {side}")
+                        if eval_window != last_eval_log_window:
+                            logger.info(f"SKIP: {shares_needed:.0f} shares < min_order_size {min_order:.0f} for {side}")
                         continue
                     vwap = market_scanner.clob_walk_asks(book, shares_needed)
                     if vwap > 0:
@@ -578,11 +637,13 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         # Book can't fill full order — scale down to available depth
                         available = market_scanner.clob_ask_depth(book)
                         if available < min_order:
-                            logger.info(f"SKIP: CLOB depth {available:.0f} shares < min_order_size {min_order:.0f} for {side}")
+                            if eval_window != last_eval_log_window:
+                                logger.info(f"SKIP: CLOB depth {available:.0f} < min_order {min_order:.0f} for {side} (edge={signal.edge:+.0%})")
                             continue
                         min_shares = market_scanner.min_book_depth_usd / price if price > 0 else 0
                         if available < min_shares:
-                            logger.info(f"SKIP: CLOB depth {available:.0f} shares < min ${market_scanner.min_book_depth_usd:.0f} for {side}")
+                            if eval_window != last_eval_log_window:
+                                logger.info(f"SKIP: CLOB depth {available:.0f} < min ${market_scanner.min_book_depth_usd:.0f} for {side}")
                             continue
                         vwap = market_scanner.clob_walk_asks(book, available)
                         if vwap > 0:
@@ -590,7 +651,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             size = round(available * price, 2)
                             logger.info(f"CLOB: scaled order to {available:.0f} shares (wanted {shares_needed:.0f}) for {side}")
                         elif shares_needed > 0:
-                            logger.info(f"SKIP: CLOB can't fill {shares_needed:.0f} shares of {side}")
+                            if eval_window != last_eval_log_window:
+                                logger.info(f"SKIP: CLOB can't fill {shares_needed:.0f} shares of {side}")
                             continue
 
                 snapshot = indicator_engine.get_snapshot(indicators)
@@ -605,6 +667,9 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     "momentum_score": signal_engine.compute_momentum(indicators),
                     "atr": indicators.get("atr", {}).get("atr", 0),
                     "size": size,
+                    "flow_score": flow_score,
+                    "flow_book_imbalance": flow_data.get("book_imbalance", 0),
+                    "flow_trade_count": flow_data.get("trade_count", 0),
                 }
                 snapshot_str = json.dumps(snapshot)
                 result = await trader.open_trade(
@@ -722,10 +787,13 @@ async def main():
     signal_engine = SignalEngine(
         min_edge=signal_cfg.get("entry_threshold", 0.20),
         kelly_fraction=config["math"].get("kelly_fraction", 0.15),
-        momentum_weight=signal_cfg.get("momentum_weight", 0.08),
+        momentum_weight=signal_cfg.get("momentum_weight", 0.04),
         weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                             "obv": 0.15, "vwap": 0.20}),
         min_model_probability=signal_cfg.get("min_model_probability", 0.65),
+        student_t_df=signal_cfg.get("student_t_df", 4),
+        regime_weight=signal_cfg.get("regime_weight", 0.05),
+        flow_weight=signal_cfg.get("flow_weight", 0.06),
     )
 
     # Brain (Claude client kept for TA evolver analysis calls)

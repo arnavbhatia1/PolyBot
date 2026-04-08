@@ -6,14 +6,15 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 
 ## Key Architecture Decisions
 
-- **Probability model, not indicators.** The bot computes P(Up) using Brownian motion: z = (BTC - strike) / (ATR * sqrt(time)), then P = logistic(1.7z). Indicators provide a small momentum nudge (±8%). The edge is: model probability - market price.
-- **Active position management.** Hold to $1 resolution when the model is confident (holding_edge > 0). Exit early when the model says the market has moved past fair value (holding_edge ≤ -5%). Same Brownian motion model for entry AND exit. Not fixed take-profit/stop-loss — the math decides.
+- **4-layer probability model.** The bot computes P(Up) using four independent signal layers: (1) Student-t CDF with df=4 for fat-tailed Brownian motion: z = (BTC - strike) / (ATR * sqrt(time)), P = t.cdf(z, 4) — captures fat tails that the normal distribution misses, finding edge on underdog positions the market overprices. (2) Regime detection: 1-lag autocorrelation of recent returns. Trending regimes amplify probability, mean-reverting regimes dampen it (±5%). (3) Order flow: book imbalance + trade flow from CLOB WebSocket data. Informed buying/selling pressure leads price movement (±6%). (4) Indicator momentum: RSI, MACD, Stochastic, OBV, VWAP provide a small directional nudge (±4%). The edge is: model probability - effective market price.
+- **Active position management.** Hold to $1 resolution when the model is confident. Exit early (scalp) when holding_edge drops below a fee-aware threshold that accounts for exit costs and time urgency. Same probability model for entry AND exit. Not fixed take-profit/stop-loss — the math decides.
 - **Single position at a time.** Full Kelly on the best edge, no capital dilution.
 - **One trade per 5-min contract.** After any exit, that contract is blacklisted.
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
 - **Minimum edge = 10%.** Only trade when model disagrees with market by 10%+. Tunable by learning pipeline (range 5-35%).
-- **Momentum weight = 0.08.** Indicators nudge probability by max ±8%. This ensures indicators alone (without BTC movement from strike) cannot trigger a trade.
+- **Signal layer weights.** Layer 1 (Student-t base) provides the core probability. Layer 2 (regime) adjusts by ±5% max. Layer 3 (order flow) adjusts by ±6% max. Layer 4 (momentum/indicators) adjusts by ±4% max — deliberately the weakest signal since indicators alone should not trigger trades.
 - **Real-time WebSocket + Gamma API for prices.** Primary: CLOB WebSocket (`wss://ws-subscriptions-clob.polymarket.com/ws/market`) provides real-time book snapshots, price deltas, best bid/ask, last trades, and market resolution events. Trading loop is event-driven — reacts instantly to book changes instead of polling. HTTP fallback: `clob.polymarket.com/book?token_id=TOKEN` if WS disconnected. Gamma API (`gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}`) for contract discovery and `token_id_up`/`token_id_down`. Supplementary: `GET /spread` for liquidity check, `GET /midpoints` for quick price ref, `GET /last-trades-prices` for fill validation. Gamma `outcomePrices` are stale fallback only.
+- **Complementary pricing for negRisk markets.** In binary markets, buying Down is economically equivalent to minting a bundle ($1) and selling Up. The effective price is: min(ask_side, 1 - bid_opposite). This fixes the "Up=0.99 Dn=0.99" problem where the underdog's ask book is empty but the favorite's bid reveals the true price. E.g., if bid_up=0.97, effective Down price = $0.03, not the $0.99 showing on the Down ask book.
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
@@ -30,6 +31,7 @@ polybot/
     clob_ws.py               # Real-time CLOB WebSocket feed (order books, trades, resolution)
     market_scanner.py        # Gamma API discovery + CLOB HTTP helpers (spread, midpoints, volume)
     signal_engine.py         # Probability model: P(Up) from BTC vs strike + time + vol
+    order_flow.py          # Book imbalance + trade flow signal from CLOB data
   indicators/
     ema.py, rsi.py, macd.py, stochastic.py, obv.py, vwap.py, atr.py
     engine.py                # Combines all 7, manages weight versions
@@ -66,7 +68,10 @@ polybot/
 - `signal.entry_threshold:` — 0.10 (minimum 10% edge to trade)
 - `signal.exit_edge_threshold:` — -0.10 (exit when holding edge drops below -10%)
 - `signal.min_model_probability:` — 0.65 (skip coin-flip trades — model must be ≥65% confident)
-- `signal.momentum_weight:` — 0.08 (max ±8% indicator adjustment to probability)
+- `signal.momentum_weight:` — 0.04 (max ±4% indicator adjustment, Layer 4 — weakest signal)
+- `signal.regime_weight:` — 0.05 (max ±5% regime adjustment, Layer 2)
+- `signal.flow_weight:` — 0.06 (max ±6% order flow adjustment, Layer 3)
+- `signal.student_t_df:` — 4 (degrees of freedom for fat-tailed CDF)
 - `signal.weights:` — per-indicator weights for momentum calculation
 - `execution.max_concurrent_positions:` — 1 (single position, full focus)
 - `execution.max_bankroll_deployed:` — 0.80
@@ -93,33 +98,54 @@ python -m pytest polybot/tests/       # 233 tests
 ```
 Strike = BTC price at 5-min window open (from candle buffer)
 Distance = current BTC price - strike
-Vol = ATR (average true range from 1-min candles)
+Vol = ATR (average true range from 1-min candles, period=7)
 Time = minutes remaining in the window
 
-z = distance / (vol * sqrt(time))
-P(Up) = 1 / (1 + exp(-1.7 * z))
+LAYER 1 — Fat-tailed base (Student-t CDF, df=4):
+  z = distance / (vol * sqrt(time))
+  P(Up) = t.cdf(z, df=4)
+  
+  Why Student-t: BTC 1-min returns have kurtosis ~6-8 (normal=3).
+  Normal CDF underestimates reversal probability. When BTC is $50 above
+  strike with 2 min left, normal says 85% Up, Student-t says ~78%.
+  The difference is edge on the underdog side.
 
-Momentum nudge: P(Up) += indicator_score * 0.08
+LAYER 2 — Regime detection:
+  autocorr = 1-lag autocorrelation of last 10 1-min returns
+  If autocorr > 0 (trending): amplify P away from 0.5 (max ±5%)
+  If autocorr < 0 (reverting): dampen P toward 0.5
+
+LAYER 3 — Order flow:
+  book_imbalance = (bid_depth - ask_depth) / total_depth (across both Up/Down books)
+  trade_flow = net_buy_volume / total_volume (from WebSocket last_trade_price events)
+  flow_signal = 0.6 * book_imbalance + 0.4 * trade_flow
+  Adjustment: flow_signal * 0.06 (max ±6%)
+  
+  Why: Order flow LEADS price. Informed traders accumulate before CLOB reprices.
+
+LAYER 4 — Indicator momentum:
+  Weighted RSI/MACD/Stochastic/OBV/VWAP score * 0.04 (max ±4%)
+
+COMPLEMENTARY PRICING:
+  effective_price_up = min(ask_up, 1 - bid_down)
+  effective_price_down = min(ask_down, 1 - bid_up)
 
 ENTRY:
-  Edge = P(Up) - market_price_up    [or P(Down) - market_price_down]
+  ATR gate: skip if volatility too quiet or too volatile
+  Edge = P(Up) - effective_price_up    [or P(Down) - effective_price_down]
   If model_prob < 65%: SKIP (coin-flip filter)
   If edge >= 10%: TRADE, size = Kelly(probability, market_price) * 0.15
   If edge < 10%: SKIP
 
 WHILE HOLDING (active position management):
   holding_edge = model_prob_for_our_side - current_market_price_for_our_side
-  If holding_edge > -10%: HOLD (model still supports the position)
-  If holding_edge ≤ -10%: EXIT (market overpricing our side, take profit or cut loss)
-  Same Brownian motion model — continuously re-evaluates.
+  Fee-aware threshold: base_threshold - exit_fee_cost + time_urgency_bonus
+  Time urgency: near expiry (<2 min), threshold relaxes by up to +5%
+  If holding_edge ≤ effective_threshold: EXIT (scalp)
+  If holding_edge > effective_threshold: HOLD
 
-RESOLUTION (contract expired, seconds_remaining <= 0):
-  1. Prefer on-chain resolution from Gamma API (closed=true, outcomePrices near $1/$0)
-  2. Fallback: determine winner from BTC price vs strike (binary outcome)
-     If BTC >= strike: Up won. If BTC < strike: Down won.
-  3. Orphaned positions (contract not findable after 10 min): same BTC fallback
+RESOLUTION (same as before — contract expired):
   Winning side pays $1.00/share, losing side pays $0.00/share.
-  Resolution fee is always $0 (fee formula: Θ × shares × p × (1-p) = 0 at p=0 or p=1).
 ```
 
 ## External APIs
@@ -246,6 +272,9 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 
 - Don't add fixed take-profit/stop-loss percentages — use the probability model for exit decisions (evaluate_hold).
 - Don't increase momentum_weight above 0.10 — indicators alone should not trigger trades.
+- Don't use normal CDF / logistic approximation — use Student-t CDF (fat tails). The normal distribution underestimates reversal probability for BTC.
+- Don't remove complementary pricing — it's essential for seeing real underdog prices in negRisk binary markets.
+- Don't increase flow_weight above 0.10 — order flow should nudge, not dominate.
 - Don't use Gamma API `outcomePrices` for edge calculation — they're stale/initial prices, not live order book. Use `clob.polymarket.com/book?token_id=X` for real prices.
 - Don't hardcode fee rates — fetch from `GET /fee-rate?token_id=X`. Crypto is 0.072, not 0.05.
 - Don't use polymarket.us for crypto — US platform has sports only. All crypto trading is on polymarket.com.

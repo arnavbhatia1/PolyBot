@@ -428,3 +428,47 @@ class BTCMarketScanner:
                 return contract
 
         return None
+
+    async def fetch_prices_history(self, token_id: str, interval: str = "1h",
+                                   fidelity: int = 1, http_client=None) -> list[dict]:
+        """GET /prices-history — CLOB price history for a token.
+
+        No auth required. Returns list of {t: timestamp, p: price}.
+        Used for detecting CLOB price momentum divergence from model.
+        """
+        try:
+            url = f"{self.CLOB_API}/prices-history"
+            params = {"market": token_id, "interval": interval, "fidelity": fidelity}
+            if http_client:
+                resp = await http_client.get(url, params=params)
+            else:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("history", [])
+        except Exception as e:
+            logger.debug(f"Prices history failed for {token_id}: {e}")
+            return []
+
+    async def fetch_open_interest(self, condition_id: str, http_client=None) -> float:
+        """GET /oi — open interest for a market.
+
+        No auth required. Returns total OI value, 0 on error.
+        Requires condition_id in Hash64 format (0x-prefixed 64 hex chars).
+        """
+        try:
+            url = f"{self.DATA_API}/oi"
+            if http_client:
+                resp = await http_client.get(url, params={"market": condition_id})
+            else:
+                async with httpx.AsyncClient(timeout=3) as client:
+                    resp = await client.get(url, params={"market": condition_id})
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, list) and data:
+                return float(data[0].get("value", 0))
+            return 0.0
+        except Exception as e:
+            logger.debug(f"Open interest failed for {condition_id}: {e}")
+            return 0.0

@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 
 import websockets
 
@@ -27,6 +28,7 @@ class ClobWebSocket:
         self.books: dict[str, dict] = {}              # token_id -> full book snapshot
         self.best_bid_ask: dict[str, dict] = {}       # token_id -> {best_bid, best_ask, spread}
         self.last_trade: dict[str, dict] = {}         # token_id -> {price, size, side}
+        self.trade_buffer: dict[str, deque] = {}     # token_id -> deque of recent trades
 
         # Events — trading loop awaits these
         self.book_updated = asyncio.Event()
@@ -89,6 +91,7 @@ class ClobWebSocket:
             self.books.pop(t, None)
             self.best_bid_ask.pop(t, None)
             self.last_trade.pop(t, None)
+            self.trade_buffer.pop(t, None)
         if self._ws and self.connected:
             msg = json.dumps({
                 "operation": "unsubscribe",
@@ -102,6 +105,10 @@ class ClobWebSocket:
     def get_book(self, token_id: str) -> dict:
         """Return latest book for token_id, or {} if not available."""
         return self.books.get(token_id, {})
+
+    def get_trade_history(self, token_id: str) -> list[dict]:
+        """Return list of recent trades for a token, oldest first."""
+        return list(self.trade_buffer.get(token_id, []))
 
     # --- Internal ---
 
@@ -194,7 +201,7 @@ class ClobWebSocket:
         elif event_type == "market_resolved":
             self.market_resolved.set()
         elif event_type == "tick_size_change":
-            logger.info(f"Tick size changed: {msg.get('old_tick_size')} -> {msg.get('new_tick_size')} for {msg.get('asset_id')}")
+            logger.debug(f"Tick size changed: {msg.get('old_tick_size')} -> {msg.get('new_tick_size')} for {msg.get('asset_id')}")
 
     def _on_book(self, msg: dict):
         """Full book snapshot — replace entire book state."""
@@ -238,12 +245,17 @@ class ClobWebSocket:
         self.book_updated.set()
 
     def _on_last_trade(self, msg: dict):
-        """Last trade price — for fill validation logging."""
+        """Last trade price — for fill validation logging and trade flow signal."""
         asset_id = msg.get("asset_id", "")
         if not asset_id:
             return
-        self.last_trade[asset_id] = {
+        trade = {
             "price": msg.get("price", "0"),
             "size": msg.get("size", "0"),
             "side": msg.get("side", ""),
+            "timestamp": time.time(),
         }
+        self.last_trade[asset_id] = trade
+        if asset_id not in self.trade_buffer:
+            self.trade_buffer[asset_id] = deque(maxlen=100)
+        self.trade_buffer[asset_id].append(trade)
