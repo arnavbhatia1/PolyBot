@@ -8,10 +8,11 @@ import time
 from pathlib import Path
 
 from polybot.config.loader import load_config, get_secret
-from polybot.execution.paper_trader import _taker_fee
+from polybot.execution.paper_trader import taker_fee, entry_fee_shares, exit_fee_usdc, DEFAULT_FEE_RATE
 from polybot.db.models import Database
 from polybot.core.binance_feed import BinanceFeed
 from polybot.core.market_scanner import BTCMarketScanner
+from polybot.core.clob_ws import ClobWebSocket
 from polybot.indicators.engine import IndicatorEngine
 from polybot.core.signal_engine import SignalEngine
 from polybot.brain.claude_client import ClaudeClient
@@ -38,9 +39,56 @@ logger.setLevel(logging.INFO)
 logging.getLogger("polybot.discord_bot.bot").setLevel(logging.INFO)
 
 
+def _compute_pnl(pos: dict, exit_price: float) -> tuple[float, float, float, float]:
+    """Compute realistic PnL using shares-based entry fee and USDC exit fee.
+
+    Returns (shares, entry_fee_usd, exit_fee_usd, pnl).
+    """
+    fee_rate = pos.get("fee_rate") or DEFAULT_FEE_RATE
+    shares = pos.get("shares_held") or pos["size"] / pos["entry_price"]
+    # Entry fee was already deducted in shares — express as USD for logging
+    shares_ordered = pos["size"] / pos["entry_price"]
+    entry_fee_in_shares = shares_ordered - shares
+    entry_fee_usd = entry_fee_in_shares * pos["entry_price"]
+    # Exit fee in USDC
+    exit_fee_usd = exit_fee_usdc(shares, exit_price, fee_rate)
+    # Revenue = sell shares at exit_price minus USDC fee
+    revenue = shares * exit_price - exit_fee_usd
+    pnl = revenue - pos["size"]  # size = USDC originally spent
+    return shares, entry_fee_usd, exit_fee_usd, pnl
+
+
+# Cache for _get_contract_prices — avoid hammering Gamma API every tick
+_contract_price_cache: dict[str, tuple[float, dict]] = {}  # market_id -> (timestamp, contract)
+_CONTRACT_CACHE_TTL = 5.0  # seconds — re-fetch at most every 5s per contract
+_CONTRACT_RESOLUTION_TTL = 2.0  # faster polling when contract might be resolving
+
+
 async def _get_contract_prices(market_scanner, market_id: str, http_client=None) -> dict | None:
-    """Fetch current Up/Down prices for an active contract via Gamma API."""
+    """Fetch current Up/Down prices for an active contract via Gamma API.
+
+    Caches results per market_id to avoid redundant HTTP calls during
+    position management ticks. Polls faster near expiry for resolution.
+    """
     import httpx
+    from datetime import datetime, timezone
+
+    now = time.time()
+    cached = _contract_price_cache.get(market_id)
+    if cached:
+        cache_ts, contract = cached
+        # Recompute seconds_remaining from stored end_date (no HTTP needed)
+        end_str = contract.get("end_date", "")
+        if end_str:
+            try:
+                end = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                contract["seconds_remaining"] = max(0.0, (end - datetime.now(timezone.utc)).total_seconds())
+            except ValueError:
+                pass
+        # Use longer cache TTL while active, shorter near/past expiry
+        ttl = _CONTRACT_RESOLUTION_TTL if contract.get("seconds_remaining", 999) <= 10 else _CONTRACT_CACHE_TTL
+        if (now - cache_ts) < ttl:
+            return contract
 
     window_ts = int(time.time() // 300) * 300
     for ts in [window_ts, window_ts + 300, window_ts - 300]:
@@ -59,6 +107,7 @@ async def _get_contract_prices(market_scanner, market_id: str, http_client=None)
                 event = data[0] if isinstance(data, list) else data
                 contract = market_scanner.parse_contract(event)
                 if contract and contract.get("slug", "") == market_id:
+                    _contract_price_cache[market_id] = (now, contract)
                     return contract
         except httpx.TimeoutException:
             continue
@@ -81,6 +130,7 @@ async def _get_contract_prices(market_scanner, market_id: str, http_client=None)
             event = data[0] if isinstance(data, list) else data
             contract = market_scanner.parse_contract(event)
             if contract:
+                _contract_price_cache[market_id] = (now, contract)
                 return contract
     except Exception as e:
         logger.debug(f"Direct slug lookup failed for {market_id}: {e}")
@@ -136,7 +186,7 @@ async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pc
 
 async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,
                        trader, alert_manager, db, config, outcome_reviewer, is_paused_fn,
-                       scheduler=None):
+                       scheduler=None, clob_ws: ClobWebSocket | None = None):
     import httpx
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
@@ -146,6 +196,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
     signal_config = config["signal"]
     max_bankroll_pct = config["execution"]["max_bankroll_deployed"]
     default_exit_threshold = signal_config.get("exit_edge_threshold", -0.10)
+    max_spread = config.get("market", {}).get("max_spread", 0.10)
 
     # Trading schedule in ET (handles EST/EDT automatically)
     sched = config.get("schedule", {})
@@ -154,8 +205,9 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
     traded_contracts: dict[str, int] = {}      # condition_id -> timestamp (one trade per contract)
     window_strikes: dict[int, float] = {}      # window_ts -> BTC price at window open
+    ws_subscribed_tokens: list[str] = []       # currently subscribed token_ids
 
-    # Shared HTTP client — one connection pool for all Gamma API calls
+    # Shared HTTP client — one connection pool for all API calls
     http_client = httpx.AsyncClient(timeout=5)
 
     # Day tracking for open/close banners
@@ -165,7 +217,15 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
     day_losses: int = 0
 
     while True:
-        await asyncio.sleep(0.25)  # 250ms tick — fast detection, ~4 req/sec to Gamma API
+        # Event-driven: react instantly to WebSocket book updates, timeout 1s for housekeeping
+        if clob_ws:
+            try:
+                await asyncio.wait_for(clob_ws.book_updated.wait(), timeout=1.0)
+                clob_ws.book_updated.clear()
+            except asyncio.TimeoutError:
+                pass  # housekeeping tick — contract discovery, day banners
+        else:
+            await asyncio.sleep(0.25)  # fallback polling if no WebSocket
         try:
             if is_paused_fn():
                 await asyncio.sleep(0.5)
@@ -224,10 +284,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
                     result = await trader.resolve_position(pos["id"], exit_price)
                     if result.success:
-                        shares = pos["size"] / pos["entry_price"]
-                        entry_fee = _taker_fee(shares, pos["entry_price"])
-                        exit_fee = _taker_fee(shares, exit_price)
-                        pnl = shares * exit_price - pos["size"] - entry_fee - exit_fee
+                        shares, entry_fee, exit_fee, pnl = _compute_pnl(pos, exit_price)
                         gain_pct = pnl / pos["size"] if pos["size"] > 0 else 0
                         won = "WIN" if pnl > 0 else "LOSS"
                         if pnl > 0: day_wins += 1
@@ -263,10 +320,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
                     result = await trader.resolve_position(pos["id"], exit_price)
                     if result.success:
-                        shares = pos["size"] / pos["entry_price"]
-                        entry_fee = _taker_fee(shares, pos["entry_price"])
-                        exit_fee = _taker_fee(shares, exit_price)
-                        pnl = shares * exit_price - pos["size"] - entry_fee - exit_fee
+                        shares, entry_fee, exit_fee, pnl = _compute_pnl(pos, exit_price)
                         gain_pct = pnl / pos["size"] if pos["size"] > 0 else 0
                         won = "WIN" if pnl > 0 else "LOSS"
                         if pnl > 0: day_wins += 1
@@ -298,12 +352,32 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
                     indicators = indicator_engine.compute_all(binance_feed.buffer)
 
-                    # Fetch real CLOB bid price for hold evaluation (what we'd get selling)
+                    # Read CLOB bid book — WebSocket (instant) or HTTP fallback
                     hold_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
-                    hold_book = await market_scanner.fetch_clob_book(hold_token, http_client)
+                    if clob_ws and clob_ws.connected:
+                        hold_book = clob_ws.get_book(hold_token)
+                        if not hold_book:
+                            hold_book = await market_scanner.fetch_clob_book(hold_token, http_client)
+                    else:
+                        hold_book = await market_scanner.fetch_clob_book(hold_token, http_client)
+                    shares_held = pos.get("shares_held") or pos["size"] / pos["entry_price"]
+
+                    # Walk bid book for realistic VWAP sell price (same as entry walks asks)
+                    sell_vwap = market_scanner.clob_walk_bids(hold_book, shares_held)
+                    if sell_vwap <= 0:
+                        # Book can't fill full order — try available depth
+                        avail_bids = market_scanner.clob_bid_depth(hold_book)
+                        if avail_bids > 0:
+                            sell_vwap = market_scanner.clob_walk_bids(hold_book, avail_bids)
                     bid_price, _ = market_scanner.clob_best_bid(hold_book)
                     gamma_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
-                    market_price = bid_price if 0.01 < bid_price < 0.99 else gamma_price
+                    # Use VWAP from bid walk if available, else best bid, else Gamma
+                    if sell_vwap > 0 and 0.01 < sell_vwap < 0.99:
+                        market_price = sell_vwap
+                    elif 0.01 < bid_price < 0.99:
+                        market_price = bid_price
+                    else:
+                        market_price = gamma_price
 
                     exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
                                       else default_exit_threshold)
@@ -315,10 +389,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
                         result = await trader.close_trade(pos["id"], market_price, token_id=sell_token)
                         if result.success:
-                            shares = pos["size"] / pos["entry_price"]
-                            entry_fee = _taker_fee(shares, pos["entry_price"])
-                            exit_fee = _taker_fee(shares, market_price)
-                            pnl = shares * market_price - pos["size"] - entry_fee - exit_fee
+                            shares, entry_fee, exit_fee, pnl = _compute_pnl(pos, market_price)
                             gain_pct = pnl / pos["size"] if pos["size"] > 0 else 0
                             won = "WIN" if pnl > 0 else "LOSS"
                             if pnl > 0: day_wins += 1
@@ -344,8 +415,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
             contract = await market_scanner.find_active_contract()
             if not contract:
-                await asyncio.sleep(1)
-                continue
+                continue  # next tick will retry (WS event or 1s timeout)
 
             cid = contract["slug"]  # Use slug as market_id — US API needs marketSlug, not condition_id
 
@@ -357,9 +427,26 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             if cid in traded_contracts:
                 continue
 
-            # Fetch real order books from polymarket.com CLOB (no auth, public)
-            book_up = await market_scanner.fetch_clob_book(contract["token_id_up"], http_client)
-            book_down = await market_scanner.fetch_clob_book(contract["token_id_down"], http_client)
+            # Subscribe WebSocket to this contract's tokens (idempotent)
+            token_up = contract["token_id_up"]
+            token_down = contract["token_id_down"]
+            new_tokens = [t for t in [token_up, token_down] if t and t not in ws_subscribed_tokens]
+            if new_tokens and clob_ws:
+                await clob_ws.subscribe(new_tokens)
+                ws_subscribed_tokens.extend(new_tokens)
+
+            # Read order books — WebSocket state (instant) or HTTP fallback
+            if clob_ws and clob_ws.connected:
+                book_up = clob_ws.get_book(token_up)
+                book_down = clob_ws.get_book(token_down)
+                # If WS has no book yet (just subscribed), fall back to HTTP
+                if not book_up:
+                    book_up = await market_scanner.fetch_clob_book(token_up, http_client)
+                if not book_down:
+                    book_down = await market_scanner.fetch_clob_book(token_down, http_client)
+            else:
+                book_up = await market_scanner.fetch_clob_book(token_up, http_client)
+                book_down = await market_scanner.fetch_clob_book(token_down, http_client)
 
             # Best ask = what you'd actually pay to buy each side
             ask_up, depth_up = market_scanner.clob_best_ask(book_up)
@@ -386,6 +473,20 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 depth_usd_down = depth_down * ask_down if ask_down > 0 else 0
                 if depth_usd_up < min_depth and depth_usd_down < min_depth:
                     logger.debug(f"Thin CLOB: Up ${depth_usd_up:.0f} Down ${depth_usd_down:.0f}")
+                    continue
+
+            # Skip if spread too wide (illiquid market)
+            if price_source == "clob":
+                # Use WS best_bid_ask if available, else quick HTTP check
+                spread_val = -1.0
+                if clob_ws:
+                    bba_up = clob_ws.best_bid_ask.get(token_up, {})
+                    if bba_up.get("spread"):
+                        spread_val = float(bba_up["spread"])
+                if spread_val < 0:
+                    spread_val = await market_scanner.get_spread(token_up, http_client)
+                if spread_val >= 0 and spread_val > max_spread:
+                    logger.debug(f"Wide spread {spread_val:.3f} > {max_spread} — skipping")
                     continue
 
             # Compute strike: BTC price at the 5-min window boundary
@@ -433,6 +534,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             if signal.action in ("BUY_YES", "BUY_NO"):
                 side = "Up" if signal.action == "BUY_YES" else "Down"
                 price = price_up if side == "Up" else price_down
+                token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
                 bankroll = await db.get_bankroll()
                 size = round(bankroll * signal.kelly_size, 2)
                 if size < 1.0:
@@ -440,16 +542,39 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 if size > bankroll * max_bankroll_pct:
                     size = round(bankroll * max_bankroll_pct, 2)
 
+                # Fetch fee rate and tick size from Polymarket API
+                fee_rate = await market_scanner.fetch_fee_rate(token_id, http_client)
+                tick_size = await market_scanner.fetch_tick_size(token_id, http_client)
+
                 # Simulate realistic fill by walking CLOB order book
                 if price_source == "clob":
                     book = book_up if side == "Up" else book_down
+                    min_order = market_scanner.book_min_order_size(book)
                     shares_needed = size / price
+                    if shares_needed < min_order:
+                        logger.info(f"SKIP: {shares_needed:.0f} shares < min_order_size {min_order:.0f} for {side}")
+                        continue
                     vwap = market_scanner.clob_walk_asks(book, shares_needed)
                     if vwap > 0:
-                        price = vwap
-                    elif shares_needed > 0:
-                        logger.info(f"SKIP: CLOB can't fill {shares_needed:.0f} shares of {side}")
-                        continue
+                        price = market_scanner.snap_to_tick(vwap, tick_size)
+                    else:
+                        # Book can't fill full order — scale down to available depth
+                        available = market_scanner.clob_ask_depth(book)
+                        if available < min_order:
+                            logger.info(f"SKIP: CLOB depth {available:.0f} shares < min_order_size {min_order:.0f} for {side}")
+                            continue
+                        min_shares = market_scanner.min_book_depth_usd / price if price > 0 else 0
+                        if available < min_shares:
+                            logger.info(f"SKIP: CLOB depth {available:.0f} shares < min ${market_scanner.min_book_depth_usd:.0f} for {side}")
+                            continue
+                        vwap = market_scanner.clob_walk_asks(book, available)
+                        if vwap > 0:
+                            price = market_scanner.snap_to_tick(vwap, tick_size)
+                            size = round(available * price, 2)
+                            logger.info(f"CLOB: scaled order to {available:.0f} shares (wanted {shares_needed:.0f}) for {side}")
+                        elif shares_needed > 0:
+                            logger.info(f"SKIP: CLOB can't fill {shares_needed:.0f} shares of {side}")
+                            continue
 
                 snapshot = indicator_engine.get_snapshot(indicators)
                 snapshot["trade_context"] = {
@@ -465,7 +590,6 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     "size": size,
                 }
                 snapshot_str = json.dumps(snapshot)
-                token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
                 result = await trader.open_trade(
                     market_id=cid,
                     question=contract["question"],
@@ -480,12 +604,21 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     weight_version=signal_config.get("active_weights_version", "weights_v001"),
                     indicator_snapshot=snapshot_str,
                     token_id=token_id,
+                    fee_rate=fee_rate,
                 )
 
                 if result.success:
                     traded_contracts[cid] = now_ts
-                    entry_fee = _taker_fee(size / price, price)
-                    logger.info(f"OPEN {side} @ {price:.3f} | ${size:.2f} | fee=${entry_fee:.2f} | src={price_source} | {signal.reason}")
+                    shares_ordered = size / price
+                    fee_shares = entry_fee_shares(shares_ordered, price, fee_rate)
+                    fee_usd = fee_shares * price
+                    # Log fill vs last actual trade for realism validation
+                    last_trade_info = ""
+                    if clob_ws:
+                        lt = clob_ws.last_trade.get(token_id, {})
+                        if lt.get("price"):
+                            last_trade_info = f" last_trade={lt['price']}"
+                    logger.info(f"OPEN {side} @ {price:.3f} | ${size:.2f} | fee=${fee_usd:.2f} ({fee_rate:.1%}) | src={price_source}{last_trade_info} | {signal.reason}")
                     if alert_manager:
                         await alert_manager.send_trade_opened(
                             question=contract["question"], side=side, size=size,
@@ -635,6 +768,11 @@ async def main():
         await db.set_bankroll(live_balance)
         logger.info(f"USDC balance: ${live_balance:,.2f}")
 
+    # CLOB WebSocket — real-time order book feed
+    clob_ws_url = market_cfg.get("clob_ws_url", "wss://ws-subscriptions-clob.polymarket.com/ws/market")
+    clob_ws = ClobWebSocket(url=clob_ws_url)
+    await clob_ws.start()
+
     await scheduler.start()
     await binance_feed.start()
 
@@ -649,18 +787,19 @@ async def main():
             binance_feed, market_scanner, indicator_engine, signal_engine,
             trader, alert_manager, db, config, outcome_reviewer,
             is_paused_fn=lambda: discord_bot.is_paused,
-            scheduler=scheduler)),
+            scheduler=scheduler, clob_ws=clob_ws)),
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(run_discord()),
     ]
-    logger.info("PolyBot started — all systems running")
+    logger.info("PolyBot started — all systems running (WebSocket + event-driven)")
 
     try:
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
         logger.info("Shutting down...")
     finally:
+        await clob_ws.close()
         await scheduler.stop()
         await binance_feed.stop()
         await db.close()

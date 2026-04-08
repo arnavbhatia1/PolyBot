@@ -11,13 +11,13 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Single position at a time.** Full Kelly on the best edge, no capital dilution.
 - **One trade per 5-min contract.** After any exit, that contract is blacklisted.
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
-- **Minimum edge = 10%.** Only trade when model disagrees with market by 10%+.
+- **Minimum edge = 10%.** Only trade when model disagrees with market by 10%+. Tunable by learning pipeline (range 5-35%).
 - **Momentum weight = 0.08.** Indicators nudge probability by max ±8%. This ensures indicators alone (without BTC movement from strike) cannot trigger a trade.
-- **Gamma API for discovery, polymarket.com CLOB for real prices.** Gamma API (`gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}`) finds contracts and extracts `token_id_up`/`token_id_down`. CLOB API (`clob.polymarket.com/book?token_id=TOKEN`) provides real order book. Each token has its OWN book — to buy Up, walk Up token asks; to buy Down, walk Down token asks. Gamma `outcomePrices` are stale fallback only.
+- **Real-time WebSocket + Gamma API for prices.** Primary: CLOB WebSocket (`wss://ws-subscriptions-clob.polymarket.com/ws/market`) provides real-time book snapshots, price deltas, best bid/ask, last trades, and market resolution events. Trading loop is event-driven — reacts instantly to book changes instead of polling. HTTP fallback: `clob.polymarket.com/book?token_id=TOKEN` if WS disconnected. Gamma API (`gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}`) for contract discovery and `token_id_up`/`token_id_down`. Supplementary: `GET /spread` for liquidity check, `GET /midpoints` for quick price ref, `GET /last-trades-prices` for fill validation. Gamma `outcomePrices` are stale fallback only.
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
-- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Live mode on polymarket.com (EIP-712 signed CLOB orders) is future work.
+- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Fee rates fetched live from `GET /fee-rate?token_id=X` (crypto = 7.2%, sports = 3%, etc.). Entry fees collected in shares (fewer shares received), exit fees in USDC — matching Polymarket's actual collection method. Prices snapped to market tick size. Min order size enforced from CLOB book. FOK fill semantics (100% fill or reject). Orders scaled down to available CLOB depth when book is thin. Live mode on polymarket.com (EIP-712 signed CLOB orders) is future work.
 
 ## Project Structure
 
@@ -27,7 +27,8 @@ polybot/
   config/settings.yaml       # ALL tunable parameters
   core/
     binance_feed.py          # WebSocket + candle buffer
-    market_scanner.py        # Gamma API slug-based contract discovery
+    clob_ws.py               # Real-time CLOB WebSocket feed (order books, trades, resolution)
+    market_scanner.py        # Gamma API discovery + CLOB HTTP helpers (spread, midpoints, volume)
     signal_engine.py         # Probability model: P(Up) from BTC vs strike + time + vol
   indicators/
     ema.py, rsi.py, macd.py, stochastic.py, obv.py, vwap.py, atr.py
@@ -62,7 +63,7 @@ polybot/
 
 `polybot/config/settings.yaml`:
 - `math.kelly_fraction:` — 0.15 (fraction of full Kelly)
-- `signal.entry_threshold:` — 0.20 (minimum 20% edge to trade)
+- `signal.entry_threshold:` — 0.10 (minimum 10% edge to trade)
 - `signal.exit_edge_threshold:` — -0.10 (exit when holding edge drops below -10%)
 - `signal.min_model_probability:` — 0.65 (skip coin-flip trades — model must be ≥65% confident)
 - `signal.momentum_weight:` — 0.08 (max ±8% indicator adjustment to probability)
@@ -71,6 +72,8 @@ polybot/
 - `execution.max_bankroll_deployed:` — 0.80
 - `market.entry_window_seconds:` — 300 (full 5-min window)
 - `market.min_time_remaining_seconds:` — 20 (tunable by learning pipeline)
+- `market.clob_ws_url:` — `wss://ws-subscriptions-clob.polymarket.com/ws/market`
+- `market.max_spread:` — 0.10 (skip entry if bid-ask spread > 10%)
 - `schedule.trading_start_hour:` — 12 (8 AM EST in UTC)
 - `schedule.trading_end_hour:` — 20, `trading_end_minute:` — 30 (4:30 PM EST in UTC)
 - `agents.daily_pipeline_hour:` — 20, `daily_pipeline_minute:` — 45 (4:45 PM EST)
@@ -119,6 +122,92 @@ RESOLUTION (contract expired, seconds_remaining <= 0):
   Resolution fee is always $0 (fee formula: Θ × shares × p × (1-p) = 0 at p=0 or p=1).
 ```
 
+## External APIs
+
+### Binance.US — Live BTC Price Data
+All market data comes from Binance.US (not .com — HTTP 451 for US IPs).
+
+| Endpoint | Usage | Auth |
+|----------|-------|------|
+| `wss://stream.binance.us:9443/ws/btcusdt@kline_1m` | Real-time 1-min candle WebSocket. Drives the entire probability model: BTC price, strike derivation, ATR, all 7 indicators. | None |
+| `GET https://api.binance.us/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=200` | REST backfill on startup to populate candle buffer before WS starts streaming. | None |
+
+### Polymarket CLOB API — Order Book & Market Data
+Base URL: `https://clob.polymarket.com` — all endpoints are public, no auth required.
+
+| Endpoint | Usage | Cached | File |
+|----------|-------|--------|------|
+| `WSS wss://ws-subscriptions-clob.polymarket.com/ws/market` | **Primary price source.** Real-time order book snapshots, price deltas, best bid/ask, last trades, market resolution events. Subscribed with `custom_feature_enabled: true`, `level: 2`, `initial_dump: true`. PING heartbeat every 10s. Handles both dict and array message formats. | In-memory (live) | `core/clob_ws.py` |
+| `GET /book?token_id=TOKEN` | Full order book (bids + asks). HTTP fallback when WebSocket is disconnected or book not yet received for a token. Also provides `min_order_size` and `tick_size` in response. | 2s per token | `core/market_scanner.py` |
+| `GET /fee-rate?token_id=TOKEN` | Taker fee rate in basis points (e.g., 720 = 7.2% for crypto). Used to compute realistic entry fees (in shares) and exit fees (in USDC). Formula: `fee = feeRate × shares × p × (1-p)`. | 1 hour | `core/market_scanner.py` |
+| `GET /tick-size?token_id=TOKEN` | Minimum price increment (e.g., "0.01"). All VWAP fill prices are snapped to tick grid via `snap_to_tick()`. | 1 hour | `core/market_scanner.py` |
+| `GET /spread?token_id=TOKEN` | Bid-ask spread as a string (e.g., "0.04"). Used as entry filter — skip if spread > `max_spread` (default 10%). Checked from WS `best_bid_ask` first, HTTP fallback. | No cache | `core/market_scanner.py` |
+| `GET /midpoints?token_ids=T1,T2` | Midpoint price (avg of best bid/ask) per token. Lightweight hold evaluation reference. | No cache | `core/market_scanner.py` |
+| `GET /last-trades-prices?token_ids=T1,T2` | Last trade price + side per token (max 500). Logged after fills to validate paper VWAP against actual market trades. | No cache | `core/market_scanner.py` |
+
+### Polymarket Gamma API — Contract Discovery
+Base URL: `https://gamma-api.polymarket.com` — public, no auth.
+
+| Endpoint | Usage | Cached | File |
+|----------|-------|--------|------|
+| `GET /events?slug=btc-updown-5m-{window_ts}` | Discovers active 5-min BTC Up/Down contracts by deterministic slug. Returns event with markets array containing `conditionId`, `outcomes`, `outcomePrices`, `clobTokenIds`, `endDate`, `closed`, `negRisk`. | 5s | `core/market_scanner.py` |
+
+Used for: contract discovery (finding current/next window), resolution detection (`closed=true`, `outcomePrices` near $1/$0), `token_id_up`/`token_id_down` extraction, `seconds_remaining` computation from `endDate`. **Note:** `outcomePrices` from Gamma are stale — never use for edge calculation, only for resolution confirmation and Gamma-only fallback.
+
+### Polymarket Data API — Volume
+Base URL: `https://data-api.polymarket.com` — public, no auth.
+
+| Endpoint | Usage | Cached | File |
+|----------|-------|--------|------|
+| `GET /live-volume?id=EVENT_ID` | Total live trading volume for an event. Used as entry filter to skip dead markets with no recent activity. | No cache | `core/market_scanner.py` |
+
+### Anthropic Claude API — Learning Pipeline
+Used by `brain/claude_client.py` via the Anthropic Python SDK.
+
+| Endpoint | Usage | When |
+|----------|-------|------|
+| `POST /v1/messages` (via SDK) | TAEvolver sends bias analysis + last 75 trades + current config. Claude returns structured JSON: recommended weight adjustments, momentum_weight, min_edge, kelly_fraction, reasoning, findings, risk warnings. Response validated server-side. | Daily at 4:45 PM ET |
+
+Model: `claude-sonnet-4-6`. Falls back to local math if API fails.
+
+### Discord API — Alerts & Control
+Used by `discord_bot/bot.py` via discord.py library.
+
+| Feature | Usage |
+|---------|-------|
+| Trade alerts | Open/close notifications with entry/exit price, PnL, fees, edge |
+| Day open/close banners | Session start bankroll, end-of-day P&L summary |
+| Commands | `!status`, `!positions`, `!history`, `!performance`, `!pause`, `!resume` |
+| Daily reports | Learning pipeline findings posted to `polybot-daily` channel |
+
+### WebSocket Message Types (CLOB)
+
+The `ClobWebSocket` class (`core/clob_ws.py`) handles these event types:
+
+| Event Type | Trigger | State Updated | Fires `book_updated`? |
+|------------|---------|---------------|----------------------|
+| `book` | Initial dump, after trades | `books[asset_id]` = full snapshot (bids, asks, hash) | Yes |
+| `price_change` | Order placed/cancelled | `best_bid_ask[asset_id]` = {best_bid, best_ask, price, size, side} | Yes |
+| `best_bid_ask` | Explicit BBA update (custom_feature) | `best_bid_ask[asset_id]` = {best_bid, best_ask, spread} | Yes |
+| `last_trade_price` | Trade executed | `last_trade[asset_id]` = {price, size, side} | No |
+| `market_resolved` | Contract resolved on-chain | Sets `market_resolved` event | No |
+| `tick_size_change` | Market precision update | Logged (unusual mid-session) | No |
+
+Messages can arrive as single JSON objects or JSON arrays (batch). Both formats are handled.
+
+Subscription format:
+```json
+{
+  "assets_ids": ["token_id_up", "token_id_down"],
+  "type": "market",
+  "initial_dump": true,
+  "level": 2,
+  "custom_feature_enabled": true
+}
+```
+
+Dynamic subscribe/unsubscribe via `{"operation": "subscribe"/"unsubscribe", "assets_ids": [...]}`.
+
 ## Common Issues
 
 - **No trades:** BTC is near the strike (no edge) or market is efficiently priced. This is correct behavior — no edge means no trade.
@@ -158,6 +247,7 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't add fixed take-profit/stop-loss percentages — use the probability model for exit decisions (evaluate_hold).
 - Don't increase momentum_weight above 0.10 — indicators alone should not trigger trades.
 - Don't use Gamma API `outcomePrices` for edge calculation — they're stale/initial prices, not live order book. Use `clob.polymarket.com/book?token_id=X` for real prices.
+- Don't hardcode fee rates — fetch from `GET /fee-rate?token_id=X`. Crypto is 0.072, not 0.05.
 - Don't use polymarket.us for crypto — US platform has sports only. All crypto trading is on polymarket.com.
 - Don't use Binance.com — use Binance.us.
 - Don't allow multiple concurrent positions — one at a time, full Kelly.

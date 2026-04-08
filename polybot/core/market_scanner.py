@@ -35,6 +35,10 @@ class BTCMarketScanner:
         self._cache_time = 0
         self._book_cache: dict[str, tuple[float, dict]] = {}  # token_id -> (timestamp, book)
         self._book_cache_seconds = 2
+        self._fee_rate_cache: dict[str, tuple[float, float]] = {}   # token_id -> (timestamp, rate)
+        self._fee_rate_cache_seconds = 3600  # 1 hour — fee rates rarely change
+        self._tick_size_cache: dict[str, tuple[float, str]] = {}    # token_id -> (timestamp, tick_size)
+        self._tick_size_cache_seconds = 3600
 
     def _current_window_ts(self) -> int:
         return int(time.time() // self.WINDOW_SECONDS) * self.WINDOW_SECONDS
@@ -142,6 +146,85 @@ class BTCMarketScanner:
             logger.debug(f"CLOB book failed for {token_id}: {e}")
             return {}
 
+    async def fetch_fee_rate(self, token_id: str, http_client=None) -> float:
+        """Fetch taker fee rate from Polymarket CLOB API.
+
+        Returns fee rate as a decimal (e.g., 0.072 for crypto).
+        Caches for 1 hour. Falls back to 0.072 (crypto default) on error.
+        """
+        now = time.time()
+        cached = self._fee_rate_cache.get(token_id)
+        if cached and (now - cached[0]) < self._fee_rate_cache_seconds:
+            return cached[1]
+
+        try:
+            url = f"{self.CLOB_API}/fee-rate"
+            if http_client:
+                resp = await http_client.get(url, params={"token_id": token_id})
+            else:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    resp = await client.get(url, params={"token_id": token_id})
+            resp.raise_for_status()
+            data = resp.json()
+            # API returns base_fee in basis points (e.g., 720 = 7.2%)
+            bps = int(data.get("base_fee", 720))
+            rate = bps / 10000.0
+            self._fee_rate_cache[token_id] = (now, rate)
+            return rate
+        except Exception as e:
+            logger.debug(f"Fee rate fetch failed for {token_id}: {e}")
+            return 0.072  # Crypto default
+
+    async def fetch_tick_size(self, token_id: str, http_client=None) -> str:
+        """Fetch tick size from Polymarket CLOB API.
+
+        Returns tick size as a string (e.g., "0.01").
+        Caches for 1 hour. Falls back to "0.01" on error.
+        """
+        now = time.time()
+        cached = self._tick_size_cache.get(token_id)
+        if cached and (now - cached[0]) < self._tick_size_cache_seconds:
+            return cached[1]
+
+        try:
+            url = f"{self.CLOB_API}/tick-size"
+            if http_client:
+                resp = await http_client.get(url, params={"token_id": token_id})
+            else:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    resp = await client.get(url, params={"token_id": token_id})
+            resp.raise_for_status()
+            data = resp.json()
+            tick = str(data.get("minimum_tick_size", "0.01"))
+            self._tick_size_cache[token_id] = (now, tick)
+            return tick
+        except Exception as e:
+            logger.debug(f"Tick size fetch failed for {token_id}: {e}")
+            return "0.01"
+
+    @staticmethod
+    def snap_to_tick(price: float, tick_size: str) -> float:
+        """Round price down to nearest tick size increment.
+
+        Polymarket requires prices to be multiples of tick_size and within
+        [tick_size, 1 - tick_size]. Uses string-based precision to avoid
+        floating-point drift.
+        """
+        tick = float(tick_size)
+        if tick <= 0:
+            return price
+        # Round down to tick grid
+        snapped = round(int(price / tick) * tick, 10)
+        # Clamp to valid range
+        min_price = tick
+        max_price = round(1.0 - tick, 10)
+        return max(min_price, min(snapped, max_price))
+
+    @staticmethod
+    def book_min_order_size(book: dict) -> float:
+        """Extract min_order_size from a CLOB book response. Default 5."""
+        return float(book.get("min_order_size", "5"))
+
     @staticmethod
     def clob_best_ask(book: dict) -> tuple[float, float]:
         """Return (best_ask_price, total_ask_depth) from a CLOB book dict.
@@ -175,7 +258,7 @@ class BTCMarketScanner:
         """Walk ask levels to compute VWAP buy price for shares_needed shares.
 
         Asks are sorted price ascending (cheapest first).
-        Returns 0.0 if the book cannot fill 90%+ of the order.
+        FOK semantics: returns 0.0 if the book cannot fill 100% of the order.
         """
         asks = book.get("asks", [])
         if not asks or shares_needed <= 0:
@@ -189,7 +272,7 @@ class BTCMarketScanner:
             filled += take
             if filled >= shares_needed:
                 break
-        if filled < shares_needed * 0.90:
+        if filled < shares_needed:
             return 0.0
         return cost / filled
 
@@ -198,7 +281,7 @@ class BTCMarketScanner:
         """Walk bid levels to compute VWAP sell price for shares_needed shares.
 
         Bids are sorted price descending (highest first).
-        Returns 0.0 if the book cannot fill 90%+ of the order.
+        FOK semantics: returns 0.0 if the book cannot fill 100% of the order.
         """
         bids = book.get("bids", [])
         if not bids or shares_needed <= 0:
@@ -212,9 +295,90 @@ class BTCMarketScanner:
             filled += take
             if filled >= shares_needed:
                 break
-        if filled < shares_needed * 0.90:
+        if filled < shares_needed:
             return 0.0
         return proceeds / filled
+
+    @staticmethod
+    def clob_ask_depth(book: dict) -> float:
+        """Total shares available on the ask side."""
+        return sum(float(l["size"]) for l in book.get("asks", []))
+
+    @staticmethod
+    def clob_bid_depth(book: dict) -> float:
+        """Total shares available on the bid side."""
+        return sum(float(l["size"]) for l in book.get("bids", []))
+
+    # --- Lightweight HTTP helpers (public, no auth) ---
+
+    DATA_API = "https://data-api.polymarket.com"
+
+    async def get_spread(self, token_id: str, http_client=None) -> float:
+        """GET /spread — bid-ask spread as a float. Returns -1 on error."""
+        try:
+            url = f"{self.CLOB_API}/spread"
+            if http_client:
+                resp = await http_client.get(url, params={"token_id": token_id})
+            else:
+                async with httpx.AsyncClient(timeout=3) as client:
+                    resp = await client.get(url, params={"token_id": token_id})
+            resp.raise_for_status()
+            return float(resp.json().get("spread", "-1"))
+        except Exception as e:
+            logger.debug(f"Spread fetch failed for {token_id}: {e}")
+            return -1.0
+
+    async def get_midpoints(self, token_ids: list[str], http_client=None) -> dict[str, float]:
+        """GET /midpoints — {token_id: midpoint_price}. Skips failures."""
+        try:
+            url = f"{self.CLOB_API}/midpoints"
+            ids_str = ",".join(token_ids)
+            if http_client:
+                resp = await http_client.get(url, params={"token_ids": ids_str})
+            else:
+                async with httpx.AsyncClient(timeout=3) as client:
+                    resp = await client.get(url, params={"token_ids": ids_str})
+            resp.raise_for_status()
+            return {k: float(v) for k, v in resp.json().items()}
+        except Exception as e:
+            logger.debug(f"Midpoints fetch failed: {e}")
+            return {}
+
+    async def get_last_trade_prices(self, token_ids: list[str], http_client=None) -> dict[str, dict]:
+        """GET /last-trades-prices — {token_id: {price, side}}."""
+        try:
+            url = f"{self.CLOB_API}/last-trades-prices"
+            ids_str = ",".join(token_ids)
+            if http_client:
+                resp = await http_client.get(url, params={"token_ids": ids_str})
+            else:
+                async with httpx.AsyncClient(timeout=3) as client:
+                    resp = await client.get(url, params={"token_ids": ids_str})
+            resp.raise_for_status()
+            data = resp.json()
+            return {item["token_id"]: {"price": float(item["price"]), "side": item.get("side", "")}
+                    for item in data if "token_id" in item}
+        except Exception as e:
+            logger.debug(f"Last trade prices fetch failed: {e}")
+            return {}
+
+    async def get_live_volume(self, event_id: int, http_client=None) -> float:
+        """GET /live-volume — total volume for an event. Returns 0 on error."""
+        try:
+            url = f"{self.DATA_API}/live-volume"
+            if http_client:
+                resp = await http_client.get(url, params={"id": event_id})
+            else:
+                async with httpx.AsyncClient(timeout=3) as client:
+                    resp = await client.get(url, params={"id": event_id})
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, list) and data:
+                return float(data[0].get("total", 0))
+            return 0.0
+        except Exception as e:
+            logger.debug(f"Live volume fetch failed for event {event_id}: {e}")
+            return 0.0
 
     async def find_active_contract(self) -> dict | None:
         now = time.time()

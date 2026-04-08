@@ -59,7 +59,7 @@ indicators:
     history_periods: 100
 
 signal:
-  entry_threshold: 0.20  # Minimum edge — tunable by learning pipeline (range: 0.05-0.35)
+  entry_threshold: 0.10  # Minimum edge — tunable by learning pipeline (range: 0.05-0.35)
   exit_edge_threshold: -0.10  # Exit when holding edge drops — tunable by pipeline (range: -0.25 to 0.0)
   min_model_probability: 0.65  # Min confidence to enter — tunable by pipeline (range: 0.55-0.85)
   momentum_weight: 0.08  # Max ±8% indicator nudge — must stay below entry_threshold so indicators alone can't trigger trades
@@ -77,7 +77,9 @@ market:
   min_time_remaining_seconds: 20  # Tunable by learning pipeline (range: 0-120)
   scan_cache_seconds: 5
   clob_url: "https://clob.polymarket.com"  # Real order book (public, no auth)
+  clob_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"  # Real-time WebSocket feed
   min_book_depth_usd: 50  # Skip if ask depth < $50 (no real liquidity)
+  max_spread: 0.10  # Skip entry if bid-ask spread > 10% (illiquid)
 
 schedule:
   trading_start_hour_et: 8    # 8 AM ET (auto-adjusts for EST/EDT)

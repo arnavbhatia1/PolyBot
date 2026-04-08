@@ -114,13 +114,13 @@ def test_clob_walk_asks_zero_shares():
     book = {"asks": [{"price": "0.55", "size": "100"}]}
     assert BTCMarketScanner.clob_walk_asks(book, 0) == 0.0
 
-def test_clob_walk_asks_exactly_90_pct():
-    # 90 out of 100 needed — filled == 90% threshold exactly (not < 90%), so it passes
+def test_clob_walk_asks_fok_semantics():
+    # FOK: must fill 100% — 90 out of 100 fails
     book = {"asks": [{"price": "0.55", "size": "90"}]}
-    assert BTCMarketScanner.clob_walk_asks(book, 100) == 0.55
-    # 89 out of 100 needed — 89 < 90, so it fails the 90% check
-    book2 = {"asks": [{"price": "0.55", "size": "89"}]}
-    assert BTCMarketScanner.clob_walk_asks(book2, 100) == 0.0
+    assert BTCMarketScanner.clob_walk_asks(book, 100) == 0.0
+    # Exact fill succeeds
+    book2 = {"asks": [{"price": "0.55", "size": "100"}]}
+    assert BTCMarketScanner.clob_walk_asks(book2, 100) == 0.55
 
 
 # --- clob_walk_bids ---
@@ -145,6 +145,118 @@ def test_clob_walk_bids_empty_book():
 def test_clob_walk_bids_zero_shares():
     book = {"bids": [{"price": "0.45", "size": "100"}]}
     assert BTCMarketScanner.clob_walk_bids(book, 0) == 0.0
+
+
+# --- snap_to_tick ---
+
+def test_snap_to_tick_rounds_down():
+    assert BTCMarketScanner.snap_to_tick(0.557, "0.01") == 0.55
+
+def test_snap_to_tick_exact():
+    assert BTCMarketScanner.snap_to_tick(0.55, "0.01") == 0.55
+
+def test_snap_to_tick_fine_grain():
+    assert BTCMarketScanner.snap_to_tick(0.5567, "0.001") == 0.556
+
+def test_snap_to_tick_clamps_min():
+    assert BTCMarketScanner.snap_to_tick(0.001, "0.01") == 0.01
+
+def test_snap_to_tick_clamps_max():
+    assert BTCMarketScanner.snap_to_tick(0.999, "0.01") == 0.99
+
+
+# --- book_min_order_size ---
+
+def test_book_min_order_size_present():
+    assert BTCMarketScanner.book_min_order_size({"min_order_size": "10"}) == 10.0
+
+def test_book_min_order_size_default():
+    assert BTCMarketScanner.book_min_order_size({}) == 5.0
+
+
+# --- clob_ask_depth / clob_bid_depth ---
+
+def test_clob_ask_depth():
+    book = {"asks": [{"price": "0.55", "size": "100"}, {"price": "0.60", "size": "50"}]}
+    assert BTCMarketScanner.clob_ask_depth(book) == 150.0
+
+def test_clob_bid_depth():
+    book = {"bids": [{"price": "0.45", "size": "200"}, {"price": "0.40", "size": "100"}]}
+    assert BTCMarketScanner.clob_bid_depth(book) == 300.0
+
+def test_clob_ask_depth_empty():
+    assert BTCMarketScanner.clob_ask_depth({}) == 0.0
+
+
+# --- Lightweight HTTP helpers (mock responses) ---
+
+import pytest
+import httpx
+from unittest.mock import AsyncMock, MagicMock
+
+@pytest.mark.asyncio
+async def test_get_spread_returns_float():
+    scanner = BTCMarketScanner()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"spread": "0.04"}
+    mock_resp.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+    result = await scanner.get_spread("tok123", mock_client)
+    assert result == 0.04
+
+@pytest.mark.asyncio
+async def test_get_spread_returns_neg_on_error():
+    scanner = BTCMarketScanner()
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = Exception("timeout")
+    result = await scanner.get_spread("tok123", mock_client)
+    assert result == -1.0
+
+@pytest.mark.asyncio
+async def test_get_midpoints_returns_dict():
+    scanner = BTCMarketScanner()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"tok_up": "0.55", "tok_down": "0.45"}
+    mock_resp.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+    result = await scanner.get_midpoints(["tok_up", "tok_down"], mock_client)
+    assert result == {"tok_up": 0.55, "tok_down": 0.45}
+
+@pytest.mark.asyncio
+async def test_get_last_trade_prices_returns_dict():
+    scanner = BTCMarketScanner()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = [
+        {"token_id": "tok_up", "price": "0.55", "side": "BUY"},
+        {"token_id": "tok_down", "price": "0.45", "side": "SELL"},
+    ]
+    mock_resp.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+    result = await scanner.get_last_trade_prices(["tok_up", "tok_down"], mock_client)
+    assert result["tok_up"]["price"] == 0.55
+    assert result["tok_down"]["side"] == "SELL"
+
+@pytest.mark.asyncio
+async def test_get_live_volume_returns_total():
+    scanner = BTCMarketScanner()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = [{"total": 50000, "markets": []}]
+    mock_resp.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+    result = await scanner.get_live_volume(12345, mock_client)
+    assert result == 50000.0
+
+@pytest.mark.asyncio
+async def test_get_live_volume_returns_zero_on_error():
+    scanner = BTCMarketScanner()
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = Exception("timeout")
+    result = await scanner.get_live_volume(12345, mock_client)
+    assert result == 0.0
 
 
 def test_parse_contract_handles_list_outcomes():

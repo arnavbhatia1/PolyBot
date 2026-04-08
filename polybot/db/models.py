@@ -29,7 +29,9 @@ class Database:
                 exit_timestamp TEXT,
                 log_return REAL,
                 weight_version TEXT NOT NULL,
-                indicator_snapshot TEXT
+                indicator_snapshot TEXT,
+                fee_rate REAL,
+                shares_held REAL
             );
 
             CREATE TABLE IF NOT EXISTS trade_history (
@@ -55,6 +57,13 @@ class Database:
                 amount REAL NOT NULL
             );
         """)
+        # Migrate existing DBs: add fee_rate and shares_held columns if missing
+        cursor = await self.conn.execute("PRAGMA table_info(positions)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if "fee_rate" not in cols:
+            await self.conn.execute("ALTER TABLE positions ADD COLUMN fee_rate REAL")
+        if "shares_held" not in cols:
+            await self.conn.execute("ALTER TABLE positions ADD COLUMN shares_held REAL")
         await self.conn.commit()
 
     async def close(self):
@@ -82,17 +91,20 @@ class Database:
         stop_loss: float,
         weight_version: str,
         indicator_snapshot: str = "",
+        fee_rate: float | None = None,
+        shares_held: float | None = None,
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
             """INSERT INTO positions
             (market_id, question, side, entry_price, size, signal_score,
              signal_strength, ev_at_entry, exit_target, stop_loss,
-             entry_timestamp, status, weight_version, indicator_snapshot)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+             entry_timestamp, status, weight_version, indicator_snapshot,
+             fee_rate, shares_held)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
             (market_id, question, side, entry_price, size, signal_score,
              signal_strength, ev_at_entry, exit_target, stop_loss,
-             now, weight_version, indicator_snapshot),
+             now, weight_version, indicator_snapshot, fee_rate, shares_held),
         )
         await self.conn.commit()
         return cursor.lastrowid
