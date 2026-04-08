@@ -85,7 +85,7 @@ polybot/
 python -m polybot.main --mode paper   # Paper trading (persistent bankroll across sessions)
 python -m polybot.main --mode live    # Live trading (real USDC on Polymarket)
 python -m polybot.main                # Defaults to mode in settings.yaml
-python -m pytest polybot/tests/       # 191 tests
+python -m pytest polybot/tests/       # 233 tests
 ```
 
 ## How the Probability Model Works
@@ -104,8 +104,8 @@ Momentum nudge: P(Up) += indicator_score * 0.08
 ENTRY:
   Edge = P(Up) - market_price_up    [or P(Down) - market_price_down]
   If model_prob < 65%: SKIP (coin-flip filter)
-  If edge >= 20%: TRADE, size = Kelly(probability, market_price) * 0.15
-  If edge < 20%: SKIP
+  If edge >= 10%: TRADE, size = Kelly(probability, market_price) * 0.15
+  If edge < 10%: SKIP
 
 WHILE HOLDING (active position management):
   holding_edge = model_prob_for_our_side - current_market_price_for_our_side
