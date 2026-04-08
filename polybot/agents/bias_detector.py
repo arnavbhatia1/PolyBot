@@ -9,6 +9,17 @@ logger = logging.getLogger(__name__)
 INDICATOR_NAMES = ["rsi", "macd", "stochastic", "obv", "vwap"]
 
 
+def _get_gain_pct(o: dict) -> float:
+    """Arithmetic return for binary outcomes. Uses stored gain_pct, falls back to price ratio."""
+    if "gain_pct" in o:
+        return o["gain_pct"]
+    entry = o.get("entry_price", 0)
+    exit_p = o.get("exit_price", 0)
+    if entry > 0:
+        return (exit_p - entry) / entry
+    return 0.0
+
+
 class BiasDetector:
     def __init__(self, biases_path: str):
         self.biases_path = Path(biases_path)
@@ -68,7 +79,7 @@ class BiasDetector:
         return result
 
     def _analyze_sides(self, outcomes: list[dict]) -> dict:
-        """Win rate and avg log_return per side (Up vs Down)."""
+        """Win rate and avg gain_pct per side (Up vs Down)."""
         sides: dict[str, list] = defaultdict(list)
         for o in outcomes:
             side = o.get("side", "").lower()
@@ -78,10 +89,10 @@ class BiasDetector:
         result = {}
         for side, trades in sides.items():
             wins = sum(1 for t in trades if t.get("correct", False))
-            returns = [t.get("log_return", 0) for t in trades]
+            returns = [_get_gain_pct(t) for t in trades]
             result[side] = {
                 "win_rate": round(wins / len(trades), 4),
-                "avg_log_return": round(sum(returns) / len(returns), 6),
+                "avg_gain_pct": round(sum(returns) / len(returns), 6),
                 "count": len(trades),
             }
         return result
@@ -169,7 +180,7 @@ class BiasDetector:
         """Aggregate statistics across all trades."""
         total = len(outcomes)
         wins = sum(1 for o in outcomes if o.get("correct", False))
-        returns = [o.get("log_return", 0) for o in outcomes]
+        returns = [_get_gain_pct(o) for o in outcomes]
 
         edges = []
         for o in outcomes:
@@ -187,7 +198,7 @@ class BiasDetector:
             "total_trades": total,
             "win_rate": round(wins / total, 4) if total > 0 else 0,
             "avg_edge": round(sum(edges) / len(edges), 4) if edges else 0,
-            "avg_log_return": round(avg_ret, 6),
+            "avg_gain_pct": round(avg_ret, 6),
             "sharpe": sharpe,
         }
 

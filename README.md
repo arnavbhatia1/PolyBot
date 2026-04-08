@@ -26,23 +26,30 @@ Binance.US WebSocket (live BTC 1-min candles)
         |
   200-candle buffer + track strike price at 5-min window open
         |
-  Probability model: z = (BTC - strike) / (ATR * sqrt(time))
-                     P(Up) = 1 / (1 + exp(-1.7 * z))
+  4-LAYER PROBABILITY MODEL:
+    Layer 1 — Student-t CDF (fat tails, df=4):
+      z = (BTC - strike) / (ATR * sqrt(time))
+      P(Up) = t.cdf(z, df=4)              <-- CDF drives all decisions
+    Layer 2 — Regime: autocorrelation nudge (max +/-3%)
+    Layer 3 — Order flow: book imbalance + trade flow (max +/-4%)
+    Layer 4 — Momentum: RSI/MACD/Stochastic/OBV/VWAP (max +/-4%)
         |
-  Momentum nudge: P(Up) += indicator_score * 0.08  (max +/-8%)
+  Edge = model probability - market price (from CLOB /price endpoint)
         |
-  Edge = model probability - market price (from live CLOB WebSocket)
+  Model confidence >= 65%? Edge >= 10%?
+    --> Kelly size (0.15 fraction), capped to 50% of book depth
+    --> Entry fill = /price + slippage (size/depth * 3%)
+    --> Place trade
         |
-  Model confidence >= 65%? Edge >= 10%? --> Kelly size (0.15 fraction) --> Place trade
-        |
-  While holding: continuously re-evaluate with same model
+  While holding: continuously re-evaluate with same 4-layer model
   holding_edge = model_prob - market_price for our side
-  If holding_edge > -10%: HOLD (ride to $1 resolution)
-  If holding_edge <= -10%: EXIT (take profit or cut loss)
+  Fee-aware threshold with time urgency bonus near expiry
+  If holding_edge > threshold: HOLD (ride to $1 resolution)
+  If holding_edge <= threshold: EXIT (scalp)
         |
   On resolution: binary outcome from BTC vs strike ($1 win / $0 loss)
-  On early exit: VWAP from walking CLOB bid book
-  --> Log outcome --> Learn
+  On early exit: sell at CLOB /price (negRisk cross-matched)
+  --> Log outcome (gain_pct, PnL, fees) --> Learn
 ```
 
 ## Architecture
@@ -52,7 +59,8 @@ Binance.US WebSocket (live BTC 1-min candles)
 | `core/binance_feed.py` | Binance.US WebSocket price stream + rolling candle buffer |
 | `core/clob_ws.py` | Real-time Polymarket CLOB WebSocket (order books, trades, resolution) |
 | `core/market_scanner.py` | Gamma API contract discovery + CLOB HTTP helpers (spread, midpoints, volume, fees, tick size) |
-| `core/signal_engine.py` | Probability model: BTC vs strike + time + vol + momentum nudge |
+| `core/signal_engine.py` | 4-layer probability model: Student-t CDF + regime + order flow + momentum |
+| `core/order_flow.py` | Book imbalance + trade flow signal from CLOB data |
 | `indicators/` | 7 indicators (RSI, MACD, Stochastic, EMA, OBV, VWAP, ATR) |
 | `indicators/engine.py` | Combines all 7, manages weight versions |
 | `execution/paper_trader.py` | Realistic simulated trading — real CLOB prices, dynamic fees, FOK fills |
@@ -77,8 +85,9 @@ Binance.US WebSocket (live BTC 1-min candles)
 Paper mode simulates live execution as closely as possible:
 
 - **Real CLOB prices** — order books from WebSocket (not stale Gamma prices)
-- **VWAP fill simulation** — walks ask levels on entry, bid levels on exit
-- **Dynamic fee rates** — fetched live from `GET /fee-rate` per token (crypto = 7.2%)
+- **Order size cap** — capped to 50% of available ask depth (no fantasy fills)
+- **Proportional slippage** — fills penalized by `(order_size / depth) * 3%` — larger orders get worse prices
+- **Dynamic fee rates** — fetched live from `GET /fee-rate` per token (crypto = 1.8%)
 - **Correct fee collection** — entry fees in shares (fewer shares received), exit fees in USDC
 - **FOK fill semantics** — order must fill 100% or reject (scaled to available depth)
 - **Tick size enforcement** — prices snapped to market tick via `GET /tick-size`
@@ -92,12 +101,12 @@ All parameters in `polybot/config/settings.yaml`:
 
 - **Minimum edge** — 10% mispricing between model and market required to trade
 - **Min model probability** — 0.65, skip coin-flip trades (model must be confident)
-- **Momentum weight** — 0.08, indicators nudge base probability by max +/-8% (below min edge so indicators alone can't trigger trades)
+- **Layer weights** — CDF drives decisions. Regime +/-3%, order flow +/-4%, momentum +/-4%. Total max layer swing: +/-11%
 - **Kelly fraction** — 0.15 (conservative for binary outcomes where losses are total)
 - **Single position** — one trade at a time, full Kelly on the best edge
 - **One trade per contract** — no re-entry after exit on same 5-min window
-- **Active position management** — hold to $1 when model is confident, exit early when holding edge drops below -10%
-- **Exit edge threshold** — -0.10 (same probability model for entry AND exit decisions)
+- **Active position management** — hold to $1 when model is confident, exit early when holding edge drops below fee-aware threshold
+- **Exit edge threshold** — -0.10, adjusted for exit fee cost and time urgency (same 4-layer model for entry AND exit)
 - **Max spread** — 0.10 (skip illiquid markets)
 - **Indicator weights** — RSI 0.20, MACD 0.25, Stochastic 0.20, OBV 0.15, VWAP 0.20
 - All signal/entry params tunable by the learning pipeline (Claude recommends, optimizer backtests)
@@ -110,7 +119,7 @@ Runs daily at 4:45 PM ET (20:45 UTC):
 2. **TA Strategy Evolver** — Sends full analysis + recent trades to Claude API as a quant strategist. Returns weight adjustments, parameter recommendations, reasoning, and risk warnings. Falls back to local math if API is unavailable.
 3. **Weight Optimizer** — Backtests recommendations against historical edge data, auto-adopts if Sharpe improves >= 3%, hot-swaps all parameters at runtime **and persists them to settings.yaml** so they survive restarts
 
-Outcomes enriched with full trade context (BTC price, strike, time remaining, model probability, edge). Claude's analysis and key findings posted to `#polybot-daily`. Negative Sharpe warnings posted to `#polybot-control`.
+Outcomes enriched with full trade context (BTC price, strike, time remaining, model probability, edge, flow score) plus `gain_pct` (arithmetic return), `pnl`, and `fees`. Sharpe calculated from `gain_pct`, not `log_return` (log returns are broken for binary outcomes). Claude's analysis and key findings posted to `#polybot-daily`.
 
 ## Discord Commands
 
@@ -139,5 +148,5 @@ Binance.US and Polymarket CLOB APIs are free and need no key. Live trading (futu
 ## Tests
 
 ```bash
-python -m pytest polybot/tests/ -v   # 233 tests
+python -m pytest polybot/tests/ -v   # 249 tests
 ```

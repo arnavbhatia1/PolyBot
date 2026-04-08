@@ -40,6 +40,20 @@ logger.setLevel(logging.INFO)
 logging.getLogger("polybot.discord_bot.bot").setLevel(logging.INFO)
 
 
+def _slippage_pct(order_size_usd: float, book_depth_usd: float,
+                   impact_factor: float = 0.03) -> float:
+    """Market impact: larger orders relative to visible depth get worse fills.
+
+    Returns a percentage (0.015 = 1.5%) to add (buys) or subtract (sells).
+    Uses visible best-level depth as proxy — conservative for negRisk markets
+    where cross-matching creates deeper real liquidity than the raw book shows.
+    """
+    if book_depth_usd <= 0:
+        return 0.0
+    fill_pct = min(order_size_usd / book_depth_usd, 1.0)
+    return fill_pct * impact_factor
+
+
 def _compute_pnl(pos: dict, exit_price: float) -> tuple[float, float, float, float]:
     """Compute realistic PnL using shares-based entry fee and USDC exit fee.
 
@@ -388,21 +402,34 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
                     if action == "EXIT":
                         sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
-                        result = await trader.close_trade(pos["id"], market_price, token_id=sell_token)
+
+                        # Apply slippage to sell price (worse fill for seller)
+                        hold_book = clob_ws.get_book(hold_token) if clob_ws else {}
+                        bid_depth_usd = sum(
+                            float(b.get("size", 0)) * float(b.get("price", 0))
+                            for b in (hold_book or {}).get("bids", [])
+                        )
+                        shares_held = pos.get("shares_held") or pos["size"] / pos["entry_price"]
+                        exit_size_usd = shares_held * market_price
+                        impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
+                        slip = _slippage_pct(exit_size_usd, bid_depth_usd, impact)
+                        exit_fill = round(market_price * (1 - slip), 4)
+
+                        result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token)
                         if result.success:
-                            shares, entry_fee, exit_fee, pnl = _compute_pnl(pos, market_price)
+                            shares, entry_fee, exit_fee, pnl = _compute_pnl(pos, exit_fill)
                             gain_pct = pnl / pos["size"] if pos["size"] > 0 else 0
                             won = "WIN" if pnl > 0 else "LOSS"
                             if pnl > 0: day_wins += 1
                             else: day_losses += 1
                             day_fees += entry_fee + exit_fee
-                            logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{market_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${entry_fee + exit_fee:.2f} | {reason}")
+                            logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_fill:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${entry_fee + exit_fee:.2f} | slip={slip:.2%} | {reason}")
                             if alert_manager:
                                 await alert_manager.send_trade_closed(
-                                    question="", exit_price=market_price, log_return=0, hold_hours=0,
+                                    question="", exit_price=exit_fill, log_return=0, hold_hours=0,
                                     side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
                                     gain_pct=gain_pct, reason=f"scalp {won.lower()}", fees=entry_fee + exit_fee)
-                            await _record_outcome(outcome_reviewer, pos, market_price, result.log_return or 0, gain_pct,
+                            await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
                                                   exit_reason="scalp", pnl=pnl, fees=entry_fee + exit_fee)
                             traded_contracts[pos["market_id"]] = int(time.time())
 
@@ -485,11 +512,13 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
             eval_window = int(now_ts // 300) * 300
 
+            # Book depth in USD (used for min-depth gate and size cap)
+            depth_usd_up = depth_up * ask_up if ask_up > 0 else 0
+            depth_usd_down = depth_down * ask_down if ask_down > 0 else 0
+
             # Skip if no real depth to fill against
             if price_source == "clob":
                 min_depth = market_scanner.min_book_depth_usd
-                depth_usd_up = depth_up * ask_up if ask_up > 0 else 0
-                depth_usd_down = depth_down * ask_down if ask_down > 0 else 0
                 if depth_usd_up < min_depth and depth_usd_down < min_depth:
                     if eval_window != last_eval_log_window:
                         last_eval_log_window = eval_window
@@ -592,6 +621,17 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 if size > bankroll * max_bankroll_pct:
                     size = round(bankroll * max_bankroll_pct, 2)
 
+                # Cap size to fraction of book depth (realistic fill constraint)
+                side_depth = depth_usd_up if side == "Up" else depth_usd_down
+                max_fill_pct = config.get("execution", {}).get("max_book_fill_pct", 0.50)
+                if side_depth > 0:
+                    max_fill = side_depth * max_fill_pct
+                    if size > max_fill:
+                        size = round(max_fill, 2)
+                        if size < 1.0:
+                            logger.info(f"SKIP: size capped to ${size:.2f} by book depth ${side_depth:.0f} — too small")
+                            continue
+
                 # Fetch fee rate and tick size from Polymarket API
                 fee_rate = await market_scanner.fetch_fee_rate(token_id, http_client)
                 tick_size = await market_scanner.fetch_tick_size(token_id, http_client)
@@ -600,7 +640,10 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 # (the price already reflects the merged book, not just the raw token asks)
                 exec_price = await market_scanner.fetch_market_price(token_id, "BUY", http_client)
                 if exec_price > 0:
-                    price = market_scanner.snap_to_tick(exec_price, tick_size)
+                    # Apply slippage: larger orders relative to depth get worse fills
+                    impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
+                    slip = _slippage_pct(size, side_depth, impact)
+                    price = market_scanner.snap_to_tick(exec_price * (1 + slip), tick_size)
                 # If /price fails, keep the price from the evaluation (already from /price)
 
                 snapshot = indicator_engine.get_snapshot(indicators)

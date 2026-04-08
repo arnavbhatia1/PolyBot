@@ -56,11 +56,18 @@ class TAEvolver:
 
     def analyze(self, outcomes: list[dict]) -> dict:
         if not outcomes:
-            return {"win_rate": 0, "avg_log_return": 0, "total_trades": 0}
+            return {"win_rate": 0, "avg_gain_pct": 0, "total_trades": 0}
         wins = sum(1 for o in outcomes if o.get("correct", False))
-        returns = [o.get("log_return", 0) for o in outcomes]
+        returns = []
+        for o in outcomes:
+            if "gain_pct" in o:
+                returns.append(o["gain_pct"])
+            elif o.get("entry_price", 0) > 0:
+                returns.append((o.get("exit_price", 0) - o["entry_price"]) / o["entry_price"])
+            else:
+                returns.append(0)
         return {"win_rate": wins / len(outcomes),
-                "avg_log_return": sum(returns) / len(returns),
+                "avg_gain_pct": sum(returns) / len(returns),
                 "total_trades": len(outcomes)}
 
     def recommend_weight_adjustments(self, outcomes: list[dict], current_weights: dict) -> dict:

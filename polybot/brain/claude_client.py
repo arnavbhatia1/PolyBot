@@ -286,7 +286,7 @@ def _format_strategy_context(context: dict) -> str:
                 f"Total trades: {overall.get('total_trades', 0)}\n"
                 f"Win rate: {overall.get('win_rate', 0):.1%}\n"
                 f"Average edge at entry: {overall.get('avg_edge', 0):.1%}\n"
-                f"Average log return: {overall.get('avg_log_return', 0):.4f}\n"
+                f"Average gain pct: {overall.get('avg_gain_pct', 0):.4f}\n"
                 f"Sharpe ratio: {overall.get('sharpe', 0):.3f}"
             )
 
@@ -308,7 +308,7 @@ def _format_strategy_context(context: dict) -> str:
             for s, stats in side.items():
                 lines.append(
                     f"- **{s}**: win_rate={stats.get('win_rate', 0):.1%} "
-                    f"avg_ret={stats.get('avg_log_return', 0):.4f} n={stats.get('count', 0)}"
+                    f"avg_ret={stats.get('avg_gain_pct', 0):.4f} n={stats.get('count', 0)}"
                 )
             sections.append("\n".join(lines))
 

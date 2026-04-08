@@ -20,6 +20,7 @@ class OutcomeReviewer:
                   "correct": profitable, "entry_price": entry_price,
                   "exit_price": exit_price, "log_return": log_return,
                   "size": size, "pnl": pnl, "fees": fees,
+                  "gain_pct": round(pnl / size, 6) if size > 0 else 0.0,
                   "weight_version": weight_version, "category": category,
                   "indicator_snapshot": indicator_snapshot or {},
                   "exit_reason": exit_reason,

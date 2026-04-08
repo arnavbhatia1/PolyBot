@@ -8,6 +8,17 @@ def log_return(entry_price: float, exit_price: float) -> float:
     return math.log(exit_price / entry_price)
 
 
+def gain_pct(entry_price: float, exit_price: float) -> float:
+    """Arithmetic return for binary outcomes: (exit - entry) / entry.
+
+    Bounded [-1, +inf) — correct metric for binary options where
+    log returns are undefined at exit_price=0.
+    """
+    if entry_price <= 0:
+        return 0.0
+    return (exit_price - entry_price) / entry_price
+
+
 def total_log_return(returns: list[float]) -> float:
     return sum(returns)
 

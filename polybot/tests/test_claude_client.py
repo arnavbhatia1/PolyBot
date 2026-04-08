@@ -154,7 +154,7 @@ def test_format_strategy_context_includes_sections():
     context = {
         "current_config": {"weights": {"rsi": 0.20}, "momentum_weight": 0.08, "min_edge": 0.10},
         "analysis": {"overall": {"total_trades": 50, "win_rate": 0.55, "avg_edge": 0.14,
-                                  "avg_log_return": 0.005, "sharpe": 0.8}},
+                                  "avg_gain_pct": 0.005, "sharpe": 0.8}},
         "trades": [{"correct": True, "side": "Up", "entry_price": 0.50, "exit_price": 1.0,
                      "log_return": 0.5, "signal_score": 0.7, "indicator_snapshot": {}}],
         "previous_recommendations": "## previous\nsome text",

@@ -6,19 +6,19 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 
 ## Key Architecture Decisions
 
-- **4-layer probability model.** The bot computes P(Up) using four independent signal layers: (1) Student-t CDF with df=4 for fat-tailed Brownian motion: z = (BTC - strike) / (ATR * sqrt(time)), P = t.cdf(z, 4) — captures fat tails that the normal distribution misses, finding edge on underdog positions the market overprices. (2) Regime detection: 1-lag autocorrelation of recent returns. Trending regimes amplify probability, mean-reverting regimes dampen it (±5%). (3) Order flow: book imbalance + trade flow from CLOB WebSocket data. Informed buying/selling pressure leads price movement (±6%). (4) Indicator momentum: RSI, MACD, Stochastic, OBV, VWAP provide a small directional nudge (±4%). The edge is: model probability - effective market price.
+- **4-layer probability model.** The bot computes P(Up) using four independent signal layers: (1) Student-t CDF with df=4 for fat-tailed Brownian motion: z = (BTC - strike) / (ATR * sqrt(time)), P = t.cdf(z, 4) — captures fat tails that the normal distribution misses, finding edge on underdog positions the market overprices. (2) Regime detection: 1-lag autocorrelation of recent returns. Trending regimes amplify probability, mean-reverting regimes dampen it (±3%). (3) Order flow: book imbalance + trade flow from CLOB WebSocket data. Informed buying/selling pressure leads price movement (±4%). (4) Indicator momentum: RSI, MACD, Stochastic, OBV, VWAP provide a small directional nudge (±4%). The CDF (Layer 1) drives all decisions — layers just nudge. The edge is: model probability - effective market price.
 - **Active position management.** Hold to $1 resolution when the model is confident. Exit early (scalp) when holding_edge drops below a fee-aware threshold that accounts for exit costs and time urgency. Same probability model for entry AND exit. Not fixed take-profit/stop-loss — the math decides.
 - **Single position at a time.** Full Kelly on the best edge, no capital dilution.
 - **One trade per 5-min contract.** After any exit, that contract is blacklisted.
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
 - **Minimum edge = 10%.** Only trade when model disagrees with market by 10%+. Tunable by learning pipeline (range 5-35%).
-- **Signal layer weights.** Layer 1 (Student-t base) provides the core probability. Layer 2 (regime) adjusts by ±5% max. Layer 3 (order flow) adjusts by ±6% max. Layer 4 (momentum/indicators) adjusts by ±4% max — deliberately the weakest signal since indicators alone should not trigger trades.
+- **Signal layer weights.** Layer 1 (Student-t base) provides the core probability — the CDF drives all decisions. Layer 2 (regime) adjusts by ±3% max. Layer 3 (order flow) adjusts by ±4% max. Layer 4 (momentum/indicators) adjusts by ±4% max. Total max layer swing: ±11%. Deliberately small so the CDF must show a direction before layers can push past the 65% confidence gate.
 - **Real-time WebSocket + Gamma API for prices.** Primary: CLOB WebSocket (`wss://ws-subscriptions-clob.polymarket.com/ws/market`) provides real-time book snapshots, price deltas, best bid/ask, last trades, and market resolution events. Trading loop is event-driven — reacts instantly to book changes instead of polling. HTTP fallback: `clob.polymarket.com/book?token_id=TOKEN` if WS disconnected. Gamma API (`gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}`) for contract discovery and `token_id_up`/`token_id_down`. Supplementary: `GET /spread` for liquidity check, `GET /midpoints` for quick price ref, `GET /last-trades-prices` for fill validation. Gamma `outcomePrices` are stale fallback only.
 - **NegRisk execution pricing via GET /price.** The raw token book (`GET /book`) only shows direct token orders — in negRisk binary markets the CLOB cross-matches across complementary tokens, so the raw book shows asks at $0.99 on both sides while the real executable price is ~$0.50. **Always use `GET /price?token_id=X&side=BUY` for entry pricing and `side=SELL` for exit pricing.** This is what Polymarket's website shows. Never use raw book best ask/bid for edge calculation.
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
-- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Fee rates fetched live from `GET /fee-rate?token_id=X` (crypto = 7.2%, sports = 3%, etc.). Entry fees collected in shares (fewer shares received), exit fees in USDC — matching Polymarket's actual collection method. Prices snapped to market tick size. Min order size enforced from CLOB book. FOK fill semantics (100% fill or reject). Orders scaled down to available CLOB depth when book is thin. Live mode on polymarket.com (EIP-712 signed CLOB orders) is future work.
+- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Fee rates fetched live from `GET /fee-rate?token_id=X` (crypto = 1.8%). Entry fees collected in shares (fewer shares received), exit fees in USDC — matching Polymarket's actual collection method. Prices snapped to market tick size. Min order size enforced from CLOB book. FOK fill semantics (100% fill or reject). Orders capped to 50% of available book depth. **Proportional slippage model**: entry and scalp exit fills are penalized by `(order_size / book_depth) * slippage_impact_pct` — larger orders relative to visible depth get worse fills. Slippage applied to execution only (signal evaluation sees clean /price quotes). Resolutions ($1/$0) have no slippage. Live mode on polymarket.com (EIP-712 signed CLOB orders) is future work.
 
 ## Project Structure
 
@@ -58,7 +58,7 @@ polybot/
   db/models.py               # SQLite: positions, trade_history, bankroll
   math_engine/
     decision_table.py        # Legacy — not used in main trading loop
-    returns.py               # Log returns, Sharpe ratio
+    returns.py               # Log returns, gain_pct (arithmetic returns for binary), Sharpe ratio
 ```
 
 ## Config
@@ -68,13 +68,15 @@ polybot/
 - `signal.entry_threshold:` — 0.10 (minimum 10% edge to trade)
 - `signal.exit_edge_threshold:` — -0.10 (exit when holding edge drops below -10%)
 - `signal.min_model_probability:` — 0.65 (skip coin-flip trades — model must be ≥65% confident)
-- `signal.momentum_weight:` — 0.04 (max ±4% indicator adjustment, Layer 4 — weakest signal)
-- `signal.regime_weight:` — 0.05 (max ±5% regime adjustment, Layer 2)
-- `signal.flow_weight:` — 0.06 (max ±6% order flow adjustment, Layer 3)
+- `signal.momentum_weight:` — 0.04 (max ±4% indicator adjustment, Layer 4)
+- `signal.regime_weight:` — 0.03 (max ±3% regime adjustment, Layer 2)
+- `signal.flow_weight:` — 0.04 (max ±4% order flow adjustment, Layer 3)
 - `signal.student_t_df:` — 4 (degrees of freedom for fat-tailed CDF)
 - `signal.weights:` — per-indicator weights for momentum calculation
 - `execution.max_concurrent_positions:` — 1 (single position, full focus)
 - `execution.max_bankroll_deployed:` — 0.80
+- `execution.max_book_fill_pct:` — 0.50 (cap order to 50% of available ask depth — realistic fills)
+- `execution.slippage_impact_pct:` — 0.03 (3% price impact at 100% depth consumption — proportional slippage model)
 - `market.entry_window_seconds:` — 300 (full 5-min window)
 - `market.min_time_remaining_seconds:` — 20 (tunable by learning pipeline)
 - `market.clob_ws_url:` — `wss://ws-subscriptions-clob.polymarket.com/ws/market`
@@ -112,14 +114,14 @@ LAYER 1 — Fat-tailed base (Student-t CDF, df=4):
 
 LAYER 2 — Regime detection:
   autocorr = 1-lag autocorrelation of last 10 1-min returns
-  If autocorr > 0 (trending): amplify P away from 0.5 (max ±5%)
+  If autocorr > 0 (trending): amplify P away from 0.5 (max ±3%)
   If autocorr < 0 (reverting): dampen P toward 0.5
 
 LAYER 3 — Order flow:
   book_imbalance = (bid_depth - ask_depth) / total_depth (across both Up/Down books)
   trade_flow = net_buy_volume / total_volume (from WebSocket last_trade_price events)
   flow_signal = 0.6 * book_imbalance + 0.4 * trade_flow
-  Adjustment: flow_signal * 0.06 (max ±6%)
+  Adjustment: flow_signal * 0.04 (max ±4%)
   
   Why: Order flow LEADS price. Informed traders accumulate before CLOB reprices.
 
@@ -135,7 +137,8 @@ ENTRY:
   ATR gate: skip if volatility too quiet or too volatile
   Edge = P(Up) - effective_price_up    [or P(Down) - effective_price_down]
   If model_prob < 65%: SKIP (coin-flip filter)
-  If edge >= 10%: TRADE, size = Kelly(probability, market_price) * 0.15
+  If edge >= 10%: TRADE, size = Kelly(probability, market_price) * 0.15, capped to 50% of book depth
+  Entry fill: /price quote + proportional slippage (size/depth * 3%)
   If edge < 10%: SKIP
 
 WHILE HOLDING (active position management):
@@ -269,7 +272,9 @@ Daily at 4:45 PM ET / 20:45 UTC (configurable via `agents.daily_pipeline_hour` a
    - **Persists all tuned parameters to settings.yaml** — values survive restarts
    - Discord alerts include Claude's key findings and reasoning
 
-Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, strike_price, seconds_remaining, market prices, model_probability, edge, momentum_score, ATR, size, flow_score, flow_book_imbalance, flow_trade_count.
+Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, strike_price, seconds_remaining, market prices, model_probability, edge, momentum_score, ATR, size, flow_score, flow_book_imbalance, flow_trade_count. Each outcome also stores `gain_pct` (arithmetic return: pnl/size), `pnl`, and `fees`.
+
+**Performance metrics use `gain_pct` (arithmetic returns), NOT `log_return`.** Log returns are mathematically broken for binary outcomes where exit_price=0 produces log(0)=-infinity. The `gain_pct` metric is bounded [-1, +inf) and gives an honest, positive Sharpe for profitable strategies. The `log_return` field is still stored for backward compatibility but is never used for Sharpe calculation.
 
 ## What NOT to Change
 
@@ -277,7 +282,8 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't increase momentum_weight above 0.10 — indicators alone should not trigger trades.
 - Don't use normal CDF / logistic approximation — use Student-t CDF (fat tails). The normal distribution underestimates reversal probability for BTC.
 - Don't remove complementary pricing — it's essential for seeing real underdog prices in negRisk binary markets.
-- Don't increase flow_weight above 0.10 — order flow should nudge, not dominate.
+- Don't increase flow_weight above 0.10 — order flow should nudge, not dominate. CDF drives decisions.
+- Don't use `log_return` for Sharpe calculation — use `gain_pct` (arithmetic returns). Log returns are broken for binary outcomes (log(0) = -infinity).
 - Don't use raw CLOB book asks/bids for entry/exit pricing — use `GET /price?token_id=X&side=BUY|SELL` for negRisk cross-matched execution prices. Raw book shows $0.99 on both sides; `/price` shows the real ~$0.50 price.
 - Don't use Gamma API `outcomePrices` for edge calculation — they're stale/initial prices, not live order book.
 - Don't hardcode fee rates — fetch from `GET /fee-rate?token_id=X`. Crypto is 0.072, not 0.05.
