@@ -562,7 +562,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 last_eval_log_window = eval_window
                 buf_len = len(binance_feed.buffer) if binance_feed.buffer else 0
                 logger.info(
-                    f"EVAL: {signal.action} | BTC={btc_price:,.0f} strike={strike:,.0f} "
+                    f"EVAL: {signal.action} | {cid} | BTC={btc_price:,.0f} strike={strike:,.0f} "
                     f"d={btc_price-strike:+,.0f} | mkt Up={price_up:.2f} Dn={price_down:.2f} "
                     f"| prob={signal.prob:.0%} edge={signal.edge:+.0%} | {contract['seconds_remaining']:.0f}s left "
                     f"| flow={flow_score:+.2f} | buf={buf_len} | {signal.reason}")

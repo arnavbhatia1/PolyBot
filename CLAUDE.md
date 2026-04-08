@@ -14,7 +14,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Minimum edge = 10%.** Only trade when model disagrees with market by 10%+. Tunable by learning pipeline (range 5-35%).
 - **Signal layer weights.** Layer 1 (Student-t base) provides the core probability. Layer 2 (regime) adjusts by ±5% max. Layer 3 (order flow) adjusts by ±6% max. Layer 4 (momentum/indicators) adjusts by ±4% max — deliberately the weakest signal since indicators alone should not trigger trades.
 - **Real-time WebSocket + Gamma API for prices.** Primary: CLOB WebSocket (`wss://ws-subscriptions-clob.polymarket.com/ws/market`) provides real-time book snapshots, price deltas, best bid/ask, last trades, and market resolution events. Trading loop is event-driven — reacts instantly to book changes instead of polling. HTTP fallback: `clob.polymarket.com/book?token_id=TOKEN` if WS disconnected. Gamma API (`gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}`) for contract discovery and `token_id_up`/`token_id_down`. Supplementary: `GET /spread` for liquidity check, `GET /midpoints` for quick price ref, `GET /last-trades-prices` for fill validation. Gamma `outcomePrices` are stale fallback only.
-- **Complementary pricing for negRisk markets.** In binary markets, buying Down is economically equivalent to minting a bundle ($1) and selling Up. The effective price is: min(ask_side, 1 - bid_opposite). This fixes the "Up=0.99 Dn=0.99" problem where the underdog's ask book is empty but the favorite's bid reveals the true price. E.g., if bid_up=0.97, effective Down price = $0.03, not the $0.99 showing on the Down ask book.
+- **NegRisk execution pricing via GET /price.** The raw token book (`GET /book`) only shows direct token orders — in negRisk binary markets the CLOB cross-matches across complementary tokens, so the raw book shows asks at $0.99 on both sides while the real executable price is ~$0.50. **Always use `GET /price?token_id=X&side=BUY` for entry pricing and `side=SELL` for exit pricing.** This is what Polymarket's website shows. Never use raw book best ask/bid for edge calculation.
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
@@ -90,7 +90,7 @@ polybot/
 python -m polybot.main --mode paper   # Paper trading (persistent bankroll across sessions)
 python -m polybot.main --mode live    # Live trading (real USDC on Polymarket)
 python -m polybot.main                # Defaults to mode in settings.yaml
-python -m pytest polybot/tests/       # 233 tests
+python -m pytest polybot/tests/       # 249 tests
 ```
 
 ## How the Probability Model Works
@@ -126,9 +126,10 @@ LAYER 3 — Order flow:
 LAYER 4 — Indicator momentum:
   Weighted RSI/MACD/Stochastic/OBV/VWAP score * 0.04 (max ±4%)
 
-COMPLEMENTARY PRICING:
-  effective_price_up = min(ask_up, 1 - bid_down)
-  effective_price_down = min(ask_down, 1 - bid_up)
+NEGRISK EXECUTION PRICING:
+  price_up = GET /price?token_id=UP&side=BUY   (cross-matched, not raw book)
+  price_down = GET /price?token_id=DOWN&side=BUY
+  sell_price = GET /price?token_id=TOKEN&side=SELL (for scalp exits)
 
 ENTRY:
   ATR gate: skip if volatility too quiet or too volatile
@@ -167,6 +168,7 @@ Base URL: `https://clob.polymarket.com` — all endpoints are public, no auth re
 | `GET /book?token_id=TOKEN` | Full order book (bids + asks). HTTP fallback when WebSocket is disconnected or book not yet received for a token. Also provides `min_order_size` and `tick_size` in response. | 2s per token | `core/market_scanner.py` |
 | `GET /fee-rate?token_id=TOKEN` | Taker fee rate in basis points (e.g., 720 = 7.2% for crypto). Used to compute realistic entry fees (in shares) and exit fees (in USDC). Formula: `fee = feeRate × shares × p × (1-p)`. | 1 hour | `core/market_scanner.py` |
 | `GET /tick-size?token_id=TOKEN` | Minimum price increment (e.g., "0.01"). All VWAP fill prices are snapped to tick grid via `snap_to_tick()`. | 1 hour | `core/market_scanner.py` |
+| `GET /price?token_id=TOKEN&side=BUY\|SELL` | **Primary execution price.** Returns the real negRisk cross-matched price accounting for complementary token matching. Raw book shows asks at $0.99 but `/price` shows the true executable price (~$0.50). Used for ALL entry and exit pricing. | No cache | `core/market_scanner.py` |
 | `GET /spread?token_id=TOKEN` | Bid-ask spread as a string (e.g., "0.04"). Used as entry filter — skip if spread > `max_spread` (default 10%). Checked from WS `best_bid_ask` first, HTTP fallback. | No cache | `core/market_scanner.py` |
 | `GET /midpoints?token_ids=T1,T2` | Midpoint price (avg of best bid/ask) per token. Lightweight hold evaluation reference. | No cache | `core/market_scanner.py` |
 | `GET /last-trades-prices?token_ids=T1,T2` | Last trade price + side per token (max 500). Logged after fills to validate paper VWAP against actual market trades. | No cache | `core/market_scanner.py` |
@@ -254,19 +256,20 @@ Daily at 4:45 PM ET / 20:45 UTC (configurable via `agents.daily_pipeline_hour` a
    - Overall statistics (Sharpe, win rate, avg edge)
 
 2. **TAEvolver** — Sends analysis + last 75 trades + current config to Claude API:
-   - System prompt defines Chief Quantitative Strategist role (quant research, trading, risk, crypto)
-   - Claude returns structured JSON: weight adjustments, momentum_weight, min_edge, kelly_fraction, reasoning, findings, risk warnings
-   - Response validated server-side (weights sum to 1.0, all constraints enforced)
+   - System prompt defines Chief Quantitative Strategist role with full 4-layer model description
+   - Trade data includes flow_score, exit_reason (scalp vs resolution) for each trade
+   - Claude returns structured JSON: weight adjustments, all 4 layer weights (momentum, regime, flow, student_t_df), min_edge, kelly_fraction, reasoning, findings, risk warnings
+   - Response validated server-side (weights sum to 1.0, all constraints enforced, new params clamped)
    - Falls back to local math if Claude API fails (resilient)
 
 3. **WeightOptimizer** — Backtests recommendations using trade_context edge data:
    - Recomputes hypothetical edge with new weights/parameters
    - Auto-adopts if Sharpe improves >= 3%
-   - Hot-swaps indicator weights, momentum_weight, min_edge, kelly_fraction at runtime
+   - Hot-swaps ALL params at runtime: indicator weights, momentum_weight, regime_weight, flow_weight, student_t_df, min_edge, kelly_fraction, min_model_probability, exit_edge_threshold, min_time_remaining, trading hours
    - **Persists all tuned parameters to settings.yaml** — values survive restarts
    - Discord alerts include Claude's key findings and reasoning
 
-Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, strike_price, seconds_remaining, market prices, model_probability, edge, momentum_score, ATR, size.
+Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, strike_price, seconds_remaining, market prices, model_probability, edge, momentum_score, ATR, size, flow_score, flow_book_imbalance, flow_trade_count.
 
 ## What NOT to Change
 
@@ -275,13 +278,24 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't use normal CDF / logistic approximation — use Student-t CDF (fat tails). The normal distribution underestimates reversal probability for BTC.
 - Don't remove complementary pricing — it's essential for seeing real underdog prices in negRisk binary markets.
 - Don't increase flow_weight above 0.10 — order flow should nudge, not dominate.
-- Don't use Gamma API `outcomePrices` for edge calculation — they're stale/initial prices, not live order book. Use `clob.polymarket.com/book?token_id=X` for real prices.
+- Don't use raw CLOB book asks/bids for entry/exit pricing — use `GET /price?token_id=X&side=BUY|SELL` for negRisk cross-matched execution prices. Raw book shows $0.99 on both sides; `/price` shows the real ~$0.50 price.
+- Don't use Gamma API `outcomePrices` for edge calculation — they're stale/initial prices, not live order book.
 - Don't hardcode fee rates — fetch from `GET /fee-rate?token_id=X`. Crypto is 0.072, not 0.05.
 - Don't use polymarket.us for crypto — US platform has sports only. All crypto trading is on polymarket.com.
 - Don't use Binance.com — use Binance.us.
 - Don't allow multiple concurrent positions — one at a time, full Kelly.
 - Don't auto-delete the DB — bankroll persists across sessions in both modes. Never delete `polybot/db/polybot.db` between runs.
 - Don't use limit orders in LiveTrader — FOK market orders for 5-min contract speed.
+
+## Baseline — LOCKED 2026-04-08
+
+The core trading logic is FROZEN. Do not make structural changes to:
+- `signal_engine.py` (4-layer probability model)
+- `order_flow.py` (book imbalance + trade flow)
+- Entry/exit/pricing logic in `main.py`
+- `paper_trader.py` (fee simulation)
+
+Only the daily learning pipeline (4:45 PM) tunes parameters slowly. Any proposed "improvement" to frozen code requires explicit user approval. New features go in NEW files/modules.
 
 ## Always Update
 

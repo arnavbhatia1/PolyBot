@@ -62,6 +62,16 @@ def create_bot(db, trader, scanner, scheduler, config):
         )
         msg = format_status(mode=bot.config.get("mode", "paper"), is_paused=bot.is_paused,
                            open_positions=positions, bankroll=bankroll, pnl_24h=pnl_24h)
+        # Show current window being evaluated
+        try:
+            contract = await bot.scanner.find_active_contract()
+            if contract:
+                msg += (f"\n\n**Current Window**\n"
+                        f"Contract: `{contract['slug']}`\n"
+                        f"Time left: `{contract['seconds_remaining']:.0f}s`\n"
+                        f"Gamma: Up=`{contract['price_up']:.3f}` Dn=`{contract['price_down']:.3f}`")
+        except Exception:
+            pass
         await ctx.send(msg)
 
     @bot.command(name="positions")

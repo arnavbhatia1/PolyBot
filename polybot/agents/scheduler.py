@@ -56,7 +56,10 @@ class AgentScheduler:
         current_config = {
             "weights": {k: v for k, v in current_weights.items()
                         if k in ["rsi", "macd", "stochastic", "obv", "vwap"]},
-            "momentum_weight": getattr(self.signal_engine, 'momentum_weight', 0.08),
+            "momentum_weight": getattr(self.signal_engine, 'momentum_weight', 0.04),
+            "regime_weight": getattr(self.signal_engine, 'regime_weight', 0.05),
+            "flow_weight": getattr(self.signal_engine, 'flow_weight', 0.06),
+            "student_t_df": getattr(self.signal_engine, 'student_t_df', 4),
             "min_edge": getattr(self.signal_engine, 'min_edge', 0.20),
             "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
             "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.65),
@@ -175,6 +178,12 @@ class AgentScheduler:
                                                if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
                 if "recommended_momentum_weight" in recommendations:
                     self.signal_engine.momentum_weight = _clamp(recommendations["recommended_momentum_weight"], 0.02, 0.10)
+                if "recommended_regime_weight" in recommendations:
+                    self.signal_engine.regime_weight = _clamp(recommendations["recommended_regime_weight"], 0.02, 0.10)
+                if "recommended_flow_weight" in recommendations:
+                    self.signal_engine.flow_weight = _clamp(recommendations["recommended_flow_weight"], 0.02, 0.12)
+                if "recommended_student_t_df" in recommendations:
+                    self.signal_engine.student_t_df = _clamp(int(recommendations["recommended_student_t_df"]), 3, 8)
                 if "recommended_min_edge" in recommendations:
                     val = _clamp(recommendations["recommended_min_edge"], 0.05, 0.35)
                     self.signal_engine.min_edge = val
@@ -209,6 +218,12 @@ class AgentScheduler:
                                   if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
                 if "recommended_momentum_weight" in recommendations:
                     sig["momentum_weight"] = recommendations["recommended_momentum_weight"]
+                if "recommended_regime_weight" in recommendations:
+                    sig["regime_weight"] = recommendations["recommended_regime_weight"]
+                if "recommended_flow_weight" in recommendations:
+                    sig["flow_weight"] = recommendations["recommended_flow_weight"]
+                if "recommended_student_t_df" in recommendations:
+                    sig["student_t_df"] = int(recommendations["recommended_student_t_df"])
                 if "recommended_min_edge" in recommendations:
                     sig["entry_threshold"] = recommendations["recommended_min_edge"]
                 if "recommended_kelly_fraction" in recommendations:

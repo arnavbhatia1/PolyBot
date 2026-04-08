@@ -44,27 +44,50 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 ## How PolyBot Works
 - Trades 5-minute BTC Up/Down binary contracts on Polymarket
 - Contracts resolve to $1.00 (correct side) or $0.00 (wrong side) based on Chainlink BTC price
-- Probability model (Brownian motion): z = (BTC_price - strike) / (ATR * sqrt(minutes_remaining))
-- P(Up) = 1 / (1 + exp(-1.7 * z))
-- 5 momentum indicators (RSI, MACD, Stochastic, OBV, VWAP) nudge the probability:
-  P(Up) += weighted_indicator_score * momentum_weight
-- Edge = model_probability - market_price. Trade only when edge >= min_edge
+- NegRisk execution prices via GET /price (cross-matched across complementary tokens)
+
+### 4-Layer Probability Model
+  Layer 1 — Student-t CDF (fat tails, df=student_t_df):
+    z = (BTC_price - strike) / (ATR * sqrt(minutes_remaining))
+    P(Up) = t.cdf(z, df=student_t_df)
+    Fat tails capture BTC's excess kurtosis — less extreme than normal CDF,
+    finds edge on underdog positions the market overprices.
+
+  Layer 2 — Regime detection (±regime_weight max):
+    1-lag autocorrelation of recent 1-min returns.
+    Positive = trending = amplify P away from 0.5.
+    Negative = mean-reverting = dampen toward 0.5.
+
+  Layer 3 — Order flow (±flow_weight max):
+    Book imbalance (60%) + trade flow direction (40%) from CLOB WebSocket.
+    Informed buying/selling pressure leads price movement.
+
+  Layer 4 — Indicator momentum (±momentum_weight max):
+    Weighted RSI/MACD/Stochastic/OBV/VWAP score. Weakest signal.
+
+- Edge = model_probability - market_execution_price. Trade only when edge >= min_edge
 - Kelly sizing: f* = (p*b - q)/b * kelly_fraction, where b = (1-price)/price
-- Single position at a time. Hold to resolution (no scalping — binary outcome)
+- Single position at a time
+- Active position management: hold to $1 resolution when confident, scalp exit when
+  holding_edge drops below fee-aware threshold (exit_edge_threshold minus exit fee cost,
+  plus time urgency bonus near expiry)
 
 ## Parameter Constraints (MUST respect)
 - Indicator weights (rsi, macd, stochastic, obv, vwap) MUST sum to 1.0
 - Each indicator weight must be >= 0.05
-- momentum_weight MUST be < min_edge (so indicators alone cannot trigger trades)
+- momentum_weight: 0.02 to 0.10 (Layer 4 — weakest signal, MUST be < min_edge)
+- regime_weight: 0.02 to 0.10 (Layer 2 — regime autocorrelation adjustment)
+- flow_weight: 0.02 to 0.12 (Layer 3 — order flow adjustment)
+- student_t_df: 3 to 8 (degrees of freedom — lower = fatter tails, more reversal edge)
 - kelly_fraction: 0.05 to 0.25 range (binary outcomes = total loss risk)
 - min_edge: 0.05 to 0.35 range
 - min_model_probability: 0.55 to 0.85 range (skip coin-flip trades)
 - exit_edge_threshold: -0.25 to 0.0 range (when to exit held positions)
 - min_time_remaining: 0 to 120 seconds (don't enter too late)
-- trading_start_hour_et: 0 to 23 (ET hour to start trading, e.g. 8 = 8 AM ET)
-- trading_end_hour_et: 0 to 23 (ET hour to stop trading, e.g. 16 = 4 PM ET)
+- trading_start_hour_et: 0 to 23 (ET hour to start trading)
+- trading_end_hour_et: 0 to 23 (ET hour to stop trading)
 - trading_end_minute: 0 to 59 (minute component of end time)
-- Only recommend schedule changes if there's clear evidence from time-of-day patterns (e.g. consistently losing in early/late hours)
+- Only recommend schedule changes if there's clear evidence from time-of-day patterns
 - Be conservative — no single weight should change by more than 0.05 per cycle
 - If fewer than 20 trades in the dataset, recommend NO CHANGES (insufficient data)
 
@@ -73,6 +96,9 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
 {
   "recommended_weights": {"rsi": 0.XX, "macd": 0.XX, "stochastic": 0.XX, "obv": 0.XX, "vwap": 0.XX},
   "recommended_momentum_weight": 0.XX,
+  "recommended_regime_weight": 0.XX,
+  "recommended_flow_weight": 0.XX,
+  "recommended_student_t_df": X,
   "recommended_min_edge": 0.XX,
   "recommended_kelly_fraction": 0.XX,
   "recommended_min_model_probability": 0.XX,
@@ -197,8 +223,14 @@ def _validate_strategy_response(data: dict, current_weights: dict | None = None,
         data.get("recommended_kelly_fraction", 0.15)))
     data["recommended_min_edge"] = max(0.05, min(0.35,
         data.get("recommended_min_edge", 0.20)))
-    data["recommended_momentum_weight"] = max(0.02, min(0.20,
-        data.get("recommended_momentum_weight", 0.08)))
+    data["recommended_momentum_weight"] = max(0.02, min(0.10,
+        data.get("recommended_momentum_weight", 0.04)))
+    data["recommended_regime_weight"] = max(0.02, min(0.10,
+        data.get("recommended_regime_weight", 0.05)))
+    data["recommended_flow_weight"] = max(0.02, min(0.12,
+        data.get("recommended_flow_weight", 0.06)))
+    data["recommended_student_t_df"] = max(3, min(8,
+        int(data.get("recommended_student_t_df", 4))))
     data["recommended_min_model_probability"] = max(0.55, min(0.85,
         data.get("recommended_min_model_probability", 0.65)))
     data["recommended_exit_edge_threshold"] = max(-0.25, min(0.0,
@@ -231,9 +263,14 @@ def _format_strategy_context(context: dict) -> str:
     sections.append(
         "## Current Configuration\n"
         f"Indicator weights: {json.dumps(cfg.get('weights', {}))}\n"
-        f"momentum_weight: {cfg.get('momentum_weight', 0.08)}\n"
+        f"momentum_weight (Layer 4): {cfg.get('momentum_weight', 0.04)}\n"
+        f"regime_weight (Layer 2): {cfg.get('regime_weight', 0.05)}\n"
+        f"flow_weight (Layer 3): {cfg.get('flow_weight', 0.06)}\n"
+        f"student_t_df (Layer 1): {cfg.get('student_t_df', 4)}\n"
         f"min_edge (entry_threshold): {cfg.get('min_edge', 0.20)}\n"
         f"kelly_fraction: {cfg.get('kelly_fraction', 0.15)}\n"
+        f"min_model_probability: {cfg.get('min_model_probability', 0.65)}\n"
+        f"exit_edge_threshold: {cfg.get('exit_edge_threshold', -0.10)}\n"
         f"trading_start_hour (ET): {cfg.get('trading_start_hour_et', 8)}\n"
         f"trading_end_hour (ET): {cfg.get('trading_end_hour_et', 16)}\n"
         f"trading_end_minute: {cfg.get('trading_end_minute', 30)}"
@@ -320,9 +357,11 @@ def _format_strategy_context(context: dict) -> str:
             obv_s = snap.get("obv", {}).get("score", 0)
             vwap_s = snap.get("vwap", {}).get("score", 0)
 
+            flow = ctx.get("flow_score", 0)
+            exit_reason = t.get("exit_reason", "resolution")
             lines.append(
-                f"#{i} {won} {side} | {entry:.3f}->{exit_:.3f} ret={lr:+.4f} | "
-                f"prob={prob:.0%} edge={edge:+.0%} | "
+                f"#{i} {won} {side} ({exit_reason}) | {entry:.3f}->{exit_:.3f} ret={lr:+.4f} | "
+                f"prob={prob:.0%} edge={edge:+.0%} flow={flow:+.2f} | "
                 f"BTC={btc:,.0f} str={strike:,.0f} {secs:.0f}s atr={atr:.1f} | "
                 f"rsi={rsi:+.2f} macd={macd_s:+.2f} stoch={stoch:+.2f} obv={obv_s:+.2f} vwap={vwap_s:+.2f}"
             )
