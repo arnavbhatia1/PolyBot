@@ -38,22 +38,26 @@ class AlertManager:
                 except Exception as e:
                     logger.warning(f"Failed to send to #{name}: {e}")
 
-    async def send_trade_opened(self, question, side, size, entry_price, ev, exit_target):
+    async def send_trade_opened(self, question, side, size, entry_price, ev, exit_target,
+                                model_prob=0.0, market_price=0.0, fee=0.0, flow=0.0):
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
         await channel.send(
-            f"**OPEN {side}** @ `{entry_price:.3f}` | Size: `${size:.2f}` | Signal: `{ev:+.3f}`")
+            f"**OPEN {side}** @ `{entry_price:.3f}` | Size: `${size:.2f}` | "
+            f"edge=`{ev:+.0%}` | model=`{model_prob:.0%}` mkt=`{market_price:.0%}` | "
+            f"flow=`{flow:+.2f}` | fee=`${fee:.2f}`")
 
     async def send_trade_closed(self, question, exit_price, log_return, hold_hours,
-                                side="", entry_price=0.0, pnl=0.0, gain_pct=0.0, reason=""):
+                                side="", entry_price=0.0, pnl=0.0, gain_pct=0.0, reason="",
+                                fees=0.0):
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
         tag = "PROFIT" if pnl >= 0 else "LOSS"
         await channel.send(
             f"**CLOSE {tag} {side}** | `{entry_price:.3f}`->`{exit_price:.3f}` | "
-            f"`{gain_pct:+.1%}` | `${pnl:+.2f}` | {reason}")
+            f"`{gain_pct:+.1%}` | `${pnl:+.2f}` | fees=`${fees:.2f}` | {reason}")
 
     async def send_pipeline_summary(self, summary):
         channel = self._get_channel(self.daily_channel_name)
@@ -102,7 +106,8 @@ class AlertManager:
         )
         await self._send_to_channels(msg, [self.trade_channel_name, self.daily_channel_name])
 
-    async def send_day_close(self, bankroll: float, day_pnl: float, wins: int, losses: int):
+    async def send_day_close(self, bankroll: float, day_pnl: float, wins: int, losses: int,
+                             fees: float = 0.0):
         """Log end of trading day to trade and daily channels."""
         now = datetime.now(ET)
         total = wins + losses
@@ -112,6 +117,7 @@ class AlertManager:
             f"**TRADING DAY CLOSE** — {now.strftime('%A, %B %d %Y')}\n"
             f"Bankroll: `${bankroll:,.2f}` | Day P&L: `${day_pnl:+,.2f}`\n"
             f"Trades: `{total}` ({wins}W / {losses}L) | Win Rate: `{wr:.0%}`\n"
+            f"Total Fees: `${fees:,.2f}`\n"
             f"{'─' * 38}"
         )
         await self._send_to_channels(msg, [self.trade_channel_name, self.daily_channel_name])
@@ -156,23 +162,26 @@ class AlertManager:
 
         # --- P&L ---
         total_pnl = 0.0
+        total_fees = 0.0
         wins, losses = 0, 0
         best_trade, worst_trade = None, None
         best_pnl, worst_pnl = -999, 999
 
         for o in todays:
-            entry = o.get("entry_price", 0)
-            exit_p = o.get("exit_price", 0)
-            size = o.get("size", 0)
-            snap = o.get("indicator_snapshot", {})
-            ctx = snap.get("trade_context", {}) if isinstance(snap, dict) else {}
-            size = ctx.get("size", size) or size
-
-            if entry > 0 and size > 0:
-                pnl = (size / entry) * exit_p - size
-            else:
-                pnl = 0
+            # Use recorded pnl/fees if available (fee-adjusted), else fallback to raw calc
+            pnl = o.get("pnl", 0)
+            fees = o.get("fees", 0)
+            if pnl == 0 and fees == 0:
+                entry = o.get("entry_price", 0)
+                exit_p = o.get("exit_price", 0)
+                size = o.get("size", 0)
+                snap = o.get("indicator_snapshot", {})
+                ctx = snap.get("trade_context", {}) if isinstance(snap, dict) else {}
+                size = ctx.get("size", size) or size
+                if entry > 0 and size > 0:
+                    pnl = (size / entry) * exit_p - size
             total_pnl += pnl
+            total_fees += fees
 
             if o.get("correct", False):
                 wins += 1
@@ -260,6 +269,7 @@ class AlertManager:
             f"**P&L**\n"
             f"```\n"
             f"  Total P&L:    ${total_pnl:+,.2f}\n"
+            f"  Total Fees:   ${total_fees:,.2f}\n"
             f"  Trades:       {total}  ({wins}W / {losses}L)\n"
             f"  Win Rate:     {win_rate:.1%}\n"
             f"  Avg Edge:     {avg_edge:.1%}\n"

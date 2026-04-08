@@ -88,8 +88,16 @@ def create_bot(db, trader, scanner, scheduler, config):
             return
         lines = [f"**Last {len(trades)} Trades**\n"]
         for t in trades:
-            pnl_sign = "+" if t["log_return"] >= 0 else ""
-            lines.append(f"  {t['question'][:40]}... | {t['entry_price']:.2f} -> {t['exit_price']:.2f} | P&L: `{pnl_sign}{t['log_return']:.4f}`")
+            entry = t["entry_price"]
+            exit_p = t["exit_price"]
+            size = t.get("size", 0)
+            # Approximate dollar PnL (pre-fee, but directionally correct)
+            if entry > 0 and size > 0:
+                dollar_pnl = (size / entry) * exit_p - size
+            else:
+                dollar_pnl = 0
+            won = "W" if dollar_pnl >= 0 else "L"
+            lines.append(f"  `{won}` {t['side']} | `{entry:.3f}`->`{exit_p:.3f}` | `${dollar_pnl:+,.2f}` | ${size:.0f}")
         await ctx.send("\n".join(lines))
 
     @bot.command(name="pause")

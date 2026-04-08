@@ -6,7 +6,7 @@ from polybot.math_engine.returns import log_return
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_FEE_RATE = 0.072  # Polymarket crypto taker fee (720 bps)
+DEFAULT_FEE_RATE = 0.018  # Polymarket crypto taker fee: 1.8% peak (Dynamic Taker-Fee Model, March 2026)
 
 
 def taker_fee(shares: float, price: float, fee_rate: float = DEFAULT_FEE_RATE) -> float:

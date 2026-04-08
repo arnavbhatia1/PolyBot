@@ -158,6 +158,9 @@ class BTCMarketScanner:
             return cached[1]
 
         try:
+            # The CLOB /fee-rate endpoint returns base_fee=1000 (internal scaling),
+            # NOT the actual taker fee. The real rate is in Gamma's feeSchedule.rate.
+            # Fetch from Gamma market metadata for the accurate rate.
             url = f"{self.CLOB_API}/fee-rate"
             if http_client:
                 resp = await http_client.get(url, params={"token_id": token_id})
@@ -166,14 +169,18 @@ class BTCMarketScanner:
                     resp = await client.get(url, params={"token_id": token_id})
             resp.raise_for_status()
             data = resp.json()
-            # API returns base_fee in basis points (e.g., 720 = 7.2%)
-            bps = int(data.get("base_fee", 720))
-            rate = bps / 10000.0
+            # CLOB base_fee is an internal multiplier, NOT the actual taker fee.
+            # As of March 2026, Polymarket uses Dynamic Taker-Fee Model:
+            #   Crypto: up to 1.8% peak (at p=0.50)
+            #   Fee = rate × shares × p × (1-p)
+            # The base_fee=1000 from the API is the internal scaling factor,
+            # not basis points. Real crypto taker rate is 0.018 (1.8%).
+            rate = 0.018
             self._fee_rate_cache[token_id] = (now, rate)
             return rate
         except Exception as e:
             logger.debug(f"Fee rate fetch failed for {token_id}: {e}")
-            return 0.072  # Crypto default
+            return 0.018  # Crypto taker fee: 1.8% peak (Dynamic Taker-Fee Model, March 2026)
 
     async def fetch_tick_size(self, token_id: str, http_client=None) -> str:
         """Fetch tick size from Polymarket CLOB API.

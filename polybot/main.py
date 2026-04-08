@@ -162,7 +162,7 @@ def _btc_at_expiry(binance_feed, market_id: str) -> float:
 
 
 async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pct,
-                          exit_reason="resolution"):
+                          exit_reason="resolution", pnl=0.0, fees=0.0):
     """Record a trade outcome for the learning pipeline."""
     try:
         outcome_reviewer.record_outcome(
@@ -180,6 +180,8 @@ async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pc
             indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}")),
             exit_reason=exit_reason,
             size=pos.get("size", 0.0),
+            pnl=pnl,
+            fees=fees,
         )
     except Exception as e:
         logger.error(f"Failed to record outcome: {e}")
@@ -217,6 +219,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
     day_open_bankroll: float = 0.0
     day_wins: int = 0
     day_losses: int = 0
+    day_fees: float = 0.0
 
     while True:
         # Event-driven: react instantly to WebSocket book updates, timeout 1s for housekeeping
@@ -247,11 +250,12 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     # Close previous day first (if bot ran overnight)
                     bankroll = await db.get_bankroll()
                     day_pnl = bankroll - day_open_bankroll
-                    await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses)
+                    await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses, day_fees)
                 current_trading_day = today_str
                 day_open_bankroll = await db.get_bankroll()
                 day_wins = 0
                 day_losses = 0
+                day_fees = 0.0
                 if alert_manager:
                     await alert_manager.send_day_open(config.get("mode", "paper"), day_open_bankroll)
 
@@ -260,7 +264,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 if alert_manager:
                     bankroll = await db.get_bankroll()
                     day_pnl = bankroll - day_open_bankroll
-                    await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses)
+                    await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses, day_fees)
                 current_trading_day = None
 
             # --- POSITION MANAGEMENT: resolution check + active re-evaluation ---
@@ -291,14 +295,15 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         won = "WIN" if pnl > 0 else "LOSS"
                         if pnl > 0: day_wins += 1
                         else: day_losses += 1
+                        day_fees += entry_fee + exit_fee
                         logger.info(f"RESOLVED {won} {pos['side']} (orphaned) | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question="", exit_price=exit_price, log_return=0, hold_hours=0,
                                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                                gain_pct=gain_pct, reason=won.lower())
+                                gain_pct=gain_pct, reason=won.lower(), fees=entry_fee + exit_fee)
                         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
-                                              exit_reason="resolution")
+                                              exit_reason="resolution", pnl=pnl, fees=entry_fee + exit_fee)
                         traded_contracts[pos["market_id"]] = int(time.time())
                     continue
 
@@ -327,14 +332,15 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         won = "WIN" if pnl > 0 else "LOSS"
                         if pnl > 0: day_wins += 1
                         else: day_losses += 1
+                        day_fees += entry_fee + exit_fee
                         logger.info(f"RESOLVED {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${entry_fee + exit_fee:.2f}")
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question="", exit_price=exit_price, log_return=0, hold_hours=0,
                                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                                gain_pct=gain_pct, reason=won.lower())
+                                gain_pct=gain_pct, reason=won.lower(), fees=entry_fee + exit_fee)
                         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
-                                              exit_reason="resolution")
+                                              exit_reason="resolution", pnl=pnl, fees=entry_fee + exit_fee)
                         traded_contracts[pos["market_id"]] = int(time.time())
                 else:
                     # Active position — re-evaluate using probability model
@@ -389,14 +395,15 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             won = "WIN" if pnl > 0 else "LOSS"
                             if pnl > 0: day_wins += 1
                             else: day_losses += 1
+                            day_fees += entry_fee + exit_fee
                             logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{market_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${entry_fee + exit_fee:.2f} | {reason}")
                             if alert_manager:
                                 await alert_manager.send_trade_closed(
                                     question="", exit_price=market_price, log_return=0, hold_hours=0,
                                     side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                                    gain_pct=gain_pct, reason=f"scalp {won.lower()}")
+                                    gain_pct=gain_pct, reason=f"scalp {won.lower()}", fees=entry_fee + exit_fee)
                             await _record_outcome(outcome_reviewer, pos, market_price, result.log_return or 0, gain_pct,
-                                                  exit_reason="scalp")
+                                                  exit_reason="scalp", pnl=pnl, fees=entry_fee + exit_fee)
                             traded_contracts[pos["market_id"]] = int(time.time())
 
             # --- ENTRY: find contract and evaluate for edge ---
@@ -462,15 +469,21 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 price_down = contract["price_down"]
                 price_source = "gamma"
 
+            # Price sanity gate: Up + Down should sum to ~$1.00 in a binary market.
+            # If the sum is way off, the /price endpoint returned stale data — skip.
+            price_sum = price_up + price_down
+            if price_source == "clob" and (price_sum < 0.90 or price_sum > 1.10):
+                eval_window = int(now_ts // 300) * 300
+                if eval_window != last_eval_log_window:
+                    last_eval_log_window = eval_window
+                    logger.info(f"EVAL: stale prices | Up={price_up:.2f} + Dn={price_down:.2f} = {price_sum:.2f} — skipping")
+                continue
+
             # Also grab raw book depth for minimum depth filter below
             ask_up, depth_up = market_scanner.clob_best_ask(book_up)
             ask_down, depth_down = market_scanner.clob_best_ask(book_down)
 
             eval_window = int(now_ts // 300) * 300
-
-            # No extreme price filter — the model's min_edge (10%) and
-            # min_model_probability (65%) already prevent bad trades.
-            # Both Up AND Down sides are evaluated by the signal engine.
 
             # Skip if no real depth to fill against
             if price_source == "clob":
@@ -637,9 +650,12 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             last_trade_info = f" last_trade={lt['price']}"
                     logger.info(f"OPEN {side} @ {price:.3f} | ${size:.2f} | fee=${fee_usd:.2f} ({fee_rate:.1%}) | src={price_source}{last_trade_info} | {signal.reason}")
                     if alert_manager:
+                        mkt_price = price_up if side == "Up" else price_down
                         await alert_manager.send_trade_opened(
                             question=contract["question"], side=side, size=size,
-                            entry_price=price, ev=signal.edge, exit_target=1.0)
+                            entry_price=price, ev=signal.edge, exit_target=1.0,
+                            model_prob=signal.prob, market_price=mkt_price,
+                            fee=fee_usd, flow=flow_score)
 
         except Exception as e:
             logger.error(f"Trading loop error: {e}", exc_info=True)

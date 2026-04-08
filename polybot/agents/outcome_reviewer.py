@@ -13,12 +13,13 @@ class OutcomeReviewer:
     def record_outcome(self, position_id, market_id, question, side, signal_score,
                        profitable, entry_price, exit_price, log_return, weight_version,
                        category="", indicator_snapshot: dict | None = None,
-                       exit_reason: str = "resolution", size: float = 0.0):
+                       exit_reason: str = "resolution", size: float = 0.0,
+                       pnl: float = 0.0, fees: float = 0.0):
         record = {"position_id": position_id, "market_id": market_id, "question": question,
                   "side": side, "signal_score": signal_score,
                   "correct": profitable, "entry_price": entry_price,
                   "exit_price": exit_price, "log_return": log_return,
-                  "size": size,
+                  "size": size, "pnl": pnl, "fees": fees,
                   "weight_version": weight_version, "category": category,
                   "indicator_snapshot": indicator_snapshot or {},
                   "exit_reason": exit_reason,
