@@ -29,15 +29,21 @@ def test_scheduler_accepts_claude_client():
 @pytest.mark.asyncio
 async def test_run_daily_pipeline_calls_agents_in_order():
     call_order = []
-    async def mock_bias():
+    async def mock_bias(outcomes=None):
         call_order.append("bias")
         return {"per_indicator": {}, "overall": {}}
-    async def mock_ta_evolver(analysis):
+    async def mock_ta_evolver(analysis, outcomes=None):
         call_order.append("ta_evolver")
         return {}
-    async def mock_weight_optimizer(recs):
+    async def mock_weight_optimizer(recs, outcomes=None):
         call_order.append("weight_optimizer")
-    scheduler = AgentScheduler(outcome_reviewer=MagicMock(), bias_detector=MagicMock(),
+    outcome_reviewer = MagicMock()
+    outcome_reviewer.load_all_outcomes.return_value = [
+        {"timestamp": f"2026-04-0{i}T12:00:00Z", "correct": True, "gain_pct": 0.1,
+         "log_return": 0.1, "weight_version": "weights_v001", "indicator_snapshot": {}}
+        for i in range(1, 6)
+    ]
+    scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=MagicMock(),
         ta_evolver=MagicMock(), weight_optimizer=MagicMock(),
         outcome_interval_seconds=3600, daily_pipeline_hour=2,
         math_config={"ev_threshold": 0.05, "exit_target": 0.90, "stop_loss_pct": 0.15, "time_stop_hours": 24})

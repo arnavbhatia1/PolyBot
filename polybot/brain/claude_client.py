@@ -89,7 +89,7 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - trading_end_minute: 0 to 59 (minute component of end time)
 - Only recommend schedule changes if there's clear evidence from time-of-day patterns
 - Be conservative — no single weight should change by more than 0.05 per cycle
-- If fewer than 20 trades in the dataset, recommend NO CHANGES (insufficient data)
+- If fewer than 50 trades in the dataset, recommend NO CHANGES (insufficient data — win rate variance at N=25 is ±13 percentage points, which is noise)
 
 ## Response Format
 Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
@@ -173,7 +173,7 @@ def _validate_strategy_response(data: dict, current_weights: dict | None = None,
     indicators = ["rsi", "macd", "stochastic", "obv", "vwap"]
 
     # Insufficient data — return no changes
-    if total_trades < 20 and current_weights:
+    if total_trades < 50 and current_weights:
         data["recommended_weights"] = {k: current_weights.get(k, 0.20) for k in indicators}
         data.setdefault("risk_warnings", []).append(f"Only {total_trades} trades — insufficient data, no changes applied")
 

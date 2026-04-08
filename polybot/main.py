@@ -25,6 +25,7 @@ from polybot.agents.weight_optimizer import WeightOptimizer
 from polybot.agents.scheduler import AgentScheduler
 from polybot.discord_bot.bot import create_bot
 from polybot.discord_bot.alerts import AlertManager
+from polybot.execution.circuit_breaker import CircuitBreaker
 
 logging.basicConfig(
     level=logging.ERROR,
@@ -42,16 +43,18 @@ logging.getLogger("polybot.discord_bot.bot").setLevel(logging.INFO)
 
 def _slippage_pct(order_size_usd: float, book_depth_usd: float,
                    impact_factor: float = 0.03) -> float:
-    """Market impact: larger orders relative to visible depth get worse fills.
+    """Convex market impact: deeper book consumption costs disproportionately more.
 
     Returns a percentage (0.015 = 1.5%) to add (buys) or subtract (sells).
-    Uses visible best-level depth as proxy — conservative for negRisk markets
+    Uses fill_pct * impact * (1 + fill_pct) so cost accelerates as the order
+    walks through price levels.  At 50% depth the cost is 50% higher than a
+    naive linear model; at 100% it is 2x.  Conservative for negRisk markets
     where cross-matching creates deeper real liquidity than the raw book shows.
     """
     if book_depth_usd <= 0:
         return 0.0
     fill_pct = min(order_size_usd / book_depth_usd, 1.0)
-    return fill_pct * impact_factor
+    return fill_pct * impact_factor * (1.0 + fill_pct)
 
 
 def _compute_pnl(pos: dict, exit_price: float) -> tuple[float, float, float, float]:
@@ -203,7 +206,8 @@ async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pc
 
 async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,
                        trader, alert_manager, db, config, outcome_reviewer, is_paused_fn,
-                       scheduler=None, clob_ws: ClobWebSocket | None = None):
+                       scheduler=None, clob_ws: ClobWebSocket | None = None,
+                       breaker: CircuitBreaker | None = None):
     import httpx
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
@@ -270,6 +274,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 day_wins = 0
                 day_losses = 0
                 day_fees = 0.0
+                if breaker:
+                    breaker.reset()
                 if alert_manager:
                     await alert_manager.send_day_open(config.get("mode", "paper"), day_open_bankroll)
 
@@ -311,6 +317,10 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         else: day_losses += 1
                         day_fees += entry_fee + exit_fee
                         logger.info(f"RESOLVED {won} {pos['side']} (orphaned) | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
+                        if breaker:
+                            cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
+                            if cb_event and alert_manager:
+                                await alert_manager.send_circuit_breaker(cb_event, breaker)
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question="", exit_price=exit_price, log_return=0, hold_hours=0,
@@ -348,6 +358,10 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         else: day_losses += 1
                         day_fees += entry_fee + exit_fee
                         logger.info(f"RESOLVED {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${entry_fee + exit_fee:.2f}")
+                        if breaker:
+                            cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
+                            if cb_event and alert_manager:
+                                await alert_manager.send_circuit_breaker(cb_event, breaker)
                         if alert_manager:
                             await alert_manager.send_trade_closed(
                                 question="", exit_price=exit_price, log_return=0, hold_hours=0,
@@ -424,6 +438,10 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             else: day_losses += 1
                             day_fees += entry_fee + exit_fee
                             logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_fill:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${entry_fee + exit_fee:.2f} | slip={slip:.2%} | {reason}")
+                            if breaker:
+                                cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
+                                if cb_event and alert_manager:
+                                    await alert_manager.send_circuit_breaker(cb_event, breaker)
                             if alert_manager:
                                 await alert_manager.send_trade_closed(
                                     question="", exit_price=exit_fill, log_return=0, hold_hours=0,
@@ -499,7 +517,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             # Price sanity gate: Up + Down should sum to ~$1.00 in a binary market.
             # If the sum is way off, the /price endpoint returned stale data — skip.
             price_sum = price_up + price_down
-            if price_source == "clob" and (price_sum < 0.90 or price_sum > 1.10):
+            if price_source == "clob" and (price_sum < 0.98 or price_sum > 1.02):
                 eval_window = int(now_ts // 300) * 300
                 if eval_window != last_eval_log_window:
                     last_eval_log_window = eval_window
@@ -614,7 +632,8 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 price = price_up if side == "Up" else price_down
                 token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
                 bankroll = await db.get_bankroll()
-                size = round(bankroll * signal.kelly_size, 2)
+                kelly_mult = breaker.kelly_multiplier if breaker else 1.0
+                size = round(bankroll * signal.kelly_size * kelly_mult, 2)
                 if size < 1.0:
                     logger.info(f"SKIP: Kelly size ${size:.2f} < $1 — edge too small to trade")
                     continue
@@ -631,6 +650,17 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         if size < 1.0:
                             logger.info(f"SKIP: size capped to ${size:.2f} by book depth ${side_depth:.0f} — too small")
                             continue
+
+                # Net-edge gate: reject if slippage eats the edge below threshold.
+                # Uses the actual Kelly-sized order for realistic slippage estimation.
+                impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
+                est_slip = _slippage_pct(size, side_depth, impact)
+                net_edge = signal.edge - price * est_slip
+                if net_edge < signal_engine.min_edge:
+                    logger.info(
+                        f"SKIP: net edge {net_edge:+.1%} < min {signal_engine.min_edge:.0%} "
+                        f"after {est_slip:.2%} slippage (gross {signal.edge:+.1%})")
+                    continue
 
                 # Fetch fee rate and tick size from Polymarket API
                 fee_rate = await market_scanner.fetch_fee_rate(token_id, http_client)
@@ -804,6 +834,13 @@ async def main():
             max_concurrent_positions=exec_cfg["max_concurrent_positions"])
         logger.info("PAPER MODE — simulated trading")
 
+    # Circuit breaker
+    cb_cfg = config.get("circuit_breaker", {})
+    breaker = CircuitBreaker(
+        losses_to_reduce=cb_cfg.get("losses_to_reduce", 3),
+        wins_to_restore=cb_cfg.get("wins_to_restore", 2),
+    )
+
     # Agents
     agents_cfg = config["agents"]
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
@@ -866,7 +903,7 @@ async def main():
             binance_feed, market_scanner, indicator_engine, signal_engine,
             trader, alert_manager, db, config, outcome_reviewer,
             is_paused_fn=lambda: discord_bot.is_paused,
-            scheduler=scheduler, clob_ws=clob_ws)),
+            scheduler=scheduler, clob_ws=clob_ws, breaker=breaker)),
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(run_discord()),

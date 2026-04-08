@@ -122,6 +122,21 @@ class AlertManager:
         )
         await self._send_to_channels(msg, [self.trade_channel_name, self.daily_channel_name])
 
+    async def send_circuit_breaker(self, event: str, breaker):
+        """Alert when circuit breaker state changes."""
+        channel = self._get_channel(self.trade_channel_name)
+        if not channel:
+            return
+        if event == "reduced":
+            await channel.send(
+                f"**CIRCUIT BREAKER** — {breaker.consecutive_losses} consecutive losses. "
+                f"Kelly reduced to `{breaker.kelly_multiplier:.0%}` "
+                f"({breaker.wins_to_restore} wins to restore).")
+        elif event == "restored":
+            await channel.send(
+                f"**CIRCUIT BREAKER** — {breaker.wins_to_restore} wins at half Kelly. "
+                f"Restored to full sizing.")
+
     async def purge_channel(self, channel_name: str, limit: int = 200) -> int:
         """Delete up to `limit` messages from a channel. Returns count deleted, or -1 on error."""
         channel = self._get_channel(channel_name)

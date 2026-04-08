@@ -37,8 +37,9 @@ class AgentScheduler:
         if claude_client and not getattr(self.ta_evolver, 'claude_client', None):
             self.ta_evolver.claude_client = claude_client
 
-    async def _run_bias_detector(self) -> dict:
-        outcomes = self.outcome_reviewer.load_all_outcomes()
+    async def _run_bias_detector(self, outcomes: list[dict] | None = None) -> dict:
+        if outcomes is None:
+            outcomes = self.outcome_reviewer.load_all_outcomes()
         if not outcomes:
             logger.info("No outcomes to analyze for biases")
             return {}
@@ -46,8 +47,9 @@ class AgentScheduler:
         self.bias_detector.save(analysis)
         return analysis
 
-    async def _run_ta_evolver(self, analysis: dict) -> dict:
-        outcomes = self.outcome_reviewer.load_all_outcomes()
+    async def _run_ta_evolver(self, analysis: dict, outcomes: list[dict] | None = None) -> dict:
+        if outcomes is None:
+            outcomes = self.outcome_reviewer.load_all_outcomes()
         if not outcomes:
             return {}
 
@@ -75,10 +77,11 @@ class AgentScheduler:
         recommendations = await self.ta_evolver.evolve(outcomes, analysis, current_config)
         return recommendations
 
-    async def _run_weight_optimizer(self, recommendations: dict):
-        outcomes = self.outcome_reviewer.load_all_outcomes()
-        if not outcomes or len(outcomes) < 5:
-            logger.info(f"Only {len(outcomes)} outcomes — need at least 5 for weight optimization")
+    async def _run_weight_optimizer(self, recommendations: dict, outcomes: list[dict] | None = None):
+        if outcomes is None:
+            outcomes = self.outcome_reviewer.load_all_outcomes()
+        if not outcomes or len(outcomes) < 10:
+            logger.info(f"Only {len(outcomes)} outcomes — need at least 10 for weight optimization")
             return
 
         # Score current weights
@@ -334,9 +337,20 @@ class AgentScheduler:
                 "trading_end": self._trading_end,
             }
 
-        analysis = await self._run_bias_detector()
-        recommendations = await self._run_ta_evolver(analysis)
-        await self._run_weight_optimizer(recommendations)
+        # Hold-out split: train on first 60% of outcomes (chronological),
+        # validate on last 40%.  Prevents in-sample overfitting — Claude's
+        # recommendations are based on older trades, adoption decision is
+        # based on newer trades the model hasn't seen.
+        all_outcomes = self.outcome_reviewer.load_all_outcomes()  # already sorted by timestamp
+        split_idx = max(1, int(len(all_outcomes) * 0.6))
+        train_outcomes = all_outcomes[:split_idx]
+        validation_outcomes = all_outcomes[split_idx:] if len(all_outcomes) > split_idx else all_outcomes
+        logger.info(f"Hold-out split: {len(train_outcomes)} train / {len(validation_outcomes)} validation "
+                    f"(of {len(all_outcomes)} total)")
+
+        analysis = await self._run_bias_detector(train_outcomes)
+        recommendations = await self._run_ta_evolver(analysis, train_outcomes)
+        await self._run_weight_optimizer(recommendations, validation_outcomes)
 
         # Compute config diff
         config_changes = {}

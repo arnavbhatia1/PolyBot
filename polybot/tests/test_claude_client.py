@@ -146,7 +146,7 @@ def test_validate_no_changes_with_few_trades():
         "recommended_kelly_fraction": 0.15,
     }
     result = _validate_strategy_response(data, current_weights=current, total_trades=5)
-    # Should keep current weights since < 20 trades
+    # Should keep current weights since < 50 trades
     assert result["recommended_weights"]["rsi"] == 0.20
     assert "insufficient data" in result.get("risk_warnings", [""])[0].lower()
 

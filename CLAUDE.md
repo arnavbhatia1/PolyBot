@@ -18,7 +18,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
-- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Fee rates fetched live from `GET /fee-rate?token_id=X` (crypto = 1.8%). Entry fees collected in shares (fewer shares received), exit fees in USDC — matching Polymarket's actual collection method. Prices snapped to market tick size. Min order size enforced from CLOB book. FOK fill semantics (100% fill or reject). Orders capped to 50% of available book depth. **Proportional slippage model**: entry and scalp exit fills are penalized by `(order_size / book_depth) * slippage_impact_pct` — larger orders relative to visible depth get worse fills. Slippage applied to execution only (signal evaluation sees clean /price quotes). Resolutions ($1/$0) have no slippage. Live mode on polymarket.com (EIP-712 signed CLOB orders) is future work.
+- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Fee rates fetched live from `GET /fee-rate?token_id=X` (crypto = 1.8%). Entry fees collected in shares (fewer shares received), exit fees in USDC — matching Polymarket's actual collection method. Prices snapped to market tick size. Min order size enforced from CLOB book. FOK fill semantics (100% fill or reject). Orders capped to 50% of available book depth. **Convex slippage model**: fills are penalized by `fill_pct * impact_factor * (1 + fill_pct)` where `fill_pct = order_size / book_depth`. Cost accelerates as the order walks through deeper price levels — at 50% depth the cost is 50% higher than a linear model, at 100% it is 2x. **Net-edge gate**: after Kelly sizing, estimated slippage is subtracted from edge; the trade is rejected if `net_edge < min_edge`. This prevents trades where execution cost eats the edge. **Price sum gate**: `price_up + price_down` must be in [0.98, 1.02] or the entry is skipped (stale/broken prices). Resolutions ($1/$0) have no slippage. Live mode on polymarket.com (EIP-712 signed CLOB orders) is future work.
 
 ## Project Structure
 
@@ -39,6 +39,7 @@ polybot/
     base.py                  # TradeResult dataclass
     paper_trader.py          # Simulated trades (paper mode)
     live_trader.py           # Stub — polymarket.com live trading is future work (EIP-712)
+    circuit_breaker.py       # Streak-based Kelly reduction (3 losses → half Kelly, 2 wins → restore)
   agents/
     scheduler.py             # Daily learning pipeline
     outcome_reviewer.py      # Logs resolved trades
@@ -64,6 +65,8 @@ polybot/
 ## Config
 
 `polybot/config/settings.yaml`:
+- `circuit_breaker.losses_to_reduce:` — 3 (consecutive losses before halving Kelly)
+- `circuit_breaker.wins_to_restore:` — 2 (wins at half Kelly before restoring full)
 - `math.kelly_fraction:` — 0.15 (fraction of full Kelly)
 - `signal.entry_threshold:` — 0.10 (minimum 10% edge to trade)
 - `signal.exit_edge_threshold:` — -0.10 (exit when holding edge drops below -10%)
@@ -76,7 +79,7 @@ polybot/
 - `execution.max_concurrent_positions:` — 1 (single position, full focus)
 - `execution.max_bankroll_deployed:` — 0.80
 - `execution.max_book_fill_pct:` — 0.50 (cap order to 50% of available ask depth — realistic fills)
-- `execution.slippage_impact_pct:` — 0.03 (3% price impact at 100% depth consumption — proportional slippage model)
+- `execution.slippage_impact_pct:` — 0.03 (base impact factor for convex slippage model — see below)
 - `market.entry_window_seconds:` — 300 (full 5-min window)
 - `market.min_time_remaining_seconds:` — 20 (tunable by learning pipeline)
 - `market.clob_ws_url:` — `wss://ws-subscriptions-clob.polymarket.com/ws/market`
@@ -138,7 +141,8 @@ ENTRY:
   Edge = P(Up) - effective_price_up    [or P(Down) - effective_price_down]
   If model_prob < 65%: SKIP (coin-flip filter)
   If edge >= 10%: TRADE, size = Kelly(probability, market_price) * 0.15, capped to 50% of book depth
-  Entry fill: /price quote + proportional slippage (size/depth * 3%)
+  Net-edge gate: net_edge = edge - (price * convex_slippage); if net_edge < min_edge: SKIP
+  Entry fill: /price quote + convex slippage: fill_pct * impact * (1 + fill_pct)
   If edge < 10%: SKIP
 
 WHILE HOLDING (active position management):
@@ -250,7 +254,11 @@ Dynamic subscribe/unsubscribe via `{"operation": "subscribe"/"unsubscribe", "ass
 
 Daily at 4:45 PM ET / 20:45 UTC (configurable via `agents.daily_pipeline_hour` and `daily_pipeline_minute`):
 
-1. **BiasDetector** — Rich multi-dimensional analysis of all outcomes:
+**Hold-out split:** Outcomes are sorted chronologically and split 60/40. The first 60% (older trades) are used for analysis and recommendations (steps 1-2). The last 40% (newer trades) are used for backtest validation (step 3). This prevents in-sample overfitting — Claude's recommendations are tested against data it hasn't seen.
+
+**Minimum data requirement:** Claude is instructed to recommend NO CHANGES with fewer than 50 trades (was 20). Win rate variance at N=25 is ±13 percentage points — noise, not signal. The WeightOptimizer also requires at least 10 outcomes to run.
+
+1. **BiasDetector** — Analyzes the **training set** (first 60% of outcomes):
    - Per-indicator accuracy (bullish/bearish breakdown, sample sizes)
    - Side analysis (Up vs Down win rate)
    - Edge calibration (do larger edges actually win more?)
@@ -258,14 +266,14 @@ Daily at 4:45 PM ET / 20:45 UTC (configurable via `agents.daily_pipeline_hour` a
    - Volatility patterns (win rate by ATR regime)
    - Overall statistics (Sharpe, win rate, avg edge)
 
-2. **TAEvolver** — Sends analysis + last 75 trades + current config to Claude API:
+2. **TAEvolver** — Sends training-set analysis + trades + current config to Claude API:
    - System prompt defines Chief Quantitative Strategist role with full 4-layer model description
    - Trade data includes flow_score, exit_reason (scalp vs resolution) for each trade
    - Claude returns structured JSON: weight adjustments, all 4 layer weights (momentum, regime, flow, student_t_df), min_edge, kelly_fraction, reasoning, findings, risk warnings
    - Response validated server-side (weights sum to 1.0, all constraints enforced, new params clamped)
    - Falls back to local math if Claude API fails (resilient)
 
-3. **WeightOptimizer** — Backtests recommendations using trade_context edge data:
+3. **WeightOptimizer** — Backtests recommendations against the **validation set** (last 40%):
    - Recomputes hypothetical edge with new weights/parameters
    - Auto-adopts if Sharpe improves >= 3%
    - Hot-swaps ALL params at runtime: indicator weights, momentum_weight, regime_weight, flow_weight, student_t_df, min_edge, kelly_fraction, min_model_probability, exit_edge_threshold, min_time_remaining, trading hours
@@ -290,6 +298,7 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't use polymarket.us for crypto — US platform has sports only. All crypto trading is on polymarket.com.
 - Don't use Binance.com — use Binance.us.
 - Don't allow multiple concurrent positions — one at a time, full Kelly.
+- Don't bypass the circuit breaker — it exists to protect bankroll during losing streaks.
 - Don't auto-delete the DB — bankroll persists across sessions in both modes. Never delete `polybot/db/polybot.db` between runs.
 - Don't use limit orders in LiveTrader — FOK market orders for 5-min contract speed.
 

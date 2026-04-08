@@ -4,6 +4,10 @@ mode: "paper"  # "paper" or "live"
 math:
   kelly_fraction: 0.15  # Fraction of Kelly to use (0.15 = conservative)
 
+circuit_breaker:
+  losses_to_reduce: 3    # consecutive losses before halving Kelly
+  wins_to_restore: 2     # wins at half Kelly before restoring full
+
 execution:
   max_slippage: 0.02
   max_bankroll_deployed: 0.80
