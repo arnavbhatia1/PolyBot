@@ -206,6 +206,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
     traded_contracts: dict[str, int] = {}      # condition_id -> timestamp (one trade per contract)
     window_strikes: dict[int, float] = {}      # window_ts -> BTC price at window open
     ws_subscribed_tokens: list[str] = []       # currently subscribed token_ids
+    last_eval_log_window: int = 0              # track which window we last logged eval for
 
     # Shared HTTP client — one connection pool for all API calls
     http_client = httpx.AsyncClient(timeout=5)
@@ -492,6 +493,7 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
             # Compute strike: BTC price at the 5-min window boundary
             # Use the candle that opened at the window start
             window_ts = int(now_ts // 300) * 300
+            eval_window = window_ts
             if window_ts not in window_strikes:
                 # Find the candle closest to the 5-min window boundary
                 candles = binance_feed.buffer.get_last_n(10)
@@ -506,6 +508,10 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
             strike = window_strikes.get(window_ts, 0)
             if strike <= 0:
+                buf_len = len(binance_feed.buffer) if binance_feed.buffer else 0
+                if eval_window != last_eval_log_window:
+                    last_eval_log_window = eval_window
+                    logger.info(f"EVAL: no strike for window {window_ts} — candle buffer has {buf_len} candles")
                 continue
 
             btc_price = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
@@ -530,6 +536,17 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                 seconds_remaining=contract["seconds_remaining"],
                 market_price_up=price_up, market_price_down=price_down,
             )
+
+            # Log signal evaluation once per window so we can see what the model sees
+            eval_window = int(now_ts // 300) * 300
+            if eval_window != last_eval_log_window:
+                last_eval_log_window = eval_window
+                buf_len = len(binance_feed.buffer) if binance_feed.buffer else 0
+                logger.info(
+                    f"EVAL: {signal.action} | BTC={btc_price:,.0f} strike={strike:,.0f} "
+                    f"d={btc_price-strike:+,.0f} | mkt Up={price_up:.2f} Dn={price_down:.2f} "
+                    f"| prob={signal.prob:.0%} edge={signal.edge:+.0%} | {contract['seconds_remaining']:.0f}s left "
+                    f"| buf={buf_len} | {signal.reason}")
 
             if signal.action in ("BUY_YES", "BUY_NO"):
                 side = "Up" if signal.action == "BUY_YES" else "Down"
