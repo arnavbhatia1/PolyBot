@@ -243,6 +243,234 @@ Subscription format:
 
 Dynamic subscribe/unsubscribe via `{"operation": "subscribe"/"unsubscribe", "assets_ids": [...]}`.
 
+## Canonical Paper Trader Dataflow — DO NOT DEVIATE
+
+This is the authoritative execution flow for the paper trader. The live trader MUST preserve the same dataflow shape — same gates, same ordering, same invariants. The only difference is what happens inside `open_trade()`, `close_trade()`, and `resolve_position()` (mock fill vs real CLOB order). Everything upstream and downstream is shared.
+
+### Phase 1: Market Discovery
+
+```
+Binance WS (1-min candles)          Gamma API (contract discovery)
+        │                                    │
+        ▼                                    ▼
+200-candle rolling buffer         btc-updown-5m-{window_ts}
+        │                           │                    │
+        ├── BTC price               ├── token_id_up      ├── token_id_down
+        ├── Strike (open @ window)  ├── seconds_remaining └── conditionId
+        └── ATR, indicators         │
+                                    ▼
+                            CLOB WS subscribe(token_up, token_down)
+                                    │
+                        ┌───────────┴───────────┐
+                        ▼                       ▼
+                   Book snapshots         Last trade prices
+                   Best bid/ask           Resolution events
+```
+
+### Phase 2: Signal Generation
+
+```
+Candle buffer ──► indicator_engine.compute_all()
+                        │
+                        ├── RSI (0.20), MACD (0.25), Stochastic (0.20)
+                        ├── OBV (0.15), VWAP (0.20)
+                        └── weighted sum → momentum_score (±4% max)
+
+CLOB books + trades ──► compute_flow_signal()
+                        ├── book_imbalance (60%) + trade_flow (40%, 120s lookback)
+                        └── flow_score (±4% max)
+
+Candle closes ──► 1-lag autocorrelation (10 returns)
+                        └── regime_adjustment (±3% max)
+
+BTC price, strike, ATR, seconds_remaining
+        │
+        ▼
+Student-t CDF:  z = (btc - strike) / (ATR × √minutes)
+                P(Up) = t.cdf(z, df=4)
+        │
+        ▼
+signal_engine.evaluate()
+        ├── base_prob = Student-t CDF
+        ├── + regime_adjustment
+        ├── + flow_adjustment
+        ├── + momentum_adjustment
+        │         │
+        │         ▼ final_prob → edge = |prob - market_price|
+        │                        side = Up if prob > 0.5, else Down
+        │                        kelly_size = (p*b - q)/b × 0.15
+        ▼
+   6 ENTRY GATES (all must pass, in order):
+        ├── prob ≥ 0.65?              (confidence gate)
+        ├── edge ≥ min_edge?          (mispricing gate)
+        ├── spread ≤ 0.10?            (liquidity gate)
+        ├── book depth ≥ $50?         (depth gate)
+        ├── price_up + price_down ∈ [0.98, 1.02]?  (price sanity gate)
+        └── seconds_remaining ≥ 20?   (timing gate)
+```
+
+### Phase 3: Sizing & Slippage
+
+```
+bankroll (from SQLite)
+        │
+        ▼
+raw_size = bankroll × kelly_size × breaker.kelly_multiplier
+        │                                    │
+        │                            (1.0 normal, 0.5 after 3 losses)
+        ▼
+CAP CHAIN (in order):
+        ├── size < $1.00?             → REJECT
+        ├── size > bankroll × 0.80?   → cap to 80%
+        └── size > depth × 0.50?      → cap to 50% of ask depth
+                │
+                ▼
+SLIPPAGE (convex model):
+  slip = (size/depth) × 0.03 × (1 + size/depth)
+        │
+        ▼
+NET EDGE CHECK:
+  net_edge = gross_edge - (price × slip)
+  net_edge < min_edge? → REJECT
+```
+
+### Phase 4: Execution (paper_trader.open_trade)
+
+```
+CLOB REST: GET /price?token_id=X&side=BUY → exec_price
+        │
+        ▼
+exec_price × (1 + slippage) → snap_to_tick(price, tick_size)
+        │
+        ▼
+CLOB REST: GET /fee-rate?token_id=X → fee_rate (default 0.018)
+        │
+        ▼
+FEE CALCULATION (entry — collected in SHARES):
+  shares_ordered = size / price
+  fee_shares = fee_rate × shares_ordered × price × (1-price) / price
+  shares_received = shares_ordered - fee_shares
+        │
+        ▼
+3 REJECTION GATES (in order):
+  ├── duplicate market?                → reject
+  ├── open positions ≥ max (1)?        → reject
+  └── deployed + size > bankroll × 80%? → reject
+        │ all pass
+        ▼
+DB: INSERT positions (entry_price, size, shares_held, fee_rate, snapshot)
+DB: UPDATE bankroll = bankroll - size   ← USDC only, fee is in shares
+        │
+        ▼
+TradeResult(success=True, position_id=N)
+  → Discord alert + logger
+```
+
+### Phase 5: Position Management (while holding)
+
+```
+LOOP (every tick, ~1-2ms, event-driven from CLOB WS):
+        │
+        ▼
+Gamma API: seconds_remaining? closed?
+        │
+        ├── EXPIRED (seconds_remaining ≤ 0 AND closed=True)
+        │         │
+        │         ▼ RESOLUTION PATH
+        │   BTC vs strike → exit_price = $1.00 or $0.00
+        │   trader.resolve_position(pos_id, exit_price)
+        │     fee = rate × shares × p × (1-p) = $0 at extremes
+        │     revenue = shares × exit_price
+        │     DB: bankroll += revenue
+        │     record_outcome(exit_reason="resolution")
+        │
+        └── STILL ACTIVE
+                  │
+                  ▼
+        RE-EVALUATE (same 4-layer model, current data):
+          signal_engine.evaluate_hold()
+            ├── Recompute prob for held side
+            ├── holding_edge = model_prob - current_market_price
+            ├── effective_threshold = exit_threshold(-10%)
+            │     - exit_fee_cost
+            │     + time_urgency (ramps in last 120s)
+            ▼
+          holding_edge > effective_threshold?
+            ├── YES → HOLD (do nothing, loop continues)
+            └── NO  → SCALP EXIT
+                        │
+                        ▼
+                  GET /price?side=SELL → exit price
+                  apply slippage (convex, worse for seller)
+                  snap_to_tick()
+                        │
+                        ▼
+                  trader.close_trade(pos_id, exit_fill)
+                    EXIT FEE (in USDC):
+                      fee = rate × shares × price × (1-price)
+                      revenue = shares × exit_price - fee_usdc
+                    DB: bankroll += revenue
+                    DB: positions.status = 'closed'
+                    DB: INSERT trade_history
+                    record_outcome(exit_reason="scalp")
+```
+
+### Phase 6: Circuit Breaker Update
+
+```
+trade closed → gain_pct = pnl / size
+        │
+  ┌─────┴─────┐
+  │ WIN       │ LOSS
+  ▼           ▼
+record_win()  record_loss()
+  │             ├── consecutive_losses++
+  │             └── if ≥ 3 AND not reduced:
+  │                   reduced=True → kelly_multiplier=0.5
+  │
+  ├── consecutive_losses = 0
+  └── if reduced AND wins_since_reduction ≥ 2:
+        reduced=False → kelly_multiplier=1.0
+```
+
+### Phase 7: Outcome → Learning Pipeline
+
+```
+outcome JSON → polybot/memory/outcomes/
+        │
+        ▼ (daily at 4:45 PM ET)
+BiasDetector: first 60% of outcomes (training set)
+  → per-indicator accuracy, edge calibration, time/vol patterns
+        │
+        ▼
+TAEvolver: analysis + last 75 trades + config → Claude Sonnet
+  → returns: {weights, min_edge, kelly_fraction, exit_threshold, hours, ...}
+        │
+        ▼
+WeightOptimizer: backtest on last 40% (validation set)
+  → new_sharpe ≥ old_sharpe × 1.03?
+        ├── YES → hot-swap all params, persist to settings.yaml
+        └── NO  → discard recommendations
+```
+
+### Paper → Live: What Changes, What Doesn't
+
+**IDENTICAL (zero changes):** Signal engine, indicator engine, order flow, circuit breaker, outcome reviewer, learning pipeline, Discord alerts, DB schema, all entry gates, Kelly sizing, slippage estimation (for pre-trade net-edge gate).
+
+**CHANGES (inside LiveTrader only):**
+- `open_trade()`: mock fill → EIP-712 sign → POST /orders → poll fill → DB with actuals
+- `close_trade()`: mock sell → EIP-712 sign → POST /orders (SELL) → poll fill → DB with actuals
+- `resolve_position()`: simulated $0/$1 → redeemPositions() on ConditionalTokens contract
+- Bankroll: fetch real USDC balance on startup, reconcile periodically
+- Slippage: actual fill price replaces simulation (but convex model still used for pre-trade gate)
+
+**INVARIANTS THAT MUST HOLD IN BOTH MODES:**
+- Entry fee collected in SHARES (fewer shares received, not extra USDC)
+- Exit fee collected in USDC (subtracted from proceeds)
+- Bankroll debited by `size` USDC on entry, credited by `revenue` on exit
+- All 3 open_trade rejection gates run BEFORE any exchange interaction
+- TradeResult is the contract boundary — same shape regardless of mode
+
 ## Common Issues
 
 - **No trades:** BTC is near the strike (no edge) or market is efficiently priced. This is correct behavior — no edge means no trade.
