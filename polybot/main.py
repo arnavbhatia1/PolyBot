@@ -873,6 +873,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
             # --- POSITION MANAGEMENT: resolution check + active re-evaluation ---
             positions = await db.get_open_positions()
+            has_active_position = False  # Track if any position has a live (non-expired) contract
             for pos in positions:
                 live = await _get_contract_prices(market_scanner, pos["market_id"], http_client)
 
@@ -888,6 +889,9 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
                 if live["seconds_remaining"] <= 0:
                     # Contract expired — check if Polymarket has resolved it.
+                    # Mark as pending so it doesn't block new entries
+                    if pos["status"] == "open":
+                        await db.mark_pending_resolution(pos["id"])
                     resolved, day_wins, day_losses, day_fees, traded_mid = \
                         await _resolve_expired_position(
                             pos, live, trader, alert_manager, db,
@@ -899,6 +903,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                         traded_contracts[traded_mid] = int(time.time())
                 else:
                     # Active position — re-evaluate using probability model
+                    has_active_position = True
                     day_wins, day_losses, day_fees, traded_mid = \
                         await _evaluate_and_exit_position(
                             pos, live, binance_feed, indicator_engine,
@@ -920,8 +925,9 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             if not in_trading_hours:
                 continue
 
-            # Skip if we already have an open position (one at a time)
-            if await db.get_open_position_count() > 0:
+            # Skip if we have an ACTIVE position (contract still running).
+            # Expired positions waiting for Gamma resolution don't block new entries.
+            if has_active_position:
                 continue
 
             contract, cid, traded_contracts, ws_subscribed_tokens = \

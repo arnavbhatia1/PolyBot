@@ -114,11 +114,20 @@ class Database:
         return cursor.lastrowid
 
     async def get_open_positions(self) -> list[dict[str, Any]]:
+        """Returns positions that need management: both 'open' (active) and 'pending_resolution' (expired, awaiting Gamma)."""
         cursor = await self.conn.execute(
-            "SELECT * FROM positions WHERE status = 'open'"
+            "SELECT * FROM positions WHERE status IN ('open', 'pending_resolution')"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def mark_pending_resolution(self, position_id: int) -> None:
+        """Mark an expired position as pending resolution — doesn't count against max_concurrent_positions."""
+        await self.conn.execute(
+            "UPDATE positions SET status='pending_resolution' WHERE id=?",
+            (position_id,),
+        )
+        await self.conn.commit()
 
     async def close_position(self, position_id: int, exit_price: float, log_return: float) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -145,7 +154,7 @@ class Database:
 
     async def has_position_for_market(self, market_id: str) -> bool:
         cursor = await self.conn.execute(
-            "SELECT COUNT(*) FROM positions WHERE market_id=? AND status='open'",
+            "SELECT COUNT(*) FROM positions WHERE market_id=? AND status IN ('open', 'pending_resolution')",
             (market_id,),
         )
         row = await cursor.fetchone()
