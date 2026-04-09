@@ -70,6 +70,10 @@ _contract_price_cache: dict[str, tuple[float, dict[str, Any]]] = {}  # market_id
 _CONTRACT_CACHE_TTL = 5.0  # seconds — re-fetch at most every 5s per contract
 _CONTRACT_RESOLUTION_TTL = 2.0  # faster polling when contract might be resolving
 
+# Throttled logging for hold evaluations and resolution waiting
+_last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
+_last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
+
 
 async def _get_contract_prices(market_scanner: Any, market_id: str, http_client: Any = None) -> dict[str, Any] | None:
     """Fetch current Up/Down prices for an active contract via Gamma API.
@@ -565,13 +569,23 @@ async def _evaluate_and_exit_position(
         fee_rate=pos.get("fee_rate") or DEFAULT_FEE_RATE,
         closes=closes, flow_signal=hold_flow["flow_score"])
 
-    if action == "HOLD" and counterfactual_tracker:
-        counterfactual_tracker.track_hold_moment(pos["market_id"], pos, {
-            "holding_edge": holding_edge, "model_prob": model_prob,
-            "market_price": market_price, "seconds_remaining": live["seconds_remaining"],
-            "exit_threshold": exit_threshold, "strike_price": strike_now,
-            "btc_price": btc_now,
-        })
+    if action == "HOLD":
+        # Log hold status every 30s so the operator knows the bot is alive
+        now_ts = time.time()
+        mid = pos["market_id"]
+        if now_ts - _last_hold_log.get(mid, 0) >= 30:
+            _last_hold_log[mid] = now_ts
+            logger.info(
+                f"HOLD {pos['side']} | prob={model_prob:.0%} mkt={market_price:.2f} "
+                f"edge={holding_edge:+.0%} thresh={exit_threshold:+.0%} | "
+                f"BTC={btc_now:,.0f} strike={strike_now:,.0f} | {live['seconds_remaining']:.0f}s left")
+        if counterfactual_tracker:
+            counterfactual_tracker.track_hold_moment(pos["market_id"], pos, {
+                "holding_edge": holding_edge, "model_prob": model_prob,
+                "market_price": market_price, "seconds_remaining": live["seconds_remaining"],
+                "exit_threshold": exit_threshold, "strike_price": strike_now,
+                "btc_price": btc_now,
+            })
 
     traded_market_id = None
     if action == "EXIT":
@@ -639,6 +653,13 @@ async def _resolve_expired_position(
         logger.info(f"RESOLVE via eventMetadata: priceToBeat={meta['price_to_beat']:,.2f} final={meta['final_price']:,.2f} → {'Up' if up_won else 'Down'}")
     else:
         # Gamma hasn't resolved yet — wait for next tick (polls every 2s)
+        now_ts = time.time()
+        mid = pos["market_id"]
+        if now_ts - _last_resolve_wait_log.get(mid, 0) >= 10:
+            _last_resolve_wait_log[mid] = now_ts
+            logger.info(f"WAITING for Gamma resolution: {mid} | closed={live.get('closed')} "
+                        f"meta={'yes' if live.get('event_metadata') else 'no'} "
+                        f"prices=Up:{live.get('price_up', 0):.2f}/Dn:{live.get('price_down', 0):.2f}")
         return False, day_wins, day_losses, day_fees, None
 
     result = await trader.resolve_position(pos["id"], exit_price)
@@ -816,11 +837,23 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     day_fees: float = 0.0
 
     while True:
-        # Event-driven: react instantly to WebSocket book updates, timeout 1s for housekeeping
+        # Event-driven: react instantly to WebSocket book/resolution updates, timeout 1s for housekeeping
         if clob_ws:
             try:
-                await asyncio.wait_for(clob_ws.book_updated.wait(), timeout=1.0)
-                clob_ws.book_updated.clear()
+                # Wake on book update OR market resolution — whichever comes first
+                book_task = asyncio.create_task(clob_ws.book_updated.wait())
+                resolve_task = asyncio.create_task(clob_ws.market_resolved.wait())
+                done, pending = await asyncio.wait(
+                    {book_task, resolve_task}, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
+                for t in pending:
+                    t.cancel()
+                if clob_ws.book_updated.is_set():
+                    clob_ws.book_updated.clear()
+                if clob_ws.market_resolved.is_set():
+                    clob_ws.market_resolved.clear()
+                    # Invalidate price cache — Gamma should have resolution data now
+                    _contract_price_cache.clear()
+                    logger.info("WS market_resolved — cache cleared, checking resolution")
             except asyncio.TimeoutError:
                 pass  # housekeeping tick — contract discovery, day banners
         else:
