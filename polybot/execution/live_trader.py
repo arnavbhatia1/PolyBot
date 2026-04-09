@@ -74,7 +74,77 @@ class LiveTrader:
         weight_version: str, indicator_snapshot: str = "",
         token_id: str = "", fee_rate: float = DEFAULT_FEE_RATE,
     ) -> TradeResult:
-        raise NotImplementedError("open_trade pending — Task 5")
+        # --- Rejection gates (identical to PaperTrader) ---
+        if await self.db.has_position_for_market(market_id):
+            return TradeResult(success=False, reason="Duplicate market — already have position")
+        if await self.db.get_open_position_count() >= self.max_concurrent_positions:
+            return TradeResult(success=False, reason="Max positions reached")
+        bankroll = await self.db.get_bankroll()
+        deployed = await self._get_deployed_capital()
+        max_deployable = bankroll * self.max_bankroll_deployed
+        if deployed + size > max_deployable:
+            return TradeResult(success=False, reason=f"Bankroll limit — deployed {deployed:.2f}, max {max_deployable:.2f}")
+
+        # --- Build, sign, and submit order ---
+        order_args = OrderArgs(
+            token_id=token_id,
+            price=price,
+            size=size,
+            side=BUY,
+        )
+        signed_order = self.client.create_order(order_args)
+        resp = self.client.post_order(signed_order, OrderType.GTC)
+        order_id = resp["orderID"]
+        logger.info("Order submitted: %s (market=%s, price=%.2f, size=%.2f)",
+                     order_id, market_id, price, size)
+
+        # --- Poll for fill ---
+        elapsed = 0.0
+        fill_price = None
+        fill_size = None
+        while elapsed < _FILL_TIMEOUT:
+            order_status = self.client.get_order(order_id)
+            status = order_status.get("status", "")
+
+            if status == "MATCHED":
+                trades = order_status.get("associate_trades", [])
+                if trades:
+                    fill_price = float(trades[0]["price"])
+                    fill_size = float(trades[0]["size"])
+                break
+
+            if status in ("CANCELLED", "EXPIRED"):
+                logger.warning("Order %s ended with status %s", order_id, status)
+                return TradeResult(success=False, reason=f"Order {status.lower()}")
+
+            await asyncio.sleep(_FILL_POLL_INTERVAL)
+            elapsed += _FILL_POLL_INTERVAL
+
+        # Timeout — cancel and bail
+        if fill_price is None:
+            logger.warning("Order %s timed out after %.1fs — cancelling", order_id, _FILL_TIMEOUT)
+            self.client.cancel(order_id)
+            return TradeResult(success=False, reason="Order fill timeout — cancelled")
+
+        # --- Fee math (identical to PaperTrader) ---
+        shares_ordered = fill_size / fill_price
+        fee_in_shares = entry_fee_shares(shares_ordered, fill_price, fee_rate)
+        shares_received = shares_ordered - fee_in_shares
+
+        # --- Persist to DB ---
+        pos_id = await self.db.open_position(
+            market_id=market_id, question=question, side=side,
+            entry_price=fill_price, size=fill_size, signal_score=signal_score,
+            signal_strength=signal_strength, ev_at_entry=ev_at_entry,
+            exit_target=exit_target, stop_loss=stop_loss,
+            weight_version=weight_version,
+            indicator_snapshot=indicator_snapshot,
+            fee_rate=fee_rate, shares_held=shares_received,
+        )
+        await self.db.set_bankroll(bankroll - fill_size)
+        logger.info("Position opened: id=%d, market=%s, shares=%.4f (fee=%.4f shares deducted)",
+                     pos_id, market_id, shares_received, fee_in_shares)
+        return TradeResult(success=True, position_id=pos_id)
 
     async def close_trade(
         self, position_id: int, exit_price: float, token_id: str = "",
