@@ -16,12 +16,12 @@ execution:
   max_concurrent_positions: 1  # One position at a time — full Kelly on best edge
   max_book_fill_pct: 0.50     # Cap order to 50% of available ask depth (realistic fills)
   slippage_impact_pct: 0.03   # 3% price impact at 100% depth consumption. Tune vs live fills.
-  initial_bankroll: 1000.0
+  initial_bankroll: 100.0
 
 agents:
   outcome_reviewer_interval_seconds: 3600
-  daily_pipeline_hour: 20  # 4:45 PM EST (20:45 UTC)
-  daily_pipeline_minute: 45
+  daily_pipeline_hour: 21  # 5:15 PM EST (21:15 UTC)
+  daily_pipeline_minute: 15
 
 discord:
   trade_channel_name: "polybot-trades"
@@ -72,7 +72,7 @@ signal:
   min_model_probability: 0.65  # Min confidence to enter — tunable by pipeline (range: 0.55-0.85)
   momentum_weight: 0.04       # was 0.08 — demoted to Layer 4 (weakest signal)
   regime_weight: 0.03         # max ±3% regime adjustment (Layer 2) — CDF drives decisions
-  regime_lookback: 20         # number of 1-min returns for autocorrelation (20 = 20 minutes)
+  regime_lookback: 10         # number of 1-min returns for autocorrelation (10 = 10 minutes)
   flow_weight: 0.04           # max ±4% order flow adjustment (Layer 3) — CDF drives decisions
   student_t_df: 4             # NEW — degrees of freedom for fat-tailed CDF
   weights:
@@ -96,8 +96,8 @@ market:
 schedule:
   trading_start_hour_et: 8    # 8 AM ET (auto-adjusts for EST/EDT)
   trading_start_minute: 0
-  trading_end_hour_et: 16     # 4:30 PM ET
-  trading_end_minute: 30
+  trading_end_hour_et: 17     # 5:00 PM ET
+  trading_end_minute: 0
 
 # Active position management: hold to $1 when model is confident,
 # exit early when holding_edge drops below exit_edge_threshold.
