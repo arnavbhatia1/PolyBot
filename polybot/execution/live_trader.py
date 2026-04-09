@@ -149,7 +149,85 @@ class LiveTrader:
     async def close_trade(
         self, position_id: int, exit_price: float, token_id: str = "",
     ) -> TradeResult:
-        raise NotImplementedError("close_trade pending — Task 6")
+        # --- Fetch position from DB ---
+        positions = await self.db.get_open_positions()
+        position = next((p for p in positions if p["id"] == position_id), None)
+        if not position:
+            return TradeResult(success=False, reason=f"Position {position_id} not found or already closed")
+
+        # --- Shares and fee rate from position (same as PaperTrader) ---
+        shares = position.get("shares_held") or position["size"] / position["entry_price"]
+        fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
+
+        # --- Build, sign, and submit SELL order ---
+        order_args = OrderArgs(
+            token_id=token_id or position.get("token_id", ""),
+            price=exit_price,
+            size=shares * exit_price,
+            side=SELL,
+        )
+        signed_order = self.client.create_order(order_args)
+        resp = self.client.post_order(signed_order, OrderType.GTC)
+        order_id = resp["orderID"]
+        logger.info("Sell order submitted: %s (position=%d, price=%.2f, shares=%.4f)",
+                     order_id, position_id, exit_price, shares)
+
+        # --- Poll for fill ---
+        elapsed = 0.0
+        fill_price = None
+        while elapsed < _FILL_TIMEOUT:
+            order_status = self.client.get_order(order_id)
+            status = order_status.get("status", "")
+
+            if status == "MATCHED":
+                trades = order_status.get("associate_trades", [])
+                if trades:
+                    fill_price = float(trades[0]["price"])
+                break
+
+            if status in ("CANCELLED", "EXPIRED"):
+                logger.warning("Sell order %s ended with status %s", order_id, status)
+                return TradeResult(success=False, reason=f"Sell order {status.lower()}")
+
+            await asyncio.sleep(_FILL_POLL_INTERVAL)
+            elapsed += _FILL_POLL_INTERVAL
+
+        # Timeout — cancel and bail
+        if fill_price is None:
+            logger.warning("Sell order %s timed out after %.1fs — cancelling", order_id, _FILL_TIMEOUT)
+            self.client.cancel(order_id)
+            return TradeResult(success=False, reason="Sell order fill timeout — cancelled")
+
+        actual_exit_price = fill_price
+
+        # --- Fee math and revenue (identical to PaperTrader) ---
+        lr = log_return(position["entry_price"], actual_exit_price)
+        fee_usdc = exit_fee_usdc(shares, actual_exit_price, fee_rate)
+        revenue = shares * actual_exit_price - fee_usdc
+
+        # --- Persist to DB ---
+        await self.db.close_position(position_id, exit_price=actual_exit_price, log_return=lr)
+        bankroll = await self.db.get_bankroll()
+        await self.db.set_bankroll(bankroll + revenue)
+        logger.info("Position closed: id=%d, exit=%.4f, log_return=%.4f, revenue=%.4f",
+                     position_id, actual_exit_price, lr, revenue)
+        return TradeResult(success=True, position_id=position_id, log_return=lr)
 
     async def resolve_position(self, position_id: int, exit_price: float) -> TradeResult:
-        raise NotImplementedError("resolve_position pending — Task 7")
+        """Resolution: Polymarket auto-credits USDC. No CLOB order needed."""
+        # --- Fetch position from DB ---
+        positions = await self.db.get_open_positions()
+        position = next((p for p in positions if p["id"] == position_id), None)
+        if not position:
+            return TradeResult(success=False, reason=f"Position {position_id} not found or already closed")
+
+        # --- Compute log return and close in DB ---
+        lr = log_return(position["entry_price"], exit_price)
+        await self.db.close_position(position_id, exit_price=exit_price, log_return=lr)
+
+        # --- Sync bankroll with real Polymarket balance ---
+        real_balance = await self.get_balance()
+        await self.db.set_bankroll(real_balance)
+        logger.info("Position resolved: id=%d, exit=%.2f, log_return=%.4f, synced bankroll=%.2f",
+                     position_id, exit_price, lr, real_balance)
+        return TradeResult(success=True, position_id=position_id, log_return=lr)

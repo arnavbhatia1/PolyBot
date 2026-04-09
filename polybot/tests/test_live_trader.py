@@ -183,3 +183,86 @@ async def test_open_trade_stores_correct_shares(trader):
     expected_shares = shares_ordered - fee_in_shares
 
     assert pos["shares_held"] == pytest.approx(expected_shares, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# close_trade tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_close_trade_success(trader):
+    # Open a position first
+    _setup_successful_fill(trader, fill_price="0.55", fill_size="10.0")
+    open_result = await trader.open_trade(**_TRADE_KWARGS)
+    assert open_result.success is True
+    pos_id = open_result.position_id
+
+    # Reconfigure mock for the sell side
+    _setup_successful_fill(trader, fill_price="0.68", fill_size="10.0")
+
+    result = await trader.close_trade(pos_id, exit_price=0.68, token_id="tok-up-123")
+
+    assert result.success is True
+    assert result.log_return is not None
+    # Sold at 0.68 vs bought at 0.55 — should profit. Bankroll was 90 after open.
+    bankroll = await trader.db.get_bankroll()
+    assert bankroll > 90.0
+
+
+@pytest.mark.asyncio
+async def test_close_trade_not_found(trader):
+    result = await trader.close_trade(position_id=999, exit_price=0.60)
+
+    assert result.success is False
+    assert "not found" in result.reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# resolve_position tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_resolve_position_winner(trader):
+    # Open a position at price=0.50, size=50.0
+    _setup_successful_fill(trader, fill_price="0.50", fill_size="50.0")
+    kwargs = {**_TRADE_KWARGS, "price": 0.50, "size": 50.0}
+    open_result = await trader.open_trade(**kwargs)
+    assert open_result.success is True
+    pos_id = open_result.position_id
+
+    # Figure out actual shares held from DB
+    positions = await trader.db.get_open_positions()
+    shares_held = positions[0]["shares_held"]
+
+    # Mock balance to reflect winnings: remaining bankroll (50) + shares_held * $1
+    winning_balance = 50.0 + shares_held
+    trader.client.get_balance_allowance.return_value = {
+        "balance": str(int(winning_balance * 1e6))
+    }
+
+    result = await trader.resolve_position(pos_id, exit_price=1.0)
+
+    assert result.success is True
+    bankroll = await trader.db.get_bankroll()
+    assert bankroll == pytest.approx(winning_balance, rel=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_resolve_position_loser(trader):
+    # Open a position at price=0.50, size=50.0
+    _setup_successful_fill(trader, fill_price="0.50", fill_size="50.0")
+    kwargs = {**_TRADE_KWARGS, "price": 0.50, "size": 50.0, "market_id": "mkt-loser"}
+    open_result = await trader.open_trade(**kwargs)
+    assert open_result.success is True
+    pos_id = open_result.position_id
+
+    # Mock balance to reflect loss: just remaining bankroll (50), shares are worthless
+    trader.client.get_balance_allowance.return_value = {
+        "balance": str(int(50.0 * 1e6))
+    }
+
+    result = await trader.resolve_position(pos_id, exit_price=0.0)
+
+    assert result.success is True
+    bankroll = await trader.db.get_bankroll()
+    assert bankroll == pytest.approx(50.0, rel=1e-4)
