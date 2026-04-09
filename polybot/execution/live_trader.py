@@ -30,6 +30,56 @@ _FILL_POLL_INTERVAL = 0.5  # seconds
 _FILL_TIMEOUT = 5.0  # seconds
 
 
+def _create_clob_client() -> ClobClient:
+    """Create and authenticate a ClobClient from env vars. Raises on failure."""
+    private_key = os.environ.get("POLYMARKET_PRIVATE_KEY")
+    if not private_key:
+        raise ValueError("Missing required secret: POLYMARKET_PRIVATE_KEY")
+    funder = os.environ.get("POLYMARKET_FUNDER", "")
+
+    client = ClobClient(
+        "https://clob.polymarket.com",
+        key=private_key,
+        chain_id=137,
+        signature_type=2,  # GNOSIS_SAFE — proxy wallet deployed via Polymarket
+        funder=funder,    # NOTE: if auth fails, try signature_type=1 (POLY_PROXY)
+    )
+    creds = client.create_or_derive_api_creds()
+    client.set_api_creds(creds)
+    return client
+
+
+def _get_balance_usd(client: ClobClient) -> float:
+    """Fetch USDC balance from Polymarket. Returns float in dollars."""
+    result = client.get_balance_allowance(
+        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+    )
+    return int(result.get("balance", "0")) / 1e6
+
+
+def verify_auth() -> tuple[bool, str, float]:
+    """Verify Polymarket auth and return (ok, message, balance).
+
+    Used by verify_keys.py and main.py preflight check.
+    """
+    try:
+        client = _create_clob_client()
+    except ValueError as e:
+        return False, str(e), 0.0
+    except Exception as e:
+        return False, f"Auth failed — check POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER: {e}", 0.0
+
+    try:
+        balance = _get_balance_usd(client)
+    except Exception as e:
+        return False, f"Authenticated but balance fetch failed: {e}", 0.0
+
+    msg = f"Authenticated OK, USDC balance: ${balance:,.2f}"
+    if balance < 1.0:
+        msg += " — WARNING: low balance, deposit USDC on Polymarket before trading"
+    return True, msg, balance
+
+
 class LiveTrader:
     """Real Polymarket CLOB trading. Same interface as PaperTrader."""
 
@@ -39,29 +89,12 @@ class LiveTrader:
         self.max_bankroll_deployed = kwargs.get("max_bankroll_deployed", 0.80)
         self.max_concurrent_positions = kwargs.get("max_concurrent_positions", 1)
 
-        private_key = os.environ.get("POLYMARKET_PRIVATE_KEY")
-        if not private_key:
-            raise ValueError("Missing required secret: POLYMARKET_PRIVATE_KEY")
-        funder = os.environ.get("POLYMARKET_FUNDER", "")
-
-        self.client = ClobClient(
-            "https://clob.polymarket.com",
-            key=private_key,
-            chain_id=137,
-            signature_type=2,  # GNOSIS_SAFE — proxy wallet deployed via Polymarket
-            funder=funder,    # NOTE: if auth fails, try signature_type=1 (POLY_PROXY)
-        )
-        creds = self.client.create_or_derive_api_creds()
-        self.client.set_api_creds(creds)
+        self.client = _create_clob_client()
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
     async def get_balance(self) -> float:
         """Fetch USDC balance from Polymarket. Returns float in dollars."""
-        result = self.client.get_balance_allowance(
-            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-        )
-        balance_wei = int(result.get("balance", "0"))
-        return balance_wei / 1e6  # USDC has 6 decimals
+        return _get_balance_usd(self.client)
 
     async def _get_deployed_capital(self) -> float:
         positions = await self.db.get_open_positions()

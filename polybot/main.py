@@ -18,7 +18,7 @@ from polybot.core.signal_engine import SignalEngine
 from polybot.core.order_flow import compute_flow_signal
 from polybot.brain.claude_client import ClaudeClient
 from polybot.execution.paper_trader import PaperTrader
-from polybot.execution.live_trader import LiveTrader
+from polybot.execution.live_trader import LiveTrader, verify_auth
 from polybot.agents.outcome_reviewer import OutcomeReviewer
 from polybot.agents.bias_detector import BiasDetector
 from polybot.agents.ta_evolver import TAEvolver
@@ -871,25 +871,14 @@ async def main():
     # Execution — route based on mode
     exec_cfg = config["execution"]
     if mode == "live":
-        try:
-            trader = LiveTrader(db=db, max_slippage=exec_cfg["max_slippage"],
-                max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
-                max_concurrent_positions=exec_cfg["max_concurrent_positions"])
-        except ValueError as e:
-            logger.error(f"LIVE MODE startup failed: {e}")
+        ok, msg, live_balance = verify_auth()
+        if not ok:
+            logger.error(f"LIVE MODE preflight failed: {msg}")
             return
-        except Exception as e:
-            logger.error(f"LIVE MODE auth failed — check POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER in .env: {e}")
-            return
-        # Preflight: verify auth works by fetching balance
-        try:
-            live_balance = await trader.get_balance()
-            logger.info(f"LIVE MODE — authenticated OK, USDC balance: ${live_balance:,.2f}")
-            if live_balance < 1.0:
-                logger.warning(f"Low balance: ${live_balance:.2f} — deposit USDC on Polymarket before trading")
-        except Exception as e:
-            logger.error(f"LIVE MODE preflight failed — could not fetch balance: {e}")
-            return
+        logger.info(f"LIVE MODE — {msg}")
+        trader = LiveTrader(db=db, max_slippage=exec_cfg["max_slippage"],
+            max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
+            max_concurrent_positions=exec_cfg["max_concurrent_positions"])
     else:
         trader = PaperTrader(db=db, max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
