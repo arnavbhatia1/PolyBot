@@ -340,7 +340,7 @@ NET EDGE CHECK:
   net_edge < min_edge? → REJECT
 ```
 
-### Phase 4: Execution (paper_trader.open_trade)
+### Phase 4: Execution (BaseTrader.open_trade — shared by paper and live)
 
 ```
 CLOB REST: GET /price?token_id=X&side=BUY → exec_price
