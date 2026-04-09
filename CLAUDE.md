@@ -18,7 +18,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
-- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Fee rates fetched live from `GET /fee-rate?token_id=X` (crypto = 1.8%). Entry fees collected in shares (fewer shares received), exit fees in USDC — matching Polymarket's actual collection method. Prices snapped to market tick size. Min order size enforced from CLOB book. FOK fill semantics (100% fill or reject). Orders capped to 50% of available book depth. **Convex slippage model**: fills are penalized by `fill_pct * impact_factor * (1 + fill_pct)` where `fill_pct = order_size / book_depth`. Cost accelerates as the order walks through deeper price levels — at 50% depth the cost is 50% higher than a linear model, at 100% it is 2x. **Net-edge gate**: after Kelly sizing, estimated slippage is subtracted from edge; the trade is rejected if `net_edge < min_edge`. This prevents trades where execution cost eats the edge. **Price sum gate**: `price_up + price_down` must be in [0.98, 1.02] or the entry is skipped (stale/broken prices). Resolutions ($1/$0) have no slippage. Live mode on polymarket.com (EIP-712 signed CLOB orders) is future work.
+- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Fee rates fetched live from `GET /fee-rate?token_id=X` (crypto = 1.8%). Entry fees collected in shares (fewer shares received), exit fees in USDC — matching Polymarket's actual collection method. Prices snapped to market tick size. Min order size enforced from CLOB book. FOK fill semantics (100% fill or reject). Orders capped to 50% of available book depth. **Convex slippage model**: fills are penalized by `fill_pct * impact_factor * (1 + fill_pct)` where `fill_pct = order_size / book_depth`. Cost accelerates as the order walks through deeper price levels — at 50% depth the cost is 50% higher than a linear model, at 100% it is 2x. **Net-edge gate**: after Kelly sizing, estimated slippage is subtracted from edge; the trade is rejected if `net_edge < min_edge`. This prevents trades where execution cost eats the edge. **Price sum gate**: `price_up + price_down` must be in [0.98, 1.02] or the entry is skipped (stale/broken prices). Resolutions ($1/$0) have no slippage. Live mode on polymarket.com uses the py-clob-client SDK for EIP-712 signed CLOB orders. Requires POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER in .env.
 
 ## Project Structure
 
@@ -38,7 +38,7 @@ polybot/
   execution/
     base.py                  # TradeResult dataclass
     paper_trader.py          # Simulated trades (paper mode)
-    live_trader.py           # Stub — polymarket.com live trading is future work (EIP-712)
+    live_trader.py           # Real Polymarket CLOB orders via py-clob-client SDK
     circuit_breaker.py       # Streak-based Kelly reduction (3 losses → half Kelly, 2 wins → restore)
   agents/
     scheduler.py             # Daily learning pipeline
@@ -470,7 +470,7 @@ WeightOptimizer: backtest on last 40% (validation set)
 **CHANGES (inside LiveTrader only):**
 - `open_trade()`: mock fill → EIP-712 sign → POST /orders → poll fill → DB with actuals
 - `close_trade()`: mock sell → EIP-712 sign → POST /orders (SELL) → poll fill → DB with actuals
-- `resolve_position()`: simulated $0/$1 → redeemPositions() on ConditionalTokens contract
+- `resolve_position()`: simulated $0/$1 → sync balance from Polymarket API (auto-credited on resolution)
 - Bankroll: fetch real USDC balance on startup, reconcile periodically
 - Slippage: actual fill price replaces simulation (but convex model still used for pre-trade gate)
 
