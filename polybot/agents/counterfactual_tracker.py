@@ -55,7 +55,8 @@ class CounterfactualTracker:
         logger.info(f"COUNTERFACTUAL: watching {market_id} (scalped {pos.get('side', '?')} @ "
                      f"{scalp_context.get('exit_fill', 0):.3f}, edge={scalp_context.get('holding_edge', 0):+.2f})")
 
-    def check_resolutions(self, binance_feed, btc_at_expiry_fn) -> list[dict]:
+    def check_resolutions(self, binance_feed, btc_at_expiry_fn,
+                          event_metadata: dict[str, dict] | None = None) -> list[dict]:
         """Check if any watched contracts have expired and compute counterfactuals.
 
         Args:
@@ -66,6 +67,9 @@ class CounterfactualTracker:
         Returns:
             List of resolved counterfactual records (for logging/alerts).
         """
+        if event_metadata is None:
+            event_metadata = {}
+
         if not self._watchlist:
             return []
 
@@ -93,17 +97,31 @@ class CounterfactualTracker:
                 to_remove.append(market_id)
                 continue
 
-            # Resolve: get BTC at expiry and compute outcome
-            btc_at_expiry = btc_at_expiry_fn(binance_feed, market_id)
-            if btc_at_expiry <= 0:
-                continue  # candle not yet in buffer, try next tick
+            # Resolve: prefer Chainlink eventMetadata, fall back to Binance
+            meta = event_metadata.get(market_id)
+            chainlink_ptb = None
+            chainlink_fp = None
 
-            strike = ctx["strike_price"]
-            if strike <= 0:
-                to_remove.append(market_id)
-                continue
+            if meta:
+                # Use Chainlink oracle prices (matches Polymarket resolution)
+                chainlink_ptb = meta["price_to_beat"]
+                chainlink_fp = meta["final_price"]
+                up_won = chainlink_fp >= chainlink_ptb
+                btc_at_expiry = chainlink_fp  # for logging
+                logger.info(f"COUNTERFACTUAL: {market_id} using Chainlink: priceToBeat={chainlink_ptb:,.2f} final={chainlink_fp:,.2f}")
+            else:
+                # Fallback: Binance (may disagree with Polymarket)
+                btc_at_expiry = btc_at_expiry_fn(binance_feed, market_id)
+                if btc_at_expiry <= 0:
+                    continue  # candle not yet in buffer, try next tick
 
-            up_won = btc_at_expiry >= strike
+                strike = ctx["strike_price"]
+                if strike <= 0:
+                    to_remove.append(market_id)
+                    continue
+
+                up_won = btc_at_expiry >= strike
+                logger.debug(f"COUNTERFACTUAL: {market_id} using Binance fallback: btc={btc_at_expiry:,.2f} strike={strike:,.2f}")
             side = ctx["side"]
             resolution_price = 1.0 if (side == "Up") == up_won else 0.0
 
@@ -140,9 +158,11 @@ class CounterfactualTracker:
                     "market_price": ctx["market_price_at_scalp"],
                     "seconds_remaining": ctx["seconds_remaining_at_scalp"],
                     "exit_threshold_used": ctx["exit_threshold_used"],
-                    "strike_price": strike,
+                    "strike_price": ctx["strike_price"],
                     "btc_at_scalp": ctx["btc_at_scalp"],
                     "btc_at_expiry": btc_at_expiry,
+                    "chainlink_price_to_beat": chainlink_ptb,
+                    "chainlink_final_price": chainlink_fp,
                 },
             }
 
@@ -154,7 +174,7 @@ class CounterfactualTracker:
             logger.info(
                 f"COUNTERFACTUAL: {market_id} resolved — scalp was {verdict} | "
                 f"scalp PnL=${ctx['scalp_pnl']:+.2f} vs hold PnL=${hypothetical_pnl:+.2f} "
-                f"(delta=${delta_pnl:+.2f}) | BTC@expiry={btc_at_expiry:,.2f} vs strike={strike:,.2f}"
+                f"(delta=${delta_pnl:+.2f}) | BTC@expiry={btc_at_expiry:,.2f}"
             )
 
         for mid in to_remove:
@@ -182,3 +202,8 @@ class CounterfactualTracker:
     @property
     def watching_count(self) -> int:
         return len(self._watchlist)
+
+    @property
+    def watched_markets(self) -> list[str]:
+        """List of market_ids currently being watched."""
+        return list(self._watchlist.keys())

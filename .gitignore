@@ -26,6 +26,7 @@ polybot.log.*
 
 # Memory (runtime generated)
 polybot/memory/outcomes/*.json
+polybot/memory/counterfactuals/*.json
 
 # OS
 .DS_Store

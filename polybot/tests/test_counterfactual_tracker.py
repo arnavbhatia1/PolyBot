@@ -252,3 +252,56 @@ def test_bias_detector_counterfactual_empty():
     from polybot.agents.bias_detector import BiasDetector
     detector = BiasDetector(biases_path="/tmp/fake_biases.json")
     assert detector.analyze_counterfactuals([]) == {}
+
+
+def test_check_resolutions_uses_event_metadata(tracker):
+    """When event_metadata is provided, use Chainlink prices instead of Binance."""
+    past_ts = int(time.time()) - 400
+    market_id = f"btc-updown-5m-{past_ts}"
+    pos = _make_pos(market_id=market_id, side="Up")
+    tracker.watch(pos, _make_scalp_ctx(strike_price=42500.0, pnl=5.0))
+
+    # Chainlink says: priceToBeat=42500, finalPrice=42400 → Down won
+    # But Binance says BTC=42600 (would say Up won — wrong)
+    event_metadata = {
+        market_id: {"price_to_beat": 42500.0, "final_price": 42400.0}
+    }
+    resolved = tracker.check_resolutions(
+        _make_binance_feed(), lambda f, m: 42600.0, event_metadata=event_metadata
+    )
+
+    assert len(resolved) == 1
+    # Chainlink says Down won, so Up side loses → resolution_price = 0.0
+    assert resolved[0]["counterfactual"]["resolution_price"] == 0.0
+
+
+def test_check_resolutions_falls_back_to_binance(tracker):
+    """Without event_metadata, falls back to Binance (existing behavior)."""
+    past_ts = int(time.time()) - 400
+    pos = _make_pos(market_id=f"btc-updown-5m-{past_ts}", side="Up")
+    tracker.watch(pos, _make_scalp_ctx(strike_price=42500.0))
+
+    resolved = tracker.check_resolutions(
+        _make_binance_feed(), lambda f, m: 42600.0, event_metadata={}
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0]["counterfactual"]["resolution_price"] == 1.0  # Binance: 42600 > 42500
+
+
+def test_check_resolutions_metadata_records_chainlink_prices(tracker):
+    """Counterfactual record should include Chainlink prices when available."""
+    past_ts = int(time.time()) - 400
+    market_id = f"btc-updown-5m-{past_ts}"
+    pos = _make_pos(market_id=market_id, side="Up")
+    tracker.watch(pos, _make_scalp_ctx(strike_price=42500.0))
+
+    event_metadata = {
+        market_id: {"price_to_beat": 72304.13, "final_price": 72129.75}
+    }
+    resolved = tracker.check_resolutions(
+        _make_binance_feed(), lambda f, m: 42600.0, event_metadata=event_metadata
+    )
+
+    assert resolved[0]["context_at_scalp"]["chainlink_price_to_beat"] == 72304.13
+    assert resolved[0]["context_at_scalp"]["chainlink_final_price"] == 72129.75

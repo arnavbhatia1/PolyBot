@@ -103,7 +103,11 @@ python -m pytest polybot/tests/       # 249 tests
 ## How the Probability Model Works
 
 ```
-Strike = BTC price at 5-min window open (from candle buffer)
+Strike = BTC price at 5-min window open (from Binance candle at the CONTRACT's
+window boundary, derived from slug — not current time). Polymarket resolves using
+Chainlink BTC/USD oracle (eventMetadata.priceToBeat/finalPrice from Gamma API),
+which can differ from Binance by $20-200. Entry uses Binance (Chainlink not
+available during active windows). Resolution always uses Gamma/Chainlink data.
 Distance = current BTC price - strike
 Vol = ATR (average true range from 1-min candles, period=7)
 Time = minutes remaining in the window
@@ -485,7 +489,7 @@ WeightOptimizer: backtest on last 40% (validation set)
 
 - **No trades:** BTC is near the strike (no edge) or market is efficiently priced. This is correct behavior — no edge means no trade.
 - **Binance 451:** Using .com instead of .us.
-- **Wrong strike:** Strike is derived from candle buffer at window boundary. If buffer is empty on startup, first few windows may have wrong strike.
+- **Wrong strike:** Strike for the probability model is derived from Binance candle buffer at the contract's window boundary (parsed from slug). Polymarket resolves using Chainlink oracle, which can differ from Binance by $20-200. Resolution always waits for Gamma API eventMetadata or closed+outcomePrices — never guesses from Binance. If buffer is empty on startup, first few windows may have no strike.
 - **All trades losing:** Check if model is systematically miscalibrated. Lower kelly_fraction or raise min_edge.
 
 ## Learning Pipeline
@@ -539,6 +543,8 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't bypass the circuit breaker — it exists to protect bankroll during losing streaks.
 - Don't auto-delete the DB — bankroll persists across sessions in both modes. Never delete `polybot/db/polybot.db` between runs.
 - Don't use limit orders in LiveTrader — FOK market orders for 5-min contract speed.
+- Don't resolve positions by comparing Binance BTC price vs Binance strike — always wait for Gamma API `eventMetadata` or `closed` + `outcomePrices`. Binance and Chainlink (Polymarket's oracle) can disagree by $20-200, causing false WIN/LOSS.
+- Don't compute entry strike from `int(now_ts // 300) * 300` — derive from the contract slug. The bot can find the next window's contract early, and current-time flooring gives the wrong window boundary.
 
 ## Baseline — LOCKED 2026-04-08
 
