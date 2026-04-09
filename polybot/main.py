@@ -304,13 +304,25 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                         age = 0
                     if age < 600:
                         continue
-                    pos_ctx = json.loads(pos.get("indicator_snapshot", "{}")).get("trade_context", {})
-                    strike = pos_ctx.get("strike_price", 0)
-                    btc_now = _btc_at_expiry(binance_feed, pos["market_id"])
-                    if strike <= 0 or btc_now <= 0:
-                        continue
-                    up_won = btc_now >= strike
-                    exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
+                    # Try direct Gamma fetch for eventMetadata (Chainlink oracle)
+                    direct = await _get_contract_prices(market_scanner, pos["market_id"], http_client)
+                    if direct and direct.get("event_metadata"):
+                        meta = direct["event_metadata"]
+                        up_won = meta["final_price"] >= meta["price_to_beat"]
+                        exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
+                        logger.info(f"RESOLVE orphan via eventMetadata: priceToBeat={meta['price_to_beat']:,.2f} final={meta['final_price']:,.2f} → {'Up' if up_won else 'Down'}")
+                    elif direct and direct.get("closed") and (direct["price_up"] >= 0.99 or direct["price_up"] <= 0.01):
+                        exit_price = direct["price_up"] if pos["side"] == "Up" else direct["price_down"]
+                    else:
+                        # Truly unreachable via Gamma — fall back to Binance (last resort)
+                        pos_ctx = json.loads(pos.get("indicator_snapshot", "{}")).get("trade_context", {})
+                        strike = pos_ctx.get("strike_price", 0)
+                        btc_now = _btc_at_expiry(binance_feed, pos["market_id"])
+                        if strike <= 0 or btc_now <= 0:
+                            continue
+                        up_won = btc_now >= strike
+                        exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
+                        logger.warning(f"RESOLVE orphan via Binance fallback (no Gamma data): strike={strike:,.2f} btc={btc_now:,.2f} — may disagree with Polymarket")
                     result = await trader.resolve_position(pos["id"], exit_price)
                     if result.success:
                         shares, entry_fee, exit_fee, pnl = _compute_pnl(pos, exit_price)
@@ -341,16 +353,15 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     if live.get("closed") and (live["price_up"] >= 0.99 or live["price_up"] <= 0.01):
                         # Polymarket has resolved: use the actual outcome prices
                         exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
-                    else:
-                        # Gamma API hasn't resolved yet — determine binary outcome from BTC vs strike
-                        pos_ctx = json.loads(pos.get("indicator_snapshot", "{}")).get("trade_context", {})
-                        strike = pos_ctx.get("strike_price", 0)
-                        btc_now = _btc_at_expiry(binance_feed, pos["market_id"])
-                        if strike <= 0 or btc_now <= 0:
-                            await asyncio.sleep(5)
-                            continue
-                        up_won = btc_now >= strike
+                    elif live.get("event_metadata"):
+                        # Gamma has Chainlink oracle prices but outcome prices not yet clear
+                        meta = live["event_metadata"]
+                        up_won = meta["final_price"] >= meta["price_to_beat"]
                         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
+                        logger.info(f"RESOLVE via eventMetadata: priceToBeat={meta['price_to_beat']:,.2f} final={meta['final_price']:,.2f} → {'Up' if up_won else 'Down'}")
+                    else:
+                        # Gamma hasn't resolved yet — wait for next tick (polls every 2s)
+                        continue
 
                     result = await trader.resolve_position(pos["id"], exit_price)
                     if result.success:
@@ -575,27 +586,32 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                     logger.debug(f"Wide spread {spread_val:.3f} > {max_spread} — skipping")
                     continue
 
-            # Compute strike: BTC price at the 5-min window boundary
-            # Use the candle that opened at the window start
-            window_ts = int(now_ts // 300) * 300
-            if window_ts not in window_strikes:
+            # Compute strike: BTC price at the CONTRACT's 5-min window boundary.
+            # Derive window_ts from the contract slug, NOT from current time.
+            # Bug fix: int(now_ts // 300) * 300 gives the CURRENT window boundary,
+            # but the contract may be for the NEXT window (found early by scanner).
+            try:
+                contract_window_ts = int(cid.rsplit("-", 1)[-1])
+            except (ValueError, IndexError):
+                contract_window_ts = int(now_ts // 300) * 300  # fallback
+            if contract_window_ts not in window_strikes:
                 # Find the candle closest to the 5-min window boundary
                 candles = binance_feed.buffer.get_last_n(10)
                 for c in candles:
-                    if abs(c.timestamp / 1000 - window_ts) <= 60:
-                        window_strikes[window_ts] = c.open
+                    if abs(c.timestamp / 1000 - contract_window_ts) <= 60:
+                        window_strikes[contract_window_ts] = c.open
                         break
                 # No fallback — if we can't find the window-open candle, skip this window.
                 # Using current price as strike creates distance=0 and false edge.
             # Clean old strikes
             window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
 
-            strike = window_strikes.get(window_ts, 0)
+            strike = window_strikes.get(contract_window_ts, 0)
             if strike <= 0:
                 buf_len = len(binance_feed.buffer) if binance_feed.buffer else 0
                 if eval_window != last_eval_log_window:
                     last_eval_log_window = eval_window
-                    logger.info(f"EVAL: no strike for window {window_ts} — candle buffer has {buf_len} candles")
+                    logger.info(f"EVAL: no strike for window {contract_window_ts} — candle buffer has {buf_len} candles")
                 continue
 
             btc_price = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
@@ -768,8 +784,11 @@ async def main():
     config["mode"] = mode
     base_dir = Path(__file__).parent
 
-    # Database — persistent across sessions (both paper and live)
-    db = Database(config["database"]["path"])
+    # Database — separate files for paper and live (no cross-contamination)
+    db_path = config["database"]["path"]
+    if mode == "live":
+        db_path = db_path.replace(".db", "_live.db")
+    db = Database(db_path)
     await db.initialize()
     if await db.get_bankroll() == 0:
         await db.set_bankroll(config["execution"]["initial_bankroll"])
