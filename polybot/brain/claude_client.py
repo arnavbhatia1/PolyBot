@@ -333,6 +333,32 @@ def _format_strategy_context(context: dict) -> str:
                 lines.append(f"- **{bucket}**: win_rate={stats.get('win_rate', 0):.1%} n={stats.get('count', 0)}")
             sections.append("\n".join(lines))
 
+        cf = analysis.get("counterfactual_analysis", {})
+        if cf and cf.get("total_scalps_tracked", 0) > 0:
+            lines = [
+                "## Counterfactual Analysis (scalps that resolved)",
+                f"Tracks what would have happened if scalped positions were held to resolution.",
+                f"Total scalps tracked: {cf.get('total_scalps_tracked', 0)}",
+                f"Scalp accuracy: {cf.get('scalp_accuracy', 0):.1%} (% where exiting was actually better than holding)",
+                f"Optimal scalps: {cf.get('optimal_scalps', 0)} | Suboptimal: {cf.get('suboptimal_scalps', 0)}",
+                f"Avg missed PnL on suboptimal scalps: ${cf.get('avg_missed_pnl', 0):+.2f}",
+                f"Avg missed gain_pct on suboptimal scalps: {cf.get('avg_missed_gain_pct', 0):+.4f}",
+                f"Avg holding_edge at scalp (optimal): {cf.get('avg_holding_edge_optimal', 0):+.4f}",
+                f"Avg holding_edge at scalp (suboptimal): {cf.get('avg_holding_edge_suboptimal', 0):+.4f}",
+                f"Avg seconds_remaining (optimal): {cf.get('avg_seconds_remaining_optimal', 0):.0f}s",
+                f"Avg seconds_remaining (suboptimal): {cf.get('avg_seconds_remaining_suboptimal', 0):.0f}s",
+            ]
+            time_acc = cf.get("time_accuracy", {})
+            if time_acc:
+                lines.append("Scalp accuracy by time remaining:")
+                for bucket, stats in time_acc.items():
+                    lines.append(f"  - **{bucket}**: accuracy={stats.get('scalp_accuracy', 0):.1%} n={stats.get('count', 0)}")
+            lines.append(
+                "NOTE: If scalp accuracy is low (<60%), consider tightening exit_edge_threshold "
+                "(less negative = hold longer). If high (>80%), current threshold is well-calibrated."
+            )
+            sections.append("\n".join(lines))
+
     # Recent trades (compact format)
     trades = context.get("trades", [])
     if trades:

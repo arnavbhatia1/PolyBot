@@ -23,6 +23,7 @@ from polybot.agents.bias_detector import BiasDetector
 from polybot.agents.ta_evolver import TAEvolver
 from polybot.agents.weight_optimizer import WeightOptimizer
 from polybot.agents.scheduler import AgentScheduler
+from polybot.agents.counterfactual_tracker import CounterfactualTracker
 from polybot.discord_bot.bot import create_bot
 from polybot.discord_bot.alerts import AlertManager
 from polybot.execution.circuit_breaker import CircuitBreaker
@@ -450,6 +451,19 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
                                                   exit_reason="scalp", pnl=pnl, fees=entry_fee + exit_fee)
                             traded_contracts[pos["market_id"]] = int(time.time())
+                            counterfactual_tracker.watch(pos, {
+                                "exit_fill": exit_fill, "pnl": pnl, "gain_pct": gain_pct,
+                                "holding_edge": holding_edge, "model_prob": model_prob,
+                                "market_price": market_price, "seconds_remaining": live["seconds_remaining"],
+                                "exit_threshold": exit_threshold, "strike_price": strike_now,
+                                "btc_price": btc_now,
+                            })
+
+            # --- COUNTERFACTUAL: check watched scalps for resolution ---
+            cf_resolved = counterfactual_tracker.check_resolutions(binance_feed, _btc_at_expiry)
+            for cf in cf_resolved:
+                verdict = "CORRECT" if cf["scalp_was_optimal"] else "MISSED +${:.2f}".format(cf["delta_pnl"])
+                logger.info(f"COUNTERFACTUAL resolved: {cf['side']} {cf['market_id']} — {verdict}")
 
             # --- ENTRY: find contract and evaluate for edge ---
             # Skip new entries outside trading hours (positions still managed above)
@@ -844,6 +858,7 @@ async def main():
     # Agents
     agents_cfg = config["agents"]
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
+    counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
     bias_detector = BiasDetector(biases_path=str(base_dir / "memory" / "biases.json"))
     ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"),
                           claude_client=claude)
@@ -875,6 +890,7 @@ async def main():
         math_config=math_cfg,
         market_scanner=market_scanner,
         config=config,
+        counterfactual_tracker=counterfactual_tracker,
     )
     scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", -0.10)
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)

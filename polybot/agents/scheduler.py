@@ -12,7 +12,7 @@ class AgentScheduler:
     def __init__(self, outcome_reviewer, bias_detector, ta_evolver, weight_optimizer,
                  indicator_engine=None, signal_engine=None, alert_manager=None,
                  outcome_interval_seconds=3600, daily_pipeline_hour=2, daily_pipeline_minute=0, math_config=None,
-                 claude_client=None, market_scanner=None, config=None):
+                 claude_client=None, market_scanner=None, config=None, counterfactual_tracker=None):
         self.outcome_reviewer = outcome_reviewer
         self.bias_detector = bias_detector
         self.ta_evolver = ta_evolver
@@ -27,6 +27,7 @@ class AgentScheduler:
         self.claude_client = claude_client  # stored for future use + passed to ta_evolver
         self.market_scanner = market_scanner
         self._config = config  # Full config dict — written back to settings.yaml after pipeline adoption
+        self.counterfactual_tracker = counterfactual_tracker
         self._exit_edge_threshold = None  # Set by main.py, updated by pipeline
         self._min_time_remaining = None   # Set by main.py, updated by pipeline
         self._trading_start = None        # (hour, minute) UTC — updated by pipeline
@@ -349,6 +350,16 @@ class AgentScheduler:
                     f"(of {len(all_outcomes)} total)")
 
         analysis = await self._run_bias_detector(train_outcomes)
+
+        # Counterfactual analysis: how accurate are our scalp exits?
+        if self.counterfactual_tracker:
+            counterfactuals = self.counterfactual_tracker.load_all()
+            if counterfactuals:
+                cf_analysis = self.bias_detector.analyze_counterfactuals(counterfactuals)
+                analysis["counterfactual_analysis"] = cf_analysis
+                logger.info(f"Counterfactual analysis: {cf_analysis.get('total_scalps_tracked', 0)} scalps tracked, "
+                           f"accuracy={cf_analysis.get('scalp_accuracy', 0):.0%}")
+
         recommendations = await self._run_ta_evolver(analysis, train_outcomes)
         await self._run_weight_optimizer(recommendations, validation_outcomes)
 

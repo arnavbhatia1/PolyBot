@@ -43,13 +43,15 @@ polybot/
   agents/
     scheduler.py             # Daily learning pipeline
     outcome_reviewer.py      # Logs resolved trades
-    bias_detector.py         # Per-indicator accuracy
+    counterfactual_tracker.py # Tracks "what if I held?" for scalped positions
+    bias_detector.py         # Per-indicator accuracy + counterfactual analysis
     ta_evolver.py            # Recommends weight adjustments
     weight_optimizer.py      # Versions and auto-adopts weights
   brain/
     claude_client.py         # analyze_strategy() for daily pipeline + analyze_market() legacy
   memory/
     outcomes/                # One JSON per trade
+    counterfactuals/         # One JSON per scalped trade — what if held to resolution?
     weights/                 # Versioned weight configs
     biases.json              # Indicator correction factors
   discord_bot/
@@ -413,6 +415,13 @@ Gamma API: seconds_remaining? closed?
                     DB: positions.status = 'closed'
                     DB: INSERT trade_history
                     record_outcome(exit_reason="scalp")
+                    counterfactual_tracker.watch(pos, scalp_context)
+                        │
+                        ▼ (contract still has time remaining)
+                  Tracker watches until window expires (30s buffer)
+                  Then: BTC vs strike → resolution_price ($0 or $1)
+                  Computes hypothetical PnL if held vs actual scalp PnL
+                  Writes JSON to memory/counterfactuals/
 ```
 
 ### Phase 6: Circuit Breaker Update
@@ -441,6 +450,7 @@ outcome JSON → polybot/memory/outcomes/
         ▼ (daily at 4:45 PM ET)
 BiasDetector: first 60% of outcomes (training set)
   → per-indicator accuracy, edge calibration, time/vol patterns
+  → counterfactual analysis (if data exists): scalp accuracy, missed gains
         │
         ▼
 TAEvolver: analysis + last 75 trades + config → Claude Sonnet
