@@ -112,6 +112,8 @@ class TAEvolver:
         mw = recommendations.get("recommended_momentum_weight", "?")
         me = recommendations.get("recommended_min_edge", "?")
         kf = recommendations.get("recommended_kelly_fraction", "?")
+        mk = recommendations.get("recommended_min_kelly", "?")
+        ar = recommendations.get("recommended_atr_sigma_ratio", "?")
 
         findings_str = "\n".join(f"- {f}" for f in findings) if findings else "- None"
         warnings_str = "\n".join(f"- {w}" for w in warnings) if warnings else "- None"
@@ -124,7 +126,8 @@ class TAEvolver:
             f"**Risk Warnings:**\n{warnings_str}\n\n"
             f"**Reasoning:** {reasoning}\n\n"
             f"**Recommended Weights:** {weights_str}\n"
-            f"**Recommended Parameters:** momentum_weight={mw}, min_edge={me}, kelly_fraction={kf}\n"
+            f"**Recommended Parameters:** momentum_weight={mw}, min_edge={me}, kelly_fraction={kf}, "
+            f"min_kelly={mk}, atr_sigma_ratio={ar}\n"
         )
 
         existing = self.strategy_log_path.read_text() if self.strategy_log_path.exists() else "# Strategy Evolution Log\n"

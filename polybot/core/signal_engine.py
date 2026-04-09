@@ -51,11 +51,13 @@ class SignalEngine:
     by at least `min_edge`. Kelly sizes the bet based on that edge.
     """
 
-    def __init__(self, min_edge: float = 0.10, kelly_fraction: float = 0.15,
+    def __init__(self, min_edge: float = 0.03, kelly_fraction: float = 0.15,
                  momentum_weight: float = 0.04, weights: dict[str, float] | None = None,
                  min_model_probability: float = 0.65,
                  student_t_df: int = 4, regime_weight: float = 0.03,
-                 flow_weight: float = 0.04, regime_lookback: int = 20) -> None:
+                 flow_weight: float = 0.04, regime_lookback: int = 20,
+                 min_kelly: float = 0.015, atr_sigma_ratio: float = 1.7,
+                 calibrator: 'PlattCalibrator | None' = None) -> None:
         self.min_edge: float = min_edge
         self.kelly_fraction: float = kelly_fraction
         self.momentum_weight: float = momentum_weight
@@ -66,6 +68,9 @@ class SignalEngine:
         self.regime_lookback: int = regime_lookback
         self.weights: dict[str, float] = weights or {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                    "obv": 0.15, "vwap": 0.20}
+        self.min_kelly: float = min_kelly
+        self.atr_sigma_ratio: float = atr_sigma_ratio
+        self.calibrator = calibrator
 
     @property
     def entry_threshold(self) -> float:
@@ -111,43 +116,68 @@ class SignalEngine:
         distance = btc_price - strike_price
         minutes_remaining = max(seconds_remaining / 60.0, 0.01)
 
-        # Scale volatility by sqrt(time) — standard Brownian motion
-        vol_scaled = atr * math.sqrt(minutes_remaining)
+        # Fix 4: Scale ATR to standard deviation
+        vol_scaled = (atr / self.atr_sigma_ratio) * math.sqrt(minutes_remaining)
 
         if vol_scaled <= 0:
             return 0.5
 
         z = distance / vol_scaled
 
-        # Layer 1: Student-t CDF (fat tails, df=4)
-        prob_up = float(student_t.cdf(z, df=self.student_t_df))
+        # Fix 5: Normalize z for Student-t variance (df=4 → variance=2, scale=√2)
+        if self.student_t_df > 2:
+            t_scale = math.sqrt(self.student_t_df / (self.student_t_df - 2))
+        else:
+            t_scale = 1.0
+        prob_up = float(student_t.cdf(z * t_scale, df=self.student_t_df))
 
-        # Layer 2: Regime detection — autocorrelation of recent returns
+        # --- Fix 2: Convert to logit space for Bayesian-correct evidence combination ---
+        prob_up = max(0.001, min(0.999, prob_up))
+        logit_p = math.log(prob_up / (1.0 - prob_up))
+
+        # Internal weight conversion: at p=0.5, dp/dlogit = 0.25
+        # logit_weight = prob_weight * 4.0 preserves behavior at p=0.5
+        logit_regime_w = self.regime_weight * 4.0
+        logit_flow_w = self.flow_weight * 4.0
+        logit_momentum_w = self.momentum_weight * 4.0
+
+        # Fix 1: Layer 2 — Regime: direction from recent return, not prob sign
         regime = self.compute_regime_factor(closes) if closes is not None else 0.0
-        # Trending: push prob further from 0.5. Reverting: pull toward 0.5.
-        direction = 1.0 if prob_up > 0.5 else -1.0
-        regime_adj = regime * direction * self.regime_weight
-        prob_up += regime_adj
+        if closes is not None and len(closes) >= 2:
+            last_return = float(closes[-1] - closes[-2]) / float(closes[-2])
+            direction = 1.0 if last_return > 0 else (-1.0 if last_return < 0 else 0.0)
+        else:
+            direction = 0.0
+        logit_p += regime * direction * logit_regime_w
 
-        # Layer 3: Order flow — external buy/sell pressure signal
-        flow_adj = flow_signal * self.flow_weight
-        prob_up += flow_adj
+        # Layer 3 — Order flow
+        logit_p += flow_signal * logit_flow_w
 
-        # Layer 4: Small momentum nudge from indicators (±4% max)
+        # Layer 4 — Momentum
         if indicators:
             momentum = self.compute_momentum(indicators)
-            prob_up += momentum * self.momentum_weight
+            logit_p += momentum * logit_momentum_w
 
-        return max(0.03, min(0.97, prob_up))
+        # Convert back via sigmoid — natural (0, 1) bounds, no clamping needed
+        prob_up = 1.0 / (1.0 + math.exp(-logit_p))
+
+        # Fix 9: Platt calibration (identity if no calibrator loaded)
+        if self.calibrator:
+            prob_up = self.calibrator.calibrate(prob_up)
+
+        return prob_up
 
     def compute_momentum(self, indicators: dict[str, dict]) -> float:
         w = self.weights
+        def _score(name: str) -> float:
+            ind = indicators.get(name, {})
+            return ind.get("norm_score", ind.get("score", 0))
         return max(-1.0, min(1.0,
-            indicators.get("rsi", {}).get("score", 0) * w.get("rsi", 0.20) +
-            indicators.get("macd", {}).get("score", 0) * w.get("macd", 0.25) +
-            indicators.get("stochastic", {}).get("score", 0) * w.get("stochastic", 0.20) +
-            indicators.get("obv", {}).get("score", 0) * w.get("obv", 0.15) +
-            indicators.get("vwap", {}).get("score", 0) * w.get("vwap", 0.20)
+            _score("rsi") * w.get("rsi", 0.20) +
+            _score("macd") * w.get("macd", 0.25) +
+            _score("stochastic") * w.get("stochastic", 0.20) +
+            _score("obv") * w.get("obv", 0.15) +
+            _score("vwap") * w.get("vwap", 0.20)
         ))
 
     def evaluate(self, indicators: dict[str, dict], has_position: bool, in_entry_window: bool,
@@ -192,24 +222,33 @@ class SignalEngine:
         edge_down = prob_down - market_price_down
 
         # Pick the side with more edge
-        if edge_up >= edge_down and edge_up >= self.min_edge:
-            kelly = self._kelly(prob_up, market_price_up)
+        if edge_up >= edge_down:
+            best_side, best_edge, best_prob, best_mkt = "BUY_YES", edge_up, prob_up, market_price_up
+        else:
+            best_side, best_edge, best_prob, best_mkt = "BUY_NO", edge_down, prob_down, market_price_down
+
+        # Gate: noise floor
+        if best_edge < self.min_edge:
+            return TradeSignal("SKIP", best_prob, best_edge, 0,
+                               f"No edge: best={best_edge:+.0%} < floor={self.min_edge:.0%}")
+
+        # Gate (Fix 3): Kelly must justify a position
+        kelly = self._kelly(best_prob, best_mkt)
+        if kelly < self.min_kelly:
+            return TradeSignal("SKIP", best_prob, best_edge, 0,
+                               f"Kelly too small: {kelly:.1%} < {self.min_kelly:.1%}")
+
+        # Entry signal
+        if best_side == "BUY_YES":
             return TradeSignal(
                 "BUY_YES", prob_up, edge_up, kelly,
                 f"Up: model={prob_up:.0%} mkt={market_price_up:.0%} edge={edge_up:+.0%} "
                 f"BTC={btc_price:,.0f} strike={strike_price:,.0f} d={btc_price-strike_price:+,.0f}")
-
-        elif edge_down > edge_up and edge_down >= self.min_edge:
-            kelly = self._kelly(prob_down, market_price_down)
+        else:
             return TradeSignal(
                 "BUY_NO", prob_down, edge_down, kelly,
                 f"Down: model={prob_down:.0%} mkt={market_price_down:.0%} edge={edge_down:+.0%} "
                 f"BTC={btc_price:,.0f} strike={strike_price:,.0f} d={btc_price-strike_price:+,.0f}")
-
-        else:
-            best = max(edge_up, edge_down)
-            return TradeSignal("SKIP", max(prob_up, prob_down), best, 0,
-                               f"No edge: best={best:+.0%} < min={self.min_edge:.0%}")
 
     def evaluate_hold(self, indicators: dict[str, dict], btc_price: float, strike_price: float,
                       seconds_remaining: float, market_price_for_side: float,

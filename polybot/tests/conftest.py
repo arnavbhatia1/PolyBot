@@ -33,13 +33,15 @@ SAMPLE_CONFIG = {
     },
     "database": {"path": ":memory:"},
     "signal": {
-        "entry_threshold": 0.10,
+        "entry_threshold": 0.03,
         "exit_edge_threshold": -0.05,
         "min_model_probability": 0.65,
         "momentum_weight": 0.08,
         "regime_weight": 0.03,
         "flow_weight": 0.04,
         "student_t_df": 4,
+        "min_kelly": 0.015,
+        "atr_sigma_ratio": 1.7,
         "weights": {
             "rsi": 0.20,
             "macd": 0.25,

@@ -25,8 +25,10 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 
 ### 4-Layer Probability Model
   Layer 1 — Student-t CDF (fat tails, df=student_t_df):
-    z = (BTC_price - strike) / (ATR * sqrt(minutes_remaining))
-    P(Up) = t.cdf(z, df=student_t_df)
+    z = (BTC_price - strike) / ((ATR / atr_sigma_ratio) * sqrt(minutes_remaining))
+    z_scaled = z * sqrt(df / (df - 2))
+    P(Up) = t.cdf(z_scaled, df=student_t_df)
+    Layers 2-4 are applied in log-odds (logit) space — config weights auto-converted internally.
     Fat tails capture BTC's excess kurtosis — less extreme than normal CDF,
     finds edge on underdog positions the market overprices.
 
@@ -42,7 +44,7 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
   Layer 4 — Indicator momentum (±momentum_weight max):
     Weighted RSI/MACD/Stochastic/OBV/VWAP score. Weakest signal.
 
-- Edge = model_probability - market_execution_price. Trade only when edge >= min_edge
+- Edge = model_probability - market_execution_price. Dual entry gate: edge >= min_edge (noise floor) AND Kelly >= min_kelly (primary gate)
 - Kelly sizing: f* = (p*b - q)/b * kelly_fraction, where b = (1-price)/price
 - Single position at a time
 - Active position management: hold to $1 resolution when confident, scalp exit when
@@ -57,7 +59,9 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - flow_weight: 0.02 to 0.12 (Layer 3 — order flow adjustment)
 - student_t_df: 3 to 8 (degrees of freedom — lower = fatter tails, more reversal edge)
 - kelly_fraction: 0.05 to 0.25 range (binary outcomes = total loss risk)
-- min_edge: 0.05 to 0.35 range
+- min_edge (entry_threshold): 0.01 to 0.10 range (noise floor, not primary gate)
+- min_kelly: 0.005 to 0.05 range (Kelly-based entry gate — minimum fraction of bankroll)
+- atr_sigma_ratio: 1.2 to 2.5 range (ATR-to-σ conversion — lower = more aggressive probabilities)
 - min_model_probability: 0.55 to 0.85 range (skip coin-flip trades)
 - exit_edge_threshold: -0.25 to 0.0 range (when to exit held positions)
 - min_time_remaining: 0 to 120 seconds (don't enter too late)
@@ -77,6 +81,8 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
   "recommended_flow_weight": 0.XX,
   "recommended_student_t_df": X,
   "recommended_min_edge": 0.XX,
+  "recommended_min_kelly": 0.XX,
+  "recommended_atr_sigma_ratio": X.X,
   "recommended_kelly_fraction": 0.XX,
   "recommended_min_model_probability": 0.XX,
   "recommended_exit_edge_threshold": -0.XX,
@@ -179,8 +185,12 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     # Clamp ranges
     data["recommended_kelly_fraction"] = max(0.05, min(0.25,
         data.get("recommended_kelly_fraction", 0.15)))
-    data["recommended_min_edge"] = max(0.05, min(0.35,
-        data.get("recommended_min_edge", 0.20)))
+    data["recommended_min_edge"] = max(0.01, min(0.10,
+        data.get("recommended_min_edge", 0.03)))
+    data["recommended_min_kelly"] = max(0.005, min(0.05,
+        data.get("recommended_min_kelly", 0.015)))
+    data["recommended_atr_sigma_ratio"] = max(1.2, min(2.5,
+        float(data.get("recommended_atr_sigma_ratio", 1.7))))
     data["recommended_momentum_weight"] = max(0.02, min(0.10,
         data.get("recommended_momentum_weight", 0.04)))
     data["recommended_regime_weight"] = max(0.02, min(0.10,
@@ -229,6 +239,8 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         f"kelly_fraction: {cfg.get('kelly_fraction', 0.15)}\n"
         f"min_model_probability: {cfg.get('min_model_probability', 0.65)}\n"
         f"exit_edge_threshold: {cfg.get('exit_edge_threshold', -0.10)}\n"
+        f"min_kelly (entry gate): {cfg.get('min_kelly', 0.015)}\n"
+        f"atr_sigma_ratio: {cfg.get('atr_sigma_ratio', 1.7)}\n"
         f"trading_start_hour (ET): {cfg.get('trading_start_hour_et', 8)}\n"
         f"trading_end_hour (ET): {cfg.get('trading_end_hour_et', 16)}\n"
         f"trading_end_minute: {cfg.get('trading_end_minute', 30)}"

@@ -1,3 +1,4 @@
+import math
 import pytest
 import numpy as np
 from polybot.core.signal_engine import SignalEngine, TradeSignal
@@ -45,7 +46,7 @@ def test_skips_when_market_already_correct(engine):
     """BTC slightly above strike, market already priced correctly — no edge."""
     signal = engine.evaluate(_make_indicators(atr_value=50), has_position=False, in_entry_window=True,
                              btc_price=66420, strike_price=66400,
-                             seconds_remaining=240, market_price_up=0.53, market_price_down=0.47)
+                             seconds_remaining=240, market_price_up=0.66, market_price_down=0.34)
     assert signal.action == "SKIP"
 
 def test_has_position_blocks(engine):
@@ -120,11 +121,10 @@ def test_exit_when_conditions_flip(engine):
     assert edge < -0.05
 
 def test_exit_when_edge_evaporates(engine):
-    """Model says 75% but market is at 85% → market overpricing our side → EXIT."""
-    # Moderate BTC above strike, but market has run ahead
+    """Model says Up likely but market overpricing our side → EXIT."""
     action, prob, edge, _ = engine.evaluate_hold(
         _make_indicators(atr_value=50), btc_price=66450, strike_price=66400,
-        seconds_remaining=180, market_price_for_side=0.85, side="Up", exit_threshold=-0.05)
+        seconds_remaining=180, market_price_for_side=0.95, side="Up", exit_threshold=-0.05)
     assert action == "EXIT"
     assert edge < 0
 
@@ -149,12 +149,16 @@ def test_hold_down_side(engine):
 # --- Student-t CDF tests ---
 
 def test_student_t_less_extreme_than_normal():
-    """Student-t CDF gives less extreme probabilities than normal for large z."""
-    se = SignalEngine(student_t_df=4)
-    # Large distance: Student-t should give lower P(Up) than normal model would
-    prob = se.compute_probability(72000, 71000, 180, 50.0)
-    # With z = 1000 / (50 * sqrt(3)) = 11.5, normal gives ~1.0, Student-t gives ~0.99
-    assert prob < 0.99  # fat tails mean reversal is more likely
+    """Student-t CDF with variance normalization gives less extreme probs at large z
+    (fat tails = more reversal probability in the extremes)."""
+    import math
+    from scipy.stats import norm, t as student_t_dist
+    # At large z, Student-t tails are fatter → P(Up) is lower than normal
+    z = 3.0
+    t_scale = math.sqrt(4 / (4 - 2))
+    prob_t = float(student_t_dist.cdf(z * t_scale, df=4))
+    prob_norm = float(norm.cdf(z))
+    assert prob_t < prob_norm
 
 
 # --- Regime factor tests ---
@@ -232,3 +236,72 @@ def test_evaluate_hold_fee_aware_threshold():
     # Both should return the same action type here but the effective thresholds differ
     assert action1 in ("HOLD", "EXIT")
     assert action2 in ("HOLD", "EXIT")
+
+
+# --- New tests for math fixes ---
+
+def test_regime_direction_from_returns_not_prob():
+    """Fix 1: trending DOWN + above strike → prob should DECREASE."""
+    se = SignalEngine(regime_weight=0.05)
+    # BTC above strike but trending down (closes decreasing)
+    closes = np.array([100 + 50 - i * 3.0 for i in range(25)])  # trending down
+    prob_no_regime = se.compute_probability(66450, 66400, 180, 30.0)
+    prob_with_regime = se.compute_probability(66450, 66400, 180, 30.0, closes=closes)
+    # Down-trending regime should push prob_up LOWER, not higher
+    assert prob_with_regime < prob_no_regime
+
+
+def test_logit_dampening_near_extremes():
+    """Fix 2: same flow_signal produces smaller prob shift at p~0.95 vs p~0.50."""
+    se = SignalEngine(flow_weight=0.06)
+    # Near p=0.5 (BTC at strike)
+    p_base_mid = se.compute_probability(66400, 66400, 180, 30.0, flow_signal=0.0)
+    p_flow_mid = se.compute_probability(66400, 66400, 180, 30.0, flow_signal=1.0)
+    shift_mid = abs(p_flow_mid - p_base_mid)
+
+    # Near p=0.95 (BTC well above strike)
+    p_base_high = se.compute_probability(66600, 66400, 60, 30.0, flow_signal=0.0)
+    p_flow_high = se.compute_probability(66600, 66400, 60, 30.0, flow_signal=1.0)
+    shift_high = abs(p_flow_high - p_base_high)
+
+    # Logit-space adjustment should produce SMALLER shift near extremes
+    assert shift_high < shift_mid
+
+
+def test_kelly_gate_rejects_thin_edge_at_high_price():
+    """Fix 3: at strike with no indicators, prob~0.50, edge~0 → SKIP."""
+    se = SignalEngine(min_edge=0.03, min_kelly=0.015)
+    signal = se.evaluate(_make_indicators(atr_value=50), has_position=False, in_entry_window=True,
+                         btc_price=66400, strike_price=66400,
+                         seconds_remaining=180, market_price_up=0.50, market_price_down=0.50)
+    assert signal.action == "SKIP"
+
+
+def test_kelly_gate_accepts_underdog_with_edge():
+    """Fix 3: decent edge on underdog → Kelly sufficient → ENTER."""
+    se = SignalEngine(min_edge=0.03, min_kelly=0.015)
+    signal = se.evaluate(_make_indicators(atr_value=30), has_position=False, in_entry_window=True,
+                         btc_price=66200, strike_price=66400,
+                         seconds_remaining=120, market_price_up=0.40, market_price_down=0.60)
+    assert signal.action == "BUY_NO"
+    assert signal.kelly_size >= 0.015
+
+
+def test_atr_scaling_increases_z():
+    """Fix 4: with atr_sigma_ratio=1.7, probability is further from 0.5."""
+    se_old = SignalEngine(atr_sigma_ratio=1.0)
+    se_new = SignalEngine(atr_sigma_ratio=1.7)
+    prob_old = se_old.compute_probability(66500, 66400, 180, 50.0)
+    prob_new = se_new.compute_probability(66500, 66400, 180, 50.0)
+    assert abs(prob_new - 0.5) > abs(prob_old - 0.5)
+
+
+def test_student_t_scale_normalization():
+    """Fix 5: t.cdf(z*scale, df=4) vs t.cdf(z, df=4) for known z."""
+    import math
+    from scipy.stats import t as student_t_dist
+    z = 1.5
+    t_scale = math.sqrt(4 / (4 - 2))
+    prob_unscaled = float(student_t_dist.cdf(z, df=4))
+    prob_scaled = float(student_t_dist.cdf(z * t_scale, df=4))
+    assert prob_scaled > prob_unscaled

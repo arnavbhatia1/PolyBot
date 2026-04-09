@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,39 @@ DEFAULT_PARAMS = {
     "atr": {"period": 7, "low_pct": 5, "high_pct": 95, "history": 100},
 }
 
+class IndicatorNormalizer:
+    """Exponentially-weighted running mean/variance per indicator.
+
+    Normalizes raw indicator scores to zero-mean, unit-variance before
+    weighted aggregation. Ensures configured weights reflect actual
+    contribution, not variance dominance.
+    """
+
+    def __init__(self, alpha: float = 0.02, warmup: int = 50) -> None:
+        self.alpha: float = alpha
+        self.warmup: int = warmup
+        self._stats: dict[str, dict] = {}
+
+    def normalize(self, name: str, raw_score: float) -> float:
+        stats = self._stats.setdefault(name, {"mean": 0.0, "var": 1.0, "count": 0})
+        stats["count"] += 1
+
+        if stats["count"] == 1:
+            stats["mean"] = raw_score
+            stats["var"] = 1.0
+        else:
+            delta = raw_score - stats["mean"]
+            stats["mean"] += self.alpha * delta
+            stats["var"] = (1 - self.alpha) * stats["var"] + self.alpha * delta * delta
+
+        if stats["count"] < self.warmup:
+            return raw_score
+
+        std = max(math.sqrt(stats["var"]), 1e-6)
+        z = (raw_score - stats["mean"]) / std
+        return max(-3.0, min(3.0, z))
+
+
 class IndicatorEngine:
     def __init__(self, weights_dir: str, active_version: str = "weights_v001",
                  params: dict[str, dict[str, Any]] | None = None) -> None:
@@ -32,6 +66,7 @@ class IndicatorEngine:
         self.active_version: str = active_version
         self.params: dict[str, dict[str, Any]] = params or DEFAULT_PARAMS
         self._weights: dict[str, float] = self._load_weights()
+        self.normalizer: IndicatorNormalizer = IndicatorNormalizer()
 
     def _load_weights(self) -> dict[str, float]:
         path = self.weights_dir / f"{self.active_version}.json"
@@ -52,7 +87,7 @@ class IndicatorEngine:
         lows = buffer.get_lows()
         volumes = buffer.get_volumes()
         p = self.params
-        return {
+        result = {
             "rsi": compute_rsi_signal(closes, **p["rsi"]),
             "macd": compute_macd_signal(closes, **p["macd"]),
             "stochastic": compute_stochastic_signal(highs, lows, closes, **p["stochastic"]),
@@ -61,6 +96,11 @@ class IndicatorEngine:
             "vwap": compute_vwap_signal(highs, lows, closes, volumes),
             "atr": compute_atr_gate(highs, lows, closes, **p["atr"]),
         }
+        for ind_name in ("rsi", "macd", "stochastic", "obv", "vwap"):
+            if ind_name in result and "score" in result[ind_name]:
+                result[ind_name]["norm_score"] = self.normalizer.normalize(
+                    ind_name, result[ind_name]["score"])
+        return result
 
     def compute_score(self, indicators: dict[str, dict[str, Any]]) -> float:
         w = self._weights

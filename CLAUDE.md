@@ -2,17 +2,17 @@
 
 ## Project Overview
 
-PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathematical probability that BTC finishes above/below the opening strike price, compares that to the market's price, and trades when mispricing exceeds 10%. Holds to $1 resolution when confident, exits early (scalps) when holding_edge drops below the exit threshold.
+PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathematical probability that BTC finishes above/below the opening strike price, compares that to the market's price, and trades when mispricing exceeds the noise floor and Kelly fraction justifies a position. Holds to $1 resolution when confident, exits early (scalps) when holding_edge drops below the exit threshold.
 
 ## Key Architecture Decisions
 
-- **4-layer probability model.** The bot computes P(Up) using four independent signal layers: (1) Student-t CDF with df=4 for fat-tailed Brownian motion: z = (BTC - strike) / (ATR * sqrt(time)), P = t.cdf(z, 4) — captures fat tails that the normal distribution misses, finding edge on underdog positions the market overprices. (2) Regime detection: 1-lag autocorrelation of last 20 1-min returns (configurable via `regime_lookback`). Trending regimes amplify probability, mean-reverting regimes dampen it (±3%). (3) Order flow: book imbalance + trade flow from CLOB WebSocket data. Informed buying/selling pressure leads price movement (±4%). (4) Indicator momentum: RSI, MACD, Stochastic, OBV, VWAP provide a small directional nudge (±4%). The CDF (Layer 1) drives all decisions — layers just nudge. The edge is: model probability - effective market price.
+- **4-layer probability model.** The bot computes P(Up) using four independent signal layers: (1) Student-t CDF with df=4 for fat-tailed Brownian motion: z = distance / ((ATR / atr_sigma_ratio) * sqrt(time)), z_scaled = z * sqrt(df/(df-2)), P = t.cdf(z_scaled, df) — captures fat tails that the normal distribution misses, finding edge on underdog positions the market overprices. Layers 2-4 are applied in log-odds (logit) space, auto-converted from config weights x 4.0. This ensures adjustments near probability extremes are correctly dampened (Bayesian evidence combination). (2) Regime detection: 1-lag autocorrelation of last 20 1-min returns (configurable via `regime_lookback`). Direction derived from sign of most recent 1-minute return (not prob_up sign). Positive autocorr = trending — amplify in direction of recent returns. Mean-reverting regimes dampen it. (3) Order flow: book imbalance + trade flow from CLOB WebSocket data. Informed buying/selling pressure leads price movement. (4) Indicator momentum: RSI, MACD, Stochastic, OBV, VWAP provide a small directional nudge. Uses z-score normalized indicator scores (IndicatorNormalizer with EMA-based running stats, warmup=50). The CDF (Layer 1) drives all decisions — layers just nudge. The edge is: model probability - effective market price. Platt scaling calibration applied after all 4 layers — fitted daily by learning pipeline, identity (no effect) until >= 100 outcomes.
 - **Active position management.** Hold to $1 resolution when the model is confident. Exit early (scalp) when holding_edge drops below a fee-aware threshold that accounts for exit costs and time urgency. Same probability model for entry AND exit. Not fixed take-profit/stop-loss — the math decides.
 - **Single position at a time.** Full Kelly on the best edge, no capital dilution.
 - **One trade per 5-min contract.** After any exit, that contract is blacklisted.
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
-- **Minimum edge = 10%.** Only trade when model disagrees with market by 10%+. Tunable by learning pipeline (range 5-35%).
-- **Signal layer weights.** Layer 1 (Student-t base) provides the core probability — the CDF drives all decisions. Layer 2 (regime) adjusts by ±3% max. Layer 3 (order flow) adjusts by ±4% max. Layer 4 (momentum/indicators) adjusts by ±4% max. Total max layer swing: ±11%. Deliberately small so the CDF must show a direction before layers can push past the 65% confidence gate.
+- **Dual entry gate.** Primary: Kelly fraction >= min_kelly (0.015, price-aware — naturally accounts for odds at different price levels). Secondary: edge >= entry_threshold (0.03, noise floor). Both must pass.
+- **Signal layer weights (logit space).** Layer 1 (Student-t base) provides the core probability — the CDF drives all decisions. Layers 2-4 apply adjustments in logit (log-odds) space with config weight x 4.0 as max logit shift. Layer 2 (regime) weight 0.03. Layer 3 (order flow) weight 0.04. Layer 4 (momentum/indicators) weight 0.04. Logit-space application ensures adjustments near probability extremes (0.1 or 0.9) are naturally dampened. The CDF must show a direction before layers can push past the 65% confidence gate.
 - **Real-time WebSocket + Gamma API for prices.** Primary: CLOB WebSocket (`wss://ws-subscriptions-clob.polymarket.com/ws/market`) provides real-time book snapshots, price deltas, best bid/ask, last trades, and market resolution events. Trading loop is event-driven — reacts instantly to book changes instead of polling. HTTP fallback: `clob.polymarket.com/book?token_id=TOKEN` if WS disconnected. Gamma API (`gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}`) for contract discovery and `token_id_up`/`token_id_down`. Supplementary: `GET /spread` for liquidity check, `GET /midpoints` for quick price ref, `GET /last-trades-prices` for fill validation. Gamma `outcomePrices` are stale fallback only.
 - **NegRisk execution pricing via GET /price.** The raw token book (`GET /book`) only shows direct token orders — in negRisk binary markets the CLOB cross-matches across complementary tokens, so the raw book shows asks at $0.99 on both sides while the real executable price is ~$0.50. **Always use `GET /price?token_id=X&side=BUY` for entry pricing and `side=SELL` for exit pricing.** This is what Polymarket's website shows. Never use raw book best ask/bid for edge calculation.
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
@@ -71,12 +71,14 @@ polybot/
 - `circuit_breaker.losses_to_reduce:` — 3 (consecutive losses before Discord streak alert)
 - `circuit_breaker.wins_to_restore:` — 2 (consecutive wins before Discord streak alert)
 - `math.kelly_fraction:` — 0.15 (fraction of full Kelly)
-- `signal.entry_threshold:` — 0.10 (minimum 10% edge to trade)
+- `signal.entry_threshold:` — 0.03 (noise floor — minimum edge to filter noise, not primary gate. Pipeline range: 0.01-0.10)
+- `signal.min_kelly:` — 0.015 (primary entry gate — Kelly fraction must justify a position. Pipeline range: 0.005-0.05)
 - `signal.exit_edge_threshold:` — -0.10 (exit when holding edge drops below -10%)
 - `signal.min_model_probability:` — 0.65 (skip coin-flip trades — model must be ≥65% confident)
 - `signal.momentum_weight:` — 0.04 (max ±4% indicator adjustment, Layer 4)
 - `signal.regime_weight:` — 0.03 (max ±3% regime adjustment, Layer 2)
 - `signal.flow_weight:` — 0.04 (max ±4% order flow adjustment, Layer 3)
+- `signal.atr_sigma_ratio:` — 1.7 (ATR-to-sigma conversion factor for BTC 1-min candles. Pipeline range: 1.2-2.5)
 - `signal.regime_lookback:` — 20 (number of 1-min returns for regime autocorrelation, 20 = 20-minute window)
 - `signal.student_t_df:` — 4 (degrees of freedom for fat-tailed CDF)
 - `signal.weights:` — per-indicator weights for momentum calculation
@@ -99,7 +101,7 @@ polybot/
 python -m polybot.main --mode paper   # Paper trading (persistent bankroll across sessions)
 python -m polybot.main --mode live    # Live trading (real USDC on Polymarket)
 python -m polybot.main                # Defaults to mode in settings.yaml
-python -m pytest polybot/tests/       # 422 tests
+python -m pytest polybot/tests/       # 443 tests
 ```
 
 ## How the Probability Model Works
@@ -111,33 +113,40 @@ Chainlink BTC/USD oracle (eventMetadata.priceToBeat/finalPrice from Gamma API),
 which can differ from Binance by $20-200. Entry uses Binance (Chainlink not
 available during active windows). Resolution always uses Gamma/Chainlink data.
 Distance = current BTC price - strike
-Vol = ATR (average true range from 1-min candles, period=7)
+Vol = ATR (average true range from 1-min candles, period=7) / atr_sigma_ratio (1.7)
 Time = minutes remaining in the window
 
 LAYER 1 — Fat-tailed base (Student-t CDF, df=4):
-  z = distance / (vol * sqrt(time))
-  P(Up) = t.cdf(z, df=4)
+  vol = (ATR / atr_sigma_ratio) x sqrt(minutes)    [ATR scaled to sigma]
+  z = distance / vol
+  z_scaled = z x sqrt(df / (df-2))               [variance normalization]
+  P(Up) = t.cdf(z_scaled, df=4)
   
   Why Student-t: BTC 1-min returns have kurtosis ~6-8 (normal=3).
   Normal CDF underestimates reversal probability. When BTC is $50 above
   strike with 2 min left, normal says 85% Up, Student-t says ~78%.
   The difference is edge on the underdog side.
 
-LAYER 2 — Regime detection:
-  autocorr = 1-lag autocorrelation of last 20 1-min returns
-  If autocorr > 0 (trending): amplify P away from 0.5 (max ±3%)
-  If autocorr < 0 (reverting): dampen P toward 0.5
+LAYER 2 — Regime detection (in logit space):
+  autocorr = 1-lag autocorrelation of last N 1-min returns
+  direction = sign(most_recent_return)    [NOT sign(prob - 0.5)]
+  logit_p += autocorr x direction x (regime_weight x 4.0)
 
-LAYER 3 — Order flow:
+LAYER 3 — Order flow (in logit space):
   book_imbalance = (bid_depth - ask_depth) / total_depth (across both Up/Down books)
   trade_flow = net_buy_volume / total_volume (from WebSocket last_trade_price events)
   flow_signal = 0.6 * book_imbalance + 0.4 * trade_flow
-  Adjustment: flow_signal * 0.04 (max ±4%)
+  logit_p += flow_signal x (flow_weight x 4.0)
   
   Why: Order flow LEADS price. Informed traders accumulate before CLOB reprices.
 
-LAYER 4 — Indicator momentum:
-  Weighted RSI/MACD/Stochastic/OBV/VWAP score * 0.04 (max ±4%)
+LAYER 4 — Indicator momentum (in logit space):
+  Z-score normalized scores per indicator (IndicatorNormalizer)
+  Weighted RSI/MACD/Stochastic/OBV/VWAP x (momentum_weight x 4.0)
+
+CALIBRATION — Platt scaling:
+  calibrated = 1 / (1 + exp(A x logit(raw_prob) + B))
+  A, B fitted daily by learning pipeline (identity until 100+ outcomes)
 
 NEGRISK EXECUTION PRICING:
   price_up = GET /price?token_id=UP&side=BUY   (cross-matched, not raw book)
@@ -148,10 +157,11 @@ ENTRY:
   ATR gate: skip if volatility too quiet or too volatile
   Edge = P(Up) - effective_price_up    [or P(Down) - effective_price_down]
   If model_prob < 65%: SKIP (coin-flip filter)
-  If edge >= 10%: TRADE, size = Kelly(probability, market_price) * 0.15, capped to 50% of book depth
+  If edge < 0.03: SKIP (noise floor)
+  If Kelly < 0.015: SKIP (primary gate — position must justify execution cost)
+  Size = Kelly(probability, market_price) x kelly_fraction, capped to 50% of book depth
   Net-edge gate: net_edge = edge - (price * convex_slippage); if net_edge < min_edge: SKIP
   Entry fill: /price quote + convex slippage: fill_pct * impact * (1 + fill_pct)
-  If edge < 10%: SKIP
 
 WHILE HOLDING (active position management):
   holding_edge = model_prob_for_our_side - current_market_price_for_our_side
@@ -294,23 +304,29 @@ Candle closes ──► 1-lag autocorrelation (20 returns)
 BTC price, strike, ATR, seconds_remaining
         │
         ▼
-Student-t CDF:  z = (btc - strike) / (ATR × √minutes)
-                P(Up) = t.cdf(z, df=4)
+Student-t CDF:  vol = (ATR / atr_sigma_ratio) x sqrt(minutes)
+                z = (btc - strike) / vol
+                z_scaled = z x sqrt(df/(df-2))
+                P(Up) = t.cdf(z_scaled, df=4)
         │
         ▼
 signal_engine.evaluate()
         ├── base_prob = Student-t CDF
-        ├── + regime_adjustment
-        ├── + flow_adjustment
-        ├── + momentum_adjustment
+        ├── convert to logit space
+        ├── + regime_adjustment (in logit)
+        ├── + flow_adjustment (in logit)
+        ├── + momentum_adjustment (in logit)
+        ├── convert back to probability
+        ├── Platt calibration (if fitted)
         │         │
         │         ▼ final_prob → edge = |prob - market_price|
         │                        side = Up if prob > 0.5, else Down
-        │                        kelly_size = (p*b - q)/b × 0.15
+        │                        kelly_size = (p*b - q)/b x kelly_fraction
         ▼
-   6 ENTRY GATES (all must pass, in order):
+   7 ENTRY GATES (all must pass, in order):
         ├── prob ≥ 0.65?              (confidence gate)
-        ├── edge ≥ min_edge?          (mispricing gate)
+        ├── edge ≥ 0.03?             (noise floor gate)
+        ├── Kelly ≥ 0.015?           (primary gate — position must justify cost)
         ├── spread ≤ 0.10?            (liquidity gate)
         ├── book depth ≥ $50?         (depth gate)
         ├── price_up + price_down ∈ [0.98, 1.02]?  (price sanity gate)
@@ -524,17 +540,19 @@ Daily at 4:45 PM ET / 20:45 UTC (configurable via `agents.daily_pipeline_hour` a
    - Overall statistics (Sharpe, win rate, avg edge)
    - Counterfactual analysis (both scalps AND holds): was the exit/hold decision optimal?
 
+1.5. **PlattCalibrator** — Fits Platt scaling parameters (A, B) on training set model probabilities vs actual outcomes. Validates on holdout — only adopts if log-loss improves. Persists to `memory/calibration/platt_params.json`. Applied after all 4 layers in `compute_probability()`.
+
 2. **TAEvolver** — Sends training-set analysis + trades + current config to Claude API:
    - System prompt defines Chief Quantitative Strategist role with full 4-layer model description
    - Trade data includes flow_score, exit_reason (scalp vs resolution) for each trade
-   - Claude returns structured JSON: weight adjustments, all 4 layer weights (momentum, regime, flow, student_t_df), min_edge, kelly_fraction, reasoning, findings, risk warnings
+   - Claude returns structured JSON: weight adjustments, all 4 layer weights (momentum, regime, flow, student_t_df), min_edge, kelly_fraction, min_kelly, atr_sigma_ratio, reasoning, findings, risk warnings
    - Response validated server-side (weights sum to 1.0, all constraints enforced, new params clamped)
    - Falls back to local math if Claude API fails (resilient)
 
 3. **WeightOptimizer** — Backtests recommendations against the **validation set** (last 40%):
    - Recomputes hypothetical edge with new weights/parameters
    - Auto-adopts if Sharpe improves >= 3%
-   - Hot-swaps ALL params at runtime: indicator weights, momentum_weight, regime_weight, flow_weight, student_t_df, min_edge, kelly_fraction, min_model_probability, exit_edge_threshold, min_time_remaining, trading hours
+   - Hot-swaps ALL params at runtime: indicator weights, momentum_weight, regime_weight, flow_weight, student_t_df, min_edge, kelly_fraction, min_kelly, atr_sigma_ratio, min_model_probability, exit_edge_threshold, min_time_remaining, trading hours
    - **Persists all tuned parameters to settings.yaml** — values survive restarts
    - Discord alerts include Claude's key findings and reasoning
 
@@ -561,8 +579,12 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't use limit orders in LiveTrader — FOK market orders for 5-min contract speed.
 - Don't resolve positions by comparing Binance BTC price vs Binance strike — always wait for Gamma API `eventMetadata` or `closed` + `outcomePrices`. Binance and Chainlink (Polymarket's oracle) can disagree by $20-200, causing false WIN/LOSS.
 - Don't compute entry strike from `int(now_ts // 300) * 300` — derive from the contract slug. The bot can find the next window's contract early, and current-time flooring gives the wrong window boundary.
+- Don't apply layer adjustments in raw probability space — use logit (log-odds) space. Additive probability adjustments violate Bayesian evidence combination near the extremes.
+- Don't derive regime direction from sign(prob - 0.5) — use sign(most recent return). The autocorrelation measures persistence, but the DIRECTION comes from recent returns.
 
-## Baseline — LOCKED 2026-04-08
+## Baseline — LOCKED 2026-04-09
+
+Engine math optimized: logit-space layer combination, ATR-to-sigma scaling, Student-t variance normalization, regime direction fix (sign of recent return), Kelly-based entry gate, indicator z-score normalization, Platt calibration. Baseline re-locked — only the daily learning pipeline tunes parameters.
 
 The core trading logic is FROZEN. Do not make structural changes to:
 - `signal_engine.py` (4-layer probability model)

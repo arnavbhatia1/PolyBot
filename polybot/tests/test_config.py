@@ -76,7 +76,9 @@ class TestValidateConfigPasses:
         """All parameters at their minimum allowed values."""
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.05)
-        _set_nested(cfg, "signal.entry_threshold", 0.05)
+        _set_nested(cfg, "signal.entry_threshold", 0.01)
+        _set_nested(cfg, "signal.min_kelly", 0.005)
+        _set_nested(cfg, "signal.atr_sigma_ratio", 1.2)
         _set_nested(cfg, "signal.exit_edge_threshold", -0.25)
         _set_nested(cfg, "signal.min_model_probability", 0.55)
         _set_nested(cfg, "signal.momentum_weight", 0.02)
@@ -99,7 +101,9 @@ class TestValidateConfigPasses:
         """All parameters at their maximum allowed values."""
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.25)
-        _set_nested(cfg, "signal.entry_threshold", 0.35)
+        _set_nested(cfg, "signal.entry_threshold", 0.10)
+        _set_nested(cfg, "signal.min_kelly", 0.05)
+        _set_nested(cfg, "signal.atr_sigma_ratio", 2.5)
         _set_nested(cfg, "signal.exit_edge_threshold", 0.0)
         _set_nested(cfg, "signal.min_model_probability", 0.85)
         _set_nested(cfg, "signal.momentum_weight", 0.10)
@@ -128,6 +132,8 @@ class TestValidateConfigMissing:
         "signal.regime_weight",
         "signal.flow_weight",
         "signal.student_t_df",
+        "signal.min_kelly",
+        "signal.atr_sigma_ratio",
         "signal.weights",
         "execution.max_concurrent_positions",
         "execution.max_bankroll_deployed",
@@ -157,8 +163,8 @@ class TestValidateConfigOutOfRange:
         ("math.kelly_fraction", 0.01, "not in [0.05, 0.25]"),
         ("math.kelly_fraction", 0.50, "not in [0.05, 0.25]"),
         # signal scalars
-        ("signal.entry_threshold", 0.04, "not in [0.05, 0.35]"),
-        ("signal.entry_threshold", 0.40, "not in [0.05, 0.35]"),
+        ("signal.entry_threshold", 0.001, "not in [0.01, 0.1]"),
+        ("signal.entry_threshold", 0.20, "not in [0.01, 0.1]"),
         ("signal.exit_edge_threshold", -0.30, "not in [-0.25, 0.0]"),
         ("signal.exit_edge_threshold", 0.01, "not in [-0.25, 0.0]"),
         ("signal.min_model_probability", 0.50, "not in [0.55, 0.85]"),
@@ -171,6 +177,10 @@ class TestValidateConfigOutOfRange:
         ("signal.flow_weight", 0.15, "not in [0.02, 0.12]"),
         ("signal.student_t_df", 2, "not in [3, 8]"),
         ("signal.student_t_df", 9, "not in [3, 8]"),
+        ("signal.min_kelly", 0.001, "not in [0.005, 0.05]"),
+        ("signal.min_kelly", 0.10, "not in [0.005, 0.05]"),
+        ("signal.atr_sigma_ratio", 1.0, "not in [1.2, 2.5]"),
+        ("signal.atr_sigma_ratio", 3.0, "not in [1.2, 2.5]"),
         # execution
         ("execution.max_bankroll_deployed", -0.1, "not in [0.0, 1.0]"),
         ("execution.max_bankroll_deployed", 1.1, "not in [0.0, 1.0]"),
@@ -270,7 +280,7 @@ class TestValidateConfigMultipleErrors:
     def test_multiple_violations_all_listed(self):
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.50)
-        _set_nested(cfg, "signal.entry_threshold", 0.01)
+        _set_nested(cfg, "signal.entry_threshold", 0.001)
         _set_nested(cfg, "execution.initial_bankroll", -1)
         with pytest.raises(ValueError) as exc_info:
             validate_config(cfg)

@@ -66,13 +66,15 @@ def validate_config(config: dict[str, Any]) -> None:
     _check_range("math.kelly_fraction", 0.05, 0.25)
 
     # --- signal ---
-    _check_range("signal.entry_threshold", 0.05, 0.35)
+    _check_range("signal.entry_threshold", 0.01, 0.10)
     _check_range("signal.exit_edge_threshold", -0.25, 0.0)
     _check_range("signal.min_model_probability", 0.55, 0.85)
     _check_range("signal.momentum_weight", 0.02, 0.10)
     _check_range("signal.regime_weight", 0.02, 0.10)
     _check_range("signal.flow_weight", 0.02, 0.12)
     _check_range("signal.student_t_df", 3, 8, integer=True)
+    _check_range("signal.min_kelly", 0.005, 0.05)
+    _check_range("signal.atr_sigma_ratio", 1.2, 2.5)
 
     # --- signal.weights ---
     weights_val, weights_found = _get_nested(config, "signal.weights")

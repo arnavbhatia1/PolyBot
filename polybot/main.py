@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from polybot.config.loader import load_config, get_secret
-from polybot.execution.base import taker_fee, entry_fee_shares, exit_fee_usdc, slippage_pct, DEFAULT_FEE_RATE
+from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE
 from polybot.db.models import Database
 from polybot.core.binance_feed import BinanceFeed
 from polybot.core.market_scanner import BTCMarketScanner
@@ -45,24 +45,6 @@ logger = logging.getLogger("polybot")
 logger.setLevel(logging.INFO)
 logging.getLogger("polybot.discord_bot.bot").setLevel(logging.INFO)
 
-
-def _compute_pnl(pos: dict[str, Any], exit_price: float) -> tuple[float, float, float, float]:
-    """Compute realistic PnL using shares-based entry fee and USDC exit fee.
-
-    Returns (shares, entry_fee_usd, exit_fee_usd, pnl).
-    """
-    fee_rate = pos.get("fee_rate") or DEFAULT_FEE_RATE
-    shares = pos.get("shares_held") or pos["size"] / pos["entry_price"]
-    # Entry fee was already deducted in shares — express as USD for logging
-    shares_ordered = pos["size"] / pos["entry_price"]
-    entry_fee_in_shares = shares_ordered - shares
-    entry_fee_usd = entry_fee_in_shares * pos["entry_price"]
-    # Exit fee in USDC
-    exit_fee_usd = exit_fee_usdc(shares, exit_price, fee_rate)
-    # Revenue = sell shares at exit_price minus USDC fee
-    revenue = shares * exit_price - exit_fee_usd
-    pnl = revenue - pos["size"]  # size = USDC originally spent
-    return shares, entry_fee_usd, exit_fee_usd, pnl
 
 
 # Cache for _get_contract_prices — avoid hammering Gamma API every tick
@@ -283,12 +265,11 @@ async def _evaluate_signal_and_enter(
     fee_rate = await market_scanner.fetch_fee_rate(token_id, http_client)
     tick_size = await market_scanner.fetch_tick_size(token_id, http_client)
 
-    # Execution price: /price endpoint gives the real negRisk cross-matched price
-    exec_price = await market_scanner.fetch_market_price(token_id, "BUY", http_client)
-    if exec_price > 0:
-        impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
-        slip = slippage_pct(size, side_depth, impact)
-        price = market_scanner.snap_to_tick(exec_price * (1 + slip), tick_size)
+    # Apply slippage to the execution price already fetched in _fetch_market_prices
+    # (price already comes from GET /price?side=BUY — no need to refetch)
+    impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
+    slip = slippage_pct(size, side_depth, impact)
+    price = market_scanner.snap_to_tick(price * (1 + slip), tick_size)
 
     snapshot = indicator_engine.get_snapshot(indicators)
     snapshot["trade_context"] = {
@@ -297,6 +278,7 @@ async def _evaluate_signal_and_enter(
         "seconds_remaining": contract["seconds_remaining"],
         "market_price_up": price_up,
         "market_price_down": price_down,
+        "model_probability_raw": signal.prob,
         "model_probability": signal.prob,
         "edge": signal.edge,
         "momentum_score": signal_engine.compute_momentum(indicators),
@@ -475,11 +457,15 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
 
 async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts: dict[str, int],
                                            ws_subscribed_tokens: list[str],
-                                           clob_ws: Any) -> tuple[dict[str, Any] | None, str | None, dict[str, int], list[str]]:
-    """Find an active contract and subscribe its WebSocket tokens. Returns (contract, cid) or None."""
+                                           clob_ws: Any,
+                                           prev_contract_tokens: list[str] | None = None,
+                                           ) -> tuple[dict[str, Any] | None, str | None, dict[str, int], list[str], list[str]]:
+    """Find an active contract and subscribe its WebSocket tokens. Returns (contract, cid, ..., prev_tokens)."""
+    if prev_contract_tokens is None:
+        prev_contract_tokens = []
     contract = await market_scanner.find_active_contract()
     if not contract:
-        return None, None, traded_contracts, ws_subscribed_tokens
+        return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
 
     cid = contract["slug"]  # Use slug as market_id — US API needs marketSlug, not condition_id
 
@@ -489,17 +475,26 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
 
     # One trade per contract
     if cid in traded_contracts:
-        return None, None, traded_contracts, ws_subscribed_tokens
+        return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
 
     # Subscribe WebSocket to this contract's tokens (idempotent)
     token_up = contract["token_id_up"]
     token_down = contract["token_id_down"]
-    new_tokens = [t for t in [token_up, token_down] if t and t not in ws_subscribed_tokens]
+    current_tokens = [t for t in [token_up, token_down] if t]
+    new_tokens = [t for t in current_tokens if t not in ws_subscribed_tokens]
+
+    # Unsubscribe tokens from previous contracts that are no longer needed
+    if prev_contract_tokens and clob_ws:
+        stale_tokens = [t for t in prev_contract_tokens if t not in current_tokens]
+        if stale_tokens:
+            await clob_ws.unsubscribe(stale_tokens)
+            ws_subscribed_tokens = [t for t in ws_subscribed_tokens if t not in stale_tokens]
+
     if new_tokens and clob_ws:
         await clob_ws.subscribe(new_tokens)
         ws_subscribed_tokens.extend(new_tokens)
 
-    return contract, cid, traded_contracts, ws_subscribed_tokens
+    return contract, cid, traded_contracts, ws_subscribed_tokens, current_tokens
 
 
 async def _check_counterfactuals(counterfactual_tracker: Any, market_scanner: Any,
@@ -605,13 +600,14 @@ async def _evaluate_and_exit_position(
 
         result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token)
         if result.success:
-            shares, entry_fee, exit_fee, pnl = _compute_pnl(pos, exit_fill)
-            gain_pct = pnl / pos["size"] if pos["size"] > 0 else 0
+            pnl = result.pnl
+            gain_pct = result.gain_pct
+            total_fees = result.entry_fee_usd + result.exit_fee_usd
             won = "WIN" if pnl > 0 else "LOSS"
             if pnl > 0: day_wins += 1
             else: day_losses += 1
-            day_fees += entry_fee + exit_fee
-            logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_fill:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${entry_fee + exit_fee:.2f} | slip={slip:.2%} | {reason}")
+            day_fees += total_fees
+            logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_fill:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${total_fees:.2f} | slip={slip:.2%} | {reason}")
             if breaker:
                 breaker.update_bankroll(await db.get_bankroll())
                 cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
@@ -621,9 +617,9 @@ async def _evaluate_and_exit_position(
                 await alert_manager.send_trade_closed(
                     question="", exit_price=exit_fill, log_return=0, hold_hours=0,
                     side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                    gain_pct=gain_pct, reason=f"scalp {won.lower()}", fees=entry_fee + exit_fee)
+                    gain_pct=gain_pct, reason=f"scalp {won.lower()}", fees=total_fees)
             await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
-                                  exit_reason="scalp", pnl=pnl, fees=entry_fee + exit_fee)
+                                  exit_reason="scalp", pnl=pnl, fees=total_fees)
             traded_market_id = pos["market_id"]
             if counterfactual_tracker:
                 counterfactual_tracker.watch(pos, {
@@ -665,13 +661,14 @@ async def _resolve_expired_position(
     result = await trader.resolve_position(pos["id"], exit_price)
     traded_market_id = None
     if result.success:
-        shares, entry_fee, exit_fee, pnl = _compute_pnl(pos, exit_price)
-        gain_pct = pnl / pos["size"] if pos["size"] > 0 else 0
+        pnl = result.pnl
+        gain_pct = result.gain_pct
+        total_fees = result.entry_fee_usd + result.exit_fee_usd
         won = "WIN" if pnl > 0 else "LOSS"
         if pnl > 0: day_wins += 1
         else: day_losses += 1
-        day_fees += entry_fee + exit_fee
-        logger.info(f"RESOLVED {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${entry_fee + exit_fee:.2f}")
+        day_fees += total_fees
+        logger.info(f"RESOLVED {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${total_fees:.2f}")
         if breaker:
             breaker.update_bankroll(await db.get_bankroll())
             cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
@@ -681,9 +678,9 @@ async def _resolve_expired_position(
             await alert_manager.send_trade_closed(
                 question="", exit_price=exit_price, log_return=0, hold_hours=0,
                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                gain_pct=gain_pct, reason=won.lower(), fees=entry_fee + exit_fee)
+                gain_pct=gain_pct, reason=won.lower(), fees=total_fees)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
-                              exit_reason="resolution", pnl=pnl, fees=entry_fee + exit_fee)
+                              exit_reason="resolution", pnl=pnl, fees=total_fees)
         if counterfactual_tracker:
             cf_hold = counterfactual_tracker.record_hold_resolution(
                 pos["market_id"], exit_price, pnl, gain_pct)
@@ -733,12 +730,13 @@ async def _manage_orphaned_position(
     result = await trader.resolve_position(pos["id"], exit_price)
     traded_market_id = None
     if result.success:
-        shares, entry_fee, exit_fee, pnl = _compute_pnl(pos, exit_price)
-        gain_pct = pnl / pos["size"] if pos["size"] > 0 else 0
+        pnl = result.pnl
+        gain_pct = result.gain_pct
+        total_fees = result.entry_fee_usd + result.exit_fee_usd
         won = "WIN" if pnl > 0 else "LOSS"
         if pnl > 0: day_wins += 1
         else: day_losses += 1
-        day_fees += entry_fee + exit_fee
+        day_fees += total_fees
         logger.info(f"RESOLVED {won} {pos['side']} (orphaned) | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
         if breaker:
             breaker.update_bankroll(await db.get_bankroll())
@@ -749,9 +747,9 @@ async def _manage_orphaned_position(
             await alert_manager.send_trade_closed(
                 question="", exit_price=exit_price, log_return=0, hold_hours=0,
                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                gain_pct=gain_pct, reason=won.lower(), fees=entry_fee + exit_fee)
+                gain_pct=gain_pct, reason=won.lower(), fees=total_fees)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
-                              exit_reason="resolution", pnl=pnl, fees=entry_fee + exit_fee)
+                              exit_reason="resolution", pnl=pnl, fees=total_fees)
         traded_market_id = pos["market_id"]
     return True, day_wins, day_losses, day_fees, traded_market_id
 
@@ -804,7 +802,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                        is_paused_fn: Any,
                        scheduler: Any = None, clob_ws: ClobWebSocket | None = None,
                        breaker: CircuitBreaker | None = None,
-                       counterfactual_tracker: Any = None) -> None:
+                       counterfactual_tracker: Any = None,
+                       http_client: Any = None) -> None:
     import httpx
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
@@ -825,9 +824,10 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     window_strikes: dict[int, float] = {}      # window_ts -> BTC price at window open
     ws_subscribed_tokens: list[str] = []       # currently subscribed token_ids
     last_eval_log_window: int = 0              # track which window we last logged eval for
+    prev_contract_tokens: list[str] = []       # tokens from previous contract (for unsubscribe)
 
-    # Shared HTTP client — one connection pool for all API calls
-    http_client = httpx.AsyncClient(timeout=5)
+    if http_client is None:
+        http_client = httpx.AsyncClient(timeout=5)
 
     # Day tracking for open/close banners
     current_trading_day: str | None = None
@@ -930,9 +930,10 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             if has_active_position:
                 continue
 
-            contract, cid, traded_contracts, ws_subscribed_tokens = \
+            contract, cid, traded_contracts, ws_subscribed_tokens, prev_contract_tokens = \
                 await _discover_contract_and_subscribe(
-                    market_scanner, traded_contracts, ws_subscribed_tokens, clob_ws)
+                    market_scanner, traded_contracts, ws_subscribed_tokens, clob_ws,
+                    prev_contract_tokens)
             if not contract:
                 continue
 
@@ -1054,18 +1055,28 @@ async def main() -> None:
     )
 
     # Signal engine — probability model with edge-based entry
+    from polybot.core.calibrator import PlattCalibrator
+
     signal_engine = SignalEngine(
-        min_edge=signal_cfg.get("entry_threshold", 0.20),
+        min_edge=signal_cfg.get("entry_threshold", 0.03),
         kelly_fraction=config["math"].get("kelly_fraction", 0.15),
         momentum_weight=signal_cfg.get("momentum_weight", 0.04),
         weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                             "obv": 0.15, "vwap": 0.20}),
         min_model_probability=signal_cfg.get("min_model_probability", 0.65),
         student_t_df=signal_cfg.get("student_t_df", 4),
-        regime_weight=signal_cfg.get("regime_weight", 0.05),
-        flow_weight=signal_cfg.get("flow_weight", 0.06),
+        regime_weight=signal_cfg.get("regime_weight", 0.03),
+        flow_weight=signal_cfg.get("flow_weight", 0.04),
         regime_lookback=signal_cfg.get("regime_lookback", 20),
+        min_kelly=signal_cfg.get("min_kelly", 0.015),
+        atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", 1.7),
     )
+
+    # Load Platt calibrator (identity if file doesn't exist)
+    calibrator = PlattCalibrator()
+    _cal_path = Path(base_dir) / "memory" / "calibration" / "platt_params.json"
+    calibrator.load(_cal_path)
+    signal_engine.calibrator = calibrator
 
     # Brain (Claude client kept for TA evolver analysis calls)
     claude = ClaudeClient(api_key=get_secret("ANTHROPIC_API_KEY"), model="claude-sonnet-4-6")
@@ -1150,6 +1161,9 @@ async def main() -> None:
     await scheduler.start()
     await binance_feed.start()
 
+    # Shared HTTP client — lifecycle managed here in main()
+    http_client = httpx.AsyncClient(timeout=5)
+
     async def run_discord():
         try:
             await discord_bot.start(get_secret("DISCORD_BOT_TOKEN"))
@@ -1162,7 +1176,8 @@ async def main() -> None:
             trader, alert_manager, db, config, outcome_reviewer,
             is_paused_fn=lambda: discord_bot.is_paused,
             scheduler=scheduler, clob_ws=clob_ws, breaker=breaker,
-            counterfactual_tracker=counterfactual_tracker)),
+            counterfactual_tracker=counterfactual_tracker,
+            http_client=http_client)),
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(run_discord()),
@@ -1174,6 +1189,7 @@ async def main() -> None:
     except asyncio.CancelledError:
         logger.info("Shutting down...")
     finally:
+        await http_client.aclose()
         await clob_ws.close()
         await scheduler.stop()
         await binance_feed.stop()

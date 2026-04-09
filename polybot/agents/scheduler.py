@@ -76,6 +76,8 @@ class AgentScheduler:
             "trading_start_hour_et": self._trading_start[0] if self._trading_start else 8,
             "trading_end_hour_et": self._trading_end[0] if self._trading_end else 16,
             "trading_end_minute": self._trading_end[1] if self._trading_end else 30,
+            "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
+            "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.7),
             "active_weights_version": getattr(self.indicator_engine, 'active_version', 'weights_v001')
                                       if self.indicator_engine else "weights_v001",
         }
@@ -121,9 +123,9 @@ class AgentScheduler:
 
             # Preferred: use trade_context to evaluate with probability model
             if ctx.get("edge", 0) > 0:
-                # Recompute momentum with new weights
+                # Recompute momentum with new weights (use norm_score — matches live engine)
                 new_momentum = sum(
-                    snap.get(ind, {}).get("score", 0) * recommended_weights.get(ind, 0)
+                    snap.get(ind, {}).get("norm_score", snap.get(ind, {}).get("score", 0)) * recommended_weights.get(ind, 0)
                     for ind in ["rsi", "macd", "stochastic", "obv", "vwap"]
                 )
                 new_momentum = max(-1.0, min(1.0, new_momentum))
@@ -149,7 +151,7 @@ class AgentScheduler:
             else:
                 # Fallback: old-style backtest for outcomes without trade_context
                 new_score = sum(
-                    snap.get(ind, {}).get("score", 0) * recommended_weights.get(ind, 0)
+                    snap.get(ind, {}).get("norm_score", snap.get(ind, {}).get("score", 0)) * recommended_weights.get(ind, 0)
                     for ind in ["rsi", "macd", "stochastic", "obv", "vwap"]
                 )
                 if abs(new_score) >= 0.10:
@@ -194,7 +196,7 @@ class AgentScheduler:
                 if "recommended_student_t_df" in recommendations:
                     self.signal_engine.student_t_df = _clamp(int(recommendations["recommended_student_t_df"]), 3, 8)
                 if "recommended_min_edge" in recommendations:
-                    val = _clamp(recommendations["recommended_min_edge"], 0.05, 0.35)
+                    val = _clamp(recommendations["recommended_min_edge"], 0.01, 0.10)
                     self.signal_engine.min_edge = val
                     self.signal_engine.entry_threshold = val
                 if "recommended_kelly_fraction" in recommendations:
@@ -207,6 +209,10 @@ class AgentScheduler:
                     self._min_time_remaining = _clamp(recommendations["recommended_min_time_remaining"], 0, 120)
                     if self.market_scanner:
                         self.market_scanner.min_time_remaining = self._min_time_remaining
+                if "recommended_min_kelly" in recommendations:
+                    self.signal_engine.min_kelly = _clamp(recommendations["recommended_min_kelly"], 0.005, 0.05)
+                if "recommended_atr_sigma_ratio" in recommendations:
+                    self.signal_engine.atr_sigma_ratio = _clamp(float(recommendations["recommended_atr_sigma_ratio"]), 1.2, 2.5)
                 if "recommended_trading_start_hour_et" in recommendations:
                     start_h = recommendations["recommended_trading_start_hour_et"]
                     self._trading_start = (start_h, 0)
@@ -216,6 +222,7 @@ class AgentScheduler:
                     self._trading_end = (end_h, end_m)
 
             # Persist tuned parameters to settings.yaml so they survive restarts
+            # Apply same _clamp bounds as hot-swap to prevent unclamped values on restart
             if self._config:
                 sig = self._config.setdefault("signal", {})
                 mkt = self._config.setdefault("market", {})
@@ -225,24 +232,28 @@ class AgentScheduler:
                 sig["active_weights_version"] = new_version
                 sig["weights"] = {k: v for k, v in new_weights.items()
                                   if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
+                if "recommended_min_kelly" in recommendations:
+                    sig["min_kelly"] = _clamp(recommendations["recommended_min_kelly"], 0.005, 0.05)
+                if "recommended_atr_sigma_ratio" in recommendations:
+                    sig["atr_sigma_ratio"] = _clamp(float(recommendations["recommended_atr_sigma_ratio"]), 1.2, 2.5)
                 if "recommended_momentum_weight" in recommendations:
-                    sig["momentum_weight"] = recommendations["recommended_momentum_weight"]
+                    sig["momentum_weight"] = _clamp(recommendations["recommended_momentum_weight"], 0.02, 0.10)
                 if "recommended_regime_weight" in recommendations:
-                    sig["regime_weight"] = recommendations["recommended_regime_weight"]
+                    sig["regime_weight"] = _clamp(recommendations["recommended_regime_weight"], 0.02, 0.10)
                 if "recommended_flow_weight" in recommendations:
-                    sig["flow_weight"] = recommendations["recommended_flow_weight"]
+                    sig["flow_weight"] = _clamp(recommendations["recommended_flow_weight"], 0.02, 0.12)
                 if "recommended_student_t_df" in recommendations:
-                    sig["student_t_df"] = int(recommendations["recommended_student_t_df"])
+                    sig["student_t_df"] = _clamp(int(recommendations["recommended_student_t_df"]), 3, 8)
                 if "recommended_min_edge" in recommendations:
-                    sig["entry_threshold"] = recommendations["recommended_min_edge"]
+                    sig["entry_threshold"] = _clamp(recommendations["recommended_min_edge"], 0.01, 0.10)
                 if "recommended_kelly_fraction" in recommendations:
-                    math_sec["kelly_fraction"] = recommendations["recommended_kelly_fraction"]
+                    math_sec["kelly_fraction"] = _clamp(recommendations["recommended_kelly_fraction"], 0.05, 0.25)
                 if "recommended_min_model_probability" in recommendations:
-                    sig["min_model_probability"] = recommendations["recommended_min_model_probability"]
+                    sig["min_model_probability"] = _clamp(recommendations["recommended_min_model_probability"], 0.55, 0.85)
                 if "recommended_exit_edge_threshold" in recommendations:
-                    sig["exit_edge_threshold"] = recommendations["recommended_exit_edge_threshold"]
+                    sig["exit_edge_threshold"] = _clamp(recommendations["recommended_exit_edge_threshold"], -0.25, 0.0)
                 if "recommended_min_time_remaining" in recommendations:
-                    mkt["min_time_remaining_seconds"] = recommendations["recommended_min_time_remaining"]
+                    mkt["min_time_remaining_seconds"] = _clamp(recommendations["recommended_min_time_remaining"], 0, 120)
                 if "recommended_trading_start_hour_et" in recommendations:
                     sched["trading_start_hour_et"] = recommendations["recommended_trading_start_hour_et"]
                 if "recommended_trading_end_hour_et" in recommendations:
@@ -282,6 +293,10 @@ class AgentScheduler:
                     msg += f"\nexit_threshold: `{recommendations['recommended_exit_edge_threshold']}`"
                 if "recommended_min_time_remaining" in recommendations:
                     msg += f"\nmin_time_remaining: `{recommendations['recommended_min_time_remaining']}s`"
+                if "recommended_min_kelly" in recommendations:
+                    msg += f"\nmin_kelly: `{recommendations['recommended_min_kelly']}`"
+                if "recommended_atr_sigma_ratio" in recommendations:
+                    msg += f"\natr_sigma_ratio: `{recommendations['recommended_atr_sigma_ratio']}`"
                 if "recommended_trading_start_hour_et" in recommendations or "recommended_trading_end_hour_et" in recommendations:
                     start_h = recommendations.get("recommended_trading_start_hour_et", self._trading_start[0] if self._trading_start else 8)
                     end_h = recommendations.get("recommended_trading_end_hour_et", self._trading_end[0] if self._trading_end else 16)
@@ -341,6 +356,8 @@ class AgentScheduler:
                 "min_time_remaining": self._min_time_remaining,
                 "trading_start": self._trading_start,
                 "trading_end": self._trading_end,
+                "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
+                "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.7),
             }
 
         # Hold-out split: train on first 60% of outcomes (chronological),
@@ -365,6 +382,42 @@ class AgentScheduler:
                 logger.info(f"Counterfactual analysis: {cf_analysis.get('total_scalps_tracked', 0)} scalps tracked, "
                            f"accuracy={cf_analysis.get('scalp_accuracy', 0):.0%}")
 
+        # Platt calibration fitting
+        from polybot.core.calibrator import PlattCalibrator, compute_log_loss
+        if len(train_outcomes) >= 100 and self.signal_engine:
+            cal_probs = []
+            cal_outcomes = []
+            for o in train_outcomes:
+                ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
+                mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
+                if mp > 0:
+                    cal_probs.append(mp)
+                    cal_outcomes.append(1 if o.get("correct", False) else 0)
+
+            if len(cal_probs) >= 100:
+                cal = PlattCalibrator()
+                if self.signal_engine.calibrator:
+                    cal.a = self.signal_engine.calibrator.a
+                    cal.b = self.signal_engine.calibrator.b
+                if cal.fit(cal_probs, cal_outcomes):
+                    val_probs, val_outs = [], []
+                    for o in validation_outcomes:
+                        ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
+                        mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
+                        if mp > 0:
+                            val_probs.append(mp)
+                            val_outs.append(1 if o.get("correct", False) else 0)
+                    if val_probs:
+                        old_loss = compute_log_loss(val_probs, val_outs)
+                        new_probs = [cal.calibrate(p) for p in val_probs]
+                        new_loss = compute_log_loss(new_probs, val_outs)
+                        if new_loss < old_loss:
+                            cal.save()
+                            self.signal_engine.calibrator = cal
+                            logger.info(f"Platt calibration adopted: log-loss {old_loss:.4f} -> {new_loss:.4f}")
+                        else:
+                            logger.info(f"Platt calibration rejected: {old_loss:.4f} -> {new_loss:.4f}")
+
         # Gate: need at least 50 trades before running TAEvolver and WeightOptimizer.
         # With fewer trades, win-rate variance is too high (±13pp at N=25) — noise, not signal.
         MIN_TRADES_FOR_LEARNING = 50
@@ -387,6 +440,8 @@ class AgentScheduler:
                 "min_time_remaining": self._min_time_remaining,
                 "trading_start": self._trading_start,
                 "trading_end": self._trading_end,
+                "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
+                "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.7),
             }
             for k, old_v in old_config.items():
                 new_v = new_vals.get(k)

@@ -22,6 +22,11 @@ class TradeResult:
     position_id: int | None = None
     reason: str = ""
     log_return: float | None = None
+    pnl: float = 0.0
+    entry_fee_usd: float = 0.0
+    exit_fee_usd: float = 0.0
+    gain_pct: float = 0.0
+    shares: float = 0.0
 
 
 @dataclass
@@ -224,12 +229,22 @@ class BaseTrader(ABC):
         fee_usdc = exit_fee_usdc(shares, fill.fill_price, fee_rate)
         revenue = shares * fill.fill_price - fee_usdc
 
+        # Entry fee breakdown (already deducted in shares at entry — express as USD for logging)
+        shares_ordered = position["size"] / position["entry_price"]
+        entry_fee_in_shares = shares_ordered - shares
+        entry_fee_usd = entry_fee_in_shares * position["entry_price"]
+
+        pnl = revenue - position["size"]
+        gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
+
         # --- Persist to DB ---
         await self.db.close_position(position_id, exit_price=fill.fill_price, log_return=lr)
         bankroll = await self.db.get_bankroll()
         await self.db.set_bankroll(bankroll + revenue)
 
-        return TradeResult(success=True, position_id=position_id, log_return=lr)
+        return TradeResult(success=True, position_id=position_id, log_return=lr,
+                           pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=fee_usdc,
+                           gain_pct=gain_pct, shares=shares)
 
     # -- resolve_position ------------------------------------------------
 
@@ -248,6 +263,17 @@ class BaseTrader(ABC):
                 reason=f"Position {position_id} not found or already closed",
             )
 
+        # --- Fee breakdown for logging ---
+        shares = position.get("shares_held") or position["size"] / position["entry_price"]
+        fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
+        shares_ordered = position["size"] / position["entry_price"]
+        entry_fee_in_shares = shares_ordered - shares
+        entry_fee_usd = entry_fee_in_shares * position["entry_price"]
+        exit_fee_usd_val = exit_fee_usdc(shares, exit_price, fee_rate)
+        revenue = shares * exit_price - exit_fee_usd_val
+        pnl = revenue - position["size"]
+        gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
+
         # --- Compute log return and close in DB ---
         lr = log_return(position["entry_price"], exit_price)
         await self.db.close_position(position_id, exit_price=exit_price, log_return=lr)
@@ -256,4 +282,6 @@ class BaseTrader(ABC):
         new_bankroll = await self._resolve_bankroll(position, exit_price)
         await self.db.set_bankroll(new_bankroll)
 
-        return TradeResult(success=True, position_id=position_id, log_return=lr)
+        return TradeResult(success=True, position_id=position_id, log_return=lr,
+                           pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=exit_fee_usd_val,
+                           gain_pct=gain_pct, shares=shares)
