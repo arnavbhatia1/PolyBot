@@ -208,7 +208,8 @@ async def _record_outcome(outcome_reviewer, pos, exit_price, log_return, gain_pc
 async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_engine,
                        trader, alert_manager, db, config, outcome_reviewer, is_paused_fn,
                        scheduler=None, clob_ws: ClobWebSocket | None = None,
-                       breaker: CircuitBreaker | None = None):
+                       breaker: CircuitBreaker | None = None,
+                       counterfactual_tracker=None):
     import httpx
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
@@ -451,19 +452,21 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
                             await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
                                                   exit_reason="scalp", pnl=pnl, fees=entry_fee + exit_fee)
                             traded_contracts[pos["market_id"]] = int(time.time())
-                            counterfactual_tracker.watch(pos, {
-                                "exit_fill": exit_fill, "pnl": pnl, "gain_pct": gain_pct,
-                                "holding_edge": holding_edge, "model_prob": model_prob,
-                                "market_price": market_price, "seconds_remaining": live["seconds_remaining"],
-                                "exit_threshold": exit_threshold, "strike_price": strike_now,
-                                "btc_price": btc_now,
-                            })
+                            if counterfactual_tracker:
+                                counterfactual_tracker.watch(pos, {
+                                    "exit_fill": exit_fill, "pnl": pnl, "gain_pct": gain_pct,
+                                    "holding_edge": holding_edge, "model_prob": model_prob,
+                                    "market_price": market_price, "seconds_remaining": live["seconds_remaining"],
+                                    "exit_threshold": exit_threshold, "strike_price": strike_now,
+                                    "btc_price": btc_now,
+                                })
 
             # --- COUNTERFACTUAL: check watched scalps for resolution ---
-            cf_resolved = counterfactual_tracker.check_resolutions(binance_feed, _btc_at_expiry)
-            for cf in cf_resolved:
-                verdict = "CORRECT" if cf["scalp_was_optimal"] else "MISSED +${:.2f}".format(cf["delta_pnl"])
-                logger.info(f"COUNTERFACTUAL resolved: {cf['side']} {cf['market_id']} — {verdict}")
+            if counterfactual_tracker:
+                cf_resolved = counterfactual_tracker.check_resolutions(binance_feed, _btc_at_expiry)
+                for cf in cf_resolved:
+                    verdict = "CORRECT" if cf["scalp_was_optimal"] else "MISSED +${:.2f}".format(cf["delta_pnl"])
+                    logger.info(f"COUNTERFACTUAL resolved: {cf['side']} {cf['market_id']} — {verdict}")
 
             # --- ENTRY: find contract and evaluate for edge ---
             # Skip new entries outside trading hours (positions still managed above)
@@ -919,7 +922,8 @@ async def main():
             binance_feed, market_scanner, indicator_engine, signal_engine,
             trader, alert_manager, db, config, outcome_reviewer,
             is_paused_fn=lambda: discord_bot.is_paused,
-            scheduler=scheduler, clob_ws=clob_ws, breaker=breaker)),
+            scheduler=scheduler, clob_ws=clob_ws, breaker=breaker,
+            counterfactual_tracker=counterfactual_tracker)),
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(run_discord()),
