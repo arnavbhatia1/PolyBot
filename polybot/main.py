@@ -18,6 +18,7 @@ from polybot.core.signal_engine import SignalEngine
 from polybot.core.order_flow import compute_flow_signal
 from polybot.brain.claude_client import ClaudeClient
 from polybot.execution.paper_trader import PaperTrader
+from polybot.execution.live_trader import LiveTrader
 from polybot.agents.outcome_reviewer import OutcomeReviewer
 from polybot.agents.bias_detector import BiasDetector
 from polybot.agents.ta_evolver import TAEvolver
@@ -843,8 +844,10 @@ async def main():
     # Execution — route based on mode
     exec_cfg = config["execution"]
     if mode == "live":
-        logger.error("LIVE MODE not yet available for polymarket.com. Use --mode paper.")
-        return
+        trader = LiveTrader(db=db, max_slippage=exec_cfg["max_slippage"],
+            max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
+            max_concurrent_positions=exec_cfg["max_concurrent_positions"])
+        logger.info("LIVE MODE — real Polymarket CLOB orders")
     else:
         trader = PaperTrader(db=db, max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
