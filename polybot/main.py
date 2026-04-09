@@ -1162,6 +1162,7 @@ async def main() -> None:
     await binance_feed.start()
 
     # Shared HTTP client — lifecycle managed here in main()
+    import httpx
     http_client = httpx.AsyncClient(timeout=5)
 
     async def run_discord():
