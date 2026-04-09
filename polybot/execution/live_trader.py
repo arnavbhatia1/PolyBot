@@ -8,27 +8,31 @@ from py_clob_client.clob_types import (
     AssetType,
     BalanceAllowanceParams,
     MarketOrderArgs,
-    OpenOrderParams,
-    OrderArgs,
     OrderType,
 )
 from py_clob_client.order_builder.constants import BUY, SELL
 
 from polybot.db.models import Database
-from polybot.execution.base import TradeResult
-from polybot.execution.paper_trader import (
-    DEFAULT_FEE_RATE,
-    entry_fee_shares,
-    exit_fee_usdc,
-)
-from polybot.math_engine.returns import log_return
+from polybot.execution.base import BaseTrader, FillResult
 
 logger = logging.getLogger(__name__)
 
-# Poll interval and timeout for fill confirmation
-_FILL_POLL_INTERVAL = 0.5  # seconds
-_FILL_TIMEOUT = 5.0  # seconds
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
 
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 0.5  # seconds, doubles each attempt
+_NON_RETRYABLE_ERRORS = frozenset({
+    "INVALID_ORDER_NOT_ENOUGH_BALANCE",
+    "MARKET_NOT_READY",
+    "INVALID_ORDER_EXPIRATION",
+})
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
 
 def _create_clob_client() -> ClobClient:
     """Create and authenticate a ClobClient from env vars. Raises on failure."""
@@ -80,15 +84,20 @@ def verify_auth() -> tuple[bool, str, float]:
     return True, msg, balance
 
 
-class LiveTrader:
-    """Real Polymarket CLOB trading. Same interface as PaperTrader."""
+# ---------------------------------------------------------------------------
+# LiveTrader
+# ---------------------------------------------------------------------------
+
+class LiveTrader(BaseTrader):
+    """Real Polymarket CLOB trading with FOK market orders and retry."""
 
     def __init__(self, db: Database, **kwargs):
-        self.db = db
-        self.max_slippage = kwargs.get("max_slippage", 0.02)
-        self.max_bankroll_deployed = kwargs.get("max_bankroll_deployed", 0.80)
-        self.max_concurrent_positions = kwargs.get("max_concurrent_positions", 1)
-
+        super().__init__(
+            db=db,
+            max_slippage=kwargs.get("max_slippage", 0.02),
+            max_bankroll_deployed=kwargs.get("max_bankroll_deployed", 0.80),
+            max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
+        )
         self.client = _create_clob_client()
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
@@ -96,186 +105,109 @@ class LiveTrader:
         """Fetch USDC balance from Polymarket. Returns float in dollars."""
         return _get_balance_usd(self.client)
 
-    async def _get_deployed_capital(self) -> float:
-        positions = await self.db.get_open_positions()
-        return sum(p["size"] for p in positions)
+    async def _execute_buy(self, token_id: str, price: float, size: float) -> FillResult:
+        """FOK market buy for `size` USDC."""
+        return await self._submit_fok_order(token_id, BUY, size, price)
 
-    async def open_trade(
-        self, market_id: str, question: str, side: str, price: float,
-        size: float, signal_score: float, signal_strength: str,
-        ev_at_entry: float, exit_target: float, stop_loss: float,
-        weight_version: str, indicator_snapshot: str = "",
-        token_id: str = "", fee_rate: float = DEFAULT_FEE_RATE,
-    ) -> TradeResult:
-        # --- Rejection gates (identical to PaperTrader) ---
-        if await self.db.has_position_for_market(market_id):
-            return TradeResult(success=False, reason="Duplicate market — already have position")
-        if await self.db.get_open_position_count() >= self.max_concurrent_positions:
-            return TradeResult(success=False, reason="Max positions reached")
-        bankroll = await self.db.get_bankroll()
-        deployed = await self._get_deployed_capital()
-        max_deployable = bankroll * self.max_bankroll_deployed
-        if deployed + size > max_deployable:
-            return TradeResult(success=False, reason=f"Bankroll limit — deployed {deployed:.2f}, max {max_deployable:.2f}")
+    async def _execute_sell(self, token_id: str, shares: float, price: float) -> FillResult:
+        """FOK market sell for `shares` shares."""
+        return await self._submit_fok_order(token_id, SELL, shares, price)
 
-        # --- Build, sign, and submit order ---
-        # Uses GTC + poll + cancel pattern (FOK not reliably supported by CLOB SDK)
-        try:
-            order_args = OrderArgs(
-                token_id=token_id,
-                price=price,
-                size=size,
-                side=BUY,
-            )
-            signed_order = self.client.create_order(order_args)
-            resp = self.client.post_order(signed_order, OrderType.GTC)
-            order_id = resp.get("orderID", "")
-            logger.info("Order submitted: %s (market=%s, price=%.2f, size=%.2f)",
-                         order_id, market_id, price, size)
-        except Exception as e:
-            logger.error("Order submission failed: %s", e)
-            return TradeResult(success=False, reason=f"Order submission failed: {e}")
-
-        # --- Poll for fill ---
-        elapsed = 0.0
-        fill_price = None
-        fill_size = None
-        while elapsed < _FILL_TIMEOUT:
-            order_status = self.client.get_order(order_id)
-            status = order_status.get("status", "")
-
-            if status == "MATCHED":
-                trades = order_status.get("associate_trades", [])
-                if trades:
-                    fill_price = float(trades[0]["price"])
-                    fill_size = float(trades[0]["size"])
-                break
-
-            if status in ("CANCELLED", "EXPIRED"):
-                logger.warning("Order %s ended with status %s", order_id, status)
-                return TradeResult(success=False, reason=f"Order {status.lower()}")
-
-            await asyncio.sleep(_FILL_POLL_INTERVAL)
-            elapsed += _FILL_POLL_INTERVAL
-
-        # Timeout — cancel and bail
-        if fill_price is None:
-            logger.warning("Order %s timed out after %.1fs — cancelling", order_id, _FILL_TIMEOUT)
-            try:
-                self.client.cancel(order_id)
-            except Exception:
-                pass  # Order may already be gone
-            return TradeResult(success=False, reason="Order not filled within timeout")
-
-        # --- Fee math (identical to PaperTrader) ---
-        shares_ordered = fill_size / fill_price
-        fee_in_shares = entry_fee_shares(shares_ordered, fill_price, fee_rate)
-        shares_received = shares_ordered - fee_in_shares
-
-        # --- Persist to DB ---
-        pos_id = await self.db.open_position(
-            market_id=market_id, question=question, side=side,
-            entry_price=fill_price, size=fill_size, signal_score=signal_score,
-            signal_strength=signal_strength, ev_at_entry=ev_at_entry,
-            exit_target=exit_target, stop_loss=stop_loss,
-            weight_version=weight_version,
-            indicator_snapshot=indicator_snapshot,
-            fee_rate=fee_rate, shares_held=shares_received,
-        )
-        await self.db.set_bankroll(bankroll - fill_size)
-        logger.info("Position opened: id=%d, market=%s, shares=%.4f (fee=%.4f shares deducted)",
-                     pos_id, market_id, shares_received, fee_in_shares)
-        return TradeResult(success=True, position_id=pos_id)
-
-    async def close_trade(
-        self, position_id: int, exit_price: float, token_id: str = "",
-    ) -> TradeResult:
-        # --- Fetch position from DB ---
-        positions = await self.db.get_open_positions()
-        position = next((p for p in positions if p["id"] == position_id), None)
-        if not position:
-            return TradeResult(success=False, reason=f"Position {position_id} not found or already closed")
-
-        # --- Shares and fee rate from position (same as PaperTrader) ---
-        shares = position.get("shares_held") or position["size"] / position["entry_price"]
-        fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
-
-        # --- Build, sign, and submit SELL order ---
-        try:
-            order_args = OrderArgs(
-                token_id=token_id or position.get("token_id", ""),
-                price=exit_price,
-                size=shares * exit_price,
-                side=SELL,
-            )
-            signed_order = self.client.create_order(order_args)
-            resp = self.client.post_order(signed_order, OrderType.GTC)
-            order_id = resp.get("orderID", "")
-            logger.info("Sell order submitted: %s (position=%d, price=%.2f, shares=%.4f)",
-                         order_id, position_id, exit_price, shares)
-        except Exception as e:
-            logger.error("Sell order submission failed: %s", e)
-            return TradeResult(success=False, reason=f"Sell order failed: {e}")
-
-        # --- Poll for fill ---
-        elapsed = 0.0
-        fill_price = None
-        while elapsed < _FILL_TIMEOUT:
-            order_status = self.client.get_order(order_id)
-            status = order_status.get("status", "")
-
-            if status == "MATCHED":
-                trades = order_status.get("associate_trades", [])
-                if trades:
-                    fill_price = float(trades[0]["price"])
-                break
-
-            if status in ("CANCELLED", "EXPIRED"):
-                logger.warning("Sell order %s ended with status %s", order_id, status)
-                return TradeResult(success=False, reason=f"Sell order {status.lower()}")
-
-            await asyncio.sleep(_FILL_POLL_INTERVAL)
-            elapsed += _FILL_POLL_INTERVAL
-
-        # Timeout — cancel and bail
-        if fill_price is None:
-            logger.warning("Sell order %s timed out after %.1fs — cancelling", order_id, _FILL_TIMEOUT)
-            try:
-                self.client.cancel(order_id)
-            except Exception:
-                pass  # Order may already be gone
-            return TradeResult(success=False, reason="Sell order not filled within timeout")
-
-        actual_exit_price = fill_price
-
-        # --- Fee math and revenue (identical to PaperTrader) ---
-        lr = log_return(position["entry_price"], actual_exit_price)
-        fee_usdc = exit_fee_usdc(shares, actual_exit_price, fee_rate)
-        revenue = shares * actual_exit_price - fee_usdc
-
-        # --- Persist to DB ---
-        await self.db.close_position(position_id, exit_price=actual_exit_price, log_return=lr)
-        bankroll = await self.db.get_bankroll()
-        await self.db.set_bankroll(bankroll + revenue)
-        logger.info("Position closed: id=%d, exit=%.4f, log_return=%.4f, revenue=%.4f",
-                     position_id, actual_exit_price, lr, revenue)
-        return TradeResult(success=True, position_id=position_id, log_return=lr)
-
-    async def resolve_position(self, position_id: int, exit_price: float) -> TradeResult:
-        """Resolution: Polymarket auto-credits USDC. No CLOB order needed."""
-        # --- Fetch position from DB ---
-        positions = await self.db.get_open_positions()
-        position = next((p for p in positions if p["id"] == position_id), None)
-        if not position:
-            return TradeResult(success=False, reason=f"Position {position_id} not found or already closed")
-
-        # --- Compute log return and close in DB ---
-        lr = log_return(position["entry_price"], exit_price)
-        await self.db.close_position(position_id, exit_price=exit_price, log_return=lr)
-
-        # --- Sync bankroll with real Polymarket balance ---
+    async def _resolve_bankroll(self, position: dict, exit_price: float) -> float:
+        """Sync bankroll with real Polymarket balance."""
         real_balance = await self.get_balance()
-        await self.db.set_bankroll(real_balance)
-        logger.info("Position resolved: id=%d, exit=%.2f, log_return=%.4f, synced bankroll=%.2f",
-                     position_id, exit_price, lr, real_balance)
-        return TradeResult(success=True, position_id=position_id, log_return=lr)
+        logger.info("Resolution bankroll sync: real balance=%.2f", real_balance)
+        return real_balance
+
+    # -- FOK order submission with retry ------------------------------------
+
+    async def _submit_fok_order(
+        self,
+        token_id: str,
+        side: str,
+        amount: float,
+        expected_price: float,
+    ) -> FillResult:
+        """Submit FOK market order with exponential-backoff retry.
+
+        Args:
+            token_id: CLOB token ID.
+            side: BUY or SELL.
+            amount: USDC for BUY, shares for SELL.
+            expected_price: Used as fallback if fill price lookup fails.
+
+        Returns:
+            FillResult with fill details or failure reason.
+        """
+        last_error = ""
+        for attempt in range(1, _MAX_RETRIES + 1):
+            try:
+                mo = MarketOrderArgs(token_id=token_id, amount=amount, side=side)
+                signed = self.client.create_market_order(mo)
+                resp = self.client.post_order(signed, OrderType.FOK)
+
+                if not resp.get("success"):
+                    error_msg = resp.get("errorMsg", "unknown error")
+                    # Non-retryable errors bail immediately
+                    if any(code in error_msg for code in _NON_RETRYABLE_ERRORS):
+                        logger.error("Order rejected (non-retryable): %s", error_msg)
+                        return FillResult(filled=False, reason=error_msg)
+                    last_error = error_msg
+                    logger.warning(
+                        "FOK attempt %d/%d failed: %s", attempt, _MAX_RETRIES, error_msg,
+                    )
+                    if attempt < _MAX_RETRIES:
+                        await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+                    continue
+
+                if resp.get("status") == "matched":
+                    order_id = resp.get("orderID", "")
+                    fill_price = self._get_fill_price(order_id, expected_price)
+                    logger.info(
+                        "FOK %s filled: order=%s, price=%.4f, amount=%.4f",
+                        side, order_id, fill_price, amount,
+                    )
+                    return FillResult(
+                        filled=True,
+                        fill_price=fill_price,
+                        fill_size=amount if side == BUY else 0.0,
+                    )
+
+                # Unexpected status
+                last_error = f"Unexpected status: {resp.get('status')}"
+                logger.warning(
+                    "FOK attempt %d/%d: %s", attempt, _MAX_RETRIES, last_error,
+                )
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(
+                    "FOK attempt %d/%d exception: %s", attempt, _MAX_RETRIES, e,
+                )
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+
+        return FillResult(
+            filled=False,
+            reason=f"Failed after {_MAX_RETRIES} attempts: {last_error}",
+        )
+
+    # -- Fill price lookup --------------------------------------------------
+
+    def _get_fill_price(self, order_id: str, fallback_price: float) -> float:
+        """Fetch actual fill price via VWAP from associate_trades."""
+        try:
+            order = self.client.get_order(order_id)
+            trades = order.get("associate_trades", [])
+            if not trades:
+                return fallback_price
+            total_shares = sum(float(t["size"]) for t in trades)
+            if total_shares == 0:
+                return fallback_price
+            total_cost = sum(float(t["size"]) * float(t["price"]) for t in trades)
+            return total_cost / total_shares
+        except Exception as e:
+            logger.warning("Failed to fetch fill price for %s: %s", order_id, e)
+            return fallback_price

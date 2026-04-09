@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from polybot.config.loader import load_config, get_secret
-from polybot.execution.paper_trader import taker_fee, entry_fee_shares, exit_fee_usdc, DEFAULT_FEE_RATE
+from polybot.execution.base import taker_fee, entry_fee_shares, exit_fee_usdc, DEFAULT_FEE_RATE
 from polybot.db.models import Database
 from polybot.core.binance_feed import BinanceFeed
 from polybot.core.market_scanner import BTCMarketScanner

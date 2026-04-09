@@ -36,9 +36,9 @@ polybot/
     ema.py, rsi.py, macd.py, stochastic.py, obv.py, vwap.py, atr.py
     engine.py                # Combines all 7, manages weight versions
   execution/
-    base.py                  # TradeResult dataclass
-    paper_trader.py          # Simulated trades (paper mode)
-    live_trader.py           # Real Polymarket CLOB orders via py-clob-client SDK
+    base.py                  # BaseTrader ABC, TradeResult, FillResult, fee functions
+    paper_trader.py          # PaperTrader(BaseTrader) — instant simulated fills
+    live_trader.py           # LiveTrader(BaseTrader) — FOK market orders via py-clob-client SDK
     circuit_breaker.py       # Streak-based Kelly reduction (3 losses → half Kelly, 2 wins → restore)
   agents/
     scheduler.py             # Daily learning pipeline
@@ -97,7 +97,7 @@ polybot/
 python -m polybot.main --mode paper   # Paper trading (persistent bankroll across sessions)
 python -m polybot.main --mode live    # Live trading (real USDC on Polymarket)
 python -m polybot.main                # Defaults to mode in settings.yaml
-python -m pytest polybot/tests/       # 249 tests
+python -m pytest polybot/tests/       # 334 tests
 ```
 
 ## How the Probability Model Works
@@ -469,21 +469,21 @@ WeightOptimizer: backtest on last 40% (validation set)
 
 ### Paper → Live: What Changes, What Doesn't
 
-**IDENTICAL (zero changes):** Signal engine, indicator engine, order flow, circuit breaker, outcome reviewer, learning pipeline, Discord alerts, DB schema, all entry gates, Kelly sizing, slippage estimation (for pre-trade net-edge gate).
+**IDENTICAL (zero changes):** Signal engine, indicator engine, order flow, circuit breaker, outcome reviewer, learning pipeline, Discord alerts, DB schema, all entry gates, Kelly sizing, slippage estimation (for pre-trade net-edge gate). Both traders extend `BaseTrader` ABC — rejection gates, fee math, and DB operations are shared code in `base.py`, not duplicated.
 
-**CHANGES (inside LiveTrader only):**
-- `open_trade()`: mock fill → EIP-712 sign → POST /orders → poll fill → DB with actuals
-- `close_trade()`: mock sell → EIP-712 sign → POST /orders (SELL) → poll fill → DB with actuals
-- `resolve_position()`: simulated $0/$1 → sync balance from Polymarket API (auto-credited on resolution)
-- Bankroll: fetch real USDC balance on startup, reconcile periodically
-- Slippage: actual fill price replaces simulation (but convex model still used for pre-trade gate)
+**CHANGES (only 3 abstract methods differ between PaperTrader and LiveTrader):**
+- `_execute_buy()`: instant fill → FOK market order via `create_market_order` + `post_order(FOK)` with exponential-backoff retry (3 attempts)
+- `_execute_sell()`: instant fill → FOK market order via `create_market_order` + `post_order(FOK)` with retry
+- `_resolve_bankroll()`: compute `shares * exit_price - fee` → fetch real USDC balance from Polymarket API (auto-credited on resolution)
+- Bankroll: fetch real USDC balance on startup, reconcile on resolution
+- Slippage: actual VWAP fill price replaces simulation (but convex model still used for pre-trade gate)
 
-**INVARIANTS THAT MUST HOLD IN BOTH MODES:**
+**INVARIANTS THAT MUST HOLD IN BOTH MODES (enforced by BaseTrader):**
 - Entry fee collected in SHARES (fewer shares received, not extra USDC)
 - Exit fee collected in USDC (subtracted from proceeds)
-- Bankroll debited by `size` USDC on entry, credited by `revenue` on exit
+- Bankroll debited by `fill_size` USDC on entry, credited by `revenue` on exit
 - All 3 open_trade rejection gates run BEFORE any exchange interaction
-- TradeResult is the contract boundary — same shape regardless of mode
+- TradeResult and FillResult are the contract boundaries — same shape regardless of mode
 
 ## Common Issues
 
@@ -552,7 +552,8 @@ The core trading logic is FROZEN. Do not make structural changes to:
 - `signal_engine.py` (4-layer probability model)
 - `order_flow.py` (book imbalance + trade flow)
 - Entry/exit/pricing logic in `main.py`
-- `paper_trader.py` (fee simulation)
+- `base.py` (BaseTrader ABC, fee math, shared gates/DB ops)
+- `paper_trader.py` / `live_trader.py` (extend BaseTrader — only 3 abstract methods each)
 
 Only the daily learning pipeline (4:45 PM) tunes parameters slowly. Any proposed "improvement" to frozen code requires explicit user approval. New features go in NEW files/modules.
 

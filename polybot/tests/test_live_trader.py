@@ -1,8 +1,8 @@
 import sys
 import pytest
 import pytest_asyncio
-from unittest.mock import MagicMock, patch, AsyncMock
-from polybot.execution.base import TradeResult
+from unittest.mock import MagicMock, patch
+from polybot.execution.base import TradeResult, entry_fee_shares
 from polybot.db.models import Database
 
 
@@ -23,20 +23,22 @@ def _mock_clob_client():
         "secret": "test-secret",
         "passphrase": "test-pass",
     }
-    mock.get_balance_allowance.return_value = {"balance": "10000000"}  # 10 USDC in wei (6 decimals)
+    mock.get_balance_allowance.return_value = {"balance": "10000000"}  # 10 USDC
     return mock
 
 
+# ---------------------------------------------------------------------------
+# Init tests
+# ---------------------------------------------------------------------------
+
 @pytest.mark.asyncio
 async def test_init_creates_client_and_derives_creds(db):
-    # Pop cached module FIRST so the fresh import picks up the patch
     sys.modules.pop("polybot.execution.live_trader", None)
     with patch.dict("os.environ", {
         "POLYMARKET_PRIVATE_KEY": "0x" + "ab" * 32,
         "POLYMARKET_FUNDER": "0x863DB57D4a54fA306091D53B4Fe19f1611221Be8",
     }):
         with patch("py_clob_client.client.ClobClient", return_value=_mock_clob_client()) as MockClient:
-            # Re-import after patching so LiveTrader sees the mock
             sys.modules.pop("polybot.execution.live_trader", None)
             from polybot.execution.live_trader import LiveTrader
             trader = LiveTrader(db=db)
@@ -48,7 +50,6 @@ async def test_init_creates_client_and_derives_creds(db):
 @pytest.mark.asyncio
 async def test_init_raises_without_private_key(db):
     with patch.dict("os.environ", {}, clear=True):
-        # Remove cached module so we get a fresh import with cleared env
         sys.modules.pop("polybot.execution.live_trader", None)
         from polybot.execution.live_trader import LiveTrader
         with pytest.raises(ValueError, match="POLYMARKET_PRIVATE_KEY"):
@@ -56,13 +57,12 @@ async def test_init_raises_without_private_key(db):
 
 
 # ---------------------------------------------------------------------------
-# open_trade tests
+# Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture
 async def trader(db):
     """Create a LiveTrader with a mocked SDK client."""
-    import sys
     sys.modules.pop("polybot.execution.live_trader", None)
     with patch("py_clob_client.client.ClobClient", return_value=_mock_clob_client()):
         with patch.dict("os.environ", {
@@ -75,13 +75,19 @@ async def trader(db):
     sys.modules.pop("polybot.execution.live_trader", None)
 
 
-def _setup_successful_fill(trader, fill_price="0.55", fill_size="10.0"):
-    """Wire up mock client to simulate a successful GTC fill."""
+def _setup_successful_fill(trader, fill_price="0.55", fill_size="18.18"):
+    """Wire up mock for successful FOK fill.
+
+    fill_size in associate_trades = shares (CLOB convention).
+    """
     signed_order = {"order": "signed-payload"}
-    trader.client.create_order.return_value = signed_order
-    trader.client.post_order.return_value = {"orderID": "order-123"}
+    trader.client.create_market_order.return_value = signed_order
+    trader.client.post_order.return_value = {
+        "success": True,
+        "status": "matched",
+        "orderID": "order-123",
+    }
     trader.client.get_order.return_value = {
-        "status": "MATCHED",
         "associate_trades": [{"price": fill_price, "size": fill_size}],
     }
 
@@ -103,6 +109,10 @@ _TRADE_KWARGS = dict(
     fee_rate=0.018,
 )
 
+
+# ---------------------------------------------------------------------------
+# open_trade tests
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_open_trade_success(trader):
@@ -142,24 +152,19 @@ async def test_open_trade_rejects_bankroll_exceeded(trader):
 
 
 @pytest.mark.asyncio
-async def test_open_trade_handles_unfilled_order(trader, monkeypatch):
-    # Patch timeouts to make test fast
-    import polybot.execution.live_trader as lt_mod
-    monkeypatch.setattr(lt_mod, "_FILL_TIMEOUT", 0.1)
-    monkeypatch.setattr(lt_mod, "_FILL_POLL_INTERVAL", 0.01)
-
+async def test_open_trade_handles_fok_failure(trader):
+    """post_order returns non-retryable INVALID_ORDER_NOT_ENOUGH_BALANCE — fails, bankroll unchanged."""
     signed_order = {"order": "signed-payload"}
-    trader.client.create_order.return_value = signed_order
-    trader.client.post_order.return_value = {"orderID": "order-456"}
-    # Order stays LIVE — never fills
-    trader.client.get_order.return_value = {"status": "LIVE"}
-    trader.client.cancel.return_value = None
+    trader.client.create_market_order.return_value = signed_order
+    trader.client.post_order.return_value = {
+        "success": False,
+        "errorMsg": "INVALID_ORDER_NOT_ENOUGH_BALANCE",
+    }
 
     result = await trader.open_trade(**_TRADE_KWARGS)
 
     assert result.success is False
-    assert "fill" in result.reason.lower() or "timeout" in result.reason.lower()
-    trader.client.cancel.assert_called_once_with("order-456")
+    assert "INVALID_ORDER_NOT_ENOUGH_BALANCE" in result.reason
 
     # Bankroll unchanged
     bankroll = await trader.db.get_bankroll()
@@ -168,7 +173,7 @@ async def test_open_trade_handles_unfilled_order(trader, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_open_trade_stores_correct_shares(trader):
-    _setup_successful_fill(trader, fill_price="0.55", fill_size="10.0")
+    _setup_successful_fill(trader, fill_price="0.55", fill_size="18.18")
     result = await trader.open_trade(**_TRADE_KWARGS)
     assert result.success is True
 
@@ -176,13 +181,79 @@ async def test_open_trade_stores_correct_shares(trader):
     assert len(positions) == 1
     pos = positions[0]
 
+    # fill_size returned by _submit_fok_order for BUY = amount = size = 10.0
+    # fill_price = VWAP from associate_trades = 0.55
     # shares_ordered = fill_size / fill_price = 10.0 / 0.55
     shares_ordered = 10.0 / 0.55
-    from polybot.execution.paper_trader import entry_fee_shares
     fee_in_shares = entry_fee_shares(shares_ordered, 0.55, 0.018)
     expected_shares = shares_ordered - fee_in_shares
 
     assert pos["shares_held"] == pytest.approx(expected_shares, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Retry tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_open_trade_retries_on_transient_failure(trader, monkeypatch):
+    """post_order fails once with retryable error, then succeeds — call_count == 2."""
+    import polybot.execution.live_trader as lt_mod
+    monkeypatch.setattr(lt_mod, "_RETRY_BASE_DELAY", 0.01)
+
+    signed_order = {"order": "signed-payload"}
+    trader.client.create_market_order.return_value = signed_order
+
+    failure_resp = {"success": False, "errorMsg": "TRANSIENT_NETWORK_ERROR"}
+    success_resp = {"success": True, "status": "matched", "orderID": "order-retry"}
+    trader.client.post_order.side_effect = [failure_resp, success_resp]
+
+    trader.client.get_order.return_value = {
+        "associate_trades": [{"price": "0.55", "size": "18.18"}],
+    }
+
+    result = await trader.open_trade(**_TRADE_KWARGS)
+
+    assert result.success is True
+    assert trader.client.post_order.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_open_trade_no_retry_on_balance_error(trader):
+    """Non-retryable INVALID_ORDER_NOT_ENOUGH_BALANCE — post_order called exactly once."""
+    signed_order = {"order": "signed-payload"}
+    trader.client.create_market_order.return_value = signed_order
+    trader.client.post_order.return_value = {
+        "success": False,
+        "errorMsg": "INVALID_ORDER_NOT_ENOUGH_BALANCE",
+    }
+
+    result = await trader.open_trade(**_TRADE_KWARGS)
+
+    assert result.success is False
+    assert trader.client.post_order.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_open_trade_retries_on_exception(trader, monkeypatch):
+    """post_order raises ConnectionError, then succeeds — call_count == 2."""
+    import polybot.execution.live_trader as lt_mod
+    monkeypatch.setattr(lt_mod, "_RETRY_BASE_DELAY", 0.01)
+
+    signed_order = {"order": "signed-payload"}
+    trader.client.create_market_order.return_value = signed_order
+
+    success_resp = {"success": True, "status": "matched", "orderID": "order-ex-retry"}
+    trader.client.post_order.side_effect = [ConnectionError("socket closed"), success_resp]
+
+    trader.client.get_order.return_value = {
+        "associate_trades": [{"price": "0.55", "size": "18.18"}],
+    }
+
+    result = await trader.open_trade(**_TRADE_KWARGS)
+
+    assert result.success is True
+    assert trader.client.post_order.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -192,13 +263,13 @@ async def test_open_trade_stores_correct_shares(trader):
 @pytest.mark.asyncio
 async def test_close_trade_success(trader):
     # Open a position first
-    _setup_successful_fill(trader, fill_price="0.55", fill_size="10.0")
+    _setup_successful_fill(trader, fill_price="0.55", fill_size="18.18")
     open_result = await trader.open_trade(**_TRADE_KWARGS)
     assert open_result.success is True
     pos_id = open_result.position_id
 
-    # Reconfigure mock for the sell side
-    _setup_successful_fill(trader, fill_price="0.68", fill_size="10.0")
+    # Reconfigure mock for the sell side at 0.68
+    _setup_successful_fill(trader, fill_price="0.68", fill_size="18.18")
 
     result = await trader.close_trade(pos_id, exit_price=0.68, token_id="tok-up-123")
 
@@ -224,7 +295,7 @@ async def test_close_trade_not_found(trader):
 @pytest.mark.asyncio
 async def test_resolve_position_winner(trader):
     # Open a position at price=0.50, size=50.0
-    _setup_successful_fill(trader, fill_price="0.50", fill_size="50.0")
+    _setup_successful_fill(trader, fill_price="0.50", fill_size="100.0")
     kwargs = {**_TRADE_KWARGS, "price": 0.50, "size": 50.0}
     open_result = await trader.open_trade(**kwargs)
     assert open_result.success is True
@@ -250,7 +321,7 @@ async def test_resolve_position_winner(trader):
 @pytest.mark.asyncio
 async def test_resolve_position_loser(trader):
     # Open a position at price=0.50, size=50.0
-    _setup_successful_fill(trader, fill_price="0.50", fill_size="50.0")
+    _setup_successful_fill(trader, fill_price="0.50", fill_size="100.0")
     kwargs = {**_TRADE_KWARGS, "price": 0.50, "size": 50.0, "market_id": "mkt-loser"}
     open_result = await trader.open_trade(**kwargs)
     assert open_result.success is True

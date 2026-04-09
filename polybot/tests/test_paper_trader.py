@@ -1,7 +1,8 @@
 import pytest
 import pytest_asyncio
 from polybot.execution.base import TradeResult
-from polybot.execution.paper_trader import PaperTrader, taker_fee, entry_fee_shares, exit_fee_usdc, DEFAULT_FEE_RATE
+from polybot.execution.base import taker_fee, entry_fee_shares, exit_fee_usdc, DEFAULT_FEE_RATE
+from polybot.execution.paper_trader import PaperTrader
 from polybot.db.models import Database
 
 
