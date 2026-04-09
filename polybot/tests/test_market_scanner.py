@@ -259,6 +259,30 @@ async def test_get_live_volume_returns_zero_on_error():
     assert result == 0.0
 
 
+def test_parse_contract_extracts_event_metadata():
+    event = {
+        **SAMPLE_EVENT,
+        "eventMetadata": {
+            "priceToBeat": 72151.5956398658,
+            "finalPrice": 72304.1338669154,
+        },
+    }
+    c = BTCMarketScanner().parse_contract(event)
+    assert c["event_metadata"]["price_to_beat"] == pytest.approx(72151.60, rel=1e-4)
+    assert c["event_metadata"]["final_price"] == pytest.approx(72304.13, rel=1e-4)
+
+
+def test_parse_contract_event_metadata_null():
+    event = {**SAMPLE_EVENT, "eventMetadata": None}
+    c = BTCMarketScanner().parse_contract(event)
+    assert c["event_metadata"] is None
+
+
+def test_parse_contract_event_metadata_missing():
+    c = BTCMarketScanner().parse_contract(SAMPLE_EVENT)
+    assert c["event_metadata"] is None
+
+
 def test_parse_contract_handles_list_outcomes():
     event = SAMPLE_EVENT.copy()
     event["markets"] = [{

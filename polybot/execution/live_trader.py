@@ -86,17 +86,22 @@ class LiveTrader:
             return TradeResult(success=False, reason=f"Bankroll limit — deployed {deployed:.2f}, max {max_deployable:.2f}")
 
         # --- Build, sign, and submit order ---
-        order_args = OrderArgs(
-            token_id=token_id,
-            price=price,
-            size=size,
-            side=BUY,
-        )
-        signed_order = self.client.create_order(order_args)
-        resp = self.client.post_order(signed_order, OrderType.GTC)
-        order_id = resp["orderID"]
-        logger.info("Order submitted: %s (market=%s, price=%.2f, size=%.2f)",
-                     order_id, market_id, price, size)
+        # Uses GTC + poll + cancel pattern (FOK not reliably supported by CLOB SDK)
+        try:
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=price,
+                size=size,
+                side=BUY,
+            )
+            signed_order = self.client.create_order(order_args)
+            resp = self.client.post_order(signed_order, OrderType.GTC)
+            order_id = resp.get("orderID", "")
+            logger.info("Order submitted: %s (market=%s, price=%.2f, size=%.2f)",
+                         order_id, market_id, price, size)
+        except Exception as e:
+            logger.error("Order submission failed: %s", e)
+            return TradeResult(success=False, reason=f"Order submission failed: {e}")
 
         # --- Poll for fill ---
         elapsed = 0.0
@@ -123,8 +128,11 @@ class LiveTrader:
         # Timeout — cancel and bail
         if fill_price is None:
             logger.warning("Order %s timed out after %.1fs — cancelling", order_id, _FILL_TIMEOUT)
-            self.client.cancel(order_id)
-            return TradeResult(success=False, reason="Order fill timeout — cancelled")
+            try:
+                self.client.cancel(order_id)
+            except Exception:
+                pass  # Order may already be gone
+            return TradeResult(success=False, reason="Order not filled within timeout")
 
         # --- Fee math (identical to PaperTrader) ---
         shares_ordered = fill_size / fill_price
@@ -160,17 +168,21 @@ class LiveTrader:
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
 
         # --- Build, sign, and submit SELL order ---
-        order_args = OrderArgs(
-            token_id=token_id or position.get("token_id", ""),
-            price=exit_price,
-            size=shares * exit_price,
-            side=SELL,
-        )
-        signed_order = self.client.create_order(order_args)
-        resp = self.client.post_order(signed_order, OrderType.GTC)
-        order_id = resp["orderID"]
-        logger.info("Sell order submitted: %s (position=%d, price=%.2f, shares=%.4f)",
-                     order_id, position_id, exit_price, shares)
+        try:
+            order_args = OrderArgs(
+                token_id=token_id or position.get("token_id", ""),
+                price=exit_price,
+                size=shares * exit_price,
+                side=SELL,
+            )
+            signed_order = self.client.create_order(order_args)
+            resp = self.client.post_order(signed_order, OrderType.GTC)
+            order_id = resp.get("orderID", "")
+            logger.info("Sell order submitted: %s (position=%d, price=%.2f, shares=%.4f)",
+                         order_id, position_id, exit_price, shares)
+        except Exception as e:
+            logger.error("Sell order submission failed: %s", e)
+            return TradeResult(success=False, reason=f"Sell order failed: {e}")
 
         # --- Poll for fill ---
         elapsed = 0.0
@@ -195,8 +207,11 @@ class LiveTrader:
         # Timeout — cancel and bail
         if fill_price is None:
             logger.warning("Sell order %s timed out after %.1fs — cancelling", order_id, _FILL_TIMEOUT)
-            self.client.cancel(order_id)
-            return TradeResult(success=False, reason="Sell order fill timeout — cancelled")
+            try:
+                self.client.cancel(order_id)
+            except Exception:
+                pass  # Order may already be gone
+            return TradeResult(success=False, reason="Sell order not filled within timeout")
 
         actual_exit_price = fill_price
 
