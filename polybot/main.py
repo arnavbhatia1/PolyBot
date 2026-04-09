@@ -475,7 +475,15 @@ async def trading_loop(binance_feed, market_scanner, indicator_engine, signal_en
 
             # --- COUNTERFACTUAL: check watched scalps for resolution ---
             if counterfactual_tracker:
-                cf_resolved = counterfactual_tracker.check_resolutions(binance_feed, _btc_at_expiry)
+                # Pre-fetch Gamma eventMetadata for watched markets
+                cf_event_metadata = {}
+                for cf_mid in counterfactual_tracker.watched_markets:
+                    cf_live = await _get_contract_prices(market_scanner, cf_mid, http_client)
+                    if cf_live and cf_live.get("event_metadata"):
+                        cf_event_metadata[cf_mid] = cf_live["event_metadata"]
+                cf_resolved = counterfactual_tracker.check_resolutions(
+                    binance_feed, _btc_at_expiry, event_metadata=cf_event_metadata
+                )
                 for cf in cf_resolved:
                     verdict = "CORRECT" if cf["scalp_was_optimal"] else "MISSED +${:.2f}".format(cf["delta_pnl"])
                     logger.info(f"COUNTERFACTUAL resolved: {cf['side']} {cf['market_id']} — {verdict}")
@@ -863,10 +871,25 @@ async def main():
     # Execution — route based on mode
     exec_cfg = config["execution"]
     if mode == "live":
-        trader = LiveTrader(db=db, max_slippage=exec_cfg["max_slippage"],
-            max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
-            max_concurrent_positions=exec_cfg["max_concurrent_positions"])
-        logger.info("LIVE MODE — real Polymarket CLOB orders")
+        try:
+            trader = LiveTrader(db=db, max_slippage=exec_cfg["max_slippage"],
+                max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
+                max_concurrent_positions=exec_cfg["max_concurrent_positions"])
+        except ValueError as e:
+            logger.error(f"LIVE MODE startup failed: {e}")
+            return
+        except Exception as e:
+            logger.error(f"LIVE MODE auth failed — check POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER in .env: {e}")
+            return
+        # Preflight: verify auth works by fetching balance
+        try:
+            live_balance = await trader.get_balance()
+            logger.info(f"LIVE MODE — authenticated OK, USDC balance: ${live_balance:,.2f}")
+            if live_balance < 1.0:
+                logger.warning(f"Low balance: ${live_balance:.2f} — deposit USDC on Polymarket before trading")
+        except Exception as e:
+            logger.error(f"LIVE MODE preflight failed — could not fetch balance: {e}")
+            return
     else:
         trader = PaperTrader(db=db, max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
@@ -921,9 +944,8 @@ async def main():
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
     discord_bot.scheduler = scheduler
     if mode == "live":
-        live_balance = await trader.get_balance()
+        # Sync DB bankroll with real Polymarket balance (fetched during preflight)
         await db.set_bankroll(live_balance)
-        logger.info(f"USDC balance: ${live_balance:,.2f}")
 
     # CLOB WebSocket — real-time order book feed
     clob_ws_url = market_cfg.get("clob_ws_url", "wss://ws-subscriptions-clob.polymarket.com/ws/market")
