@@ -1,15 +1,18 @@
+from __future__ import annotations
+
 import json
 import math
 import logging
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 INDICATOR_NAMES = ["rsi", "macd", "stochastic", "obv", "vwap"]
 
 
-def _get_gain_pct(o: dict) -> float:
+def _get_gain_pct(o: dict[str, Any]) -> float:
     """Arithmetic return for binary outcomes. Uses stored gain_pct, falls back to price ratio."""
     if "gain_pct" in o:
         return o["gain_pct"]
@@ -21,10 +24,10 @@ def _get_gain_pct(o: dict) -> float:
 
 
 class BiasDetector:
-    def __init__(self, biases_path: str):
-        self.biases_path = Path(biases_path)
+    def __init__(self, biases_path: str) -> None:
+        self.biases_path: Path = Path(biases_path)
 
-    def detect(self, outcomes: list[dict], min_samples: int = 3) -> dict:
+    def detect(self, outcomes: list[dict[str, Any]], min_samples: int = 3) -> dict[str, Any]:
         """Produce a rich multi-dimensional analysis of trade outcomes.
 
         Returns a dict with sections: per_indicator, side_analysis,
@@ -44,7 +47,7 @@ class BiasDetector:
             "overall": self._analyze_overall(outcomes),
         }
 
-    def _analyze_indicators(self, outcomes: list[dict], min_samples: int) -> dict:
+    def _analyze_indicators(self, outcomes: list[dict[str, Any]], min_samples: int) -> dict[str, Any]:
         """Per-indicator accuracy with bullish/bearish breakdown."""
         result = {}
         for ind in INDICATOR_NAMES:
@@ -78,7 +81,7 @@ class BiasDetector:
             }
         return result
 
-    def _analyze_sides(self, outcomes: list[dict]) -> dict:
+    def _analyze_sides(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         """Win rate and avg gain_pct per side (Up vs Down)."""
         sides: dict[str, list] = defaultdict(list)
         for o in outcomes:
@@ -97,7 +100,7 @@ class BiasDetector:
             }
         return result
 
-    def _analyze_edges(self, outcomes: list[dict]) -> dict:
+    def _analyze_edges(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         """Win rate bucketed by edge size at entry."""
         buckets = {"10-20%": [], "20-35%": [], "35%+": []}
         for o in outcomes:
@@ -120,7 +123,7 @@ class BiasDetector:
             result[label] = {"win_rate": round(wins / len(trades), 4), "count": len(trades)}
         return result
 
-    def _analyze_time(self, outcomes: list[dict]) -> dict:
+    def _analyze_time(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         """Win rate by seconds remaining at entry."""
         buckets = {"0-60s": [], "60-180s": [], "180-300s": []}
         for o in outcomes:
@@ -143,7 +146,7 @@ class BiasDetector:
             result[label] = {"win_rate": round(wins / len(trades), 4), "count": len(trades)}
         return result
 
-    def _analyze_volatility(self, outcomes: list[dict]) -> dict:
+    def _analyze_volatility(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         """Win rate by ATR regime (low/mid/high via percentiles)."""
         atrs = []
         for o in outcomes:
@@ -176,8 +179,14 @@ class BiasDetector:
             result[label] = {"win_rate": round(wins / len(trades), 4), "count": len(trades)}
         return result
 
-    def analyze_counterfactuals(self, counterfactuals: list[dict]) -> dict:
-        """Analyze scalp outcomes vs hypothetical resolution outcomes.
+    def analyze_counterfactuals(self, counterfactuals: list[dict[str, Any]]) -> dict[str, Any]:
+        """Analyze counterfactual outcomes for both scalps and holds.
+
+        Scalp counterfactuals: was the early exit optimal, or would holding
+        to resolution have been better?
+
+        Hold counterfactuals: was holding to resolution optimal, or would
+        scalping at the worst moment have been better?
 
         Returns metrics that tell the learning pipeline whether the exit
         threshold is too aggressive (scalping winners) or too loose.
@@ -185,70 +194,100 @@ class BiasDetector:
         if not counterfactuals:
             return {}
 
-        total = len(counterfactuals)
-        optimal = sum(1 for c in counterfactuals if c.get("scalp_was_optimal", True))
-        suboptimal = total - optimal
+        # Split by type: scalps have "scalp_was_optimal", holds have "hold_was_optimal"
+        scalps = [c for c in counterfactuals if "scalp_was_optimal" in c]
+        holds = [c for c in counterfactuals if "hold_was_optimal" in c]
 
-        # Separate for detailed stats
-        suboptimal_records = [c for c in counterfactuals if not c.get("scalp_was_optimal", True)]
-        optimal_records = [c for c in counterfactuals if c.get("scalp_was_optimal", True)]
+        result = {}
 
-        # Average missed gain on suboptimal scalps
-        missed_gains = [c.get("delta_pnl", 0) for c in suboptimal_records]
-        avg_missed_pnl = sum(missed_gains) / len(missed_gains) if missed_gains else 0
+        # --- Scalp analysis (existing logic) ---
+        if scalps:
+            s_total = len(scalps)
+            s_optimal = sum(1 for c in scalps if c.get("scalp_was_optimal", True))
+            s_suboptimal = s_total - s_optimal
+            s_suboptimal_records = [c for c in scalps if not c.get("scalp_was_optimal", True)]
+            s_optimal_records = [c for c in scalps if c.get("scalp_was_optimal", True)]
 
-        missed_pcts = [
-            c.get("counterfactual", {}).get("gain_pct", 0) - c.get("actual", {}).get("gain_pct", 0)
-            for c in suboptimal_records
-        ]
-        avg_missed_gain_pct = sum(missed_pcts) / len(missed_pcts) if missed_pcts else 0
+            missed_gains = [c.get("delta_pnl", 0) for c in s_suboptimal_records]
+            avg_missed_pnl = sum(missed_gains) / len(missed_gains) if missed_gains else 0
 
-        # Holding edge at scalp time — split by optimal vs suboptimal
-        def _avg_edge(records):
-            edges = [c.get("context_at_scalp", {}).get("holding_edge", 0) for c in records]
-            return round(sum(edges) / len(edges), 4) if edges else 0
+            missed_pcts = [
+                c.get("counterfactual", {}).get("gain_pct", 0) - c.get("actual", {}).get("gain_pct", 0)
+                for c in s_suboptimal_records
+            ]
+            avg_missed_gain_pct = sum(missed_pcts) / len(missed_pcts) if missed_pcts else 0
 
-        # Seconds remaining at scalp — do late scalps perform worse?
-        def _avg_secs(records):
-            secs = [c.get("context_at_scalp", {}).get("seconds_remaining", 0) for c in records]
-            return round(sum(secs) / len(secs), 1) if secs else 0
+            def _avg_edge_scalp(records):
+                edges = [c.get("context_at_scalp", {}).get("holding_edge", 0) for c in records]
+                return round(sum(edges) / len(edges), 4) if edges else 0
 
-        # Time bucketing: how does scalp accuracy vary by seconds remaining?
-        time_buckets = {"0-30s": [], "30-90s": [], "90s+": []}
-        for c in counterfactuals:
-            secs = c.get("context_at_scalp", {}).get("seconds_remaining", 0)
-            if secs <= 30:
-                time_buckets["0-30s"].append(c)
-            elif secs <= 90:
-                time_buckets["30-90s"].append(c)
-            else:
-                time_buckets["90s+"].append(c)
+            def _avg_secs_scalp(records):
+                secs = [c.get("context_at_scalp", {}).get("seconds_remaining", 0) for c in records]
+                return round(sum(secs) / len(secs), 1) if secs else 0
 
-        time_accuracy = {}
-        for label, bucket in time_buckets.items():
-            if not bucket:
-                continue
-            opt = sum(1 for c in bucket if c.get("scalp_was_optimal", True))
-            time_accuracy[label] = {
-                "scalp_accuracy": round(opt / len(bucket), 4),
-                "count": len(bucket),
-            }
+            time_buckets = {"0-30s": [], "30-90s": [], "90s+": []}
+            for c in scalps:
+                secs = c.get("context_at_scalp", {}).get("seconds_remaining", 0)
+                if secs <= 30:
+                    time_buckets["0-30s"].append(c)
+                elif secs <= 90:
+                    time_buckets["30-90s"].append(c)
+                else:
+                    time_buckets["90s+"].append(c)
 
-        return {
-            "total_scalps_tracked": total,
-            "scalp_accuracy": round(optimal / total, 4) if total > 0 else 0,
-            "optimal_scalps": optimal,
-            "suboptimal_scalps": suboptimal,
-            "avg_missed_pnl": round(avg_missed_pnl, 4),
-            "avg_missed_gain_pct": round(avg_missed_gain_pct, 4),
-            "avg_holding_edge_optimal": _avg_edge(optimal_records),
-            "avg_holding_edge_suboptimal": _avg_edge(suboptimal_records),
-            "avg_seconds_remaining_optimal": _avg_secs(optimal_records),
-            "avg_seconds_remaining_suboptimal": _avg_secs(suboptimal_records),
-            "time_accuracy": time_accuracy,
-        }
+            time_accuracy = {}
+            for label, bucket in time_buckets.items():
+                if not bucket:
+                    continue
+                opt = sum(1 for c in bucket if c.get("scalp_was_optimal", True))
+                time_accuracy[label] = {
+                    "scalp_accuracy": round(opt / len(bucket), 4),
+                    "count": len(bucket),
+                }
 
-    def _analyze_overall(self, outcomes: list[dict]) -> dict:
+            result.update({
+                "total_scalps_tracked": s_total,
+                "scalp_accuracy": round(s_optimal / s_total, 4),
+                "optimal_scalps": s_optimal,
+                "suboptimal_scalps": s_suboptimal,
+                "avg_missed_pnl": round(avg_missed_pnl, 4),
+                "avg_missed_gain_pct": round(avg_missed_gain_pct, 4),
+                "avg_holding_edge_optimal": _avg_edge_scalp(s_optimal_records),
+                "avg_holding_edge_suboptimal": _avg_edge_scalp(s_suboptimal_records),
+                "avg_seconds_remaining_optimal": _avg_secs_scalp(s_optimal_records),
+                "avg_seconds_remaining_suboptimal": _avg_secs_scalp(s_suboptimal_records),
+                "time_accuracy": time_accuracy,
+            })
+
+        # --- Hold analysis (new) ---
+        if holds:
+            h_total = len(holds)
+            h_optimal = sum(1 for c in holds if c.get("hold_was_optimal", True))
+            h_suboptimal = h_total - h_optimal
+
+            h_suboptimal_records = [c for c in holds if not c.get("hold_was_optimal", True)]
+
+            # How much did suboptimal holds cost vs scalping at worst moment?
+            hold_missed = [abs(c.get("delta_pnl", 0)) for c in h_suboptimal_records]
+            avg_hold_cost = sum(hold_missed) / len(hold_missed) if hold_missed else 0
+
+            def _avg_edge_hold(records):
+                edges = [c.get("context_at_worst_moment", {}).get("holding_edge", 0) for c in records]
+                return round(sum(edges) / len(edges), 4) if edges else 0
+
+            result.update({
+                "total_holds_tracked": h_total,
+                "hold_accuracy": round(h_optimal / h_total, 4),
+                "optimal_holds": h_optimal,
+                "suboptimal_holds": h_suboptimal,
+                "avg_hold_cost_when_suboptimal": round(avg_hold_cost, 4),
+                "avg_worst_edge_optimal_holds": _avg_edge_hold([c for c in holds if c.get("hold_was_optimal", True)]),
+                "avg_worst_edge_suboptimal_holds": _avg_edge_hold(h_suboptimal_records),
+            })
+
+        return result
+
+    def _analyze_overall(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         """Aggregate statistics across all trades."""
         total = len(outcomes)
         wins = sum(1 for o in outcomes if o.get("correct", False))
@@ -274,6 +313,6 @@ class BiasDetector:
             "sharpe": sharpe,
         }
 
-    def save(self, analysis: dict):
+    def save(self, analysis: dict[str, Any]) -> None:
         self.biases_path.parent.mkdir(parents=True, exist_ok=True)
         self.biases_path.write_text(json.dumps(analysis, indent=2))

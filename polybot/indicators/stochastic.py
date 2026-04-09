@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import numpy as np
+
 
 def compute_stochastic(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
                        k_period: int = 14, d_smoothing: int = 3) -> tuple[float, float]:
@@ -18,7 +21,7 @@ def compute_stochastic(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
 
 def compute_stochastic_signal(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
                               k_period: int = 14, d_smoothing: int = 3,
-                              overbought: float = 80, oversold: float = 20) -> dict:
+                              overbought: float = 80, oversold: float = 20) -> dict[str, float]:
     if len(closes) < k_period + d_smoothing:
         return {"k": 50.0, "d": 50.0, "score": 0.0}
     k, d = compute_stochastic(highs, lows, closes, k_period, d_smoothing)

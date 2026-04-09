@@ -5,8 +5,8 @@ import pytest
 import pytest_asyncio
 from unittest.mock import MagicMock
 
-# Import the slippage function from main
-from polybot.main import _slippage_pct
+# Import the slippage function from execution base
+from polybot.execution.base import slippage_pct as _slippage_pct
 from polybot.agents.scheduler import AgentScheduler
 
 
@@ -65,7 +65,21 @@ class TestConvexSlippage:
 # ---------------------------------------------------------------------------
 
 class TestHoldoutSplit:
-    """run_daily_pipeline should split outcomes 60/40 chronologically."""
+    """run_daily_pipeline should split outcomes 60/40 chronologically.
+
+    Note: tests use 100 outcomes to exceed the 50-trade minimum required by
+    the learning pipeline gate.  Holdout split logic is independent of the
+    gate — it just needs enough data to actually reach TAEvolver/WeightOptimizer.
+    """
+
+    @staticmethod
+    def _make_outcomes(n):
+        return [
+            {"timestamp": f"2026-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}T12:00:00Z",
+             "correct": True, "gain_pct": 0.1, "log_return": 0.1,
+             "weight_version": "v1", "indicator_snapshot": {}}
+            for i in range(n)
+        ]
 
     @pytest.mark.asyncio
     async def test_split_passes_train_to_bias_and_evolver(self):
@@ -83,12 +97,7 @@ class TestHoldoutSplit:
         async def mock_wo(recs, outcomes=None):
             received["wo_count"] = len(outcomes) if outcomes else 0
 
-        outcomes = [
-            {"timestamp": f"2026-04-{i:02d}T12:00:00Z", "correct": True,
-             "gain_pct": 0.1, "log_return": 0.1, "weight_version": "v1",
-             "indicator_snapshot": {}}
-            for i in range(1, 11)  # 10 outcomes
-        ]
+        outcomes = self._make_outcomes(100)
 
         reviewer = MagicMock()
         reviewer.load_all_outcomes.return_value = outcomes
@@ -102,9 +111,9 @@ class TestHoldoutSplit:
 
         await scheduler.run_daily_pipeline()
 
-        assert received["bias_count"] == 6   # 60% of 10
-        assert received["ta_count"] == 6
-        assert received["wo_count"] == 4     # 40% of 10
+        assert received["bias_count"] == 60   # 60% of 100
+        assert received["ta_count"] == 60
+        assert received["wo_count"] == 40     # 40% of 100
 
     @pytest.mark.asyncio
     async def test_split_is_chronological(self):
@@ -121,12 +130,7 @@ class TestHoldoutSplit:
         async def mock_wo(recs, outcomes=None):
             received["wo_timestamps"] = [o["timestamp"] for o in (outcomes or [])]
 
-        outcomes = [
-            {"timestamp": f"2026-04-{i:02d}T12:00:00Z", "correct": True,
-             "gain_pct": 0.1, "log_return": 0.1, "weight_version": "v1",
-             "indicator_snapshot": {}}
-            for i in range(1, 11)
-        ]
+        outcomes = self._make_outcomes(100)
 
         reviewer = MagicMock()
         reviewer.load_all_outcomes.return_value = outcomes
@@ -140,12 +144,12 @@ class TestHoldoutSplit:
 
         await scheduler.run_daily_pipeline()
 
-        # Train = first 6 (oldest), validation = last 4 (newest)
+        # Train = first 60 (oldest), validation = last 40 (newest)
         assert received["bias_timestamps"][-1] < received["wo_timestamps"][0]
 
     @pytest.mark.asyncio
     async def test_small_dataset_still_works(self):
-        """With very few outcomes, split should not crash."""
+        """With very few outcomes, pipeline skips learning but BiasDetector still runs."""
         received = {}
 
         async def mock_bias(outcomes=None):
@@ -153,10 +157,11 @@ class TestHoldoutSplit:
             return {}
 
         async def mock_ta(analysis, outcomes=None):
+            received["ta_called"] = True
             return {}
 
         async def mock_wo(recs, outcomes=None):
-            received["wo_count"] = len(outcomes) if outcomes else 0
+            received["wo_called"] = True
 
         outcomes = [
             {"timestamp": "2026-04-01T12:00:00Z", "correct": True,
@@ -176,6 +181,8 @@ class TestHoldoutSplit:
 
         await scheduler.run_daily_pipeline()
 
-        # With 1 outcome: split_idx = max(1, int(0.6)) = 1, so train=1, val=0
-        # validation falls back to all_outcomes when empty
+        # BiasDetector still runs (useful for monitoring)
         assert received["bias_count"] == 1
+        # TAEvolver and WeightOptimizer skipped (< 50 trades)
+        assert "ta_called" not in received
+        assert "wo_called" not in received

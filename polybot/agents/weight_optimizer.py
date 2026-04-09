@@ -1,17 +1,20 @@
+from __future__ import annotations
+
 import json
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 class WeightOptimizer:
-    def __init__(self, weights_dir: str, scores_path: str, min_improvement: float = 0.03):
-        self.weights_dir = Path(weights_dir)
-        self.scores_path = Path(scores_path)
-        self.min_improvement = min_improvement
+    def __init__(self, weights_dir: str, scores_path: str, min_improvement: float = 0.03) -> None:
+        self.weights_dir: Path = Path(weights_dir)
+        self.scores_path: Path = Path(scores_path)
+        self.min_improvement: float = min_improvement
 
-    def get_scores(self) -> dict:
+    def get_scores(self) -> dict[str, Any]:
         if not self.scores_path.exists():
             return {}
         return json.loads(self.scores_path.read_text())
@@ -22,13 +25,13 @@ class WeightOptimizer:
             return "weights_v001"
         return max(scores, key=lambda v: scores[v].get("sharpe", 0))
 
-    def record_score(self, version: str, sharpe: float, total_trades: int, win_rate: float):
+    def record_score(self, version: str, sharpe: float, total_trades: int, win_rate: float) -> None:
         scores = self.get_scores()
         scores[version] = {"sharpe": round(sharpe, 4), "total_trades": total_trades, "win_rate": round(win_rate, 4)}
         self.scores_path.parent.mkdir(parents=True, exist_ok=True)
         self.scores_path.write_text(json.dumps(scores, indent=2))
 
-    def save_weights(self, version: str, weights: dict):
+    def save_weights(self, version: str, weights: dict[str, Any]) -> None:
         self.weights_dir.mkdir(parents=True, exist_ok=True)
         (self.weights_dir / f"{version}.json").write_text(json.dumps(weights, indent=2))
 

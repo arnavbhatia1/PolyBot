@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 from polybot.indicators.ema import compute_ema
 
@@ -13,7 +15,7 @@ def compute_macd(closes: np.ndarray, fast: int = 12, slow: int = 26,
     return float(macd_line[-1]), float(signal_line[-1]), float(histogram[-1])
 
 def compute_macd_signal(closes: np.ndarray, fast: int = 12, slow: int = 26,
-                        signal_period: int = 9) -> dict:
+                        signal_period: int = 9) -> dict[str, float]:
     if len(closes) < slow + signal_period:
         return {"macd": 0.0, "signal": 0.0, "histogram": 0.0, "score": 0.0}
     macd_val, sig_val, hist = compute_macd(closes, fast, slow, signal_period)

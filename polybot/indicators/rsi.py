@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import numpy as np
+
 
 def compute_rsi(closes: np.ndarray, period: int = 14) -> float:
     if len(closes) < period + 1:
@@ -14,7 +17,7 @@ def compute_rsi(closes: np.ndarray, period: int = 14) -> float:
     return float(100.0 - (100.0 / (1.0 + rs)))
 
 def compute_rsi_signal(closes: np.ndarray, period: int = 14,
-                       overbought: float = 70, oversold: float = 30) -> dict:
+                       overbought: float = 70, oversold: float = 30) -> dict[str, float]:
     if len(closes) < period + 1:
         return {"rsi": 50.0, "score": 0.0}
     rsi = compute_rsi(closes, period)

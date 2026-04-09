@@ -9,10 +9,18 @@ SAMPLE_CONFIG = {
     "math": {
         "kelly_fraction": 0.15,
     },
+    "circuit_breaker": {
+        "max_drawdown_pct": 0.15,
+        "min_multiplier": 0.25,
+        "losses_to_reduce": 3,
+        "wins_to_restore": 2,
+    },
     "execution": {
         "max_slippage": 0.02,
         "max_bankroll_deployed": 0.80,
         "max_concurrent_positions": 1,
+        "max_book_fill_pct": 0.50,
+        "slippage_impact_pct": 0.03,
         "initial_bankroll": 1000.0,
     },
     "agents": {
@@ -27,7 +35,11 @@ SAMPLE_CONFIG = {
     "signal": {
         "entry_threshold": 0.10,
         "exit_edge_threshold": -0.05,
+        "min_model_probability": 0.65,
         "momentum_weight": 0.08,
+        "regime_weight": 0.03,
+        "flow_weight": 0.04,
+        "student_t_df": 4,
         "weights": {
             "rsi": 0.20,
             "macd": 0.25,
@@ -42,6 +54,7 @@ SAMPLE_CONFIG = {
         "entry_window_seconds": 300,
         "min_time_remaining_seconds": 5,
         "scan_cache_seconds": 5,
+        "max_spread": 0.10,
     },
 }
 

@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import numpy as np
+
 
 def compute_ema(closes: np.ndarray, period: int) -> np.ndarray:
     if len(closes) < period:
@@ -11,7 +14,7 @@ def compute_ema(closes: np.ndarray, period: int) -> np.ndarray:
     return ema
 
 def compute_ema_signal(closes: np.ndarray, fast_period: int = 9, slow_period: int = 21,
-                       chop_threshold: float = 0.001) -> dict:
+                       chop_threshold: float = 0.001) -> dict[str, str | float]:
     if len(closes) < slow_period + 1:
         return {"trend": "insufficient_data", "fast_ema": 0.0, "slow_ema": 0.0}
     fast = compute_ema(closes, fast_period)

@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from polybot.math_engine.returns import log_return, sharpe_ratio, total_log_return
+from polybot.math_engine.returns import log_return, sharpe_ratio
 
 
 def test_log_return_basic():
@@ -16,12 +16,6 @@ def test_log_return_loss():
 def test_log_return_breakeven():
     result = log_return(entry_price=0.55, exit_price=0.55)
     assert result == pytest.approx(0.0, abs=0.0001)
-
-
-def test_total_log_return_sums_correctly():
-    returns = [0.2, -0.1, 0.15, -0.05]
-    result = total_log_return(returns)
-    assert result == pytest.approx(0.2, abs=0.001)
 
 
 def test_sharpe_ratio_basic():

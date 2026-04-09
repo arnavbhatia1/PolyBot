@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import numpy as np
+
 
 def compute_vwap(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.ndarray) -> float:
     if len(closes) < 2 or np.sum(volumes) == 0:
@@ -6,7 +9,7 @@ def compute_vwap(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volume
     typical_price = (highs + lows + closes) / 3.0
     return float(np.sum(typical_price * volumes) / np.sum(volumes))
 
-def compute_vwap_signal(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.ndarray) -> dict:
+def compute_vwap_signal(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.ndarray) -> dict[str, float]:
     if len(closes) < 3:
         return {"vwap": 0.0, "deviation": 0.0, "score": 0.0}
     vwap = compute_vwap(highs, lows, closes, volumes)

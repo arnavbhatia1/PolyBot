@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import json
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Any
+
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -25,20 +29,20 @@ class BTCMarketScanner:
 
     def __init__(self, entry_window_seconds: int = 120, min_time_remaining: int = 30,
                  cache_seconds: int = 5, symbol: str = "btc",
-                 min_book_depth_usd: float = 50.0):
-        self.entry_window_seconds = entry_window_seconds
-        self.min_time_remaining = min_time_remaining
-        self.cache_seconds = cache_seconds
-        self.symbol = symbol
-        self.min_book_depth_usd = min_book_depth_usd
-        self._cached_contract = None
-        self._cache_time = 0
-        self._book_cache: dict[str, tuple[float, dict]] = {}  # token_id -> (timestamp, book)
-        self._book_cache_seconds = 2
+                 min_book_depth_usd: float = 50.0) -> None:
+        self.entry_window_seconds: int = entry_window_seconds
+        self.min_time_remaining: int = min_time_remaining
+        self.cache_seconds: int = cache_seconds
+        self.symbol: str = symbol
+        self.min_book_depth_usd: float = min_book_depth_usd
+        self._cached_contract: dict[str, Any] | None = None
+        self._cache_time: float = 0
+        self._book_cache: dict[str, tuple[float, dict[str, Any]]] = {}  # token_id -> (timestamp, book)
+        self._book_cache_seconds: int = 2
         self._fee_rate_cache: dict[str, tuple[float, float]] = {}   # token_id -> (timestamp, rate)
-        self._fee_rate_cache_seconds = 3600  # 1 hour — fee rates rarely change
+        self._fee_rate_cache_seconds: int = 3600  # 1 hour — fee rates rarely change
         self._tick_size_cache: dict[str, tuple[float, str]] = {}    # token_id -> (timestamp, tick_size)
-        self._tick_size_cache_seconds = 3600
+        self._tick_size_cache_seconds: int = 3600
 
     def _current_window_ts(self) -> int:
         return int(time.time() // self.WINDOW_SECONDS) * self.WINDOW_SECONDS
@@ -46,7 +50,7 @@ class BTCMarketScanner:
     def _make_slug(self, window_ts: int) -> str:
         return f"{self.symbol}-updown-5m-{window_ts}"
 
-    def parse_contract(self, event: dict) -> dict | None:
+    def parse_contract(self, event: dict[str, Any]) -> dict[str, Any] | None:
         markets = event.get("markets", [])
         if not markets:
             return None
@@ -124,7 +128,7 @@ class BTCMarketScanner:
 
     # --- Polymarket CLOB API (real order book, no auth required) ---
 
-    async def fetch_clob_book(self, token_id: str, http_client=None) -> dict:
+    async def fetch_clob_book(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> dict[str, Any]:
         """Fetch full order book from Polymarket CLOB API.
 
         No auth required. Caches result for _book_cache_seconds (2s).
@@ -159,7 +163,7 @@ class BTCMarketScanner:
             logger.debug(f"CLOB book failed for {token_id}: {e}")
             return {}
 
-    async def fetch_fee_rate(self, token_id: str, http_client=None) -> float:
+    async def fetch_fee_rate(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> float:
         """Fetch taker fee rate from Polymarket CLOB API.
 
         Returns fee rate as a decimal (e.g., 0.072 for crypto).
@@ -195,7 +199,7 @@ class BTCMarketScanner:
             logger.debug(f"Fee rate fetch failed for {token_id}: {e}")
             return 0.018  # Crypto taker fee: 1.8% peak (Dynamic Taker-Fee Model, March 2026)
 
-    async def fetch_tick_size(self, token_id: str, http_client=None) -> str:
+    async def fetch_tick_size(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> str:
         """Fetch tick size from Polymarket CLOB API.
 
         Returns tick size as a string (e.g., "0.01").
@@ -241,12 +245,12 @@ class BTCMarketScanner:
         return max(min_price, min(snapped, max_price))
 
     @staticmethod
-    def book_min_order_size(book: dict) -> float:
+    def book_min_order_size(book: dict[str, Any]) -> float:
         """Extract min_order_size from a CLOB book response. Default 5."""
         return float(book.get("min_order_size", "5"))
 
     @staticmethod
-    def clob_best_ask(book: dict) -> tuple[float, float]:
+    def clob_best_ask(book: dict[str, Any]) -> tuple[float, float]:
         """Return (best_ask_price, total_ask_depth) from a CLOB book dict.
 
         Asks are sorted price ascending — first entry is the best ask.
@@ -260,7 +264,7 @@ class BTCMarketScanner:
         return (best_price, total_depth)
 
     @staticmethod
-    def clob_best_bid(book: dict) -> tuple[float, float]:
+    def clob_best_bid(book: dict[str, Any]) -> tuple[float, float]:
         """Return (best_bid_price, total_bid_depth) from a CLOB book dict.
 
         Bids are sorted price descending — first entry is the best bid.
@@ -274,7 +278,7 @@ class BTCMarketScanner:
         return (best_price, total_depth)
 
     @staticmethod
-    def clob_walk_asks(book: dict, shares_needed: float) -> float:
+    def clob_walk_asks(book: dict[str, Any], shares_needed: float) -> float:
         """Walk ask levels to compute VWAP buy price for shares_needed shares.
 
         Asks are sorted price ascending (cheapest first).
@@ -297,7 +301,7 @@ class BTCMarketScanner:
         return cost / filled
 
     @staticmethod
-    def clob_walk_bids(book: dict, shares_needed: float) -> float:
+    def clob_walk_bids(book: dict[str, Any], shares_needed: float) -> float:
         """Walk bid levels to compute VWAP sell price for shares_needed shares.
 
         Bids are sorted price descending (highest first).
@@ -320,19 +324,19 @@ class BTCMarketScanner:
         return proceeds / filled
 
     @staticmethod
-    def clob_ask_depth(book: dict) -> float:
+    def clob_ask_depth(book: dict[str, Any]) -> float:
         """Total shares available on the ask side."""
         return sum(float(l["size"]) for l in book.get("asks", []))
 
     @staticmethod
-    def clob_bid_depth(book: dict) -> float:
+    def clob_bid_depth(book: dict[str, Any]) -> float:
         """Total shares available on the bid side."""
         return sum(float(l["size"]) for l in book.get("bids", []))
 
     # --- NegRisk execution prices (accounts for cross-matching) ---
 
     async def fetch_market_price(self, token_id: str, side: str = "BUY",
-                                  http_client=None) -> float:
+                                  http_client: httpx.AsyncClient | None = None) -> float:
         """GET /price — actual execution price accounting for negRisk cross-matching.
 
         The raw token book (GET /book) only shows direct token orders.
@@ -365,7 +369,7 @@ class BTCMarketScanner:
 
     DATA_API = "https://data-api.polymarket.com"
 
-    async def get_spread(self, token_id: str, http_client=None) -> float:
+    async def get_spread(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> float:
         """GET /spread — bid-ask spread as a float. Returns -1 on error."""
         try:
             url = f"{self.CLOB_API}/spread"
@@ -380,7 +384,7 @@ class BTCMarketScanner:
             logger.debug(f"Spread fetch failed for {token_id}: {e}")
             return -1.0
 
-    async def get_midpoints(self, token_ids: list[str], http_client=None) -> dict[str, float]:
+    async def get_midpoints(self, token_ids: list[str], http_client: httpx.AsyncClient | None = None) -> dict[str, float]:
         """GET /midpoints — {token_id: midpoint_price}. Skips failures."""
         try:
             url = f"{self.CLOB_API}/midpoints"
@@ -396,7 +400,7 @@ class BTCMarketScanner:
             logger.debug(f"Midpoints fetch failed: {e}")
             return {}
 
-    async def get_last_trade_prices(self, token_ids: list[str], http_client=None) -> dict[str, dict]:
+    async def get_last_trade_prices(self, token_ids: list[str], http_client: httpx.AsyncClient | None = None) -> dict[str, dict[str, Any]]:
         """GET /last-trades-prices — {token_id: {price, side}}."""
         try:
             url = f"{self.CLOB_API}/last-trades-prices"
@@ -414,7 +418,7 @@ class BTCMarketScanner:
             logger.debug(f"Last trade prices fetch failed: {e}")
             return {}
 
-    async def get_live_volume(self, event_id: int, http_client=None) -> float:
+    async def get_live_volume(self, event_id: int, http_client: httpx.AsyncClient | None = None) -> float:
         """GET /live-volume — total volume for an event. Returns 0 on error."""
         try:
             url = f"{self.DATA_API}/live-volume"
@@ -432,7 +436,7 @@ class BTCMarketScanner:
             logger.debug(f"Live volume fetch failed for event {event_id}: {e}")
             return 0.0
 
-    async def find_active_contract(self) -> dict | None:
+    async def find_active_contract(self) -> dict[str, Any] | None:
         now = time.time()
 
         # Return cache if fresh
@@ -482,7 +486,7 @@ class BTCMarketScanner:
         return None
 
     async def fetch_prices_history(self, token_id: str, interval: str = "1h",
-                                   fidelity: int = 1, http_client=None) -> list[dict]:
+                                   fidelity: int = 1, http_client: httpx.AsyncClient | None = None) -> list[dict[str, Any]]:
         """GET /prices-history — CLOB price history for a token.
 
         No auth required. Returns list of {t: timestamp, p: price}.
@@ -503,7 +507,7 @@ class BTCMarketScanner:
             logger.debug(f"Prices history failed for {token_id}: {e}")
             return []
 
-    async def fetch_open_interest(self, condition_id: str, http_client=None) -> float:
+    async def fetch_open_interest(self, condition_id: str, http_client: httpx.AsyncClient | None = None) -> float:
         """GET /oi — open interest for a market.
 
         No auth required. Returns total OI value, 0 on error.

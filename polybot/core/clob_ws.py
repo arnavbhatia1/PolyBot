@@ -4,11 +4,14 @@ Maintains live order book state per subscribed token_id.
 Signals the trading loop via asyncio.Event on every book update
 so it can react instantly instead of polling.
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import time
 from collections import deque
+from typing import Any
 
 import websockets
 
@@ -21,33 +24,33 @@ RECONNECT_MAX = 30       # seconds — backoff cap
 
 
 class ClobWebSocket:
-    def __init__(self, url: str = WS_URL):
-        self.url = url
+    def __init__(self, url: str = WS_URL) -> None:
+        self.url: str = url
 
         # Live state — read by trading loop (no lock needed, single event loop)
-        self.books: dict[str, dict] = {}              # token_id -> full book snapshot
-        self.best_bid_ask: dict[str, dict] = {}       # token_id -> {best_bid, best_ask, spread}
-        self.last_trade: dict[str, dict] = {}         # token_id -> {price, size, side}
-        self.trade_buffer: dict[str, deque] = {}     # token_id -> deque of recent trades
+        self.books: dict[str, dict[str, Any]] = {}              # token_id -> full book snapshot
+        self.best_bid_ask: dict[str, dict[str, str]] = {}       # token_id -> {best_bid, best_ask, spread}
+        self.last_trade: dict[str, dict[str, Any]] = {}         # token_id -> {price, size, side}
+        self.trade_buffer: dict[str, deque[dict[str, Any]]] = {}     # token_id -> deque of recent trades
 
         # Events — trading loop awaits these
-        self.book_updated = asyncio.Event()
-        self.market_resolved = asyncio.Event()
+        self.book_updated: asyncio.Event = asyncio.Event()
+        self.market_resolved: asyncio.Event = asyncio.Event()
 
         # Connection state
-        self.connected = False
-        self._ws = None
+        self.connected: bool = False
+        self._ws: Any = None
         self._subscribed_ids: list[str] = []
-        self._task: asyncio.Task | None = None
-        self._heartbeat_task: asyncio.Task | None = None
-        self._closing = False
+        self._task: asyncio.Task[None] | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
+        self._closing: bool = False
 
-    async def start(self):
+    async def start(self) -> None:
         """Launch the WebSocket connection as a background task."""
         self._closing = False
         self._task = asyncio.create_task(self._run_forever())
 
-    async def close(self):
+    async def close(self) -> None:
         """Cleanly shut down the WebSocket."""
         self._closing = True
         if self._heartbeat_task:
@@ -62,7 +65,7 @@ class ClobWebSocket:
                 pass
         self.connected = False
 
-    async def subscribe(self, token_ids: list[str]):
+    async def subscribe(self, token_ids: list[str]) -> None:
         """Subscribe to token_ids. Safe to call before or after connection."""
         new_ids = [t for t in token_ids if t and t not in self._subscribed_ids]
         if not new_ids:
@@ -81,7 +84,7 @@ class ClobWebSocket:
             except Exception as e:
                 logger.warning(f"WS subscribe send failed: {e}")
 
-    async def unsubscribe(self, token_ids: list[str]):
+    async def unsubscribe(self, token_ids: list[str]) -> None:
         """Unsubscribe from token_ids and clear their state."""
         ids_to_remove = [t for t in token_ids if t in self._subscribed_ids]
         if not ids_to_remove:
@@ -102,17 +105,17 @@ class ClobWebSocket:
             except Exception:
                 pass
 
-    def get_book(self, token_id: str) -> dict:
+    def get_book(self, token_id: str) -> dict[str, Any]:
         """Return latest book for token_id, or {} if not available."""
         return self.books.get(token_id, {})
 
-    def get_trade_history(self, token_id: str) -> list[dict]:
+    def get_trade_history(self, token_id: str) -> list[dict[str, Any]]:
         """Return list of recent trades for a token, oldest first."""
         return list(self.trade_buffer.get(token_id, []))
 
     # --- Internal ---
 
-    async def _run_forever(self):
+    async def _run_forever(self) -> None:
         """Connect and reconnect loop with exponential backoff."""
         backoff = RECONNECT_BASE
         while not self._closing:
@@ -158,7 +161,7 @@ class ClobWebSocket:
         self.connected = False
         self._ws = None
 
-    async def _heartbeat(self, ws):
+    async def _heartbeat(self, ws: Any) -> None:
         """Send PING every 10s to keep connection alive."""
         try:
             while True:
@@ -167,7 +170,7 @@ class ClobWebSocket:
         except (asyncio.CancelledError, websockets.ConnectionClosed):
             pass
 
-    def _handle_message(self, raw: str):
+    def _handle_message(self, raw: str) -> None:
         """Parse and dispatch a WebSocket message. Non-async for speed."""
         if raw == "PONG":
             return
@@ -186,7 +189,7 @@ class ClobWebSocket:
         if isinstance(msg, dict):
             self._dispatch(msg)
 
-    def _dispatch(self, msg: dict):
+    def _dispatch(self, msg: dict[str, Any]) -> None:
         """Route a single parsed message to the appropriate handler."""
         event_type = msg.get("event_type", "")
 
@@ -203,7 +206,7 @@ class ClobWebSocket:
         elif event_type == "tick_size_change":
             logger.debug(f"Tick size changed: {msg.get('old_tick_size')} -> {msg.get('new_tick_size')} for {msg.get('asset_id')}")
 
-    def _on_book(self, msg: dict):
+    def _on_book(self, msg: dict[str, Any]) -> None:
         """Full book snapshot — replace entire book state."""
         asset_id = msg.get("asset_id", "")
         if not asset_id:
@@ -217,7 +220,7 @@ class ClobWebSocket:
         }
         self.book_updated.set()
 
-    def _on_price_change(self, msg: dict):
+    def _on_price_change(self, msg: dict[str, Any]) -> None:
         """Delta update — update best_bid_ask from price_changes."""
         for change in msg.get("price_changes", []):
             asset_id = change.get("asset_id", "")
@@ -232,7 +235,7 @@ class ClobWebSocket:
             }
         self.book_updated.set()
 
-    def _on_best_bid_ask(self, msg: dict):
+    def _on_best_bid_ask(self, msg: dict[str, Any]) -> None:
         """Explicit best bid/ask event (custom_feature_enabled)."""
         asset_id = msg.get("asset_id", "")
         if not asset_id:
@@ -244,7 +247,7 @@ class ClobWebSocket:
         }
         self.book_updated.set()
 
-    def _on_last_trade(self, msg: dict):
+    def _on_last_trade(self, msg: dict[str, Any]) -> None:
         """Last trade price — for fill validation logging and trade flow signal."""
         asset_id = msg.get("asset_id", "")
         if not asset_id:

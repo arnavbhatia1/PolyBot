@@ -1,27 +1,35 @@
-"""Track what would have happened if scalped positions were held to resolution.
+"""Track counterfactual outcomes for both scalps and holds.
 
-When the bot scalps (exits early), the contract still has time remaining.
-This tracker watches those contracts until resolution, then records the
-counterfactual outcome: was the scalp optimal, or would holding have been better?
+Scalp counterfactuals: when the bot exits early, watch until resolution
+and record whether holding would have been better.
+
+Hold counterfactuals: when the bot holds to resolution, record the worst
+moment during the hold (lowest holding_edge) and compute whether scalping
+at that moment would have been better.
 
 Data feeds into the daily learning pipeline to tune exit_edge_threshold.
 """
+from __future__ import annotations
+
 import json
 import logging
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 class CounterfactualTracker:
-    def __init__(self, memory_dir: str):
-        self.memory_dir = Path(memory_dir) / "counterfactuals"
+    def __init__(self, memory_dir: str) -> None:
+        self.memory_dir: Path = Path(memory_dir) / "counterfactuals"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self._watchlist: dict[str, dict] = {}  # market_id -> scalp context
+        self._watchlist: dict[str, dict[str, Any]] = {}  # market_id -> scalp context
+        self._hold_worst: dict[str, dict[str, Any]] = {}  # market_id -> worst moment during hold
 
-    def watch(self, pos: dict, scalp_context: dict):
+    def watch(self, pos: dict[str, Any], scalp_context: dict[str, Any]) -> None:
         """Add a scalped position to the watch list for post-resolution comparison.
 
         Called immediately after a scalp exit in main.py. All data needed to
@@ -55,8 +63,107 @@ class CounterfactualTracker:
         logger.info(f"COUNTERFACTUAL: watching {market_id} (scalped {pos.get('side', '?')} @ "
                      f"{scalp_context.get('exit_fill', 0):.3f}, edge={scalp_context.get('holding_edge', 0):+.2f})")
 
-    def check_resolutions(self, binance_feed, btc_at_expiry_fn,
-                          event_metadata: dict[str, dict] | None = None) -> list[dict]:
+    def track_hold_moment(self, market_id: str, pos: dict[str, Any], hold_context: dict[str, Any]) -> None:
+        """Track the worst holding moment for a position being held to resolution.
+
+        Called on every HOLD tick. Updates only if this tick's holding_edge is
+        lower than the previous worst. After resolution, record_hold_resolution()
+        uses this to compute "what if I had scalped at the worst moment?"
+        """
+        if not market_id:
+            return
+
+        holding_edge = hold_context.get("holding_edge", 0)
+        current = self._hold_worst.get(market_id)
+
+        if current is None or holding_edge < current["worst_holding_edge"]:
+            self._hold_worst[market_id] = {
+                "position_id": pos.get("id", 0),
+                "market_id": market_id,
+                "side": pos.get("side", ""),
+                "entry_price": pos.get("entry_price", 0),
+                "size": pos.get("size", 0),
+                "shares_held": pos.get("shares_held") or pos.get("size", 0) / max(pos.get("entry_price", 1), 0.001),
+                "fee_rate": pos.get("fee_rate", 0.018),
+                "weight_version": pos.get("weight_version", ""),
+                "worst_holding_edge": holding_edge,
+                "worst_model_prob": hold_context.get("model_prob", 0),
+                "worst_market_price": hold_context.get("market_price", 0),
+                "worst_seconds_remaining": hold_context.get("seconds_remaining", 0),
+                "worst_btc_price": hold_context.get("btc_price", 0),
+                "exit_threshold_used": hold_context.get("exit_threshold", -0.10),
+                "strike_price": hold_context.get("strike_price", 0),
+                "worst_at": time.time(),
+            }
+
+    def record_hold_resolution(self, market_id: str, resolution_price: float,
+                               actual_pnl: float, actual_gain_pct: float) -> dict[str, Any] | None:
+        """Record counterfactual for a position that was held to resolution.
+
+        Computes what would have happened if the bot had scalped at the worst
+        holding moment (lowest holding_edge during the hold).
+
+        Returns the counterfactual record, or None if no hold data was tracked.
+        """
+        ctx = self._hold_worst.pop(market_id, None)
+        if ctx is None:
+            return None
+
+        # Hypothetical scalp PnL at worst moment
+        worst_sell_price = ctx["worst_market_price"]
+        fee_rate = ctx["fee_rate"]
+        shares = ctx["shares_held"]
+        exit_fee = fee_rate * shares * worst_sell_price * (1.0 - worst_sell_price)
+        hypo_revenue = shares * worst_sell_price - exit_fee
+        hypo_pnl = hypo_revenue - ctx["size"]
+        hypo_gain_pct = hypo_pnl / ctx["size"] if ctx["size"] > 0 else 0
+
+        delta_pnl = actual_pnl - hypo_pnl
+        hold_was_optimal = actual_pnl >= hypo_pnl
+
+        record = {
+            "position_id": ctx["position_id"],
+            "market_id": market_id,
+            "side": ctx["side"],
+            "weight_version": ctx["weight_version"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "actual": {
+                "exit_reason": "hold",
+                "exit_price": resolution_price,
+                "pnl": round(actual_pnl, 6),
+                "gain_pct": round(actual_gain_pct, 6),
+            },
+            "counterfactual": {
+                "exit_reason": "hypothetical_scalp",
+                "exit_price": round(worst_sell_price, 6),
+                "pnl": round(hypo_pnl, 6),
+                "gain_pct": round(hypo_gain_pct, 6),
+            },
+            "delta_pnl": round(delta_pnl, 6),
+            "hold_was_optimal": hold_was_optimal,
+            "context_at_worst_moment": {
+                "holding_edge": ctx["worst_holding_edge"],
+                "model_prob": ctx["worst_model_prob"],
+                "market_price": ctx["worst_market_price"],
+                "seconds_remaining": ctx["worst_seconds_remaining"],
+                "exit_threshold_used": ctx["exit_threshold_used"],
+                "strike_price": ctx["strike_price"],
+                "btc_at_worst": ctx["worst_btc_price"],
+                "worst_at": ctx["worst_at"],
+            },
+        }
+
+        self._save(record)
+        verdict = "CORRECT" if hold_was_optimal else "SUBOPTIMAL"
+        logger.info(
+            f"COUNTERFACTUAL HOLD: {market_id} — hold was {verdict} | "
+            f"hold PnL=${actual_pnl:+.2f} vs worst-moment scalp PnL=${hypo_pnl:+.2f} "
+            f"(delta=${delta_pnl:+.2f})"
+        )
+        return record
+
+    def check_resolutions(self, binance_feed: Any, btc_at_expiry_fn: Callable[..., float],
+                          event_metadata: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         """Check if any watched contracts have expired and compute counterfactuals.
 
         Args:
@@ -182,14 +289,14 @@ class CounterfactualTracker:
 
         return resolved
 
-    def _save(self, record: dict):
+    def _save(self, record: dict[str, Any]) -> None:
         """Write counterfactual record to JSON file."""
         ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
         filename = f"{record['position_id']}_{record['market_id']}_{ts}.json"
         filepath = self.memory_dir / filename
         filepath.write_text(json.dumps(record, indent=2))
 
-    def load_all(self) -> list[dict]:
+    def load_all(self) -> list[dict[str, Any]]:
         """Load all counterfactual records sorted by timestamp."""
         records = []
         for filepath in self.memory_dir.glob("*.json"):

@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import json
 import logging
 from pathlib import Path
+from typing import Any
+
 from polybot.core.binance_feed import CandleBuffer
 from polybot.indicators.rsi import compute_rsi_signal
 from polybot.indicators.macd import compute_macd_signal
@@ -23,26 +27,26 @@ DEFAULT_PARAMS = {
 
 class IndicatorEngine:
     def __init__(self, weights_dir: str, active_version: str = "weights_v001",
-                 params: dict | None = None):
-        self.weights_dir = Path(weights_dir)
-        self.active_version = active_version
-        self.params = params or DEFAULT_PARAMS
-        self._weights = self._load_weights()
+                 params: dict[str, dict[str, Any]] | None = None) -> None:
+        self.weights_dir: Path = Path(weights_dir)
+        self.active_version: str = active_version
+        self.params: dict[str, dict[str, Any]] = params or DEFAULT_PARAMS
+        self._weights: dict[str, float] = self._load_weights()
 
-    def _load_weights(self) -> dict:
+    def _load_weights(self) -> dict[str, float]:
         path = self.weights_dir / f"{self.active_version}.json"
         if path.exists():
             return json.loads(path.read_text())
         return {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20, "entry_threshold": 0.60}
 
-    def get_weights(self) -> dict:
+    def get_weights(self) -> dict[str, float]:
         return self._weights.copy()
 
-    def set_active_version(self, version: str):
+    def set_active_version(self, version: str) -> None:
         self.active_version = version
         self._weights = self._load_weights()
 
-    def compute_all(self, buffer: CandleBuffer) -> dict:
+    def compute_all(self, buffer: CandleBuffer) -> dict[str, dict[str, Any]]:
         closes = buffer.get_closes()
         highs = buffer.get_highs()
         lows = buffer.get_lows()
@@ -58,7 +62,7 @@ class IndicatorEngine:
             "atr": compute_atr_gate(highs, lows, closes, **p["atr"]),
         }
 
-    def compute_score(self, indicators: dict) -> float:
+    def compute_score(self, indicators: dict[str, dict[str, Any]]) -> float:
         w = self._weights
         score = (indicators["rsi"]["score"] * w.get("rsi", 0.20) +
                  indicators["macd"]["score"] * w.get("macd", 0.25) +
@@ -67,7 +71,7 @@ class IndicatorEngine:
                  indicators["vwap"]["score"] * w.get("vwap", 0.20))
         return max(-1.0, min(1.0, score))
 
-    def get_snapshot(self, indicators: dict) -> dict:
+    def get_snapshot(self, indicators: dict[str, dict[str, Any]]) -> dict[str, Any]:
         return {"rsi": indicators["rsi"], "macd": indicators["macd"],
                 "stochastic": indicators["stochastic"], "ema": indicators["ema"],
                 "obv": indicators["obv"], "vwap": indicators["vwap"],

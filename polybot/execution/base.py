@@ -1,8 +1,10 @@
 """Base execution layer: shared dataclasses, fee math, and BaseTrader ABC."""
+from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 from polybot.db.models import Database
 from polybot.math_engine.returns import log_return
@@ -35,6 +37,22 @@ class FillResult:
 # ---------------------------------------------------------------------------
 
 DEFAULT_FEE_RATE = 0.018  # Polymarket crypto taker fee: 1.8% peak (Dynamic Taker-Fee Model, March 2026)
+
+
+def slippage_pct(order_size_usd: float, book_depth_usd: float,
+                 impact_factor: float = 0.03) -> float:
+    """Convex market impact: deeper book consumption costs disproportionately more.
+
+    Returns a percentage (0.015 = 1.5%) to add (buys) or subtract (sells).
+    Uses fill_pct * impact * (1 + fill_pct) so cost accelerates as the order
+    walks through price levels.  At 50% depth the cost is 50% higher than a
+    naive linear model; at 100% it is 2x.  Conservative for negRisk markets
+    where cross-matching creates deeper real liquidity than the raw book shows.
+    """
+    if book_depth_usd <= 0:
+        return 0.0
+    fill_pct = min(order_size_usd / book_depth_usd, 1.0)
+    return fill_pct * impact_factor * (1.0 + fill_pct)
 
 
 def taker_fee(shares: float, price: float, fee_rate: float = DEFAULT_FEE_RATE) -> float:
@@ -72,11 +90,11 @@ class BaseTrader(ABC):
         max_slippage: float = 0.02,
         max_bankroll_deployed: float = 0.80,
         max_concurrent_positions: int = 1,
-    ):
-        self.db = db
-        self.max_slippage = max_slippage
-        self.max_bankroll_deployed = max_bankroll_deployed
-        self.max_concurrent_positions = max_concurrent_positions
+    ) -> None:
+        self.db: Database = db
+        self.max_slippage: float = max_slippage
+        self.max_bankroll_deployed: float = max_bankroll_deployed
+        self.max_concurrent_positions: int = max_concurrent_positions
 
     # -- deployed capital ------------------------------------------------
 
@@ -96,7 +114,7 @@ class BaseTrader(ABC):
         """Execute a sell order. Returns FillResult with actual fill details."""
 
     @abstractmethod
-    async def _resolve_bankroll(self, position: dict, exit_price: float) -> float:
+    async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
         """Compute new bankroll after market resolution.
 
         resolve_position does NOT route through _execute_sell/close_trade,

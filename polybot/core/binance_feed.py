@@ -1,9 +1,13 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import time
 from dataclasses import dataclass
 from collections import deque
+from typing import Any
+
 import numpy as np
 import httpx
 
@@ -26,10 +30,10 @@ class CandleBuffer:
     def __len__(self) -> int:
         return len(self._candles)
 
-    def add(self, candle: Candle):
+    def add(self, candle: Candle) -> None:
         self._candles.append(candle)
 
-    def update_current(self, close: float, high: float, low: float, volume: float):
+    def update_current(self, close: float, high: float, low: float, volume: float) -> None:
         if self._candles:
             c = self._candles[-1]
             c.close = close
@@ -62,15 +66,15 @@ class CandleBuffer:
 class BinanceFeed:
     def __init__(self, symbol: str = "btcusdt", buffer_size: int = 200,
                  ws_url: str = "wss://stream.binance.com:9443/ws",
-                 rest_url: str = "https://api.binance.com/api/v3"):
-        self.symbol = symbol
-        self.ws_url = ws_url
-        self.rest_url = rest_url
-        self.buffer = CandleBuffer(max_size=buffer_size)
-        self._running = False
-        self._ws = None
+                 rest_url: str = "https://api.binance.com/api/v3") -> None:
+        self.symbol: str = symbol
+        self.ws_url: str = ws_url
+        self.rest_url: str = rest_url
+        self.buffer: CandleBuffer = CandleBuffer(max_size=buffer_size)
+        self._running: bool = False
+        self._ws: Any = None
 
-    async def backfill(self):
+    async def backfill(self) -> None:
         url = f"{self.rest_url}/klines"
         params = {"symbol": self.symbol.upper(), "interval": "1m", "limit": self.buffer.max_size}
         for attempt in range(5):
@@ -92,7 +96,7 @@ class BinanceFeed:
                 await asyncio.sleep(wait)
         raise ConnectionError("Failed to backfill candles after 5 attempts")
 
-    async def _connect_ws(self):
+    async def _connect_ws(self) -> None:
         import websockets
         stream = f"{self.ws_url}/{self.symbol}@kline_1m"
         backoff = 1
@@ -111,7 +115,7 @@ class BinanceFeed:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
 
-    def _handle_kline(self, data: dict):
+    def _handle_kline(self, data: dict[str, Any]) -> None:
         k = data.get("k", {})
         if not k:
             return
@@ -125,12 +129,12 @@ class BinanceFeed:
             self.buffer.update_current(close=candle.close, high=candle.high,
                                         low=candle.low, volume=candle.volume)
 
-    async def start(self):
+    async def start(self) -> None:
         self._running = True
         await self.backfill()
         asyncio.create_task(self._connect_ws())
 
-    async def stop(self):
+    async def stop(self) -> None:
         self._running = False
         if self._ws:
             await self._ws.close()

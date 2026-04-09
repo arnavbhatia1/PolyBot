@@ -7,12 +7,22 @@ Combines two independent signals:
 The composite signal is passed to SignalEngine as flow_signal (-1 to +1),
 where positive = bullish (favors Up) and negative = bearish (favors Down).
 """
+from __future__ import annotations
+
 import logging
+from typing import Any, TypedDict
 
 logger = logging.getLogger(__name__)
 
 
-def book_imbalance(book_up: dict, book_down: dict) -> float:
+class FlowData(TypedDict):
+    flow_score: float
+    book_imbalance: float
+    trade_flow: float
+    trade_count: int
+
+
+def book_imbalance(book_up: dict[str, Any], book_down: dict[str, Any]) -> float:
     """Compute bid/ask imbalance across both sides of the binary market.
 
     Returns float from -1 (bearish / Down pressure) to +1 (bullish / Up pressure).
@@ -39,7 +49,7 @@ def book_imbalance(book_up: dict, book_down: dict) -> float:
     return max(-1.0, min(1.0, net))
 
 
-def trade_flow(trades_up: list[dict], trades_down: list[dict],
+def trade_flow(trades_up: list[dict[str, Any]], trades_down: list[dict[str, Any]],
                lookback_seconds: float = 120.0) -> float:
     """Compute net trade flow direction from recent trade history.
 
@@ -87,11 +97,11 @@ def trade_flow(trades_up: list[dict], trades_down: list[dict],
     return max(-1.0, min(1.0, net_up / total))
 
 
-def compute_flow_signal(book_up: dict, book_down: dict,
-                        trades_up: list[dict], trades_down: list[dict],
+def compute_flow_signal(book_up: dict[str, Any], book_down: dict[str, Any],
+                        trades_up: list[dict[str, Any]], trades_down: list[dict[str, Any]],
                         book_weight: float = 0.6,
                         trade_weight: float = 0.4,
-                        lookback_seconds: float = 120.0) -> dict:
+                        lookback_seconds: float = 120.0) -> FlowData:
     """Compute composite order flow signal.
 
     Args:

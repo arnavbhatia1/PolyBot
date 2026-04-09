@@ -1,4 +1,8 @@
 """Paper trader — simulated fills with instant execution."""
+from __future__ import annotations
+
+from typing import Any
+
 from polybot.execution.base import BaseTrader, FillResult, DEFAULT_FEE_RATE, exit_fee_usdc
 
 
@@ -13,7 +17,7 @@ class PaperTrader(BaseTrader):
         """Instant fill at the given price."""
         return FillResult(filled=True, fill_price=price)
 
-    async def _resolve_bankroll(self, position: dict, exit_price: float) -> float:
+    async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
         """Compute revenue from shares. Fee is $0 at resolution extremes."""
         shares = position.get("shares_held") or position["size"] / position["entry_price"]
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE

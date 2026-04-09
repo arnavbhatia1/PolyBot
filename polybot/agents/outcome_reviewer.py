@@ -1,20 +1,25 @@
+from __future__ import annotations
+
 import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 class OutcomeReviewer:
-    def __init__(self, outcomes_dir: str):
-        self.outcomes_dir = Path(outcomes_dir)
+    def __init__(self, outcomes_dir: str) -> None:
+        self.outcomes_dir: Path = Path(outcomes_dir)
         self.outcomes_dir.mkdir(parents=True, exist_ok=True)
 
-    def record_outcome(self, position_id, market_id, question, side, signal_score,
-                       profitable, entry_price, exit_price, log_return, weight_version,
-                       category="", indicator_snapshot: dict | None = None,
+    def record_outcome(self, position_id: int, market_id: str, question: str,
+                       side: str, signal_score: float,
+                       profitable: bool, entry_price: float, exit_price: float,
+                       log_return: float, weight_version: str,
+                       category: str = "", indicator_snapshot: dict[str, Any] | None = None,
                        exit_reason: str = "resolution", size: float = 0.0,
-                       pnl: float = 0.0, fees: float = 0.0):
+                       pnl: float = 0.0, fees: float = 0.0) -> None:
         record = {"position_id": position_id, "market_id": market_id, "question": question,
                   "side": side, "signal_score": signal_score,
                   "correct": profitable, "entry_price": entry_price,
@@ -30,7 +35,7 @@ class OutcomeReviewer:
         filepath.write_text(json.dumps(record, indent=2))
         logger.info(f"Recorded outcome for position {position_id}: profitable={profitable}")
 
-    def load_all_outcomes(self) -> list[dict]:
+    def load_all_outcomes(self) -> list[dict[str, Any]]:
         outcomes = []
         for filepath in self.outcomes_dir.glob("*.json"):
             try:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 import numpy as np
 
@@ -17,10 +19,6 @@ def gain_pct(entry_price: float, exit_price: float) -> float:
     if entry_price <= 0:
         return 0.0
     return (exit_price - entry_price) / entry_price
-
-
-def total_log_return(returns: list[float]) -> float:
-    return sum(returns)
 
 
 def sharpe_ratio(returns: list[float], risk_free_rate: float = 0.0) -> float:

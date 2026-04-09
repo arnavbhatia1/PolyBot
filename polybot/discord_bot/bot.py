@@ -1,11 +1,17 @@
 # polybot/discord_bot/bot.py
+from __future__ import annotations
+
 import logging
+from typing import Any
+
 import discord
 from discord.ext import commands
 
 logger = logging.getLogger(__name__)
 
-def create_bot(db, trader, scanner, scheduler, config):
+
+def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
+               config: dict[str, Any]) -> commands.Bot:
     intents = discord.Intents.default()
     intents.message_content = True
     bot = commands.Bot(command_prefix="!", intents=intents)
@@ -144,13 +150,13 @@ def create_bot(db, trader, scanner, scheduler, config):
             return
         total = len(trades)
         pnls = []
-        log_returns = []
+        gain_pcts = []
         hold_hours = []
         for t in trades:
             entry_p = t["entry_price"]
             pnl = t["size"] * (t["exit_price"] - entry_p) / entry_p if entry_p > 0 else 0
             pnls.append(pnl)
-            log_returns.append(t["log_return"])
+            gain_pcts.append((t["exit_price"] - entry_p) / entry_p if entry_p > 0 else 0)
             try:
                 entry_dt = dt.fromisoformat(t["entry_timestamp"])
                 exit_dt = dt.fromisoformat(t["exit_timestamp"])
@@ -163,8 +169,8 @@ def create_bot(db, trader, scanner, scheduler, config):
         best = max(pnls)
         worst = min(pnls)
         avg_hold = sum(hold_hours) / len(hold_hours) if hold_hours else 0
-        mean_r = sum(log_returns) / len(log_returns)
-        var_r = sum((r - mean_r) ** 2 for r in log_returns) / len(log_returns) if total > 1 else 1
+        mean_r = sum(gain_pcts) / len(gain_pcts)
+        var_r = sum((r - mean_r) ** 2 for r in gain_pcts) / len(gain_pcts) if total > 1 else 1
         std_r = math.sqrt(var_r) if var_r > 0 else 1
         sharpe = (mean_r / std_r) * math.sqrt(288) if std_r > 0 else 0  # 288 five-min periods/day
         await ctx.send(format_performance(sharpe, win_rate, total_pnl, avg_hold, total, best, worst))

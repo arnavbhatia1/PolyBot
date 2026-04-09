@@ -1,7 +1,10 @@
 """Live trader — real Polymarket CLOB orders via py-clob-client SDK."""
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
+from typing import Any
 
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import (
@@ -91,14 +94,14 @@ def verify_auth() -> tuple[bool, str, float]:
 class LiveTrader(BaseTrader):
     """Real Polymarket CLOB trading with FOK market orders and retry."""
 
-    def __init__(self, db: Database, **kwargs):
+    def __init__(self, db: Database, **kwargs: Any) -> None:
         super().__init__(
             db=db,
             max_slippage=kwargs.get("max_slippage", 0.02),
             max_bankroll_deployed=kwargs.get("max_bankroll_deployed", 0.80),
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
-        self.client = _create_clob_client()
+        self.client: ClobClient = _create_clob_client()
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
     async def get_balance(self) -> float:
@@ -113,7 +116,7 @@ class LiveTrader(BaseTrader):
         """FOK market sell for `shares` shares."""
         return await self._submit_fok_order(token_id, SELL, shares, price)
 
-    async def _resolve_bankroll(self, position: dict, exit_price: float) -> float:
+    async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
         """Sync bankroll with real Polymarket balance."""
         real_balance = await self.get_balance()
         logger.info("Resolution bankroll sync: real balance=%.2f", real_balance)

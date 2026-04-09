@@ -1,12 +1,16 @@
+from __future__ import annotations
+
+from typing import Any
+
 import aiosqlite
 from datetime import datetime, timezone
 
 class Database:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+    def __init__(self, db_path: str) -> None:
+        self.db_path: str = db_path
         self.conn: aiosqlite.Connection | None = None
 
-    async def initialize(self):
+    async def initialize(self) -> None:
         self.conn = await aiosqlite.connect(self.db_path)
         self.conn.row_factory = aiosqlite.Row
         await self.conn.execute("PRAGMA journal_mode=WAL")
@@ -66,7 +70,7 @@ class Database:
             await self.conn.execute("ALTER TABLE positions ADD COLUMN shares_held REAL")
         await self.conn.commit()
 
-    async def close(self):
+    async def close(self) -> None:
         if self.conn:
             await self.conn.close()
 
@@ -109,14 +113,14 @@ class Database:
         await self.conn.commit()
         return cursor.lastrowid
 
-    async def get_open_positions(self) -> list[dict]:
+    async def get_open_positions(self) -> list[dict[str, Any]]:
         cursor = await self.conn.execute(
             "SELECT * FROM positions WHERE status = 'open'"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
-    async def close_position(self, position_id: int, exit_price: float, log_return: float):
+    async def close_position(self, position_id: int, exit_price: float, log_return: float) -> None:
         now = datetime.now(timezone.utc).isoformat()
         await self.conn.execute(
             "UPDATE positions SET status='closed', exit_price=?, exit_timestamp=?, log_return=? WHERE id=?",
@@ -154,7 +158,7 @@ class Database:
         row = await cursor.fetchone()
         return row[0]
 
-    async def get_trade_history(self, limit: int = 50) -> list[dict]:
+    async def get_trade_history(self, limit: int = 50) -> list[dict[str, Any]]:
         cursor = await self.conn.execute(
             "SELECT * FROM trade_history ORDER BY exit_timestamp DESC LIMIT ?",
             (limit,),
@@ -162,7 +166,7 @@ class Database:
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
-    async def set_bankroll(self, amount: float):
+    async def set_bankroll(self, amount: float) -> None:
         await self.conn.execute(
             "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
             "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",

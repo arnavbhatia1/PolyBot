@@ -161,18 +161,34 @@ def test_student_t_less_extreme_than_normal():
 
 def test_regime_factor_trending():
     se = SignalEngine()
-    # Monotonically increasing closes = positive autocorrelation
-    closes = np.array([100 + i * 2.0 for i in range(15)])
+    # Monotonically increasing closes = positive autocorrelation (need 22+ for 20 returns)
+    closes = np.array([100 + i * 2.0 for i in range(25)])
     factor = se.compute_regime_factor(closes)
     assert factor > 0  # trending
 
 
 def test_regime_factor_reverting():
     se = SignalEngine()
-    # Alternating up/down = negative autocorrelation
-    closes = np.array([100 + ((-1)**i) * 5.0 for i in range(15)])
+    # Alternating up/down = negative autocorrelation (need 22+ for 20 returns)
+    closes = np.array([100 + ((-1)**i) * 5.0 for i in range(25)])
     factor = se.compute_regime_factor(closes)
     assert factor < 0  # mean reverting
+
+
+def test_regime_factor_short_lookback():
+    """With a smaller lookback, fewer closes are needed."""
+    se = SignalEngine(regime_lookback=10)
+    closes = np.array([100 + i * 2.0 for i in range(15)])
+    factor = se.compute_regime_factor(closes)
+    assert factor > 0  # trending
+
+
+def test_regime_factor_insufficient_data():
+    """Returns 0.0 when not enough closes for the lookback window."""
+    se = SignalEngine(regime_lookback=20)
+    closes = np.array([100 + i for i in range(10)])  # only 10 closes, need 22
+    factor = se.compute_regime_factor(closes)
+    assert factor == 0.0
 
 
 # --- Order flow integration tests ---

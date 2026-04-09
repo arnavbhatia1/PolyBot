@@ -6,7 +6,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 
 ## Key Architecture Decisions
 
-- **4-layer probability model.** The bot computes P(Up) using four independent signal layers: (1) Student-t CDF with df=4 for fat-tailed Brownian motion: z = (BTC - strike) / (ATR * sqrt(time)), P = t.cdf(z, 4) — captures fat tails that the normal distribution misses, finding edge on underdog positions the market overprices. (2) Regime detection: 1-lag autocorrelation of recent returns. Trending regimes amplify probability, mean-reverting regimes dampen it (±3%). (3) Order flow: book imbalance + trade flow from CLOB WebSocket data. Informed buying/selling pressure leads price movement (±4%). (4) Indicator momentum: RSI, MACD, Stochastic, OBV, VWAP provide a small directional nudge (±4%). The CDF (Layer 1) drives all decisions — layers just nudge. The edge is: model probability - effective market price.
+- **4-layer probability model.** The bot computes P(Up) using four independent signal layers: (1) Student-t CDF with df=4 for fat-tailed Brownian motion: z = (BTC - strike) / (ATR * sqrt(time)), P = t.cdf(z, 4) — captures fat tails that the normal distribution misses, finding edge on underdog positions the market overprices. (2) Regime detection: 1-lag autocorrelation of last 20 1-min returns (configurable via `regime_lookback`). Trending regimes amplify probability, mean-reverting regimes dampen it (±3%). (3) Order flow: book imbalance + trade flow from CLOB WebSocket data. Informed buying/selling pressure leads price movement (±4%). (4) Indicator momentum: RSI, MACD, Stochastic, OBV, VWAP provide a small directional nudge (±4%). The CDF (Layer 1) drives all decisions — layers just nudge. The edge is: model probability - effective market price.
 - **Active position management.** Hold to $1 resolution when the model is confident. Exit early (scalp) when holding_edge drops below a fee-aware threshold that accounts for exit costs and time urgency. Same probability model for entry AND exit. Not fixed take-profit/stop-loss — the math decides.
 - **Single position at a time.** Full Kelly on the best edge, no capital dilution.
 - **One trade per 5-min contract.** After any exit, that contract is blacklisted.
@@ -24,7 +24,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 
 ```
 polybot/
-  main.py                    # Entry point, trading loop (hold to resolution)
+  main.py                    # Entry point, trading loop (9 extracted helper functions)
   config/settings.yaml       # ALL tunable parameters
   core/
     binance_feed.py          # WebSocket + candle buffer
@@ -39,19 +39,19 @@ polybot/
     base.py                  # BaseTrader ABC, TradeResult, FillResult, fee functions
     paper_trader.py          # PaperTrader(BaseTrader) — instant simulated fills
     live_trader.py           # LiveTrader(BaseTrader) — FOK market orders via py-clob-client SDK
-    circuit_breaker.py       # Streak-based Kelly reduction (3 losses → half Kelly, 2 wins → restore)
+    circuit_breaker.py       # Drawdown-based Kelly scaling (tracks high-water mark, scales Kelly 1.0→0.25 as drawdown deepens)
   agents/
     scheduler.py             # Daily learning pipeline
     outcome_reviewer.py      # Logs resolved trades
-    counterfactual_tracker.py # Tracks "what if I held?" for scalped positions
+    counterfactual_tracker.py # Tracks counterfactuals for both scalps (what if held?) and holds (what if scalped?)
     bias_detector.py         # Per-indicator accuracy + counterfactual analysis
     ta_evolver.py            # Recommends weight adjustments
     weight_optimizer.py      # Versions and auto-adopts weights
   brain/
-    claude_client.py         # analyze_strategy() for daily pipeline + analyze_market() legacy
+    claude_client.py         # analyze_strategy() for daily pipeline
   memory/
     outcomes/                # One JSON per trade
-    counterfactuals/         # One JSON per scalped trade — what if held to resolution?
+    counterfactuals/         # One JSON per scalp or hold — bidirectional "what if?"
     weights/                 # Versioned weight configs
     biases.json              # Indicator correction factors
   discord_bot/
@@ -60,15 +60,16 @@ polybot/
     alerts.py                # Trade alerts, session banners, channel purging
   db/models.py               # SQLite: positions, trade_history, bankroll
   math_engine/
-    decision_table.py        # Legacy — not used in main trading loop
     returns.py               # Log returns, gain_pct (arithmetic returns for binary), Sharpe ratio
 ```
 
 ## Config
 
-`polybot/config/settings.yaml`:
-- `circuit_breaker.losses_to_reduce:` — 3 (consecutive losses before halving Kelly)
-- `circuit_breaker.wins_to_restore:` — 2 (wins at half Kelly before restoring full)
+`polybot/config/settings.yaml` (validated by `validate_config()` in `loader.py` on startup — raises `ValueError` listing all bound violations):
+- `circuit_breaker.max_drawdown_pct:` — 0.15 (Kelly bottoms out at this drawdown from peak)
+- `circuit_breaker.min_multiplier:` — 0.25 (floor Kelly multiplier at max drawdown)
+- `circuit_breaker.losses_to_reduce:` — 3 (consecutive losses before Discord streak alert)
+- `circuit_breaker.wins_to_restore:` — 2 (consecutive wins before Discord streak alert)
 - `math.kelly_fraction:` — 0.15 (fraction of full Kelly)
 - `signal.entry_threshold:` — 0.10 (minimum 10% edge to trade)
 - `signal.exit_edge_threshold:` — -0.10 (exit when holding edge drops below -10%)
@@ -76,6 +77,7 @@ polybot/
 - `signal.momentum_weight:` — 0.04 (max ±4% indicator adjustment, Layer 4)
 - `signal.regime_weight:` — 0.03 (max ±3% regime adjustment, Layer 2)
 - `signal.flow_weight:` — 0.04 (max ±4% order flow adjustment, Layer 3)
+- `signal.regime_lookback:` — 20 (number of 1-min returns for regime autocorrelation, 20 = 20-minute window)
 - `signal.student_t_df:` — 4 (degrees of freedom for fat-tailed CDF)
 - `signal.weights:` — per-indicator weights for momentum calculation
 - `execution.max_concurrent_positions:` — 1 (single position, full focus)
@@ -97,7 +99,7 @@ polybot/
 python -m polybot.main --mode paper   # Paper trading (persistent bankroll across sessions)
 python -m polybot.main --mode live    # Live trading (real USDC on Polymarket)
 python -m polybot.main                # Defaults to mode in settings.yaml
-python -m pytest polybot/tests/       # 334 tests
+python -m pytest polybot/tests/       # 422 tests
 ```
 
 ## How the Probability Model Works
@@ -122,7 +124,7 @@ LAYER 1 — Fat-tailed base (Student-t CDF, df=4):
   The difference is edge on the underdog side.
 
 LAYER 2 — Regime detection:
-  autocorr = 1-lag autocorrelation of last 10 1-min returns
+  autocorr = 1-lag autocorrelation of last 20 1-min returns
   If autocorr > 0 (trending): amplify P away from 0.5 (max ±3%)
   If autocorr < 0 (reverting): dampen P toward 0.5
 
@@ -286,7 +288,7 @@ CLOB books + trades ──► compute_flow_signal()
                         ├── book_imbalance (60%) + trade_flow (40%, 120s lookback)
                         └── flow_score (±4% max)
 
-Candle closes ──► 1-lag autocorrelation (10 returns)
+Candle closes ──► 1-lag autocorrelation (20 returns)
                         └── regime_adjustment (±3% max)
 
 BTC price, strike, ATR, seconds_remaining
@@ -323,7 +325,7 @@ bankroll (from SQLite)
         ▼
 raw_size = bankroll × kelly_size × breaker.kelly_multiplier
         │                                    │
-        │                            (1.0 normal, 0.5 after 3 losses)
+        │                            (1.0 at peak, scales to 0.25 at 15% drawdown)
         ▼
 CAP CHAIN (in order):
         ├── size < $1.00?             → REJECT
@@ -382,8 +384,9 @@ Gamma API: seconds_remaining? closed?
         │
         ├── EXPIRED (seconds_remaining ≤ 0 AND closed=True)
         │         │
-        │         ▼ RESOLUTION PATH
-        │   BTC vs strike → exit_price = $1.00 or $0.00
+        │         ▼ RESOLUTION PATH (Gamma/Chainlink only — no Binance fallback)
+        │   Gamma eventMetadata or closed+outcomePrices → exit_price = $1.00 or $0.00
+        │   Orphaned positions wait indefinitely (Discord alert after 1 hour)
         │   trader.resolve_position(pos_id, exit_price)
         │     fee = rate × shares × p × (1-p) = $0 at extremes
         │     revenue = shares × exit_price
@@ -426,24 +429,34 @@ Gamma API: seconds_remaining? closed?
                   Then: BTC vs strike → resolution_price ($0 or $1)
                   Computes hypothetical PnL if held vs actual scalp PnL
                   Writes JSON to memory/counterfactuals/
+
+        HOLD COUNTERFACTUALS (resolution path):
+          While holding, tracker records worst holding moment
+            (lowest holding_edge during the hold)
+          On resolution: computes hypothetical scalp PnL at that
+            worst moment vs actual resolution PnL
+          Writes JSON to memory/counterfactuals/ (same directory)
+          BiasDetector analyzes both scalp AND hold counterfactuals
 ```
 
 ### Phase 6: Circuit Breaker Update
 
 ```
-trade closed → gain_pct = pnl / size
-        │
-  ┌─────┴─────┐
-  │ WIN       │ LOSS
-  ▼           ▼
+trade closed -> bankroll updated in DB
+        |
+        v
+breaker.update_bankroll(new_bankroll)
+  |-- if new_bankroll > peak: peak = new_bankroll (high-water mark)
+  |-- drawdown_pct = (peak - current) / peak
+  '-- kelly_multiplier = linear(1.0 at 0%, 0.25 at 15%+)
+        |
+        v (streak tracking for Discord alerts only)
+  +-----+-----+
+  | WIN       | LOSS
+  v           v
 record_win()  record_loss()
-  │             ├── consecutive_losses++
-  │             └── if ≥ 3 AND not reduced:
-  │                   reduced=True → kelly_multiplier=0.5
-  │
-  ├── consecutive_losses = 0
-  └── if reduced AND wins_since_reduction ≥ 2:
-        reduced=False → kelly_multiplier=1.0
+  -> streak counters for Discord alerts
+  -> does NOT affect kelly_multiplier
 ```
 
 ### Phase 7: Outcome → Learning Pipeline
@@ -454,7 +467,7 @@ outcome JSON → polybot/memory/outcomes/
         ▼ (daily at 4:45 PM ET)
 BiasDetector: first 60% of outcomes (training set)
   → per-indicator accuracy, edge calibration, time/vol patterns
-  → counterfactual analysis (if data exists): scalp accuracy, missed gains
+  → counterfactual analysis (if data exists): scalp AND hold accuracy, missed gains
         │
         ▼
 TAEvolver: analysis + last 75 trades + config → Claude Sonnet
@@ -491,6 +504,8 @@ WeightOptimizer: backtest on last 40% (validation set)
 - **Binance 451:** Using .com instead of .us.
 - **Wrong strike:** Strike for the probability model is derived from Binance candle buffer at the contract's window boundary (parsed from slug). Polymarket resolves using Chainlink oracle, which can differ from Binance by $20-200. Resolution always waits for Gamma API eventMetadata or closed+outcomePrices — never guesses from Binance. If buffer is empty on startup, first few windows may have no strike.
 - **All trades losing:** Check if model is systematically miscalibrated. Lower kelly_fraction or raise min_edge.
+- **Startup config error:** `validate_config()` in `loader.py` validates all parameter bounds on startup and raises `ValueError` listing all violations. Fix settings.yaml values to be within documented ranges.
+- **Orphaned position not resolving:** Positions now wait indefinitely for Gamma/Chainlink resolution data (no Binance fallback). A Discord alert fires after 1 hour. This is by design — Binance and Chainlink can disagree by $20-200, so guessing from Binance is unsafe.
 
 ## Learning Pipeline
 
@@ -498,7 +513,7 @@ Daily at 4:45 PM ET / 20:45 UTC (configurable via `agents.daily_pipeline_hour` a
 
 **Hold-out split:** Outcomes are sorted chronologically and split 60/40. The first 60% (older trades) are used for analysis and recommendations (steps 1-2). The last 40% (newer trades) are used for backtest validation (step 3). This prevents in-sample overfitting — Claude's recommendations are tested against data it hasn't seen.
 
-**Minimum data requirement:** Claude is instructed to recommend NO CHANGES with fewer than 50 trades (was 20). Win rate variance at N=25 is ±13 percentage points — noise, not signal. The WeightOptimizer also requires at least 10 outcomes to run.
+**Minimum data requirement:** The scheduler (`scheduler.py`) programmatically skips TAEvolver and WeightOptimizer if fewer than 50 trades exist. BiasDetector still runs regardless. This is enforced in code (not just a Claude prompt instruction). Win rate variance at N=25 is ±13 percentage points — noise, not signal. The WeightOptimizer also requires at least 10 outcomes to run.
 
 1. **BiasDetector** — Analyzes the **training set** (first 60% of outcomes):
    - Per-indicator accuracy (bullish/bearish breakdown, sample sizes)
@@ -507,6 +522,7 @@ Daily at 4:45 PM ET / 20:45 UTC (configurable via `agents.daily_pipeline_hour` a
    - Time patterns (win rate by seconds remaining at entry)
    - Volatility patterns (win rate by ATR regime)
    - Overall statistics (Sharpe, win rate, avg edge)
+   - Counterfactual analysis (both scalps AND holds): was the exit/hold decision optimal?
 
 2. **TAEvolver** — Sends training-set analysis + trades + current config to Claude API:
    - System prompt defines Chief Quantitative Strategist role with full 4-layer model description
@@ -540,7 +556,7 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't use polymarket.us for crypto — US platform has sports only. All crypto trading is on polymarket.com.
 - Don't use Binance.com — use Binance.us.
 - Don't allow multiple concurrent positions — one at a time, full Kelly.
-- Don't bypass the circuit breaker — it exists to protect bankroll during losing streaks.
+- Don't bypass the circuit breaker — it scales Kelly proportionally to drawdown from peak bankroll, protecting against compounding losses while still trading.
 - Don't auto-delete the DB — bankroll persists across sessions in both modes. Never delete `polybot/db/polybot.db` between runs.
 - Don't use limit orders in LiveTrader — FOK market orders for 5-min contract speed.
 - Don't resolve positions by comparing Binance BTC price vs Binance strike — always wait for Gamma API `eventMetadata` or `closed` + `outcomePrices`. Binance and Chainlink (Polymarket's oracle) can disagree by $20-200, causing false WIN/LOSS.
@@ -551,7 +567,7 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 The core trading logic is FROZEN. Do not make structural changes to:
 - `signal_engine.py` (4-layer probability model)
 - `order_flow.py` (book imbalance + trade flow)
-- Entry/exit/pricing logic in `main.py`
+- Entry/exit/pricing logic in `main.py` (now 9 extracted helper functions — logic unchanged, just organized)
 - `base.py` (BaseTrader ABC, fee math, shared gates/DB ops)
 - `paper_trader.py` / `live_trader.py` (extend BaseTrader — only 3 abstract methods each)
 

@@ -305,3 +305,124 @@ def test_check_resolutions_metadata_records_chainlink_prices(tracker):
 
     assert resolved[0]["context_at_scalp"]["chainlink_price_to_beat"] == 72304.13
     assert resolved[0]["context_at_scalp"]["chainlink_final_price"] == 72129.75
+
+
+# --- Hold counterfactual tests ---
+
+def _make_hold_ctx(holding_edge=0.05, model_prob=0.70, market_price=0.55,
+                   seconds_remaining=120, exit_threshold=-0.10,
+                   strike_price=42500.0, btc_price=42550.0):
+    return {
+        "holding_edge": holding_edge, "model_prob": model_prob,
+        "market_price": market_price, "seconds_remaining": seconds_remaining,
+        "exit_threshold": exit_threshold, "strike_price": strike_price,
+        "btc_price": btc_price,
+    }
+
+
+def test_track_hold_moment_records_worst(tracker):
+    """track_hold_moment should keep only the worst (lowest) holding_edge."""
+    pos = _make_pos()
+    tracker.track_hold_moment(pos["market_id"], pos, _make_hold_ctx(holding_edge=0.10))
+    tracker.track_hold_moment(pos["market_id"], pos, _make_hold_ctx(holding_edge=-0.02))
+    tracker.track_hold_moment(pos["market_id"], pos, _make_hold_ctx(holding_edge=0.05))
+
+    worst = tracker._hold_worst[pos["market_id"]]
+    assert worst["worst_holding_edge"] == -0.02
+
+
+def test_track_hold_moment_ignores_empty_market(tracker):
+    pos = _make_pos(market_id="")
+    tracker.track_hold_moment("", pos, _make_hold_ctx())
+    assert len(tracker._hold_worst) == 0
+
+
+def test_record_hold_resolution_win(tracker, memory_dir):
+    """Hold to resolution that won — compare vs hypothetical worst-moment scalp."""
+    pos = _make_pos(side="Up", entry_price=0.45, size=100.0)
+    # Worst moment: market_price=0.40, edge barely positive
+    tracker.track_hold_moment(pos["market_id"], pos, _make_hold_ctx(
+        holding_edge=0.01, market_price=0.40, model_prob=0.55))
+
+    # Held to resolution: Up won, $1.00
+    actual_pnl = (100 / 0.45) * 1.0 - 100  # big win
+    record = tracker.record_hold_resolution(
+        pos["market_id"], resolution_price=1.0,
+        actual_pnl=actual_pnl, actual_gain_pct=actual_pnl / 100)
+
+    assert record is not None
+    assert record["hold_was_optimal"] is True
+    assert record["actual"]["exit_reason"] == "hold"
+    assert record["counterfactual"]["exit_reason"] == "hypothetical_scalp"
+    assert record["delta_pnl"] > 0  # hold was better
+
+    # Should be saved to disk
+    cf_dir = memory_dir / "counterfactuals"
+    files = list(cf_dir.glob("*.json"))
+    assert len(files) == 1
+
+
+def test_record_hold_resolution_loss(tracker):
+    """Hold to resolution that lost — scalp at worst moment would have been better."""
+    pos = _make_pos(side="Up", entry_price=0.55, size=100.0)
+    shares = 100 / 0.55
+    # Worst moment: market_price=0.48 — could have sold
+    tracker.track_hold_moment(pos["market_id"], pos, _make_hold_ctx(
+        holding_edge=-0.05, market_price=0.48))
+
+    # Held to resolution: Up lost, $0.00, total loss
+    actual_pnl = -100.0
+    record = tracker.record_hold_resolution(
+        pos["market_id"], resolution_price=0.0,
+        actual_pnl=actual_pnl, actual_gain_pct=-1.0)
+
+    assert record is not None
+    assert record["hold_was_optimal"] is False
+    assert record["counterfactual"]["pnl"] > actual_pnl  # scalp was better
+
+
+def test_record_hold_resolution_no_data(tracker):
+    """If no hold moments were tracked, returns None."""
+    result = tracker.record_hold_resolution("nonexistent", 1.0, 50.0, 0.5)
+    assert result is None
+
+
+def test_record_hold_resolution_clears_watchlist(tracker):
+    """After recording, the market should be removed from _hold_worst."""
+    pos = _make_pos()
+    tracker.track_hold_moment(pos["market_id"], pos, _make_hold_ctx())
+    assert pos["market_id"] in tracker._hold_worst
+    tracker.record_hold_resolution(pos["market_id"], 1.0, 50.0, 0.5)
+    assert pos["market_id"] not in tracker._hold_worst
+
+
+def test_bias_detector_hold_counterfactual_analysis():
+    """BiasDetector should analyze hold counterfactuals alongside scalps."""
+    from polybot.agents.bias_detector import BiasDetector
+    detector = BiasDetector(biases_path="/tmp/fake_biases.json")
+
+    counterfactuals = [
+        # Scalp records
+        {"scalp_was_optimal": True, "delta_pnl": 0,
+         "actual": {"gain_pct": 0.05}, "counterfactual": {"gain_pct": -1.0},
+         "context_at_scalp": {"holding_edge": -0.15, "seconds_remaining": 20}},
+        {"scalp_was_optimal": False, "delta_pnl": 50.0,
+         "actual": {"gain_pct": -0.10}, "counterfactual": {"gain_pct": 0.90},
+         "context_at_scalp": {"holding_edge": -0.02, "seconds_remaining": 60}},
+        # Hold records
+        {"hold_was_optimal": True, "delta_pnl": 80.0,
+         "actual": {"gain_pct": 1.22}, "counterfactual": {"gain_pct": -0.10},
+         "context_at_worst_moment": {"holding_edge": 0.01}},
+        {"hold_was_optimal": False, "delta_pnl": -30.0,
+         "actual": {"gain_pct": -1.0}, "counterfactual": {"gain_pct": -0.10},
+         "context_at_worst_moment": {"holding_edge": -0.08}},
+    ]
+
+    result = detector.analyze_counterfactuals(counterfactuals)
+    # Scalp stats
+    assert result["total_scalps_tracked"] == 2
+    assert result["optimal_scalps"] == 1
+    # Hold stats
+    assert result["total_holds_tracked"] == 2
+    assert result["optimal_holds"] == 1
+    assert result["suboptimal_holds"] == 1

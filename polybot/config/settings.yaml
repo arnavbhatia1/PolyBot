@@ -5,8 +5,10 @@ math:
   kelly_fraction: 0.15  # Fraction of Kelly to use (0.15 = conservative)
 
 circuit_breaker:
-  losses_to_reduce: 3    # consecutive losses before halving Kelly
-  wins_to_restore: 2     # wins at half Kelly before restoring full
+  max_drawdown_pct: 0.15   # Kelly bottoms out at this drawdown from peak
+  min_multiplier: 0.25     # Floor Kelly multiplier at max drawdown
+  losses_to_reduce: 3      # consecutive losses before Discord streak alert
+  wins_to_restore: 2       # consecutive wins before Discord streak alert
 
 execution:
   max_slippage: 0.02
@@ -70,6 +72,7 @@ signal:
   min_model_probability: 0.65  # Min confidence to enter — tunable by pipeline (range: 0.55-0.85)
   momentum_weight: 0.04       # was 0.08 — demoted to Layer 4 (weakest signal)
   regime_weight: 0.03         # max ±3% regime adjustment (Layer 2) — CDF drives decisions
+  regime_lookback: 20         # number of 1-min returns for autocorrelation (20 = 20 minutes)
   flow_weight: 0.04           # max ±4% order flow adjustment (Layer 3) — CDF drives decisions
   student_t_df: 4             # NEW — degrees of freedom for fat-tailed CDF
   weights:

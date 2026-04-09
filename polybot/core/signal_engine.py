@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 import logging
 from dataclasses import dataclass
@@ -49,34 +51,36 @@ class SignalEngine:
     by at least `min_edge`. Kelly sizes the bet based on that edge.
     """
 
-    def __init__(self, min_edge: float = 0.20, kelly_fraction: float = 0.15,
-                 momentum_weight: float = 0.04, weights: dict | None = None,
+    def __init__(self, min_edge: float = 0.10, kelly_fraction: float = 0.15,
+                 momentum_weight: float = 0.04, weights: dict[str, float] | None = None,
                  min_model_probability: float = 0.65,
-                 student_t_df: int = 4, regime_weight: float = 0.05,
-                 flow_weight: float = 0.06):
-        self.min_edge = min_edge
-        self.kelly_fraction = kelly_fraction
-        self.momentum_weight = momentum_weight
-        self.min_model_probability = min_model_probability
-        self.student_t_df = student_t_df
-        self.regime_weight = regime_weight
-        self.flow_weight = flow_weight
-        self.weights = weights or {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
+                 student_t_df: int = 4, regime_weight: float = 0.03,
+                 flow_weight: float = 0.04, regime_lookback: int = 20) -> None:
+        self.min_edge: float = min_edge
+        self.kelly_fraction: float = kelly_fraction
+        self.momentum_weight: float = momentum_weight
+        self.min_model_probability: float = min_model_probability
+        self.student_t_df: int = student_t_df
+        self.regime_weight: float = regime_weight
+        self.flow_weight: float = flow_weight
+        self.regime_lookback: int = regime_lookback
+        self.weights: dict[str, float] = weights or {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                    "obv": 0.15, "vwap": 0.20}
 
     @property
-    def entry_threshold(self):
+    def entry_threshold(self) -> float:
         return self.min_edge
 
     @entry_threshold.setter
-    def entry_threshold(self, value):
+    def entry_threshold(self, value: float) -> None:
         self.min_edge = value
 
     def compute_regime_factor(self, closes) -> float:
         """1-lag autocorrelation of recent returns. Positive=trending, negative=reverting."""
-        if len(closes) < 12:
+        n = self.regime_lookback
+        if len(closes) < n + 2:
             return 0.0
-        returns = np.diff(closes[-11:]) / closes[-11:-1]  # last 10 returns
+        returns = np.diff(closes[-(n + 1):]) / closes[-(n + 1):-1]  # last n returns
         if len(returns) < 6:
             return 0.0
         r1 = returns[:-1]
@@ -136,7 +140,7 @@ class SignalEngine:
 
         return max(0.03, min(0.97, prob_up))
 
-    def compute_momentum(self, indicators: dict) -> float:
+    def compute_momentum(self, indicators: dict[str, dict]) -> float:
         w = self.weights
         return max(-1.0, min(1.0,
             indicators.get("rsi", {}).get("score", 0) * w.get("rsi", 0.20) +
@@ -146,7 +150,7 @@ class SignalEngine:
             indicators.get("vwap", {}).get("score", 0) * w.get("vwap", 0.20)
         ))
 
-    def evaluate(self, indicators: dict, has_position: bool, in_entry_window: bool,
+    def evaluate(self, indicators: dict[str, dict], has_position: bool, in_entry_window: bool,
                  btc_price: float = 0, strike_price: float = 0,
                  seconds_remaining: float = 0, market_price_up: float = 0.5,
                  market_price_down: float = 0.5,
@@ -207,7 +211,7 @@ class SignalEngine:
             return TradeSignal("SKIP", max(prob_up, prob_down), best, 0,
                                f"No edge: best={best:+.0%} < min={self.min_edge:.0%}")
 
-    def evaluate_hold(self, indicators: dict, btc_price: float, strike_price: float,
+    def evaluate_hold(self, indicators: dict[str, dict], btc_price: float, strike_price: float,
                       seconds_remaining: float, market_price_for_side: float,
                       side: str, exit_threshold: float = -0.10,
                       entry_price: float = 0.0, fee_rate: float = 0.072,

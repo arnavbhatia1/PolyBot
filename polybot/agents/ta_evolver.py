@@ -1,19 +1,22 @@
+from __future__ import annotations
+
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 class TAEvolver:
-    def __init__(self, strategy_log_path: str, claude_client=None):
-        self.strategy_log_path = Path(strategy_log_path)
-        self.claude_client = claude_client
+    def __init__(self, strategy_log_path: str, claude_client: Any = None) -> None:
+        self.strategy_log_path: Path = Path(strategy_log_path)
+        self.claude_client: Any = claude_client
 
     # --- Primary entry point (async, uses Claude) ---
 
-    async def evolve(self, outcomes: list[dict], analysis: dict,
-                     current_config: dict) -> dict:
+    async def evolve(self, outcomes: list[dict[str, Any]], analysis: dict[str, Any],
+                     current_config: dict[str, Any]) -> dict[str, Any]:
         """Compile data, call Claude for strategy analysis, fall back to local on failure.
 
         Returns a recommendations dict with at minimum 'recommended_weights'.
@@ -54,7 +57,7 @@ class TAEvolver:
 
     # --- Local fallback methods (sync, no API) ---
 
-    def analyze(self, outcomes: list[dict]) -> dict:
+    def analyze(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         if not outcomes:
             return {"win_rate": 0, "avg_gain_pct": 0, "total_trades": 0}
         wins = sum(1 for o in outcomes if o.get("correct", False))
@@ -70,7 +73,7 @@ class TAEvolver:
                 "avg_gain_pct": sum(returns) / len(returns),
                 "total_trades": len(outcomes)}
 
-    def recommend_weight_adjustments(self, outcomes: list[dict], current_weights: dict) -> dict:
+    def recommend_weight_adjustments(self, outcomes: list[dict[str, Any]], current_weights: dict[str, float]) -> dict[str, float]:
         if len(outcomes) < 5:
             return current_weights.copy()
         indicator_names = ["rsi", "macd", "stochastic", "obv", "vwap"]
@@ -97,7 +100,7 @@ class TAEvolver:
 
     # --- Logging ---
 
-    def _save_claude_log(self, recommendations: dict):
+    def _save_claude_log(self, recommendations: dict[str, Any]) -> None:
         """Append Claude's analysis to strategy_log.md."""
         self.strategy_log_path.parent.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc).isoformat()
@@ -127,7 +130,7 @@ class TAEvolver:
         existing = self.strategy_log_path.read_text() if self.strategy_log_path.exists() else "# Strategy Evolution Log\n"
         self.strategy_log_path.write_text(existing + entry)
 
-    def _save_local_log(self, analysis: dict, recommended_weights: dict):
+    def _save_local_log(self, analysis: dict[str, Any], recommended_weights: dict[str, float]) -> None:
         """Append local fallback analysis to strategy_log.md."""
         self.strategy_log_path.parent.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc).isoformat()
@@ -140,6 +143,6 @@ class TAEvolver:
         existing = self.strategy_log_path.read_text() if self.strategy_log_path.exists() else "# Strategy Evolution Log\n"
         self.strategy_log_path.write_text(existing + entry)
 
-    def save_log(self, analysis: dict, recommended_weights: dict):
+    def save_log(self, analysis: dict[str, Any], recommended_weights: dict[str, float]) -> None:
         """Legacy method for backward compatibility."""
         self._save_local_log(analysis, recommended_weights)

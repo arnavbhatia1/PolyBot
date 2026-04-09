@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import asyncio
 import math
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 from polybot.config.loader import save_config
 
@@ -9,36 +12,38 @@ logger = logging.getLogger(__name__)
 
 
 class AgentScheduler:
-    def __init__(self, outcome_reviewer, bias_detector, ta_evolver, weight_optimizer,
-                 indicator_engine=None, signal_engine=None, alert_manager=None,
-                 outcome_interval_seconds=3600, daily_pipeline_hour=2, daily_pipeline_minute=0, math_config=None,
-                 claude_client=None, market_scanner=None, config=None, counterfactual_tracker=None):
-        self.outcome_reviewer = outcome_reviewer
-        self.bias_detector = bias_detector
-        self.ta_evolver = ta_evolver
-        self.weight_optimizer = weight_optimizer
-        self.indicator_engine = indicator_engine
-        self.signal_engine = signal_engine
-        self.alert_manager = alert_manager
-        self.outcome_interval_seconds = outcome_interval_seconds
-        self.daily_pipeline_hour = daily_pipeline_hour
-        self.daily_pipeline_minute = daily_pipeline_minute
-        self.math_config = math_config or {}
-        self.claude_client = claude_client  # stored for future use + passed to ta_evolver
-        self.market_scanner = market_scanner
-        self._config = config  # Full config dict — written back to settings.yaml after pipeline adoption
-        self.counterfactual_tracker = counterfactual_tracker
-        self._exit_edge_threshold = None  # Set by main.py, updated by pipeline
-        self._min_time_remaining = None   # Set by main.py, updated by pipeline
-        self._trading_start = None        # (hour, minute) UTC — updated by pipeline
-        self._trading_end = None          # (hour, minute) UTC — updated by pipeline
-        self._running = False
+    def __init__(self, outcome_reviewer: Any, bias_detector: Any, ta_evolver: Any, weight_optimizer: Any,
+                 indicator_engine: Any = None, signal_engine: Any = None, alert_manager: Any = None,
+                 outcome_interval_seconds: int = 3600, daily_pipeline_hour: int = 2,
+                 daily_pipeline_minute: int = 0, math_config: dict[str, Any] | None = None,
+                 claude_client: Any = None, market_scanner: Any = None,
+                 config: dict[str, Any] | None = None, counterfactual_tracker: Any = None) -> None:
+        self.outcome_reviewer: Any = outcome_reviewer
+        self.bias_detector: Any = bias_detector
+        self.ta_evolver: Any = ta_evolver
+        self.weight_optimizer: Any = weight_optimizer
+        self.indicator_engine: Any = indicator_engine
+        self.signal_engine: Any = signal_engine
+        self.alert_manager: Any = alert_manager
+        self.outcome_interval_seconds: int = outcome_interval_seconds
+        self.daily_pipeline_hour: int = daily_pipeline_hour
+        self.daily_pipeline_minute: int = daily_pipeline_minute
+        self.math_config: dict[str, Any] = math_config or {}
+        self.claude_client: Any = claude_client  # stored for future use + passed to ta_evolver
+        self.market_scanner: Any = market_scanner
+        self._config: dict[str, Any] | None = config  # Full config dict — written back to settings.yaml after pipeline adoption
+        self.counterfactual_tracker: Any = counterfactual_tracker
+        self._exit_edge_threshold: float | None = None  # Set by main.py, updated by pipeline
+        self._min_time_remaining: int | None = None   # Set by main.py, updated by pipeline
+        self._trading_start: tuple[int, int] | None = None        # (hour, minute) UTC — updated by pipeline
+        self._trading_end: tuple[int, int] | None = None          # (hour, minute) UTC — updated by pipeline
+        self._running: bool = False
 
         # Inject claude_client into ta_evolver if not already set
         if claude_client and not getattr(self.ta_evolver, 'claude_client', None):
             self.ta_evolver.claude_client = claude_client
 
-    async def _run_bias_detector(self, outcomes: list[dict] | None = None) -> dict:
+    async def _run_bias_detector(self, outcomes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         if outcomes is None:
             outcomes = self.outcome_reviewer.load_all_outcomes()
         if not outcomes:
@@ -48,7 +53,7 @@ class AgentScheduler:
         self.bias_detector.save(analysis)
         return analysis
 
-    async def _run_ta_evolver(self, analysis: dict, outcomes: list[dict] | None = None) -> dict:
+    async def _run_ta_evolver(self, analysis: dict[str, Any], outcomes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         if outcomes is None:
             outcomes = self.outcome_reviewer.load_all_outcomes()
         if not outcomes:
@@ -78,7 +83,7 @@ class AgentScheduler:
         recommendations = await self.ta_evolver.evolve(outcomes, analysis, current_config)
         return recommendations
 
-    async def _run_weight_optimizer(self, recommendations: dict, outcomes: list[dict] | None = None):
+    async def _run_weight_optimizer(self, recommendations: dict[str, Any], outcomes: list[dict[str, Any]] | None = None) -> None:
         if outcomes is None:
             outcomes = self.outcome_reviewer.load_all_outcomes()
         if not outcomes or len(outcomes) < 10:
@@ -91,7 +96,7 @@ class AgentScheduler:
 
         current_sharpe = 0.0
         if current_outcomes:
-            returns = [o.get("log_return", 0) for o in current_outcomes]
+            returns = [o.get("gain_pct", 0) for o in current_outcomes]
             avg = sum(returns) / len(returns)
             variance = sum((r - avg) ** 2 for r in returns) / len(returns) if len(returns) > 1 else 1
             std = math.sqrt(variance) if variance > 0 else 1
@@ -140,7 +145,7 @@ class AgentScheduler:
                 estimated_new_edge = original_edge + momentum_delta
 
                 if estimated_new_edge >= rec_me:
-                    candidate_returns.append(o.get("log_return", 0))
+                    candidate_returns.append(o.get("gain_pct", 0))
             else:
                 # Fallback: old-style backtest for outcomes without trade_context
                 new_score = sum(
@@ -148,7 +153,7 @@ class AgentScheduler:
                     for ind in ["rsi", "macd", "stochastic", "obv", "vwap"]
                 )
                 if abs(new_score) >= 0.10:
-                    candidate_returns.append(o.get("log_return", 0))
+                    candidate_returns.append(o.get("gain_pct", 0))
 
         if len(candidate_returns) < 3:
             logger.info("Not enough hypothetical trades to evaluate new weights")
@@ -321,7 +326,7 @@ class AgentScheduler:
                     msg += "\n\n**Claude's Findings:**\n" + "\n".join(f"  - {f}" for f in findings[:3])
                 await self.alert_manager.send_pipeline_summary(msg)
 
-    async def run_daily_pipeline(self):
+    async def run_daily_pipeline(self) -> None:
         logger.info("Starting daily learning pipeline")
 
         # Snapshot current config before changes
@@ -360,8 +365,15 @@ class AgentScheduler:
                 logger.info(f"Counterfactual analysis: {cf_analysis.get('total_scalps_tracked', 0)} scalps tracked, "
                            f"accuracy={cf_analysis.get('scalp_accuracy', 0):.0%}")
 
-        recommendations = await self._run_ta_evolver(analysis, train_outcomes)
-        await self._run_weight_optimizer(recommendations, validation_outcomes)
+        # Gate: need at least 50 trades before running TAEvolver and WeightOptimizer.
+        # With fewer trades, win-rate variance is too high (±13pp at N=25) — noise, not signal.
+        MIN_TRADES_FOR_LEARNING = 50
+        if len(all_outcomes) < MIN_TRADES_FOR_LEARNING:
+            logger.info(f"Skipping learning pipeline: only {len(all_outcomes)} trades, need {MIN_TRADES_FOR_LEARNING}")
+            recommendations = {}
+        else:
+            recommendations = await self._run_ta_evolver(analysis, train_outcomes)
+            await self._run_weight_optimizer(recommendations, validation_outcomes)
 
         # Compute config diff
         config_changes = {}
@@ -392,13 +404,13 @@ class AgentScheduler:
 
         logger.info("Daily learning pipeline complete")
 
-    async def run_outcome_loop(self):
+    async def run_outcome_loop(self) -> None:
         """Periodic outcome review — outcomes are recorded inline by the trading loop.
         This loop exists for future periodic analysis tasks."""
         while self._running:
             await asyncio.sleep(self.outcome_interval_seconds)
 
-    async def run_daily_loop(self):
+    async def run_daily_loop(self) -> None:
         while self._running:
             now = datetime.now(timezone.utc)
             if now.hour == self.daily_pipeline_hour and self.daily_pipeline_minute <= now.minute < self.daily_pipeline_minute + 5:
@@ -411,10 +423,10 @@ class AgentScheduler:
                 await asyncio.sleep(3600)
             await asyncio.sleep(60)
 
-    async def start(self):
+    async def start(self) -> None:
         self._running = True
         logger.info("Agent scheduler started")
 
-    async def stop(self):
+    async def stop(self) -> None:
         self._running = False
         logger.info("Agent scheduler stopped")

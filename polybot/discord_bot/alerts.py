@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import logging
 import math
 import uuid
 from datetime import datetime, timezone, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import discord
@@ -11,16 +14,17 @@ ET = ZoneInfo("America/New_York")
 logger = logging.getLogger(__name__)
 
 class AlertManager:
-    def __init__(self, bot, trade_channel_name, control_channel_name, daily_channel_name="polybot-daily"):
-        self.bot = bot
-        self.trade_channel_name = trade_channel_name
-        self.control_channel_name = control_channel_name
-        self.daily_channel_name = daily_channel_name
-        self.session_id = uuid.uuid4().hex[:8]
+    def __init__(self, bot: Any, trade_channel_name: str, control_channel_name: str,
+                 daily_channel_name: str = "polybot-daily") -> None:
+        self.bot: Any = bot
+        self.trade_channel_name: str = trade_channel_name
+        self.control_channel_name: str = control_channel_name
+        self.daily_channel_name: str = daily_channel_name
+        self.session_id: str = uuid.uuid4().hex[:8]
 
-    def _get_channel(self, name):
+    def _get_channel(self, name: str) -> Any:
         if not hasattr(self, '_channel_cache'):
-            self._channel_cache = {}
+            self._channel_cache: dict[str, Any] = {}
         if name not in self._channel_cache:
             for guild in self.bot.guilds:
                 for channel in guild.text_channels:
@@ -29,7 +33,7 @@ class AlertManager:
                         break
         return self._channel_cache.get(name)
 
-    async def _send_to_channels(self, msg: str, channels: list[str]):
+    async def _send_to_channels(self, msg: str, channels: list[str]) -> None:
         for name in channels:
             channel = self._get_channel(name)
             if channel:
@@ -38,8 +42,10 @@ class AlertManager:
                 except Exception as e:
                     logger.warning(f"Failed to send to #{name}: {e}")
 
-    async def send_trade_opened(self, question, side, size, entry_price, ev, exit_target,
-                                model_prob=0.0, market_price=0.0, fee=0.0, flow=0.0):
+    async def send_trade_opened(self, question: str, side: str, size: float, entry_price: float,
+                                ev: float, exit_target: float,
+                                model_prob: float = 0.0, market_price: float = 0.0,
+                                fee: float = 0.0, flow: float = 0.0) -> None:
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
@@ -48,9 +54,11 @@ class AlertManager:
             f"edge=`{ev:+.0%}` | model=`{model_prob:.0%}` mkt=`{market_price:.0%}` | "
             f"flow=`{flow:+.2f}` | fee=`${fee:.2f}`")
 
-    async def send_trade_closed(self, question, exit_price, log_return, hold_hours,
-                                side="", entry_price=0.0, pnl=0.0, gain_pct=0.0, reason="",
-                                fees=0.0):
+    async def send_trade_closed(self, question: str, exit_price: float, log_return: float,
+                                hold_hours: float,
+                                side: str = "", entry_price: float = 0.0, pnl: float = 0.0,
+                                gain_pct: float = 0.0, reason: str = "",
+                                fees: float = 0.0) -> None:
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
@@ -59,13 +67,13 @@ class AlertManager:
             f"**CLOSE {tag} {side}** | `{entry_price:.3f}`->`{exit_price:.3f}` | "
             f"`{gain_pct:+.1%}` | `${pnl:+.2f}` | fees=`${fees:.2f}` | {reason}")
 
-    async def send_pipeline_summary(self, summary):
+    async def send_pipeline_summary(self, summary: str) -> None:
         channel = self._get_channel(self.daily_channel_name)
         if not channel:
             return
         await channel.send(f"**Learning Pipeline Complete**\n{summary}")
 
-    async def send_strategy_recommendation(self, recommendations):
+    async def send_strategy_recommendation(self, recommendations: list[Any]) -> None:
         channel = self._get_channel(self.control_channel_name)
         if not channel:
             return
@@ -77,13 +85,13 @@ class AlertManager:
         await msg.add_reaction("\u2705")
         await msg.add_reaction("\u274c")
 
-    async def send_error(self, error_message):
+    async def send_error(self, error_message: str) -> None:
         channel = self._get_channel(self.control_channel_name)
         if not channel:
             return
         await channel.send(f"**Error**\n```{error_message}```")
 
-    async def send_session_banner(self, mode: str, bankroll: float):
+    async def send_session_banner(self, mode: str, bankroll: float) -> None:
         """Send a session start banner to both channels to mark a new bot run."""
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         banner = (
@@ -95,7 +103,7 @@ class AlertManager:
         )
         await self._send_to_channels(banner, [self.trade_channel_name, self.daily_channel_name])
 
-    async def send_day_open(self, mode: str, bankroll: float):
+    async def send_day_open(self, mode: str, bankroll: float) -> None:
         """Log start of trading day to trade and daily channels."""
         now = datetime.now(ET)
         msg = (
@@ -122,20 +130,21 @@ class AlertManager:
         )
         await self._send_to_channels(msg, [self.trade_channel_name, self.daily_channel_name])
 
-    async def send_circuit_breaker(self, event: str, breaker):
+    async def send_circuit_breaker(self, event: str, breaker: Any) -> None:
         """Alert when circuit breaker state changes."""
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
-        if event == "reduced":
+        if event == "streak_losses":
             await channel.send(
                 f"**CIRCUIT BREAKER** — {breaker.consecutive_losses} consecutive losses. "
-                f"Kelly reduced to `{breaker.kelly_multiplier:.0%}` "
-                f"({breaker.wins_to_restore} wins to restore).")
-        elif event == "restored":
+                f"Drawdown `{breaker.drawdown_pct:.1%}` | "
+                f"Kelly at `{breaker.kelly_multiplier:.0%}`.")
+        elif event == "streak_wins":
             await channel.send(
-                f"**CIRCUIT BREAKER** — {breaker.wins_to_restore} wins at half Kelly. "
-                f"Restored to full sizing.")
+                f"**CIRCUIT BREAKER** — {breaker.consecutive_wins} consecutive wins. "
+                f"Drawdown `{breaker.drawdown_pct:.1%}` | "
+                f"Kelly at `{breaker.kelly_multiplier:.0%}`.")
 
     async def purge_channel(self, channel_name: str, limit: int = 200) -> int:
         """Delete up to `limit` messages from a channel. Returns count deleted, or -1 on error."""
@@ -153,8 +162,8 @@ class AlertManager:
             logger.error(f"Failed to purge #{channel_name}: {e}")
             return -1
 
-    async def send_daily_report(self, outcomes: list, analysis: dict,
-                                recommendations: dict, config_changes: dict):
+    async def send_daily_report(self, outcomes: list[dict[str, Any]], analysis: dict[str, Any],
+                                recommendations: dict[str, Any], config_changes: dict[str, Any]) -> None:
         """Post end-of-day report to the daily channel."""
         channel = self._get_channel(self.daily_channel_name)
         if not channel:

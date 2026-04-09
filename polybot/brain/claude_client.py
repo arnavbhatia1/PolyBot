@@ -1,35 +1,12 @@
+from __future__ import annotations
+
 import json
 import logging
-from dataclasses import dataclass
+from typing import Any
+
 import anthropic
 
 logger = logging.getLogger(__name__)
-
-CONFIDENCE_LEVELS = {"low": 0, "medium": 1, "high": 2}
-
-@dataclass
-class MarketAnalysis:
-    probability: float
-    confidence: str
-    reasoning: str
-    key_factors: list[str]
-    base_rate_considered: bool
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "MarketAnalysis":
-        prob = data["probability"]
-        if not (0.0 <= prob <= 1.0):
-            raise ValueError(f"probability must be 0-1, got {prob}")
-        conf = data["confidence"]
-        if conf not in CONFIDENCE_LEVELS:
-            raise ValueError(f"confidence must be one of {list(CONFIDENCE_LEVELS)}, got {conf}")
-        return cls(probability=prob, confidence=conf, reasoning=data.get("reasoning", ""),
-                   key_factors=data.get("key_factors", []), base_rate_considered=data.get("base_rate_considered", False))
-
-    def passes_gate(self, min_confidence: str, min_probability: float) -> bool:
-        conf_level = CONFIDENCE_LEVELS.get(self.confidence, 0)
-        min_level = CONFIDENCE_LEVELS.get(min_confidence, 2)
-        return conf_level >= min_level and self.probability >= min_probability
 
 
 STRATEGY_SYSTEM_PROMPT = """\
@@ -115,30 +92,11 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
 
 
 class ClaudeClient:
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6"):
-        self.client = anthropic.AsyncAnthropic(api_key=api_key)
-        self.model = model
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6") -> None:
+        self.client: anthropic.AsyncAnthropic = anthropic.AsyncAnthropic(api_key=api_key)
+        self.model: str = model
 
-    async def analyze_market(self, question: str, price: float, volume: float, liquidity: float,
-                             spread: float, days_to_expiry: int, prompt: str) -> MarketAnalysis:
-        user_message = (
-            f"{prompt}\n\n"
-            f"Market Question: {question}\nCurrent YES Price: {price}\n"
-            f"24h Volume: ${volume:,.0f}\nLiquidity: ${liquidity:,.0f}\n"
-            f"Spread: {spread:.2%}\nDays to Expiry: {days_to_expiry}\n\n"
-            "Respond with ONLY valid JSON in this exact format:\n"
-            '{"probability": 0.XX, "confidence": "high/medium/low", '
-            '"reasoning": "...", "key_factors": ["..."], "base_rate_considered": true/false}')
-        response = await self.client.messages.create(
-            model=self.model, max_tokens=500,
-            messages=[{"role": "user", "content": user_message}])
-        text = response.content[0].text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        data = json.loads(text)
-        return MarketAnalysis.from_dict(data)
-
-    async def analyze_strategy(self, context: dict) -> dict:
+    async def analyze_strategy(self, context: dict[str, Any]) -> dict[str, Any]:
         """Send performance data to Claude for quant strategy analysis.
 
         Args:
@@ -167,8 +125,8 @@ class ClaudeClient:
         return _validate_strategy_response(data, current_weights, total_trades)
 
 
-def _validate_strategy_response(data: dict, current_weights: dict | None = None,
-                                total_trades: int = 0) -> dict:
+def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str, float] | None = None,
+                                total_trades: int = 0) -> dict[str, Any]:
     """Enforce parameter constraints on Claude's recommendations."""
     indicators = ["rsi", "macd", "stochastic", "obv", "vwap"]
 
@@ -254,7 +212,7 @@ def _validate_strategy_response(data: dict, current_weights: dict | None = None,
     return data
 
 
-def _format_strategy_context(context: dict) -> str:
+def _format_strategy_context(context: dict[str, Any]) -> str:
     """Format context into a structured prompt for Claude."""
     sections = []
 
@@ -370,7 +328,7 @@ def _format_strategy_context(context: dict) -> str:
             side = t.get("side", "?")
             entry = t.get("entry_price", 0)
             exit_ = t.get("exit_price", 0)
-            lr = t.get("log_return", 0)
+            lr = t.get("gain_pct", 0)
             prob = ctx.get("model_probability", t.get("signal_score", 0))
             edge = ctx.get("edge", 0)
             btc = ctx.get("btc_price", 0)

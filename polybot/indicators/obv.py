@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import numpy as np
+
 
 def compute_obv(closes: np.ndarray, volumes: np.ndarray) -> np.ndarray:
     if len(closes) < 2:
@@ -13,7 +16,7 @@ def compute_obv(closes: np.ndarray, volumes: np.ndarray) -> np.ndarray:
             obv[i] = obv[i - 1]
     return obv
 
-def compute_obv_signal(closes: np.ndarray, volumes: np.ndarray, slope_period: int = 5) -> dict:
+def compute_obv_signal(closes: np.ndarray, volumes: np.ndarray, slope_period: int = 5) -> dict[str, float]:
     if len(closes) < slope_period + 1:
         return {"obv_slope": 0.0, "price_slope": 0.0, "score": 0.0}
     obv = compute_obv(closes, volumes)

@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import numpy as np
+
 
 def compute_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> float:
     if len(closes) < period + 1:
@@ -8,7 +11,8 @@ def compute_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period:
     return float(np.mean(tr[-period:]))
 
 def compute_atr_gate(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
-                     period: int = 14, low_pct: int = 25, high_pct: int = 90, history: int = 100) -> dict:
+                     period: int = 14, low_pct: int = 25, high_pct: int = 90,
+                     history: int = 100) -> dict[str, float | bool | str]:
     if len(closes) < period + 2:
         return {"atr": 0.0, "passes": False, "reason": "insufficient_data"}
     atr_current = compute_atr(highs, lows, closes, period)

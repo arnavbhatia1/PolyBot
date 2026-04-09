@@ -30,7 +30,7 @@ Binance.US WebSocket (live BTC 1-min candles)
     Layer 1 — Student-t CDF (fat tails, df=4):
       z = (BTC - strike) / (ATR * sqrt(time))
       P(Up) = t.cdf(z, df=4)              <-- CDF drives all decisions
-    Layer 2 — Regime: autocorrelation nudge (max +/-3%)
+    Layer 2 — Regime: autocorrelation of last 20 1-min returns (max +/-3%)
     Layer 3 — Order flow: book imbalance + trade flow (max +/-4%)
     Layer 4 — Momentum: RSI/MACD/Stochastic/OBV/VWAP (max +/-4%)
         |
@@ -47,7 +47,7 @@ Binance.US WebSocket (live BTC 1-min candles)
   If holding_edge > threshold: HOLD (ride to $1 resolution)
   If holding_edge <= threshold: EXIT (scalp)
         |
-  On resolution: binary outcome from BTC vs strike ($1 win / $0 loss)
+  On resolution: Gamma/Chainlink oracle data ($1 win / $0 loss, no Binance fallback)
   On early exit: sell at CLOB /price (negRisk cross-matched)
   --> Log outcome (gain_pct, PnL, fees) --> Learn
 ```
@@ -65,7 +65,7 @@ Binance.US WebSocket (live BTC 1-min candles)
 | `indicators/engine.py` | Combines all 7, manages weight versions |
 | `execution/paper_trader.py` | Realistic simulated trading — real CLOB prices, dynamic fees, FOK fills |
 | `execution/live_trader.py` | Stub — polymarket.com live trading (EIP-712 signed CLOB orders) is future work |
-| `agents/` | Self-learning pipeline (bias detector, TA evolver, weight optimizer) |
+| `agents/` | Self-learning pipeline (bias detector, TA evolver, weight optimizer, counterfactual tracker for scalps AND holds) |
 | `discord_bot/` | Commands, trade alerts, session management |
 | `db/models.py` | SQLite for positions, trade history, bankroll |
 
@@ -97,7 +97,7 @@ Paper mode simulates live execution as closely as possible:
 
 ## Configuration
 
-All parameters in `polybot/config/settings.yaml`:
+All parameters in `polybot/config/settings.yaml` (validated by `validate_config()` on startup):
 
 - **Minimum edge** — 10% mispricing between model and market required to trade
 - **Min model probability** — 0.65, skip coin-flip trades (model must be confident)
@@ -107,15 +107,17 @@ All parameters in `polybot/config/settings.yaml`:
 - **One trade per contract** — no re-entry after exit on same 5-min window
 - **Active position management** — hold to $1 when model is confident, exit early when holding edge drops below fee-aware threshold
 - **Exit edge threshold** — -0.10, adjusted for exit fee cost and time urgency (same 4-layer model for entry AND exit)
+- **Circuit breaker** — drawdown-based Kelly scaling: 1.0 at peak, linearly scales to 0.25 at 15% drawdown from peak bankroll (`max_drawdown_pct: 0.15`, `min_multiplier: 0.25`). Streaks tracked for Discord alerts only.
+- **Regime lookback** — 20 (number of 1-min returns for autocorrelation, configurable via `signal.regime_lookback`)
 - **Max spread** — 0.10 (skip illiquid markets)
 - **Indicator weights** — RSI 0.20, MACD 0.25, Stochastic 0.20, OBV 0.15, VWAP 0.20
 - All signal/entry params tunable by the learning pipeline (Claude recommends, optimizer backtests)
 
 ## Learning Pipeline
 
-Runs daily at 4:45 PM ET (20:45 UTC):
+Runs daily at 4:45 PM ET (20:45 UTC). Scheduler enforces minimum 50 trades in code -- TAEvolver and WeightOptimizer are skipped if fewer than 50 trades exist. BiasDetector still runs regardless.
 
-1. **Bias Detector** — Multi-dimensional analysis: per-indicator accuracy, side bias, edge calibration, time/volatility patterns
+1. **Bias Detector** — Multi-dimensional analysis: per-indicator accuracy, side bias, edge calibration, time/volatility patterns, counterfactual analysis for both scalps and holds
 2. **TA Strategy Evolver** — Sends full analysis + recent trades to Claude API as a quant strategist. Returns weight adjustments, parameter recommendations, reasoning, and risk warnings. Falls back to local math if API is unavailable.
 3. **Weight Optimizer** — Backtests recommendations against historical edge data, auto-adopts if Sharpe improves >= 3%, hot-swaps all parameters at runtime **and persists them to settings.yaml** so they survive restarts
 
@@ -148,5 +150,5 @@ Binance.US and Polymarket CLOB APIs are free and need no key. Live trading (futu
 ## Tests
 
 ```bash
-python -m pytest polybot/tests/ -v   # 249 tests
+python -m pytest polybot/tests/ -v   # 422 tests
 ```
