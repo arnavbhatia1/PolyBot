@@ -22,9 +22,15 @@ def compute_rsi_signal(closes: np.ndarray, period: int = 14,
         return {"rsi": 50.0, "score": 0.0}
     rsi = compute_rsi(closes, period)
     if rsi >= overbought:
-        score = -((rsi - overbought) / (100 - overbought))
+        # Continuous from neutral zone (-0.3 at boundary → -1.0 at 100)
+        base = 0.3
+        extra = (rsi - overbought) / (100 - overbought) * (1.0 - base)
+        score = -(base + extra)
     elif rsi <= oversold:
-        score = (oversold - rsi) / oversold
+        # Continuous from neutral zone (+0.3 at boundary → +1.0 at 0)
+        base = 0.3
+        extra = (oversold - rsi) / oversold * (1.0 - base)
+        score = base + extra
     else:
         mid = (overbought + oversold) / 2
         score = -(rsi - mid) / (overbought - mid) * 0.3

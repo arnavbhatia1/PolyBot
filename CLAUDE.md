@@ -6,12 +6,12 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 
 ## Key Architecture Decisions
 
-- **4-layer probability model.** The bot computes P(Up) using four independent signal layers: (1) Student-t CDF with df=4 for fat-tailed Brownian motion: z = distance / ((ATR / atr_sigma_ratio) * sqrt(time)), z_scaled = z * sqrt(df/(df-2)), P = t.cdf(z_scaled, df) — captures fat tails that the normal distribution misses, finding edge on underdog positions the market overprices. Layers 2-4 are applied in log-odds (logit) space, auto-converted from config weights x 4.0. This ensures adjustments near probability extremes are correctly dampened (Bayesian evidence combination). (2) Regime detection: 1-lag autocorrelation of last 20 1-min returns (configurable via `regime_lookback`). Direction derived from sign of most recent 1-minute return (not prob_up sign). Positive autocorr = trending — amplify in direction of recent returns. Mean-reverting regimes dampen it. (3) Order flow: book imbalance + trade flow from CLOB WebSocket data. Informed buying/selling pressure leads price movement. (4) Indicator momentum: RSI, MACD, Stochastic, OBV, VWAP provide a small directional nudge. Uses z-score normalized indicator scores (IndicatorNormalizer with EMA-based running stats, warmup=50). The CDF (Layer 1) drives all decisions — layers just nudge. The edge is: model probability - effective market price. Platt scaling calibration applied after all 4 layers — fitted daily by learning pipeline, identity (no effect) until >= 100 outcomes.
-- **Active position management.** Hold to $1 resolution when the model is confident. Exit early (scalp) when holding_edge drops below a fee-aware threshold that accounts for exit costs and time urgency. Same probability model for entry AND exit. Not fixed take-profit/stop-loss — the math decides.
+- **4-layer probability model.** The bot computes P(Up) using four independent signal layers: (1) Student-t CDF with df=5 for fat-tailed Brownian motion: z = distance / ((ATR / atr_sigma_ratio) * sqrt(time)), z_scaled = z * sqrt(df/(df-2)), P = t.cdf(z_scaled, df) — captures fat tails that the normal distribution misses, finding edge on underdog positions the market overprices. Layers 2-4 are applied in log-odds (logit) space, auto-converted from config weights x 4.0. This ensures adjustments near probability extremes are correctly dampened (Bayesian evidence combination). (2) Regime detection: 1-lag autocorrelation of last 20 1-min returns (configurable via `regime_lookback`). Direction derived from sign of most recent 1-minute return (not prob_up sign). Positive autocorr = trending — amplify in direction of recent returns. Mean-reverting regimes dampen it. (3) Order flow: book imbalance + trade flow from CLOB WebSocket data. Informed buying/selling pressure leads price movement. (4) Indicator momentum: RSI, MACD, Stochastic, OBV, VWAP provide a small directional nudge. Uses z-score normalized indicator scores (IndicatorNormalizer with EMA-based running stats, warmup=50). The CDF (Layer 1) drives all decisions — layers just nudge. The edge is: model probability - effective market price. Platt scaling calibration applied after all 4 layers — fitted daily by learning pipeline, identity (no effect) until >= 100 outcomes.
+- **Active position management.** Hold to $1 resolution when the model is confident. Exit early (scalp) when holding_edge drops below a fee-aware threshold that accounts for exit costs and time urgency. **Trailing profit exit**: for cheap entries (<$0.50), tracks peak market price — exits if market peaked above $0.65 then drops 15%+ from peak (prevents riding winners to zero). Same probability model for entry AND exit. Not fixed take-profit/stop-loss — the math decides.
 - **Single position at a time.** Full Kelly on the best edge, no capital dilution.
 - **One trade per 5-min contract.** After any exit, that contract is blacklisted.
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
-- **Dual entry gate.** Primary: Kelly fraction >= min_kelly (0.015, price-aware — naturally accounts for odds at different price levels). Secondary: edge >= entry_threshold (0.03, noise floor). Both must pass.
+- **Dual entry gate + safety gates.** Primary: Kelly fraction >= min_kelly (0.015, price-aware — naturally accounts for odds at different price levels). Secondary: edge >= entry_threshold (0.04, noise floor). Both must pass. Additional safety: edge cap (>30% = skip, model miscalibration), layer disagreement penalty (momentum opposing trade direction with |score|>0.5 halves effective edge).
 - **Signal layer weights (logit space).** Layer 1 (Student-t base) provides the core probability — the CDF drives all decisions. Layers 2-4 apply adjustments in logit (log-odds) space with config weight x 4.0 as max logit shift. Layer 2 (regime) weight 0.03. Layer 3 (order flow) weight 0.04. Layer 4 (momentum/indicators) weight 0.04. Logit-space application ensures adjustments near probability extremes (0.1 or 0.9) are naturally dampened. The CDF must show a direction before layers can push past the 65% confidence gate.
 - **Real-time WebSocket + Gamma API for prices.** Primary: CLOB WebSocket (`wss://ws-subscriptions-clob.polymarket.com/ws/market`) provides real-time book snapshots, price deltas, best bid/ask, last trades, and market resolution events. Trading loop is event-driven — reacts instantly to book changes instead of polling. HTTP fallback: `clob.polymarket.com/book?token_id=TOKEN` if WS disconnected. Gamma API (`gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}`) for contract discovery and `token_id_up`/`token_id_down`. Supplementary: `GET /spread` for liquidity check, `GET /midpoints` for quick price ref, `GET /last-trades-prices` for fill validation. Gamma `outcomePrices` are stale fallback only.
 - **NegRisk execution pricing via GET /price.** The raw token book (`GET /book`) only shows direct token orders — in negRisk binary markets the CLOB cross-matches across complementary tokens, so the raw book shows asks at $0.99 on both sides while the real executable price is ~$0.50. **Always use `GET /price?token_id=X&side=BUY` for entry pricing and `side=SELL` for exit pricing.** This is what Polymarket's website shows. Never use raw book best ask/bid for edge calculation.
@@ -71,16 +71,16 @@ polybot/
 - `circuit_breaker.losses_to_reduce:` — 3 (consecutive losses before Discord streak alert)
 - `circuit_breaker.wins_to_restore:` — 2 (consecutive wins before Discord streak alert)
 - `math.kelly_fraction:` — 0.15 (fraction of full Kelly)
-- `signal.entry_threshold:` — 0.03 (noise floor — minimum edge to filter noise, not primary gate. Pipeline range: 0.01-0.10)
+- `signal.entry_threshold:` — 0.04 (noise floor — minimum edge to cover fee friction at mid-prices. Pipeline range: 0.01-0.10)
 - `signal.min_kelly:` — 0.015 (primary entry gate — Kelly fraction must justify a position. Pipeline range: 0.005-0.05)
 - `signal.exit_edge_threshold:` — -0.10 (exit when holding edge drops below -10%)
 - `signal.min_model_probability:` — 0.65 (skip coin-flip trades — model must be ≥65% confident)
 - `signal.momentum_weight:` — 0.04 (max ±4% indicator adjustment, Layer 4)
 - `signal.regime_weight:` — 0.03 (max ±3% regime adjustment, Layer 2)
 - `signal.flow_weight:` — 0.04 (max ±4% order flow adjustment, Layer 3)
-- `signal.atr_sigma_ratio:` — 1.7 (ATR-to-sigma conversion factor for BTC 1-min candles. Pipeline range: 1.2-2.5)
+- `signal.atr_sigma_ratio:` — 1.4 (ATR-to-sigma conversion factor for BTC 1-min candles. Empirical range 1.3-1.6. Pipeline range: 1.2-2.5)
 - `signal.regime_lookback:` — 20 (number of 1-min returns for regime autocorrelation, 20 = 20-minute window)
-- `signal.student_t_df:` — 4 (degrees of freedom for fat-tailed CDF)
+- `signal.student_t_df:` — 5 (degrees of freedom for fat-tailed CDF; df=5 gives excess kurtosis=6, matching BTC 1-min empirical)
 - `signal.weights:` — per-indicator weights for momentum calculation
 - `execution.max_concurrent_positions:` — 1 (single position, full focus)
 - `execution.max_bankroll_deployed:` — 0.80
@@ -116,11 +116,11 @@ Distance = current BTC price - strike
 Vol = ATR (average true range from 1-min candles, period=7) / atr_sigma_ratio (1.7)
 Time = minutes remaining in the window
 
-LAYER 1 — Fat-tailed base (Student-t CDF, df=4):
-  vol = (ATR / atr_sigma_ratio) x sqrt(minutes)    [ATR scaled to sigma]
+LAYER 1 — Fat-tailed base (Student-t CDF, df=5):
+  vol = (ATR / atr_sigma_ratio) x sqrt(minutes)    [ATR scaled to sigma, ratio=1.4]
   z = distance / vol
   z_scaled = z x sqrt(df / (df-2))               [variance normalization]
-  P(Up) = t.cdf(z_scaled, df=4)
+  P(Up) = t.cdf(z_scaled, df=5)                  [df=5: excess kurtosis=6]
   
   Why Student-t: BTC 1-min returns have kurtosis ~6-8 (normal=3).
   Normal CDF underestimates reversal probability. When BTC is $50 above
@@ -307,7 +307,7 @@ BTC price, strike, ATR, seconds_remaining
 Student-t CDF:  vol = (ATR / atr_sigma_ratio) x sqrt(minutes)
                 z = (btc - strike) / vol
                 z_scaled = z x sqrt(df/(df-2))
-                P(Up) = t.cdf(z_scaled, df=4)
+                P(Up) = t.cdf(z_scaled, df=5)
         │
         ▼
 signal_engine.evaluate()
@@ -323,14 +323,16 @@ signal_engine.evaluate()
         │                        side = Up if prob > 0.5, else Down
         │                        kelly_size = (p*b - q)/b x kelly_fraction
         ▼
-   7 ENTRY GATES (all must pass, in order):
+   9 ENTRY GATES (all must pass, in order):
         ├── prob ≥ 0.65?              (confidence gate)
-        ├── edge ≥ 0.03?             (noise floor gate)
+        ├── edge ≥ 0.04?             (noise floor gate — covers fee friction)
         ├── Kelly ≥ 0.015?           (primary gate — position must justify cost)
         ├── spread ≤ 0.10?            (liquidity gate)
         ├── book depth ≥ $50?         (depth gate)
         ├── price_up + price_down ∈ [0.98, 1.02]?  (price sanity gate)
-        └── seconds_remaining ≥ 20?   (timing gate)
+        ├── seconds_remaining ≥ 20?   (timing gate)
+        ├── edge ≤ 0.30?             (edge cap — >30% = model miscalibration)
+        └── momentum agrees or edge*0.5 ≥ min? (layer disagreement gate)
 ```
 
 ### Phase 3: Sizing & Slippage
@@ -421,7 +423,10 @@ Gamma API: seconds_remaining? closed?
             │     + time_urgency (ramps in last 120s)
             ▼
           holding_edge > effective_threshold?
-            ├── YES → HOLD (do nothing, loop continues)
+            ├── YES → CHECK TRAILING PROFIT EXIT:
+            │         If entry < $0.50 AND peak_market_price ≥ $0.65
+            │         AND current_market < peak × 0.85 → SCALP EXIT
+            │         Else → HOLD (do nothing, loop continues)
             └── NO  → SCALP EXIT
                         │
                         ▼

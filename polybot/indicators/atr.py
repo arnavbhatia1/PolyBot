@@ -8,7 +8,15 @@ def compute_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period:
         return 0.0
     tr = np.maximum(highs[1:] - lows[1:],
                     np.maximum(np.abs(highs[1:] - closes[:-1]), np.abs(lows[1:] - closes[:-1])))
-    return float(np.mean(tr[-period:]))
+    if len(tr) < period:
+        return 0.0
+    # Wilder's EMA (RMA): seed with SMA, then exponential smoothing (alpha=1/period)
+    # Responds faster to vol spikes than SMA — critical for 5-min windows
+    atr = float(np.mean(tr[:period]))
+    alpha = 1.0 / period
+    for i in range(period, len(tr)):
+        atr = (1.0 - alpha) * atr + alpha * float(tr[i])
+    return atr
 
 def compute_atr_gate(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
                      period: int = 14, low_pct: int = 25, high_pct: int = 90,

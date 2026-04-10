@@ -25,14 +25,25 @@ def compute_stochastic_signal(highs: np.ndarray, lows: np.ndarray, closes: np.nd
     if len(closes) < k_period + d_smoothing:
         return {"k": 50.0, "d": 50.0, "score": 0.0}
     k, d = compute_stochastic(highs, lows, closes, k_period, d_smoothing)
+    mid = (overbought + oversold) / 2.0
     if k >= overbought:
-        score = -((k - overbought) / (100 - overbought))
+        # Continuous: -0.3 at boundary → -1.0 at 100
+        base = 0.3
+        extra = (k - overbought) / (100 - overbought) * (1.0 - base)
+        score = -(base + extra)
     elif k <= oversold:
-        score = (oversold - k) / oversold
+        # Continuous: +0.3 at boundary → +1.0 at 0
+        base = 0.3
+        extra = (oversold - k) / oversold * (1.0 - base)
+        score = base + extra
     else:
-        score = 0.0
+        # Linear in neutral zone: 0 at mid, ±0.3 at boundaries
+        score = -(k - mid) / (overbought - mid) * 0.3
+    # Crossover nudge: scale by zone depth instead of hard override
     if k > d and k < oversold + 10:
-        score = max(score, 0.3)
+        depth = max(0.0, (oversold + 10 - k) / 10.0)  # 1.0 deep in zone, 0.0 at edge
+        score = max(score, 0.3 * depth)
     elif k < d and k > overbought - 10:
-        score = min(score, -0.3)
+        depth = max(0.0, (k - (overbought - 10)) / 10.0)
+        score = min(score, -0.3 * depth)
     return {"k": round(k, 2), "d": round(d, 2), "score": round(max(-1.0, min(1.0, score)), 4)}

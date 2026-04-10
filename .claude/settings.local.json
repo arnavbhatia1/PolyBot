@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:qoppac.blogspot.com)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:stoye.economics.cornell.edu)",
+      "WebFetch(domain:www.ledgerjournal.org)",
+      "WebFetch(domain:harbourfronts.com)",
+      "WebFetch(domain:www.mdpi.com)",
+      "WebFetch(domain:pmc.ncbi.nlm.nih.gov)",
+      "Bash(python -m pytest polybot/tests/ -x -q --tb=short)"
+    ]
+  }
+}

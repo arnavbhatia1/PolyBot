@@ -15,7 +15,12 @@ def compute_vwap_signal(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
     vwap = compute_vwap(highs, lows, closes, volumes)
     price = float(closes[-1])
     typical = (highs + lows + closes) / 3.0
-    std = float(np.std(typical - vwap)) if len(typical) > 1 else 1.0
+    # Volume-weighted std: heavy-volume candles dominate deviation, not outlier thin candles
+    total_vol = np.sum(volumes)
+    if len(typical) > 1 and total_vol > 0:
+        std = float(np.sqrt(np.sum(volumes * (typical - vwap) ** 2) / total_vol))
+    else:
+        std = 1.0
     if std == 0:
         std = 1.0
     deviation = (price - vwap) / std

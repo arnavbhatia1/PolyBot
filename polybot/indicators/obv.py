@@ -25,9 +25,15 @@ def compute_obv_signal(closes: np.ndarray, volumes: np.ndarray, slope_period: in
     if obv_slope == 0:
         score = 0.0
     elif (obv_slope > 0 and price_slope > 0):
+        # Confirmation: OBV and price agree (bullish)
         score = min(1.0, abs(obv_slope) / (abs(obv_slope) + 1))
     elif (obv_slope < 0 and price_slope < 0):
+        # Confirmation: OBV and price agree (bearish)
         score = -min(1.0, abs(obv_slope) / (abs(obv_slope) + 1))
+    elif obv_slope > 0 and price_slope <= 0:
+        # Bullish divergence: volume leads up while price falls (leading signal)
+        score = min(1.0, abs(obv_slope) / (abs(obv_slope) + 1)) * 0.5
     else:
-        score = 0.0
+        # Bearish divergence: volume leads down while price rises
+        score = -min(1.0, abs(obv_slope) / (abs(obv_slope) + 1)) * 0.5
     return {"obv_slope": round(obv_slope, 2), "price_slope": round(price_slope, 4), "score": round(score, 4)}

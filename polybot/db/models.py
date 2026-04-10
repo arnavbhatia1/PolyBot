@@ -60,6 +60,11 @@ class Database:
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 amount REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS peak_bankroll (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                amount REAL NOT NULL
+            );
         """)
         # Migrate existing DBs: add fee_rate and shares_held columns if missing
         cursor = await self.conn.execute("PRAGMA table_info(positions)")
@@ -187,3 +192,16 @@ class Database:
         cursor = await self.conn.execute("SELECT amount FROM bankroll WHERE id=1")
         row = await cursor.fetchone()
         return row[0] if row else 0.0
+
+    async def set_peak_bankroll(self, amount: float) -> None:
+        await self.conn.execute(
+            "INSERT INTO peak_bankroll (id, amount) VALUES (1, ?) "
+            "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
+            (amount,),
+        )
+        await self.conn.commit()
+
+    async def get_peak_bankroll(self) -> float | None:
+        cursor = await self.conn.execute("SELECT amount FROM peak_bankroll WHERE id=1")
+        row = await cursor.fetchone()
+        return row[0] if row else None

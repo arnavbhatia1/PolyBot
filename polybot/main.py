@@ -56,6 +56,9 @@ _CONTRACT_RESOLUTION_TTL = 2.0  # faster polling when contract might be resolvin
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 
+# Trailing profit exit: track peak market price per held position
+_peak_hold_price: dict[str, float] = {}  # market_id -> peak market_price_for_side during hold
+
 
 async def _get_contract_prices(market_scanner: Any, market_id: str, http_client: Any = None) -> dict[str, Any] | None:
     """Fetch current Up/Down prices for an active contract via Gamma API.
@@ -228,7 +231,23 @@ async def _evaluate_signal_and_enter(
     if signal.action not in ("BUY_YES", "BUY_NO"):
         return None, last_eval_log_window
 
+    # --- EDGE CAP GATE: >30% edge = model miscalibration, not real alpha ---
+    if signal.edge > 0.30:
+        return None, last_eval_log_window
+
+    # --- LAYER DISAGREEMENT GATE: momentum opposing trade direction ---
     side = "Up" if signal.action == "BUY_YES" else "Down"
+    momentum_score = signal_engine.compute_momentum(indicators)
+    momentum_opposes = (
+        (side == "Down" and momentum_score > 0.5) or
+        (side == "Up" and momentum_score < -0.5)
+    )
+    if momentum_opposes and signal.edge * 0.5 < signal_engine.min_edge:
+        logger.info(
+            f"SKIP: layer disagreement — momentum={momentum_score:+.2f} opposes {side}, "
+            f"penalized edge {signal.edge * 0.5:+.1%} < min {signal_engine.min_edge:.0%}")
+        return None, last_eval_log_window
+
     price = price_up if side == "Up" else price_down
     token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
     bankroll = await db.get_bankroll()
@@ -575,10 +594,25 @@ async def _evaluate_and_exit_position(
         fee_rate=pos.get("fee_rate") or DEFAULT_FEE_RATE,
         closes=closes, flow_signal=hold_flow["flow_score"])
 
+    # --- TRAILING PROFIT EXIT: don't ride cheap winners to zero ---
+    mid = pos["market_id"]
+    prev_peak = _peak_hold_price.get(mid, 0.0)
+    if market_price > prev_peak:
+        _peak_hold_price[mid] = market_price
+    peak = _peak_hold_price.get(mid, 0.0)
+    if (action == "HOLD"
+            and pos["entry_price"] < 0.50
+            and peak >= 0.65
+            and market_price < peak * 0.85):
+        action = "EXIT"
+        reason = (
+            f"Trailing profit exit {pos['side']}: entry={pos['entry_price']:.2f} "
+            f"peak={peak:.2f} now={market_price:.2f} (dropped {(1 - market_price/peak):.0%} from peak)")
+        logger.info(f"TRAILING EXIT triggered: {reason}")
+
     if action == "HOLD":
         # Log hold status every 30s so the operator knows the bot is alive
         now_ts = time.time()
-        mid = pos["market_id"]
         if now_ts - _last_hold_log.get(mid, 0) >= 30:
             _last_hold_log[mid] = now_ts
             logger.info(
@@ -621,6 +655,7 @@ async def _evaluate_and_exit_position(
             logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_fill:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${total_fees:.2f} | slip={slip:.2%} | {reason}")
             if breaker:
                 breaker.update_bankroll(await db.get_bankroll())
+                await db.set_peak_bankroll(breaker.peak_bankroll)
                 cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
                 if cb_event and alert_manager:
                     await alert_manager.send_circuit_breaker(cb_event, breaker)
@@ -632,6 +667,7 @@ async def _evaluate_and_exit_position(
             await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
                                   exit_reason="scalp", pnl=pnl, fees=total_fees)
             traded_market_id = pos["market_id"]
+            _peak_hold_price.pop(traded_market_id, None)
             if counterfactual_tracker:
                 counterfactual_tracker.watch(pos, {
                     "exit_fill": exit_fill, "pnl": pnl, "gain_pct": gain_pct,
@@ -682,6 +718,7 @@ async def _resolve_expired_position(
         logger.info(f"RESOLVED {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${total_fees:.2f}")
         if breaker:
             breaker.update_bankroll(await db.get_bankroll())
+            await db.set_peak_bankroll(breaker.peak_bankroll)
             cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
             if cb_event and alert_manager:
                 await alert_manager.send_circuit_breaker(cb_event, breaker)
@@ -699,6 +736,7 @@ async def _resolve_expired_position(
                 verdict = "CORRECT" if cf_hold["hold_was_optimal"] else "MISSED scalp +${:.2f}".format(-cf_hold["delta_pnl"])
                 logger.info(f"COUNTERFACTUAL HOLD resolved: {pos['side']} {pos['market_id']} — {verdict}")
         traded_market_id = pos["market_id"]
+        _peak_hold_price.pop(traded_market_id, None)
     return True, day_wins, day_losses, day_fees, traded_market_id
 
 
@@ -751,6 +789,7 @@ async def _manage_orphaned_position(
         logger.info(f"RESOLVED {won} {pos['side']} (orphaned) | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
         if breaker:
             breaker.update_bankroll(await db.get_bankroll())
+            await db.set_peak_bankroll(breaker.peak_bankroll)
             cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
             if cb_event and alert_manager:
                 await alert_manager.send_circuit_breaker(cb_event, breaker)
@@ -762,6 +801,7 @@ async def _manage_orphaned_position(
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
                               exit_reason="resolution", pnl=pnl, fees=total_fees)
         traded_market_id = pos["market_id"]
+        _peak_hold_price.pop(traded_market_id, None)
     return True, day_wins, day_losses, day_fees, traded_market_id
 
 
@@ -1119,6 +1159,12 @@ async def main() -> None:
         losses_to_reduce=cb_cfg.get("losses_to_reduce", 3),
         wins_to_restore=cb_cfg.get("wins_to_restore", 2),
     )
+    persisted_peak = await db.get_peak_bankroll()
+    if persisted_peak is not None and persisted_peak > init_bankroll:
+        breaker.peak_bankroll = persisted_peak
+        logger.info(f"CIRCUIT BREAKER: restored persisted peak ${persisted_peak:,.2f} (current ${init_bankroll:,.2f}, drawdown={breaker.drawdown_pct:.1%})")
+    else:
+        await db.set_peak_bankroll(init_bankroll)
 
     # Agents
     agents_cfg = config["agents"]
