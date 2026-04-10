@@ -302,7 +302,7 @@ async def _evaluate_signal_and_enter(
         dist = btc_price - strike
         action_color = _C.GREEN if signal.action in ("BUY_YES", "BUY_NO") else _C.DIM
         logger.info(
-            f"{_C.CYAN}{'─' * 60}{_C.RESET}\n"
+            f"{_C.CYAN}{'-' * 60}{_C.RESET}\n"
             f"  {action_color}EVAL  {signal.action:<8}{_C.RESET} | {contract.get('question', cid)}\n"
             f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]\n"
             f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
@@ -444,7 +444,7 @@ async def _evaluate_signal_and_enter(
                 last_trade_info = f" last_trade={lt['price']}"
         bankroll_now = await db.get_bankroll()
         logger.info(
-            f"{_C.GREEN}{'━' * 60}{_C.RESET}\n"
+            f"{_C.GREEN}{'=' * 60}{_C.RESET}\n"
             f"  {_C.GREEN}{_C.BOLD}OPEN {side}{_C.RESET}  @ {price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}\n"
             f"  {contract.get('question', cid)}  [{entry_phase['phase']}]\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}")
@@ -798,7 +798,7 @@ async def _evaluate_and_exit_position(
             color = _C.GREEN if pnl >= 0 else _C.RED
             bankroll_after = await db.get_bankroll()
             logger.info(
-                f"{color}{'━' * 60}{_C.RESET}\n"
+                f"{color}{'=' * 60}{_C.RESET}\n"
                 f"  {color}{_C.BOLD}SCALP {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_fill:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
                 f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
                 f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
@@ -869,7 +869,7 @@ async def _resolve_expired_position(
         color = _C.GREEN if pnl >= 0 else _C.RED
         bankroll_after = await db.get_bankroll()
         logger.info(
-            f"{color}{'━' * 60}{_C.RESET}\n"
+            f"{color}{'=' * 60}{_C.RESET}\n"
             f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
             f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
             f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
@@ -951,7 +951,7 @@ async def _manage_orphaned_position(
         color = _C.GREEN if pnl >= 0 else _C.RED
         bankroll_after = await db.get_bankroll()
         logger.info(
-            f"{color}{'━' * 60}{_C.RESET}\n"
+            f"{color}{'=' * 60}{_C.RESET}\n"
             f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']} (orphan){_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
             f"  {pos.get('question', pos['market_id'])}\n"
             f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
