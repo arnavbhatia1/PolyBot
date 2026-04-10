@@ -31,6 +31,12 @@ from polybot.agents.counterfactual_tracker import CounterfactualTracker
 from polybot.discord_bot.bot import create_bot
 from polybot.discord_bot.alerts import AlertManager
 from polybot.execution.circuit_breaker import CircuitBreaker
+import math
+from polybot.core.binance_depth import BinanceDepthFeed
+from polybot.core.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
+from polybot.core.bybit_feed import BybitFeed
+from polybot.core.deribit_iv import DeribitIVFeed
+from polybot.core.bankroll_strategy import compute_kelly_tier
 
 logging.basicConfig(
     level=logging.ERROR,
@@ -58,6 +64,9 @@ _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 
 # Trailing profit exit: track peak market price per held position
 _peak_hold_price: dict[str, float] = {}  # market_id -> peak market_price_for_side during hold
+
+# Previous window resolution margin for adjacent window momentum (D2)
+_prev_resolution_margin: float = 0.0
 
 
 def compute_entry_phase(seconds_remaining: float, window_seconds: float = 300.0) -> dict:
@@ -214,9 +223,18 @@ async def _evaluate_signal_and_enter(
         btc_price: float, strike: float, eval_window: int, last_eval_log_window: int,
         token_up: str, token_down: str, signal_config: dict[str, Any],
         max_bankroll_pct: float,
-        now_ts: int) -> tuple[str | None, int]:
+        now_ts: int,
+        depth_feed: Any = None,
+        trades_feed: Any = None,
+        bybit_feed: Any = None,
+        deribit_feed: Any = None) -> tuple[str | None, int]:
     """Compute indicators/flow/signal, check for entry, size the trade, execute."""
     in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
+
+    # Dynamic entry timing — observe first 60s, then phased entry
+    entry_phase = compute_entry_phase(contract["seconds_remaining"])
+    if not entry_phase["allowed"]:
+        return None, last_eval_log_window
 
     # Compute indicators and evaluate probability model
     indicators = indicator_engine.compute_all(binance_feed.buffer)
@@ -227,6 +245,29 @@ async def _evaluate_signal_and_enter(
     flow_data = compute_flow_signal(book_up, book_down, trades_up, trades_down)
     flow_score = flow_data["flow_score"]
 
+    # --- New signals from extended feeds ---
+    spot_flow_signal = 0.0
+    wall_pressure_val = 0.0
+    perp_lead_val = 0.0
+    iv_ratio_val = 1.0
+
+    if trades_feed and trades_feed.accumulator:
+        acc = trades_feed.accumulator
+        cvd = acc.get_cvd(window_s=120)
+        taker = acc.get_taker_ratio(window_s=60)
+        # Composite: CVD direction (60%) + taker bias (40%)
+        spot_flow_signal = max(-1.0, min(1.0, math.tanh(cvd * 2) * 0.6 + (taker - 0.5) * 2 * 0.4))
+
+    if depth_feed:
+        wall_pressure_val = depth_feed.get_wall_pressure(strike, btc_price)
+
+    if bybit_feed and bybit_feed.state.perp_price > 0:
+        perp_lead_val = bybit_feed.state.get_lead(btc_price)
+
+    if deribit_feed and deribit_feed.state.btc_iv > 0:
+        atr_val = indicators.get("atr", {}).get("atr", 0)
+        iv_ratio_val = deribit_feed.state.get_iv_ratio(atr_val, btc_price)
+
     # Get closes array for regime detection
     closes = binance_feed.buffer.get_closes()
 
@@ -236,6 +277,11 @@ async def _evaluate_signal_and_enter(
         seconds_remaining=contract["seconds_remaining"],
         market_price_up=price_up, market_price_down=price_down,
         closes=closes, flow_signal=flow_score,
+        spot_flow_signal=spot_flow_signal,
+        wall_pressure=wall_pressure_val,
+        perp_lead=perp_lead_val,
+        prev_resolution_margin=_prev_resolution_margin,
+        iv_ratio=iv_ratio_val,
     )
 
     # Log signal evaluation once per window so we can see what the model sees
@@ -273,6 +319,20 @@ async def _evaluate_signal_and_enter(
     bankroll = await db.get_bankroll()
     kelly_mult = breaker.kelly_multiplier if breaker else 1.0
     size = round(bankroll * signal.kelly_size * kelly_mult, 2)
+
+    # Dynamic entry timing: apply phase Kelly multiplier
+    size = round(size * entry_phase["kelly_multiplier"], 2)
+
+    # Phase-based probability override (final phase needs >90%)
+    if entry_phase["min_prob_override"] and signal.prob < entry_phase["min_prob_override"]:
+        logger.info(f"SKIP: final phase prob {signal.prob:.0%} < {entry_phase['min_prob_override']:.0%}")
+        return None, last_eval_log_window
+
+    # Concurrent windows: half Kelly when already holding another position
+    open_positions = await db.get_open_positions()
+    if len(open_positions) > 0:
+        size = round(size * 0.5, 2)
+
     if size < 1.0:
         logger.info(f"SKIP: Kelly size ${size:.2f} < $1 — edge too small to trade")
         return None, last_eval_log_window
@@ -326,6 +386,18 @@ async def _evaluate_signal_and_enter(
         "flow_score": flow_score,
         "flow_book_imbalance": flow_data.get("book_imbalance", 0),
         "flow_trade_count": flow_data.get("trade_count", 0),
+        "spot_flow_signal": spot_flow_signal,
+        "wall_pressure": wall_pressure_val,
+        "perp_lead": perp_lead_val,
+        "iv_ratio": iv_ratio_val,
+        "prev_resolution_margin": _prev_resolution_margin,
+        "bybit_perp_price": bybit_feed.state.perp_price if bybit_feed and bybit_feed.state else 0,
+        "funding_rate": bybit_feed.state.funding_rate if bybit_feed and bybit_feed.state else 0,
+        "depth_usd_top20": depth_feed.get_depth_usd() if depth_feed else 0,
+        "entry_phase": entry_phase.get("phase", "unknown"),
+        "cvd_120s": trades_feed.accumulator.get_cvd(120) if trades_feed and trades_feed.accumulator else 0,
+        "taker_ratio_60s": trades_feed.accumulator.get_taker_ratio(60) if trades_feed and trades_feed.accumulator else 0,
+        "volume_surge": trades_feed.accumulator.is_volume_surge() if trades_feed and trades_feed.accumulator else False,
     }
     snapshot_str = json.dumps(snapshot)
     result = await trader.open_trade(
@@ -569,7 +641,9 @@ async def _evaluate_and_exit_position(
         http_client: Any, clob_ws: Any, trader: Any, alert_manager: Any, db: Any,
         outcome_reviewer: Any, breaker: Any, counterfactual_tracker: Any,
         config: dict[str, Any], scheduler: Any, default_exit_threshold: float,
-        day_wins: int, day_losses: int, day_fees: float) -> tuple[int, int, float, str | None]:
+        day_wins: int, day_losses: int, day_fees: float,
+        depth_feed: Any = None, trades_feed: Any = None,
+        bybit_feed: Any = None, deribit_feed: Any = None) -> tuple[int, int, float, str | None]:
     """Re-evaluate an active position and exit (scalp) if holding edge is gone."""
     btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
     if btc_now <= 0:
@@ -607,12 +681,39 @@ async def _evaluate_and_exit_position(
         hold_trades_up, hold_trades_down,
     )
 
+    # New signals for hold evaluation
+    hold_spot_flow = 0.0
+    hold_wall_pressure = 0.0
+    hold_perp_lead = 0.0
+    hold_iv_ratio = 1.0
+
+    if trades_feed and trades_feed.accumulator:
+        acc = trades_feed.accumulator
+        cvd = acc.get_cvd(window_s=120)
+        taker = acc.get_taker_ratio(window_s=60)
+        hold_spot_flow = max(-1.0, min(1.0, math.tanh(cvd * 2) * 0.6 + (taker - 0.5) * 2 * 0.4))
+
+    if depth_feed:
+        hold_wall_pressure = depth_feed.get_wall_pressure(strike_now, btc_now)
+
+    if bybit_feed and bybit_feed.state.perp_price > 0:
+        hold_perp_lead = bybit_feed.state.get_lead(btc_now)
+
+    if deribit_feed and deribit_feed.state.btc_iv > 0:
+        atr_val = indicators.get("atr", {}).get("atr", 0)
+        hold_iv_ratio = deribit_feed.state.get_iv_ratio(atr_val, btc_now)
+
     action, model_prob, holding_edge, reason = signal_engine.evaluate_hold(
         indicators, btc_now, strike_now, live["seconds_remaining"],
         market_price, pos["side"], exit_threshold,
         entry_price=pos["entry_price"],
         fee_rate=pos.get("fee_rate") or DEFAULT_FEE_RATE,
-        closes=closes, flow_signal=hold_flow["flow_score"])
+        closes=closes, flow_signal=hold_flow["flow_score"],
+        spot_flow_signal=hold_spot_flow,
+        wall_pressure=hold_wall_pressure,
+        perp_lead=hold_perp_lead,
+        prev_resolution_margin=_prev_resolution_margin,
+        iv_ratio=hold_iv_ratio)
 
     # --- TRAILING PROFIT EXIT: don't ride cheap winners to zero ---
     mid = pos["market_id"]
@@ -705,6 +806,7 @@ async def _resolve_expired_position(
         db: Any, outcome_reviewer: Any, breaker: Any, counterfactual_tracker: Any,
         day_wins: int, day_losses: int, day_fees: float) -> tuple[bool, int, int, float, str | None]:
     """Resolve a position whose contract has expired (seconds_remaining <= 0)."""
+    global _prev_resolution_margin
     if live.get("closed") and (live["price_up"] >= 0.99 or live["price_up"] <= 0.01):
         # Polymarket has resolved: use the actual outcome prices
         exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
@@ -757,6 +859,10 @@ async def _resolve_expired_position(
                 logger.info(f"COUNTERFACTUAL HOLD resolved: {pos['side']} {pos['market_id']} — {verdict}")
         traded_market_id = pos["market_id"]
         _peak_hold_price.pop(traded_market_id, None)
+        # Track resolution margin for adjacent window momentum (D2)
+        meta = live.get("event_metadata")
+        if meta and meta.get("final_price") and meta.get("price_to_beat"):
+            _prev_resolution_margin = meta["final_price"] - meta["price_to_beat"]
     return True, day_wins, day_losses, day_fees, traded_market_id
 
 
@@ -874,7 +980,11 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                        scheduler: Any = None, clob_ws: ClobWebSocket | None = None,
                        breaker: CircuitBreaker | None = None,
                        counterfactual_tracker: Any = None,
-                       http_client: Any = None) -> None:
+                       http_client: Any = None,
+                       depth_feed: Any = None,
+                       trades_feed: Any = None,
+                       bybit_feed: Any = None,
+                       deribit_feed: Any = None) -> None:
     import httpx
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
@@ -982,7 +1092,9 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                             clob_ws, trader, alert_manager, db,
                             outcome_reviewer, breaker, counterfactual_tracker,
                             config, scheduler, default_exit_threshold,
-                            day_wins, day_losses, day_fees)
+                            day_wins, day_losses, day_fees,
+                            depth_feed=depth_feed, trades_feed=trades_feed,
+                            bybit_feed=bybit_feed, deribit_feed=deribit_feed)
                     if traded_mid:
                         traded_contracts[traded_mid] = int(time.time())
 
@@ -996,9 +1108,11 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             if not in_trading_hours:
                 continue
 
-            # Skip if we have an ACTIVE position (contract still running).
+            # Concurrent windows: allow up to max_concurrent_positions from DIFFERENT markets.
             # Expired positions waiting for Gamma resolution don't block new entries.
-            if has_active_position:
+            max_concurrent = config.get("execution", {}).get("max_concurrent_positions", 1)
+            active_count = sum(1 for p in positions if p["status"] == "open")
+            if active_count >= max_concurrent:
                 continue
 
             contract, cid, traded_contracts, ws_subscribed_tokens, prev_contract_tokens = \
@@ -1041,7 +1155,9 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 book_up, book_down, depth_usd_up, depth_usd_down,
                 btc_price, strike, eval_window, last_eval_log_window,
                 token_up, token_down, signal_config, max_bankroll_pct,
-                now_ts)
+                now_ts,
+                depth_feed=depth_feed, trades_feed=trades_feed,
+                bybit_feed=bybit_feed, deribit_feed=deribit_feed)
             if traded_cid:
                 traded_contracts[traded_cid] = now_ts
 
@@ -1235,8 +1351,36 @@ async def main() -> None:
     clob_ws = ClobWebSocket(url=clob_ws_url)
     await clob_ws.start()
 
+    # --- New data feeds ---
+    depth_cfg = config.get("binance_depth", {})
+    depth_feed = BinanceDepthFeed(
+        ws_url=depth_cfg.get("ws_url", "wss://stream.binance.us:9443/ws"),
+        rest_url=depth_cfg.get("rest_url", "https://api.binance.us/api/v3"),
+        rest_interval=depth_cfg.get("poll_interval_s", 5.0),
+    )
+    trades_cfg = config.get("binance_trades", {})
+    trades_accumulator = BinanceTradeAccumulator(max_age_s=trades_cfg.get("max_age_s", 300))
+    trades_feed = BinanceTradesFeed(
+        accumulator=trades_accumulator,
+        ws_url=trades_cfg.get("ws_url", "wss://stream.binance.us:9443/ws"),
+    )
+    bybit_cfg = config.get("bybit", {})
+    bybit_feed_inst = BybitFeed(
+        ws_url=bybit_cfg.get("ws_url", "wss://stream.bybit.com/v5/public/linear"),
+        rest_url=bybit_cfg.get("rest_url", "https://api.bybit.com/v5/market/tickers"),
+    )
+    deribit_cfg = config.get("deribit", {})
+    deribit_feed = DeribitIVFeed(
+        poll_interval=deribit_cfg.get("poll_interval_s", 60.0),
+    )
+
     await scheduler.start()
     await binance_feed.start()
+    await depth_feed.start()
+    await trades_feed.start()
+    await bybit_feed_inst.start()
+    # DeribitIVFeed.start() is a blocking loop — run as background task
+    deribit_task = asyncio.create_task(deribit_feed.start())
 
     # Shared HTTP client — lifecycle managed here in main()
     import httpx
@@ -1255,7 +1399,9 @@ async def main() -> None:
             is_paused_fn=lambda: discord_bot.is_paused,
             scheduler=scheduler, clob_ws=clob_ws, breaker=breaker,
             counterfactual_tracker=counterfactual_tracker,
-            http_client=http_client)),
+            http_client=http_client,
+            depth_feed=depth_feed, trades_feed=trades_feed,
+            bybit_feed=bybit_feed_inst, deribit_feed=deribit_feed)),
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(run_discord()),
@@ -1271,6 +1417,11 @@ async def main() -> None:
         await clob_ws.close()
         await scheduler.stop()
         await binance_feed.stop()
+        await depth_feed.stop()
+        await trades_feed.stop()
+        await bybit_feed_inst.stop()
+        deribit_feed.stop()
+        deribit_task.cancel()
         await db.close()
         await discord_bot.close()
 
