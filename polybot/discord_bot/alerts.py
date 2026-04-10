@@ -51,10 +51,14 @@ class AlertManager:
             return
         window = question.replace("Bitcoin Up or Down - ", "") if question else ""
         await channel.send(
-            f"**OPEN {side}** | {window}\n"
-            f"@ `{entry_price:.3f}` | Size: `${size:.2f}` | "
-            f"edge=`{ev:+.0%}` | model=`{model_prob:.0%}` mkt=`{market_price:.0%}` | "
-            f"flow=`{flow:+.2f}` | fee=`${fee:.2f}`")
+            f"**OPEN {side}**  {window}\n"
+            f"```\n"
+            f"  Price     {entry_price:.3f}\n"
+            f"  Size      ${size:.2f}\n"
+            f"  Edge      {ev:+.0%}   (model {model_prob:.0%}  mkt {market_price:.0%})\n"
+            f"  Flow      {flow:+.2f}\n"
+            f"  Fee       ${fee:.2f}\n"
+            f"```")
 
     async def send_trade_closed(self, question: str, exit_price: float, log_return: float,
                                 hold_hours: float,
@@ -67,9 +71,13 @@ class AlertManager:
         tag = "PROFIT" if pnl >= 0 else "LOSS"
         window = question.replace("Bitcoin Up or Down - ", "") if question else ""
         await channel.send(
-            f"**CLOSE {tag} {side}** | {window}\n"
-            f"`{entry_price:.3f}`->`{exit_price:.3f}` | "
-            f"`{gain_pct:+.1%}` | `${pnl:+.2f}` | fees=`${fees:.2f}` | {reason}")
+            f"**CLOSE {tag} {side}**  {window}\n"
+            f"```\n"
+            f"  Entry     {entry_price:.3f}  ->  {exit_price:.3f}\n"
+            f"  Return    {gain_pct:+.1%}   (${pnl:+.2f})\n"
+            f"  Fees      ${fees:.2f}\n"
+            f"  Reason    {reason}\n"
+            f"```")
 
     async def send_pipeline_summary(self, summary: str) -> None:
         channel = self._get_channel(self.daily_channel_name)

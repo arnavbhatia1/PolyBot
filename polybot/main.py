@@ -287,12 +287,16 @@ async def _evaluate_signal_and_enter(
     # Log signal evaluation once per window so we can see what the model sees
     if eval_window != last_eval_log_window:
         last_eval_log_window = eval_window
-        buf_len = len(binance_feed.buffer) if binance_feed.buffer else 0
+        phase_tag = entry_phase["phase"].upper()
+        secs = contract["seconds_remaining"]
+        dist = btc_price - strike
         logger.info(
-            f"EVAL: {signal.action} | {cid} | BTC={btc_price:,.0f} strike={strike:,.0f} "
-            f"d={btc_price-strike:+,.0f} | mkt Up={price_up:.2f} Dn={price_down:.2f} "
-            f"| prob={signal.prob:.0%} edge={signal.edge:+.0%} | {contract['seconds_remaining']:.0f}s left "
-            f"| flow={flow_score:+.2f} | buf={buf_len} | {signal.reason}")
+            f"{'─' * 60}\n"
+            f"  EVAL  {signal.action:<8} | {contract.get('question', cid)}\n"
+            f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]\n"
+            f"  MODEL prob {signal.prob:.0%}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
+            f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  perp {perp_lead_val:+.3f}  iv {iv_ratio_val:.2f}\n"
+            f"  {signal.reason}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         return None, last_eval_log_window
@@ -427,7 +431,11 @@ async def _evaluate_signal_and_enter(
             lt = clob_ws.last_trade.get(token_id, {})
             if lt.get("price"):
                 last_trade_info = f" last_trade={lt['price']}"
-        logger.info(f"OPEN {side} @ {price:.3f} | ${size:.2f} | fee=${fee_usd:.2f} ({fee_rate:.1%}) | src={price_source}{last_trade_info} | {signal.reason}")
+        logger.info(
+            f"{'━' * 60}\n"
+            f"  OPEN {side}  @ {price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f} ({fee_rate:.1%})\n"
+            f"  {contract.get('question', cid)}  [{entry_phase['phase']}]\n"
+            f"  {signal.reason}")
         if alert_manager:
             mkt_price = price_up if side == "Up" else price_down
             await alert_manager.send_trade_opened(
@@ -773,7 +781,11 @@ async def _evaluate_and_exit_position(
             if pnl > 0: day_wins += 1
             else: day_losses += 1
             day_fees += total_fees
-            logger.info(f"SCALP {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_fill:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${total_fees:.2f} | slip={slip:.2%} | {reason}")
+            logger.info(
+                f"{'━' * 60}\n"
+                f"  SCALP {won} {pos['side']}  |  {pos['entry_price']:.3f} -> {exit_fill:.3f}  |  {gain_pct:+.1%}  |  ${pnl:+.2f}\n"
+                f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}  slip {slip:.2%}\n"
+                f"  {reason}")
             if breaker:
                 breaker.update_bankroll(await db.get_bankroll())
                 await db.set_peak_bankroll(breaker.peak_bankroll)
@@ -837,7 +849,10 @@ async def _resolve_expired_position(
         if pnl > 0: day_wins += 1
         else: day_losses += 1
         day_fees += total_fees
-        logger.info(f"RESOLVED {won} {pos['side']} | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f} | fees=${total_fees:.2f}")
+        logger.info(
+            f"{'━' * 60}\n"
+            f"  RESOLVED {won} {pos['side']}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  ${pnl:+.2f}\n"
+            f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}")
         if breaker:
             breaker.update_bankroll(await db.get_bankroll())
             await db.set_peak_bankroll(breaker.peak_bankroll)
@@ -912,7 +927,10 @@ async def _manage_orphaned_position(
         if pnl > 0: day_wins += 1
         else: day_losses += 1
         day_fees += total_fees
-        logger.info(f"RESOLVED {won} {pos['side']} (orphaned) | {pos['entry_price']:.3f}->{exit_price:.3f} | {gain_pct:+.1%} | ${pnl:+.2f}")
+        logger.info(
+            f"{'━' * 60}\n"
+            f"  RESOLVED {won} {pos['side']} (orphan)  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  ${pnl:+.2f}\n"
+            f"  {pos.get('question', pos['market_id'])}")
         if breaker:
             breaker.update_bankroll(await db.get_bankroll())
             await db.set_peak_bankroll(breaker.peak_bankroll)
