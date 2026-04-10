@@ -38,9 +38,7 @@ from polybot.core.bybit_feed import BybitFeed
 from polybot.core.deribit_iv import DeribitIVFeed
 from polybot.core.bankroll_strategy import compute_kelly_tier
 
-import sys
-_console_stream = open(sys.stdout.fileno(), mode='w', encoding='utf-8', errors='replace', closefd=False)
-_console_handler = logging.StreamHandler(_console_stream)
+_console_handler = logging.StreamHandler()
 _console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
 _file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=3, mode="a")
 _file_handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
@@ -759,12 +757,9 @@ async def _evaluate_and_exit_position(
         if now_ts - _last_hold_log.get(mid, 0) >= 30:
             _last_hold_log[mid] = now_ts
             secs = live['seconds_remaining']
-            bar_len = 20
-            filled = max(0, min(bar_len, int((1 - secs / 300) * bar_len)))
-            bar = "█" * filled + "░" * (bar_len - filled)
             edge_color = _C.GREEN if holding_edge > 0 else _C.RED
             logger.info(
-                f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {bar}  {secs:.0f}s  |  "
+                f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {secs:.0f}s  |  "
                 f"prob {model_prob:.0%}  {edge_color}edge {holding_edge:+.0%}{_C.RESET}  |  "
                 f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}")
         if counterfactual_tracker:
