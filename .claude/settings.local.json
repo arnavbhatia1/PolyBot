@@ -10,7 +10,11 @@
       "WebFetch(domain:harbourfronts.com)",
       "WebFetch(domain:www.mdpi.com)",
       "WebFetch(domain:pmc.ncbi.nlm.nih.gov)",
-      "Bash(python -m pytest polybot/tests/ -x -q --tb=short)"
+      "Bash(python -m pytest polybot/tests/ -x -q --tb=short)",
+      "Bash(sqlite3:*)",
+      "Bash(python3:*)",
+      "WebFetch(domain:docs.binance.us)",
+      "Bash(python:*)"
     ]
   }
 }
