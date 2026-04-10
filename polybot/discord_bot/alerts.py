@@ -45,11 +45,13 @@ class AlertManager:
     async def send_trade_opened(self, question: str, side: str, size: float, entry_price: float,
                                 ev: float, exit_target: float,
                                 model_prob: float = 0.0, market_price: float = 0.0,
-                                fee: float = 0.0, flow: float = 0.0) -> None:
+                                fee: float = 0.0, flow: float = 0.0,
+                                bankroll: float = 0.0) -> None:
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
         window = question.replace("Bitcoin Up or Down - ", "") if question else ""
+        bankroll_str = f"  Bankroll  ${bankroll:,.2f}\n" if bankroll > 0 else ""
         await channel.send(
             f"**OPEN {side}**  {window}\n"
             f"```\n"
@@ -58,18 +60,23 @@ class AlertManager:
             f"  Edge      {ev:+.0%}   (model {model_prob:.0%}  mkt {market_price:.0%})\n"
             f"  Flow      {flow:+.2f}\n"
             f"  Fee       ${fee:.2f}\n"
-            f"```")
+            f"{bankroll_str}```")
 
     async def send_trade_closed(self, question: str, exit_price: float, log_return: float,
                                 hold_hours: float,
                                 side: str = "", entry_price: float = 0.0, pnl: float = 0.0,
                                 gain_pct: float = 0.0, reason: str = "",
-                                fees: float = 0.0) -> None:
+                                fees: float = 0.0, bankroll: float = 0.0,
+                                day_wins: int = 0, day_losses: int = 0) -> None:
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
         tag = "PROFIT" if pnl >= 0 else "LOSS"
         window = question.replace("Bitcoin Up or Down - ", "") if question else ""
+        day_line = ""
+        if bankroll > 0:
+            total = day_wins + day_losses
+            day_line = f"  Day       {day_wins}W/{day_losses}L ({total})  |  Bankroll ${bankroll:,.2f}\n"
         await channel.send(
             f"**CLOSE {tag} {side}**  {window}\n"
             f"```\n"
@@ -77,7 +84,7 @@ class AlertManager:
             f"  Return    {gain_pct:+.1%}   (${pnl:+.2f})\n"
             f"  Fees      ${fees:.2f}\n"
             f"  Reason    {reason}\n"
-            f"```")
+            f"{day_line}```")
 
     async def send_pipeline_summary(self, summary: str) -> None:
         channel = self._get_channel(self.daily_channel_name)

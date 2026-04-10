@@ -38,14 +38,24 @@ from polybot.core.bybit_feed import BybitFeed
 from polybot.core.deribit_iv import DeribitIVFeed
 from polybot.core.bankroll_strategy import compute_kelly_tier
 
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+_file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=3, mode="a")
+_file_handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
 logging.basicConfig(
     level=logging.ERROR,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=3, mode="a"),
-    ],
+    handlers=[_console_handler, _file_handler],
 )
+
+# ANSI color codes for terminal readability
+class _C:
+    GREEN = "\033[92m"
+    RED = "\033[91m"
+    YELLOW = "\033[93m"
+    CYAN = "\033[96m"
+    DIM = "\033[2m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
 # Only polybot and discord bot loggers show INFO. Everything else (httpx, discord.client, websockets) is silent.
 logger = logging.getLogger("polybot")
 logger.setLevel(logging.INFO)
@@ -290,13 +300,14 @@ async def _evaluate_signal_and_enter(
         phase_tag = entry_phase["phase"].upper()
         secs = contract["seconds_remaining"]
         dist = btc_price - strike
+        action_color = _C.GREEN if signal.action in ("BUY_YES", "BUY_NO") else _C.DIM
         logger.info(
-            f"{'─' * 60}\n"
-            f"  EVAL  {signal.action:<8} | {contract.get('question', cid)}\n"
+            f"{_C.CYAN}{'─' * 60}{_C.RESET}\n"
+            f"  {action_color}EVAL  {signal.action:<8}{_C.RESET} | {contract.get('question', cid)}\n"
             f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]\n"
-            f"  MODEL prob {signal.prob:.0%}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
+            f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
             f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  perp {perp_lead_val:+.3f}  iv {iv_ratio_val:.2f}\n"
-            f"  {signal.reason}")
+            f"  {_C.DIM}{signal.reason}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         return None, last_eval_log_window
@@ -431,18 +442,19 @@ async def _evaluate_signal_and_enter(
             lt = clob_ws.last_trade.get(token_id, {})
             if lt.get("price"):
                 last_trade_info = f" last_trade={lt['price']}"
+        bankroll_now = await db.get_bankroll()
         logger.info(
-            f"{'━' * 60}\n"
-            f"  OPEN {side}  @ {price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f} ({fee_rate:.1%})\n"
+            f"{_C.GREEN}{'━' * 60}{_C.RESET}\n"
+            f"  {_C.GREEN}{_C.BOLD}OPEN {side}{_C.RESET}  @ {price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}\n"
             f"  {contract.get('question', cid)}  [{entry_phase['phase']}]\n"
-            f"  {signal.reason}")
+            f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}")
         if alert_manager:
             mkt_price = price_up if side == "Up" else price_down
             await alert_manager.send_trade_opened(
                 question=contract["question"], side=side, size=size,
                 entry_price=price, ev=signal.edge, exit_target=1.0,
                 model_prob=signal.prob, market_price=mkt_price,
-                fee=fee_usd, flow=flow_score)
+                fee=fee_usd, flow=flow_score, bankroll=bankroll_now)
         return cid, last_eval_log_window
 
     return None, last_eval_log_window
@@ -744,10 +756,15 @@ async def _evaluate_and_exit_position(
         now_ts = time.time()
         if now_ts - _last_hold_log.get(mid, 0) >= 30:
             _last_hold_log[mid] = now_ts
+            secs = live['seconds_remaining']
+            bar_len = 20
+            filled = max(0, min(bar_len, int((1 - secs / 300) * bar_len)))
+            bar = "█" * filled + "░" * (bar_len - filled)
+            edge_color = _C.GREEN if holding_edge > 0 else _C.RED
             logger.info(
-                f"HOLD {pos['side']} | prob={model_prob:.0%} mkt={market_price:.2f} "
-                f"edge={holding_edge:+.0%} thresh={exit_threshold:+.0%} | "
-                f"BTC={btc_now:,.0f} strike={strike_now:,.0f} | {live['seconds_remaining']:.0f}s left")
+                f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {bar}  {secs:.0f}s  |  "
+                f"prob {model_prob:.0%}  {edge_color}edge {holding_edge:+.0%}{_C.RESET}  |  "
+                f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}")
         if counterfactual_tracker:
             counterfactual_tracker.track_hold_moment(pos["market_id"], pos, {
                 "holding_edge": holding_edge, "model_prob": model_prob,
@@ -781,11 +798,13 @@ async def _evaluate_and_exit_position(
             if pnl > 0: day_wins += 1
             else: day_losses += 1
             day_fees += total_fees
+            color = _C.GREEN if pnl >= 0 else _C.RED
+            bankroll_after = await db.get_bankroll()
             logger.info(
-                f"{'━' * 60}\n"
-                f"  SCALP {won} {pos['side']}  |  {pos['entry_price']:.3f} -> {exit_fill:.3f}  |  {gain_pct:+.1%}  |  ${pnl:+.2f}\n"
-                f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}  slip {slip:.2%}\n"
-                f"  {reason}")
+                f"{color}{'━' * 60}{_C.RESET}\n"
+                f"  {color}{_C.BOLD}SCALP {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_fill:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
+                f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
+                f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
             if breaker:
                 breaker.update_bankroll(await db.get_bankroll())
                 await db.set_peak_bankroll(breaker.peak_bankroll)
@@ -796,7 +815,8 @@ async def _evaluate_and_exit_position(
                 await alert_manager.send_trade_closed(
                     question=pos.get("question", ""), exit_price=exit_fill, log_return=0, hold_hours=0,
                     side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                    gain_pct=gain_pct, reason=f"scalp {won.lower()}", fees=total_fees)
+                    gain_pct=gain_pct, reason=f"scalp {won.lower()}", fees=total_fees,
+                    bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
             await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
                                   exit_reason="scalp", pnl=pnl, fees=total_fees)
             traded_market_id = pos["market_id"]
@@ -849,10 +869,13 @@ async def _resolve_expired_position(
         if pnl > 0: day_wins += 1
         else: day_losses += 1
         day_fees += total_fees
+        color = _C.GREEN if pnl >= 0 else _C.RED
+        bankroll_after = await db.get_bankroll()
         logger.info(
-            f"{'━' * 60}\n"
-            f"  RESOLVED {won} {pos['side']}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  ${pnl:+.2f}\n"
-            f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}")
+            f"{color}{'━' * 60}{_C.RESET}\n"
+            f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
+            f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
+            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
         if breaker:
             breaker.update_bankroll(await db.get_bankroll())
             await db.set_peak_bankroll(breaker.peak_bankroll)
@@ -863,7 +886,8 @@ async def _resolve_expired_position(
             await alert_manager.send_trade_closed(
                 question=pos.get("question", ""), exit_price=exit_price, log_return=0, hold_hours=0,
                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                gain_pct=gain_pct, reason=won.lower(), fees=total_fees)
+                gain_pct=gain_pct, reason=won.lower(), fees=total_fees,
+                bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
                               exit_reason="resolution", pnl=pnl, fees=total_fees)
         if counterfactual_tracker:
@@ -927,10 +951,13 @@ async def _manage_orphaned_position(
         if pnl > 0: day_wins += 1
         else: day_losses += 1
         day_fees += total_fees
+        color = _C.GREEN if pnl >= 0 else _C.RED
+        bankroll_after = await db.get_bankroll()
         logger.info(
-            f"{'━' * 60}\n"
-            f"  RESOLVED {won} {pos['side']} (orphan)  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  ${pnl:+.2f}\n"
-            f"  {pos.get('question', pos['market_id'])}")
+            f"{color}{'━' * 60}{_C.RESET}\n"
+            f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']} (orphan){_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
+            f"  {pos.get('question', pos['market_id'])}\n"
+            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
         if breaker:
             breaker.update_bankroll(await db.get_bankroll())
             await db.set_peak_bankroll(breaker.peak_bankroll)
@@ -941,7 +968,8 @@ async def _manage_orphaned_position(
             await alert_manager.send_trade_closed(
                 question=pos.get("question", ""), exit_price=exit_price, log_return=0, hold_hours=0,
                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
-                gain_pct=gain_pct, reason=won.lower(), fees=total_fees)
+                gain_pct=gain_pct, reason=won.lower(), fees=total_fees,
+                bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
                               exit_reason="resolution", pnl=pnl, fees=total_fees)
         traded_market_id = pos["market_id"]
