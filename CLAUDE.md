@@ -38,6 +38,11 @@ polybot/
     market_scanner.py        # Gamma API discovery + CLOB HTTP helpers (spread, midpoints, volume)
     signal_engine.py         # Probability model: P(Up) from BTC vs strike + time + vol
     order_flow.py          # Book imbalance + trade flow signal from CLOB data
+    binance_depth.py         # L2 order book: wall detection, spot imbalance, book depth
+    binance_trades.py        # Aggregate trade stream: CVD, taker ratio, large trades, volume surge
+    bybit_feed.py            # BTC perpetual price lead + funding rate signal
+    deribit_iv.py            # BTC options implied volatility (forward-looking vol)
+    bankroll_strategy.py     # Tiered Kelly acceleration based on track record
   indicators/
     ema.py, rsi.py, macd.py, stochastic.py, obv.py, vwap.py, atr.py
     engine.py                # Combines all 7, manages weight versions
@@ -84,14 +89,20 @@ polybot/
 - `signal.momentum_weight:` — 0.04 (max ±4% indicator adjustment, Layer 4)
 - `signal.regime_weight:` — 0.03 (max ±3% regime adjustment, Layer 2)
 - `signal.flow_weight:` — 0.04 (max ±4% order flow adjustment, Layer 3)
+- `signal.spot_flow_weight:` — 0.04 (max ±4% spot market flow from Binance aggTrades, Layer 3b)
+- `signal.wall_weight:` — 0.05 (max ±5% wall pressure from L2 depth near strike, Layer 3c)
+- `signal.perp_lead_weight:` — 0.03 (max ±3% Bybit perpetual price lead, Layer 3d)
+- `signal.prev_margin_weight:` — 0.02 (max ±2% previous window momentum carry, Layer 5)
 - `signal.atr_sigma_ratio:` — 1.4 (ATR-to-sigma conversion factor for BTC 1-min candles. Empirical range 1.3-1.6. Pipeline range: 1.2-2.5)
-- `signal.regime_lookback:` — 20 (number of 1-min returns for regime autocorrelation, 20 = 20-minute window)
+- `signal.regime_lookback:` — 10 (number of 1-min returns for autocorrelation, 10 = 10-minute window)
 - `signal.student_t_df:` — 5 (degrees of freedom for fat-tailed CDF; df=5 gives excess kurtosis=6, matching BTC 1-min empirical)
 - `signal.weights:` — per-indicator weights for momentum calculation
-- `execution.max_concurrent_positions:` — 1 (single position, full focus)
+- `execution.max_concurrent_positions:` — 2 (up to 2 positions from different windows, half-Kelly when concurrent)
 - `execution.max_bankroll_deployed:` — 0.80
 - `execution.max_book_fill_pct:` — 0.50 (cap order to 50% of available ask depth — realistic fills)
 - `execution.slippage_impact_pct:` — 0.03 (base impact factor for convex slippage model — see below)
+- `execution.use_maker_orders:` — true (post limit orders at 0% fee, FOK fallback at 1.8% fee after timeout)
+- `execution.maker_timeout_s:` — 60.0 (seconds to wait for maker fill before FOK fallback)
 - `market.entry_window_seconds:` — 300 (full 5-min window)
 - `market.min_time_remaining_seconds:` — 20 (tunable by learning pipeline)
 - `market.clob_ws_url:` — `wss://ws-subscriptions-clob.polymarket.com/ws/market`
@@ -100,6 +111,17 @@ polybot/
 - `schedule.trading_end_hour:` — 20, `trading_end_minute:` — 30 (4:30 PM EST in UTC)
 - `agents.daily_pipeline_hour:` — 20, `daily_pipeline_minute:` — 45 (4:45 PM EST)
 - `discord.daily_channel_name:` — "polybot-daily" (end-of-day reports)
+- `binance_depth.ws_url:` — `wss://stream.binance.us:9443/ws/btcusdt@depth20@100ms`
+- `binance_depth.poll_interval_s:` — 5.0 (REST full-depth poll interval for wall detection)
+- `binance_trades.ws_url:` — `wss://stream.binance.us:9443/ws/btcusdt@aggTrade`
+- `bybit.ws_url:` — `wss://stream.bybit.com/v5/public/linear` (BTC perpetual ticker)
+- `bybit.funding_poll_s:` — 300.0 (REST backup poll for funding rate)
+- `deribit.rest_url:` — `https://www.deribit.com/api/v2/public` (BTC options IV polling)
+- `deribit.poll_interval_s:` — 60.0
+- `entry_timing.observe_seconds:` — 60 (first 60s of each window: observe only, no entry)
+- `entry_timing.late_kelly_multiplier:` — 0.7 (reduced Kelly for 180-240s elapsed)
+- `entry_timing.final_min_probability:` — 0.90 (minimum model confidence in last 60s)
+- `bankroll_acceleration.enabled:` — true (tiered Kelly: 0.15 base → 0.18/0.22/0.25 as track record grows)
 
 ## Running
 
@@ -123,7 +145,7 @@ Vol = ATR (average true range from 1-min candles, period=7) / atr_sigma_ratio (1
 Time = minutes remaining in the window
 
 LAYER 1 — Fat-tailed base (Student-t CDF, df=5):
-  vol = (ATR / atr_sigma_ratio) x sqrt(minutes)    [ATR scaled to sigma, ratio=1.4]
+  vol = (ATR / atr_sigma_ratio) x sqrt(minutes) x iv_ratio    [iv_ratio from Deribit options IV]
   z = distance / vol
   z_scaled = z x sqrt(df / (df-2))               [variance normalization]
   P(Up) = t.cdf(z_scaled, df=5)                  [df=5: excess kurtosis=6]
@@ -149,6 +171,38 @@ LAYER 3 — Order flow (in logit space):
 LAYER 4 — Indicator momentum (in logit space):
   Z-score normalized scores per indicator (IndicatorNormalizer)
   Weighted RSI/MACD/Stochastic/OBV/VWAP x (momentum_weight x 4.0)
+
+LAYER 3b — Spot market flow (in logit space):
+  CVD = sum of (+qty if buyer taker, -qty if seller taker) over 120s
+  taker_ratio = buy_taker_volume / total_volume over 60s
+  spot_flow = tanh(CVD * 2) * 0.6 + (taker_ratio - 0.5) * 2 * 0.4
+  logit_p += spot_flow * (spot_flow_weight x 4.0)
+  
+  Why: Binance spot trades are a leading indicator. Aggressive buyers
+  (taker side) signal directional commitment before candles close.
+
+LAYER 3c — Wall pressure near strike (in logit space):
+  wall_pressure = (ask_vol_near_strike - bid_vol_near_strike) / total
+  logit_p -= wall_pressure * (wall_weight x 4.0)
+  
+  Why: Large sell walls between current price and strike block upward
+  movement. No other signal captures "there's a $3M wall blocking the path."
+  Uses full 1000-level Binance order book polled every 5s.
+
+LAYER 3d — Perpetual price lead (in logit space):
+  perp_lead = tanh((bybit_perp_price - binance_spot) / spot * 350)
+  logit_p += perp_lead * (perp_lead_weight x 4.0)
+  
+  Why: Bybit BTC perpetual leads Binance spot by 0.5-2s because
+  leveraged traders react first. Also provides staleness detection
+  for latency arbitrage when Polymarket hasn't repriced.
+
+LAYER 5 — Previous window momentum carry (in logit space):
+  normalized_margin = (prev_btc_at_expiry - prev_strike) / ATR
+  logit_p += tanh(normalized_margin) * (prev_margin_weight x 4.0)
+  
+  Why: BTC momentum persists across adjacent 5-min windows.
+  Strong resolution in window N predicts direction in window N+1.
 
 CALIBRATION — Platt scaling:
   calibrated = 1 / (1 + exp(A x logit(raw_prob) + B))
@@ -239,6 +293,31 @@ Used by `discord_bot/bot.py` via discord.py library.
 | Commands | `!status`, `!positions`, `!history`, `!performance`, `!pause`, `!resume` |
 | Daily reports | Learning pipeline findings posted to `polybot-daily` channel |
 
+`!pause` blocks new entries only -- position management (hold evaluation, scalps, resolution) continues while paused. `!resume` re-enables new entries.
+
+### Bybit — Perpetual Price Lead & Funding Rate
+BTC perpetual futures on Bybit lead Binance spot by 0.5-2 seconds. Free, no auth.
+
+| Endpoint | Usage | Auth |
+|----------|-------|------|
+| `wss://stream.bybit.com/v5/public/linear` | Real-time BTC/USDT perpetual ticker. Subscribe: `{"op":"subscribe","args":["tickers.BTCUSDT"]}`. Provides lastPrice and fundingRate. | None |
+| `GET https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT` | REST backup for funding rate (polled every 300s). | None |
+
+### Deribit — Options Implied Volatility
+Forward-looking BTC volatility from options market. Free, no auth.
+
+| Endpoint | Usage | Auth |
+|----------|-------|------|
+| `GET https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency=BTC&kind=option` | ATM implied volatility from nearest-expiry BTC options. Polled every 60s. Used to compute iv_ratio for dynamic sigma adjustment in Layer 1. | None |
+
+### Binance.US — L2 Depth & Aggregate Trades (New)
+
+| Endpoint | Usage | Auth |
+|----------|-------|------|
+| `wss://stream.binance.us:9443/ws/btcusdt@depth20@100ms` | Top 20 order book levels, 100ms snapshots. Provides spot bid/ask imbalance and book depth measurement. | None |
+| `GET https://api.binance.us/api/v3/depth?symbol=BTCUSDT&limit=1000` | Full 1000-level order book for wall detection near strike. Polled every 5s. Weight: 10. | None |
+| `wss://stream.binance.us:9443/ws/btcusdt@aggTrade` | Every BTC trade with taker side (`m` field). Drives CVD and taker ratio for Layer 3b spot flow signal. | None |
+
 ### WebSocket Message Types (CLOB)
 
 The `ClobWebSocket` class (`core/clob_ws.py`) handles these event types:
@@ -304,7 +383,13 @@ CLOB books + trades ──► compute_flow_signal()
                         ├── book_imbalance (60%) + trade_flow (40%, 120s lookback)
                         └── flow_score (±4% max)
 
-Candle closes ──► 1-lag autocorrelation (20 returns)
+Binance aggTrades ──► spot_flow_signal (CVD + taker ratio)
+Binance L2 depth ──► wall_pressure (near strike)
+Bybit perp ticker ──► perp_lead (perp/spot divergence)
+Deribit options ──► iv_ratio (forward-looking vol)
+Previous resolution ──► prev_resolution_margin (momentum carry)
+
+Candle closes ──► 1-lag autocorrelation (10 returns)
                         └── regime_adjustment (±3% max)
 
 BTC price, strike, ATR, seconds_remaining
@@ -584,7 +669,7 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't hardcode fee rates — fetch from `GET /fee-rate?token_id=X`. Crypto is 0.072, not 0.05.
 - Don't use polymarket.us for crypto — US platform has sports only. All crypto trading is on polymarket.com.
 - Don't use Binance.com — use Binance.us.
-- Don't allow multiple concurrent positions — one at a time, full Kelly.
+- Don't allow more than 2 concurrent positions — max 2 from different windows, half-Kelly when concurrent. Same-window duplicates still blocked.
 - Don't bypass the circuit breaker — it scales Kelly proportionally to drawdown from peak bankroll, protecting against compounding losses while still trading.
 - Don't auto-delete the DB — bankroll persists across sessions in both modes. Never delete `polybot/db/polybot.db` between runs.
 - Don't use limit orders in LiveTrader — FOK market orders for 5-min contract speed.
@@ -598,7 +683,7 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 Engine math optimized: logit-space layer combination, ATR-to-sigma scaling, Student-t variance normalization, regime direction fix (sign of recent return), Kelly-based entry gate, indicator z-score normalization, Platt calibration. Baseline re-locked — only the daily learning pipeline tunes parameters.
 
 The core trading logic is FROZEN. Do not make structural changes to:
-- `signal_engine.py` (4-layer probability model)
+- `signal_engine.py` (8-layer probability model)
 - `order_flow.py` (book imbalance + trade flow)
 - Entry/exit/pricing logic in `main.py` (now 9 extracted helper functions — logic unchanged, just organized)
 - `base.py` (BaseTrader ABC, fee math, shared gates/DB ops)
