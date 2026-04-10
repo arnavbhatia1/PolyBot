@@ -49,8 +49,10 @@ class AlertManager:
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
+        window = question.replace("Bitcoin Up or Down - ", "") if question else ""
         await channel.send(
-            f"**OPEN {side}** @ `{entry_price:.3f}` | Size: `${size:.2f}` | "
+            f"**OPEN {side}** | {window}\n"
+            f"@ `{entry_price:.3f}` | Size: `${size:.2f}` | "
             f"edge=`{ev:+.0%}` | model=`{model_prob:.0%}` mkt=`{market_price:.0%}` | "
             f"flow=`{flow:+.2f}` | fee=`${fee:.2f}`")
 
@@ -63,8 +65,10 @@ class AlertManager:
         if not channel:
             return
         tag = "PROFIT" if pnl >= 0 else "LOSS"
+        window = question.replace("Bitcoin Up or Down - ", "") if question else ""
         await channel.send(
-            f"**CLOSE {tag} {side}** | `{entry_price:.3f}`->`{exit_price:.3f}` | "
+            f"**CLOSE {tag} {side}** | {window}\n"
+            f"`{entry_price:.3f}`->`{exit_price:.3f}` | "
             f"`{gain_pct:+.1%}` | `${pnl:+.2f}` | fees=`${fees:.2f}` | {reason}")
 
     async def send_pipeline_summary(self, summary: str) -> None:

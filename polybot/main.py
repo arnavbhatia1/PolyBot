@@ -782,7 +782,7 @@ async def _evaluate_and_exit_position(
                     await alert_manager.send_circuit_breaker(cb_event, breaker)
             if alert_manager:
                 await alert_manager.send_trade_closed(
-                    question="", exit_price=exit_fill, log_return=0, hold_hours=0,
+                    question=pos.get("question", ""), exit_price=exit_fill, log_return=0, hold_hours=0,
                     side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
                     gain_pct=gain_pct, reason=f"scalp {won.lower()}", fees=total_fees)
             await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
@@ -846,7 +846,7 @@ async def _resolve_expired_position(
                 await alert_manager.send_circuit_breaker(cb_event, breaker)
         if alert_manager:
             await alert_manager.send_trade_closed(
-                question="", exit_price=exit_price, log_return=0, hold_hours=0,
+                question=pos.get("question", ""), exit_price=exit_price, log_return=0, hold_hours=0,
                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
                 gain_pct=gain_pct, reason=won.lower(), fees=total_fees)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
@@ -896,7 +896,7 @@ async def _manage_orphaned_position(
             logger.error(f"ORPHANED >1hr: {pos['market_id']} — no Gamma resolution data. Waiting for Chainlink oracle.")
             if alert_manager:
                 await alert_manager.send_trade_closed(
-                    question="", exit_price=0, log_return=0, hold_hours=age / 3600,
+                    question=pos.get("question", ""), exit_price=0, log_return=0, hold_hours=age / 3600,
                     side=pos["side"], entry_price=pos["entry_price"], pnl=0,
                     gain_pct=0, reason="orphaned — awaiting resolution", fees=0)
         else:
@@ -921,7 +921,7 @@ async def _manage_orphaned_position(
                 await alert_manager.send_circuit_breaker(cb_event, breaker)
         if alert_manager:
             await alert_manager.send_trade_closed(
-                question="", exit_price=exit_price, log_return=0, hold_hours=0,
+                question=pos.get("question", ""), exit_price=exit_price, log_return=0, hold_hours=0,
                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
                 gain_pct=gain_pct, reason=won.lower(), fees=total_fees)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
