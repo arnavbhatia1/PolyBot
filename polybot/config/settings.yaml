@@ -13,10 +13,12 @@ circuit_breaker:
 execution:
   max_slippage: 0.02
   max_bankroll_deployed: 0.80
-  max_concurrent_positions: 1  # One position at a time — full Kelly on best edge
+  max_concurrent_positions: 2  # Allow hedged Up+Down positions
   max_book_fill_pct: 0.50     # Cap order to 50% of available ask depth (realistic fills)
   slippage_impact_pct: 0.03   # 3% price impact at 100% depth consumption. Tune vs live fills.
   initial_bankroll: 100.0
+  use_maker_orders: true
+  maker_timeout_s: 60.0
 
 agents:
   outcome_reviewer_interval_seconds: 3600
@@ -76,6 +78,10 @@ signal:
   min_kelly: 0.015            # minimum Kelly fraction — skip if sized below this (noise floor)
   atr_sigma_ratio: 1.4        # ATR/sigma scaling (empirical range 1.3-1.6 for BTC 1-min; was 1.7, overcounted vol)
   flow_weight: 0.04           # max ±4% order flow adjustment (Layer 3) — CDF drives decisions
+  spot_flow_weight: 0.04
+  wall_weight: 0.05
+  perp_lead_weight: 0.03
+  prev_margin_weight: 0.02
   student_t_df: 5             # degrees of freedom for fat-tailed CDF (df=5 → excess kurtosis=6, matches BTC empirical; was 4=infinite kurtosis)
   weights:
     rsi: 0.20
@@ -104,3 +110,34 @@ schedule:
 # Active position management: hold to $1 when model is confident,
 # exit early when holding_edge drops below exit_edge_threshold.
 # Same probability model for entry AND exit decisions.
+
+# --- New data feeds ---
+binance_depth:
+  ws_url: "wss://stream.binance.us:9443/ws/btcusdt@depth20@100ms"
+  rest_url: "https://api.binance.us/api/v3"
+  poll_interval_s: 5.0
+
+binance_trades:
+  ws_url: "wss://stream.binance.us:9443/ws/btcusdt@aggTrade"
+
+bybit:
+  ws_url: "wss://stream.bybit.com/v5/public/linear"
+  rest_url: "https://api.bybit.com/v5/market"
+  funding_poll_s: 300.0
+
+deribit:
+  rest_url: "https://www.deribit.com/api/v2/public"
+  poll_interval_s: 60.0
+
+# --- Dynamic entry timing ---
+entry_timing:
+  observe_seconds: 60
+  late_phase_seconds: 180
+  final_phase_seconds: 240
+  late_kelly_multiplier: 0.7
+  final_kelly_multiplier: 0.5
+  final_min_probability: 0.90
+
+# --- Bankroll acceleration ---
+bankroll_acceleration:
+  enabled: true

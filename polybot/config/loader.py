@@ -112,6 +112,17 @@ def validate_config(config: dict[str, Any]) -> None:
     for cb_key in ("circuit_breaker.losses_to_reduce", "circuit_breaker.wins_to_restore"):
         _check_positive(cb_key, integer=True)
 
+    # New signal weights (optional — only validate if present)
+    for key, lo, hi in [
+        ("signal.spot_flow_weight", 0.0, 0.10),
+        ("signal.wall_weight", 0.0, 0.15),
+        ("signal.perp_lead_weight", 0.0, 0.10),
+        ("signal.prev_margin_weight", 0.0, 0.05),
+    ]:
+        val, found = _get_nested(config, key)
+        if found:
+            _check_range(key, lo, hi)
+
     if errors:
         header = f"Config validation failed with {len(errors)} error(s):"
         detail = "\n  - ".join([""] + errors)
