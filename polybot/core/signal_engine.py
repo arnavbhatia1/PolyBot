@@ -57,7 +57,12 @@ class SignalEngine:
                  student_t_df: int = 4, regime_weight: float = 0.03,
                  flow_weight: float = 0.04, regime_lookback: int = 20,
                  min_kelly: float = 0.015, atr_sigma_ratio: float = 1.7,
-                 calibrator: 'PlattCalibrator | None' = None) -> None:
+                 calibrator: 'PlattCalibrator | None' = None,
+                 spot_flow_weight: float = 0.04,
+                 wall_weight: float = 0.05,
+                 perp_lead_weight: float = 0.03,
+                 prev_margin_weight: float = 0.02,
+                 conviction_multiplier: bool = True) -> None:
         self.min_edge: float = min_edge
         self.kelly_fraction: float = kelly_fraction
         self.momentum_weight: float = momentum_weight
@@ -71,6 +76,11 @@ class SignalEngine:
         self.min_kelly: float = min_kelly
         self.atr_sigma_ratio: float = atr_sigma_ratio
         self.calibrator = calibrator
+        self.spot_flow_weight: float = spot_flow_weight
+        self.wall_weight: float = wall_weight
+        self.perp_lead_weight: float = perp_lead_weight
+        self.prev_margin_weight: float = prev_margin_weight
+        self.conviction_multiplier: bool = conviction_multiplier
 
     @property
     def entry_threshold(self) -> float:
@@ -101,7 +111,12 @@ class SignalEngine:
                             seconds_remaining: float, atr: float,
                             indicators: dict | None = None,
                             closes: np.ndarray | None = None,
-                            flow_signal: float = 0.0) -> float:
+                            flow_signal: float = 0.0,
+                            spot_flow_signal: float = 0.0,
+                            wall_pressure: float = 0.0,
+                            perp_lead: float = 0.0,
+                            prev_resolution_margin: float = 0.0,
+                            iv_ratio: float = 1.0) -> float:
         """Compute P(Up) — probability BTC finishes above the strike.
 
         Uses Brownian motion approximation with Student-t CDF (fat tails):
@@ -116,8 +131,8 @@ class SignalEngine:
         distance = btc_price - strike_price
         minutes_remaining = max(seconds_remaining / 60.0, 0.01)
 
-        # Fix 4: Scale ATR to standard deviation
-        vol_scaled = (atr / self.atr_sigma_ratio) * math.sqrt(minutes_remaining)
+        # Fix 4: Scale ATR to standard deviation (iv_ratio adjusts for forward-looking vol)
+        vol_scaled = (atr / self.atr_sigma_ratio) * math.sqrt(minutes_remaining) * iv_ratio
 
         if vol_scaled <= 0:
             return 0.5
@@ -150,8 +165,27 @@ class SignalEngine:
             direction = 0.0
         logit_p += regime * direction * logit_regime_w
 
-        # Layer 3 — Order flow
+        # Layer 3 — Order flow (Polymarket CLOB)
         logit_p += flow_signal * logit_flow_w
+
+        # Layer 3b — Spot market flow (CVD + taker ratio from Binance aggTrades)
+        logit_spot_flow_w = self.spot_flow_weight * 4.0
+        logit_p += spot_flow_signal * logit_spot_flow_w
+
+        # Layer 3c — Wall pressure near strike (from Binance L2 depth)
+        # Positive wall_pressure = resistance above = bearish for Up = reduce logit
+        logit_wall_w = self.wall_weight * 4.0
+        logit_p -= wall_pressure * logit_wall_w
+
+        # Layer 3d — Perpetual price lead (from Bybit)
+        logit_perp_w = self.perp_lead_weight * 4.0
+        logit_p += perp_lead * logit_perp_w
+
+        # Layer 5 — Previous window momentum carry
+        if prev_resolution_margin != 0.0 and atr > 0:
+            normalized_margin = prev_resolution_margin / max(atr, 1.0)
+            logit_prev_w = self.prev_margin_weight * 4.0
+            logit_p += math.tanh(normalized_margin) * logit_prev_w
 
         # Layer 4 — Momentum
         if indicators:
@@ -185,7 +219,12 @@ class SignalEngine:
                  seconds_remaining: float = 0, market_price_up: float = 0.5,
                  market_price_down: float = 0.5,
                  closes: np.ndarray | None = None,
-                 flow_signal: float = 0.0) -> TradeSignal:
+                 flow_signal: float = 0.0,
+                 spot_flow_signal: float = 0.0,
+                 wall_pressure: float = 0.0,
+                 perp_lead: float = 0.0,
+                 prev_resolution_margin: float = 0.0,
+                 iv_ratio: float = 1.0) -> TradeSignal:
 
         # Gate: already have position or outside window
         if not in_entry_window:
@@ -208,7 +247,12 @@ class SignalEngine:
         prob_up = self.compute_probability(btc_price, strike_price,
                                            seconds_remaining, atr, indicators,
                                            closes=closes,
-                                           flow_signal=flow_signal)
+                                           flow_signal=flow_signal,
+                                           spot_flow_signal=spot_flow_signal,
+                                           wall_pressure=wall_pressure,
+                                           perp_lead=perp_lead,
+                                           prev_resolution_margin=prev_resolution_margin,
+                                           iv_ratio=iv_ratio)
         prob_down = 1.0 - prob_up
 
         # Gate: model must be confident enough (not a coin flip)
@@ -255,7 +299,12 @@ class SignalEngine:
                       side: str, exit_threshold: float = -0.10,
                       entry_price: float = 0.0, fee_rate: float = 0.072,
                       closes: np.ndarray | None = None,
-                      flow_signal: float = 0.0) -> tuple[str, float, float, str]:
+                      flow_signal: float = 0.0,
+                      spot_flow_signal: float = 0.0,
+                      wall_pressure: float = 0.0,
+                      perp_lead: float = 0.0,
+                      prev_resolution_margin: float = 0.0,
+                      iv_ratio: float = 1.0) -> tuple[str, float, float, str]:
         """Continuously evaluate whether to hold or exit an existing position.
 
         Uses the same 4-layer probability model as entry. Compares the
@@ -276,7 +325,12 @@ class SignalEngine:
         prob_up = self.compute_probability(btc_price, strike_price,
                                            seconds_remaining, atr, indicators,
                                            closes=closes,
-                                           flow_signal=flow_signal)
+                                           flow_signal=flow_signal,
+                                           spot_flow_signal=spot_flow_signal,
+                                           wall_pressure=wall_pressure,
+                                           perp_lead=perp_lead,
+                                           prev_resolution_margin=prev_resolution_margin,
+                                           iv_ratio=iv_ratio)
         model_prob = prob_up if side == "Up" else 1.0 - prob_up
         holding_edge = model_prob - market_price_for_side
 
@@ -303,10 +357,20 @@ class SignalEngine:
                 f"edge={holding_edge:+.0%}")
 
     def _kelly(self, prob: float, market_price: float) -> float:
-        """Quarter Kelly for binary outcome."""
+        """Kelly for binary outcome with optional conviction scaling."""
         if market_price <= 0.01 or market_price >= 0.99:
             return 0
         b = (1.0 - market_price) / market_price
         q = 1.0 - prob
         raw = (prob * b - q) / b
-        return max(0, raw * self.kelly_fraction)
+        base = max(0, raw * self.kelly_fraction)
+        if not self.conviction_multiplier:
+            return base
+        # Scale Kelly by conviction: >85% prob = boost, 65-75% = dampen
+        if prob >= 0.90:
+            return base * 1.3
+        elif prob >= 0.85:
+            return base * 1.15
+        elif prob < 0.72:
+            return base * 0.7
+        return base
