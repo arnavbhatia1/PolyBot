@@ -224,7 +224,7 @@ class BybitFeed:
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
                     resp = await client.get(
-                        self.rest_url,
+                        f"{self.rest_url}/tickers",
                         params={"category": "linear", "symbol": "BTCUSDT"},
                     )
                     resp.raise_for_status()
