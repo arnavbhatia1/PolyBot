@@ -60,6 +60,26 @@ _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 _peak_hold_price: dict[str, float] = {}  # market_id -> peak market_price_for_side during hold
 
 
+def compute_entry_phase(seconds_remaining: float, window_seconds: float = 300.0) -> dict:
+    """Determine entry phase based on time elapsed in window.
+
+    Phases (user requested 60s observe):
+      0-60s elapsed (300-240s remaining): OBSERVE — collect data, no entry
+      60-180s elapsed (240-120s remaining): NORMAL — full Kelly entry when gates pass
+      180-240s elapsed (120-60s remaining): LATE — reduced Kelly (0.7x)
+      240-300s elapsed (60-0s remaining): FINAL — only at >90% confidence, half Kelly
+    """
+    elapsed = window_seconds - seconds_remaining
+    if elapsed < 60:
+        return {"allowed": False, "kelly_multiplier": 1.0, "min_prob_override": None, "phase": "observe"}
+    elif elapsed < 180:
+        return {"allowed": True, "kelly_multiplier": 1.0, "min_prob_override": None, "phase": "normal"}
+    elif elapsed < 240:
+        return {"allowed": True, "kelly_multiplier": 0.7, "min_prob_override": None, "phase": "late"}
+    else:
+        return {"allowed": True, "kelly_multiplier": 0.5, "min_prob_override": 0.90, "phase": "final"}
+
+
 async def _get_contract_prices(market_scanner: Any, market_id: str, http_client: Any = None) -> dict[str, Any] | None:
     """Fetch current Up/Down prices for an active contract via Gamma API.
 

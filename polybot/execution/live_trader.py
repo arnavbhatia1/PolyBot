@@ -122,6 +122,100 @@ class LiveTrader(BaseTrader):
         logger.info("Resolution bankroll sync: real balance=%.2f", real_balance)
         return real_balance
 
+    # -- Maker limit order with FOK fallback ---------------------------------
+
+    async def _execute_buy_limit(
+        self,
+        token_id: str,
+        price: float,
+        size: float,
+        timeout_s: float = 60.0,
+    ) -> FillResult:
+        """Post a maker limit buy (0% fee) with timeout fallback to FOK.
+
+        Posts a limit order at *price*, polls for fill up to *timeout_s*
+        seconds.  If the order fills, returns a maker FillResult.  If not
+        filled after the timeout, cancels the resting order and falls back
+        to the existing FOK market-order path.  Any exception at any stage
+        triggers the same FOK fallback — this method never crashes the loop.
+
+        Args:
+            token_id: CLOB token ID.
+            price: Limit price (per share).
+            size: Order size in USDC.
+            timeout_s: Seconds to wait for a maker fill before falling back.
+
+        Returns:
+            FillResult with fill details (reason="maker_fill") or FOK result.
+        """
+        try:
+            # OrderArgs.size = shares, not USDC
+            shares = size / price
+
+            order = self.client.create_order(
+                order_args={
+                    "token_id": token_id,
+                    "price": price,
+                    "size": shares,
+                    "side": BUY,
+                },
+            )
+            resp = self.client.post_order(order)
+
+            order_id = resp.get("orderID") or resp.get("id")
+            if not order_id:
+                logger.warning("Maker order: no order ID returned, falling back to FOK")
+                return await self._execute_buy(token_id, price, size)
+
+            logger.info(
+                "Maker limit order posted: %s at $%.4f (%.4f shares)",
+                order_id, price, shares,
+            )
+
+            # Poll for fill
+            poll_interval = 2.0
+            elapsed = 0.0
+            while elapsed < timeout_s:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+                try:
+                    order_status = self.client.get_order(order_id)
+                    status = order_status.get("status", "")
+                    if status == "MATCHED":
+                        fill_price = self._get_fill_price(order_id, price)
+                        logger.info(
+                            "Maker order filled: %s at $%.4f", order_id, fill_price,
+                        )
+                        return FillResult(
+                            filled=True,
+                            fill_price=fill_price,
+                            fill_size=size,
+                            reason="maker_fill",
+                        )
+                    if status in ("CANCELLED", "EXPIRED"):
+                        logger.info(
+                            "Maker order %s, falling back to FOK", status,
+                        )
+                        return await self._execute_buy(token_id, price, size)
+                except Exception as poll_err:
+                    logger.warning("Maker poll error: %s", poll_err)
+
+            # Timeout — cancel the resting order and fall back to FOK
+            try:
+                self.client.cancel(order_id)
+                logger.info(
+                    "Maker order timed out after %.0fs, cancelled %s — falling back to FOK",
+                    timeout_s, order_id,
+                )
+            except Exception as cancel_err:
+                logger.warning("Failed to cancel maker order %s: %s", order_id, cancel_err)
+
+            return await self._execute_buy(token_id, price, size)
+
+        except Exception as e:
+            logger.warning("Maker order flow failed: %s — falling back to FOK", e)
+            return await self._execute_buy(token_id, price, size)
+
     # -- FOK order submission with retry ------------------------------------
 
     async def _submit_fok_order(
