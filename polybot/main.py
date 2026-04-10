@@ -757,10 +757,11 @@ async def _evaluate_and_exit_position(
         if now_ts - _last_hold_log.get(mid, 0) >= 30:
             _last_hold_log[mid] = now_ts
             secs = live['seconds_remaining']
-            edge_color = _C.GREEN if holding_edge > 0 else _C.RED
+            edge_color = _C.GREEN if holding_edge > 0 else (_C.RESET if holding_edge == 0 else _C.RED)
+            edge_str = f"{abs(holding_edge):.0%}" if holding_edge == 0 else f"{holding_edge:+.0%}"
             logger.info(
                 f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {secs:.0f}s  |  "
-                f"prob {model_prob:.0%}  {edge_color}edge {holding_edge:+.0%}{_C.RESET}  |  "
+                f"prob {model_prob:.0%}  {edge_color}edge {edge_str}{_C.RESET}  |  "
                 f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}")
         if counterfactual_tracker:
             counterfactual_tracker.track_hold_moment(pos["market_id"], pos, {
