@@ -1040,10 +1040,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         else:
             await asyncio.sleep(0.25)  # fallback polling if no WebSocket
         try:
-            if is_paused_fn():
-                await asyncio.sleep(0.5)
-                continue
-
             # --- DAY OPEN / CLOSE ---
             now_et = datetime.now(ET)
             in_trading_hours, current_trading_day, day_open_bankroll, day_wins, day_losses, day_fees = \
@@ -1104,6 +1100,10 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                                              http_client, binance_feed)
 
             # --- ENTRY: find contract and evaluate for edge ---
+            # Skip new entries when paused (positions still managed above)
+            if is_paused_fn():
+                continue
+
             # Skip new entries outside trading hours (positions still managed above)
             if not in_trading_hours:
                 continue
