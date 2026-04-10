@@ -38,10 +38,19 @@ from polybot.core.bybit_feed import BybitFeed
 from polybot.core.deribit_iv import DeribitIVFeed
 from polybot.core.bankroll_strategy import compute_kelly_tier
 
+import re
+_ANSI_RE = re.compile(r'\033\[[0-9;]*m')
+
+class _StripAnsiFormatter(logging.Formatter):
+    """Strips ANSI color codes so log files stay clean."""
+    def format(self, record):
+        result = super().format(record)
+        return _ANSI_RE.sub('', result)
+
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
 _file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=3, mode="a")
-_file_handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+_file_handler.setFormatter(_StripAnsiFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
 logging.basicConfig(
     level=logging.ERROR,
     handlers=[_console_handler, _file_handler],
