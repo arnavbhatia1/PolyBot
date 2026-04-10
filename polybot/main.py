@@ -340,12 +340,23 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     except (ValueError, IndexError):
         contract_window_ts = int(now_ts // 300) * 300  # fallback
     if contract_window_ts not in window_strikes:
-        # Find the candle closest to the 5-min window boundary
+        target_ms = contract_window_ts * 1000
         candles = binance_feed.buffer.get_last_n(10)
-        for c in candles:
-            if abs(c.timestamp / 1000 - contract_window_ts) <= 60:
+        for c in reversed(candles):
+            if c.timestamp == target_ms:
+                # Candle opens exactly at boundary — use its open
                 window_strikes[contract_window_ts] = c.open
                 break
+            elif c.timestamp < target_ms <= c.timestamp + 60_000:
+                # Boundary falls at or within this candle's range — use close
+                # (close is updated tick-by-tick via update_current)
+                window_strikes[contract_window_ts] = c.close
+                break
+        else:
+            # Boundary candle not in buffer yet (WS latency) — use latest price
+            latest = binance_feed.buffer.latest()
+            if latest and now_ts - contract_window_ts < 10:
+                window_strikes[contract_window_ts] = latest.close
     # Clean old strikes
     window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
 

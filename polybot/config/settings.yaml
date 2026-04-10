@@ -20,8 +20,8 @@ execution:
 
 agents:
   outcome_reviewer_interval_seconds: 3600
-  daily_pipeline_hour: 21  # 5:15 PM EST (21:15 UTC)
-  daily_pipeline_minute: 15
+  daily_pipeline_hour: 20  # 4:45 PM ET (20:45 UTC)
+  daily_pipeline_minute: 45
 
 discord:
   trade_channel_name: "polybot-trades"
@@ -98,8 +98,8 @@ market:
 schedule:
   trading_start_hour_et: 8    # 8 AM ET (auto-adjusts for EST/EDT)
   trading_start_minute: 0
-  trading_end_hour_et: 23     # 11:00 PM ET (temporary)
-  trading_end_minute: 0
+  trading_end_hour_et: 16     # 4:30 PM ET
+  trading_end_minute: 30
 
 # Active position management: hold to $1 when model is confident,
 # exit early when holding_edge drops below exit_edge_threshold.
