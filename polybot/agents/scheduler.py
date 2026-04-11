@@ -78,6 +78,10 @@ class AgentScheduler:
             "trading_end_minute": self._trading_end[1] if self._trading_end else 30,
             "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
             "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.7),
+            "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', 0.04),
+            "wall_weight": getattr(self.signal_engine, 'wall_weight', 0.05),
+            "perp_lead_weight": getattr(self.signal_engine, 'perp_lead_weight', 0.03),
+            "prev_margin_weight": getattr(self.signal_engine, 'prev_margin_weight', 0.02),
             "active_weights_version": getattr(self.indicator_engine, 'active_version', 'weights_v001')
                                       if self.indicator_engine else "weights_v001",
         }
@@ -213,6 +217,14 @@ class AgentScheduler:
                     self.signal_engine.min_kelly = _clamp(recommendations["recommended_min_kelly"], 0.005, 0.05)
                 if "recommended_atr_sigma_ratio" in recommendations:
                     self.signal_engine.atr_sigma_ratio = _clamp(float(recommendations["recommended_atr_sigma_ratio"]), 1.2, 2.5)
+                if "recommended_spot_flow_weight" in recommendations:
+                    self.signal_engine.spot_flow_weight = _clamp(recommendations["recommended_spot_flow_weight"], 0.0, 0.10)
+                if "recommended_wall_weight" in recommendations:
+                    self.signal_engine.wall_weight = _clamp(recommendations["recommended_wall_weight"], 0.0, 0.15)
+                if "recommended_perp_lead_weight" in recommendations:
+                    self.signal_engine.perp_lead_weight = _clamp(recommendations["recommended_perp_lead_weight"], 0.0, 0.10)
+                if "recommended_prev_margin_weight" in recommendations:
+                    self.signal_engine.prev_margin_weight = _clamp(recommendations["recommended_prev_margin_weight"], 0.0, 0.05)
                 if "recommended_trading_start_hour_et" in recommendations:
                     start_h = recommendations["recommended_trading_start_hour_et"]
                     self._trading_start = (start_h, 0)
@@ -236,6 +248,14 @@ class AgentScheduler:
                     sig["min_kelly"] = _clamp(recommendations["recommended_min_kelly"], 0.005, 0.05)
                 if "recommended_atr_sigma_ratio" in recommendations:
                     sig["atr_sigma_ratio"] = _clamp(float(recommendations["recommended_atr_sigma_ratio"]), 1.2, 2.5)
+                if "recommended_spot_flow_weight" in recommendations:
+                    sig["spot_flow_weight"] = _clamp(recommendations["recommended_spot_flow_weight"], 0.0, 0.10)
+                if "recommended_wall_weight" in recommendations:
+                    sig["wall_weight"] = _clamp(recommendations["recommended_wall_weight"], 0.0, 0.15)
+                if "recommended_perp_lead_weight" in recommendations:
+                    sig["perp_lead_weight"] = _clamp(recommendations["recommended_perp_lead_weight"], 0.0, 0.10)
+                if "recommended_prev_margin_weight" in recommendations:
+                    sig["prev_margin_weight"] = _clamp(recommendations["recommended_prev_margin_weight"], 0.0, 0.05)
                 if "recommended_momentum_weight" in recommendations:
                     sig["momentum_weight"] = _clamp(recommendations["recommended_momentum_weight"], 0.02, 0.10)
                 if "recommended_regime_weight" in recommendations:
