@@ -6,7 +6,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 
 ## Key Architecture Decisions
 
-- **Multi-layer probability model (8 signal layers).** The bot computes P(Up) using eight signal layers: (1) Student-t CDF with df=5 for fat-tailed Brownian motion: z = distance / ((ATR / atr_sigma_ratio) * sqrt(time) * iv_ratio), z_scaled = z * sqrt(df/(df-2)), P = t.cdf(z_scaled, df). iv_ratio from Deribit options IV dynamically scales sigma for forward-looking vol. (2) Regime detection: 1-lag autocorrelation of last 20 1-min returns. (3) Polymarket CLOB order flow: book imbalance + trade flow. (3b) Spot market flow: CVD + taker ratio from Binance.US aggTrade stream — leading directional indicator from actual BTC traders. (3c) Wall pressure: L2 depth detection of large orders near strike from Binance.US full order book — blocks/supports price path to strike. (3d) Perpetual price lead: Bybit BTC perp divergence from spot — leveraged traders react first, perp leads spot by 0.5-2s. (4) Indicator momentum: RSI, MACD, Stochastic, OBV, VWAP. (5) Adjacent window momentum: carry from previous resolution margin. Layers 2-5 applied in logit space. CDF drives decisions — layers nudge. Platt scaling calibration after all layers.
+- **Multi-layer probability model (10 signal layers).** The bot computes P(Up) using ten signal layers: (1) Student-t CDF with df=5 for fat-tailed Brownian motion: z = distance / ((ATR / atr_sigma_ratio) * sqrt(time) * iv_ratio), z_scaled = z * sqrt(df/(df-2)), P = t.cdf(z_scaled, df). iv_ratio from Deribit options IV dynamically scales sigma for forward-looking vol. (2) Regime detection: 1-lag autocorrelation of last 20 1-min returns. (3) Polymarket CLOB order flow: book imbalance + trade flow. (3b) Spot market flow: CVD + taker ratio from Binance.US aggTrade stream — leading directional indicator from actual BTC traders. (3c) Wall pressure: L2 depth detection of large orders near strike from Binance.US full order book — blocks/supports price path to strike. (3d) Perpetual price lead: Bybit BTC perp divergence from spot — leveraged traders react first, perp leads spot by 0.5-2s. (3e) Liquidation pressure: Bybit OI drop + price direction detects forced selling/buying cascades. (4) Indicator momentum: RSI, MACD, Stochastic, OBV, VWAP. (5) Adjacent window momentum: carry from previous resolution margin. Layers 2-5 applied in logit space. CDF drives decisions — layers nudge. Platt scaling calibration after all layers. SPRT entry: Sequential Probability Ratio Test accumulates evidence during 60s observe phase — strong signals enter in 5-7 ticks, weak signals correctly skipped. HMM regime detection: Multi-state classifier (trending/reverting/volatile/quiet) adjusts Kelly and edge thresholds per market condition. Signal consensus multiplier: When >80% of independent signals agree on direction, Kelly boosted 1.3x. When <40% agree, Kelly reduced to 0.6x. Adaptive alpha decay: Tracks edge decay rate — if edge is disappearing fast, SPRT can trigger early entry before observe phase ends. Gamma exposure (GEX): Net options gamma from Deribit classifies market as stabilizing (dampen momentum) or amplifying (boost momentum).
 - **Active position management.** Hold to $1 resolution when the model is confident. Exit early (scalp) when holding_edge drops below a fee-aware threshold that accounts for exit costs and time urgency. **Trailing profit exit**: for cheap entries (<$0.50), tracks peak market price — exits if market peaked above $0.65 then drops 15%+ from peak (prevents riding winners to zero). Same probability model for entry AND exit. Not fixed take-profit/stop-loss — the math decides.
 - **Up to 2 concurrent positions from different windows.** Half-Kelly per position when concurrent (total exposure = same as single full-Kelly). Next window's strike must be established (candle closed at boundary) before entry. Same-window duplicates still blocked.
 - **Dynamic entry timing.** First 60s of each 5-min window: OBSERVE ONLY (collect L2/CVD/flow signals). 60-180s: normal entry. 180-240s: reduced Kelly (0.7x). Last 60s: only at >90% confidence, half Kelly.
@@ -43,6 +43,11 @@ polybot/
     bybit_feed.py            # BTC perpetual price lead + funding rate signal
     deribit_iv.py            # BTC options implied volatility (forward-looking vol)
     bankroll_strategy.py     # Tiered Kelly acceleration based on track record
+    sprt.py                  # Sequential Probability Ratio Test for evidence-based entry
+    regime.py                # Multi-state regime detector (trending/reverting/volatile/quiet)
+    liquidation.py           # OI-based liquidation pressure from Bybit
+    gamma_exposure.py        # Net gamma exposure from Deribit options chain
+    alpha_decay.py           # Edge decay rate tracker for adaptive entry timing
   indicators/
     ema.py, rsi.py, macd.py, stochastic.py, obv.py, vwap.py, atr.py
     engine.py                # Combines all 7, manages weight versions
@@ -122,6 +127,12 @@ polybot/
 - `entry_timing.late_kelly_multiplier:` — 0.7 (reduced Kelly for 180-240s elapsed)
 - `entry_timing.final_min_probability:` — 0.90 (minimum model confidence in last 60s)
 - `bankroll_acceleration.enabled:` — true (tiered Kelly: 0.15 base → 0.18/0.22/0.25 as track record grows)
+- `sprt.alpha:` — 0.05 (false positive rate — enter when shouldn't)
+- `sprt.beta:` — 0.10 (false negative rate — skip when should enter)
+- `regime.lookback:` — 20 (number of candles for regime classification)
+- `regime.vol_high_percentile:` — 75 (ATR percentile threshold for high-vol regime)
+- `regime.vol_low_percentile:` — 25 (ATR percentile threshold for low-vol regime)
+- `regime.autocorr_threshold:` — 0.25 (autocorrelation cutoff for trending vs reverting)
 
 ## Running
 
@@ -196,6 +207,14 @@ LAYER 3d — Perpetual price lead (in logit space):
   Why: Bybit BTC perpetual leads Binance spot by 0.5-2s because
   leveraged traders react first. Also provides staleness detection
   for latency arbitrage when Polymarket hasn't repriced.
+
+LAYER 3e — Liquidation pressure (in logit space):
+  If OI drops + price drops → long liquidations → bearish pressure
+  If OI drops + price rises → short liquidations → bullish pressure
+  logit_p += liquidation_pressure * (0.03 x 4.0)
+  
+  Why: Forced liquidations cascade. $50M of longs just got margin-called
+  means more sell pressure is coming as cascading liquidations trigger.
 
 LAYER 5 — Previous window momentum carry (in logit space):
   normalized_margin = (prev_btc_at_expiry - prev_strike) / ATR
@@ -677,13 +696,14 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't compute entry strike from `int(now_ts // 300) * 300` — derive from the contract slug. The bot can find the next window's contract early, and current-time flooring gives the wrong window boundary.
 - Don't apply layer adjustments in raw probability space — use logit (log-odds) space. Additive probability adjustments violate Bayesian evidence combination near the extremes.
 - Don't derive regime direction from sign(prob - 0.5) — use sign(most recent return). The autocorrelation measures persistence, but the DIRECTION comes from recent returns.
+- Don't bypass the SPRT gate — it's mathematically optimal for sequential binary decisions.
 
 ## Baseline — LOCKED 2026-04-09
 
 Engine math optimized: logit-space layer combination, ATR-to-sigma scaling, Student-t variance normalization, regime direction fix (sign of recent return), Kelly-based entry gate, indicator z-score normalization, Platt calibration. Baseline re-locked — only the daily learning pipeline tunes parameters.
 
 The core trading logic is FROZEN. Do not make structural changes to:
-- `signal_engine.py` (8-layer probability model)
+- `signal_engine.py` (10-layer probability model)
 - `order_flow.py` (book imbalance + trade flow)
 - Entry/exit/pricing logic in `main.py` (now 9 extracted helper functions — logic unchanged, just organized)
 - `base.py` (BaseTrader ABC, fee math, shared gates/DB ops)

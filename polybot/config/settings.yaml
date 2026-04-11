@@ -141,3 +141,15 @@ entry_timing:
 # --- Bankroll acceleration ---
 bankroll_acceleration:
   enabled: true
+
+# --- SPRT entry ---
+sprt:
+  alpha: 0.05           # False positive rate (enter when shouldn't)
+  beta: 0.10            # False negative rate (skip when should enter)
+
+# --- Regime detection ---
+regime:
+  lookback: 20
+  vol_high_percentile: 75
+  vol_low_percentile: 25
+  autocorr_threshold: 0.25
