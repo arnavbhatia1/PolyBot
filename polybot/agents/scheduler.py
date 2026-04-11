@@ -486,8 +486,10 @@ class AgentScheduler:
             await asyncio.sleep(self.outcome_interval_seconds)
 
     async def run_daily_loop(self) -> None:
+        from zoneinfo import ZoneInfo
+        ET = ZoneInfo("America/New_York")
         while self._running:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(ET)
             if now.hour == self.daily_pipeline_hour and self.daily_pipeline_minute <= now.minute < self.daily_pipeline_minute + 5:
                 try:
                     await self.run_daily_pipeline()
