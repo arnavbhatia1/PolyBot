@@ -38,6 +38,8 @@ class AgentScheduler:
         self._trading_start: tuple[int, int] | None = None        # (hour, minute) UTC — updated by pipeline
         self._trading_end: tuple[int, int] | None = None          # (hour, minute) UTC — updated by pipeline
         self._running: bool = False
+        self._auto_shutdown: bool = False
+        self._shutdown_requested: bool = False
 
         # Inject claude_client into ta_evolver if not already set
         if claude_client and not getattr(self.ta_evolver, 'claude_client', None):
@@ -497,6 +499,11 @@ class AgentScheduler:
                     logger.error(f"Daily pipeline error: {e}")
                     if self.alert_manager:
                         await self.alert_manager.send_error(f"Daily pipeline failed: {e}")
+                # If auto_shutdown is enabled, signal the bot to exit
+                if self._auto_shutdown:
+                    logger.info("PIPELINE COMPLETE — auto-shutdown enabled, exiting for restart cycle")
+                    self._shutdown_requested = True
+                    return
                 await asyncio.sleep(3600)
             await asyncio.sleep(60)
 

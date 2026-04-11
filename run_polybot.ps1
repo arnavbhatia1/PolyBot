@@ -1,0 +1,64 @@
+# PolyBot Auto-Restart Wrapper
+# Runs the bot with --auto-restart. After the daily pipeline (11:55 PM ET),
+# the bot exits cleanly. This script commits updated config/weights to git,
+# pushes to remote, and restarts the bot for the next trading day.
+#
+# Usage: powershell -ExecutionPolicy Bypass -File run_polybot.ps1
+# Or:    .\run_polybot.ps1
+
+$ErrorActionPreference = "Continue"
+Set-Location $PSScriptRoot
+
+# Prevent machine from sleeping
+powercfg -change -standby-timeout-ac 0
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  PolyBot Auto-Restart Loop" -ForegroundColor Cyan
+Write-Host "  Trading: 12:00 AM - 11:45 PM ET" -ForegroundColor Cyan
+Write-Host "  Pipeline: 11:55 PM ET" -ForegroundColor Cyan
+Write-Host "  Bot exits after pipeline, commits, pushes, restarts" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+while ($true) {
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Write-Host "`n[$timestamp] Starting PolyBot..." -ForegroundColor Green
+
+    # Run the bot — blocks until pipeline completes and bot exits
+    python -m polybot.main --mode paper --auto-restart
+
+    $exitCode = $LASTEXITCODE
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Write-Host "[$timestamp] Bot exited (code: $exitCode)" -ForegroundColor Yellow
+
+    # Commit any config/weight changes from the pipeline
+    Write-Host "[$timestamp] Committing pipeline updates..." -ForegroundColor Cyan
+    git add polybot/config/settings.yaml polybot/memory/ -f 2>$null
+    $hasChanges = git diff --cached --quiet 2>$null; $hasChanges = $LASTEXITCODE
+    if ($hasChanges -ne 0) {
+        $date = Get-Date -Format "yyyy-MM-dd"
+        git commit -m "auto: daily pipeline update $date"
+        git push origin main 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[$timestamp] Pushed to remote" -ForegroundColor Green
+        } else {
+            Write-Host "[$timestamp] Push failed (will retry tomorrow)" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "[$timestamp] No config changes to commit" -ForegroundColor DarkGray
+    }
+
+    # Wait until midnight ET to restart
+    # Calculate seconds until next 12:00 AM ET
+    $now = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), "Eastern Standard Time")
+    $midnight = $now.Date.AddDays(1)
+    $waitSeconds = ($midnight - $now).TotalSeconds
+
+    if ($waitSeconds -gt 300) {
+        Write-Host "[$timestamp] Waiting $([math]::Round($waitSeconds/60)) minutes until midnight ET..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $waitSeconds
+    } else {
+        # Less than 5 minutes to midnight, just restart now
+        Write-Host "[$timestamp] Near midnight, restarting immediately..." -ForegroundColor Green
+        Start-Sleep -Seconds 10
+    }
+}

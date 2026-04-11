@@ -1183,6 +1183,11 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     day_fees: float = 0.0
 
     while True:
+        # Check if scheduler requested shutdown (auto-restart cycle after pipeline)
+        if scheduler and getattr(scheduler, '_shutdown_requested', False):
+            logger.info("Scheduler requested shutdown — exiting trading loop")
+            break
+
         # Event-driven: react instantly to WebSocket book/resolution updates, timeout 1s for housekeeping
         if clob_ws:
             try:
@@ -1336,6 +1341,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PolyBot — 5-min BTC Up/Down trader")
     parser.add_argument("--mode", choices=["paper", "live"], default=None,
                         help="Trading mode (overrides settings.yaml)")
+    parser.add_argument("--auto-restart", action="store_true",
+                        help="Exit after daily pipeline for wrapper script to git commit/push and restart")
     return parser.parse_args()
 
 
@@ -1513,6 +1520,7 @@ async def main() -> None:
     )
     scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", -0.10)
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
+    scheduler._auto_shutdown = args.auto_restart
     discord_bot.scheduler = scheduler
     if mode == "live":
         # Sync DB bankroll with real Polymarket balance (fetched during preflight)
