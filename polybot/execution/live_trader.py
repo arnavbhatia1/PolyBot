@@ -156,7 +156,7 @@ class LiveTrader(BaseTrader):
             # OrderArgs.size = shares, not USDC
             shares = size / price
 
-            order = self.client.create_order(
+            order = await asyncio.to_thread(self.client.create_order,
                 order_args={
                     "token_id": token_id,
                     "price": price,
@@ -164,7 +164,7 @@ class LiveTrader(BaseTrader):
                     "side": BUY,
                 },
             )
-            resp = self.client.post_order(order)
+            resp = await asyncio.to_thread(self.client.post_order, order)
 
             order_id = resp.get("orderID") or resp.get("id")
             if not order_id:
@@ -183,10 +183,10 @@ class LiveTrader(BaseTrader):
                 await asyncio.sleep(poll_interval)
                 elapsed += poll_interval
                 try:
-                    order_status = self.client.get_order(order_id)
+                    order_status = await asyncio.to_thread(self.client.get_order, order_id)
                     status = order_status.get("status", "")
                     if status == "MATCHED":
-                        fill_price = self._get_fill_price(order_id, price)
+                        fill_price = await self._get_fill_price(order_id, price)
                         logger.info(
                             "Maker order filled: %s at $%.4f", order_id, fill_price,
                         )
@@ -206,7 +206,7 @@ class LiveTrader(BaseTrader):
 
             # Timeout — cancel the resting order and fall back to FOK
             try:
-                self.client.cancel(order_id)
+                await asyncio.to_thread(self.client.cancel, order_id)
                 logger.info(
                     "Maker order timed out after %.0fs, cancelled %s — falling back to FOK",
                     timeout_s, order_id,
@@ -244,8 +244,9 @@ class LiveTrader(BaseTrader):
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
                 mo = MarketOrderArgs(token_id=token_id, amount=amount, side=side)
-                signed = self.client.create_market_order(mo)
-                resp = self.client.post_order(signed, OrderType.FOK)
+                # Offload blocking SDK calls to thread pool — keeps event loop free
+                signed = await asyncio.to_thread(self.client.create_market_order, mo)
+                resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.FOK)
 
                 if not resp.get("success"):
                     error_msg = resp.get("errorMsg", "unknown error")
@@ -263,7 +264,7 @@ class LiveTrader(BaseTrader):
 
                 if resp.get("status") == "matched":
                     order_id = resp.get("orderID", "")
-                    fill_price = self._get_fill_price(order_id, expected_price)
+                    fill_price = await self._get_fill_price(order_id, expected_price)
                     logger.info(
                         "FOK %s filled: order=%s, price=%.4f, amount=%.4f",
                         side, order_id, fill_price, amount,
@@ -297,10 +298,10 @@ class LiveTrader(BaseTrader):
 
     # -- Fill price lookup --------------------------------------------------
 
-    def _get_fill_price(self, order_id: str, fallback_price: float) -> float:
+    async def _get_fill_price(self, order_id: str, fallback_price: float) -> float:
         """Fetch actual fill price via VWAP from associate_trades."""
         try:
-            order = self.client.get_order(order_id)
+            order = await asyncio.to_thread(self.client.get_order, order_id)
             trades = order.get("associate_trades", [])
             if not trades:
                 return fallback_price
