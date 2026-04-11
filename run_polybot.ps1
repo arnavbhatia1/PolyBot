@@ -1,5 +1,5 @@
 # PolyBot Auto-Restart Wrapper
-# Runs the bot with --auto-restart. After the daily pipeline (11:55 PM ET),
+# Runs the bot with --auto-restart. After the daily pipeline (6:10 PM ET),
 # the bot exits cleanly. This script commits updated config/weights to git,
 # pushes to remote, and restarts the bot for the next trading day.
 #
@@ -14,8 +14,8 @@ powercfg -change -standby-timeout-ac 0
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  PolyBot Auto-Restart Loop" -ForegroundColor Cyan
-Write-Host "  Trading: 12:00 AM - 11:45 PM ET" -ForegroundColor Cyan
-Write-Host "  Pipeline: 11:55 PM ET" -ForegroundColor Cyan
+Write-Host "  Trading: 8:00 AM - 6:00 PM ET" -ForegroundColor Cyan
+Write-Host "  Pipeline: 6:10 PM ET" -ForegroundColor Cyan
 Write-Host "  Bot exits after pipeline, commits, pushes, restarts" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
@@ -50,18 +50,21 @@ while ($true) {
         Write-Host "[$timestamp] No config changes to commit" -ForegroundColor DarkGray
     }
 
-    # Wait until midnight ET to restart
-    # Calculate seconds until next 12:00 AM ET
+    # Wait until 8:00 AM ET to restart
+    # Calculate seconds until next 8:00 AM ET
     $now = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), "Eastern Standard Time")
-    $midnight = $now.Date.AddDays(1)
-    $waitSeconds = ($midnight - $now).TotalSeconds
+    $next8am = $now.Date.AddHours(8)
+    if ($now -ge $next8am) {
+        $next8am = $next8am.AddDays(1)
+    }
+    $waitSeconds = ($next8am - $now).TotalSeconds
 
     if ($waitSeconds -gt 300) {
-        Write-Host "[$timestamp] Waiting $([math]::Round($waitSeconds/60)) minutes until midnight ET..." -ForegroundColor DarkGray
+        Write-Host "[$timestamp] Waiting $([math]::Round($waitSeconds/60)) minutes until 8:00 AM ET..." -ForegroundColor DarkGray
         Start-Sleep -Seconds $waitSeconds
     } else {
-        # Less than 5 minutes to midnight, just restart now
-        Write-Host "[$timestamp] Near midnight, restarting immediately..." -ForegroundColor Green
+        # Less than 5 minutes to 8 AM, just restart now
+        Write-Host "[$timestamp] Near 8 AM, restarting immediately..." -ForegroundColor Green
         Start-Sleep -Seconds 10
     }
 }

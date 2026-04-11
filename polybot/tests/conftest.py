@@ -25,7 +25,7 @@ SAMPLE_CONFIG = {
     },
     "agents": {
         "outcome_reviewer_interval_seconds": 3600,
-        "daily_pipeline_hour": 2,
+        "daily_pipeline_hour": 18,
     },
     "discord": {
         "trade_channel_name": "polybot-trades",

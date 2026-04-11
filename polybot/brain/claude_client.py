@@ -210,10 +210,10 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
             int(data.get("recommended_trading_start_hour_et", 8))))
     if "recommended_trading_end_hour_et" in data:
         data["recommended_trading_end_hour_et"] = max(0, min(23,
-            int(data.get("recommended_trading_end_hour_et", 16))))
+            int(data.get("recommended_trading_end_hour_et", 18))))
     if "recommended_trading_end_minute" in data:
         data["recommended_trading_end_minute"] = max(0, min(59,
-            int(data.get("recommended_trading_end_minute", 30))))
+            int(data.get("recommended_trading_end_minute", 0))))
 
     # Enforce momentum_weight < min_edge
     if data["recommended_momentum_weight"] >= data["recommended_min_edge"]:
@@ -242,8 +242,8 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         f"min_kelly (entry gate): {cfg.get('min_kelly', 0.015)}\n"
         f"atr_sigma_ratio: {cfg.get('atr_sigma_ratio', 1.7)}\n"
         f"trading_start_hour (ET): {cfg.get('trading_start_hour_et', 8)}\n"
-        f"trading_end_hour (ET): {cfg.get('trading_end_hour_et', 16)}\n"
-        f"trading_end_minute: {cfg.get('trading_end_minute', 30)}"
+        f"trading_end_hour (ET): {cfg.get('trading_end_hour_et', 18)}\n"
+        f"trading_end_minute: {cfg.get('trading_end_minute', 0)}"
     )
 
     # Performance analysis from BiasDetector

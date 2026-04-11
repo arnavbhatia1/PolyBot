@@ -137,7 +137,7 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
     @bot.command(name="agents")
     async def agents(ctx):
         await ctx.send(f"**Agent Status**\nOutcome Reviewer: runs every {bot.config.get('agents', {}).get('outcome_reviewer_interval_seconds', 3600)}s\n"
-                       f"Daily Pipeline: runs at {bot.config.get('agents', {}).get('daily_pipeline_hour', 2)}:00 UTC")
+                       f"Daily Pipeline: runs at {bot.config.get('agents', {}).get('daily_pipeline_hour', 18)}:{bot.config.get('agents', {}).get('daily_pipeline_minute', 10):02d} ET")
 
     @bot.command(name="performance")
     async def performance(ctx):

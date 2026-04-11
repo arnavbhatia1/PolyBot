@@ -120,7 +120,8 @@
       "Bash(sqlite3 /c/Users/abhat/Personal/PolyBot/PolyBot/polybot/db/polybot.db \"SELECT id, market_id, side, entry_price, exit_price, pnl, status FROM trade_history ORDER BY id DESC LIMIT 30;\")",
       "Bash(rm /c/Users/abhat/Personal/PolyBot/PolyBot/polybot/memory/outcomes/*.json)",
       "Bash(rm /c/Users/abhat/Personal/PolyBot/PolyBot/polybot/memory/counterfactuals/*.json)",
-      "Bash(sqlite3:*)"
+      "Bash(sqlite3:*)",
+      "Bash(find .:*)"
     ]
   }
 }

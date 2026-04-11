@@ -76,8 +76,8 @@ class AgentScheduler:
             "exit_edge_threshold": getattr(self, '_exit_edge_threshold', -0.10),
             "min_time_remaining": getattr(self, '_min_time_remaining', 0),
             "trading_start_hour_et": self._trading_start[0] if self._trading_start else 8,
-            "trading_end_hour_et": self._trading_end[0] if self._trading_end else 16,
-            "trading_end_minute": self._trading_end[1] if self._trading_end else 30,
+            "trading_end_hour_et": self._trading_end[0] if self._trading_end else 18,
+            "trading_end_minute": self._trading_end[1] if self._trading_end else 0,
             "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
             "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.7),
             "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', 0.04),
@@ -232,7 +232,7 @@ class AgentScheduler:
                     self._trading_start = (start_h, 0)
                 if "recommended_trading_end_hour_et" in recommendations:
                     end_h = recommendations["recommended_trading_end_hour_et"]
-                    end_m = recommendations.get("recommended_trading_end_minute", 30)
+                    end_m = recommendations.get("recommended_trading_end_minute", 0)
                     self._trading_end = (end_h, end_m)
 
             # Persist tuned parameters to settings.yaml so they survive restarts

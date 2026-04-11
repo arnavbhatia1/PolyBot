@@ -23,7 +23,7 @@ polybot.log.*
 .vscode/
 .idea/
 
-# Memory — tracked in git for cross-machine sync
+# Memory — tracked in git for persistence across restarts
 # (outcomes, counterfactuals, weights, calibration all persist)
 
 # OS

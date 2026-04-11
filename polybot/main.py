@@ -1164,7 +1164,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     # Trading schedule in ET (handles EST/EDT automatically)
     sched = config.get("schedule", {})
     sched_start_et = (sched.get("trading_start_hour_et", 8), sched.get("trading_start_minute", 0))
-    sched_end_et = (sched.get("trading_end_hour_et", 16), sched.get("trading_end_minute", 30))
+    sched_end_et = (sched.get("trading_end_hour_et", 18), sched.get("trading_end_minute", 0))
 
     traded_contracts: dict[str, int] = {}      # condition_id -> timestamp (one trade per contract)
     window_strikes: dict[int, float] = {}      # window_ts -> BTC price at window open
