@@ -22,6 +22,9 @@ python -m polybot.main --mode live
 # Defaults to mode in settings.yaml
 python -m polybot.main
 
+# Run learning pipeline manually (no trading, analyzes all outcomes and exits)
+python -m polybot.main --run-pipeline
+
 # Auto-restart mode (daily cycle: trade -> pipeline -> commit -> push -> restart)
 .\run_polybot.ps1
 ```

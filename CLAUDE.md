@@ -126,6 +126,7 @@ polybot/
 python -m polybot.main --mode paper   # Paper trading (persistent bankroll across sessions)
 python -m polybot.main --mode live    # Live trading (real USDC on Polymarket)
 python -m polybot.main                # Defaults to mode in settings.yaml
+python -m polybot.main --run-pipeline # Run daily learning pipeline once and exit (no trading)
 python -m pytest polybot/tests/       # 545 tests
 ```
 

@@ -1343,7 +1343,111 @@ def parse_args() -> argparse.Namespace:
                         help="Trading mode (overrides settings.yaml)")
     parser.add_argument("--auto-restart", action="store_true",
                         help="Exit after daily pipeline for wrapper script to git commit/push and restart")
+    parser.add_argument("--run-pipeline", action="store_true",
+                        help="Run the daily learning pipeline once and exit (no trading)")
     return parser.parse_args()
+
+
+async def run_pipeline() -> None:
+    """Run the daily learning pipeline once and exit. No trading, no WebSockets, no Discord."""
+    config = load_config()
+    base_dir = Path(__file__).parent
+
+    # Logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
+    signal_cfg = config.get("signal", {})
+    market_cfg = config.get("market", {})
+    sched_cfg = config.get("schedule", {})
+    weights_dir = str(base_dir / "memory" / "weights")
+    ind_cfg = config.get("indicators", {})
+
+    indicator_params = {
+        "rsi": {"period": ind_cfg.get("rsi", {}).get("period", 14),
+                "overbought": ind_cfg.get("rsi", {}).get("overbought", 70),
+                "oversold": ind_cfg.get("rsi", {}).get("oversold", 30)},
+        "macd": {"fast": ind_cfg.get("macd", {}).get("fast_period", 12),
+                 "slow": ind_cfg.get("macd", {}).get("slow_period", 26),
+                 "signal_period": ind_cfg.get("macd", {}).get("signal_period", 9)},
+        "stochastic": {"k_period": ind_cfg.get("stochastic", {}).get("k_period", 14),
+                       "d_smoothing": ind_cfg.get("stochastic", {}).get("d_smoothing", 3),
+                       "overbought": ind_cfg.get("stochastic", {}).get("overbought", 80),
+                       "oversold": ind_cfg.get("stochastic", {}).get("oversold", 20)},
+        "ema": {"fast_period": ind_cfg.get("ema", {}).get("fast_period", 9),
+                "slow_period": ind_cfg.get("ema", {}).get("slow_period", 21),
+                "chop_threshold": ind_cfg.get("ema", {}).get("chop_threshold", 0.0001)},
+        "obv": {"slope_period": ind_cfg.get("obv", {}).get("slope_period", 5)},
+        "atr": {"period": ind_cfg.get("atr", {}).get("period", 14),
+                "low_pct": ind_cfg.get("atr", {}).get("low_percentile", 5),
+                "high_pct": ind_cfg.get("atr", {}).get("high_percentile", 95),
+                "history": ind_cfg.get("atr", {}).get("history_periods", 100)},
+    }
+    indicator_engine = IndicatorEngine(weights_dir=weights_dir,
+        active_version=signal_cfg.get("active_weights_version", "weights_v001"),
+        params=indicator_params)
+
+    signal_engine = SignalEngine(
+        min_edge=signal_cfg.get("entry_threshold", 0.03),
+        kelly_fraction=config["math"].get("kelly_fraction", 0.15),
+        momentum_weight=signal_cfg.get("momentum_weight", 0.04),
+        weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
+                                            "obv": 0.15, "vwap": 0.20}),
+        min_model_probability=signal_cfg.get("min_model_probability", 0.65),
+        student_t_df=signal_cfg.get("student_t_df", 4),
+        regime_weight=signal_cfg.get("regime_weight", 0.03),
+        flow_weight=signal_cfg.get("flow_weight", 0.04),
+        regime_lookback=signal_cfg.get("regime_lookback", 20),
+        min_kelly=signal_cfg.get("min_kelly", 0.015),
+        atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", 1.7),
+        spot_flow_weight=signal_cfg.get("spot_flow_weight", 0.04),
+        wall_weight=signal_cfg.get("wall_weight", 0.05),
+        perp_lead_weight=signal_cfg.get("perp_lead_weight", 0.03),
+        prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
+        conviction_multiplier=config.get("bankroll_acceleration", {}).get("enabled", True),
+    )
+
+    from polybot.core.calibrator import PlattCalibrator
+    calibrator = PlattCalibrator()
+    _cal_path = Path(base_dir) / "memory" / "calibration" / "platt_params.json"
+    calibrator.load(_cal_path)
+    signal_engine.calibrator = calibrator
+
+    claude = ClaudeClient(api_key=get_secret("ANTHROPIC_API_KEY"), model="claude-sonnet-4-6")
+
+    outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
+    counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
+    bias_detector = BiasDetector(biases_path=str(base_dir / "memory" / "biases.json"))
+    ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"),
+                          claude_client=claude)
+    weight_optimizer = WeightOptimizer(
+        weights_dir=weights_dir,
+        scores_path=str(base_dir / "memory" / "weight_scores.json"),
+        min_improvement=0.03,
+    )
+
+    agents_cfg = config["agents"]
+    scheduler = AgentScheduler(
+        outcome_reviewer=outcome_reviewer,
+        bias_detector=bias_detector,
+        ta_evolver=ta_evolver,
+        weight_optimizer=weight_optimizer,
+        indicator_engine=indicator_engine,
+        signal_engine=signal_engine,
+        outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
+        daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
+        daily_pipeline_minute=agents_cfg.get("daily_pipeline_minute", 0),
+        math_config=config["math"],
+        config=config,
+        counterfactual_tracker=counterfactual_tracker,
+    )
+    scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", -0.10)
+    scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
+    scheduler._trading_start = (sched_cfg.get("trading_start_hour_et", 8), sched_cfg.get("trading_start_minute", 0))
+    scheduler._trading_end = (sched_cfg.get("trading_end_hour_et", 18), sched_cfg.get("trading_end_minute", 0))
+
+    logger.info("Running daily learning pipeline (manual trigger)...")
+    await scheduler.run_daily_pipeline()
+    logger.info("Pipeline complete.")
 
 
 async def main() -> None:
@@ -1620,4 +1724,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    args = parse_args()
+    if args.run_pipeline:
+        asyncio.run(run_pipeline())
+    else:
+        asyncio.run(main())
