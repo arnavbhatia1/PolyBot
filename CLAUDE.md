@@ -21,26 +21,25 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Signal consensus multiplier.** >80% signals agree -> Kelly 1.3x. <40% agree -> Kelly 0.6x.
 - **Adaptive alpha decay.** Tracks edge decay rate. Fast decay triggers early SPRT entry before observe phase ends.
 - **Gamma exposure (GEX).** Net options gamma from Deribit: stabilizing (dampen momentum) or amplifying (boost momentum).
-- **Active position management.** Hold to $1 resolution when the model is confident. Exit early (scalp) when holding_edge drops below a fee-aware threshold that accounts for exit costs and time urgency. **Trailing profit exit**: for cheap entries (<$0.50), tracks peak market price — exits if market peaked above $0.65 then drops 15%+ from peak (prevents riding winners to zero). Same probability model for entry AND exit. Not fixed take-profit/stop-loss — the math decides.
-- **Up to 2 concurrent positions from different windows.** Half-Kelly per position when concurrent (total exposure = same as single full-Kelly). Next window's strike must be established (candle closed at boundary) before entry. Same-window duplicates still blocked.
-- **Dynamic entry timing.** First 60s of each 5-min window: OBSERVE ONLY (collect L2/CVD/flow signals). 60-180s: normal entry. 180-240s: reduced Kelly (0.7x). Last 60s: only at >90% confidence, half Kelly.
-- **Conviction multiplier on Kelly.** Kelly scales 1.3x when model confidence >90%, 1.15x at 85-90%, 0.7x below 72%. Concentrates capital on highest-conviction trades.
-- **Bankroll acceleration.** Kelly fraction ratchets from 0.15 base to 0.18 (100+ trades, >55% WR), 0.22 (250+, >56%), 0.25 (500+, >57%). Drops back if win rate falls.
-- **Maker orders with FOK fallback.** LiveTrader posts limit orders (0% fee) first, waits up to 60s, falls back to FOK market order (1.8% fee) if not filled. Expected fee savings: ~60%.
-- **Bybit perpetual price lead + funding rate.** Bybit BTC perp leads Binance.US spot by 0.5-2s. Used as directional signal and staleness detector for latency arbitrage. Funding rate provides contrarian crowding indicator.
-- **Deribit options IV.** Forward-looking volatility from BTC options market. Dynamically adjusts ATR-to-sigma ratio in Layer 1 when market expects more/less vol than ATR shows.
+- **Active position management.** Hold to $1 resolution when confident. Scalp exit when holding_edge < fee-aware threshold. **Trailing profit exit**: cheap entries (<$0.50) that peaked >$0.65 then drop 15%+ from peak. Same probability model for entry AND exit.
+- **Up to 2 concurrent positions from different windows.** Half-Kelly when concurrent. Next window's strike must be established before entry. Same-window duplicates blocked.
+- **Dynamic entry timing.** 0-60s: OBSERVE ONLY. 60-180s: normal. 180-240s: Kelly 0.7x. Last 60s: >90% confidence only, half Kelly.
+- **Conviction multiplier on Kelly.** 1.3x at >90% confidence, 1.15x at 85-90%, 0.7x below 72%.
+- **Bankroll acceleration.** Kelly ratchets 0.15 -> 0.18/0.22/0.25 as trade count and win rate grow. Drops back if WR falls.
+- **Maker orders with FOK fallback.** Limit order first (0% fee), FOK fallback after 60s (1.8% fee). ~60% fee savings.
+- **Bybit perpetual price lead + funding rate.** Perp leads spot by 0.5-2s — directional signal + staleness detection. Funding rate = contrarian crowding indicator.
+- **Deribit options IV.** Forward-looking vol adjusts ATR-to-sigma ratio in L1 when market expects more/less vol than ATR shows.
 - **One trade per 5-min contract.** After any exit, that contract is blacklisted.
-- **Auto-restart cycle.** `run_polybot.ps1` wrapper script manages the daily lifecycle: starts bot at midnight with `--auto-restart`, bot trades until 11:55 PM pipeline, exits cleanly after pipeline, wrapper commits config/outcomes/DB to git, pushes to remote, waits for midnight, restarts. All memory syncs across machines via git.
-- **Cross-machine sync.** Outcomes (`memory/outcomes/`), counterfactuals (`memory/counterfactuals/`), and `polybot/db/polybot.db` are tracked in git (not gitignored). Machine A pushes at 11:55 PM, Machine B pulls at midnight — full state synchronization across machines.
+- **Auto-restart cycle.** `run_polybot.ps1` manages daily lifecycle: start at midnight, trade until 11:55 PM pipeline, exit, commit config/outcomes/DB to git, push, restart at midnight.
+- **Cross-machine sync.** Outcomes, counterfactuals, and DB tracked in git. Machine A pushes at 11:55 PM, Machine B pulls at midnight.
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
-- **Dual entry gate + safety gates.** Primary: Kelly fraction >= min_kelly (0.015, price-aware — naturally accounts for odds at different price levels). Secondary: edge >= entry_threshold (0.04, noise floor). Both must pass. Additional safety: edge cap (>30% = skip, model miscalibration), layer disagreement penalty (momentum opposing trade direction with |score|>0.5 halves effective edge).
-- **Signal layer weights (logit space).** Layer 1 (Student-t base) provides the core probability — the CDF drives all decisions. Layers 2-4 apply adjustments in logit (log-odds) space with config weight x 4.0 as max logit shift. Layer 2 (regime) weight 0.03. Layer 3 (order flow) weight 0.04. Layer 4 (momentum/indicators) weight 0.04. Logit-space application ensures adjustments near probability extremes (0.1 or 0.9) are naturally dampened. The CDF must show a direction before layers can push past the 65% confidence gate.
-- **Real-time WebSocket + Gamma API for prices.** Primary: CLOB WebSocket (`wss://ws-subscriptions-clob.polymarket.com/ws/market`) provides real-time book snapshots, price deltas, best bid/ask, last trades, and market resolution events. Trading loop is event-driven — reacts instantly to book changes instead of polling. HTTP fallback: `clob.polymarket.com/book?token_id=TOKEN` if WS disconnected. Gamma API (`gamma-api.polymarket.com/events?slug=btc-updown-5m-{window_ts}`) for contract discovery and `token_id_up`/`token_id_down`. Supplementary: `GET /spread` for liquidity check, `GET /midpoints` for quick price ref, `GET /last-trades-prices` for fill validation. Gamma `outcomePrices` are stale fallback only.
-- **NegRisk execution pricing via GET /price.** The raw token book (`GET /book`) only shows direct token orders — in negRisk binary markets the CLOB cross-matches across complementary tokens, so the raw book shows asks at $0.99 on both sides while the real executable price is ~$0.50. **Always use `GET /price?token_id=X&side=BUY` for entry pricing and `side=SELL` for exit pricing.** This is what Polymarket's website shows. Never use raw book best ask/bid for edge calculation.
+- **Dual entry gate + safety gates.** Kelly >= 0.015 (primary) AND edge >= 0.04 (noise floor). Safety: edge >30% = skip (miscalibration), momentum disagreement halves edge.
+- **Signal layer weights (logit space).** L1 Student-t CDF drives decisions. L2-L5 adjust in logit space (weight x 4.0 max shift). Logit-space dampens adjustments near extremes. CDF must show direction before layers can push past 65% gate.
+- **Real-time WebSocket + Gamma API for prices.** CLOB WS provides real-time books, BBA, last trades, resolution events. Event-driven loop, HTTP fallback if WS disconnected. Gamma API for contract discovery. `outcomePrices` are stale — never use for edge.
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
-- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Fee rates fetched live from `GET /fee-rate?token_id=X` (crypto = 1.8%). Entry fees collected in shares (fewer shares received), exit fees in USDC — matching Polymarket's actual collection method. Prices snapped to market tick size. Min order size enforced from CLOB book. FOK fill semantics (100% fill or reject). Orders capped to 50% of available book depth. **Convex slippage model**: fills are penalized by `fill_pct * impact_factor * (1 + fill_pct)` where `fill_pct = order_size / book_depth`. Cost accelerates as the order walks through deeper price levels — at 50% depth the cost is 50% higher than a linear model, at 100% it is 2x. **Net-edge gate**: after Kelly sizing, estimated slippage is subtracted from edge; the trade is rejected if `net_edge < min_edge`. This prevents trades where execution cost eats the edge. **Price sum gate**: `price_up + price_down` must be in [0.98, 1.02] or the entry is skipped (stale/broken prices). Resolutions ($1/$0) have no slippage. **Maker/FOK fee blend**: paper mode simulates a 65/35 maker/FOK fee split — each trade randomly gets 0% fee (65% chance, simulating maker fill) or full taker fee (35% chance, simulating FOK fallback). This models the expected fee savings from LiveTrader's maker-first strategy. Live mode on polymarket.com uses the py-clob-client SDK for EIP-712 signed CLOB orders. Requires POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER in .env.
+- **`--mode paper` CLI flag.** Persistent SQLite bankroll, real CLOB prices, live fee rates. Entry fees in shares, exit fees in USDC (matches Polymarket). Tick-snapped prices, FOK fill semantics, 50% max book depth. **Convex slippage**: `fill_pct * impact * (1 + fill_pct)`. **Net-edge gate**: rejects if slippage eats the edge. **Price sum gate**: skip if `price_up + price_down` outside [0.98, 1.02]. **Maker/FOK fee blend**: 65/35 random split (0% or full taker fee). Live mode uses py-clob-client SDK (EIP-712 signed orders). Requires POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER in .env.
 
 ## Project Structure
 
@@ -143,15 +142,11 @@ Vol = ATR (average true range from 1-min candles, period=7) / atr_sigma_ratio (1
 Time = minutes remaining in the window
 
 LAYER 1 — Fat-tailed base (Student-t CDF, df=5):
-  vol = (ATR / atr_sigma_ratio) x sqrt(minutes) x iv_ratio    [iv_ratio from Deribit options IV]
+  vol = (ATR / atr_sigma_ratio) x sqrt(minutes) x iv_ratio
   z = distance / vol
   z_scaled = z x sqrt(df / (df-2))               [variance normalization]
   P(Up) = t.cdf(z_scaled, df=5)                  [df=5: excess kurtosis=6]
-  
-  Why Student-t: BTC 1-min returns have kurtosis ~6-8 (normal=3).
-  Normal CDF underestimates reversal probability. When BTC is $50 above
-  strike with 2 min left, normal says 85% Up, Student-t says ~78%.
-  The difference is edge on the underdog side.
+  Why: BTC kurtosis ~6-8 — normal CDF underestimates reversal probability.
 
 LAYER 2 — Regime detection (in logit space):
   autocorr = 1-lag autocorrelation of last N 1-min returns
@@ -159,56 +154,32 @@ LAYER 2 — Regime detection (in logit space):
   logit_p += autocorr x direction x (regime_weight x 4.0)
 
 LAYER 3 — Order flow (in logit space):
-  book_imbalance = (bid_depth - ask_depth) / total_depth (across both Up/Down books)
-  trade_flow = net_buy_volume / total_volume (from WebSocket last_trade_price events)
   flow_signal = 0.6 * book_imbalance + 0.4 * trade_flow
   logit_p += flow_signal x (flow_weight x 4.0)
-  
-  Why: Order flow LEADS price. Informed traders accumulate before CLOB reprices.
 
 LAYER 4 — Indicator momentum (in logit space):
   Z-score normalized scores per indicator (IndicatorNormalizer)
   Weighted RSI/MACD/Stochastic/OBV/VWAP x (momentum_weight x 4.0)
 
 LAYER 3b — Spot market flow (in logit space):
-  CVD = sum of (+qty if buyer taker, -qty if seller taker) over 120s
-  taker_ratio = buy_taker_volume / total_volume over 60s
   spot_flow = tanh(CVD * 2) * 0.6 + (taker_ratio - 0.5) * 2 * 0.4
   logit_p += spot_flow * (spot_flow_weight x 4.0)
-  
-  Why: Binance spot trades are a leading indicator. Aggressive buyers
-  (taker side) signal directional commitment before candles close.
 
 LAYER 3c — Wall pressure near strike (in logit space):
   wall_pressure = (ask_vol_near_strike - bid_vol_near_strike) / total
   logit_p -= wall_pressure * (wall_weight x 4.0)
-  
-  Why: Large sell walls between current price and strike block upward
-  movement. No other signal captures "there's a $3M wall blocking the path."
-  Uses full 1000-level Binance order book polled every 5s.
 
 LAYER 3d — Perpetual price lead (in logit space):
   perp_lead = tanh((bybit_perp_price - binance_spot) / spot * 350)
   logit_p += perp_lead * (perp_lead_weight x 4.0)
-  
-  Why: Bybit BTC perpetual leads Binance spot by 0.5-2s because
-  leveraged traders react first. Also provides staleness detection
-  for latency arbitrage when Polymarket hasn't repriced.
 
 LAYER 3e — Liquidation pressure (in logit space):
-  If OI drops + price drops → long liquidations → bearish pressure
-  If OI drops + price rises → short liquidations → bullish pressure
+  OI drop + price drop → bearish; OI drop + price rise → bullish
   logit_p += liquidation_pressure * (0.03 x 4.0)
-  
-  Why: Forced liquidations cascade. $50M of longs just got margin-called
-  means more sell pressure is coming as cascading liquidations trigger.
 
 LAYER 5 — Previous window momentum carry (in logit space):
   normalized_margin = (prev_btc_at_expiry - prev_strike) / ATR
   logit_p += tanh(normalized_margin) * (prev_margin_weight x 4.0)
-  
-  Why: BTC momentum persists across adjacent 5-min windows.
-  Strong resolution in window N predicts direction in window N+1.
 
 CALIBRATION — Platt scaling:
   calibrated = 1 / (1 + exp(A x logit(raw_prob) + B))
@@ -219,15 +190,11 @@ NEGRISK EXECUTION PRICING:
   price_down = GET /price?token_id=DOWN&side=BUY
   sell_price = GET /price?token_id=TOKEN&side=SELL (for scalp exits)
 
-ENTRY:
-  ATR gate: skip if volatility too quiet or too volatile
-  Edge = P(Up) - effective_price_up    [or P(Down) - effective_price_down]
-  If model_prob < 65%: SKIP (coin-flip filter)
-  If edge < 0.03: SKIP (noise floor)
-  If Kelly < 0.015: SKIP (primary gate — position must justify execution cost)
-  Size = Kelly(probability, market_price) x kelly_fraction, capped to 50% of book depth
-  Net-edge gate: net_edge = edge - (price * convex_slippage); if net_edge < min_edge: SKIP
-  Entry fill: /price quote + convex slippage: fill_pct * impact * (1 + fill_pct)
+ENTRY (9 gates — all must pass):
+  prob >= 65%, edge >= 0.04, Kelly >= 0.015, spread <= 10%, depth >= $50,
+  price_sum in [0.98,1.02], time >= 20s, edge <= 0.30, layer agreement
+  Size = Kelly x kelly_fraction, capped to 50% of book depth
+  Net-edge gate: rejects if slippage eats the edge
 
 WHILE HOLDING (active position management):
   holding_edge = model_prob_for_our_side - current_market_price_for_our_side
@@ -364,9 +331,9 @@ Outcomes saved to `memory/outcomes/`. Daily pipeline (see "Learning Pipeline" se
 
 Daily at 11:55 PM ET (configurable via `agents.daily_pipeline_hour` and `daily_pipeline_minute`):
 
-**Hold-out split:** Outcomes are sorted chronologically and split 60/40. The first 60% (older trades) are used for analysis and recommendations (steps 1-2). The last 40% (newer trades) are used for backtest validation (step 3). This prevents in-sample overfitting — Claude's recommendations are tested against data it hasn't seen.
+**Hold-out split:** 60/40 chronological — first 60% for analysis, last 40% for backtest validation. Prevents in-sample overfitting.
 
-**Minimum data requirement:** The scheduler (`scheduler.py`) programmatically skips TAEvolver and WeightOptimizer if fewer than 50 trades exist. BiasDetector still runs regardless. This is enforced in code (not just a Claude prompt instruction). Win rate variance at N=25 is ±13 percentage points — noise, not signal. The WeightOptimizer also requires at least 10 outcomes to run.
+**Minimum data:** TAEvolver and WeightOptimizer skip if <50 trades (enforced in code). BiasDetector always runs. WeightOptimizer requires >=10 outcomes.
 
 1. **BiasDetector** — Analyzes the **training set** (first 60% of outcomes):
    - Per-indicator accuracy (bullish/bearish breakdown, sample sizes)
@@ -379,21 +346,11 @@ Daily at 11:55 PM ET (configurable via `agents.daily_pipeline_hour` and `daily_p
 
 1.5. **PlattCalibrator** — Fits Platt scaling parameters (A, B) on training set model probabilities vs actual outcomes. Validates on holdout — only adopts if log-loss improves. Persists to `memory/calibration/platt_params.json`. Applied after all 4 layers in `compute_probability()`.
 
-2. **TAEvolver** — Sends training-set analysis + trades + current config to Claude API:
-   - System prompt defines Chief Quantitative Strategist role with full 4-layer model description
-   - Trade data includes flow_score, exit_reason (scalp vs resolution) for each trade
-   - Claude returns structured JSON: weight adjustments, all 4 layer weights (momentum, regime, flow, student_t_df), min_edge, kelly_fraction, min_kelly, atr_sigma_ratio, reasoning, findings, risk warnings
-   - Response validated server-side (weights sum to 1.0, all constraints enforced, new params clamped)
-   - Falls back to local math if Claude API fails (resilient)
+2. **TAEvolver** — Sends training-set analysis + trades + config to Claude API. Returns structured JSON with weight adjustments and parameter recommendations. Server-side validated (weights sum to 1.0, constraints enforced). Falls back to local math if API fails.
 
-3. **WeightOptimizer** — Backtests recommendations against the **validation set** (last 40%):
-   - Recomputes hypothetical edge with new weights/parameters
-   - Auto-adopts if Sharpe improves >= 3%
-   - Hot-swaps ALL params at runtime: indicator weights, momentum_weight, regime_weight, flow_weight, student_t_df, min_edge, kelly_fraction, min_kelly, atr_sigma_ratio, min_model_probability, exit_edge_threshold, min_time_remaining, trading hours
-   - **Persists all tuned parameters to settings.yaml** — values survive restarts
-   - Discord alerts include Claude's key findings and reasoning
+3. **WeightOptimizer** — Backtests recommendations against the **validation set** (last 40%). Auto-adopts if Sharpe improves >= 3%. Hot-swaps ALL signal weights and entry/exit params at runtime, persists to settings.yaml. Discord alerts with findings.
 
-Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, strike_price, seconds_remaining, market prices, model_probability, edge, momentum_score, ATR, size, flow_score, flow_book_imbalance, flow_trade_count. Each outcome also stores `gain_pct` (arithmetic return: pnl/size), `pnl`, and `fees`.
+Outcomes enriched with `trade_context` (btc_price, strike, seconds_remaining, market prices, model_probability, edge, ATR, flow scores) plus `gain_pct`, `pnl`, and `fees`.
 
 **Performance metrics use `gain_pct` (arithmetic returns), NOT `log_return`.** Log returns are mathematically broken for binary outcomes where exit_price=0 produces log(0)=-infinity. The `gain_pct` metric is bounded [-1, +inf) and gives an honest, positive Sharpe for profitable strategies. The `log_return` field is still stored for backward compatibility but is never used for Sharpe calculation.
 
