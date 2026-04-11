@@ -1310,6 +1310,11 @@ async def main() -> None:
         regime_lookback=signal_cfg.get("regime_lookback", 20),
         min_kelly=signal_cfg.get("min_kelly", 0.015),
         atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", 1.7),
+        spot_flow_weight=signal_cfg.get("spot_flow_weight", 0.04),
+        wall_weight=signal_cfg.get("wall_weight", 0.05),
+        perp_lead_weight=signal_cfg.get("perp_lead_weight", 0.03),
+        prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
+        conviction_multiplier=config.get("bankroll_acceleration", {}).get("enabled", True),
     )
 
     # Load Platt calibrator (identity if file doesn't exist)
@@ -1331,7 +1336,9 @@ async def main() -> None:
         logger.info(f"LIVE MODE — {msg}")
         trader = LiveTrader(db=db, max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
-            max_concurrent_positions=exec_cfg["max_concurrent_positions"])
+            max_concurrent_positions=exec_cfg["max_concurrent_positions"],
+            use_maker_orders=exec_cfg.get("use_maker_orders", False),
+            maker_timeout_s=exec_cfg.get("maker_timeout_s", 60.0))
     else:
         trader = PaperTrader(db=db, max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],

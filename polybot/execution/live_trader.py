@@ -102,6 +102,8 @@ class LiveTrader(BaseTrader):
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
         self.client: ClobClient = _create_clob_client()
+        self.use_maker_orders: bool = kwargs.get("use_maker_orders", False)
+        self.maker_timeout_s: float = kwargs.get("maker_timeout_s", 60.0)
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
     async def get_balance(self) -> float:
@@ -109,7 +111,9 @@ class LiveTrader(BaseTrader):
         return _get_balance_usd(self.client)
 
     async def _execute_buy(self, token_id: str, price: float, size: float) -> FillResult:
-        """FOK market buy for `size` USDC."""
+        """Buy: try maker limit order (0% fee) if enabled, else FOK (1.8% fee)."""
+        if self.use_maker_orders:
+            return await self._execute_buy_limit(token_id, price, size, self.maker_timeout_s)
         return await self._submit_fok_order(token_id, BUY, size, price)
 
     async def _execute_sell(self, token_id: str, shares: float, price: float) -> FillResult:
