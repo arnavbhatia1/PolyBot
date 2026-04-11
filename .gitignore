@@ -11,8 +11,7 @@ venv/
 .env
 polybot/config/.env
 
-# Database
-*.db
+# Database WAL files (temp, not needed in git)
 *.db-shm
 *.db-wal
 
@@ -24,9 +23,8 @@ polybot.log.*
 .vscode/
 .idea/
 
-# Memory (runtime generated)
-polybot/memory/outcomes/*.json
-polybot/memory/counterfactuals/*.json
+# Memory — tracked in git for cross-machine sync
+# (outcomes, counterfactuals, weights, calibration all persist)
 
 # OS
 .DS_Store
