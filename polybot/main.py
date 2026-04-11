@@ -37,6 +37,12 @@ from polybot.core.binance_trades import BinanceTradesFeed, BinanceTradeAccumulat
 from polybot.core.bybit_feed import BybitFeed
 from polybot.core.deribit_iv import DeribitIVFeed
 from polybot.core.bankroll_strategy import compute_kelly_tier
+from polybot.core.sprt import SPRTAccumulator
+from polybot.core.regime import RegimeDetector
+from polybot.core.alpha_decay import AlphaDecayTracker
+from polybot.core.liquidation import compute_liquidation_pressure
+from polybot.core.gamma_exposure import classify_gex
+from polybot.core.signal_engine import compute_signal_consensus
 
 import re
 _ANSI_RE = re.compile(r'\033\[[0-9;]*m')
@@ -86,6 +92,12 @@ _peak_hold_price: dict[str, float] = {}  # market_id -> peak market_price_for_si
 
 # Previous window resolution margin for adjacent window momentum (D2)
 _prev_resolution_margin: float = 0.0
+
+# SPRT and alpha decay state — reset per window
+_sprt: SPRTAccumulator | None = None
+_alpha_decay: AlphaDecayTracker | None = None
+_regime_detector: RegimeDetector | None = None
+_current_window_id: str = ""
 
 
 def compute_entry_phase(seconds_remaining: float, window_seconds: float = 300.0) -> dict:
@@ -253,6 +265,26 @@ async def _evaluate_signal_and_enter(
     # Dynamic entry timing — observe first 60s, then phased entry
     entry_phase = compute_entry_phase(contract["seconds_remaining"])
     if not entry_phase["allowed"]:
+        # During observe phase: accumulate SPRT evidence instead of doing nothing
+        global _sprt, _alpha_decay, _current_window_id
+        window_id = contract.get("market_id", contract.get("slug", ""))
+        if window_id != _current_window_id:
+            _current_window_id = window_id
+            if _sprt: _sprt.reset()
+            if _alpha_decay: _alpha_decay.reset()
+
+        prob_up_obs = 0.5
+        if _sprt:
+            indicators_obs = indicator_engine.compute_all(binance_feed.buffer)
+            closes_obs = binance_feed.buffer.get_closes()
+            prob_up_obs = signal_engine.compute_probability(
+                btc_price, strike, contract["seconds_remaining"],
+                indicators_obs.get("atr", {}).get("atr", 0), indicators_obs, closes_obs,
+                prev_resolution_margin=_prev_resolution_margin)
+            _sprt.update(prob_up_obs)
+        if _alpha_decay:
+            best_prob = max(prob_up_obs, 1 - prob_up_obs) if _sprt else 0.5
+            _alpha_decay.add_observation(time.time(), best_prob)
         return None, last_eval_log_window
 
     # Compute indicators and evaluate probability model
@@ -287,6 +319,25 @@ async def _evaluate_signal_and_enter(
         atr_val = indicators.get("atr", {}).get("atr", 0)
         iv_ratio_val = deribit_feed.state.get_iv_ratio(atr_val, btc_price)
 
+    # CVD acceleration (first derivative of buying pressure)
+    cvd_accel_val = 0.0
+    if trades_feed and trades_feed.accumulator:
+        cvd_accel_val = trades_feed.accumulator.get_cvd_acceleration(recent_s=15, baseline_s=45)
+
+    # Liquidation pressure from Bybit OI changes
+    liquidation_val = 0.0
+    if bybit_feed and bybit_feed.state.open_interest > 0 and bybit_feed.state.open_interest_prev > 0:
+        liquidation_val = compute_liquidation_pressure(
+            bybit_feed.state.open_interest, bybit_feed.state.open_interest_prev,
+            bybit_feed.state.price_at_oi, bybit_feed.state.price_at_oi_prev)
+
+    # Gamma exposure regime
+    gex_val = 0.0
+    gex_info = {"regime": "neutral", "trade_bias": 1.0}
+    if deribit_feed and deribit_feed.state.net_gex != 0:
+        gex_val = deribit_feed.state.net_gex
+        gex_info = classify_gex(gex_val)
+
     # Get closes array for regime detection
     closes = binance_feed.buffer.get_closes()
 
@@ -301,6 +352,8 @@ async def _evaluate_signal_and_enter(
         perp_lead=perp_lead_val,
         prev_resolution_margin=_prev_resolution_margin,
         iv_ratio=iv_ratio_val,
+        liquidation_pressure=liquidation_val,
+        gex_signal=gex_val,
     )
 
     # Log signal evaluation once per window so we can see what the model sees
@@ -316,6 +369,7 @@ async def _evaluate_signal_and_enter(
             f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]\n"
             f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
             f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  perp {perp_lead_val:+.3f}  iv {iv_ratio_val:.2f}\n"
+            f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}  cvd_a {cvd_accel_val:+.2f}\n"
             f"  {_C.DIM}{signal.reason}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
@@ -346,6 +400,34 @@ async def _evaluate_signal_and_enter(
 
     # Dynamic entry timing: apply phase Kelly multiplier
     size = round(size * entry_phase["kelly_multiplier"], 2)
+
+    # Regime-based Kelly adjustment
+    regime_state = None
+    if _regime_detector:
+        atr_val = indicators.get("atr", {}).get("atr", 0)
+        atr_history = [c.high - c.low for c in binance_feed.buffer.get_last_n(50)]
+        cvd_now = trades_feed.accumulator.get_cvd(120) if trades_feed and trades_feed.accumulator else 0
+        regime_state = _regime_detector.classify(closes, atr_val, atr_history, cvd_now)
+        if regime_state.skip:
+            logger.info(f"SKIP: regime={regime_state.name} — no edge in this market state")
+            return None, last_eval_log_window
+        size = round(size * regime_state.kelly_mult, 2)
+
+    # Signal consensus multiplier
+    consensus_signals = {
+        "flow": flow_score,
+        "spot_flow": spot_flow_signal,
+        "wall": wall_pressure_val,
+        "perp": perp_lead_val,
+        "cvd_accel": cvd_accel_val,
+    }
+    consensus_mult = compute_signal_consensus(consensus_signals, side)
+    size = round(size * consensus_mult, 2)
+
+    logger.debug(
+        f"  REGIME {regime_state.name if regime_state else 'N/A'}  |  "
+        f"SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%})  |  "
+        f"consensus {consensus_mult:.1f}x  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}")
 
     # Phase-based probability override (final phase needs >90%)
     if entry_phase["min_prob_override"] and signal.prob < entry_phase["min_prob_override"]:
@@ -422,6 +504,16 @@ async def _evaluate_signal_and_enter(
         "cvd_120s": trades_feed.accumulator.get_cvd(120) if trades_feed and trades_feed.accumulator else 0,
         "taker_ratio_60s": trades_feed.accumulator.get_taker_ratio(60) if trades_feed and trades_feed.accumulator else 0,
         "volume_surge": trades_feed.accumulator.is_volume_surge() if trades_feed and trades_feed.accumulator else False,
+        "liquidation_pressure": liquidation_val,
+        "gex_signal": gex_val,
+        "gex_regime": gex_info.get("regime", "neutral"),
+        "cvd_acceleration": cvd_accel_val,
+        "regime_state": regime_state.name if regime_state else "unknown",
+        "regime_kelly_mult": regime_state.kelly_mult if regime_state else 1.0,
+        "sprt_confidence": _sprt.get_confidence() if _sprt else 0,
+        "sprt_status": _sprt.get_status() if _sprt else "N/A",
+        "signal_consensus": consensus_mult,
+        "alpha_decay_rate": _alpha_decay.get_decay_rate() if _alpha_decay else 0,
     }
     snapshot_str = json.dumps(snapshot)
     result = await trader.open_trade(
@@ -732,6 +824,18 @@ async def _evaluate_and_exit_position(
         atr_val = indicators.get("atr", {}).get("atr", 0)
         hold_iv_ratio = deribit_feed.state.get_iv_ratio(atr_val, btc_now)
 
+    # Liquidation pressure for hold evaluation
+    hold_liquidation = 0.0
+    if bybit_feed and bybit_feed.state.open_interest > 0 and bybit_feed.state.open_interest_prev > 0:
+        hold_liquidation = compute_liquidation_pressure(
+            bybit_feed.state.open_interest, bybit_feed.state.open_interest_prev,
+            bybit_feed.state.price_at_oi, bybit_feed.state.price_at_oi_prev)
+
+    # GEX signal for hold evaluation
+    hold_gex = 0.0
+    if deribit_feed and deribit_feed.state.net_gex != 0:
+        hold_gex = deribit_feed.state.net_gex
+
     action, model_prob, holding_edge, reason = signal_engine.evaluate_hold(
         indicators, btc_now, strike_now, live["seconds_remaining"],
         market_price, pos["side"], exit_threshold,
@@ -742,7 +846,9 @@ async def _evaluate_and_exit_position(
         wall_pressure=hold_wall_pressure,
         perp_lead=hold_perp_lead,
         prev_resolution_margin=_prev_resolution_margin,
-        iv_ratio=hold_iv_ratio)
+        iv_ratio=hold_iv_ratio,
+        liquidation_pressure=hold_liquidation,
+        gex_signal=hold_gex)
 
     # --- TRAILING PROFIT EXIT: don't ride cheap winners to zero ---
     mid = pos["market_id"]
@@ -1437,6 +1543,15 @@ async def main() -> None:
     deribit_feed = DeribitIVFeed(
         poll_interval=deribit_cfg.get("poll_interval_s", 60.0),
     )
+
+    # SPRT, regime detector, alpha decay — module-level state for trading loop
+    global _sprt, _alpha_decay, _regime_detector
+    _sprt = SPRTAccumulator(
+        alpha=config.get("sprt", {}).get("alpha", 0.05),
+        beta=config.get("sprt", {}).get("beta", 0.10),
+    )
+    _regime_detector = RegimeDetector()
+    _alpha_decay = AlphaDecayTracker()
 
     await scheduler.start()
     await binance_feed.start()

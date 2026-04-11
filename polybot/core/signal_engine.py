@@ -160,7 +160,9 @@ class SignalEngine:
                             wall_pressure: float = 0.0,
                             perp_lead: float = 0.0,
                             prev_resolution_margin: float = 0.0,
-                            iv_ratio: float = 1.0) -> float:
+                            iv_ratio: float = 1.0,
+                            liquidation_pressure: float = 0.0,
+                            gex_signal: float = 0.0) -> float:
         """Compute P(Up) — probability BTC finishes above the strike.
 
         Uses Brownian motion approximation with Student-t CDF (fat tails):
@@ -225,6 +227,11 @@ class SignalEngine:
         logit_perp_w = self.perp_lead_weight * 4.0
         logit_p += perp_lead * logit_perp_w
 
+        # Layer 3e — Liquidation pressure (from Bybit OI changes)
+        if liquidation_pressure != 0.0:
+            logit_liq_w = 0.03 * 4.0
+            logit_p += liquidation_pressure * logit_liq_w
+
         # Layer 5 — Previous window momentum carry
         if prev_resolution_margin != 0.0 and atr > 0:
             normalized_margin = prev_resolution_margin / max(atr, 1.0)
@@ -268,7 +275,9 @@ class SignalEngine:
                  wall_pressure: float = 0.0,
                  perp_lead: float = 0.0,
                  prev_resolution_margin: float = 0.0,
-                 iv_ratio: float = 1.0) -> TradeSignal:
+                 iv_ratio: float = 1.0,
+                 liquidation_pressure: float = 0.0,
+                 gex_signal: float = 0.0) -> TradeSignal:
 
         # Gate: already have position or outside window
         if not in_entry_window:
@@ -296,7 +305,9 @@ class SignalEngine:
                                            wall_pressure=wall_pressure,
                                            perp_lead=perp_lead,
                                            prev_resolution_margin=prev_resolution_margin,
-                                           iv_ratio=iv_ratio)
+                                           iv_ratio=iv_ratio,
+                                           liquidation_pressure=liquidation_pressure,
+                                           gex_signal=gex_signal)
         prob_down = 1.0 - prob_up
 
         # Gate: model must be confident enough (not a coin flip)
@@ -348,7 +359,9 @@ class SignalEngine:
                       wall_pressure: float = 0.0,
                       perp_lead: float = 0.0,
                       prev_resolution_margin: float = 0.0,
-                      iv_ratio: float = 1.0) -> tuple[str, float, float, str]:
+                      iv_ratio: float = 1.0,
+                      liquidation_pressure: float = 0.0,
+                      gex_signal: float = 0.0) -> tuple[str, float, float, str]:
         """Continuously evaluate whether to hold or exit an existing position.
 
         Uses the same 4-layer probability model as entry. Compares the
@@ -374,7 +387,9 @@ class SignalEngine:
                                            wall_pressure=wall_pressure,
                                            perp_lead=perp_lead,
                                            prev_resolution_margin=prev_resolution_margin,
-                                           iv_ratio=iv_ratio)
+                                           iv_ratio=iv_ratio,
+                                           liquidation_pressure=liquidation_pressure,
+                                           gex_signal=gex_signal)
         model_prob = prob_up if side == "Up" else 1.0 - prob_up
         holding_edge = model_prob - market_price_for_side
 
