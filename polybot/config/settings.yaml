@@ -16,7 +16,7 @@ execution:
   max_concurrent_positions: 2  # Allow hedged Up+Down positions
   max_book_fill_pct: 0.50     # Cap order to 50% of available ask depth (realistic fills)
   slippage_impact_pct: 0.03   # 3% price impact at 100% depth consumption. Tune vs live fills.
-  initial_bankroll: 100.0
+  initial_bankroll: 60.0
   use_maker_orders: true        # Post limit orders (0% fee), FOK fallback (1.8% fee) if not filled
   maker_timeout_s: 60.0         # Seconds to wait for maker fill before FOK fallback
 
