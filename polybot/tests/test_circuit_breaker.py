@@ -163,20 +163,23 @@ class TestUpdateBankroll:
 
     def test_sequence_of_updates(self):
         cb = CircuitBreaker(initial_bankroll=1000.0, max_drawdown_pct=0.15, min_multiplier=0.25)
-        # Win some
+        # Win some — still above initial, no drawdown
         cb.update_bankroll(1050.0)
         assert cb.peak_bankroll == 1050.0
         assert cb.kelly_multiplier == 1.0
-        # Lose some
+        # Lose some — still above initial ($1000), no drawdown
+        cb.update_bankroll(1000.0)
+        assert cb.drawdown_pct == 0.0
+        assert cb.kelly_multiplier == 1.0
+        # Lose below initial — NOW drawdown kicks in
         cb.update_bankroll(950.0)
-        assert cb.peak_bankroll == 1050.0
-        dd = (1050.0 - 950.0) / 1050.0
+        dd = (1000.0 - 950.0) / 1000.0  # 5% below initial
         assert cb.drawdown_pct == pytest.approx(dd)
         # Lose more
         cb.update_bankroll(900.0)
-        dd2 = (1050.0 - 900.0) / 1050.0
+        dd2 = (1000.0 - 900.0) / 1000.0  # 10% below initial
         assert cb.drawdown_pct == pytest.approx(dd2)
-        # Recover past peak
+        # Recover past initial — drawdown gone
         cb.update_bankroll(1100.0)
         assert cb.peak_bankroll == 1100.0
         assert cb.drawdown_pct == 0.0

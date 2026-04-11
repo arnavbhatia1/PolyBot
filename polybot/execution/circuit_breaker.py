@@ -26,7 +26,8 @@ class CircuitBreaker:
         losses_to_reduce: int = 3,
         wins_to_restore: int = 2,
     ) -> None:
-        # Drawdown tracking
+        # Drawdown tracking (from initial principal, not peak)
+        self.initial_bankroll: float = initial_bankroll
         self.peak_bankroll: float = initial_bankroll
         self.current_bankroll: float = initial_bankroll
         self.max_drawdown_pct: float = max_drawdown_pct
@@ -44,10 +45,15 @@ class CircuitBreaker:
 
     @property
     def drawdown_pct(self) -> float:
-        """Current drawdown as fraction of peak bankroll (0.0 = at peak)."""
-        if self.peak_bankroll <= 0:
+        """Current drawdown as fraction of INITIAL bankroll (not peak).
+
+        Measures how far below the starting principal we've fallen.
+        At or above initial → 0% drawdown → full Kelly.
+        Only triggers when losing actual principal, not unrealized gains.
+        """
+        if self.initial_bankroll <= 0:
             return 0.0
-        dd = (self.peak_bankroll - self.current_bankroll) / self.peak_bankroll
+        dd = (self.initial_bankroll - self.current_bankroll) / self.initial_bankroll
         return max(dd, 0.0)
 
     @property

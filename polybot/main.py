@@ -439,8 +439,8 @@ async def _evaluate_signal_and_enter(
     if len(open_positions) > 0:
         size = round(size * 0.5, 2)
 
-    if size < 1.0:
-        logger.info(f"SKIP: Kelly size ${size:.2f} < $1 — edge too small to trade")
+    if size < 0.10:
+        logger.info(f"SKIP: Kelly size ${size:.2f} < $0.10 — edge too small to trade")
         return None, last_eval_log_window
     if size > bankroll * max_bankroll_pct:
         size = round(bankroll * max_bankroll_pct, 2)
@@ -452,7 +452,7 @@ async def _evaluate_signal_and_enter(
         max_fill = side_depth * max_fill_pct
         if size > max_fill:
             size = round(max_fill, 2)
-            if size < 1.0:
+            if size < 0.10:
                 logger.info(f"SKIP: size capped to ${size:.2f} by book depth ${side_depth:.0f} — too small")
                 return None, last_eval_log_window
 
@@ -468,6 +468,9 @@ async def _evaluate_signal_and_enter(
 
     # Fetch fee rate and tick size from Polymarket API
     fee_rate = await market_scanner.fetch_fee_rate(token_id, http_client)
+    # Maker orders pay 0% fee — simulate this in paper mode too
+    if config.get("execution", {}).get("use_maker_orders", False):
+        fee_rate = 0.0
     tick_size = await market_scanner.fetch_tick_size(token_id, http_client)
 
     # Apply slippage to the execution price already fetched in _fetch_market_prices
