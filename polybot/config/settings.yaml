@@ -70,7 +70,7 @@ indicators:
 
 signal:
   entry_threshold: 0.04  # Minimum edge — raised from 0.03 to cover fee friction at mid-prices (range: 0.01-0.10)
-  exit_edge_threshold: -0.10  # Exit when holding edge drops — tunable by pipeline (range: -0.25 to 0.0)
+  exit_edge_threshold: -0.05  # Exit when holding edge drops — tunable by pipeline (range: -0.25 to 0.0)
   min_model_probability: 0.65  # Min confidence to enter — tunable by pipeline (range: 0.55-0.85)
   momentum_weight: 0.04       # was 0.08 — demoted to Layer 4 (weakest signal)
   regime_weight: 0.03         # max ±3% regime adjustment (Layer 2) — CDF drives decisions
