@@ -75,6 +75,28 @@ class BinanceTradeAccumulator:
                 cvd += t.qty  # Buyer aggressor
         return cvd
 
+    def get_cvd_acceleration(self, recent_s: float = 15.0, baseline_s: float = 45.0) -> float:
+        """First derivative of CVD: rate of change in buying pressure.
+
+        Compares CVD rate in the recent window vs an older baseline window.
+        Positive = buying accelerating, Negative = buying decelerating.
+        """
+        now = time.time()
+        recent_cvd = 0.0
+        baseline_cvd = 0.0
+        for t in self._trades:
+            if t.ts >= now - recent_s:
+                recent_cvd += t.qty if not t.is_buyer_maker else -t.qty
+            elif t.ts >= now - recent_s - baseline_s:
+                baseline_cvd += t.qty if not t.is_buyer_maker else -t.qty
+
+        recent_rate = recent_cvd / max(recent_s, 1.0)
+        baseline_rate = baseline_cvd / max(baseline_s, 1.0)
+
+        if baseline_rate == 0 and recent_rate == 0:
+            return 0.0
+        return recent_rate - baseline_rate
+
     def get_taker_ratio(self, window_s: float = 60) -> float:
         """Fraction of volume from aggressive buyers [0, 1].
 

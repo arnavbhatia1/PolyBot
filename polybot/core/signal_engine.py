@@ -18,6 +18,50 @@ class TradeSignal:
     reason: str
 
 
+def compute_signal_consensus(signals: dict[str, float], side: str,
+                              dead_zone: float = 0.05) -> float:
+    """Compute Kelly multiplier based on signal agreement.
+
+    Counts how many independent signals agree with the chosen trade direction.
+    More agreement = higher conviction = bigger size.
+
+    Args:
+        signals: dict of signal_name -> value (positive = bullish, negative = bearish)
+                 Exception: "wall" is INVERTED (positive wall = bearish)
+        side: "Up" or "Down" — the trade direction
+        dead_zone: signals within this of zero are ignored (noise)
+
+    Returns:
+        Multiplier: 1.3 at >=80% agreement, 1.0 at 60-80%, 0.8 at 40-60%, 0.6 at <40%
+    """
+    if not signals:
+        return 1.0
+
+    agree = 0
+    total = 0
+    for name, val in signals.items():
+        if abs(val) < dead_zone:
+            continue
+        total += 1
+        effective_val = -val if name == "wall" else val
+        if side == "Up" and effective_val > 0:
+            agree += 1
+        elif side == "Down" and effective_val < 0:
+            agree += 1
+
+    if total == 0:
+        return 1.0
+
+    agreement_pct = agree / total
+    if agreement_pct >= 0.80:
+        return 1.3
+    elif agreement_pct >= 0.60:
+        return 1.0
+    elif agreement_pct >= 0.40:
+        return 0.8
+    return 0.6
+
+
 class SignalEngine:
     """Determines if a 5-min BTC Up/Down contract is mispriced.
 

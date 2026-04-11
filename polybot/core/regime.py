@@ -1,0 +1,194 @@
+"""Multi-state regime detector.
+
+Classifies BTC microstructure into one of six regimes:
+trending_up, trending_down, mean_reverting, volatile, quiet, neutral.
+
+Each regime returns a RegimeState with Kelly sizing and edge multipliers.
+"""
+
+from dataclasses import dataclass, field
+import numpy as np
+
+
+@dataclass(frozen=True)
+class RegimeState:
+    """Immutable regime classification result."""
+    name: str
+    kelly_mult: float = 1.0
+    min_edge_mult: float = 1.0
+    momentum_boost: float = 1.0
+    skip: bool = False
+
+
+# Pre-built regime states (immutable singletons)
+_REGIMES = {
+    "trending_up": RegimeState(
+        name="trending_up", kelly_mult=1.2, momentum_boost=1.5,
+    ),
+    "trending_down": RegimeState(
+        name="trending_down", kelly_mult=1.2, momentum_boost=1.5,
+    ),
+    "mean_reverting": RegimeState(
+        name="mean_reverting", kelly_mult=0.8, min_edge_mult=1.2,
+    ),
+    "volatile": RegimeState(
+        name="volatile", kelly_mult=0.7, min_edge_mult=1.5,
+    ),
+    "quiet": RegimeState(
+        name="quiet", kelly_mult=0.5, skip=True,
+    ),
+    "neutral": RegimeState(name="neutral"),
+    "unknown": RegimeState(name="unknown"),
+}
+
+
+class RegimeDetector:
+    """Classifies market regime from price closes, ATR, and CVD.
+
+    Parameters
+    ----------
+    lookback : int
+        Number of recent closes to use for autocorrelation (default 20).
+    vol_high_pct : float
+        ATR percentile above which market is considered high-volatility (default 75).
+    vol_low_pct : float
+        ATR percentile below which market is considered low-volatility (default 25).
+    autocorr_threshold : float
+        |autocorr| must exceed this for trending or mean-reverting (default 0.25).
+    trend_consistency : float
+        Fraction of returns in the same direction to qualify as trending (default 0.70).
+    """
+
+    def __init__(
+        self,
+        lookback: int = 20,
+        vol_high_pct: float = 75,
+        vol_low_pct: float = 25,
+        autocorr_threshold: float = 0.25,
+        trend_consistency: float = 0.70,
+    ) -> None:
+        self.lookback = lookback
+        self.vol_high_pct = vol_high_pct
+        self.vol_low_pct = vol_low_pct
+        self.autocorr_threshold = autocorr_threshold
+        self.trend_consistency = trend_consistency
+
+    def classify(
+        self,
+        closes: np.ndarray,
+        atr: float,
+        atr_history: list[float],
+        cvd: float = 0.0,
+    ) -> RegimeState:
+        """Classify the current market regime.
+
+        Parameters
+        ----------
+        closes : np.ndarray
+            Recent close prices (need at least lookback + 2 values).
+        atr : float
+            Current ATR value.
+        atr_history : list[float]
+            Historical ATR values for percentile ranking.
+        cvd : float
+            Cumulative volume delta (positive = net buying).
+
+        Returns
+        -------
+        RegimeState
+            The detected regime with sizing/edge multipliers.
+        """
+        n = self.lookback
+        if len(closes) < n + 2 or len(atr_history) < 1:
+            return _REGIMES["unknown"]
+
+        autocorr = self._compute_autocorr(closes, n)
+        vol_pct = self._compute_vol_percentile(atr, atr_history)
+        dir_ratio = self._compute_directional_ratio(closes, n)
+
+        # Rules checked in priority order.
+        #
+        # ATR-based regimes (quiet/volatile) take priority -- they reflect
+        # market conditions that dominate any directional signal.  Gating
+        # these on autocorrelation is unreliable because near-constant
+        # percentage returns (gentle trends) produce artificially high
+        # autocorrelation from the shrinking denominator.
+
+        # 1. Quiet: ATR well below historical norms -- market is asleep.
+        if vol_pct < self.vol_low_pct:
+            return _REGIMES["quiet"]
+
+        # 2. Volatile: ATR well above historical norms -- widen edge requirement.
+        if vol_pct > self.vol_high_pct:
+            return _REGIMES["volatile"]
+
+        # 3. Trending: strong directional consistency confirmed by CVD.
+        #    Monotonic series have near-zero autocorr (constant returns -> zero std),
+        #    so we use directional ratio instead: fraction of returns in the same
+        #    direction. >70% in one direction = trending.
+        is_trending = (
+            autocorr > self.autocorr_threshold
+            or dir_ratio > self.trend_consistency
+        )
+        if is_trending and cvd > 0:
+            return _REGIMES["trending_up"]
+        if is_trending and cvd < 0:
+            return _REGIMES["trending_down"]
+
+        # 4. Mean-reverting: negative autocorrelation (returns flip sign)
+        if autocorr < -self.autocorr_threshold:
+            return _REGIMES["mean_reverting"]
+
+        return _REGIMES["neutral"]
+
+    @staticmethod
+    def _compute_autocorr(closes: np.ndarray, n: int) -> float:
+        """1-lag autocorrelation of the last n returns.
+
+        Mirrors signal_engine.compute_regime_factor -- returns 0.0
+        when data is insufficient or std is zero.
+        """
+        returns = np.diff(closes[-(n + 1):]) / closes[-(n + 1):-1]
+        if len(returns) < 6:
+            return 0.0
+        r1 = returns[:-1]
+        r2 = returns[1:]
+        if np.std(r1) == 0 or np.std(r2) == 0:
+            return 0.0
+        corr = float(np.corrcoef(r1, r2)[0, 1])
+        if np.isnan(corr):
+            return 0.0
+        return max(-1.0, min(1.0, corr))
+
+    @staticmethod
+    def _compute_vol_percentile(atr: float, atr_history: list[float]) -> float:
+        """Where the current ATR ranks in recent history (0-100).
+
+        Uses midrank percentile: values strictly below count fully,
+        values equal to atr count as half.  This avoids the degenerate
+        case where atr == all history values yields 0th percentile.
+        """
+        if not atr_history:
+            return 50.0
+        n = len(atr_history)
+        below = sum(1 for v in atr_history if v < atr)
+        equal = sum(1 for v in atr_history if v == atr)
+        return ((below + 0.5 * equal) / n) * 100.0
+
+    @staticmethod
+    def _compute_directional_ratio(closes: np.ndarray, n: int) -> float:
+        """Fraction of returns in the dominant direction over the lookback.
+
+        A value of 1.0 means every return was in the same direction
+        (monotonic series). A value of 0.5 means equal up/down moves.
+        Returns 0.0 if insufficient data.
+        """
+        returns = np.diff(closes[-(n + 1):]) / closes[-(n + 1):-1]
+        if len(returns) < 2:
+            return 0.0
+        pos = np.sum(returns > 0)
+        neg = np.sum(returns < 0)
+        total = pos + neg
+        if total == 0:
+            return 0.0
+        return max(pos, neg) / total
