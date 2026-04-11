@@ -17,8 +17,8 @@ execution:
   max_book_fill_pct: 0.50     # Cap order to 50% of available ask depth (realistic fills)
   slippage_impact_pct: 0.03   # 3% price impact at 100% depth consumption. Tune vs live fills.
   initial_bankroll: 100.0
-  use_maker_orders: false      # Start with FOK (~100ms) for speed. Enable maker (0% fee) once profitable.
-  maker_timeout_s: 15.0        # If maker enabled: short timeout, quick fallback to FOK
+  use_maker_orders: true        # Post limit orders (0% fee), FOK fallback (1.8% fee) if not filled
+  maker_timeout_s: 60.0         # Seconds to wait for maker fill before FOK fallback
 
 agents:
   outcome_reviewer_interval_seconds: 3600

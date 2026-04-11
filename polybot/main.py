@@ -1411,6 +1411,10 @@ async def main() -> None:
     clob_ws = ClobWebSocket(url=clob_ws_url)
     await clob_ws.start()
 
+    # Give LiveTrader access to CLOB WS for fast maker fill detection
+    if hasattr(trader, "set_clob_ws"):
+        trader.set_clob_ws(clob_ws)
+
     # --- New data feeds ---
     depth_cfg = config.get("binance_depth", {})
     depth_feed = BinanceDepthFeed(
