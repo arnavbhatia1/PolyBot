@@ -468,9 +468,12 @@ async def _evaluate_signal_and_enter(
 
     # Fetch fee rate and tick size from Polymarket API
     fee_rate = await market_scanner.fetch_fee_rate(token_id, http_client)
-    # Maker orders pay 0% fee — simulate this in paper mode too
+    # Simulate maker/FOK blend: ~65% of orders fill as maker (0% fee),
+    # ~35% fall back to FOK (full taker fee). Randomize per trade.
     if config.get("execution", {}).get("use_maker_orders", False):
-        fee_rate = 0.0
+        import random
+        if random.random() < 0.65:
+            fee_rate = 0.0  # maker fill
     tick_size = await market_scanner.fetch_tick_size(token_id, http_client)
 
     # Apply slippage to the execution price already fetched in _fetch_market_prices
