@@ -147,7 +147,7 @@ Key parameters (all tunable by learning pipeline):
 
 ## Learning Pipeline
 
-Runs daily at 6:10 PM ET. Minimum 50 trades required (enforced in code). 60/40 hold-out split prevents overfitting.
+Runs daily at 12:05 AM ET. Minimum 50 trades required (enforced in code). 60/40 hold-out split prevents overfitting.
 
 1. **BiasDetector** -- Per-indicator accuracy, side bias, edge calibration, time/vol patterns, counterfactual analysis (scalps AND holds)
 2. **PlattCalibrator** -- Fits Platt scaling (A, B) on training set. Validates on holdout -- adopts only if log-loss improves
@@ -184,7 +184,7 @@ Binance.US, Polymarket CLOB/Gamma, Bybit, and Deribit APIs are all free and need
 
 ## Git-Backed Persistence
 
-All memory syncs via git -- outcomes, counterfactuals, DB, and config are tracked (not gitignored). The `run_polybot.ps1` wrapper commits and pushes at 6:10 PM after the daily pipeline, preserving state across restarts.
+All memory syncs via git -- outcomes, counterfactuals, DB, and config are tracked (not gitignored). The `run_polybot.ps1` wrapper commits and pushes at 12:05 AM after the daily pipeline, preserving state across restarts.
 
 ## Tests
 

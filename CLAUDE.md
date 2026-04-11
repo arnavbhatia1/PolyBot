@@ -30,8 +30,8 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Bybit perpetual price lead + funding rate.** Perp leads spot by 0.5-2s — directional signal + staleness detection. Funding rate = contrarian crowding indicator.
 - **Deribit options IV.** Forward-looking vol adjusts ATR-to-sigma ratio in L1 when market expects more/less vol than ATR shows.
 - **One trade per 5-min contract.** After any exit, that contract is blacklisted.
-- **Auto-restart cycle.** `run_polybot.ps1` manages daily lifecycle: start at 8 AM ET, trade until 6:10 PM pipeline, exit, commit config/outcomes/DB to git, push, restart at 8 AM.
-- **Git-backed persistence.** Outcomes, counterfactuals, and DB tracked in git. `run_polybot.ps1` commits and pushes after the daily pipeline, preserving state across restarts.
+- **Auto-restart cycle.** `run_polybot.ps1` manages daily lifecycle: start at 12:15 AM ET, trade until 11:59 PM, pipeline at 12:05 AM, exit, commit config/outcomes/DB to git, push, restart at 12:15 AM.
+- **Git-backed persistence.** Outcomes, counterfactuals, and DB tracked in git. `run_polybot.ps1` commits and pushes after the 12:05 AM pipeline, preserving state across restarts.
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
 - **Dual entry gate + safety gates.** Kelly >= 0.015 (primary) AND edge >= 0.04 (noise floor). Safety: edge >30% = skip (miscalibration), momentum disagreement halves edge.
 - **Signal layer weights (logit space).** L1 Student-t CDF drives decisions. L2-L5 adjust in logit space (weight x 4.0 max shift). Logit-space dampens adjustments near extremes. CDF must show direction before layers can push past 65% gate.
@@ -112,8 +112,8 @@ polybot/
 - `execution.slippage_impact_pct:` — 0.03, `use_maker_orders:` — true, `maker_timeout_s:` — 60.0
 - `market.entry_window_seconds:` — 300, `min_time_remaining_seconds:` — 20, `max_spread:` — 0.10
 - `market.clob_ws_url:` — `wss://ws-subscriptions-clob.polymarket.com/ws/market`
-- `schedule.trading_start_hour_et:` — 8 (8 AM ET), `trading_end_hour_et:` — 18, `trading_end_minute:` — 0
-- `agents.daily_pipeline_hour:` — 18, `daily_pipeline_minute:` — 10 (6:10 PM ET)
+- `schedule.trading_start_hour_et:` — 0 (12:15 AM ET), `trading_start_minute:` — 15, `trading_end_hour_et:` — 23, `trading_end_minute:` — 59
+- `agents.daily_pipeline_hour:` — 0, `daily_pipeline_minute:` — 5 (12:05 AM ET)
 - `binance_depth.poll_interval_s:` — 5.0, `binance_trades` / `bybit` / `deribit` WS URLs in config
 - `entry_timing.observe_seconds:` — 60, `late_kelly_multiplier:` — 0.7, `final_min_probability:` — 0.90
 - `bankroll_acceleration.enabled:` — true (0.15 -> 0.18/0.22/0.25 as track record grows)
@@ -330,7 +330,7 @@ Outcomes saved to `memory/outcomes/`. Daily pipeline (see "Learning Pipeline" se
 
 ## Learning Pipeline
 
-Daily at 6:10 PM ET (configurable via `agents.daily_pipeline_hour` and `daily_pipeline_minute`):
+Daily at 12:05 AM ET (configurable via `agents.daily_pipeline_hour` and `daily_pipeline_minute`):
 
 **Hold-out split:** 60/40 chronological — first 60% for analysis, last 40% for backtest validation. Prevents in-sample overfitting.
 
@@ -389,7 +389,7 @@ The core trading logic is FROZEN. Do not make structural changes to:
 - `base.py` (BaseTrader ABC, fee math, shared gates/DB ops)
 - `paper_trader.py` / `live_trader.py` (extend BaseTrader — only 3 abstract methods each)
 
-Only the daily learning pipeline (6:10 PM ET) tunes parameters slowly. Any proposed "improvement" to frozen code requires explicit user approval. New features go in NEW files/modules.
+Only the daily learning pipeline (12:05 AM ET) tunes parameters slowly. Any proposed "improvement" to frozen code requires explicit user approval. New features go in NEW files/modules.
 
 ## Always Update
 
