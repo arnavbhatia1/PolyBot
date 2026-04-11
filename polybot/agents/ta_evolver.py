@@ -29,7 +29,7 @@ class TAEvolver:
         # Read recent strategy log entries for context
         prev = ""
         if self.strategy_log_path.exists():
-            text = self.strategy_log_path.read_text()
+            text = self.strategy_log_path.read_text(encoding="utf-8")
             prev = text[-2000:] if len(text) > 2000 else text
 
         context = {
@@ -130,8 +130,8 @@ class TAEvolver:
             f"min_kelly={mk}, atr_sigma_ratio={ar}\n"
         )
 
-        existing = self.strategy_log_path.read_text() if self.strategy_log_path.exists() else "# Strategy Evolution Log\n"
-        self.strategy_log_path.write_text(existing + entry)
+        existing = self.strategy_log_path.read_text(encoding="utf-8") if self.strategy_log_path.exists() else "# Strategy Evolution Log\n"
+        self.strategy_log_path.write_text(existing + entry, encoding="utf-8")
 
     def _save_local_log(self, analysis: dict[str, Any], recommended_weights: dict[str, float]) -> None:
         """Append local fallback analysis to strategy_log.md."""
@@ -143,8 +143,8 @@ class TAEvolver:
             f"**Analysis:** {analysis}\n\n"
             f"**Recommended Weights:** {recommended_weights}\n"
         )
-        existing = self.strategy_log_path.read_text() if self.strategy_log_path.exists() else "# Strategy Evolution Log\n"
-        self.strategy_log_path.write_text(existing + entry)
+        existing = self.strategy_log_path.read_text(encoding="utf-8") if self.strategy_log_path.exists() else "# Strategy Evolution Log\n"
+        self.strategy_log_path.write_text(existing + entry, encoding="utf-8")
 
     def save_log(self, analysis: dict[str, Any], recommended_weights: dict[str, float]) -> None:
         """Legacy method for backward compatibility."""
