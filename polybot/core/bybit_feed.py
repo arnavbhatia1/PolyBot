@@ -70,6 +70,11 @@ class BybitState:
     funding_rate: float = 0.0
     funding_updated: float = 0.0
     next_funding_time: float = 0.0
+    open_interest: float = 0.0
+    open_interest_prev: float = 0.0
+    price_at_oi: float = 0.0
+    price_at_oi_prev: float = 0.0
+    oi_updated: float = 0.0
 
     def is_stale(self, spot_price: float, spot_updated: float,
                  threshold_usd: float = 20.0) -> bool:
@@ -239,6 +244,13 @@ class BybitFeed:
                         next_ft = ticker.get("nextFundingTime")
                         if next_ft is not None:
                             self.state.next_funding_time = float(next_ft) / 1000.0
+                        oi = ticker.get("openInterest")
+                        if oi:
+                            self.state.open_interest_prev = self.state.open_interest
+                            self.state.price_at_oi_prev = self.state.price_at_oi
+                            self.state.open_interest = float(oi)
+                            self.state.price_at_oi = self.state.perp_price
+                            self.state.oi_updated = time.time()
                         logger.debug(
                             f"Bybit REST funding: rate={self.state.funding_rate}, "
                             f"next={self.state.next_funding_time}"
