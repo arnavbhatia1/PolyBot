@@ -21,6 +21,9 @@ python -m polybot.main --mode live
 
 # Defaults to mode in settings.yaml
 python -m polybot.main
+
+# Auto-restart mode (daily cycle: trade -> pipeline -> commit -> push -> restart)
+.\run_polybot.ps1
 ```
 
 ## How It Works
@@ -89,7 +92,7 @@ python -m polybot.main
 | `execution/base.py` | BaseTrader ABC, TradeResult, FillResult, shared fee math + gates |
 | `execution/paper_trader.py` | Realistic simulated trading -- real CLOB prices, dynamic fees, FOK fills |
 | `execution/live_trader.py` | Real Polymarket CLOB trading with maker orders + FOK fallback |
-| `execution/circuit_breaker.py` | Drawdown-based Kelly scaling (1.0 at peak, 0.25 at 15% drawdown) |
+| `execution/circuit_breaker.py` | Drawdown-based Kelly scaling (1.0 at initial principal, 0.25 at 15% drawdown from principal) |
 | `agents/` | Self-learning pipeline (bias detector, TA evolver, weight optimizer, counterfactual tracker) |
 | `discord_bot/` | Commands, trade alerts, session management |
 | `db/models.py` | SQLite for positions, trade history, bankroll |
@@ -118,6 +121,7 @@ Paper mode simulates live execution as closely as possible:
 - **Convex slippage** -- fills penalized by `(size/depth) * 3% * (1 + size/depth)` -- larger orders get worse prices
 - **Dynamic fee rates** -- fetched live from `GET /fee-rate` per token (crypto = 1.8%)
 - **Correct fee collection** -- entry fees in shares (fewer shares received), exit fees in USDC
+- **65/35 maker/FOK fee blend** -- each trade randomly gets 0% fee (65% chance, maker fill) or full taker fee (35% chance, FOK fallback), modeling LiveTrader's expected fee savings
 - **FOK fill semantics** -- order must fill 100% or reject (scaled to available depth)
 - **Tick size enforcement** -- prices snapped to market tick via `GET /tick-size`
 - **Min order size** -- from CLOB book response (typically 5 shares)
@@ -134,7 +138,7 @@ Key parameters (all tunable by learning pipeline):
 - **Min model probability** -- 65% confidence gate
 - **Layer weights** -- L2 regime 3%, L3 flow 4%, L3b spot flow 4%, L3c wall 5%, L3d perp 3%, L4 momentum 4%, L5 carry 2%
 - **Max concurrent positions** -- 2 (half-Kelly when concurrent)
-- **Circuit breaker** -- Kelly scales 1.0 to 0.25 as drawdown reaches 15%
+- **Circuit breaker** -- Kelly scales 1.0 to 0.25 as drawdown from initial principal reaches 15% (not peak-based)
 - **SPRT** -- alpha 0.05, beta 0.10 for evidence accumulation
 - **Regime** -- 4-state HMM classifier adjusts Kelly and thresholds
 
@@ -174,6 +178,10 @@ Tunes 15+ parameters: indicator weights, all layer weights, student_t_df, min_ed
 | `POLYMARKET_FUNDER` | Live mode (USDC funding address) |
 
 Binance.US, Polymarket CLOB/Gamma, Bybit, and Deribit APIs are all free and need no key.
+
+## Cross-Machine Sync
+
+All memory syncs via git -- outcomes, counterfactuals, DB, and config are tracked (not gitignored). The `run_polybot.ps1` wrapper commits and pushes at 11:55 PM after the daily pipeline. Another machine pulls at midnight before restarting, ensuring full state synchronization.
 
 ## Tests
 

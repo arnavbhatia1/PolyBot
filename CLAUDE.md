@@ -30,6 +30,8 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Bybit perpetual price lead + funding rate.** Bybit BTC perp leads Binance.US spot by 0.5-2s. Used as directional signal and staleness detector for latency arbitrage. Funding rate provides contrarian crowding indicator.
 - **Deribit options IV.** Forward-looking volatility from BTC options market. Dynamically adjusts ATR-to-sigma ratio in Layer 1 when market expects more/less vol than ATR shows.
 - **One trade per 5-min contract.** After any exit, that contract is blacklisted.
+- **Auto-restart cycle.** `run_polybot.ps1` wrapper script manages the daily lifecycle: starts bot at midnight with `--auto-restart`, bot trades until 11:55 PM pipeline, exits cleanly after pipeline, wrapper commits config/outcomes/DB to git, pushes to remote, waits for midnight, restarts. All memory syncs across machines via git.
+- **Cross-machine sync.** Outcomes (`memory/outcomes/`), counterfactuals (`memory/counterfactuals/`), and `polybot/db/polybot.db` are tracked in git (not gitignored). Machine A pushes at 11:55 PM, Machine B pulls at midnight — full state synchronization across machines.
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
 - **Dual entry gate + safety gates.** Primary: Kelly fraction >= min_kelly (0.015, price-aware — naturally accounts for odds at different price levels). Secondary: edge >= entry_threshold (0.04, noise floor). Both must pass. Additional safety: edge cap (>30% = skip, model miscalibration), layer disagreement penalty (momentum opposing trade direction with |score|>0.5 halves effective edge).
 - **Signal layer weights (logit space).** Layer 1 (Student-t base) provides the core probability — the CDF drives all decisions. Layers 2-4 apply adjustments in logit (log-odds) space with config weight x 4.0 as max logit shift. Layer 2 (regime) weight 0.03. Layer 3 (order flow) weight 0.04. Layer 4 (momentum/indicators) weight 0.04. Logit-space application ensures adjustments near probability extremes (0.1 or 0.9) are naturally dampened. The CDF must show a direction before layers can push past the 65% confidence gate.
@@ -38,7 +40,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
 - **Strike = BTC price at 5-min window boundary.** Derived from candle buffer, not "first time bot sees the contract."
-- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Fee rates fetched live from `GET /fee-rate?token_id=X` (crypto = 1.8%). Entry fees collected in shares (fewer shares received), exit fees in USDC — matching Polymarket's actual collection method. Prices snapped to market tick size. Min order size enforced from CLOB book. FOK fill semantics (100% fill or reject). Orders capped to 50% of available book depth. **Convex slippage model**: fills are penalized by `fill_pct * impact_factor * (1 + fill_pct)` where `fill_pct = order_size / book_depth`. Cost accelerates as the order walks through deeper price levels — at 50% depth the cost is 50% higher than a linear model, at 100% it is 2x. **Net-edge gate**: after Kelly sizing, estimated slippage is subtracted from edge; the trade is rejected if `net_edge < min_edge`. This prevents trades where execution cost eats the edge. **Price sum gate**: `price_up + price_down` must be in [0.98, 1.02] or the entry is skipped (stale/broken prices). Resolutions ($1/$0) have no slippage. Live mode on polymarket.com uses the py-clob-client SDK for EIP-712 signed CLOB orders. Requires POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER in .env.
+- **`--mode paper` CLI flag.** Paper mode uses persistent SQLite bankroll with real CLOB order book prices for realistic fill simulation. Fee rates fetched live from `GET /fee-rate?token_id=X` (crypto = 1.8%). Entry fees collected in shares (fewer shares received), exit fees in USDC — matching Polymarket's actual collection method. Prices snapped to market tick size. Min order size enforced from CLOB book. FOK fill semantics (100% fill or reject). Orders capped to 50% of available book depth. **Convex slippage model**: fills are penalized by `fill_pct * impact_factor * (1 + fill_pct)` where `fill_pct = order_size / book_depth`. Cost accelerates as the order walks through deeper price levels — at 50% depth the cost is 50% higher than a linear model, at 100% it is 2x. **Net-edge gate**: after Kelly sizing, estimated slippage is subtracted from edge; the trade is rejected if `net_edge < min_edge`. This prevents trades where execution cost eats the edge. **Price sum gate**: `price_up + price_down` must be in [0.98, 1.02] or the entry is skipped (stale/broken prices). Resolutions ($1/$0) have no slippage. **Maker/FOK fee blend**: paper mode simulates a 65/35 maker/FOK fee split — each trade randomly gets 0% fee (65% chance, simulating maker fill) or full taker fee (35% chance, simulating FOK fallback). This models the expected fee savings from LiveTrader's maker-first strategy. Live mode on polymarket.com uses the py-clob-client SDK for EIP-712 signed CLOB orders. Requires POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER in .env.
 
 ## Project Structure
 
@@ -69,7 +71,7 @@ polybot/
     base.py                  # BaseTrader ABC, TradeResult, FillResult, fee functions
     paper_trader.py          # PaperTrader(BaseTrader) — instant simulated fills
     live_trader.py           # LiveTrader(BaseTrader) — FOK market orders via py-clob-client SDK
-    circuit_breaker.py       # Drawdown-based Kelly scaling (tracks high-water mark, scales Kelly 1.0→0.25 as drawdown deepens)
+    circuit_breaker.py       # Drawdown-based Kelly scaling (tracks drawdown from initial principal, scales Kelly 1.0→0.25 as drawdown deepens)
   agents/
     scheduler.py             # Daily learning pipeline
     outcome_reviewer.py      # Logs resolved trades
@@ -96,7 +98,7 @@ polybot/
 ## Config
 
 `polybot/config/settings.yaml` (validated by `validate_config()` on startup):
-- `circuit_breaker.max_drawdown_pct:` — 0.15, `min_multiplier:` — 0.25, `losses_to_reduce:` — 3, `wins_to_restore:` — 2
+- `circuit_breaker.max_drawdown_pct:` — 0.15 (from initial principal, not peak), `min_multiplier:` — 0.25, `losses_to_reduce:` — 3, `wins_to_restore:` — 2
 - `math.kelly_fraction:` — 0.15
 - `signal.entry_threshold:` — 0.04 (noise floor, range 0.01-0.10)
 - `signal.min_kelly:` — 0.015 (primary gate, range 0.005-0.05)
@@ -318,7 +320,7 @@ All 10 signal layers feed `signal_engine.evaluate()` (see "How the Probability M
 
 ```
 raw_size = bankroll x kelly_size x breaker.kelly_multiplier
-CAP CHAIN: size < $1 -> REJECT | size > 80% bankroll -> cap | size > 50% depth -> cap
+CAP CHAIN: size < $0.10 -> REJECT | size > 80% bankroll -> cap | size > 50% depth -> cap
 NET EDGE: net_edge = gross_edge - (price x convex_slippage); if < min_edge -> REJECT
 ```
 
@@ -409,7 +411,7 @@ Outcome data enriched with `trade_context` in indicator_snapshot: btc_price, str
 - Don't use polymarket.us for crypto — US platform has sports only. All crypto trading is on polymarket.com.
 - Don't use Binance.com — use Binance.us.
 - Don't allow more than 2 concurrent positions — max 2 from different windows, half-Kelly when concurrent. Same-window duplicates still blocked.
-- Don't bypass the circuit breaker — it scales Kelly proportionally to drawdown from peak bankroll, protecting against compounding losses while still trading.
+- Don't bypass the circuit breaker — it scales Kelly proportionally to drawdown from initial principal (not peak), protecting against compounding losses while still trading. Growing from $60 to $80 and dipping to $75 does NOT trigger drawdown — only falling below $60 does.
 - Don't auto-delete the DB — bankroll persists across sessions in both modes. Never delete `polybot/db/polybot.db` between runs.
 - Don't use limit orders in LiveTrader — FOK market orders for 5-min contract speed.
 - Don't resolve positions by comparing Binance BTC price vs Binance strike — always wait for Gamma API `eventMetadata` or `closed` + `outcomePrices`. Binance and Chainlink (Polymarket's oracle) can disagree by $20-200, causing false WIN/LOSS.
