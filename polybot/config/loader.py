@@ -75,6 +75,7 @@ def validate_config(config: dict[str, Any]) -> None:
     _check_range("signal.student_t_df", 3, 8, integer=True)
     _check_range("signal.min_kelly", 0.005, 0.05)
     _check_range("signal.atr_sigma_ratio", 1.2, 2.5)
+    _check_range("signal.min_atr", 1.0, 30.0)
 
     # --- signal.weights ---
     weights_val, weights_found = _get_nested(config, "signal.weights")
@@ -99,6 +100,7 @@ def validate_config(config: dict[str, Any]) -> None:
     # --- execution ---
     _check_positive("execution.max_concurrent_positions", integer=True)
     _check_range("execution.max_bankroll_deployed", 0.0, 1.0)
+    _check_range("execution.max_single_position_pct", 0.05, 0.30)
     _check_range("execution.max_book_fill_pct", 0.0, 1.0)
     _check_positive("execution.initial_bankroll")
     _check_range("execution.slippage_impact_pct", 0.0, 0.20)

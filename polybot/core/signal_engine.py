@@ -106,7 +106,8 @@ class SignalEngine:
                  wall_weight: float = 0.05,
                  perp_lead_weight: float = 0.03,
                  prev_margin_weight: float = 0.02,
-                 conviction_multiplier: bool = True) -> None:
+                 conviction_multiplier: bool = True,
+                 min_atr: float = 8.0) -> None:
         self.min_edge: float = min_edge
         self.kelly_fraction: float = kelly_fraction
         self.momentum_weight: float = momentum_weight
@@ -125,6 +126,7 @@ class SignalEngine:
         self.perp_lead_weight: float = perp_lead_weight
         self.prev_margin_weight: float = prev_margin_weight
         self.conviction_multiplier: bool = conviction_multiplier
+        self.min_atr: float = min_atr
 
     @property
     def entry_threshold(self) -> float:
@@ -177,8 +179,11 @@ class SignalEngine:
         distance = btc_price - strike_price
         minutes_remaining = max(seconds_remaining / 60.0, 0.01)
 
+        # ATR floor: prevent extreme z-scores in quiet markets
+        atr_effective = max(atr, self.min_atr)
+
         # Fix 4: Scale ATR to standard deviation (iv_ratio adjusts for forward-looking vol)
-        vol_scaled = (atr / self.atr_sigma_ratio) * math.sqrt(minutes_remaining) * iv_ratio
+        vol_scaled = (atr_effective / self.atr_sigma_ratio) * math.sqrt(minutes_remaining) * iv_ratio
 
         if vol_scaled <= 0:
             return 0.5
@@ -401,6 +406,11 @@ class SignalEngine:
             effective_threshold = exit_threshold - scalp_cost
         else:
             effective_threshold = exit_threshold
+
+        # Patience: require larger adverse edge when plenty of time remains
+        if seconds_remaining > 120:
+            patience = min((seconds_remaining - 120) / 180.0, 1.0)
+            effective_threshold -= patience * 0.05  # up to 5% harder to exit early
 
         # Time urgency: near expiry, lower the bar (better to scalp than risk total loss)
         time_urgency = max(0.0, 1.0 - seconds_remaining / 120.0)  # ramps in last 2 min

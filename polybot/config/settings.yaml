@@ -13,6 +13,7 @@ circuit_breaker:
 execution:
   max_slippage: 0.02
   max_bankroll_deployed: 0.80
+  max_single_position_pct: 0.12  # No single trade > 12% of bankroll (prevents concentration risk)
   max_concurrent_positions: 2  # Allow hedged Up+Down positions
   max_book_fill_pct: 0.50     # Cap order to 50% of available ask depth (realistic fills)
   slippage_impact_pct: 0.03   # 3% price impact at 100% depth consumption. Tune vs live fills.
@@ -77,6 +78,7 @@ signal:
   regime_lookback: 10         # number of 1-min returns for autocorrelation (10 = 10 minutes)
   min_kelly: 0.015            # minimum Kelly fraction — skip if sized below this (noise floor)
   atr_sigma_ratio: 1.4        # ATR/sigma scaling (empirical range 1.3-1.6 for BTC 1-min; was 1.7, overcounted vol)
+  min_atr: 8.0                 # Floor prevents extreme z-scores in quiet markets (P10 of observed ATR distribution)
   flow_weight: 0.04           # max ±4% order flow adjustment (Layer 3) — CDF drives decisions
   spot_flow_weight: 0.04
   wall_weight: 0.05

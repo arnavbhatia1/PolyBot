@@ -445,6 +445,12 @@ async def _evaluate_signal_and_enter(
     if size > bankroll * max_bankroll_pct:
         size = round(bankroll * max_bankroll_pct, 2)
 
+    # Cap single position to prevent concentration risk
+    max_pos_pct = config.get("execution", {}).get("max_single_position_pct", 0.12)
+    max_single = round(bankroll * max_pos_pct, 2)
+    if size > max_single:
+        size = max_single
+
     # Cap size to fraction of book depth (realistic fill constraint)
     side_depth = depth_usd_up if side == "Up" else depth_usd_down
     max_fill_pct = config.get("execution", {}).get("max_book_fill_pct", 0.50)
@@ -1404,6 +1410,7 @@ async def run_pipeline() -> None:
         perp_lead_weight=signal_cfg.get("perp_lead_weight", 0.03),
         prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
         conviction_multiplier=config.get("bankroll_acceleration", {}).get("enabled", True),
+        min_atr=signal_cfg.get("min_atr", 8.0),
     )
 
     from polybot.core.calibrator import PlattCalibrator
@@ -1538,6 +1545,7 @@ async def main() -> None:
         perp_lead_weight=signal_cfg.get("perp_lead_weight", 0.03),
         prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
         conviction_multiplier=config.get("bankroll_acceleration", {}).get("enabled", True),
+        min_atr=signal_cfg.get("min_atr", 8.0),
     )
 
     # Load Platt calibrator (identity if file doesn't exist)

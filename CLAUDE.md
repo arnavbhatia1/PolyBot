@@ -106,9 +106,9 @@ polybot/
 - `signal.momentum_weight:` — 0.04 (L4), `regime_weight:` — 0.03 (L2), `flow_weight:` — 0.04 (L3)
 - `signal.spot_flow_weight:` — 0.04 (L3b), `wall_weight:` — 0.05 (L3c), `perp_lead_weight:` — 0.03 (L3d)
 - `signal.prev_margin_weight:` — 0.02 (L5)
-- `signal.atr_sigma_ratio:` — 1.4 (range 1.2-2.5), `student_t_df:` — 5, `regime_lookback:` — 10
+- `signal.atr_sigma_ratio:` — 1.4 (range 1.2-2.5), `student_t_df:` — 5, `regime_lookback:` — 10, `min_atr:` — 8.0 (range 1.0-30.0)
 - `signal.weights:` — per-indicator weights for momentum
-- `execution.max_concurrent_positions:` — 2, `max_bankroll_deployed:` — 0.80, `max_book_fill_pct:` — 0.50
+- `execution.max_concurrent_positions:` — 2, `max_bankroll_deployed:` — 0.80, `max_single_position_pct:` — 0.12, `max_book_fill_pct:` — 0.50
 - `execution.slippage_impact_pct:` — 0.03, `use_maker_orders:` — true, `maker_timeout_s:` — 60.0
 - `market.entry_window_seconds:` — 300, `min_time_remaining_seconds:` — 20, `max_spread:` — 0.10
 - `market.clob_ws_url:` — `wss://ws-subscriptions-clob.polymarket.com/ws/market`
@@ -143,7 +143,8 @@ Vol = ATR (average true range from 1-min candles, period=7) / atr_sigma_ratio (1
 Time = minutes remaining in the window
 
 LAYER 1 — Fat-tailed base (Student-t CDF, df=5):
-  vol = (ATR / atr_sigma_ratio) x sqrt(minutes) x iv_ratio
+  ATR_effective = max(ATR, min_atr)                   [floor prevents extreme z in quiet markets]
+  vol = (ATR_effective / atr_sigma_ratio) x sqrt(minutes) x iv_ratio
   z = distance / vol
   z_scaled = z x sqrt(df / (df-2))               [variance normalization]
   P(Up) = t.cdf(z_scaled, df=5)                  [df=5: excess kurtosis=6]
@@ -199,8 +200,9 @@ ENTRY (9 gates — all must pass):
 
 WHILE HOLDING (active position management):
   holding_edge = model_prob_for_our_side - current_market_price_for_our_side
-  Fee-aware threshold: base_threshold - exit_fee_cost + time_urgency_bonus
-  Time urgency: near expiry (<2 min), threshold relaxes by up to +5%
+  Fee-aware threshold: base_threshold - exit_fee_cost
+  Patience: >120s remaining, threshold tightens by up to -5% (harder to exit early)
+  Time urgency: near expiry (<2 min), threshold relaxes by up to +5% (easier to exit)
   If holding_edge ≤ effective_threshold: EXIT (scalp)
   If holding_edge > effective_threshold: HOLD
 
@@ -288,7 +290,7 @@ All 10 signal layers feed `signal_engine.evaluate()` (see "How the Probability M
 
 ```
 raw_size = bankroll x kelly_size x breaker.kelly_multiplier
-CAP CHAIN: size < $0.10 -> REJECT | size > 80% bankroll -> cap | size > 50% depth -> cap
+CAP CHAIN: size < $0.10 -> REJECT | size > 80% bankroll -> cap | size > 12% bankroll -> cap | size > 50% depth -> cap
 NET EDGE: net_edge = gross_edge - (price x convex_slippage); if < min_edge -> REJECT
 ```
 
@@ -378,12 +380,15 @@ Outcomes enriched with `trade_context` (btc_price, strike, seconds_remaining, ma
 - Don't derive regime direction from sign(prob - 0.5) — use sign(most recent return). The autocorrelation measures persistence, but the DIRECTION comes from recent returns.
 - Don't bypass the SPRT gate — it's mathematically optimal for sequential binary decisions.
 
-## Baseline — LOCKED 2026-04-09
+## Baseline — LOCKED 2026-04-11
 
-Engine math optimized: logit-space layer combination, ATR-to-sigma scaling, Student-t variance normalization, regime direction fix (sign of recent return), Kelly-based entry gate, indicator z-score normalization, Platt calibration. Baseline re-locked — only the daily learning pipeline tunes parameters.
+Engine math optimized: logit-space layer combination, ATR-to-sigma scaling, Student-t variance normalization, regime direction fix (sign of recent return), Kelly-based entry gate, indicator z-score normalization, Platt calibration. Final structural fixes applied 2026-04-11 based on 132-trade evidence:
+- **Max single position cap** (`execution.max_single_position_pct: 0.12`): prevents concentration risk. Evidence: positions #133 ($28) and #237 ($24) lost $52 combined — 18.6% and 16% of bankroll on single binary bets.
+- **Time-weighted exit patience** (evaluate_hold): requires larger adverse edge to exit when >120s remaining. Evidence: 28 early scalps on contracts that resolved at $1.00 missed $141.75. Avg holding_edge at scalp was -0.0501 (exactly at flat threshold) with 126s remaining.
+- **Minimum ATR floor** (`signal.min_atr: 8.0`): prevents CDF overconfidence in quiet markets. Evidence: positions #124 (ATR $1.98), #137 (ATR $3.47), #154 (ATR $4.64) had pathologically low volatility → extreme z-scores → 97-99.7% false confidence → $14.71 in losses.
 
 The core trading logic is FROZEN. Do not make structural changes to:
-- `signal_engine.py` (10-layer probability model)
+- `signal_engine.py` (10-layer probability model + evaluate_hold)
 - `order_flow.py` (book imbalance + trade flow)
 - Entry/exit/pricing logic in `main.py` (now 9 extracted helper functions — logic unchanged, just organized)
 - `base.py` (BaseTrader ABC, fee math, shared gates/DB ops)
