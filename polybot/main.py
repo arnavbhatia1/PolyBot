@@ -576,32 +576,40 @@ async def _evaluate_signal_and_enter(
 
 def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[int, float],
                             eval_window: int,
-                            last_eval_log_window: int) -> tuple[float | None, float | None, dict[int, float], int]:
-    """Derive strike from slug, get current BTC price, check staleness."""
+                            last_eval_log_window: int,
+                            chainlink_feed: Any = None) -> tuple[float | None, float | None, dict[int, float], int]:
+    """Derive strike and BTC price, preferring Chainlink (resolution source) over Binance."""
     now_ts = int(time.time())
 
     try:
         contract_window_ts = int(cid.rsplit("-", 1)[-1])
     except (ValueError, IndexError):
         contract_window_ts = int(now_ts // 300) * 300  # fallback
+
     if contract_window_ts not in window_strikes:
-        target_ms = contract_window_ts * 1000
-        candles = binance_feed.buffer.get_last_n(10)
-        for c in reversed(candles):
-            if c.timestamp == target_ms:
-                # Candle opens exactly at boundary — use its open
-                window_strikes[contract_window_ts] = c.open
-                break
-            elif c.timestamp < target_ms <= c.timestamp + 60_000:
-                # Boundary falls at or within this candle's range — use close
-                # (close is updated tick-by-tick via update_current)
-                window_strikes[contract_window_ts] = c.close
-                break
-        else:
-            # Boundary candle not in buffer yet (WS latency) — use latest price
-            latest = binance_feed.buffer.latest()
-            if latest and now_ts - contract_window_ts < 10:
-                window_strikes[contract_window_ts] = latest.close
+        # Prefer Chainlink boundary price (matches Polymarket's priceToBeat)
+        if chainlink_feed:
+            cl_strike = chainlink_feed.get_strike(contract_window_ts)
+            if cl_strike:
+                window_strikes[contract_window_ts] = cl_strike
+                logger.info(f"STRIKE: using Chainlink ${cl_strike:,.2f} for window {contract_window_ts}")
+
+        # Fall back to Binance candle if Chainlink didn't capture it
+        if contract_window_ts not in window_strikes:
+            target_ms = contract_window_ts * 1000
+            candles = binance_feed.buffer.get_last_n(10)
+            for c in reversed(candles):
+                if c.timestamp == target_ms:
+                    window_strikes[contract_window_ts] = c.open
+                    break
+                elif c.timestamp < target_ms <= c.timestamp + 60_000:
+                    window_strikes[contract_window_ts] = c.close
+                    break
+            else:
+                latest = binance_feed.buffer.latest()
+                if latest and now_ts - contract_window_ts < 10:
+                    window_strikes[contract_window_ts] = latest.close
+
     # Clean old strikes
     window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
 
@@ -613,6 +621,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             logger.info(f"EVAL: no strike for window {contract_window_ts} — candle buffer has {buf_len} candles")
         return None, None, window_strikes, last_eval_log_window
 
+    # Real-time BTC from Binance (fast) — speed edge over Chainlink's slow oracle
     btc_price = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
     if btc_price <= 0:
         if eval_window != last_eval_log_window:
@@ -777,8 +786,10 @@ async def _evaluate_and_exit_position(
         config: dict[str, Any], scheduler: Any, default_exit_threshold: float,
         day_wins: int, day_losses: int, day_fees: float,
         depth_feed: Any = None, trades_feed: Any = None,
-        bybit_feed: Any = None, deribit_feed: Any = None) -> tuple[int, int, float, str | None]:
+        bybit_feed: Any = None, deribit_feed: Any = None,
+        chainlink_feed: Any = None) -> tuple[int, int, float, str | None]:
     """Re-evaluate an active position and exit (scalp) if holding edge is gone."""
+    # Real-time BTC from Binance (fast) — speed edge over slow Chainlink oracle
     btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
     if btc_now <= 0:
         return day_wins, day_losses, day_fees, None
@@ -1155,7 +1166,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                        depth_feed: Any = None,
                        trades_feed: Any = None,
                        bybit_feed: Any = None,
-                       deribit_feed: Any = None) -> None:
+                       deribit_feed: Any = None,
+                       chainlink_feed: Any = None) -> None:
     import httpx
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
@@ -1272,7 +1284,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                             config, scheduler, default_exit_threshold,
                             day_wins, day_losses, day_fees,
                             depth_feed=depth_feed, trades_feed=trades_feed,
-                            bybit_feed=bybit_feed, deribit_feed=deribit_feed)
+                            bybit_feed=bybit_feed, deribit_feed=deribit_feed,
+                            chainlink_feed=chainlink_feed)
                     if traded_mid:
                         traded_contracts[traded_mid] = int(time.time())
 
@@ -1325,7 +1338,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
             strike, btc_price, window_strikes, last_eval_log_window = \
                 _compute_strike_and_btc(cid, binance_feed, window_strikes,
-                                        eval_window, last_eval_log_window)
+                                        eval_window, last_eval_log_window,
+                                        chainlink_feed=chainlink_feed)
             if strike is None:
                 continue
 
@@ -1693,6 +1707,11 @@ async def main() -> None:
     # DeribitIVFeed.start() is a blocking loop — run as background task
     deribit_task = asyncio.create_task(deribit_feed.start())
 
+    # Chainlink oracle feed — resolution price source (Polymarket uses this, not Binance)
+    from polybot.core.chainlink_feed import ChainlinkFeed
+    chainlink_feed = ChainlinkFeed()
+    await chainlink_feed.start()
+
     # Shared HTTP client — lifecycle managed here in main()
     import httpx
     http_client = httpx.AsyncClient(timeout=5)
@@ -1711,7 +1730,8 @@ async def main() -> None:
         counterfactual_tracker=counterfactual_tracker,
         http_client=http_client,
         depth_feed=depth_feed, trades_feed=trades_feed,
-        bybit_feed=bybit_feed_inst, deribit_feed=deribit_feed))
+        bybit_feed=bybit_feed_inst, deribit_feed=deribit_feed,
+        chainlink_feed=chainlink_feed))
     background_tasks = [
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
@@ -1736,6 +1756,7 @@ async def main() -> None:
         await depth_feed.stop()
         await trades_feed.stop()
         await bybit_feed_inst.stop()
+        await chainlink_feed.stop()
         deribit_feed.stop()
         deribit_task.cancel()
         await db.close()
