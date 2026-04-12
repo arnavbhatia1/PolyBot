@@ -18,6 +18,7 @@ SAMPLE_CONFIG = {
     "execution": {
         "max_slippage": 0.02,
         "max_bankroll_deployed": 0.80,
+        "max_single_position_pct": 0.12,
         "max_concurrent_positions": 1,
         "max_book_fill_pct": 0.50,
         "slippage_impact_pct": 0.03,
@@ -42,6 +43,7 @@ SAMPLE_CONFIG = {
         "student_t_df": 4,
         "min_kelly": 0.015,
         "atr_sigma_ratio": 1.7,
+        "min_atr": 8.0,
         "weights": {
             "rsi": 0.20,
             "macd": 0.25,
