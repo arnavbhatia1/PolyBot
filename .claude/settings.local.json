@@ -121,7 +121,8 @@
       "Bash(rm /c/Users/abhat/Personal/PolyBot/PolyBot/polybot/memory/outcomes/*.json)",
       "Bash(rm /c/Users/abhat/Personal/PolyBot/PolyBot/polybot/memory/counterfactuals/*.json)",
       "Bash(sqlite3:*)",
-      "Bash(find .:*)"
+      "Bash(find .:*)",
+      "Bash(echo \"---exit code: $?\")"
     ]
   }
 }

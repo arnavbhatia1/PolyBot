@@ -375,8 +375,9 @@ async def _evaluate_signal_and_enter(
     if signal.action not in ("BUY_YES", "BUY_NO"):
         return None, last_eval_log_window
 
-    # --- EDGE CAP GATE: >30% edge = model miscalibration, not real alpha ---
-    if signal.edge > 0.30:
+    # --- EDGE CAP GATE: large edge = model miscalibration, not real alpha ---
+    max_edge = config.get("signal", {}).get("max_edge", 0.20)
+    if signal.edge > max_edge:
         return None, last_eval_log_window
 
     # --- LAYER DISAGREEMENT GATE: momentum opposing trade direction ---
@@ -1124,9 +1125,8 @@ async def _check_trading_schedule(
             await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses, day_fees)
         current_trading_day = today_str
         day_open_bankroll = await db.get_bankroll()
-        day_wins = 0
-        day_losses = 0
-        day_fees = 0.0
+        # Restore from DB in case of mid-day restart
+        day_wins, day_losses, day_fees = await db.get_day_stats(today_str)
         if breaker:
             breaker.reset()
         if alert_manager:
@@ -1181,12 +1181,18 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     if http_client is None:
         http_client = httpx.AsyncClient(timeout=5)
 
-    # Day tracking for open/close banners
-    current_trading_day: str | None = None
-    day_open_bankroll: float = 0.0
-    day_wins: int = 0
-    day_losses: int = 0
-    day_fees: float = 0.0
+    # Day tracking for open/close banners — restore from DB so mid-day restarts don't lose counts
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    _today_et = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    _db_wins, _db_losses, _db_fees = await db.get_day_stats(_today_et)
+    current_trading_day: str | None = _today_et if (_db_wins + _db_losses) > 0 else None
+    day_open_bankroll: float = await db.get_bankroll()
+    day_wins: int = _db_wins
+    day_losses: int = _db_losses
+    day_fees: float = _db_fees
+    if _db_wins + _db_losses > 0:
+        logger.info(f"Restored day stats from DB: {_db_wins}W/{_db_losses}L")
 
     while True:
         # Check if scheduler requested shutdown (auto-restart cycle after pipeline)

@@ -35,6 +35,7 @@ SAMPLE_CONFIG = {
     "database": {"path": ":memory:"},
     "signal": {
         "entry_threshold": 0.03,
+        "max_edge": 0.20,
         "exit_edge_threshold": -0.05,
         "min_model_probability": 0.65,
         "momentum_weight": 0.08,

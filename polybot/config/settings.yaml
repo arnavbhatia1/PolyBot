@@ -5,8 +5,8 @@ math:
   kelly_fraction: 0.15  # Fraction of Kelly to use (0.15 = conservative)
 
 circuit_breaker:
-  max_drawdown_pct: 0.15   # Kelly bottoms out at this drawdown from peak
-  min_multiplier: 0.25     # Floor Kelly multiplier at max drawdown
+  max_drawdown_pct: 0.30   # Kelly bottoms out at this drawdown from initial (was 0.15 — too aggressive for $100 bankroll)
+  min_multiplier: 0.40     # Floor Kelly multiplier at max drawdown (was 0.25 — strangled recovery)
   losses_to_reduce: 3      # consecutive losses before Discord streak alert
   wins_to_restore: 2       # consecutive wins before Discord streak alert
 
@@ -71,6 +71,7 @@ indicators:
 
 signal:
   entry_threshold: 0.04  # Minimum edge — raised from 0.03 to cover fee friction at mid-prices (range: 0.01-0.10)
+  max_edge: 0.20          # Maximum edge — above this the model is miscalibrated, not finding real alpha (range: 0.10-0.30)
   exit_edge_threshold: -0.05  # Exit when holding edge drops — tunable by pipeline (range: -0.25 to 0.0)
   min_model_probability: 0.65  # Min confidence to enter — tunable by pipeline (range: 0.55-0.85)
   momentum_weight: 0.04       # was 0.08 — demoted to Layer 4 (weakest signal)

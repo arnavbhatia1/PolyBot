@@ -99,7 +99,7 @@ polybot/
 `polybot/config/settings.yaml` (validated by `validate_config()` on startup):
 - `circuit_breaker.max_drawdown_pct:` — 0.15 (from initial principal, not peak), `min_multiplier:` — 0.25, `losses_to_reduce:` — 3, `wins_to_restore:` — 2
 - `math.kelly_fraction:` — 0.15
-- `signal.entry_threshold:` — 0.04 (noise floor, range 0.01-0.10)
+- `signal.entry_threshold:` — 0.04 (noise floor, range 0.01-0.10), `max_edge:` — 0.20 (miscalibration cap, range 0.10-0.30)
 - `signal.min_kelly:` — 0.015 (primary gate, range 0.005-0.05)
 - `signal.exit_edge_threshold:` — -0.10
 - `signal.min_model_probability:` — 0.65
@@ -194,7 +194,7 @@ NEGRISK EXECUTION PRICING:
 
 ENTRY (9 gates — all must pass):
   prob >= 65%, edge >= 0.04, Kelly >= 0.015, spread <= 10%, depth >= $50,
-  price_sum in [0.98,1.02], time >= 20s, edge <= 0.30, layer agreement
+  price_sum in [0.98,1.02], time >= 20s, edge <= 0.20, layer agreement
   Size = Kelly x kelly_fraction, capped to 50% of book depth
   Net-edge gate: rejects if slippage eats the edge
 
@@ -386,6 +386,7 @@ Engine math optimized: logit-space layer combination, ATR-to-sigma scaling, Stud
 - **Max single position cap** (`execution.max_single_position_pct: 0.12`): prevents concentration risk. Evidence: positions #133 ($28) and #237 ($24) lost $52 combined — 18.6% and 16% of bankroll on single binary bets.
 - **Time-weighted exit patience** (evaluate_hold): requires larger adverse edge to exit when >120s remaining. Evidence: 28 early scalps on contracts that resolved at $1.00 missed $141.75. Avg holding_edge at scalp was -0.0501 (exactly at flat threshold) with 126s remaining.
 - **Minimum ATR floor** (`signal.min_atr: 8.0`): prevents CDF overconfidence in quiet markets. Evidence: positions #124 (ATR $1.98), #137 (ATR $3.47), #154 (ATR $4.64) had pathologically low volatility → extreme z-scores → 97-99.7% false confidence → $14.71 in losses.
+- **Max edge cap** (`signal.max_edge: 0.20`): blocks trades where model disagrees strongly with market. Evidence: across 204 trades, edge >20% has 55% WR and -$28 PnL (coin flip with total losses). Edge 4-20% has 83% WR and +$15 PnL. The market correctly prices reversal risk that the CDF ignores.
 
 The core trading logic is FROZEN. Do not make structural changes to:
 - `signal_engine.py` (10-layer probability model + evaluate_hold)

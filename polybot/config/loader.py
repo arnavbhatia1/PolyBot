@@ -67,6 +67,7 @@ def validate_config(config: dict[str, Any]) -> None:
 
     # --- signal ---
     _check_range("signal.entry_threshold", 0.01, 0.10)
+    _check_range("signal.max_edge", 0.10, 0.30)
     _check_range("signal.exit_edge_threshold", -0.25, 0.0)
     _check_range("signal.min_model_probability", 0.55, 0.85)
     _check_range("signal.momentum_weight", 0.02, 0.10)

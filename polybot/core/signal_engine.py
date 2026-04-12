@@ -417,6 +417,17 @@ class SignalEngine:
         effective_threshold += time_urgency * 0.05  # up to +5% easier to exit
 
         if holding_edge <= effective_threshold:
+            # Trust the model: don't scalp when model still favors our side
+            # Exception: deeply negative edge (-20%+) means market knows something we don't
+            if model_prob >= 0.50 and holding_edge > -0.20:
+                return ("HOLD", model_prob, holding_edge,
+                        f"Hold {side} (model still {model_prob:.0%}): "
+                        f"mkt={market_price_for_side:.0%} edge={holding_edge:+.0%}")
+            # Don't panic-sell at very low prices — option value exceeds recovery
+            if market_price_for_side < 0.15:
+                return ("HOLD", model_prob, holding_edge,
+                        f"Hold {side} (mkt {market_price_for_side:.0%} too low to sell): "
+                        f"model={model_prob:.0%} edge={holding_edge:+.0%}")
             return ("EXIT", model_prob, holding_edge,
                     f"Exit {side}: model={model_prob:.0%} mkt={market_price_for_side:.0%} "
                     f"edge={holding_edge:+.0%} thresh={effective_threshold:+.0%} "

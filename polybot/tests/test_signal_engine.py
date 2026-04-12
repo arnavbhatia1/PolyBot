@@ -120,13 +120,22 @@ def test_exit_when_conditions_flip(engine):
     assert action == "EXIT"
     assert edge < -0.05
 
-def test_exit_when_edge_evaporates(engine):
-    """Model says Up likely but market overpricing our side → EXIT."""
+def test_hold_when_model_still_favors(engine):
+    """Model says 88% Up but market at 95% — model still favors, HOLD."""
     action, prob, edge, _ = engine.evaluate_hold(
         _make_indicators(atr_value=50), btc_price=66450, strike_price=66400,
         seconds_remaining=180, market_price_for_side=0.95, side="Up", exit_threshold=-0.05)
+    assert action == "HOLD"
+    assert prob > 0.50
+
+def test_exit_when_edge_deeply_negative(engine):
+    """Model says ~55% but market at 95% → edge deeply negative → EXIT."""
+    # BTC barely above strike with high ATR → model ~55%, market 95% → edge ~ -40%
+    action, prob, edge, _ = engine.evaluate_hold(
+        _make_indicators(atr_value=80), btc_price=66410, strike_price=66400,
+        seconds_remaining=180, market_price_for_side=0.95, side="Up", exit_threshold=-0.05)
     assert action == "EXIT"
-    assert edge < 0
+    assert edge < -0.20
 
 def test_hold_at_boundary(engine):
     """Small positive edge → still HOLD."""

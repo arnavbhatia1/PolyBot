@@ -180,6 +180,25 @@ class Database:
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
+    async def get_day_stats(self, date_str: str) -> tuple[int, int, float]:
+        """Return (wins, losses, fees) for a given trading day from trade_history.
+
+        Matches on exit_timestamp starting with date_str (e.g. '2026-04-12').
+        """
+        cursor = await self.conn.execute(
+            "SELECT exit_price, entry_price FROM trade_history "
+            "WHERE exit_timestamp LIKE ?",
+            (f"{date_str}%",),
+        )
+        rows = await cursor.fetchall()
+        wins = losses = 0
+        for row in rows:
+            if row[0] > row[1]:
+                wins += 1
+            else:
+                losses += 1
+        return wins, losses, 0.0
+
     async def set_bankroll(self, amount: float) -> None:
         await self.conn.execute(
             "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
