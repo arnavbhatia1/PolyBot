@@ -100,6 +100,37 @@ _regime_detector: RegimeDetector | None = None
 _current_window_id: str = ""
 
 
+def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
+    """Construct SignalEngine from config — shared between pipeline and main."""
+    return SignalEngine(
+        min_edge=signal_cfg.get("entry_threshold", 0.03),
+        kelly_fraction=config["math"].get("kelly_fraction", 0.15),
+        momentum_weight=signal_cfg.get("momentum_weight", 0.04),
+        weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
+                                            "obv": 0.15, "vwap": 0.20}),
+        min_model_probability=signal_cfg.get("min_model_probability", 0.65),
+        student_t_df=signal_cfg.get("student_t_df", 4),
+        regime_weight=signal_cfg.get("regime_weight", 0.03),
+        flow_weight=signal_cfg.get("flow_weight", 0.04),
+        regime_lookback=signal_cfg.get("regime_lookback", 20),
+        min_kelly=signal_cfg.get("min_kelly", 0.015),
+        atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", 1.7),
+        spot_flow_weight=signal_cfg.get("spot_flow_weight", 0.04),
+        wall_weight=signal_cfg.get("wall_weight", 0.05),
+        perp_lead_weight=signal_cfg.get("perp_lead_weight", 0.03),
+        prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
+        conviction_multiplier=config.get("bankroll_acceleration", {}).get("enabled", True),
+        min_atr=signal_cfg.get("min_atr", 8.0),
+        liquidation_weight=signal_cfg.get("liquidation_weight", 0.03),
+        logit_scale=signal_cfg.get("logit_scale", 4.0),
+        probability_compression=signal_cfg.get("probability_compression", 1.0),
+        consensus_dead_zone=signal_cfg.get("consensus_dead_zone", 0.05),
+        conviction_config=signal_cfg.get("conviction"),
+        consensus_config=signal_cfg.get("consensus"),
+        exit_config=signal_cfg.get("exit"),
+    )
+
+
 def compute_entry_phase(seconds_remaining: float, window_seconds: float = 300.0) -> dict:
     """Determine entry phase based on time elapsed in window.
 
@@ -283,7 +314,7 @@ async def _evaluate_signal_and_enter(
                 prev_resolution_margin=_prev_resolution_margin)
             _sprt.update(prob_up_obs)
         if _alpha_decay:
-            best_prob = max(prob_up_obs, 1 - prob_up_obs) if _sprt else 0.5
+            best_prob = max(prob_up_obs, 1 - prob_up_obs) if prob_up_obs != 0.5 else 0.5
             _alpha_decay.add_observation(time.time(), best_prob)
         return None, last_eval_log_window
 
@@ -306,8 +337,13 @@ async def _evaluate_signal_and_enter(
         acc = trades_feed.accumulator
         cvd = acc.get_cvd(window_s=120)
         taker = acc.get_taker_ratio(window_s=60)
-        # Composite: CVD direction (60%) + taker bias (40%)
-        spot_flow_signal = max(-1.0, min(1.0, math.tanh(cvd * 2) * 0.6 + (taker - 0.5) * 2 * 0.4))
+        # CVD-dominant: taker_ratio is degenerate on Binance.US (87% are 0.0/0.5/1.0).
+        # CVD has real signal above noise floor (r=0.14 vs taker r=0.025).
+        # Gate taker: only trust when trade count >= 5 in window (not 1-trade noise).
+        trade_count = acc.trade_count
+        cvd_component = math.tanh(cvd * 200) * 0.8  # scaled for BTC units (0.01 BTC -> tanh(2)=0.96)
+        taker_component = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
+        spot_flow_signal = max(-1.0, min(1.0, cvd_component + taker_component))
 
     if depth_feed:
         wall_pressure_val = depth_feed.get_wall_pressure(strike, btc_price)
@@ -317,7 +353,11 @@ async def _evaluate_signal_and_enter(
 
     if deribit_feed and deribit_feed.state.btc_iv > 0:
         atr_val = indicators.get("atr", {}).get("atr", 0)
-        iv_ratio_val = deribit_feed.state.get_iv_ratio(atr_val, btc_price)
+        deribit_cfg = config.get("deribit", {})
+        iv_ratio_val = deribit_feed.state.get_iv_ratio(
+            atr_val, btc_price,
+            iv_min=deribit_cfg.get("iv_ratio_min", 0.5),
+            iv_max=deribit_cfg.get("iv_ratio_max", 3.0))
 
     # CVD acceleration (first derivative of buying pressure)
     cvd_accel_val = 0.0
@@ -422,7 +462,10 @@ async def _evaluate_signal_and_enter(
         "perp": perp_lead_val,
         "cvd_accel": cvd_accel_val,
     }
-    consensus_mult = compute_signal_consensus(consensus_signals, side)
+    consensus_mult = compute_signal_consensus(
+        consensus_signals, side,
+        dead_zone=signal_engine.consensus_dead_zone,
+        consensus_config=signal_engine.consensus_config)
     size = round(size * consensus_mult, 2)
 
     logger.debug(
@@ -836,7 +879,10 @@ async def _evaluate_and_exit_position(
         acc = trades_feed.accumulator
         cvd = acc.get_cvd(window_s=120)
         taker = acc.get_taker_ratio(window_s=60)
-        hold_spot_flow = max(-1.0, min(1.0, math.tanh(cvd * 2) * 0.6 + (taker - 0.5) * 2 * 0.4))
+        trade_count = acc.trade_count
+        cvd_comp = math.tanh(cvd * 200) * 0.8
+        taker_comp = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
+        hold_spot_flow = max(-1.0, min(1.0, cvd_comp + taker_comp))
 
     if depth_feed:
         hold_wall_pressure = depth_feed.get_wall_pressure(strike_now, btc_now)
@@ -846,7 +892,11 @@ async def _evaluate_and_exit_position(
 
     if deribit_feed and deribit_feed.state.btc_iv > 0:
         atr_val = indicators.get("atr", {}).get("atr", 0)
-        hold_iv_ratio = deribit_feed.state.get_iv_ratio(atr_val, btc_now)
+        deribit_cfg = config.get("deribit", {})
+        hold_iv_ratio = deribit_feed.state.get_iv_ratio(
+            atr_val, btc_now,
+            iv_min=deribit_cfg.get("iv_ratio_min", 0.5),
+            iv_max=deribit_cfg.get("iv_ratio_max", 3.0))
 
     # Liquidation pressure for hold evaluation
     hold_liquidation = 0.0
@@ -1412,26 +1462,7 @@ async def run_pipeline() -> None:
         active_version=signal_cfg.get("active_weights_version", "weights_v001"),
         params=indicator_params)
 
-    signal_engine = SignalEngine(
-        min_edge=signal_cfg.get("entry_threshold", 0.03),
-        kelly_fraction=config["math"].get("kelly_fraction", 0.15),
-        momentum_weight=signal_cfg.get("momentum_weight", 0.04),
-        weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
-                                            "obv": 0.15, "vwap": 0.20}),
-        min_model_probability=signal_cfg.get("min_model_probability", 0.65),
-        student_t_df=signal_cfg.get("student_t_df", 4),
-        regime_weight=signal_cfg.get("regime_weight", 0.03),
-        flow_weight=signal_cfg.get("flow_weight", 0.04),
-        regime_lookback=signal_cfg.get("regime_lookback", 20),
-        min_kelly=signal_cfg.get("min_kelly", 0.015),
-        atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", 1.7),
-        spot_flow_weight=signal_cfg.get("spot_flow_weight", 0.04),
-        wall_weight=signal_cfg.get("wall_weight", 0.05),
-        perp_lead_weight=signal_cfg.get("perp_lead_weight", 0.03),
-        prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
-        conviction_multiplier=config.get("bankroll_acceleration", {}).get("enabled", True),
-        min_atr=signal_cfg.get("min_atr", 8.0),
-    )
+    signal_engine = _build_signal_engine(signal_cfg, config)
 
     from polybot.core.calibrator import PlattCalibrator
     calibrator = PlattCalibrator()
@@ -1547,26 +1578,7 @@ async def main() -> None:
     # Signal engine — probability model with edge-based entry
     from polybot.core.calibrator import PlattCalibrator
 
-    signal_engine = SignalEngine(
-        min_edge=signal_cfg.get("entry_threshold", 0.03),
-        kelly_fraction=config["math"].get("kelly_fraction", 0.15),
-        momentum_weight=signal_cfg.get("momentum_weight", 0.04),
-        weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
-                                            "obv": 0.15, "vwap": 0.20}),
-        min_model_probability=signal_cfg.get("min_model_probability", 0.65),
-        student_t_df=signal_cfg.get("student_t_df", 4),
-        regime_weight=signal_cfg.get("regime_weight", 0.03),
-        flow_weight=signal_cfg.get("flow_weight", 0.04),
-        regime_lookback=signal_cfg.get("regime_lookback", 20),
-        min_kelly=signal_cfg.get("min_kelly", 0.015),
-        atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", 1.7),
-        spot_flow_weight=signal_cfg.get("spot_flow_weight", 0.04),
-        wall_weight=signal_cfg.get("wall_weight", 0.05),
-        perp_lead_weight=signal_cfg.get("perp_lead_weight", 0.03),
-        prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
-        conviction_multiplier=config.get("bankroll_acceleration", {}).get("enabled", True),
-        min_atr=signal_cfg.get("min_atr", 8.0),
-    )
+    signal_engine = _build_signal_engine(signal_cfg, config)
 
     # Load Platt calibrator (identity if file doesn't exist)
     calibrator = PlattCalibrator()

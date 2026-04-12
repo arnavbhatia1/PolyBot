@@ -115,12 +115,25 @@ def validate_config(config: dict[str, Any]) -> None:
     for cb_key in ("circuit_breaker.losses_to_reduce", "circuit_breaker.wins_to_restore"):
         _check_positive(cb_key, integer=True)
 
-    # New signal weights (optional — only validate if present)
+    # Signal layer weights (optional — only validate if present)
     for key, lo, hi in [
         ("signal.spot_flow_weight", 0.0, 0.10),
         ("signal.wall_weight", 0.0, 0.15),
         ("signal.perp_lead_weight", 0.0, 0.10),
         ("signal.prev_margin_weight", 0.0, 0.05),
+        ("signal.liquidation_weight", 0.0, 0.10),
+        ("signal.logit_scale", 1.0, 10.0),
+        ("signal.probability_compression", 0.1, 1.0),
+        ("signal.consensus_dead_zone", 0.0, 0.20),
+    ]:
+        val, found = _get_nested(config, key)
+        if found:
+            _check_range(key, lo, hi)
+
+    # IV ratio bounds (optional)
+    for key, lo, hi in [
+        ("deribit.iv_ratio_min", 0.1, 1.0),
+        ("deribit.iv_ratio_max", 1.0, 10.0),
     ]:
         val, found = _get_nested(config, key)
         if found:

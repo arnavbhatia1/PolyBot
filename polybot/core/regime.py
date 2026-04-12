@@ -122,18 +122,24 @@ class RegimeDetector:
         if vol_pct > self.vol_high_pct:
             return _REGIMES["volatile"]
 
-        # 3. Trending: strong directional consistency confirmed by CVD.
-        #    Monotonic series have near-zero autocorr (constant returns -> zero std),
-        #    so we use directional ratio instead: fraction of returns in the same
-        #    direction. >70% in one direction = trending.
+        # 3. Trending: strong directional consistency — direction from PRICE, not CVD.
+        #    CVD confirms but does NOT override price direction. Previous logic used
+        #    CVD alone for direction, causing misclassification when prices rose but
+        #    CVD was negative (e.g., thin Binance.US volume with 1 seller).
         is_trending = (
             autocorr > self.autocorr_threshold
             or dir_ratio > self.trend_consistency
         )
-        if is_trending and cvd > 0:
-            return _REGIMES["trending_up"]
-        if is_trending and cvd < 0:
-            return _REGIMES["trending_down"]
+        if is_trending:
+            # Direction from price returns (majority direction), not CVD
+            returns = np.diff(closes[-(n + 1):]) / closes[-(n + 1):-1]
+            up_count = np.sum(returns > 0)
+            down_count = np.sum(returns < 0)
+            if up_count > down_count:
+                return _REGIMES["trending_up"]
+            elif down_count > up_count:
+                return _REGIMES["trending_down"]
+            # Tie: fall through to mean_reverting/neutral checks
 
         # 4. Mean-reverting: negative autocorrelation (returns flip sign)
         if autocorr < -self.autocorr_threshold:

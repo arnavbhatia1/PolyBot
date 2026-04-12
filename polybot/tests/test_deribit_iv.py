@@ -17,6 +17,10 @@ class TestIVRatio:
 
     def test_clamped_range(self):
         ratio = compute_iv_ratio(current_iv=2.0, historical_iv=0.30)
+        assert ratio <= 3.0  # default cap raised from 2.0 to 3.0
+
+    def test_custom_clamp_bounds(self):
+        ratio = compute_iv_ratio(current_iv=2.0, historical_iv=0.30, iv_max=2.0)
         assert ratio <= 2.0
 
     def test_zero_historical(self):

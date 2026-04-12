@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 # Minutes per year (365.25 days * 24 hours * 60 minutes)
 MINUTES_PER_YEAR = 525600
 
-# Clamp bounds for IV ratio
+# Default clamp bounds for IV ratio (overridden by config)
 IV_RATIO_MIN = 0.5
-IV_RATIO_MAX = 2.0
+IV_RATIO_MAX = 3.0
 
 # ATM proximity threshold: option strike within 5% of underlying
 ATM_THRESHOLD_PCT = 0.05
@@ -38,20 +38,24 @@ DERIBIT_BOOK_SUMMARY_URL = (
 )
 
 
-def compute_iv_ratio(current_iv: float, historical_iv: float) -> float:
+def compute_iv_ratio(current_iv: float, historical_iv: float,
+                     iv_min: float = IV_RATIO_MIN,
+                     iv_max: float = IV_RATIO_MAX) -> float:
     """Compute clamped ratio of current IV to historical IV.
 
     Args:
         current_iv: Forward-looking implied volatility (annualized, decimal).
         historical_iv: Backward-looking realized/historical volatility (annualized, decimal).
+        iv_min: Floor for the ratio (pipeline-tunable).
+        iv_max: Cap for the ratio (pipeline-tunable).
 
     Returns:
-        Ratio clamped to [0.5, 2.0]. Returns 1.0 if historical_iv is zero or negative.
+        Ratio clamped to [iv_min, iv_max]. Returns 1.0 if historical_iv is zero or negative.
     """
     if historical_iv <= 0.0:
         return 1.0
     ratio = current_iv / historical_iv
-    return max(IV_RATIO_MIN, min(IV_RATIO_MAX, ratio))
+    return max(iv_min, min(iv_max, ratio))
 
 
 @dataclass
@@ -67,7 +71,9 @@ class IVState:
     updated_at: float = 0.0
     net_gex: float = 0.0
 
-    def get_iv_ratio(self, atr: float, btc_price: float) -> float:
+    def get_iv_ratio(self, atr: float, btc_price: float,
+                     iv_min: float = IV_RATIO_MIN,
+                     iv_max: float = IV_RATIO_MAX) -> float:
         """Compare Deribit IV to ATR-derived annualized volatility.
 
         Converts ATR (1-minute) to annualized vol:
@@ -76,9 +82,11 @@ class IVState:
         Args:
             atr: Average true range from 1-min candles.
             btc_price: Current BTC price in USD.
+            iv_min: Floor for the ratio (from config).
+            iv_max: Cap for the ratio (from config).
 
         Returns:
-            IV ratio clamped to [0.5, 2.0]. Returns 1.0 if no IV data available
+            IV ratio clamped to [iv_min, iv_max]. Returns 1.0 if no IV data available
             or if btc_price/atr are invalid.
         """
         if self.btc_iv is None:
@@ -86,7 +94,7 @@ class IVState:
         if btc_price <= 0.0 or atr <= 0.0:
             return 1.0
         historical_iv = (atr / btc_price) * math.sqrt(MINUTES_PER_YEAR)
-        return compute_iv_ratio(self.btc_iv, historical_iv)
+        return compute_iv_ratio(self.btc_iv, historical_iv, iv_min, iv_max)
 
 
 class DeribitIVFeed:

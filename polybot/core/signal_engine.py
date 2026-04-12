@@ -19,7 +19,8 @@ class TradeSignal:
 
 
 def compute_signal_consensus(signals: dict[str, float], side: str,
-                              dead_zone: float = 0.05) -> float:
+                              dead_zone: float = 0.05,
+                              consensus_config: dict | None = None) -> float:
     """Compute Kelly multiplier based on signal agreement.
 
     Counts how many independent signals agree with the chosen trade direction.
@@ -30,10 +31,17 @@ def compute_signal_consensus(signals: dict[str, float], side: str,
                  Exception: "wall" is INVERTED (positive wall = bearish)
         side: "Up" or "Down" — the trade direction
         dead_zone: signals within this of zero are ignored (noise)
+        consensus_config: thresholds and multipliers (pipeline-tunable)
 
     Returns:
-        Multiplier: 1.3 at >=80% agreement, 1.0 at 60-80%, 0.8 at 40-60%, 0.6 at <40%
+        Multiplier based on agreement percentage (from consensus_config)
     """
+    cc = consensus_config or {
+        "very_high_pct": 0.80, "very_high_mult": 1.3,
+        "high_pct": 0.60, "high_mult": 1.0,
+        "medium_pct": 0.40, "medium_mult": 0.8,
+        "low_mult": 0.6,
+    }
     if not signals:
         return 1.0
 
@@ -53,13 +61,13 @@ def compute_signal_consensus(signals: dict[str, float], side: str,
         return 1.0
 
     agreement_pct = agree / total
-    if agreement_pct >= 0.80:
-        return 1.3
-    elif agreement_pct >= 0.60:
-        return 1.0
-    elif agreement_pct >= 0.40:
-        return 0.8
-    return 0.6
+    if agreement_pct >= cc["very_high_pct"]:
+        return cc["very_high_mult"]
+    elif agreement_pct >= cc["high_pct"]:
+        return cc["high_mult"]
+    elif agreement_pct >= cc["medium_pct"]:
+        return cc["medium_mult"]
+    return cc["low_mult"]
 
 
 class SignalEngine:
@@ -107,7 +115,14 @@ class SignalEngine:
                  perp_lead_weight: float = 0.03,
                  prev_margin_weight: float = 0.02,
                  conviction_multiplier: bool = True,
-                 min_atr: float = 8.0) -> None:
+                 min_atr: float = 8.0,
+                 liquidation_weight: float = 0.03,
+                 logit_scale: float = 4.0,
+                 probability_compression: float = 1.0,
+                 consensus_dead_zone: float = 0.05,
+                 conviction_config: dict | None = None,
+                 consensus_config: dict | None = None,
+                 exit_config: dict | None = None) -> None:
         self.min_edge: float = min_edge
         self.kelly_fraction: float = kelly_fraction
         self.momentum_weight: float = momentum_weight
@@ -127,6 +142,27 @@ class SignalEngine:
         self.prev_margin_weight: float = prev_margin_weight
         self.conviction_multiplier: bool = conviction_multiplier
         self.min_atr: float = min_atr
+        self.liquidation_weight: float = liquidation_weight
+        self.logit_scale: float = logit_scale
+        self.probability_compression: float = probability_compression
+        self.consensus_dead_zone: float = consensus_dead_zone
+        self.conviction_config: dict = conviction_config or {
+            "high_prob": 0.90, "high_mult": 1.3,
+            "mid_prob": 0.85, "mid_mult": 1.15,
+            "low_prob": 0.72, "low_mult": 0.7,
+        }
+        self.consensus_config: dict = consensus_config or {
+            "very_high_pct": 0.80, "very_high_mult": 1.3,
+            "high_pct": 0.60, "high_mult": 1.0,
+            "medium_pct": 0.40, "medium_mult": 0.8,
+            "low_mult": 0.6,
+        }
+        self.exit_config: dict = exit_config or {
+            "patience_seconds": 120, "patience_max_penalty": 0.05,
+            "urgency_seconds": 120, "urgency_max_bonus": 0.05,
+            "hold_min_prob": 0.50, "panic_edge": -0.20,
+            "low_price_hold": 0.15,
+        }
 
     @property
     def entry_threshold(self) -> float:
@@ -197,15 +233,21 @@ class SignalEngine:
             t_scale = 1.0
         prob_up = float(student_t.cdf(z * t_scale, df=self.student_t_df))
 
+        # Probability compression: shrink CDF toward 0.5 before logit layers.
+        # Addresses systematic overconfidence (96% model -> 74% actual).
+        # 1.0 = identity, 0.5 = halve distance from 0.5. Pipeline-tunable.
+        if self.probability_compression < 1.0:
+            prob_up = 0.5 + (prob_up - 0.5) * self.probability_compression
+
         # --- Fix 2: Convert to logit space for Bayesian-correct evidence combination ---
         prob_up = max(0.001, min(0.999, prob_up))
         logit_p = math.log(prob_up / (1.0 - prob_up))
 
         # Internal weight conversion: at p=0.5, dp/dlogit = 0.25
-        # logit_weight = prob_weight * 4.0 preserves behavior at p=0.5
-        logit_regime_w = self.regime_weight * 4.0
-        logit_flow_w = self.flow_weight * 4.0
-        logit_momentum_w = self.momentum_weight * 4.0
+        # logit_weight = prob_weight * logit_scale preserves behavior at p=0.5
+        logit_regime_w = self.regime_weight * self.logit_scale
+        logit_flow_w = self.flow_weight * self.logit_scale
+        logit_momentum_w = self.momentum_weight * self.logit_scale
 
         # Fix 1: Layer 2 — Regime: direction from recent return, not prob sign
         regime = self.compute_regime_factor(closes) if closes is not None else 0.0
@@ -220,27 +262,27 @@ class SignalEngine:
         logit_p += flow_signal * logit_flow_w
 
         # Layer 3b — Spot market flow (CVD + taker ratio from Binance aggTrades)
-        logit_spot_flow_w = self.spot_flow_weight * 4.0
+        logit_spot_flow_w = self.spot_flow_weight * self.logit_scale
         logit_p += spot_flow_signal * logit_spot_flow_w
 
         # Layer 3c — Wall pressure near strike (from Binance L2 depth)
         # Positive wall_pressure = resistance above = bearish for Up = reduce logit
-        logit_wall_w = self.wall_weight * 4.0
+        logit_wall_w = self.wall_weight * self.logit_scale
         logit_p -= wall_pressure * logit_wall_w
 
         # Layer 3d — Perpetual price lead (from Bybit)
-        logit_perp_w = self.perp_lead_weight * 4.0
+        logit_perp_w = self.perp_lead_weight * self.logit_scale
         logit_p += perp_lead * logit_perp_w
 
         # Layer 3e — Liquidation pressure (from Bybit OI changes)
         if liquidation_pressure != 0.0:
-            logit_liq_w = 0.03 * 4.0
+            logit_liq_w = self.liquidation_weight * self.logit_scale
             logit_p += liquidation_pressure * logit_liq_w
 
         # Layer 5 — Previous window momentum carry
         if prev_resolution_margin != 0.0 and atr > 0:
             normalized_margin = prev_resolution_margin / max(atr, 1.0)
-            logit_prev_w = self.prev_margin_weight * 4.0
+            logit_prev_w = self.prev_margin_weight * self.logit_scale
             logit_p += math.tanh(normalized_margin) * logit_prev_w
 
         # Layer 4 — Momentum
@@ -407,24 +449,29 @@ class SignalEngine:
         else:
             effective_threshold = exit_threshold
 
+        # Exit params from config (pipeline-tunable)
+        ec = self.exit_config
+
         # Patience: require larger adverse edge when plenty of time remains
-        if seconds_remaining > 120:
-            patience = min((seconds_remaining - 120) / 180.0, 1.0)
-            effective_threshold -= patience * 0.05  # up to 5% harder to exit early
+        patience_s = ec["patience_seconds"]
+        if seconds_remaining > patience_s:
+            patience = min((seconds_remaining - patience_s) / 180.0, 1.0)
+            effective_threshold -= patience * ec["patience_max_penalty"]
 
         # Time urgency: near expiry, lower the bar (better to scalp than risk total loss)
-        time_urgency = max(0.0, 1.0 - seconds_remaining / 120.0)  # ramps in last 2 min
-        effective_threshold += time_urgency * 0.05  # up to +5% easier to exit
+        urgency_s = ec["urgency_seconds"]
+        time_urgency = max(0.0, 1.0 - seconds_remaining / urgency_s)
+        effective_threshold += time_urgency * ec["urgency_max_bonus"]
 
         if holding_edge <= effective_threshold:
             # Trust the model: don't scalp when model still favors our side
-            # Exception: deeply negative edge (-20%+) means market knows something we don't
-            if model_prob >= 0.50 and holding_edge > -0.20:
+            # Exception: deeply negative edge means market knows something we don't
+            if model_prob >= ec["hold_min_prob"] and holding_edge > ec["panic_edge"]:
                 return ("HOLD", model_prob, holding_edge,
                         f"Hold {side} (model still {model_prob:.0%}): "
                         f"mkt={market_price_for_side:.0%} edge={holding_edge:+.0%}")
             # Don't panic-sell at very low prices — option value exceeds recovery
-            if market_price_for_side < 0.15:
+            if market_price_for_side < ec["low_price_hold"]:
                 return ("HOLD", model_prob, holding_edge,
                         f"Hold {side} (mkt {market_price_for_side:.0%} too low to sell): "
                         f"model={model_prob:.0%} edge={holding_edge:+.0%}")
@@ -446,11 +493,12 @@ class SignalEngine:
         base = max(0, raw * self.kelly_fraction)
         if not self.conviction_multiplier:
             return base
-        # Scale Kelly by conviction: >85% prob = boost, 65-75% = dampen
-        if prob >= 0.90:
-            return base * 1.3
-        elif prob >= 0.85:
-            return base * 1.15
-        elif prob < 0.72:
-            return base * 0.7
+        # Scale Kelly by conviction — thresholds and multipliers from config
+        cc = self.conviction_config
+        if prob >= cc["high_prob"]:
+            return base * cc["high_mult"]
+        elif prob >= cc["mid_prob"]:
+            return base * cc["mid_mult"]
+        elif prob < cc["low_prob"]:
+            return base * cc["low_mult"]
         return base

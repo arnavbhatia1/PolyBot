@@ -70,22 +70,26 @@ indicators:
     history_periods: 100
 
 signal:
-  entry_threshold: 0.04  # Minimum edge — raised from 0.03 to cover fee friction at mid-prices (range: 0.01-0.10)
-  max_edge: 0.20          # Maximum edge — above this the model is miscalibrated, not finding real alpha (range: 0.10-0.30)
-  exit_edge_threshold: -0.05  # Exit when holding edge drops — tunable by pipeline (range: -0.25 to 0.0)
-  min_model_probability: 0.65  # Min confidence to enter — tunable by pipeline (range: 0.55-0.85)
-  momentum_weight: 0.04       # was 0.08 — demoted to Layer 4 (weakest signal)
-  regime_weight: 0.03         # max ±3% regime adjustment (Layer 2) — CDF drives decisions
-  regime_lookback: 10         # number of 1-min returns for autocorrelation (10 = 10 minutes)
-  min_kelly: 0.015            # minimum Kelly fraction — skip if sized below this (noise floor)
-  atr_sigma_ratio: 1.4        # ATR/sigma scaling (empirical range 1.3-1.6 for BTC 1-min; was 1.7, overcounted vol)
-  min_atr: 8.0                 # Floor prevents extreme z-scores in quiet markets (P10 of observed ATR distribution)
-  flow_weight: 0.04           # max ±4% order flow adjustment (Layer 3) — CDF drives decisions
-  spot_flow_weight: 0.04
-  wall_weight: 0.05
-  perp_lead_weight: 0.03
-  prev_margin_weight: 0.02
-  student_t_df: 5             # degrees of freedom for fat-tailed CDF (df=5 → excess kurtosis=6, matches BTC empirical; was 4=infinite kurtosis)
+  entry_threshold: 0.04  # Minimum edge (range: 0.01-0.10)
+  max_edge: 0.20          # Safety net — Platt calibration is the real fix (range: 0.10-0.30)
+  exit_edge_threshold: -0.05  # Exit when holding edge drops (range: -0.25 to 0.0)
+  min_model_probability: 0.65  # Min confidence to enter (range: 0.55-0.85)
+  momentum_weight: 0.04       # Layer 4 (weakest signal)
+  regime_weight: 0.03         # Layer 2 — regime adjustment
+  regime_lookback: 10         # 1-min returns for autocorrelation
+  min_kelly: 0.015            # minimum Kelly fraction — noise floor
+  atr_sigma_ratio: 1.4        # ATR/sigma scaling (range: 1.2-2.5)
+  min_atr: 8.0                # Floor prevents extreme z-scores in quiet markets
+  flow_weight: 0.04           # Layer 3 — CLOB order flow (r=+0.105, only predictive signal layer)
+  spot_flow_weight: 0.04      # Layer 3b — CVD + taker ratio
+  wall_weight: 0.05           # Layer 3c — depth wall pressure
+  perp_lead_weight: 0.00      # Layer 3d — DISABLED: constant -0.20 on 96% of trades, not a signal (r=-0.029)
+  prev_margin_weight: 0.02    # Layer 5 — previous window carry
+  liquidation_weight: 0.03    # Layer 3e — OI-based liquidation pressure
+  student_t_df: 5             # degrees of freedom for fat-tailed CDF
+  logit_scale: 4.0            # converts probability weights to logit space (dp/dlogit=0.25 at p=0.5)
+  probability_compression: 1.0  # shrink toward 0.5 after CDF: 1.0=identity, 0.5=halve distance. Pipeline-tunable.
+  consensus_dead_zone: 0.05   # ignore signals within this of zero for consensus calc
   weights:
     rsi: 0.20
     macd: 0.25
@@ -93,6 +97,35 @@ signal:
     obv: 0.15
     vwap: 0.20
   active_weights_version: "weights_v001"
+
+  # Conviction scaling on Kelly — pipeline can tune thresholds and multipliers
+  conviction:
+    high_prob: 0.90       # prob >= this: boost Kelly
+    high_mult: 1.3
+    mid_prob: 0.85        # prob >= this: moderate boost
+    mid_mult: 1.15
+    low_prob: 0.72        # prob < this: reduce Kelly
+    low_mult: 0.7
+
+  # Signal consensus — agreement multiplier on Kelly
+  consensus:
+    very_high_pct: 0.80   # agreement >= this
+    very_high_mult: 1.3
+    high_pct: 0.60
+    high_mult: 1.0
+    medium_pct: 0.40
+    medium_mult: 0.8
+    low_mult: 0.6         # agreement < medium_pct
+
+  # Exit / hold parameters — all pipeline-tunable
+  exit:
+    patience_seconds: 120      # hold threshold tightens when > this many seconds remain
+    patience_max_penalty: 0.05 # max extra edge required to exit early
+    urgency_seconds: 120       # exit threshold loosens when < this many seconds remain
+    urgency_max_bonus: 0.05    # max edge reduction near expiry
+    hold_min_prob: 0.50        # don't exit if model still favors our side above this
+    panic_edge: -0.20          # exit regardless if edge below this (market knows something)
+    low_price_hold: 0.15       # don't sell if market price below this (option value)
 
 market:
   contract_type: "btc_5min"
@@ -131,6 +164,8 @@ bybit:
 deribit:
   rest_url: "https://www.deribit.com/api/v2/public"
   poll_interval_s: 60.0
+  iv_ratio_min: 0.5    # floor for IV/ATR ratio (pipeline-tunable)
+  iv_ratio_max: 3.0    # cap — was 2.0, always hit. 3.0 lets more dampening through (pipeline-tunable)
 
 # --- Dynamic entry timing ---
 entry_timing:
