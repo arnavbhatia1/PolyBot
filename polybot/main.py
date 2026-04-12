@@ -1697,16 +1697,16 @@ async def main() -> None:
         except Exception as e:
             logger.error(f"Discord bot error: {e}")
 
-    tasks = [
-        asyncio.create_task(trading_loop(
-            binance_feed, market_scanner, indicator_engine, signal_engine,
-            trader, alert_manager, db, config, outcome_reviewer,
-            is_paused_fn=lambda: discord_bot.is_paused,
-            scheduler=scheduler, clob_ws=clob_ws, breaker=breaker,
-            counterfactual_tracker=counterfactual_tracker,
-            http_client=http_client,
-            depth_feed=depth_feed, trades_feed=trades_feed,
-            bybit_feed=bybit_feed_inst, deribit_feed=deribit_feed)),
+    trading_task = asyncio.create_task(trading_loop(
+        binance_feed, market_scanner, indicator_engine, signal_engine,
+        trader, alert_manager, db, config, outcome_reviewer,
+        is_paused_fn=lambda: discord_bot.is_paused,
+        scheduler=scheduler, clob_ws=clob_ws, breaker=breaker,
+        counterfactual_tracker=counterfactual_tracker,
+        http_client=http_client,
+        depth_feed=depth_feed, trades_feed=trades_feed,
+        bybit_feed=bybit_feed_inst, deribit_feed=deribit_feed))
+    background_tasks = [
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(run_discord()),
@@ -1714,10 +1714,15 @@ async def main() -> None:
     logger.info("PolyBot started — all systems running (WebSocket + event-driven)")
 
     try:
-        await asyncio.gather(*tasks)
+        # Wait for trading loop — it exits after pipeline sets _shutdown_requested
+        await trading_task
     except asyncio.CancelledError:
         logger.info("Shutting down...")
     finally:
+        # Pipeline already completed before trading_loop exited — cancel lingering tasks
+        for t in background_tasks:
+            t.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
         await http_client.aclose()
         await clob_ws.close()
         await scheduler.stop()
