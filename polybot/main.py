@@ -1240,7 +1240,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                        trades_feed: Any = None,
                        bybit_feed: Any = None,
                        deribit_feed: Any = None,
-                       chainlink_feed: Any = None) -> None:
+                       chainlink_feed: Any = None,
+                       coinbase_feed: Any = None) -> None:
     import httpx
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
@@ -1784,7 +1785,7 @@ async def main() -> None:
         http_client=http_client,
         depth_feed=depth_feed, trades_feed=trades_feed,
         bybit_feed=bybit_feed_inst, deribit_feed=deribit_feed,
-        chainlink_feed=chainlink_feed))
+        chainlink_feed=chainlink_feed, coinbase_feed=coinbase_feed))
     background_tasks = [
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
