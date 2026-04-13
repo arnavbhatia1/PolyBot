@@ -289,41 +289,26 @@ class AgentScheduler:
                         f"win rate {candidate_win_rate:.0%}")
 
             if self.alert_manager:
-                findings = recommendations.get("key_findings", [])
-                findings_str = "\n".join(f"  - {f}" for f in findings[:5]) if findings else ""
-                reasoning_preview = recommendations.get("reasoning", "")[:200]
-
                 msg = (
-                    f"**Weights auto-updated: {current_version} -> {new_version}**\n"
-                    f"Sharpe: `{current_sharpe:.3f}` -> `{candidate_sharpe:.3f}`\n"
-                    f"Win rate: `{candidate_win_rate:.0%}`\n"
-                    f"Trades evaluated: `{len(candidate_returns)}`\n"
-                    f"New weights: {', '.join(f'{k}={v:.2f}' for k, v in new_weights.items() if k in ['rsi','macd','stochastic','obv','vwap'])}"
+                    f"**Weights updated: {current_version} -> {new_version}**\n"
+                    f"Sharpe: `{current_sharpe:.3f}` -> `{candidate_sharpe:.3f}`  |  WR `{candidate_win_rate:.0%}`"
                 )
-                if "recommended_momentum_weight" in recommendations:
-                    msg += f"\nmomentum_weight: `{recommendations['recommended_momentum_weight']}`"
-                if "recommended_min_edge" in recommendations:
-                    msg += f"\nmin_edge: `{recommendations['recommended_min_edge']}`"
-                if "recommended_min_model_probability" in recommendations:
-                    msg += f"\nmin_model_prob: `{recommendations['recommended_min_model_probability']}`"
-                if "recommended_exit_edge_threshold" in recommendations:
-                    msg += f"\nexit_threshold: `{recommendations['recommended_exit_edge_threshold']}`"
-                if "recommended_min_time_remaining" in recommendations:
-                    msg += f"\nmin_time_remaining: `{recommendations['recommended_min_time_remaining']}s`"
-                if "recommended_min_kelly" in recommendations:
-                    msg += f"\nmin_kelly: `{recommendations['recommended_min_kelly']}`"
-                if "recommended_atr_sigma_ratio" in recommendations:
-                    msg += f"\natr_sigma_ratio: `{recommendations['recommended_atr_sigma_ratio']}`"
-                if "recommended_trading_start_hour_et" in recommendations or "recommended_trading_end_hour_et" in recommendations:
-                    start_h = recommendations.get("recommended_trading_start_hour_et", self._trading_start[0] if self._trading_start else 8)
-                    end_h = recommendations.get("recommended_trading_end_hour_et", self._trading_end[0] if self._trading_end else 16)
-                    end_m = recommendations.get("recommended_trading_end_minute", self._trading_end[1] if self._trading_end else 30)
-                    msg += f"\ntrading_hours: `{start_h}:00-{end_h}:{end_m:02d} ET`"
-                if findings_str:
-                    msg += f"\n\n**Key Findings:**\n{findings_str}"
-                if reasoning_preview:
-                    msg += f"\n\n**Analysis:** {reasoning_preview}..."
-
+                # List only params that changed
+                param_keys = [
+                    ("recommended_momentum_weight", "momentum"),
+                    ("recommended_min_edge", "min_edge"),
+                    ("recommended_min_model_probability", "min_prob"),
+                    ("recommended_exit_edge_threshold", "exit_thresh"),
+                    ("recommended_min_kelly", "min_kelly"),
+                    ("recommended_atr_sigma_ratio", "atr_sigma"),
+                ]
+                changes = [f"{short}: `{recommendations[k]}`"
+                           for k, short in param_keys if k in recommendations]
+                if changes:
+                    msg += "\n" + "  |  ".join(changes)
+                findings = recommendations.get("key_findings", [])
+                if findings:
+                    msg += "\n" + "\n".join(f"- {f}" for f in findings[:3])
                 await self.alert_manager.send_pipeline_summary(msg)
 
         elif candidate_sharpe < -0.5:
@@ -347,15 +332,10 @@ class AgentScheduler:
             logger.info(f"Weights not adopted: improvement {candidate_sharpe - current_sharpe:.3f} "
                         f"below threshold {self.weight_optimizer.min_improvement}")
             if self.alert_manager:
-                msg = (
-                    f"**Learning pipeline complete — no weight change**\n"
-                    f"Current Sharpe: `{current_sharpe:.3f}`\n"
-                    f"Candidate Sharpe: `{candidate_sharpe:.3f}`\n"
-                    f"Improvement `{candidate_sharpe - current_sharpe:.3f}` below threshold `{self.weight_optimizer.min_improvement}`"
-                )
+                msg = f"**Pipeline: no change** (Sharpe {current_sharpe:.3f} -> {candidate_sharpe:.3f}, below threshold)"
                 findings = recommendations.get("key_findings", [])
                 if findings:
-                    msg += "\n\n**Claude's Findings:**\n" + "\n".join(f"  - {f}" for f in findings[:3])
+                    msg += "\n" + "\n".join(f"- {f}" for f in findings[:2])
                 await self.alert_manager.send_pipeline_summary(msg)
 
     async def run_daily_pipeline(self) -> None:

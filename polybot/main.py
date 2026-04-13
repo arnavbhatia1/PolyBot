@@ -1351,18 +1351,31 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     if http_client is None:
         http_client = httpx.AsyncClient(timeout=5)
 
-    # Day tracking for open/close banners — restore from DB so mid-day restarts don't lose counts
+    # Day tracking for open/close banners
+    # At scheduled restart (12:15 AM ET), start fresh at 0W/0L.
+    # Only restore from DB if it's a mid-day restart (trading already happened today).
     from zoneinfo import ZoneInfo
     from datetime import datetime
-    _today_et = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-    _db_wins, _db_losses, _db_fees = await db.get_day_stats(_today_et)
-    current_trading_day: str | None = _today_et if (_db_wins + _db_losses) > 0 else None
-    day_open_bankroll: float = await db.get_bankroll()
-    day_wins: int = _db_wins
-    day_losses: int = _db_losses
-    day_fees: float = _db_fees
-    if _db_wins + _db_losses > 0:
-        logger.info(f"Restored day stats from DB: {_db_wins}W/{_db_losses}L")
+    ET_tz = ZoneInfo("America/New_York")
+    _now_et = datetime.now(ET_tz)
+    _today_et = _now_et.strftime("%Y-%m-%d")
+    _is_scheduled_restart = _now_et.hour == 0 and _now_et.minute < 30  # 12:00-12:30 AM = fresh start
+    if _is_scheduled_restart:
+        current_trading_day: str | None = None
+        day_open_bankroll: float = await db.get_bankroll()
+        day_wins: int = 0
+        day_losses: int = 0
+        day_fees: float = 0.0
+        logger.info("Fresh day start (scheduled restart)")
+    else:
+        _db_wins, _db_losses, _db_fees = await db.get_day_stats(_today_et)
+        current_trading_day = _today_et if (_db_wins + _db_losses) > 0 else None
+        day_open_bankroll = await db.get_bankroll()
+        day_wins = _db_wins
+        day_losses = _db_losses
+        day_fees = _db_fees
+        if _db_wins + _db_losses > 0:
+            logger.info(f"Mid-day restart: restored {_db_wins}W/{_db_losses}L from DB")
 
     while True:
         # Check if scheduler requested shutdown (auto-restart cycle after pipeline)
