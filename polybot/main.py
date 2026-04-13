@@ -289,7 +289,8 @@ async def _evaluate_signal_and_enter(
         depth_feed: Any = None,
         trades_feed: Any = None,
         bybit_feed: Any = None,
-        deribit_feed: Any = None) -> tuple[str | None, int]:
+        deribit_feed: Any = None,
+        coinbase_feed: Any = None) -> tuple[str | None, int]:
     """Compute indicators/flow/signal, check for entry, size the trade, execute."""
     in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
 
@@ -1428,7 +1429,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 token_up, token_down, signal_config, max_bankroll_pct,
                 now_ts,
                 depth_feed=depth_feed, trades_feed=trades_feed,
-                bybit_feed=bybit_feed, deribit_feed=deribit_feed)
+                bybit_feed=bybit_feed, deribit_feed=deribit_feed,
+                coinbase_feed=coinbase_feed)
             if traded_cid:
                 traded_contracts[traded_cid] = now_ts
 
