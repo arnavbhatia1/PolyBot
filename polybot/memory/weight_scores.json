@@ -1,7 +1,7 @@
 {
   "weights_v001": {
-    "sharpe": 0.0639,
-    "total_trades": 55,
-    "win_rate": 0.7091
+    "sharpe": -0.0722,
+    "total_trades": 116,
+    "win_rate": 0.6121
   }
 }

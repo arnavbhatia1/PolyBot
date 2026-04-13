@@ -16,6 +16,7 @@ execution:
   max_single_position_pct: 0.12  # No single trade > 12% of bankroll (prevents concentration risk)
   max_concurrent_positions: 2  # Allow hedged Up+Down positions
   max_book_fill_pct: 0.50     # Cap order to 50% of available ask depth (realistic fills)
+  concurrent_position_discount: 0.45  # Binary outcome correlation is lower than spot price correlation — outcomes decorrelate faster
   slippage_impact_pct: 0.03   # 3% price impact at 100% depth consumption. Tune vs live fills.
   initial_bankroll: 100.0
   use_maker_orders: true        # Post limit orders (0% fee), FOK fallback (1.8% fee) if not filled
@@ -74,7 +75,7 @@ signal:
   max_edge: 0.20          # Safety net — Platt calibration is the real fix (range: 0.10-0.30)
   exit_edge_threshold: -0.05  # Exit when holding edge drops (range: -0.25 to 0.0)
   min_model_probability: 0.65  # Min confidence to enter (range: 0.55-0.85)
-  momentum_weight: 0.02       # Layer 4 — reduced, r=-0.040 (slightly anti-predictive at 5-min). Pipeline can zero out.
+  momentum_weight: 0.00       # Layer 4 — zeroed out, r=-0.040 (anti-predictive at 5-min). Pipeline found no value.
   regime_weight: 0.03         # Layer 2 — regime adjustment
   regime_lookback: 10         # 1-min returns for autocorrelation
   min_kelly: 0.015            # minimum Kelly fraction — noise floor

@@ -1,0 +1,109 @@
+{
+  "position_id": 396,
+  "market_id": "btc-updown-5m-1776050100",
+  "question": "Bitcoin Up or Down - April 12, 11:15PM-11:20PM ET",
+  "side": "Up",
+  "signal_score": 0.6780870591637512,
+  "correct": true,
+  "entry_price": 0.5,
+  "exit_price": 1.0,
+  "log_return": 0.6931471805599453,
+  "size": 0.53,
+  "pnl": 0.53,
+  "fees": 0.0,
+  "gain_pct": 1.0,
+  "weight_version": "weights_v001",
+  "category": "crypto-5min",
+  "indicator_snapshot": {
+    "rsi": {
+      "rsi": 50.34,
+      "score": -0.0051,
+      "norm_score": -0.0698821309311341
+    },
+    "macd": {
+      "macd": -2.473,
+      "signal": -2.1609,
+      "histogram": -0.3121,
+      "score": -0.0229,
+      "norm_score": 0.43915981402747395
+    },
+    "stochastic": {
+      "k": 54.25,
+      "d": 54.25,
+      "score": -0.0425,
+      "norm_score": -0.20844573010866782
+    },
+    "ema": {
+      "trend": "chop",
+      "fast_ema": 71052.32697002898,
+      "slow_ema": 71054.24809983489
+    },
+    "obv": {
+      "obv_slope": 0.0,
+      "price_slope": 2.33,
+      "score": 0.0,
+      "norm_score": 0.14357676082007328
+    },
+    "vwap": {
+      "vwap": 70914.44,
+      "deviation": 1.6755,
+      "score": -0.5027,
+      "norm_score": -0.17384483835414857
+    },
+    "atr": {
+      "atr": 25.47,
+      "passes": true,
+      "reason": "ok"
+    },
+    "weights": {
+      "rsi": 0.2,
+      "macd": 0.25,
+      "stochastic": 0.2,
+      "obv": 0.15,
+      "vwap": 0.2,
+      "entry_threshold": 0.6
+    },
+    "trade_context": {
+      "btc_price": 71073.99,
+      "strike_price": 71046.01,
+      "seconds_remaining": 181.451158,
+      "market_price_up": 0.5,
+      "market_price_down": 0.49,
+      "model_probability_raw": 0.6780870591637512,
+      "model_probability": 0.6780870591637512,
+      "edge": 0.17808705916375123,
+      "momentum_score": 0.04089192775108937,
+      "atr": 25.47,
+      "size": 0.53,
+      "flow_score": -0.1494,
+      "flow_book_imbalance": 0.072,
+      "flow_trade_count": 200,
+      "spot_flow_signal": -0.22346735095928272,
+      "wall_pressure": 0.14884824007326175,
+      "iv_ratio": 1.717833075376449,
+      "prev_resolution_margin": 51.587143480515806,
+      "bybit_perp_price": 71038.4,
+      "funding_rate": 1.152e-05,
+      "depth_usd_top20": 306290.9273528999,
+      "entry_phase": "normal",
+      "cvd_120s": -9.999999999999999e-06,
+      "taker_ratio_60s": 0.5,
+      "volume_surge": false,
+      "liquidation_pressure": 0.0,
+      "gex_signal": 1.0,
+      "gex_regime": "stabilizing",
+      "cvd_acceleration": 0.0,
+      "clob_velocity_up": 0.1779532195997405,
+      "clob_velocity_down": -0.1779532195997405,
+      "coinbase_btc": 71073.99,
+      "regime_state": "neutral",
+      "regime_kelly_mult": 1.0,
+      "sprt_confidence": 1.0,
+      "sprt_status": "ENTER",
+      "signal_consensus": 0.6,
+      "alpha_decay_rate": -0.00392068047856654
+    }
+  },
+  "exit_reason": "resolution",
+  "timestamp": "2026-04-13T03:22:25.744392+00:00"
+}
