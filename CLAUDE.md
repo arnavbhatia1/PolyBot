@@ -10,10 +10,10 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
   - L1: Student-t CDF (df=5, fat tails). z = distance / (ATR/sigma_ratio * sqrt(time) * iv_ratio)
   - L2: Regime detection (1-lag autocorrelation of last N 1-min returns)
   - L3: CLOB order flow (book imbalance + trade flow)
-  - L3b: Spot market flow (CVD + taker ratio from Binance aggTrades)
+  - L3b: Spot market flow (CVD-dominant from Binance aggTrades, taker gated by min trade count)
   - L3c: Wall pressure (L2 depth near strike from Binance 1000-level book)
-  - L3d: Perpetual price lead (Bybit perp/spot divergence, 0.5-2s lead)
-  - L3e: Liquidation pressure (Bybit OI drop + price direction)
+  - L3d: Perpetual price lead — **DISABLED** (weight=0.0, constant -0.20 on 96% of trades due to Binance.US/Bybit pricing gap, r=-0.029)
+  - L3e: Liquidation pressure (Bybit OI drop + price direction, weight now configurable)
   - L4: Indicator momentum (RSI, MACD, Stochastic, OBV, VWAP)
   - L5: Previous window momentum carry (resolution margin / ATR)
 - **SPRT entry gate.** Sequential Probability Ratio Test accumulates evidence during 60s observe phase. Strong signals enter in 5-7 ticks, weak signals correctly skipped.
@@ -27,14 +27,14 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Conviction multiplier on Kelly.** 1.3x at >90% confidence, 1.15x at 85-90%, 0.7x below 72%.
 - **Bankroll acceleration.** Kelly ratchets 0.15 -> 0.18/0.22/0.25 as trade count and win rate grow. Drops back if WR falls.
 - **Maker orders with FOK fallback.** Limit order first (0% fee), FOK fallback after 60s (1.8% fee). ~60% fee savings.
-- **Bybit perpetual price lead + funding rate.** Perp leads spot by 0.5-2s — directional signal + staleness detection. Funding rate = contrarian crowding indicator.
-- **Deribit options IV.** Forward-looking vol adjusts ATR-to-sigma ratio in L1 when market expects more/less vol than ATR shows.
+- **Bybit perpetual price lead + funding rate.** Perp leads spot by 0.5-2s. **Layer 3d DISABLED (weight=0.0)** — audit showed Bybit perp is consistently $40-50 below Binance.US spot (96% of trades), making it a constant bias not a signal. Funding rate still available for future use.
+- **Deribit options IV.** Forward-looking vol adjusts ATR-to-sigma ratio in L1. IV ratio cap raised from 2.0 to 3.0 (configurable via `deribit.iv_ratio_max`). Was always hitting 2.0 cap; 3.0 lets more dampening through to compress overconfident CDF.
 - **One trade per 5-min contract.** After any exit, that contract is blacklisted.
 - **Auto-restart cycle.** `run_polybot.ps1` manages daily lifecycle: start at 12:15 AM ET, trade until 11:59 PM, pipeline at 12:05 AM, exit, commit config/outcomes/DB to git, push, restart at 12:15 AM.
 - **Git-backed persistence.** Outcomes, counterfactuals, and DB tracked in git. `run_polybot.ps1` commits and pushes after the 12:05 AM pipeline, preserving state across restarts.
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total.
-- **Dual entry gate + safety gates.** Kelly >= 0.015 (primary) AND edge >= 0.04 (noise floor). Safety: edge >30% = skip (miscalibration), momentum disagreement halves edge.
-- **Signal layer weights (logit space).** L1 Student-t CDF drives decisions. L2-L5 adjust in logit space (weight x 4.0 max shift). Logit-space dampens adjustments near extremes. CDF must show direction before layers can push past 65% gate.
+- **Dual entry gate + safety gates.** Kelly >= 0.015 (primary) AND edge >= 0.04 (noise floor). Safety: edge >20% = skip (miscalibration cap), momentum disagreement halves edge.
+- **Signal layer weights (logit space).** L1 Student-t CDF drives decisions. L2-L5 adjust in logit space (weight x `logit_scale` max shift, default 4.0). Logit-space dampens adjustments near extremes. CDF must show direction before layers can push past 65% gate. `logit_scale` is pipeline-tunable.
 - **Real-time WebSocket + Gamma API for prices.** CLOB WS provides real-time books, BBA, last trades, resolution events. Event-driven loop, HTTP fallback if WS disconnected. Gamma API for contract discovery. `outcomePrices` are stale — never use for edge.
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
 - **Binance.US, not Binance.com.** HTTP 451 for US IPs on .com.
@@ -99,15 +99,20 @@ polybot/
 `polybot/config/settings.yaml` (validated by `validate_config()` on startup):
 - `circuit_breaker.max_drawdown_pct:` — 0.15 (from initial principal, not peak), `min_multiplier:` — 0.25, `losses_to_reduce:` — 3, `wins_to_restore:` — 2
 - `math.kelly_fraction:` — 0.15
-- `signal.entry_threshold:` — 0.04 (noise floor, range 0.01-0.10), `max_edge:` — 0.20 (miscalibration cap, range 0.10-0.30)
+- `signal.entry_threshold:` — 0.04 (noise floor, range 0.01-0.10), `max_edge:` — 0.20 (safety net behind Platt, range 0.10-0.30)
 - `signal.min_kelly:` — 0.015 (primary gate, range 0.005-0.05)
-- `signal.exit_edge_threshold:` — -0.10
+- `signal.exit_edge_threshold:` — -0.05
 - `signal.min_model_probability:` — 0.65
 - `signal.momentum_weight:` — 0.04 (L4), `regime_weight:` — 0.03 (L2), `flow_weight:` — 0.04 (L3)
-- `signal.spot_flow_weight:` — 0.04 (L3b), `wall_weight:` — 0.05 (L3c), `perp_lead_weight:` — 0.03 (L3d)
-- `signal.prev_margin_weight:` — 0.02 (L5)
+- `signal.spot_flow_weight:` — 0.04 (L3b), `wall_weight:` — 0.05 (L3c), `perp_lead_weight:` — 0.00 (L3d DISABLED)
+- `signal.prev_margin_weight:` — 0.02 (L5), `liquidation_weight:` — 0.03 (L3e, was hardcoded)
 - `signal.atr_sigma_ratio:` — 1.4 (range 1.2-2.5), `student_t_df:` — 5, `regime_lookback:` — 10, `min_atr:` — 8.0 (range 1.0-30.0)
+- `signal.logit_scale:` — 4.0 (prob-to-logit multiplier, was hardcoded), `probability_compression:` — 1.0 (CDF shrink, 1.0=off), `consensus_dead_zone:` — 0.05
+- `signal.conviction:` — high_prob/mult (0.90/1.3x), mid_prob/mult (0.85/1.15x), low_prob/mult (0.72/0.7x) — all pipeline-tunable
+- `signal.consensus:` — agreement thresholds and Kelly multipliers — all pipeline-tunable
+- `signal.exit:` — patience_seconds, urgency_seconds, hold_min_prob, panic_edge, low_price_hold — all pipeline-tunable
 - `signal.weights:` — per-indicator weights for momentum
+- `deribit.iv_ratio_min:` — 0.5, `iv_ratio_max:` — 3.0 (was hardcoded at 2.0)
 - `execution.max_concurrent_positions:` — 2, `max_bankroll_deployed:` — 0.80, `max_single_position_pct:` — 0.12, `max_book_fill_pct:` — 0.50
 - `execution.slippage_impact_pct:` — 0.03, `use_maker_orders:` — true, `maker_timeout_s:` — 60.0
 - `market.entry_window_seconds:` — 300, `min_time_remaining_seconds:` — 20, `max_spread:` — 0.10
@@ -127,7 +132,7 @@ python -m polybot.main --mode paper   # Paper trading (persistent bankroll acros
 python -m polybot.main --mode live    # Live trading (real USDC on Polymarket)
 python -m polybot.main                # Defaults to mode in settings.yaml
 python -m polybot.main --run-pipeline # Run daily learning pipeline once and exit (no trading)
-python -m pytest polybot/tests/       # 545 tests
+python -m pytest polybot/tests/       # 547 tests
 ```
 
 ## How the Probability Model Works
@@ -139,7 +144,7 @@ Chainlink BTC/USD oracle (eventMetadata.priceToBeat/finalPrice from Gamma API),
 which can differ from Binance by $20-200. Entry uses Binance (Chainlink not
 available during active windows). Resolution always uses Gamma/Chainlink data.
 Distance = current BTC price - strike
-Vol = ATR (average true range from 1-min candles, period=7) / atr_sigma_ratio (1.7)
+Vol = ATR (average true range from 1-min candles, period=7) / atr_sigma_ratio (1.4)
 Time = minutes remaining in the window
 
 LAYER 1 — Fat-tailed base (Student-t CDF, df=5):
@@ -148,6 +153,8 @@ LAYER 1 — Fat-tailed base (Student-t CDF, df=5):
   z = distance / vol
   z_scaled = z x sqrt(df / (df-2))               [variance normalization]
   P(Up) = t.cdf(z_scaled, df=5)                  [df=5: excess kurtosis=6]
+  IF probability_compression < 1.0:               [shrink CDF toward 0.5, pipeline-tunable]
+    P(Up) = 0.5 + (P(Up) - 0.5) x compression
   Why: BTC kurtosis ~6-8 — normal CDF underestimates reversal probability.
 
 LAYER 2 — Regime detection (in logit space):
@@ -163,9 +170,11 @@ LAYER 4 — Indicator momentum (in logit space):
   Z-score normalized scores per indicator (IndicatorNormalizer)
   Weighted RSI/MACD/Stochastic/OBV/VWAP x (momentum_weight x 4.0)
 
-LAYER 3b — Spot market flow (in logit space):
-  spot_flow = tanh(CVD * 2) * 0.6 + (taker_ratio - 0.5) * 2 * 0.4
-  logit_p += spot_flow * (spot_flow_weight x 4.0)
+LAYER 3b — Spot market flow (in logit space, CVD-dominant):
+  cvd_component = tanh(CVD * 200) * 0.8       [scaled for BTC units on Binance.US]
+  taker_component = (taker - 0.5) * 2 * 0.2   [only if trade_count >= 5, else 0]
+  spot_flow = cvd_component + taker_component
+  logit_p += spot_flow * (spot_flow_weight x logit_scale)
 
 LAYER 3c — Wall pressure near strike (in logit space):
   wall_pressure = (ask_vol_near_strike - bid_vol_near_strike) / total
@@ -177,15 +186,17 @@ LAYER 3d — Perpetual price lead (in logit space):
 
 LAYER 3e — Liquidation pressure (in logit space):
   OI drop + price drop → bearish; OI drop + price rise → bullish
-  logit_p += liquidation_pressure * (0.03 x 4.0)
+  logit_p += liquidation_pressure * (liquidation_weight x logit_scale)
 
 LAYER 5 — Previous window momentum carry (in logit space):
   normalized_margin = (prev_btc_at_expiry - prev_strike) / ATR
   logit_p += tanh(normalized_margin) * (prev_margin_weight x 4.0)
 
-CALIBRATION — Platt scaling:
+CALIBRATION — Platt scaling (ACTIVE as of 2026-04-12):
   calibrated = 1 / (1 + exp(A x logit(raw_prob) + B))
-  A, B fitted daily by learning pipeline (identity until 100+ outcomes)
+  A=-0.200, B=-0.294 fitted from 253 outcomes (Brier 0.250→0.213)
+  Maps: 95%→71%, 85%→66%, 70%→61% — fixes systematic overconfidence
+  Re-fitted daily by pipeline (60/40 train/holdout validation)
 
 NEGRISK EXECUTION PRICING:
   price_up = GET /price?token_id=UP&side=BUY   (cross-matched, not raw book)
@@ -284,7 +295,7 @@ Binance WS (1-min candles)          Gamma API (contract discovery)
 
 All 10 signal layers feed `signal_engine.evaluate()` (see "How the Probability Model Works" for formulas). Layers 2-5 applied in logit space. Output: `final_prob`, `edge`, `side`, `kelly_size`.
 
-9 entry gates (all must pass): confidence >= 0.65, edge >= 0.04, Kelly >= 0.015, spread <= 0.10, depth >= $50, price_sum in [0.98, 1.02], time >= 20s, edge <= 0.30, layer agreement.
+9 entry gates (all must pass): confidence >= 0.65, edge >= 0.04, Kelly >= 0.015, spread <= 0.10, depth >= $50, price_sum in [0.98, 1.02], time >= 20s, edge <= 0.20, layer agreement.
 
 ### Phase 3: Sizing
 
@@ -380,18 +391,27 @@ Outcomes enriched with `trade_context` (btc_price, strike, seconds_remaining, ma
 - Don't derive regime direction from sign(prob - 0.5) — use sign(most recent return). The autocorrelation measures persistence, but the DIRECTION comes from recent returns.
 - Don't bypass the SPRT gate — it's mathematically optimal for sequential binary decisions.
 
-## Baseline — LOCKED 2026-04-11
+## Baseline — LOCKED 2026-04-11, CALIBRATION AUDIT 2026-04-12
 
 Engine math optimized: logit-space layer combination, ATR-to-sigma scaling, Student-t variance normalization, regime direction fix (sign of recent return), Kelly-based entry gate, indicator z-score normalization, Platt calibration. Final structural fixes applied 2026-04-11 based on 132-trade evidence:
-- **Max single position cap** (`execution.max_single_position_pct: 0.12`): prevents concentration risk. Evidence: positions #133 ($28) and #237 ($24) lost $52 combined — 18.6% and 16% of bankroll on single binary bets.
-- **Time-weighted exit patience** (evaluate_hold): requires larger adverse edge to exit when >120s remaining. Evidence: 28 early scalps on contracts that resolved at $1.00 missed $141.75. Avg holding_edge at scalp was -0.0501 (exactly at flat threshold) with 126s remaining.
-- **Minimum ATR floor** (`signal.min_atr: 8.0`): prevents CDF overconfidence in quiet markets. Evidence: positions #124 (ATR $1.98), #137 (ATR $3.47), #154 (ATR $4.64) had pathologically low volatility → extreme z-scores → 97-99.7% false confidence → $14.71 in losses.
-- **Max edge cap** (`signal.max_edge: 0.20`): blocks trades where model disagrees strongly with market. Evidence: across 204 trades, edge >20% has 55% WR and -$28 PnL (coin flip with total losses). Edge 4-20% has 83% WR and +$15 PnL. The market correctly prices reversal risk that the CDF ignores.
+- **Max single position cap** (`execution.max_single_position_pct: 0.12`): prevents concentration risk.
+- **Time-weighted exit patience** (evaluate_hold): requires larger adverse edge to exit when >120s remaining.
+- **Minimum ATR floor** (`signal.min_atr: 8.0`): prevents CDF overconfidence in quiet markets.
+- **Max edge cap** (`signal.max_edge: 0.20`): safety net behind Platt calibration.
+
+**2026-04-12 calibration audit (253-trade evidence):**
+- **Platt calibration fitted and active.** A=-0.200, B=-0.294. Brier 0.250→0.213. Raw model was 20-28% overconfident above 70% (model said 96%, actual 74%). Platt compresses: 95%→71%, 85%→66%. Edge computed from calibrated probabilities is now genuine — overconfident high-edge trades compute negative edge and are naturally filtered.
+- **Perp lead disabled** (`perp_lead_weight: 0.00`): constant -0.20 on 96% of trades (Binance.US vs Bybit pricing gap). r=-0.029 with outcomes. Not a signal.
+- **IV ratio cap raised** (`deribit.iv_ratio_max: 3.0`): was always hitting 2.0 cap. Higher cap lets more vol dampening through.
+- **spot_flow formula rewritten**: CVD-dominant (scaled for BTC units), taker_ratio gated by min 5 trades. Old formula was 81% taker noise. CVD has r=+0.14, taker r=+0.025.
+- **Regime direction fixed**: was using CVD for trending direction (could misclassify uptrends as downtrends when CVD was negative). Now uses price return direction.
+- **30+ pipeline-tunable parameters** (was 13): conviction thresholds, consensus multipliers, exit params, logit_scale, liquidation_weight, probability_compression, iv_ratio bounds — all in settings.yaml.
+- **`_build_signal_engine()` helper** extracted in main.py — single source of truth for both pipeline and trading constructors.
 
 The core trading logic is FROZEN. Do not make structural changes to:
 - `signal_engine.py` (10-layer probability model + evaluate_hold)
 - `order_flow.py` (book imbalance + trade flow)
-- Entry/exit/pricing logic in `main.py` (now 9 extracted helper functions — logic unchanged, just organized)
+- Entry/exit/pricing logic in `main.py` (extracted helper functions)
 - `base.py` (BaseTrader ABC, fee math, shared gates/DB ops)
 - `paper_trader.py` / `live_trader.py` (extend BaseTrader — only 3 abstract methods each)
 

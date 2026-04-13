@@ -40,9 +40,9 @@ python -m polybot.main --run-pipeline
     L1  -- Student-t CDF (df=5, fat tails): z = distance / (vol * sqrt(time) * iv_ratio)
     L2  -- Regime detection: autocorrelation of last N 1-min returns (+/-3%)
     L3  -- CLOB order flow: book imbalance + trade flow (+/-4%)
-    L3b -- Spot market flow: CVD + taker ratio from Binance aggTrades (+/-4%)
+    L3b -- Spot market flow: CVD-dominant from Binance aggTrades, taker gated by min trade count (+/-4%)
     L3c -- Wall pressure: L2 depth near strike from Binance 1000-level book (+/-5%)
-    L3d -- Perpetual price lead: Bybit perp/spot divergence (+/-3%)
+    L3d -- Perpetual price lead: DISABLED (constant bias from Binance.US/Bybit pricing gap)
     L3e -- Liquidation pressure: Bybit OI drop + price direction (+/-3%)
     L4  -- Indicator momentum: RSI/MACD/Stochastic/OBV/VWAP (+/-4%)
     L5  -- Previous window momentum carry (+/-2%)
@@ -139,7 +139,7 @@ Key parameters (all tunable by learning pipeline):
 - **Kelly fraction** -- 0.15 (conservative for binary outcomes)
 - **Entry threshold** -- 4% minimum edge (noise floor)
 - **Min model probability** -- 65% confidence gate
-- **Layer weights** -- L2 regime 3%, L3 flow 4%, L3b spot flow 4%, L3c wall 5%, L3d perp 3%, L4 momentum 4%, L5 carry 2%
+- **Layer weights** -- L2 regime 3%, L3 flow 4%, L3b spot flow 4%, L3c wall 5%, L3d perp 0% (disabled), L3e liquidation 3%, L4 momentum 4%, L5 carry 2%
 - **Max concurrent positions** -- 2 (half-Kelly when concurrent)
 - **Circuit breaker** -- Kelly scales 1.0 to 0.25 as drawdown from initial principal reaches 15% (not peak-based)
 - **SPRT** -- alpha 0.05, beta 0.10 for evidence accumulation
@@ -154,7 +154,7 @@ Runs daily at 12:05 AM ET. Minimum 50 trades required (enforced in code). 60/40 
 3. **TAEvolver** -- Sends analysis + trades to Claude API. Returns weight adjustments, all layer weights, kelly_fraction, atr_sigma_ratio, reasoning, risk warnings
 4. **WeightOptimizer** -- Backtests on validation set (last 40%). Auto-adopts if Sharpe improves >= 3%. Hot-swaps all params and persists to settings.yaml
 
-Tunes 15+ parameters: indicator weights, all layer weights, student_t_df, min_edge, kelly_fraction, min_kelly, atr_sigma_ratio, min_model_probability, exit_edge_threshold, min_time_remaining, trading hours.
+Tunes 30+ parameters: indicator weights, all layer weights, student_t_df, min_edge, kelly_fraction, min_kelly, atr_sigma_ratio, min_model_probability, exit_edge_threshold, min_time_remaining, trading hours, logit_scale, probability_compression, liquidation_weight, conviction thresholds/multipliers, consensus thresholds/multipliers, exit patience/urgency params, iv_ratio bounds.
 
 ## Discord Commands
 
@@ -189,5 +189,5 @@ All memory syncs via git -- outcomes, counterfactuals, DB, and config are tracke
 ## Tests
 
 ```bash
-python -m pytest polybot/tests/ -q   # 545 tests
+python -m pytest polybot/tests/ -q   # 547 tests
 ```
