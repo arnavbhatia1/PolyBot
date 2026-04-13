@@ -174,16 +174,16 @@ def test_student_t_less_extreme_than_normal():
 
 def test_regime_factor_trending():
     se = SignalEngine()
-    # Monotonically increasing closes = positive autocorrelation (need 22+ for 20 returns)
-    closes = np.array([100 + i * 2.0 for i in range(25)])
+    # Monotonically increasing closes = positive autocorrelation (need lookback+2 closes)
+    closes = np.array([100 + i * 2.0 for i in range(55)])
     factor = se.compute_regime_factor(closes)
     assert factor > 0  # trending
 
 
 def test_regime_factor_reverting():
     se = SignalEngine()
-    # Alternating up/down = negative autocorrelation (need 22+ for 20 returns)
-    closes = np.array([100 + ((-1)**i) * 5.0 for i in range(25)])
+    # Alternating up/down = negative autocorrelation (need lookback+2 closes)
+    closes = np.array([100 + ((-1)**i) * 5.0 for i in range(55)])
     factor = se.compute_regime_factor(closes)
     assert factor < 0  # mean reverting
 
@@ -252,8 +252,8 @@ def test_evaluate_hold_fee_aware_threshold():
 def test_regime_direction_from_returns_not_prob():
     """Fix 1: trending DOWN + above strike → prob should DECREASE."""
     se = SignalEngine(regime_weight=0.05)
-    # BTC above strike but trending down (closes decreasing)
-    closes = np.array([100 + 50 - i * 3.0 for i in range(25)])  # trending down
+    # BTC above strike but trending down (closes decreasing, need lookback+2 closes)
+    closes = np.array([67000 - i * 2.0 for i in range(55)])  # trending down, stays positive
     prob_no_regime = se.compute_probability(66450, 66400, 180, 30.0)
     prob_with_regime = se.compute_probability(66450, 66400, 180, 30.0, closes=closes)
     # Down-trending regime should push prob_up LOWER, not higher

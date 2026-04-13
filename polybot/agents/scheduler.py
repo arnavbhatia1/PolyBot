@@ -279,7 +279,7 @@ class AgentScheduler:
                     sched["trading_end_minute"] = recommendations["recommended_trading_end_minute"]
 
                 try:
-                    config_to_save = {k: v for k, v in self._config.items() if k != "mode"}
+                    config_to_save = dict(self._config)
                     save_config(config_to_save)
                     logger.info("Pipeline parameters persisted to settings.yaml")
                 except Exception as e:

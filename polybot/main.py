@@ -116,18 +116,18 @@ _realized_edge_history: list[tuple[float, float]] = []  # (predicted_edge, reali
 def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
     """Construct SignalEngine from config — shared between pipeline and main."""
     return SignalEngine(
-        min_edge=signal_cfg.get("entry_threshold", 0.03),
+        min_edge=signal_cfg.get("entry_threshold", 0.04),
         kelly_fraction=config["math"].get("kelly_fraction", 0.15),
-        momentum_weight=signal_cfg.get("momentum_weight", 0.04),
+        momentum_weight=signal_cfg.get("momentum_weight", -0.02),
         weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                             "obv": 0.15, "vwap": 0.20}),
-        min_model_probability=signal_cfg.get("min_model_probability", 0.65),
-        student_t_df=signal_cfg.get("student_t_df", 4),
+        min_model_probability=signal_cfg.get("min_model_probability", 0.58),
+        student_t_df=signal_cfg.get("student_t_df", 5),
         regime_weight=signal_cfg.get("regime_weight", 0.03),
         flow_weight=signal_cfg.get("flow_weight", 0.04),
-        regime_lookback=signal_cfg.get("regime_lookback", 20),
+        regime_lookback=signal_cfg.get("regime_lookback", 50),
         min_kelly=signal_cfg.get("min_kelly", 0.015),
-        atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", 1.7),
+        atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", 1.4),
         spot_flow_weight=signal_cfg.get("spot_flow_weight", 0.04),
         wall_weight=signal_cfg.get("wall_weight", 0.05),
         prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
@@ -442,7 +442,7 @@ async def _evaluate_signal_and_enter(
         logger.info(
             f"{_C.CYAN}{'-' * 60}{_C.RESET}\n"
             f"  {action_color}EVAL  {signal.action:<8}{_C.RESET} | {contract.get('question', cid)}\n"
-            f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]  src={_price_source}\n"
+            f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]  src={price_source}\n"
             f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
             f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  iv {iv_ratio_val:.2f}\n"
             f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}  cvd_a {cvd_accel_val:+.2f}\n"
@@ -563,7 +563,7 @@ async def _evaluate_signal_and_enter(
     # Portfolio Kelly with correlation: ~0.35 per position, not naive 0.50
     open_positions = await db.get_open_positions()
     if len(open_positions) > 0:
-        concurrent_discount = config.get("execution", {}).get("concurrent_position_discount", 0.35)
+        concurrent_discount = config.get("execution", {}).get("concurrent_position_discount", 0.45)
         size = round(size * concurrent_discount, 2)
 
     if size > bankroll * max_bankroll_pct:
@@ -717,7 +717,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
                             last_eval_log_window: int,
                             chainlink_feed: Any = None,
                             coinbase_feed: Any = None,
-                            **kwargs) -> tuple[float | None, float | None, dict[int, float], int]:
+                            **kwargs) -> tuple[float | None, float | None, dict[int, float], int, str]:
     """Derive strike and BTC price, preferring Chainlink (resolution source) over Binance."""
     now_ts = int(time.time())
 
@@ -759,7 +759,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
             logger.info(f"EVAL: no strike for window {contract_window_ts} — candle buffer has {buf_len} candles")
-        return None, None, window_strikes, last_eval_log_window
+        return None, None, window_strikes, last_eval_log_window, "none"
 
     # BTC price priority: Coinbase (fastest) > Kraken (Chainlink source) > Binance (fallback)
     _price_source = "none"
@@ -777,15 +777,15 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
             logger.info(f"EVAL: no BTC price — Binance feed not ready")
-        return None, None, window_strikes, last_eval_log_window
+        return None, None, window_strikes, last_eval_log_window, "none"
 
     # Skip if candle data is stale (WebSocket may have disconnected)
     latest_candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
     if latest_candle_age > 180:
         logger.warning(f"Stale candle data: {latest_candle_age:.0f}s old, skipping entry")
-        return None, None, window_strikes, last_eval_log_window
+        return None, None, window_strikes, last_eval_log_window, "none"
 
-    return strike, btc_price, window_strikes, last_eval_log_window
+    return strike, btc_price, window_strikes, last_eval_log_window, _price_source
 
 
 async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_down: str,
@@ -937,6 +937,7 @@ async def _evaluate_and_exit_position(
         day_wins: int, day_losses: int, day_fees: float,
         depth_feed: Any = None, trades_feed: Any = None,
         bybit_feed: Any = None, deribit_feed: Any = None,
+        coinbase_feed: Any = None,
         chainlink_feed: Any = None,
         kraken_feed: Any = None) -> tuple[int, int, float, str | None]:
     """Re-evaluate an active position and exit (scalp) if holding edge is gone."""
@@ -1480,6 +1481,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                             day_wins, day_losses, day_fees,
                             depth_feed=depth_feed, trades_feed=trades_feed,
                             bybit_feed=bybit_feed, deribit_feed=deribit_feed,
+                            coinbase_feed=coinbase_feed,
                             chainlink_feed=chainlink_feed, kraken_feed=kraken_feed)
                     if traded_mid:
                         traded_contracts[traded_mid] = int(time.time())
@@ -1531,7 +1533,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             depth_usd_down = prices["depth_usd_down"]
             eval_window = prices["eval_window"]
 
-            strike, btc_price, window_strikes, last_eval_log_window = \
+            strike, btc_price, window_strikes, last_eval_log_window, btc_price_source = \
                 _compute_strike_and_btc(cid, binance_feed, window_strikes,
                                         eval_window, last_eval_log_window,
                                         chainlink_feed=chainlink_feed,
@@ -1763,8 +1765,8 @@ async def main() -> None:
     init_bankroll = await db.get_bankroll()
     breaker = CircuitBreaker(
         initial_bankroll=init_bankroll,
-        max_drawdown_pct=cb_cfg.get("max_drawdown_pct", 0.15),
-        min_multiplier=cb_cfg.get("min_multiplier", 0.25),
+        max_drawdown_pct=cb_cfg.get("max_drawdown_pct", 0.30),
+        min_multiplier=cb_cfg.get("min_multiplier", 0.40),
         losses_to_reduce=cb_cfg.get("losses_to_reduce", 3),
         wins_to_restore=cb_cfg.get("wins_to_restore", 2),
     )

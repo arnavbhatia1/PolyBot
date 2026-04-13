@@ -77,7 +77,7 @@ signal:
   min_model_probability: 0.58  # Lowered from 0.65 — near-ATM trades have highest crowd bias edge. SPRT still gates weak signals.
   momentum_weight: -0.02      # Layer 4 — NEGATIVE: fade indicators (5-min BTC mean reverts). r=-0.04 is the signal with sign inverted. Pipeline can tune [-0.10, +0.10].
   regime_weight: 0.03         # Layer 2 — regime adjustment
-  regime_lookback: 10         # 1-min returns for autocorrelation
+  regime_lookback: 50         # 1-min returns for autocorrelation
   min_kelly: 0.015            # minimum Kelly fraction — noise floor
   atr_sigma_ratio: 1.4        # ATR/sigma scaling (range: 1.2-2.5)
   min_atr: 8.0                # Floor prevents extreme z-scores in quiet markets

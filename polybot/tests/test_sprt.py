@@ -9,17 +9,19 @@ class TestSPRT:
             result = sprt.update(prob_up=0.80)
         assert result == "ENTER"
 
-    def test_weak_signal_stays_accumulating(self):
+    def test_weak_signal_skips(self):
+        """Weak signals (0.55) accumulate little evidence and correctly SKIP after 4+ obs."""
         sprt = SPRTAccumulator(alpha=0.05, beta=0.10, min_interval_s=0.0)
         for _ in range(5):
             result = sprt.update(prob_up=0.55)
-        assert result == "ACCUMULATING"
+        assert result == "SKIP"
 
-    def test_coin_flip_never_enters(self):
+    def test_coin_flip_skips(self):
+        """Coin-flip signals (0.50) add zero evidence and correctly SKIP after 4+ obs."""
         sprt = SPRTAccumulator(alpha=0.05, beta=0.10, min_interval_s=0.0)
-        for _ in range(100):
+        for _ in range(5):
             result = sprt.update(prob_up=0.50)
-        assert result == "ACCUMULATING"
+        assert result == "SKIP"
 
     def test_down_signal_also_enters(self):
         sprt = SPRTAccumulator(alpha=0.05, beta=0.10, min_interval_s=0.0)

@@ -20,8 +20,8 @@ class CircuitBreaker:
     def __init__(
         self,
         initial_bankroll: float = 1000.0,
-        max_drawdown_pct: float = 0.15,
-        min_multiplier: float = 0.25,
+        max_drawdown_pct: float = 0.30,
+        min_multiplier: float = 0.40,
         # Legacy params accepted for backward compat (ignored for sizing)
         losses_to_reduce: int = 3,
         wins_to_restore: int = 2,

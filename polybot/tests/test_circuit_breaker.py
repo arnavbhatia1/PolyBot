@@ -13,8 +13,8 @@ class TestConstruction:
         cb = CircuitBreaker()
         assert cb.peak_bankroll == 1000.0
         assert cb.current_bankroll == 1000.0
-        assert cb.max_drawdown_pct == 0.15
-        assert cb.min_multiplier == 0.25
+        assert cb.max_drawdown_pct == 0.30
+        assert cb.min_multiplier == 0.40
         assert cb.kelly_multiplier == 1.0
 
     def test_custom_initial_bankroll(self):

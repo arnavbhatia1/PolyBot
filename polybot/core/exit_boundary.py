@@ -53,7 +53,7 @@ class ExitBoundary:
         minutes_remaining = max(seconds_remaining / 60.0, 0.01)
 
         # Fee cost of exiting now
-        fee_cost = fee_rate * entry_price * (1.0 - entry_price)
+        fee_cost = fee_rate * market_price * (1.0 - market_price)
 
         # Base time value: sqrt(time) optionality (ATM case)
         base_time_value = self.price_vol_per_min * math.sqrt(minutes_remaining) * 0.4

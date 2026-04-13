@@ -105,12 +105,12 @@ class SignalEngine:
     by at least `min_edge`. Kelly sizes the bet based on that edge.
     """
 
-    def __init__(self, min_edge: float = 0.03, kelly_fraction: float = 0.15,
-                 momentum_weight: float = 0.04, weights: dict[str, float] | None = None,
-                 min_model_probability: float = 0.65,
-                 student_t_df: int = 4, regime_weight: float = 0.03,
-                 flow_weight: float = 0.04, regime_lookback: int = 20,
-                 min_kelly: float = 0.015, atr_sigma_ratio: float = 1.7,
+    def __init__(self, min_edge: float = 0.04, kelly_fraction: float = 0.15,
+                 momentum_weight: float = -0.02, weights: dict[str, float] | None = None,
+                 min_model_probability: float = 0.58,
+                 student_t_df: int = 5, regime_weight: float = 0.03,
+                 flow_weight: float = 0.04, regime_lookback: int = 50,
+                 min_kelly: float = 0.015, atr_sigma_ratio: float = 1.4,
                  calibrator: 'PlattCalibrator | None' = None,
                  spot_flow_weight: float = 0.04,
                  wall_weight: float = 0.05,

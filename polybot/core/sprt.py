@@ -31,6 +31,7 @@ class SPRTAccumulator:
         self.lower_bound = math.log(beta / (1.0 - alpha))
         self._up_evidence: float = 0.0
         self._down_evidence: float = 0.0
+        self._observation_count: int = 0
         self._status: str = "ACCUMULATING"
         self._last_update_ts: float = 0.0
 
@@ -61,6 +62,7 @@ class SPRTAccumulator:
         if now - self._last_update_ts < self.min_interval_s:
             return self._status  # too soon, skip this observation
         self._last_update_ts = now
+        self._observation_count += 1
 
         # Evidence increment: how much this tick supports a directional signal.
         # log(max(p, 1-p) / 0.5) — stronger signals add more evidence.
@@ -75,10 +77,13 @@ class SPRTAccumulator:
             self._down_evidence += increment
         # prob_up == 0.5: no evidence added to either side
 
-        # Check boundaries against the stronger directional evidence
+        # Check ENTER: strong directional evidence
         if self.llr >= self.upper_bound:
             self._status = "ENTER"
-        elif self.llr <= self.lower_bound:
+        # Check SKIP: evidence is weak or conflicted after enough observations
+        elif self._observation_count >= 4 and self.llr < self.upper_bound * 0.3:
+            # After 4+ observations, if LLR hasn't reached 30% of ENTER threshold,
+            # the signal is too weak to trade
             self._status = "SKIP"
 
         return self._status
@@ -103,5 +108,6 @@ class SPRTAccumulator:
         """Clear all state for a new window."""
         self._up_evidence = 0.0
         self._down_evidence = 0.0
+        self._observation_count = 0
         self._status = "ACCUMULATING"
         self._last_update_ts = 0.0
