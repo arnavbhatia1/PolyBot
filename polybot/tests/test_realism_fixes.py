@@ -67,9 +67,7 @@ class TestConvexSlippage:
 class TestHoldoutSplit:
     """run_daily_pipeline should split outcomes 60/40 chronologically.
 
-    Note: tests use 100 outcomes to exceed the 50-trade minimum required by
-    the learning pipeline gate.  Holdout split logic is independent of the
-    gate — it just needs enough data to actually reach TAEvolver/WeightOptimizer.
+    Uses 250 outcomes to exceed the 200-trade pipeline minimum.
     """
 
     @staticmethod
@@ -97,7 +95,7 @@ class TestHoldoutSplit:
         async def mock_wo(recs, outcomes=None):
             received["wo_count"] = len(outcomes) if outcomes else 0
 
-        outcomes = self._make_outcomes(100)
+        outcomes = self._make_outcomes(250)
 
         reviewer = MagicMock()
         reviewer.load_all_outcomes.return_value = outcomes
@@ -111,9 +109,9 @@ class TestHoldoutSplit:
 
         await scheduler.run_daily_pipeline()
 
-        assert received["bias_count"] == 60   # 60% of 100
-        assert received["ta_count"] == 60
-        assert received["wo_count"] == 40     # 40% of 100
+        assert received["bias_count"] == 150   # 60% of 250
+        assert received["ta_count"] == 150
+        assert received["wo_count"] == 100     # 40% of 250
 
     @pytest.mark.asyncio
     async def test_split_is_chronological(self):
@@ -130,7 +128,7 @@ class TestHoldoutSplit:
         async def mock_wo(recs, outcomes=None):
             received["wo_timestamps"] = [o["timestamp"] for o in (outcomes or [])]
 
-        outcomes = self._make_outcomes(100)
+        outcomes = self._make_outcomes(250)
 
         reviewer = MagicMock()
         reviewer.load_all_outcomes.return_value = outcomes
@@ -144,7 +142,7 @@ class TestHoldoutSplit:
 
         await scheduler.run_daily_pipeline()
 
-        # Train = first 60 (oldest), validation = last 40 (newest)
+        # Train = first 150 (oldest), validation = last 100 (newest)
         assert received["bias_timestamps"][-1] < received["wo_timestamps"][0]
 
     @pytest.mark.asyncio

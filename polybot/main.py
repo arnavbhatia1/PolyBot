@@ -16,7 +16,7 @@ from polybot.db.models import Database
 from polybot.core.binance_feed import BinanceFeed
 from polybot.core.market_scanner import BTCMarketScanner
 from polybot.core.clob_ws import ClobWebSocket
-from polybot.indicators.engine import IndicatorEngine
+from polybot.indicators.engine import IndicatorEngine, IndicatorNormalizer
 from polybot.core.signal_engine import SignalEngine
 from polybot.core.order_flow import compute_flow_signal
 from polybot.brain.claude_client import ClaudeClient
@@ -36,6 +36,7 @@ from polybot.core.binance_depth import BinanceDepthFeed
 from polybot.core.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
 from polybot.core.bybit_feed import BybitFeed
 from polybot.core.deribit_iv import DeribitIVFeed
+from polybot.core.coinbase_feed import CoinbaseFeed
 from polybot.core.bankroll_strategy import compute_kelly_tier
 from polybot.core.sprt import SPRTAccumulator
 from polybot.core.regime import RegimeDetector
@@ -93,10 +94,10 @@ _peak_hold_price: dict[str, float] = {}  # market_id -> peak market_price_for_si
 # Previous window resolution margin for adjacent window momentum (D2)
 _prev_resolution_margin: float = 0.0
 
-# SPRT and alpha decay state — reset per window
 _sprt: SPRTAccumulator | None = None
 _alpha_decay: AlphaDecayTracker | None = None
 _regime_detector: RegimeDetector | None = None
+_cvd_normalizer: IndicatorNormalizer | None = None
 _current_window_id: str = ""
 
 
@@ -117,7 +118,6 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
         atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", 1.7),
         spot_flow_weight=signal_cfg.get("spot_flow_weight", 0.04),
         wall_weight=signal_cfg.get("wall_weight", 0.05),
-        perp_lead_weight=signal_cfg.get("perp_lead_weight", 0.03),
         prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
         conviction_multiplier=config.get("bankroll_acceleration", {}).get("enabled", True),
         min_atr=signal_cfg.get("min_atr", 8.0),
@@ -296,7 +296,7 @@ async def _evaluate_signal_and_enter(
     # Dynamic entry timing — observe first 60s, then phased entry
     entry_phase = compute_entry_phase(contract["seconds_remaining"])
     if not entry_phase["allowed"]:
-        # During observe phase: accumulate SPRT evidence instead of doing nothing
+        # During observe phase: accumulate SPRT evidence + track alpha decay
         global _sprt, _alpha_decay, _current_window_id
         window_id = contract.get("market_id", contract.get("slug", ""))
         if window_id != _current_window_id:
@@ -316,7 +316,14 @@ async def _evaluate_signal_and_enter(
         if _alpha_decay:
             best_prob = max(prob_up_obs, 1 - prob_up_obs) if prob_up_obs != 0.5 else 0.5
             _alpha_decay.add_observation(time.time(), best_prob)
-        return None, last_eval_log_window
+
+        # Adaptive alpha decay: if edge is decaying fast AND SPRT has strong evidence,
+        # break out of observe phase early (CLAUDE.md: "Fast decay triggers early SPRT entry")
+        if (_alpha_decay and _alpha_decay.should_enter_now()
+                and _sprt and _sprt.get_status() == "ENTER"):
+            logger.info(f"EARLY ENTRY: alpha decay {_alpha_decay.get_decay_rate():+.4f}/s + SPRT ENTER — skipping remaining observe")
+        else:
+            return None, last_eval_log_window
 
     # Compute indicators and evaluate probability model
     indicators = indicator_engine.compute_all(binance_feed.buffer)
@@ -330,7 +337,6 @@ async def _evaluate_signal_and_enter(
     # --- New signals from extended feeds ---
     spot_flow_signal = 0.0
     wall_pressure_val = 0.0
-    perp_lead_val = 0.0
     iv_ratio_val = 1.0
 
     if trades_feed and trades_feed.accumulator:
@@ -341,15 +347,13 @@ async def _evaluate_signal_and_enter(
         # CVD has real signal above noise floor (r=0.14 vs taker r=0.025).
         # Gate taker: only trust when trade count >= 5 in window (not 1-trade noise).
         trade_count = acc.trade_count
-        cvd_component = math.tanh(cvd * 200) * 0.8  # scaled for BTC units (0.01 BTC -> tanh(2)=0.96)
+        cvd_z = _cvd_normalizer.normalize("cvd", cvd) if _cvd_normalizer else 0.0
+        cvd_component = math.tanh(cvd_z) * 0.8
         taker_component = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
         spot_flow_signal = max(-1.0, min(1.0, cvd_component + taker_component))
 
     if depth_feed:
         wall_pressure_val = depth_feed.get_wall_pressure(strike, btc_price)
-
-    if bybit_feed and bybit_feed.state.perp_price > 0:
-        perp_lead_val = bybit_feed.state.get_lead(btc_price)
 
     if deribit_feed and deribit_feed.state.btc_iv > 0:
         atr_val = indicators.get("atr", {}).get("atr", 0)
@@ -389,7 +393,6 @@ async def _evaluate_signal_and_enter(
         closes=closes, flow_signal=flow_score,
         spot_flow_signal=spot_flow_signal,
         wall_pressure=wall_pressure_val,
-        perp_lead=perp_lead_val,
         prev_resolution_margin=_prev_resolution_margin,
         iv_ratio=iv_ratio_val,
         liquidation_pressure=liquidation_val,
@@ -408,11 +411,16 @@ async def _evaluate_signal_and_enter(
             f"  {action_color}EVAL  {signal.action:<8}{_C.RESET} | {contract.get('question', cid)}\n"
             f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]\n"
             f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
-            f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  perp {perp_lead_val:+.3f}  iv {iv_ratio_val:.2f}\n"
+            f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  iv {iv_ratio_val:.2f}\n"
             f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}  cvd_a {cvd_accel_val:+.2f}\n"
             f"  {_C.DIM}{signal.reason}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
+        return None, last_eval_log_window
+
+    # --- SPRT GATE: require accumulated evidence from observe phase ---
+    if _sprt and _sprt.get_status() == "SKIP":
+        logger.info(f"SKIP: SPRT rejected — insufficient evidence during observe phase")
         return None, last_eval_log_window
 
     # --- EDGE CAP GATE: large edge = model miscalibration, not real alpha ---
@@ -437,6 +445,14 @@ async def _evaluate_signal_and_enter(
     token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
     bankroll = await db.get_bankroll()
     kelly_mult = breaker.kelly_multiplier if breaker else 1.0
+
+    # Bankroll acceleration: ratchet Kelly up as track record grows (CLAUDE.md)
+    if config.get("bankroll_acceleration", {}).get("enabled", True):
+        trade_count, win_rate = await db.get_trade_stats()
+        accel_kelly = compute_kelly_tier(trade_count, win_rate, signal_engine.kelly_fraction)
+        if accel_kelly != signal_engine.kelly_fraction:
+            signal_engine.kelly_fraction = accel_kelly
+
     size = round(bankroll * signal.kelly_size * kelly_mult, 2)
 
     # Dynamic entry timing: apply phase Kelly multiplier
@@ -459,7 +475,6 @@ async def _evaluate_signal_and_enter(
         "flow": flow_score,
         "spot_flow": spot_flow_signal,
         "wall": wall_pressure_val,
-        "perp": perp_lead_val,
         "cvd_accel": cvd_accel_val,
     }
     consensus_mult = compute_signal_consensus(
@@ -468,10 +483,15 @@ async def _evaluate_signal_and_enter(
         consensus_config=signal_engine.consensus_config)
     size = round(size * consensus_mult, 2)
 
+    # GEX trade bias: stabilizing gamma dampens size, amplifying boosts (CLAUDE.md)
+    gex_bias = gex_info.get("trade_bias", 1.0)
+    if gex_bias != 1.0:
+        size = round(size * gex_bias, 2)
+
     logger.debug(
         f"  REGIME {regime_state.name if regime_state else 'N/A'}  |  "
         f"SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%})  |  "
-        f"consensus {consensus_mult:.1f}x  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}")
+        f"consensus {consensus_mult:.1f}x  |  gex {gex_bias:.1f}x  |  liq {liquidation_val:+.2f}")
 
     # Phase-based probability override (final phase needs >90%)
     if entry_phase["min_prob_override"] and signal.prob < entry_phase["min_prob_override"]:
@@ -550,7 +570,6 @@ async def _evaluate_signal_and_enter(
         "flow_trade_count": flow_data.get("trade_count", 0),
         "spot_flow_signal": spot_flow_signal,
         "wall_pressure": wall_pressure_val,
-        "perp_lead": perp_lead_val,
         "iv_ratio": iv_ratio_val,
         "prev_resolution_margin": _prev_resolution_margin,
         "bybit_perp_price": bybit_feed.state.perp_price if bybit_feed and bybit_feed.state else 0,
@@ -564,6 +583,9 @@ async def _evaluate_signal_and_enter(
         "gex_signal": gex_val,
         "gex_regime": gex_info.get("regime", "neutral"),
         "cvd_acceleration": cvd_accel_val,
+        "clob_velocity_up": clob_ws.get_price_velocity(token_up) if clob_ws else 0,
+        "clob_velocity_down": clob_ws.get_price_velocity(token_down) if clob_ws else 0,
+        "coinbase_btc": coinbase_feed.state.price if coinbase_feed and coinbase_feed.state.price > 0 else 0,
         "regime_state": regime_state.name if regime_state else "unknown",
         "regime_kelly_mult": regime_state.kelly_mult if regime_state else 1.0,
         "sprt_confidence": _sprt.get_confidence() if _sprt else 0,
@@ -620,7 +642,9 @@ async def _evaluate_signal_and_enter(
 def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[int, float],
                             eval_window: int,
                             last_eval_log_window: int,
-                            chainlink_feed: Any = None) -> tuple[float | None, float | None, dict[int, float], int]:
+                            chainlink_feed: Any = None,
+                            coinbase_feed: Any = None,
+                            **kwargs) -> tuple[float | None, float | None, dict[int, float], int]:
     """Derive strike and BTC price, preferring Chainlink (resolution source) over Binance."""
     now_ts = int(time.time())
 
@@ -664,8 +688,11 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             logger.info(f"EVAL: no strike for window {contract_window_ts} — candle buffer has {buf_len} candles")
         return None, None, window_strikes, last_eval_log_window
 
-    # Real-time BTC from Binance (fast) — speed edge over Chainlink's slow oracle
-    btc_price = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+    # Use the fastest available BTC price: Coinbase leads Binance.US by 0.5-2s
+    if coinbase_feed and coinbase_feed.state.price > 0 and coinbase_feed.state.age_seconds < 5:
+        btc_price = coinbase_feed.state.price
+    else:
+        btc_price = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
     if btc_price <= 0:
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
@@ -872,7 +899,6 @@ async def _evaluate_and_exit_position(
     # New signals for hold evaluation
     hold_spot_flow = 0.0
     hold_wall_pressure = 0.0
-    hold_perp_lead = 0.0
     hold_iv_ratio = 1.0
 
     if trades_feed and trades_feed.accumulator:
@@ -880,15 +906,13 @@ async def _evaluate_and_exit_position(
         cvd = acc.get_cvd(window_s=120)
         taker = acc.get_taker_ratio(window_s=60)
         trade_count = acc.trade_count
-        cvd_comp = math.tanh(cvd * 200) * 0.8
+        cvd_z = _cvd_normalizer.normalize("cvd_hold", cvd) if _cvd_normalizer else 0.0
+        cvd_comp = math.tanh(cvd_z) * 0.8
         taker_comp = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
         hold_spot_flow = max(-1.0, min(1.0, cvd_comp + taker_comp))
 
     if depth_feed:
         hold_wall_pressure = depth_feed.get_wall_pressure(strike_now, btc_now)
-
-    if bybit_feed and bybit_feed.state.perp_price > 0:
-        hold_perp_lead = bybit_feed.state.get_lead(btc_now)
 
     if deribit_feed and deribit_feed.state.btc_iv > 0:
         atr_val = indicators.get("atr", {}).get("atr", 0)
@@ -918,7 +942,6 @@ async def _evaluate_and_exit_position(
         closes=closes, flow_signal=hold_flow["flow_score"],
         spot_flow_signal=hold_spot_flow,
         wall_pressure=hold_wall_pressure,
-        perp_lead=hold_perp_lead,
         prev_resolution_margin=_prev_resolution_margin,
         iv_ratio=hold_iv_ratio,
         liquidation_pressure=hold_liquidation,
@@ -1389,7 +1412,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             strike, btc_price, window_strikes, last_eval_log_window = \
                 _compute_strike_and_btc(cid, binance_feed, window_strikes,
                                         eval_window, last_eval_log_window,
-                                        chainlink_feed=chainlink_feed)
+                                        chainlink_feed=chainlink_feed,
+                                        coinbase_feed=coinbase_feed)
             if strike is None:
                 continue
 
@@ -1702,20 +1726,37 @@ async def main() -> None:
         poll_interval=deribit_cfg.get("poll_interval_s", 60.0),
     )
 
+    # Coinbase feed — faster BTC price (leads Binance.US by 0.5-2s)
+    coinbase_cfg = config.get("coinbase", {})
+    coinbase_feed = CoinbaseFeed(
+        ws_url=coinbase_cfg.get("ws_url", "wss://ws-feed.exchange.coinbase.com"),
+        product_id=coinbase_cfg.get("product_id", "BTC-USD"),
+    )
+
     # SPRT, regime detector, alpha decay — module-level state for trading loop
     global _sprt, _alpha_decay, _regime_detector
     _sprt = SPRTAccumulator(
         alpha=config.get("sprt", {}).get("alpha", 0.05),
         beta=config.get("sprt", {}).get("beta", 0.10),
     )
-    _regime_detector = RegimeDetector()
+    regime_cfg = config.get("regime", {})
+    _regime_detector = RegimeDetector(
+        lookback=regime_cfg.get("lookback", 50),
+        vol_high_pct=regime_cfg.get("vol_high_percentile", 75),
+        vol_low_pct=regime_cfg.get("vol_low_percentile", 25),
+        autocorr_threshold=regime_cfg.get("autocorr_threshold", 0.25),
+    )
     _alpha_decay = AlphaDecayTracker()
+
+    global _cvd_normalizer
+    _cvd_normalizer = IndicatorNormalizer(alpha=0.02, warmup=50)
 
     await scheduler.start()
     await binance_feed.start()
     await depth_feed.start()
     await trades_feed.start()
     await bybit_feed_inst.start()
+    await coinbase_feed.start()
     # DeribitIVFeed.start() is a blocking loop — run as background task
     deribit_task = asyncio.create_task(deribit_feed.start())
 

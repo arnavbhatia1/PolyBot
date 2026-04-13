@@ -32,9 +32,9 @@ python -m polybot.main --run-pipeline
 ## How It Works
 
 ```
-6 WebSocket feeds + 2 REST polls (real-time data)
+8 WebSocket feeds + 2 REST polls (real-time data)
         |
-  200-candle Binance buffer + track strike at 5-min window open
+  Coinbase BTC price (primary, 0.5-2s faster) + Binance candle buffer + Chainlink strike
         |
   10-LAYER PROBABILITY MODEL (logit-space combination):
     L1  -- Student-t CDF (df=5, fat tails): z = distance / (vol * sqrt(time) * iv_ratio)
@@ -48,18 +48,19 @@ python -m polybot.main --run-pipeline
     L5  -- Previous window momentum carry (+/-2%)
     +   -- Platt scaling calibration (fitted daily)
         |
-  SPRT evidence accumulation during 60s observe phase
-  HMM regime classifier adjusts Kelly/edge per market state
+  SPRT evidence gate during 60s observe phase (blocks weak signals)
+  Alpha decay: fast edge decay triggers early SPRT entry
+  Rule-based regime classifier (lookback=50) adjusts Kelly per market state
   Signal consensus multiplier (>80% agree -> 1.3x Kelly)
-  Alpha decay tracker for adaptive entry timing
-  GEX from Deribit options (stabilizing vs amplifying)
+  GEX from Deribit options (stabilizing 0.7x / amplifying 1.3x size)
+  Bankroll acceleration (Kelly ratchets 0.15 -> 0.25 with track record)
         |
-  Edge = model_prob - market_price (from CLOB /price endpoint)
+  Edge = calibrated_model_prob - market_price (from CLOB /price endpoint)
         |
-  9 entry gates: confidence >= 65%, edge >= 4%, Kelly >= 1.5%,
+  10 entry gates: SPRT, confidence >= 65%, edge >= 4%, Kelly >= 1.5%,
     spread <= 10%, depth >= $50, price sanity, timing, edge cap, layer agreement
         |
-  Kelly sizing (0.15 fraction), capped to 50% of book depth
+  Kelly sizing x breaker x phase x regime x consensus x GEX, capped to 50% of book depth
   Convex slippage model, net-edge gate
         |
   While holding: continuously re-evaluate with same model
@@ -75,19 +76,21 @@ python -m polybot.main --run-pipeline
 | Module | Purpose |
 |--------|---------|
 | `core/signal_engine.py` | 10-layer probability model: Student-t CDF + 9 logit-space layers |
-| `core/binance_feed.py` | Binance.US WebSocket price stream + rolling candle buffer |
-| `core/clob_ws.py` | Real-time Polymarket CLOB WebSocket (order books, trades, resolution) |
+| `core/coinbase_feed.py` | Coinbase Exchange BTC-USD ticker (primary price, 0.5-2s faster) |
+| `core/binance_feed.py` | Binance.US WebSocket candle buffer (ATR, indicators, fallback price) |
+| `core/clob_ws.py` | Real-time Polymarket CLOB WebSocket (order books, trades, resolution, price velocity) |
+| `core/chainlink_feed.py` | Chainlink BTC/USD oracle (resolution price source, preferred for strike) |
 | `core/market_scanner.py` | Gamma API contract discovery + CLOB HTTP helpers |
 | `core/order_flow.py` | Book imbalance + trade flow signal from CLOB data |
 | `core/binance_depth.py` | L2 order book: wall detection, spot imbalance, book depth |
 | `core/binance_trades.py` | Aggregate trade stream: CVD, taker ratio, large trades, volume surge |
 | `core/bybit_feed.py` | BTC perpetual price lead + funding rate signal |
 | `core/deribit_iv.py` | BTC options implied volatility (forward-looking vol) |
-| `core/sprt.py` | Sequential Probability Ratio Test for evidence-based entry |
+| `core/sprt.py` | Sequential Probability Ratio Test — actively gates entries |
 | `core/regime.py` | Multi-state regime detector (trending/reverting/volatile/quiet) |
 | `core/liquidation.py` | OI-based liquidation pressure from Bybit |
 | `core/gamma_exposure.py` | Net gamma exposure from Deribit options chain |
-| `core/alpha_decay.py` | Edge decay rate tracker for adaptive entry timing |
+| `core/alpha_decay.py` | Edge decay rate tracker — triggers early SPRT entry |
 | `core/bankroll_strategy.py` | Tiered Kelly acceleration based on track record |
 | `core/calibrator.py` | Platt scaling calibration for probability model |
 | `indicators/` | 7 indicators (RSI, MACD, Stochastic, EMA, OBV, VWAP, ATR) |
@@ -104,7 +107,8 @@ python -m polybot.main --run-pipeline
 
 | Source | Feed | What |
 |--------|------|------|
-| **Binance.US** | `btcusdt@kline_1m` WS | 1-min candles -- BTC price, ATR, indicators |
+| **Coinbase** | `ticker` WS (BTC-USD) | **Primary BTC price** (0.5-2s faster than Binance.US) |
+| **Binance.US** | `btcusdt@kline_1m` WS | 1-min candles -- ATR, indicators, fallback BTC price |
 | **Binance.US** | `btcusdt@depth20@100ms` WS | Top 20 book levels -- spot imbalance |
 | **Binance.US** | `btcusdt@aggTrade` WS | Every trade with taker side -- CVD, taker ratio |
 | **Binance.US** | `GET /depth?limit=1000` REST | Full order book -- wall detection near strike |
@@ -112,7 +116,8 @@ python -m polybot.main --run-pipeline
 | **Polymarket CLOB** | `GET /price`, `/book`, `/spread` | Execution prices, order books, liquidity |
 | **Polymarket Gamma** | `GET /events?slug=...` | Contract discovery, resolution, token IDs |
 | **Bybit** | `tickers.BTCUSDT` WS | BTC perpetual price lead + funding rate |
-| **Deribit** | `GET /get_book_summary_by_currency` | ATM implied volatility (polled every 60s) |
+| **Deribit** | `GET /get_book_summary_by_currency` | ATM implied volatility + net gamma exposure (polled every 60s) |
+| **Chainlink** | Ethereum RPC `latestRoundData()` | BTC/USD oracle — resolution price source |
 | **Anthropic Claude** | `claude-sonnet-4-6` via SDK | Daily learning pipeline recommendations |
 
 ## Paper Trading Realism
@@ -141,13 +146,15 @@ Key parameters (all tunable by learning pipeline):
 - **Min model probability** -- 65% confidence gate
 - **Layer weights** -- L2 regime 3%, L3 flow 4%, L3b spot flow 4%, L3c wall 5%, L3d perp 0% (disabled), L3e liquidation 3%, L4 momentum 4%, L5 carry 2%
 - **Max concurrent positions** -- 2 (half-Kelly when concurrent)
-- **Circuit breaker** -- Kelly scales 1.0 to 0.25 as drawdown from initial principal reaches 15% (not peak-based)
-- **SPRT** -- alpha 0.05, beta 0.10 for evidence accumulation
-- **Regime** -- 4-state HMM classifier adjusts Kelly and thresholds
+- **Circuit breaker** -- Kelly scales 1.0 to 0.40 as drawdown from initial principal reaches 30% (not peak-based)
+- **SPRT** -- alpha 0.05, beta 0.10 — actively gates entries (blocks SKIP status)
+- **Regime** -- 6-state rule-based classifier (lookback=50 for stable autocorrelation) adjusts Kelly per state
+- **GEX** -- stabilizing gamma 0.7x size, amplifying 1.3x size
+- **Bankroll acceleration** -- Kelly ratchets 0.15 -> 0.18 -> 0.22 -> 0.25 at 200/400/750 trades using Wilson score 95% CI lower bound
 
 ## Learning Pipeline
 
-Runs daily at 12:05 AM ET. Minimum 50 trades required (enforced in code). 60/40 hold-out split prevents overfitting.
+Runs daily at 12:05 AM ET. Minimum 200 trades required (enforced in code). 60/40 hold-out split prevents overfitting.
 
 1. **BiasDetector** -- Per-indicator accuracy, side bias, edge calibration, time/vol patterns, counterfactual analysis (scalps AND holds)
 2. **PlattCalibrator** -- Fits Platt scaling (A, B) on training set. Validates on holdout -- adopts only if log-loss improves
@@ -189,5 +196,5 @@ All memory syncs via git -- outcomes, counterfactuals, DB, and config are tracke
 ## Tests
 
 ```bash
-python -m pytest polybot/tests/ -q   # 547 tests
+python -m pytest polybot/tests/ -q   # 550 tests
 ```

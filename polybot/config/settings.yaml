@@ -74,7 +74,7 @@ signal:
   max_edge: 0.20          # Safety net — Platt calibration is the real fix (range: 0.10-0.30)
   exit_edge_threshold: -0.05  # Exit when holding edge drops (range: -0.25 to 0.0)
   min_model_probability: 0.65  # Min confidence to enter (range: 0.55-0.85)
-  momentum_weight: 0.04       # Layer 4 (weakest signal)
+  momentum_weight: 0.02       # Layer 4 — reduced, r=-0.040 (slightly anti-predictive at 5-min). Pipeline can zero out.
   regime_weight: 0.03         # Layer 2 — regime adjustment
   regime_lookback: 10         # 1-min returns for autocorrelation
   min_kelly: 0.015            # minimum Kelly fraction — noise floor
@@ -83,7 +83,6 @@ signal:
   flow_weight: 0.04           # Layer 3 — CLOB order flow (r=+0.105, only predictive signal layer)
   spot_flow_weight: 0.04      # Layer 3b — CVD + taker ratio
   wall_weight: 0.05           # Layer 3c — depth wall pressure
-  perp_lead_weight: 0.00      # Layer 3d — DISABLED: constant -0.20 on 96% of trades, not a signal (r=-0.029)
   prev_margin_weight: 0.02    # Layer 5 — previous window carry
   liquidation_weight: 0.03    # Layer 3e — OI-based liquidation pressure
   student_t_df: 5             # degrees of freedom for fat-tailed CDF
@@ -156,6 +155,10 @@ binance_depth:
 binance_trades:
   ws_url: "wss://stream.binance.us:9443/ws/btcusdt@aggTrade"
 
+coinbase:
+  ws_url: "wss://ws-feed.exchange.coinbase.com"
+  product_id: "BTC-USD"
+
 bybit:
   ws_url: "wss://stream.bybit.com/v5/public/linear"
   rest_url: "https://api.bybit.com/v5/market"
@@ -187,7 +190,7 @@ sprt:
 
 # --- Regime detection ---
 regime:
-  lookback: 20
+  lookback: 50
   vol_high_percentile: 75
   vol_low_percentile: 25
   autocorr_threshold: 0.25

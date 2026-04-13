@@ -199,6 +199,17 @@ class Database:
                 losses += 1
         return wins, losses, 0.0
 
+    async def get_trade_stats(self) -> tuple[int, float]:
+        """Return (total_trades, win_rate) for bankroll acceleration."""
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN exit_price > entry_price THEN 1 ELSE 0 END) "
+            "FROM trade_history"
+        )
+        row = await cursor.fetchone()
+        total = row[0] or 0
+        wins = row[1] or 0
+        return total, (wins / total if total > 0 else 0.0)
+
     async def set_bankroll(self, amount: float) -> None:
         await self.conn.execute(
             "INSERT INTO bankroll (id, amount) VALUES (1, ?) "

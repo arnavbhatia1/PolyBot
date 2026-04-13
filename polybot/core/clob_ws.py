@@ -32,6 +32,7 @@ class ClobWebSocket:
         self.best_bid_ask: dict[str, dict[str, str]] = {}       # token_id -> {best_bid, best_ask, spread}
         self.last_trade: dict[str, dict[str, Any]] = {}         # token_id -> {price, size, side}
         self.trade_buffer: dict[str, deque[dict[str, Any]]] = {}     # token_id -> deque of recent trades
+        self._price_samples: dict[str, deque[tuple[float, float]]] = {}  # token_id -> deque of (timestamp, midprice)
 
         # Events — trading loop awaits these
         self.book_updated: asyncio.Event = asyncio.Event()
@@ -112,6 +113,29 @@ class ClobWebSocket:
     def get_trade_history(self, token_id: str) -> list[dict[str, Any]]:
         """Return list of recent trades for a token, oldest first."""
         return list(self.trade_buffer.get(token_id, []))
+
+    def get_price_velocity(self, token_id: str, window_s: float = 5.0) -> float:
+        """Price velocity: cents per second over the last window_s seconds.
+
+        Positive = price moving up rapidly. Negative = price dropping.
+        Returns 0.0 if insufficient data.
+
+        A velocity of +0.10 means the contract price is rising 10 cents/sec —
+        informed flow is pushing the price ahead of BTC movement.
+        """
+        samples = self._price_samples.get(token_id)
+        if not samples or len(samples) < 2:
+            return 0.0
+        now = time.time()
+        cutoff = now - window_s
+        recent = [(t, p) for t, p in samples if t >= cutoff]
+        if len(recent) < 2:
+            return 0.0
+        dt = recent[-1][0] - recent[0][0]
+        if dt < 0.1:  # need at least 100ms of data
+            return 0.0
+        dp = recent[-1][1] - recent[0][1]
+        return dp / dt
 
     # --- Internal ---
 
@@ -222,6 +246,7 @@ class ClobWebSocket:
 
     def _on_price_change(self, msg: dict[str, Any]) -> None:
         """Delta update — update best_bid_ask from price_changes."""
+        now = time.time()
         for change in msg.get("price_changes", []):
             asset_id = change.get("asset_id", "")
             if not asset_id:
@@ -233,6 +258,17 @@ class ClobWebSocket:
                 "size": change.get("size", "0"),
                 "side": change.get("side", ""),
             }
+            # Record price sample for velocity tracking
+            try:
+                bid = float(change.get("best_bid", "0"))
+                ask = float(change.get("best_ask", "0"))
+                if bid > 0 and ask > 0:
+                    mid = (bid + ask) / 2
+                    if asset_id not in self._price_samples:
+                        self._price_samples[asset_id] = deque(maxlen=200)
+                    self._price_samples[asset_id].append((now, mid))
+            except (ValueError, TypeError):
+                pass
         self.book_updated.set()
 
     def _on_best_bid_ask(self, msg: dict[str, Any]) -> None:

@@ -47,7 +47,7 @@ class PlattCalibrator:
         return 1.0 / (1.0 + math.exp(self.a * logit + self.b))
 
     def fit(self, probs: list[float], outcomes: list[int],
-            min_samples: int = 100) -> bool:
+            min_samples: int = 200) -> bool:
         """Fit calibration parameters from historical data. Returns True if successful."""
         if len(probs) < min_samples:
             logger.info(f"Platt calibration: {len(probs)} samples < {min_samples} minimum, skipping")

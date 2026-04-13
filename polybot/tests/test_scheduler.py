@@ -47,7 +47,7 @@ async def test_run_daily_pipeline_calls_agents_in_order():
     async def mock_weight_optimizer(recs, outcomes=None):
         call_order.append("weight_optimizer")
     outcome_reviewer = MagicMock()
-    outcome_reviewer.load_all_outcomes.return_value = _make_outcomes(60)
+    outcome_reviewer.load_all_outcomes.return_value = _make_outcomes(250)
     scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=MagicMock(),
         ta_evolver=MagicMock(), weight_optimizer=MagicMock(),
         outcome_interval_seconds=3600, daily_pipeline_hour=2,
@@ -60,8 +60,8 @@ async def test_run_daily_pipeline_calls_agents_in_order():
 
 
 @pytest.mark.asyncio
-async def test_pipeline_skips_learning_below_50_trades():
-    """TAEvolver and WeightOptimizer must not run with fewer than 50 trades."""
+async def test_pipeline_skips_learning_below_200_trades():
+    """TAEvolver and WeightOptimizer must not run with fewer than 200 trades."""
     call_order = []
     async def mock_bias(outcomes=None):
         call_order.append("bias")
@@ -86,8 +86,8 @@ async def test_pipeline_skips_learning_below_50_trades():
 
 
 @pytest.mark.asyncio
-async def test_pipeline_runs_learning_at_exactly_50_trades():
-    """At exactly 50 trades the learning pipeline should run."""
+async def test_pipeline_runs_learning_at_exactly_200_trades():
+    """At exactly 200 trades the learning pipeline should run."""
     call_order = []
     async def mock_bias(outcomes=None):
         call_order.append("bias")
@@ -98,7 +98,7 @@ async def test_pipeline_runs_learning_at_exactly_50_trades():
     async def mock_weight_optimizer(recs, outcomes=None):
         call_order.append("weight_optimizer")
     outcome_reviewer = MagicMock()
-    outcome_reviewer.load_all_outcomes.return_value = _make_outcomes(50)
+    outcome_reviewer.load_all_outcomes.return_value = _make_outcomes(200)
     scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=MagicMock(),
         ta_evolver=MagicMock(), weight_optimizer=MagicMock(),
         outcome_interval_seconds=3600, daily_pipeline_hour=2,

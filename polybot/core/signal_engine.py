@@ -112,7 +112,6 @@ class SignalEngine:
                  calibrator: 'PlattCalibrator | None' = None,
                  spot_flow_weight: float = 0.04,
                  wall_weight: float = 0.05,
-                 perp_lead_weight: float = 0.03,
                  prev_margin_weight: float = 0.02,
                  conviction_multiplier: bool = True,
                  min_atr: float = 8.0,
@@ -138,7 +137,6 @@ class SignalEngine:
         self.calibrator = calibrator
         self.spot_flow_weight: float = spot_flow_weight
         self.wall_weight: float = wall_weight
-        self.perp_lead_weight: float = perp_lead_weight
         self.prev_margin_weight: float = prev_margin_weight
         self.conviction_multiplier: bool = conviction_multiplier
         self.min_atr: float = min_atr
@@ -196,7 +194,6 @@ class SignalEngine:
                             flow_signal: float = 0.0,
                             spot_flow_signal: float = 0.0,
                             wall_pressure: float = 0.0,
-                            perp_lead: float = 0.0,
                             prev_resolution_margin: float = 0.0,
                             iv_ratio: float = 1.0,
                             liquidation_pressure: float = 0.0,
@@ -270,10 +267,6 @@ class SignalEngine:
         logit_wall_w = self.wall_weight * self.logit_scale
         logit_p -= wall_pressure * logit_wall_w
 
-        # Layer 3d — Perpetual price lead (from Bybit)
-        logit_perp_w = self.perp_lead_weight * self.logit_scale
-        logit_p += perp_lead * logit_perp_w
-
         # Layer 3e — Liquidation pressure (from Bybit OI changes)
         if liquidation_pressure != 0.0:
             logit_liq_w = self.liquidation_weight * self.logit_scale
@@ -320,7 +313,7 @@ class SignalEngine:
                  flow_signal: float = 0.0,
                  spot_flow_signal: float = 0.0,
                  wall_pressure: float = 0.0,
-                 perp_lead: float = 0.0,
+
                  prev_resolution_margin: float = 0.0,
                  iv_ratio: float = 1.0,
                  liquidation_pressure: float = 0.0,
@@ -350,7 +343,7 @@ class SignalEngine:
                                            flow_signal=flow_signal,
                                            spot_flow_signal=spot_flow_signal,
                                            wall_pressure=wall_pressure,
-                                           perp_lead=perp_lead,
+
                                            prev_resolution_margin=prev_resolution_margin,
                                            iv_ratio=iv_ratio,
                                            liquidation_pressure=liquidation_pressure,
@@ -404,7 +397,7 @@ class SignalEngine:
                       flow_signal: float = 0.0,
                       spot_flow_signal: float = 0.0,
                       wall_pressure: float = 0.0,
-                      perp_lead: float = 0.0,
+     
                       prev_resolution_margin: float = 0.0,
                       iv_ratio: float = 1.0,
                       liquidation_pressure: float = 0.0,
@@ -432,7 +425,7 @@ class SignalEngine:
                                            flow_signal=flow_signal,
                                            spot_flow_signal=spot_flow_signal,
                                            wall_pressure=wall_pressure,
-                                           perp_lead=perp_lead,
+
                                            prev_resolution_margin=prev_resolution_margin,
                                            iv_ratio=iv_ratio,
                                            liquidation_pressure=liquidation_pressure,

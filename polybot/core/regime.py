@@ -48,7 +48,7 @@ class RegimeDetector:
     Parameters
     ----------
     lookback : int
-        Number of recent closes to use for autocorrelation (default 20).
+        Number of recent closes to use for autocorrelation (default 50).
     vol_high_pct : float
         ATR percentile above which market is considered high-volatility (default 75).
     vol_low_pct : float
@@ -61,7 +61,7 @@ class RegimeDetector:
 
     def __init__(
         self,
-        lookback: int = 20,
+        lookback: int = 50,
         vol_high_pct: float = 75,
         vol_low_pct: float = 25,
         autocorr_threshold: float = 0.25,

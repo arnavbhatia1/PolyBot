@@ -82,7 +82,6 @@ class AgentScheduler:
             "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.7),
             "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', 0.04),
             "wall_weight": getattr(self.signal_engine, 'wall_weight', 0.05),
-            "perp_lead_weight": getattr(self.signal_engine, 'perp_lead_weight', 0.03),
             "prev_margin_weight": getattr(self.signal_engine, 'prev_margin_weight', 0.02),
             "active_weights_version": getattr(self.indicator_engine, 'active_version', 'weights_v001')
                                       if self.indicator_engine else "weights_v001",
@@ -194,7 +193,7 @@ class AgentScheduler:
                 self.signal_engine.weights = {k: v for k, v in new_weights.items()
                                                if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
                 if "recommended_momentum_weight" in recommendations:
-                    self.signal_engine.momentum_weight = _clamp(recommendations["recommended_momentum_weight"], 0.02, 0.10)
+                    self.signal_engine.momentum_weight = _clamp(recommendations["recommended_momentum_weight"], 0.00, 0.10)
                 if "recommended_regime_weight" in recommendations:
                     self.signal_engine.regime_weight = _clamp(recommendations["recommended_regime_weight"], 0.02, 0.10)
                 if "recommended_flow_weight" in recommendations:
@@ -223,8 +222,6 @@ class AgentScheduler:
                     self.signal_engine.spot_flow_weight = _clamp(recommendations["recommended_spot_flow_weight"], 0.0, 0.10)
                 if "recommended_wall_weight" in recommendations:
                     self.signal_engine.wall_weight = _clamp(recommendations["recommended_wall_weight"], 0.0, 0.15)
-                if "recommended_perp_lead_weight" in recommendations:
-                    self.signal_engine.perp_lead_weight = _clamp(recommendations["recommended_perp_lead_weight"], 0.0, 0.10)
                 if "recommended_prev_margin_weight" in recommendations:
                     self.signal_engine.prev_margin_weight = _clamp(recommendations["recommended_prev_margin_weight"], 0.0, 0.05)
                 if "recommended_trading_start_hour_et" in recommendations:
@@ -254,12 +251,10 @@ class AgentScheduler:
                     sig["spot_flow_weight"] = _clamp(recommendations["recommended_spot_flow_weight"], 0.0, 0.10)
                 if "recommended_wall_weight" in recommendations:
                     sig["wall_weight"] = _clamp(recommendations["recommended_wall_weight"], 0.0, 0.15)
-                if "recommended_perp_lead_weight" in recommendations:
-                    sig["perp_lead_weight"] = _clamp(recommendations["recommended_perp_lead_weight"], 0.0, 0.10)
                 if "recommended_prev_margin_weight" in recommendations:
                     sig["prev_margin_weight"] = _clamp(recommendations["recommended_prev_margin_weight"], 0.0, 0.05)
                 if "recommended_momentum_weight" in recommendations:
-                    sig["momentum_weight"] = _clamp(recommendations["recommended_momentum_weight"], 0.02, 0.10)
+                    sig["momentum_weight"] = _clamp(recommendations["recommended_momentum_weight"], 0.00, 0.10)
                 if "recommended_regime_weight" in recommendations:
                     sig["regime_weight"] = _clamp(recommendations["recommended_regime_weight"], 0.02, 0.10)
                 if "recommended_flow_weight" in recommendations:
@@ -406,7 +401,7 @@ class AgentScheduler:
 
         # Platt calibration fitting
         from polybot.core.calibrator import PlattCalibrator, compute_log_loss
-        if len(train_outcomes) >= 100 and self.signal_engine:
+        if len(train_outcomes) >= 200 and self.signal_engine:
             cal_probs = []
             cal_outcomes = []
             for o in train_outcomes:
@@ -416,7 +411,7 @@ class AgentScheduler:
                     cal_probs.append(mp)
                     cal_outcomes.append(1 if o.get("correct", False) else 0)
 
-            if len(cal_probs) >= 100:
+            if len(cal_probs) >= 200:
                 cal = PlattCalibrator()
                 if self.signal_engine.calibrator:
                     cal.a = self.signal_engine.calibrator.a
@@ -442,7 +437,7 @@ class AgentScheduler:
 
         # Gate: need at least 50 trades before running TAEvolver and WeightOptimizer.
         # With fewer trades, win-rate variance is too high (±13pp at N=25) — noise, not signal.
-        MIN_TRADES_FOR_LEARNING = 50
+        MIN_TRADES_FOR_LEARNING = 200
         if len(all_outcomes) < MIN_TRADES_FOR_LEARNING:
             logger.info(f"Skipping learning pipeline: only {len(all_outcomes)} trades, need {MIN_TRADES_FOR_LEARNING}")
             recommendations = {}

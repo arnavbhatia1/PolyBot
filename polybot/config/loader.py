@@ -70,7 +70,7 @@ def validate_config(config: dict[str, Any]) -> None:
     _check_range("signal.max_edge", 0.10, 0.30)
     _check_range("signal.exit_edge_threshold", -0.25, 0.0)
     _check_range("signal.min_model_probability", 0.55, 0.85)
-    _check_range("signal.momentum_weight", 0.02, 0.10)
+    _check_range("signal.momentum_weight", 0.00, 0.10)
     _check_range("signal.regime_weight", 0.02, 0.10)
     _check_range("signal.flow_weight", 0.02, 0.12)
     _check_range("signal.student_t_df", 3, 8, integer=True)
@@ -119,7 +119,6 @@ def validate_config(config: dict[str, Any]) -> None:
     for key, lo, hi in [
         ("signal.spot_flow_weight", 0.0, 0.10),
         ("signal.wall_weight", 0.0, 0.15),
-        ("signal.perp_lead_weight", 0.0, 0.10),
         ("signal.prev_margin_weight", 0.0, 0.05),
         ("signal.liquidation_weight", 0.0, 0.10),
         ("signal.logit_scale", 1.0, 10.0),

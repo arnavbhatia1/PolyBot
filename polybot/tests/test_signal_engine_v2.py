@@ -47,21 +47,6 @@ class TestSpotFlowIntegration:
         assert bullish > base
 
 
-class TestPerpLeadIntegration:
-    def test_perp_leading_up_increases_prob(self):
-        engine = SignalEngine(perp_lead_weight=0.03)
-        closes = np.array([73000.0 + i for i in range(25)])
-        base = engine.compute_probability(
-            btc_price=73020, strike_price=73000, seconds_remaining=120,
-            atr=25, closes=closes, perp_lead=0.0,
-        )
-        leading_up = engine.compute_probability(
-            btc_price=73020, strike_price=73000, seconds_remaining=120,
-            atr=25, closes=closes, perp_lead=0.5,
-        )
-        assert leading_up > base
-
-
 class TestIVRatioIntegration:
     def test_high_iv_widens_probability(self):
         engine = SignalEngine()
