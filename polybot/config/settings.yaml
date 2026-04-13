@@ -74,8 +74,8 @@ signal:
   entry_threshold: 0.04  # Minimum edge (range: 0.01-0.10)
   max_edge: 0.20          # Safety net — Platt calibration is the real fix (range: 0.10-0.30)
   exit_edge_threshold: -0.05  # Exit when holding edge drops (range: -0.25 to 0.0)
-  min_model_probability: 0.65  # Min confidence to enter (range: 0.55-0.85)
-  momentum_weight: 0.00       # Layer 4 — zeroed out, r=-0.040 (anti-predictive at 5-min). Pipeline found no value.
+  min_model_probability: 0.58  # Lowered from 0.65 — near-ATM trades have highest crowd bias edge. SPRT still gates weak signals.
+  momentum_weight: -0.02      # Layer 4 — NEGATIVE: fade indicators (5-min BTC mean reverts). r=-0.04 is the signal with sign inverted. Pipeline can tune [-0.10, +0.10].
   regime_weight: 0.03         # Layer 2 — regime adjustment
   regime_lookback: 10         # 1-min returns for autocorrelation
   min_kelly: 0.015            # minimum Kelly fraction — noise floor

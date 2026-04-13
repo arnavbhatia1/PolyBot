@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.stats import t as student_t
 
+from polybot.core.exit_boundary import ExitBoundary
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -161,6 +163,7 @@ class SignalEngine:
             "hold_min_prob": 0.50, "panic_edge": -0.20,
             "low_price_hold": 0.15,
         }
+        self._exit_boundary = ExitBoundary(df=self.student_t_df)
 
     @property
     def entry_threshold(self) -> float:
@@ -215,7 +218,11 @@ class SignalEngine:
         # ATR floor: prevent extreme z-scores in quiet markets
         atr_effective = max(atr, self.min_atr)
 
-        # Fix 4: Scale ATR to standard deviation (iv_ratio adjusts for forward-looking vol)
+        # Scale ATR to standard deviation. ATR from 1-min candles is the correct
+        # 5-minute vol measure. Deribit 30-day IV is NOT used here — it's a regime
+        # mismatch (30-day forward variance applied to 5-min windows systematically
+        # overestimates vol in quiet periods and underestimates around macro events).
+        # iv_ratio kept as parameter for pipeline but defaults to 1.0.
         vol_scaled = (atr_effective / self.atr_sigma_ratio) * math.sqrt(minutes_remaining) * iv_ratio
 
         if vol_scaled <= 0:
@@ -445,16 +452,12 @@ class SignalEngine:
         # Exit params from config (pipeline-tunable)
         ec = self.exit_config
 
-        # Patience: require larger adverse edge when plenty of time remains
-        patience_s = ec["patience_seconds"]
-        if seconds_remaining > patience_s:
-            patience = min((seconds_remaining - patience_s) / 180.0, 1.0)
-            effective_threshold -= patience * ec["patience_max_penalty"]
-
-        # Time urgency: near expiry, lower the bar (better to scalp than risk total loss)
-        urgency_s = ec["urgency_seconds"]
-        time_urgency = max(0.0, 1.0 - seconds_remaining / urgency_s)
-        effective_threshold += time_urgency * ec["urgency_max_bonus"]
+        # Optimal exit boundary: binary option time value (NOT European option sqrt(t))
+        # Deep ITM near expiry: more patient (want $1 resolution, not early exit)
+        # Deep OTM near expiry: less patient (cut losses, time value exhausted)
+        optimal_threshold = self._exit_boundary.compute_exit_threshold(
+            seconds_remaining, entry_price, fee_rate, market_price_for_side)
+        effective_threshold = max(effective_threshold, optimal_threshold)
 
         if holding_edge <= effective_threshold:
             # Trust the model: don't scalp when model still favors our side

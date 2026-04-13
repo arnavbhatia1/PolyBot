@@ -37,14 +37,18 @@ from polybot.core.binance_trades import BinanceTradesFeed, BinanceTradeAccumulat
 from polybot.core.bybit_feed import BybitFeed
 from polybot.core.deribit_iv import DeribitIVFeed
 from polybot.core.coinbase_feed import CoinbaseFeed
-from polybot.core.bankroll_strategy import compute_kelly_tier
+from polybot.core.bankroll_strategy import compute_kelly_tier, compute_uncertainty_discount, DrawdownVelocityTracker
 from polybot.core.sprt import SPRTAccumulator
 from polybot.core.regime import RegimeDetector
 from polybot.core.alpha_decay import AlphaDecayTracker
 from polybot.core.liquidation import compute_liquidation_pressure
 from polybot.core.gamma_exposure import classify_gex
 from polybot.core.signal_engine import compute_signal_consensus
+from polybot.core.adverse_selection import AdverseSelectionMonitor
+from polybot.core.crowd_bias import CrowdBiasTracker
+from polybot.core.garch_vol import GarchPredictor
 
+import numpy as np
 import re
 _ANSI_RE = re.compile(r'\033\[[0-9;]*m')
 
@@ -97,8 +101,15 @@ _prev_resolution_margin: float = 0.0
 _sprt: SPRTAccumulator | None = None
 _alpha_decay: AlphaDecayTracker | None = None
 _regime_detector: RegimeDetector | None = None
+_garch: GarchPredictor | None = None
 _cvd_normalizer: IndicatorNormalizer | None = None
 _current_window_id: str = ""
+_early_entry_fired: bool = False
+_drawdown_tracker: DrawdownVelocityTracker | None = None
+_adverse_monitor: AdverseSelectionMonitor | None = None
+_crowd_bias: CrowdBiasTracker | None = None
+
+_realized_edge_history: list[tuple[float, float]] = []  # (predicted_edge, realized_gain_pct)
 
 
 def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
@@ -275,6 +286,18 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
         logger.error(f"Failed to record outcome: {e}")
 
 
+def _get_edge_realization_ratio() -> float:
+    """Rolling ratio of realized gains to predicted edge. < 0.6 = model overconfident."""
+    if len(_realized_edge_history) < 50:
+        return 1.0  # insufficient data
+    recent = _realized_edge_history[-50:]
+    predicted = [abs(p) for p, _ in recent if p > 0]
+    realized = [max(0, g) for _, g in recent]
+    if not predicted or sum(predicted) == 0:
+        return 1.0
+    return sum(realized) / sum(predicted)
+
+
 async def _evaluate_signal_and_enter(
         contract: dict[str, Any], cid: str, binance_feed: Any, indicator_engine: Any,
         signal_engine: Any, market_scanner: Any, http_client: Any, clob_ws: Any,
@@ -290,7 +313,8 @@ async def _evaluate_signal_and_enter(
         trades_feed: Any = None,
         bybit_feed: Any = None,
         deribit_feed: Any = None,
-        coinbase_feed: Any = None) -> tuple[str | None, int]:
+        coinbase_feed: Any = None,
+        chainlink_feed: Any = None) -> tuple[str | None, int]:
     """Compute indicators/flow/signal, check for entry, size the trade, execute."""
     in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
 
@@ -298,12 +322,13 @@ async def _evaluate_signal_and_enter(
     entry_phase = compute_entry_phase(contract["seconds_remaining"])
     if not entry_phase["allowed"]:
         # During observe phase: accumulate SPRT evidence + track alpha decay
-        global _sprt, _alpha_decay, _current_window_id
+        global _sprt, _alpha_decay, _current_window_id, _early_entry_fired
         window_id = contract.get("market_id", contract.get("slug", ""))
         if window_id != _current_window_id:
             _current_window_id = window_id
             if _sprt: _sprt.reset()
             if _alpha_decay: _alpha_decay.reset()
+            _early_entry_fired = False
 
         prob_up_obs = 0.5
         if _sprt:
@@ -319,9 +344,11 @@ async def _evaluate_signal_and_enter(
             _alpha_decay.add_observation(time.time(), best_prob)
 
         # Adaptive alpha decay: if edge is decaying fast AND SPRT has strong evidence,
-        # break out of observe phase early (CLAUDE.md: "Fast decay triggers early SPRT entry")
-        if (_alpha_decay and _alpha_decay.should_enter_now()
+        # break out of observe phase early — but only once per window
+        if (not _early_entry_fired
+                and _alpha_decay and _alpha_decay.should_enter_now()
                 and _sprt and _sprt.get_status() == "ENTER"):
+            _early_entry_fired = True
             logger.info(f"EARLY ENTRY: alpha decay {_alpha_decay.get_decay_rate():+.4f}/s + SPRT ENTER — skipping remaining observe")
         else:
             return None, last_eval_log_window
@@ -356,6 +383,8 @@ async def _evaluate_signal_and_enter(
     if depth_feed:
         wall_pressure_val = depth_feed.get_wall_pressure(strike, btc_price)
 
+    # Deribit IV: logged for pipeline analysis but NOT applied to CDF vol scaling.
+    # 30-day IV is a regime mismatch for 5-min windows — ATR is the correct vol measure.
     if deribit_feed and deribit_feed.state.btc_iv > 0:
         atr_val = indicators.get("atr", {}).get("atr", 0)
         deribit_cfg = config.get("deribit", {})
@@ -363,6 +392,7 @@ async def _evaluate_signal_and_enter(
             atr_val, btc_price,
             iv_min=deribit_cfg.get("iv_ratio_min", 0.5),
             iv_max=deribit_cfg.get("iv_ratio_max", 3.0))
+    # iv_ratio_val stays 1.0 for CDF — logged in trade_context for pipeline
 
     # CVD acceleration (first derivative of buying pressure)
     cvd_accel_val = 0.0
@@ -395,7 +425,7 @@ async def _evaluate_signal_and_enter(
         spot_flow_signal=spot_flow_signal,
         wall_pressure=wall_pressure_val,
         prev_resolution_margin=_prev_resolution_margin,
-        iv_ratio=iv_ratio_val,
+        iv_ratio=1.0,  # ATR is the correct 5-min vol; Deribit 30-day IV not applied
         liquidation_pressure=liquidation_val,
         gex_signal=gex_val,
     )
@@ -448,13 +478,22 @@ async def _evaluate_signal_and_enter(
     kelly_mult = breaker.kelly_multiplier if breaker else 1.0
 
     # Bankroll acceleration: ratchet Kelly up as track record grows (CLAUDE.md)
+    trade_count = 0
     if config.get("bankroll_acceleration", {}).get("enabled", True):
         trade_count, win_rate = await db.get_trade_stats()
-        accel_kelly = compute_kelly_tier(trade_count, win_rate, signal_engine.kelly_fraction)
+        dd_breach = _drawdown_tracker.is_velocity_breach() if _drawdown_tracker else False
+        accel_kelly = compute_kelly_tier(trade_count, win_rate, signal_engine.kelly_fraction,
+                                         drawdown_breach=dd_breach)
         if accel_kelly != signal_engine.kelly_fraction:
             signal_engine.kelly_fraction = accel_kelly
 
-    size = round(bankroll * signal.kelly_size * kelly_mult, 2)
+    # Uncertainty-adjusted Kelly: f* = f_kelly x (1 - sigma^2/edge^2) -- Thorp 2006
+    if trade_count == 0:
+        trade_count, _ = await db.get_trade_stats()
+    avg_edge = await db.get_avg_edge()
+    uncertainty_discount = compute_uncertainty_discount(trade_count, avg_edge)
+
+    size = round(bankroll * signal.kelly_size * kelly_mult * uncertainty_discount, 2)
 
     # Dynamic entry timing: apply phase Kelly multiplier
     size = round(size * entry_phase["kelly_multiplier"], 2)
@@ -469,9 +508,9 @@ async def _evaluate_signal_and_enter(
         if regime_state.skip:
             logger.info(f"SKIP: regime={regime_state.name} — no edge in this market state")
             return None, last_eval_log_window
-        size = round(size * regime_state.kelly_mult, 2)
+        # Regime: logged for pipeline, NOT applied to sizing (operates near noise at SE=0.14)
 
-    # Signal consensus multiplier
+    # Signal consensus: logged for pipeline, NOT applied to sizing (weak signal correlations)
     consensus_signals = {
         "flow": flow_score,
         "spot_flow": spot_flow_signal,
@@ -482,27 +521,44 @@ async def _evaluate_signal_and_enter(
         consensus_signals, side,
         dead_zone=signal_engine.consensus_dead_zone,
         consensus_config=signal_engine.consensus_config)
-    size = round(size * consensus_mult, 2)
 
-    # GEX trade bias: stabilizing gamma dampens size, amplifying boosts (CLAUDE.md)
+    # GEX: logged for pipeline ablation, NOT applied to sizing
     gex_bias = gex_info.get("trade_bias", 1.0)
-    if gex_bias != 1.0:
-        size = round(size * gex_bias, 2)
+
+    # Vol ratio: logged for pipeline, NOT applied to sizing (just added, no data)
+    garch_adj = 1.0
+    if _garch and deribit_feed and deribit_feed.state.btc_iv:
+        log_returns = np.diff(np.log(closes)) if closes is not None and len(closes) > 20 else np.array([])
+        garch_adj = _garch.compute_sizing_adjustment(log_returns, deribit_feed.state.btc_iv)
+
+    # Oracle divergence: logged for pipeline, NOT applied to sizing (just added, no data)
+    oracle_divergence = 0.0
+    oracle_discount = 1.0
+    if chainlink_feed:
+        cl_price = chainlink_feed.price if hasattr(chainlink_feed, 'price') else 0
+        if cl_price > 0 and btc_price > 0:
+            oracle_divergence = abs(btc_price - cl_price)
+            atr_val = indicators.get("atr", {}).get("atr", 0)
+            if atr_val > 0 and oracle_divergence > atr_val:
+                divergence_ratio = min(oracle_divergence / atr_val, 3.0)
+                oracle_discount = max(0.3, 1.0 - (divergence_ratio - 1.0) * 0.3)
 
     logger.debug(
-        f"  REGIME {regime_state.name if regime_state else 'N/A'}  |  "
+        f"  REGIME {regime_state.name if regime_state else 'N/A'} ({regime_state.kelly_mult if regime_state else 1.0:.1f}x)  |  "
         f"SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%})  |  "
-        f"consensus {consensus_mult:.1f}x  |  gex {gex_bias:.1f}x  |  liq {liquidation_val:+.2f}")
+        f"consensus {consensus_mult:.1f}x  |  gex {gex_bias:.1f}x  |  vol {garch_adj:.1f}x  |  oracle {oracle_discount:.1f}x")
 
     # Phase-based probability override (final phase needs >90%)
     if entry_phase["min_prob_override"] and signal.prob < entry_phase["min_prob_override"]:
         logger.info(f"SKIP: final phase prob {signal.prob:.0%} < {entry_phase['min_prob_override']:.0%}")
         return None, last_eval_log_window
 
-    # Concurrent windows: half Kelly when already holding another position
+    # Concurrent windows: correlated position discount (ρ≈0.75 for adjacent BTC windows)
+    # Portfolio Kelly with correlation: ~0.35 per position, not naive 0.50
     open_positions = await db.get_open_positions()
     if len(open_positions) > 0:
-        size = round(size * 0.5, 2)
+        concurrent_discount = config.get("execution", {}).get("concurrent_position_discount", 0.35)
+        size = round(size * concurrent_discount, 2)
 
     if size < 0.10:
         logger.info(f"SKIP: Kelly size ${size:.2f} < $0.10 — edge too small to trade")
@@ -592,7 +648,12 @@ async def _evaluate_signal_and_enter(
         "sprt_confidence": _sprt.get_confidence() if _sprt else 0,
         "sprt_status": _sprt.get_status() if _sprt else "N/A",
         "signal_consensus": consensus_mult,
+        "adverse_selection_30s": _adverse_monitor.get_adverse_rate(30.0) if _adverse_monitor else 0.5,
         "alpha_decay_rate": _alpha_decay.get_decay_rate() if _alpha_decay else 0,
+        "garch_vol_ratio": _garch.compute_vol_ratio(np.diff(np.log(closes)) if closes is not None and len(closes) > 20 else np.array([]), deribit_feed.state.btc_iv if deribit_feed and deribit_feed.state.btc_iv else 0) if _garch else 1.0,
+        "crowd_bias": _crowd_bias.compute_composite(price_up, price_down, strike) if _crowd_bias else {},
+        "oracle_divergence": oracle_divergence,
+        "edge_realization_ratio": _get_edge_realization_ratio(),
     }
     snapshot_str = json.dumps(snapshot)
     result = await trader.open_trade(
@@ -628,6 +689,9 @@ async def _evaluate_signal_and_enter(
             f"  {_C.GREEN}{_C.BOLD}OPEN {side}{_C.RESET}  @ {price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}\n"
             f"  {contract.get('question', cid)}  [{entry_phase['phase']}]\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}")
+        if _adverse_monitor:
+            mkt_mid = (price_up + price_down) / 2 if price_up + price_down > 0 else price
+            _adverse_monitor.record_fill(side=side, fill_price=price, token_id=token_id, midprice=mkt_mid)
         if alert_manager:
             mkt_price = price_up if side == "Up" else price_down
             await alert_manager.send_trade_opened(
@@ -944,7 +1008,7 @@ async def _evaluate_and_exit_position(
         spot_flow_signal=hold_spot_flow,
         wall_pressure=hold_wall_pressure,
         prev_resolution_margin=_prev_resolution_margin,
-        iv_ratio=hold_iv_ratio,
+        iv_ratio=1.0,  # ATR is the correct 5-min vol; Deribit 30-day IV not applied
         liquidation_pressure=hold_liquidation,
         gex_signal=hold_gex)
 
@@ -1030,6 +1094,11 @@ async def _evaluate_and_exit_position(
                     bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
             await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
                                   exit_reason="scalp", pnl=pnl, fees=total_fees)
+            _realized_edge_history.append((pos.get("ev_at_entry", 0), gain_pct))
+            if len(_realized_edge_history) > 500:
+                _realized_edge_history[:] = _realized_edge_history[-500:]
+            if _drawdown_tracker:
+                _drawdown_tracker.record_trade(gain_pct)
             traded_market_id = pos["market_id"]
             _peak_hold_price.pop(traded_market_id, None)
             if counterfactual_tracker:
@@ -1101,6 +1170,11 @@ async def _resolve_expired_position(
                 bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
                               exit_reason="resolution", pnl=pnl, fees=total_fees)
+        _realized_edge_history.append((pos.get("ev_at_entry", 0), gain_pct))
+        if len(_realized_edge_history) > 500:
+            _realized_edge_history[:] = _realized_edge_history[-500:]
+        if _drawdown_tracker:
+            _drawdown_tracker.record_trade(gain_pct)
         if counterfactual_tracker:
             cf_hold = counterfactual_tracker.record_hold_resolution(
                 pos["market_id"], exit_price, pnl, gain_pct)
@@ -1113,6 +1187,10 @@ async def _resolve_expired_position(
         meta = live.get("event_metadata")
         if meta and meta.get("final_price") and meta.get("price_to_beat"):
             _prev_resolution_margin = meta["final_price"] - meta["price_to_beat"]
+        # Record winning side for crowd bias recency tracking
+        if _crowd_bias:
+            winning_side = pos["side"] if gain_pct > 0 else ("Down" if pos["side"] == "Up" else "Up")
+            _crowd_bias.record_resolution(winning_side)
     return True, day_wins, day_losses, day_fees, traded_market_id
 
 
@@ -1183,6 +1261,11 @@ async def _manage_orphaned_position(
                 bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
                               exit_reason="resolution", pnl=pnl, fees=total_fees)
+        _realized_edge_history.append((pos.get("ev_at_entry", 0), gain_pct))
+        if len(_realized_edge_history) > 500:
+            _realized_edge_history[:] = _realized_edge_history[-500:]
+        if _drawdown_tracker:
+            _drawdown_tracker.record_trade(gain_pct)
         traded_market_id = pos["market_id"]
         _peak_hold_price.pop(traded_market_id, None)
     return True, day_wins, day_losses, day_fees, traded_market_id
@@ -1430,7 +1513,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 now_ts,
                 depth_feed=depth_feed, trades_feed=trades_feed,
                 bybit_feed=bybit_feed, deribit_feed=deribit_feed,
-                coinbase_feed=coinbase_feed)
+                coinbase_feed=coinbase_feed,
+                chainlink_feed=chainlink_feed)
             if traded_cid:
                 traded_contracts[traded_cid] = now_ts
 
@@ -1750,6 +1834,18 @@ async def main() -> None:
         autocorr_threshold=regime_cfg.get("autocorr_threshold", 0.25),
     )
     _alpha_decay = AlphaDecayTracker()
+
+    global _adverse_monitor
+    _adverse_monitor = AdverseSelectionMonitor()
+
+    global _drawdown_tracker
+    _drawdown_tracker = DrawdownVelocityTracker()
+
+    global _crowd_bias
+    _crowd_bias = CrowdBiasTracker()
+
+    global _garch
+    _garch = GarchPredictor()
 
     global _cvd_normalizer
     _cvd_normalizer = IndicatorNormalizer(alpha=0.02, warmup=50)

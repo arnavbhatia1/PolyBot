@@ -1,0 +1,121 @@
+"""Adverse selection monitor: detects if fills are systematically picked off.
+
+After each fill, tracks the midprice 10s, 30s, and 60s later. If the price
+consistently moves against the bot's position after entry, someone is fading
+the bot with better information.
+
+adverse_selection_rate = P(price moves against you | you just filled)
+If rolling rate > 0.55, the bot is being picked off.
+"""
+from __future__ import annotations
+
+import time
+import logging
+from collections import deque
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FillEvent:
+    """Records a fill for adverse selection tracking."""
+    timestamp: float       # Unix seconds when filled
+    side: str              # "Up" or "Down"
+    fill_price: float      # Price we paid
+    token_id: str          # Which token
+    midprice_at_fill: float  # Market midprice at fill time
+    midprice_10s: float | None = None   # Midprice 10s after fill
+    midprice_30s: float | None = None   # Midprice 30s after fill
+    midprice_60s: float | None = None   # Midprice 60s after fill
+    resolved: bool = False              # All checkpoints measured
+
+
+class AdverseSelectionMonitor:
+    """Track post-fill price movement to detect adverse selection.
+
+    Usage:
+        monitor = AdverseSelectionMonitor()
+        # After each fill:
+        monitor.record_fill(side="Up", fill_price=0.60, token_id="abc", midprice=0.60)
+        # On each tick:
+        monitor.update_prices(clob_ws, time.time())
+        # Check health:
+        rate = monitor.get_adverse_rate()
+        if rate > 0.55: # being picked off
+    """
+
+    def __init__(self, max_fills: int = 200, check_windows: tuple[float, ...] = (10.0, 30.0, 60.0)) -> None:
+        self.max_fills = max_fills
+        self.check_windows = check_windows
+        self._fills: deque[FillEvent] = deque(maxlen=max_fills)
+
+    def record_fill(self, side: str, fill_price: float, token_id: str, midprice: float) -> None:
+        """Record a new fill event for tracking."""
+        self._fills.append(FillEvent(
+            timestamp=time.time(),
+            side=side,
+            fill_price=fill_price,
+            token_id=token_id,
+            midprice_at_fill=midprice,
+        ))
+
+    def update_prices(self, get_midprice_fn) -> None:
+        """Update pending fill events with current midprices.
+
+        Args:
+            get_midprice_fn: callable(token_id) -> float, returns current midprice
+        """
+        now = time.time()
+        for fill in self._fills:
+            if fill.resolved:
+                continue
+            elapsed = now - fill.timestamp
+            mid = get_midprice_fn(fill.token_id)
+            if mid <= 0:
+                continue
+            if fill.midprice_10s is None and elapsed >= 10.0:
+                fill.midprice_10s = mid
+            if fill.midprice_30s is None and elapsed >= 30.0:
+                fill.midprice_30s = mid
+            if fill.midprice_60s is None and elapsed >= 60.0:
+                fill.midprice_60s = mid
+                fill.resolved = True
+
+    def get_adverse_rate(self, window_s: float = 30.0) -> float:
+        """Fraction of fills where price moved AGAINST us within window_s.
+
+        For Up bets: adverse = midprice dropped after fill
+        For Down bets: adverse = midprice rose after fill
+
+        Returns 0.5 (neutral) if insufficient data.
+        """
+        adverse = 0
+        total = 0
+        for fill in self._fills:
+            if window_s <= 10.0:
+                post = fill.midprice_10s
+            elif window_s <= 30.0:
+                post = fill.midprice_30s
+            else:
+                post = fill.midprice_60s
+            if post is None:
+                continue
+            total += 1
+            if fill.side == "Up" and post < fill.midprice_at_fill:
+                adverse += 1
+            elif fill.side == "Down" and post > fill.midprice_at_fill:
+                adverse += 1
+        if total < 10:
+            return 0.5  # not enough data
+        return adverse / total
+
+    def get_stats(self) -> dict:
+        """Return summary stats for logging/pipeline."""
+        return {
+            "total_tracked": len(self._fills),
+            "resolved": sum(1 for f in self._fills if f.resolved),
+            "adverse_rate_10s": self.get_adverse_rate(10.0),
+            "adverse_rate_30s": self.get_adverse_rate(30.0),
+            "adverse_rate_60s": self.get_adverse_rate(60.0),
+        }

@@ -1,5 +1,5 @@
 import pytest
-from polybot.core.bankroll_strategy import compute_kelly_tier, _wilson_lower
+from polybot.core.bankroll_strategy import compute_kelly_tier, _wilson_lower, compute_uncertainty_discount
 
 
 class TestWilsonLower:
@@ -50,3 +50,29 @@ class TestKellyTier:
 
     def test_zero_trades(self):
         assert compute_kelly_tier(trade_count=0, win_rate=0.0, base_kelly=0.15) == 0.15
+
+
+class TestUncertaintyDiscount:
+    def test_few_trades_hits_floor(self):
+        """At 50 trades with 6% edge, raw would be 0.31 but floor is 0.50."""
+        d = compute_uncertainty_discount(50, 0.06)
+        assert d == 0.50  # floor prevents over-discounting
+
+    def test_many_trades_light_discount(self):
+        """At 1000 trades with 6% edge, discount should be near 1.0."""
+        d = compute_uncertainty_discount(1000, 0.06)
+        assert d > 0.90
+
+    def test_zero_trades(self):
+        d = compute_uncertainty_discount(0, 0.06)
+        assert d == 0.50  # minimum floor
+
+    def test_zero_edge(self):
+        d = compute_uncertainty_discount(100, 0.0)
+        assert d == 0.50  # minimum floor
+
+    def test_large_edge_less_discount(self):
+        """Larger edge means less relative uncertainty."""
+        d_small = compute_uncertainty_discount(200, 0.04)
+        d_large = compute_uncertainty_discount(200, 0.10)
+        assert d_large > d_small

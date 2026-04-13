@@ -210,6 +210,14 @@ class Database:
         wins = row[1] or 0
         return total, (wins / total if total > 0 else 0.0)
 
+    async def get_avg_edge(self) -> float:
+        """Average edge at entry across all trades, for uncertainty discount."""
+        cursor = await self.conn.execute(
+            "SELECT AVG(ev_at_entry) FROM trade_history WHERE ev_at_entry > 0"
+        )
+        row = await cursor.fetchone()
+        return row[0] if row[0] is not None else 0.0
+
     async def set_bankroll(self, amount: float) -> None:
         await self.conn.execute(
             "INSERT INTO bankroll (id, amount) VALUES (1, ?) "

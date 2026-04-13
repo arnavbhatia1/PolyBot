@@ -13,23 +13,32 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
   - L3b: Spot market flow (CVD-dominant from Binance aggTrades, taker gated by min trade count)
   - L3c: Wall pressure (L2 depth near strike from Binance 1000-level book)
   - L3e: Liquidation pressure (Bybit OI drop + price direction, weight now configurable)
-  - L4: Indicator momentum (RSI, MACD, Stochastic, OBV, VWAP)
+  - L4: Indicator mean-reversion (RSI, MACD, Stochastic, OBV, VWAP) — negative weight fades indicators
   - L5: Previous window momentum carry (resolution margin / ATR)
 - **SPRT entry gate.** Sequential Probability Ratio Test accumulates evidence during 60s observe phase. Strong signals enter in 5-7 ticks, weak signals correctly skipped. **Actively gates entries** — trades are blocked if SPRT reaches SKIP status.
 - **Rule-based regime detection.** Multi-state classifier (trending_up/trending_down/reverting/volatile/quiet/neutral) adjusts Kelly and edge thresholds per market condition. Trending direction derived from price returns (majority up vs down count), not CVD. Lookback=50 for stable autocorrelation (SE=0.14).
 - **Signal consensus multiplier.** >80% signals agree -> Kelly 1.3x. <40% agree -> Kelly 0.6x. All thresholds and multipliers pipeline-tunable.
 - **Adaptive alpha decay.** Tracks edge decay rate. Fast decay triggers early SPRT entry before observe phase ends. When `should_enter_now()` fires AND SPRT has reached ENTER, the bot breaks out of the observe phase early.
-- **Gamma exposure (GEX).** Net options gamma from Deribit. Stabilizing gamma (positive GEX) -> 0.7x position size. Amplifying gamma (negative GEX) -> 1.3x position size.
+- **Gamma exposure (GEX).** Net options gamma from Deribit. Logged in trade_context for pipeline ablation — NOT applied to sizing until proven. Pipeline can enable 0.7x/1.3x multiplier if data supports it.
 - **Active position management.** Hold to $1 resolution when confident. Scalp exit when holding_edge < fee-aware threshold. **Trailing profit exit**: cheap entries (<$0.50) that peaked >$0.65 then drop 15%+ from peak. Same probability model for entry AND exit.
 - **Up to 2 concurrent positions from different windows.** Half-Kelly when concurrent. Next window's strike must be established before entry. Same-window duplicates blocked.
 - **Dynamic entry timing.** 0-60s: OBSERVE ONLY. 60-180s: normal. 180-240s: Kelly 0.7x. Last 60s: >90% confidence only, half Kelly.
 - **Conviction multiplier on Kelly.** 1.3x at >90% confidence, 1.15x at 85-90%, 0.7x below 72%. All thresholds pipeline-tunable.
-- **Bankroll acceleration.** Kelly ratchets 0.15 -> 0.18/0.22/0.25 at 200/400/750 trades. Uses Wilson score 95% CI lower bound (not point estimate) — prevents ratcheting on luck. `compute_kelly_tier()` called per trade, queries DB for track record. Drops back if WR falls.
+- **Bankroll acceleration.** Kelly ratchets 0.15 -> 0.18/0.22/0.25 at 200/400/750 trades. Uses Wilson score 95% CI lower bound (not point estimate) — prevents ratcheting on luck. **Drawdown velocity trigger**: if rolling 25-trade PnL drops below -15%, forces base Kelly immediately (catches regime changes 20-30 trades faster than Wilson alone). `compute_kelly_tier()` called per trade.
+- **Uncertainty-adjusted Kelly.** `f* = f_kelly × (1 - σ²_edge / edge²)`. At 100 trades with 6% edge, bets ~31% of Kelly. At 1000 trades, ~97%. Prevents overbetting when edge estimates are noisy. Applied as a multiplier in the sizing chain.
+- **Optimal exit boundary.** Time-varying exit curve for binary option payoff (NOT European option sqrt(t)). Deep ITM near expiry: MORE patient (want $1 resolution, negative time value). ATM: standard optionality. Deep OTM: less patient (cut losses). The binary payoff kink at 0/$1 means winners near expiry should hold, not exit.
+- **Adverse selection monitor.** After each fill, tracks midprice 10/30/60s later. If >55% of fills see adverse price movement, the bot is being picked off by faster participants. Logged in trade_context for pipeline analysis.
+- **Edge half-life tracker.** Compares 7-day vs 30-day rolling realized edge. If edge is decaying (half-life < 90 days), reduces Kelly by 15-75%. Detects when the strategy is being arbitraged away before ruin.
+- **Realized vol ratio sizing.** Compares recent 25-return vol to 100-return baseline. When recent vol > 1.5x baseline: vol expanding, reduce size 0.7x. When recent < 0.6x baseline: vol contracting, boost size 1.3x. Simpler and more stable than GARCH parameter estimation.
+- **Crowd bias fading.** Tracks three structural biases: Favorite-Longshot Bias, Recency Bias (3+ streaks), Round Number Anchoring. Logged in trade_context for pipeline analysis — NOT applied to sizing until empirically validated (may already be arbed away).
+- **Concurrent position correlation.** Binary outcome correlation for adjacent windows is ~0.45-0.55 (lower than spot ρ≈0.75). Position sizing uses 0.45x discount. Configurable via `execution.concurrent_position_discount`.
+- **Oracle divergence risk.** When Chainlink-Coinbase spread > 1 ATR, reduces size (0.7x at 2 ATR, 0.3x at 3+ ATR). CDF uses fast Coinbase price for speed edge; Chainlink divergence signals resolution uncertainty.
+- **Realized/predicted edge ratio.** Rolling 50-trade metric comparing model-predicted edge at entry vs actual gain. If ratio < 0.6, model is systematically overconfident. Logged in trade_context.
 - **Maker orders with FOK fallback.** Limit order first (0% fee), FOK fallback after 60s (1.8% fee). ~60% fee savings.
 - **Coinbase Exchange feed.** Faster BTC/USD price source (leads Binance.US by 0.5-2s). Used as primary BTC price when fresh (<5s), Binance.US as fallback. No auth required.
 - **Chainlink oracle feed.** Reads BTC/USD price from the same oracle Polymarket uses for resolution. Preferred for strike computation when available.
 - **CLOB flow velocity.** Tracks midprice rate of change on Polymarket CLOB (cents/sec over 5s window). Detects informed flow (e.g., contract 60c->90c in 3s). Logged in trade_context for pipeline analysis.
-- **Deribit options IV.** Forward-looking vol adjusts ATR-to-sigma ratio in L1. IV ratio clamped to [iv_ratio_min, iv_ratio_max] (configurable, default [0.5, 3.0]).
+- **Deribit options IV.** Logged in trade_context for pipeline analysis. NOT applied to CDF vol scaling — 30-day IV is a regime mismatch for 5-min windows (ATR from 1-min candles is the correct vol measure). Deribit still provides GEX data.
 - **One trade per 5-min contract.** After any exit, that contract is blacklisted.
 - **Auto-restart cycle.** `run_polybot.ps1` manages daily lifecycle: start at 12:15 AM ET, trade until 11:59 PM, pipeline at 12:05 AM, exit, commit config/outcomes/DB to git, push, restart at 12:15 AM.
 - **Git-backed persistence.** Outcomes, counterfactuals, and DB tracked in git. `run_polybot.ps1` commits and pushes after the 12:05 AM pipeline, preserving state across restarts.
@@ -47,7 +56,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 ```
 polybot/
   main.py                    # Entry point, trading loop, _build_signal_engine() shared constructor
-  config/settings.yaml       # ALL tunable parameters (30+)
+  config/settings.yaml       # ALL tunable parameters (55)
   core/
     binance_feed.py          # WebSocket + candle buffer (ATR, indicators, strike)
     coinbase_feed.py         # Coinbase Exchange BTC-USD ticker (faster price source)
@@ -67,6 +76,11 @@ polybot/
     gamma_exposure.py        # Net gamma exposure from Deribit options chain
     alpha_decay.py           # Edge decay rate tracker — triggers early SPRT entry
     chainlink_feed.py        # Chainlink BTC/USD oracle (resolution price source)
+    exit_boundary.py         # Optimal exit curve (MDP-based, replaces linear patience/urgency)
+    adverse_selection.py     # Post-fill price tracking — detects if being picked off
+    edge_halflife.py         # Strategy-level edge decay detection (7d vs 30d rolling)
+    garch_vol.py             # GARCH(1,1) vol forecast — adjusts sizing when forecast diverges from IV
+    crowd_bias.py            # Favorite-longshot bias, recency fade, round number anchoring
   indicators/
     ema.py, rsi.py, macd.py, stochastic.py, obv.py, vwap.py, atr.py
     engine.py                # Combines all 7, manages weight versions, IndicatorNormalizer
@@ -107,8 +121,8 @@ polybot/
 - `signal.entry_threshold:` — 0.04 (noise floor, range 0.01-0.10), `max_edge:` — 0.20 (safety net behind Platt, range 0.10-0.30)
 - `signal.min_kelly:` — 0.015 (primary gate, range 0.005-0.05)
 - `signal.exit_edge_threshold:` — -0.05
-- `signal.min_model_probability:` — 0.65
-- `signal.momentum_weight:` — 0.02 (L4, reduced — r=-0.04, pipeline can zero out), `regime_weight:` — 0.03 (L2), `flow_weight:` — 0.04 (L3)
+- `signal.min_model_probability:` — 0.58 (lowered from 0.65 — near-ATM trades have highest crowd bias edge, SPRT still gates weak signals)
+- `signal.momentum_weight:` — -0.02 (L4, NEGATIVE = fade indicators for 5-min mean reversion. r=-0.04 is the signal with sign flipped. Range [-0.10, +0.10], pipeline-tunable), `regime_weight:` — 0.03 (L2), `flow_weight:` — 0.04 (L3)
 - `signal.spot_flow_weight:` — 0.04 (L3b), `wall_weight:` — 0.05 (L3c)
 - `signal.prev_margin_weight:` — 0.02 (L5), `liquidation_weight:` — 0.03 (L3e)
 - `signal.atr_sigma_ratio:` — 1.4 (range 1.2-2.5), `student_t_df:` — 5, `min_atr:` — 8.0 (range 1.0-30.0)
@@ -119,7 +133,7 @@ polybot/
 - `signal.weights:` — per-indicator weights for momentum
 - `deribit.iv_ratio_min:` — 0.5, `iv_ratio_max:` — 3.0
 - `coinbase.ws_url:` — `wss://ws-feed.exchange.coinbase.com`, `product_id:` — `BTC-USD`
-- `execution.max_concurrent_positions:` — 2, `max_bankroll_deployed:` — 0.80, `max_single_position_pct:` — 0.12, `max_book_fill_pct:` — 0.50
+- `execution.max_concurrent_positions:` — 2, `max_bankroll_deployed:` — 0.80, `max_single_position_pct:` — 0.12, `max_book_fill_pct:` — 0.50, `concurrent_position_discount:` — 0.45 (binary outcome ρ≈0.45-0.55, lower than spot ρ)
 - `execution.slippage_impact_pct:` — 0.03, `use_maker_orders:` — true, `maker_timeout_s:` — 60.0
 - `market.entry_window_seconds:` — 300, `min_time_remaining_seconds:` — 20, `max_spread:` — 0.10
 - `market.clob_ws_url:` — `wss://ws-subscriptions-clob.polymarket.com/ws/market`
@@ -138,7 +152,7 @@ python -m polybot.main --mode paper   # Paper trading (persistent bankroll acros
 python -m polybot.main --mode live    # Live trading (real USDC on Polymarket)
 python -m polybot.main                # Defaults to mode in settings.yaml
 python -m polybot.main --run-pipeline # Run daily learning pipeline once and exit (no trading)
-python -m pytest polybot/tests/       # 550 tests
+python -m pytest polybot/tests/       # 602 tests
 ```
 
 ## How the Probability Model Works
@@ -206,17 +220,21 @@ NEGRISK EXECUTION PRICING:
   sell_price = GET /price?token_id=TOKEN&side=SELL (for scalp exits)
 
 ENTRY (10 gates — all must pass):
-  SPRT != SKIP, prob >= 65%, edge >= 0.04, Kelly >= 0.015, spread <= 10%,
+  SPRT != SKIP, prob >= 58%, edge >= 0.04, Kelly >= 0.015, spread <= 10%,
   depth >= $50, price_sum in [0.98,1.02], time >= 20s, edge <= 0.20, layer agreement
-  Size = Kelly x kelly_fraction x breaker x phase x regime x consensus x GEX_bias
+  Size = Kelly x kelly_fraction x breaker x uncertainty_discount(floor=0.50) x phase
+  Concurrent discount (0.45x) if already holding. Regime/consensus/GEX/vol/oracle logged only.
   Capped to 50% of book depth, 12% of bankroll, 80% total deployed
   Net-edge gate: rejects if slippage eats the edge
 
 WHILE HOLDING (active position management):
   holding_edge = model_prob_for_our_side - current_market_price_for_our_side
   Fee-aware threshold: base_threshold - exit_fee_cost
-  Patience: >patience_seconds remaining, threshold tightens by up to patience_max_penalty
-  Time urgency: <urgency_seconds remaining, threshold relaxes by up to urgency_max_bonus
+  Optimal exit boundary: binary option time value (NOT European sqrt(t))
+    - Deep ITM near expiry: MORE patient (want $1 resolution, not early exit)
+    - ATM: standard optionality (patient early, tighter late)
+    - Deep OTM near expiry: LESS patient (cut losses, time value exhausted)
+  effective_threshold = max(fee_aware_threshold, optimal_boundary)
   If holding_edge ≤ effective_threshold: EXIT (scalp)
   If holding_edge > effective_threshold: HOLD
 
@@ -309,11 +327,17 @@ All 10 signal layers feed `signal_engine.evaluate()` (see "How the Probability M
 
 ```
 bankroll_acceleration: compute_kelly_tier(trade_count, win_rate) -> dynamic kelly_fraction
-raw_size = bankroll x kelly_size x breaker.kelly_multiplier
+UNCERTAINTY DISCOUNT: f* = f_kelly x (1 - sigma^2/edge^2), floor 0.50 (never discount >50%)
+raw_size = bankroll x kelly_size x breaker x uncertainty_discount
 PHASE MULT: normal=1.0, late=0.7, final=0.5
-REGIME MULT: trending=1.2, reverting=0.8, volatile=0.7, quiet=SKIP
-CONSENSUS MULT: >80% agree=1.3, 60-80%=1.0, 40-60%=0.8, <40%=0.6
-GEX MULT: stabilizing=0.7, neutral=1.0, amplifying=1.3
+CONCURRENT: if already holding, x0.45 (binary outcome rho≈0.45-0.55)
+--- LOGGED ONLY (pipeline can enable when data supports) ---
+REGIME: trending=1.2, volatile=0.7, quiet=SKIP (still gates, but mult not applied)
+CONSENSUS: >80% agree=1.3, <40%=0.6 (logged, not applied)
+GEX: stabilizing=0.7, amplifying=1.3 (logged, not applied)
+VOL RATIO: recent_25/baseline_100 divergence (logged, not applied)
+ORACLE: |Coinbase - Chainlink| > 1 ATR (logged, not applied)
+--- END LOGGED ONLY ---
 CAP CHAIN: size < $0.10 -> REJECT | size > 80% bankroll -> cap | size > 12% bankroll -> cap | size > 50% depth -> cap
 NET EDGE: net_edge = gross_edge - (price x convex_slippage); if < min_edge -> REJECT
 ```
@@ -377,7 +401,7 @@ Daily at 12:05 AM ET (configurable via `agents.daily_pipeline_hour` and `daily_p
 
 3. **WeightOptimizer** — Backtests recommendations against the **validation set** (last 40%). Auto-adopts if Sharpe improves >= 3%. Hot-swaps ALL signal weights and entry/exit params at runtime, persists to settings.yaml. Discord alerts with findings.
 
-Outcomes enriched with `trade_context` (btc_price, strike, seconds_remaining, market prices, model_probability, edge, ATR, flow scores, clob_velocity, coinbase_btc) plus `gain_pct`, `pnl`, and `fees`.
+Outcomes enriched with `trade_context` (btc_price, strike, seconds_remaining, market prices, model_probability, edge, ATR, flow scores, clob_velocity, coinbase_btc, oracle_divergence, adverse_selection_30s, edge_realization_ratio, garch_vol_ratio, crowd_bias) plus `gain_pct`, `pnl`, and `fees`.
 
 **Performance metrics use `gain_pct` (arithmetic returns), NOT `log_return`.** Log returns are mathematically broken for binary outcomes where exit_price=0 produces log(0)=-infinity. The `gain_pct` metric is bounded [-1, +inf) and gives an honest, positive Sharpe for profitable strategies. The `log_return` field is still stored for backward compatibility but is never used for Sharpe calculation.
 

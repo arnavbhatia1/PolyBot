@@ -193,7 +193,7 @@ class AgentScheduler:
                 self.signal_engine.weights = {k: v for k, v in new_weights.items()
                                                if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
                 if "recommended_momentum_weight" in recommendations:
-                    self.signal_engine.momentum_weight = _clamp(recommendations["recommended_momentum_weight"], 0.00, 0.10)
+                    self.signal_engine.momentum_weight = _clamp(recommendations["recommended_momentum_weight"], -0.10, 0.10)
                 if "recommended_regime_weight" in recommendations:
                     self.signal_engine.regime_weight = _clamp(recommendations["recommended_regime_weight"], 0.02, 0.10)
                 if "recommended_flow_weight" in recommendations:
@@ -254,7 +254,7 @@ class AgentScheduler:
                 if "recommended_prev_margin_weight" in recommendations:
                     sig["prev_margin_weight"] = _clamp(recommendations["recommended_prev_margin_weight"], 0.0, 0.05)
                 if "recommended_momentum_weight" in recommendations:
-                    sig["momentum_weight"] = _clamp(recommendations["recommended_momentum_weight"], 0.00, 0.10)
+                    sig["momentum_weight"] = _clamp(recommendations["recommended_momentum_weight"], -0.10, 0.10)
                 if "recommended_regime_weight" in recommendations:
                     sig["regime_weight"] = _clamp(recommendations["recommended_regime_weight"], 0.02, 0.10)
                 if "recommended_flow_weight" in recommendations:

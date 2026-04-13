@@ -54,17 +54,24 @@ python -m polybot.main --run-pipeline
   Signal consensus multiplier (>80% agree -> 1.3x Kelly)
   GEX from Deribit options (stabilizing 0.7x / amplifying 1.3x size)
   Bankroll acceleration (Kelly ratchets 0.15 -> 0.25 with track record)
+  Uncertainty-adjusted Kelly (f* = f_kelly x (1 - sigma^2/edge^2))
+  Realized vol ratio (recent vs baseline -> size adjustment)
+  Oracle divergence discount (Chainlink vs Coinbase spread -> size reduction)
+  Adverse selection monitor (tracks post-fill price movement)
+  Edge half-life tracker (detects strategy decay)
         |
   Edge = calibrated_model_prob - market_price (from CLOB /price endpoint)
         |
-  10 entry gates: SPRT, confidence >= 65%, edge >= 4%, Kelly >= 1.5%,
+  10 entry gates: SPRT, confidence >= 58%, edge >= 4%, Kelly >= 1.5%,
     spread <= 10%, depth >= $50, price sanity, timing, edge cap, layer agreement
         |
-  Kelly sizing x breaker x phase x regime x consensus x GEX, capped to 50% of book depth
+  Kelly sizing x breaker x uncertainty_discount(floor=0.50) x phase
+  Concurrent: x0.45 if holding. Regime/consensus/GEX/vol/oracle logged only.
+  Capped to 50% of book depth
   Convex slippage model, net-edge gate
         |
   While holding: continuously re-evaluate with same model
-    holding_edge > fee-aware threshold? HOLD : SCALP EXIT
+    Binary option exit curve: ITM holds to $1 resolution, OTM cuts losses
     Trailing profit exit for cheap entries that peak then drop
         |
   Resolution: Gamma/Chainlink oracle ($1 win / $0 loss)
@@ -93,6 +100,11 @@ python -m polybot.main --run-pipeline
 | `core/alpha_decay.py` | Edge decay rate tracker — triggers early SPRT entry |
 | `core/bankroll_strategy.py` | Tiered Kelly acceleration based on track record |
 | `core/calibrator.py` | Platt scaling calibration for probability model |
+| `core/exit_boundary.py` | Binary option exit curve (ITM holds to $1, OTM cuts losses) |
+| `core/adverse_selection.py` | Post-fill price tracking — detects if being picked off |
+| `core/edge_halflife.py` | Strategy-level edge decay detection (7d vs 30d rolling) |
+| `core/garch_vol.py` | Realized vol ratio — sizing adjustment when recent vol diverges from baseline |
+| `core/crowd_bias.py` | Favorite-longshot bias, recency fade, round number anchoring |
 | `indicators/` | 7 indicators (RSI, MACD, Stochastic, EMA, OBV, VWAP, ATR) |
 | `indicators/engine.py` | Combines all 7, manages weight versions |
 | `execution/base.py` | BaseTrader ABC, TradeResult, FillResult, shared fee math + gates |
@@ -150,7 +162,9 @@ Key parameters (all tunable by learning pipeline):
 - **SPRT** -- alpha 0.05, beta 0.10 — actively gates entries (blocks SKIP status)
 - **Regime** -- 6-state rule-based classifier (lookback=50 for stable autocorrelation) adjusts Kelly per state
 - **GEX** -- stabilizing gamma 0.7x size, amplifying 1.3x size
-- **Bankroll acceleration** -- Kelly ratchets 0.15 -> 0.18 -> 0.22 -> 0.25 at 200/400/750 trades using Wilson score 95% CI lower bound
+- **Bankroll acceleration** -- Kelly ratchets 0.15 -> 0.25 at 200/400/750 trades using Wilson score 95% CI lower bound
+- **Concurrent discount** -- 0.45x (binary outcome ρ < spot ρ)
+- **Oracle divergence** -- Chainlink-Coinbase spread > 1 ATR reduces sizing
 
 ## Learning Pipeline
 
@@ -196,5 +210,5 @@ All memory syncs via git -- outcomes, counterfactuals, DB, and config are tracke
 ## Tests
 
 ```bash
-python -m pytest polybot/tests/ -q   # 550 tests
+python -m pytest polybot/tests/ -q   # 602 tests
 ```
