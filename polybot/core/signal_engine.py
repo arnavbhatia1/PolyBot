@@ -263,6 +263,7 @@ class SignalEngine:
         logit_p += regime * direction * logit_regime_w
 
         # Layer 3 — Order flow (Polymarket CLOB)
+        logit_before_flow = logit_p
         logit_p += flow_signal * logit_flow_w
 
         # Layer 3b — Spot market flow (CVD + taker ratio from Binance aggTrades)
@@ -273,6 +274,12 @@ class SignalEngine:
         # Positive wall_pressure = resistance above = bearish for Up = reduce logit
         logit_wall_w = self.wall_weight * self.logit_scale
         logit_p -= wall_pressure * logit_wall_w
+
+        # Flow layer cap: prevent multicollinearity from triple-counting order flow evidence
+        max_flow_logit = 0.35  # ~one layer's worth of adjustment
+        flow_total = logit_p - logit_before_flow
+        if abs(flow_total) > max_flow_logit:
+            logit_p = logit_before_flow + max_flow_logit * (1.0 if flow_total > 0 else -1.0)
 
         # Layer 3e — Liquidation pressure (from Bybit OI changes)
         if liquidation_pressure != 0.0:

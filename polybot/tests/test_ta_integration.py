@@ -51,9 +51,9 @@ async def test_full_ta_flow(db, weights_dir):
     signal_eng = SignalEngine(min_edge=0.05,
                               weights={"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20})
 
-    # Verify the momentum adjustment is non-zero (indicators produced a directional signal)
+    # Verify momentum is zero during normalizer warmup (neutral, no garbage z-scores)
     momentum = signal_eng.compute_momentum(indicators)
-    assert momentum != 0
+    assert momentum == 0.0
 
     # Simulate: BTC above strike, market at 50/50 — should find edge
     signal = signal_eng.evaluate(indicators, has_position=False, in_entry_window=True,

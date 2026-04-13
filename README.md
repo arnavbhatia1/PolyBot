@@ -32,9 +32,10 @@ python -m polybot.main --run-pipeline
 ## How It Works
 
 ```
-8 WebSocket feeds + 2 REST polls (real-time data)
+9 WebSocket feeds + 2 REST polls (real-time data)
         |
-  Coinbase BTC price (primary, 0.5-2s faster) + Binance candle buffer + Chainlink strike
+  BTC price: Coinbase (primary) > Kraken (secondary, Chainlink source) > Binance (fallback)
+  + Binance candle buffer + Chainlink strike
         |
   10-LAYER PROBABILITY MODEL (logit-space combination):
     L1  -- Student-t CDF (df=5, fat tails): z = distance / (vol * sqrt(time) * iv_ratio)
@@ -48,7 +49,7 @@ python -m polybot.main --run-pipeline
     L5  -- Previous window momentum carry (+/-2%)
     +   -- Platt scaling calibration (fitted daily)
         |
-  SPRT evidence gate during 60s observe phase (blocks weak signals)
+  SPRT evidence gate during 60s observe phase (10s intervals, blocks weak signals)
   Alpha decay: fast edge decay triggers early SPRT entry
   Rule-based regime classifier (lookback=50) adjusts Kelly per market state
   Signal consensus multiplier (>80% agree -> 1.3x Kelly)
@@ -84,6 +85,7 @@ python -m polybot.main --run-pipeline
 |--------|---------|
 | `core/signal_engine.py` | 10-layer probability model: Student-t CDF + 9 logit-space layers |
 | `core/coinbase_feed.py` | Coinbase Exchange BTC-USD ticker (primary price, 0.5-2s faster) |
+| `core/kraken_feed.py` | Kraken XBT/USD WebSocket ticker (secondary price, Chainlink oracle source) |
 | `core/binance_feed.py` | Binance.US WebSocket candle buffer (ATR, indicators, fallback price) |
 | `core/clob_ws.py` | Real-time Polymarket CLOB WebSocket (order books, trades, resolution, price velocity) |
 | `core/chainlink_feed.py` | Chainlink BTC/USD oracle (resolution price source, preferred for strike) |
@@ -120,6 +122,7 @@ python -m polybot.main --run-pipeline
 | Source | Feed | What |
 |--------|------|------|
 | **Coinbase** | `ticker` WS (BTC-USD) | **Primary BTC price** (0.5-2s faster than Binance.US) |
+| **Kraken** | `ticker` WS (XBT/USD) | **Secondary BTC price** (Chainlink oracle data source, fallback when Coinbase stale) |
 | **Binance.US** | `btcusdt@kline_1m` WS | 1-min candles -- ATR, indicators, fallback BTC price |
 | **Binance.US** | `btcusdt@depth20@100ms` WS | Top 20 book levels -- spot imbalance |
 | **Binance.US** | `btcusdt@aggTrade` WS | Every trade with taker side -- CVD, taker ratio |
@@ -159,7 +162,7 @@ Key parameters (all tunable by learning pipeline):
 - **Layer weights** -- L2 regime 3%, L3 flow 4%, L3b spot flow 4%, L3c wall 5%, L3d perp 0% (disabled), L3e liquidation 3%, L4 momentum 4%, L5 carry 2%
 - **Max concurrent positions** -- 2 (half-Kelly when concurrent)
 - **Circuit breaker** -- Kelly scales 1.0 to 0.40 as drawdown from initial principal reaches 30% (not peak-based)
-- **SPRT** -- alpha 0.05, beta 0.10 — actively gates entries (blocks SKIP status)
+- **SPRT** -- alpha 0.05, beta 0.10, observation_interval 10s — downsampled to account for autocorrelated ticks, actively gates entries (blocks SKIP status)
 - **Regime** -- 6-state rule-based classifier (lookback=50 for stable autocorrelation) adjusts Kelly per state
 - **GEX** -- stabilizing gamma 0.7x size, amplifying 1.3x size
 - **Bankroll acceleration** -- Kelly ratchets 0.15 -> 0.25 at 200/400/750 trades using Wilson score 95% CI lower bound
@@ -201,7 +204,7 @@ Tunes 30+ parameters: indicator weights, all layer weights, student_t_df, min_ed
 | `POLYMARKET_PRIVATE_KEY` | Live mode (EIP-712 order signing) |
 | `POLYMARKET_FUNDER` | Live mode (USDC funding address) |
 
-Binance.US, Polymarket CLOB/Gamma, Bybit, and Deribit APIs are all free and need no key.
+Binance.US, Polymarket CLOB/Gamma, Bybit, Deribit, Coinbase, and Kraken APIs are all free and need no key.
 
 ## Git-Backed Persistence
 
@@ -210,5 +213,5 @@ All memory syncs via git -- outcomes, counterfactuals, DB, and config are tracke
 ## Tests
 
 ```bash
-python -m pytest polybot/tests/ -q   # 602 tests
+python -m pytest polybot/tests/ -q   # 628 tests
 ```

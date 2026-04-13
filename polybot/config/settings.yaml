@@ -160,6 +160,9 @@ coinbase:
   ws_url: "wss://ws-feed.exchange.coinbase.com"
   product_id: "BTC-USD"
 
+kraken:
+  ws_url: "wss://ws.kraken.com"
+
 bybit:
   ws_url: "wss://stream.bybit.com/v5/public/linear"
   rest_url: "https://api.bybit.com/v5/market"
@@ -188,6 +191,7 @@ bankroll_acceleration:
 sprt:
   alpha: 0.05           # False positive rate (enter when shouldn't)
   beta: 0.10            # False negative rate (skip when should enter)
+  observation_interval_s: 10.0  # Min seconds between observations (downsamples autocorrelated ticks)
 
 # --- Regime detection ---
 regime:

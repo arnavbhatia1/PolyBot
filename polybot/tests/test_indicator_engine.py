@@ -90,11 +90,11 @@ def test_load_weights(engine):
 from polybot.indicators.engine import IndicatorNormalizer
 
 def test_normalizer_warmup_returns_raw():
-    """First 50 calls return raw scores unchanged."""
+    """First 50 calls return 0.0 (neutral) during warmup."""
     norm = IndicatorNormalizer(warmup=50)
     for i in range(49):
         result = norm.normalize("rsi", 0.5)
-        assert result == 0.5
+        assert result == 0.0
 
 
 def test_normalizer_after_warmup_returns_zscore():

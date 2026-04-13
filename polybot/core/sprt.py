@@ -6,6 +6,7 @@ the decision boundary in 5-7 ticks; weak signals need more evidence.
 """
 
 import math
+import time
 
 
 class SPRTAccumulator:
@@ -17,16 +18,21 @@ class SPRTAccumulator:
         Type I error rate (false positive). Default 0.05.
     beta : float
         Type II error rate (false negative). Default 0.10.
+    min_interval_s : float
+        Minimum seconds between observations. BTC ticks are autocorrelated
+        (rho ~0.2-0.4), so feeding every tick inflates evidence. Default 10.0.
     """
 
-    def __init__(self, alpha: float = 0.05, beta: float = 0.10):
+    def __init__(self, alpha: float = 0.05, beta: float = 0.10, min_interval_s: float = 10.0):
         self.alpha = alpha
         self.beta = beta
+        self.min_interval_s = min_interval_s
         self.upper_bound = math.log((1.0 - beta) / alpha)
         self.lower_bound = math.log(beta / (1.0 - alpha))
         self._up_evidence: float = 0.0
         self._down_evidence: float = 0.0
         self._status: str = "ACCUMULATING"
+        self._last_update_ts: float = 0.0
 
     @property
     def llr(self) -> float:
@@ -50,6 +56,11 @@ class SPRTAccumulator:
         """
         if self._status != "ACCUMULATING":
             return self._status
+
+        now = time.time()
+        if now - self._last_update_ts < self.min_interval_s:
+            return self._status  # too soon, skip this observation
+        self._last_update_ts = now
 
         # Evidence increment: how much this tick supports a directional signal.
         # log(max(p, 1-p) / 0.5) — stronger signals add more evidence.
@@ -93,3 +104,4 @@ class SPRTAccumulator:
         self._up_evidence = 0.0
         self._down_evidence = 0.0
         self._status = "ACCUMULATING"
+        self._last_update_ts = 0.0

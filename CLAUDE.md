@@ -15,7 +15,8 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
   - L3e: Liquidation pressure (Bybit OI drop + price direction, weight now configurable)
   - L4: Indicator mean-reversion (RSI, MACD, Stochastic, OBV, VWAP) — negative weight fades indicators
   - L5: Previous window momentum carry (resolution margin / ATR)
-- **SPRT entry gate.** Sequential Probability Ratio Test accumulates evidence during 60s observe phase. Strong signals enter in 5-7 ticks, weak signals correctly skipped. **Actively gates entries** — trades are blocked if SPRT reaches SKIP status.
+- **SPRT entry gate.** Sequential Probability Ratio Test accumulates evidence during 60s observe phase, downsampled to 10s intervals to account for autocorrelated ticks. Strong signals enter in 5-7 observations, weak signals correctly skipped. **Actively gates entries** — trades are blocked if SPRT reaches SKIP status.
+- **Flow layer multicollinearity cap.** L3 (CLOB flow) + L3b (spot flow) + L3c (wall pressure) combined logit adjustment capped at 0.35 logit units. Prevents triple-counting correlated order flow evidence.
 - **Rule-based regime detection.** Multi-state classifier (trending_up/trending_down/reverting/volatile/quiet/neutral) adjusts Kelly and edge thresholds per market condition. Trending direction derived from price returns (majority up vs down count), not CVD. Lookback=50 for stable autocorrelation (SE=0.14).
 - **Signal consensus multiplier.** >80% signals agree -> Kelly 1.3x. <40% agree -> Kelly 0.6x. All thresholds and multipliers pipeline-tunable.
 - **Adaptive alpha decay.** Tracks edge decay rate. Fast decay triggers early SPRT entry before observe phase ends. When `should_enter_now()` fires AND SPRT has reached ENTER, the bot breaks out of the observe phase early.
@@ -35,7 +36,8 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Oracle divergence risk.** When Chainlink-Coinbase spread > 1 ATR, reduces size (0.7x at 2 ATR, 0.3x at 3+ ATR). CDF uses fast Coinbase price for speed edge; Chainlink divergence signals resolution uncertainty.
 - **Realized/predicted edge ratio.** Rolling 50-trade metric comparing model-predicted edge at entry vs actual gain. If ratio < 0.6, model is systematically overconfident. Logged in trade_context.
 - **Maker orders with FOK fallback.** Limit order first (0% fee), FOK fallback after 60s (1.8% fee). ~60% fee savings.
-- **Coinbase Exchange feed.** Faster BTC/USD price source (leads Binance.US by 0.5-2s). Used as primary BTC price when fresh (<5s), Binance.US as fallback. No auth required.
+- **Coinbase Exchange feed.** Faster BTC/USD price source (leads Binance.US by 0.5-2s). Used as primary BTC price when fresh (<5s). No auth required.
+- **Kraken Exchange feed.** Secondary BTC/USD price source via `wss://ws.kraken.com` (XBT/USD ticker). Kraken is a Chainlink oracle data source, so tracking it gives a better approximation of what Chainlink reports for resolution. Falls back here when Coinbase is stale (>5s). No auth required.
 - **Chainlink oracle feed.** Reads BTC/USD price from the same oracle Polymarket uses for resolution. Preferred for strike computation when available.
 - **CLOB flow velocity.** Tracks midprice rate of change on Polymarket CLOB (cents/sec over 5s window). Detects informed flow (e.g., contract 60c->90c in 3s). Logged in trade_context for pipeline analysis.
 - **Deribit options IV.** Logged in trade_context for pipeline analysis. NOT applied to CDF vol scaling — 30-day IV is a regime mismatch for 5-min windows (ATR from 1-min candles is the correct vol measure). Deribit still provides GEX data.
@@ -43,7 +45,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes the mathema
 - **Auto-restart cycle.** `run_polybot.ps1` manages daily lifecycle: start at 12:15 AM ET, trade until 11:59 PM, pipeline at 12:05 AM, exit, commit config/outcomes/DB to git, push, restart at 12:15 AM.
 - **Git-backed persistence.** Outcomes, counterfactuals, and DB tracked in git. `run_polybot.ps1` commits and pushes after the 12:05 AM pipeline, preserving state across restarts.
 - **Kelly fraction = 0.15.** Conservative for binary outcomes where losses are total. Bankroll acceleration ratchets up with proven track record.
-- **Dual entry gate + safety gates.** Kelly >= 0.015 (primary) AND edge >= 0.04 (noise floor). Safety: edge >20% = skip (miscalibration cap), momentum disagreement halves edge.
+- **Dual entry gate + safety gates.** Kelly >= 0.015 (primary) AND edge >= 0.04 (noise floor). Safety: edge >20% = skip (miscalibration cap), momentum disagreement halves edge (accounts for negative momentum_weight sign -- raw indicator direction opposing the bet is agreement when weight is negative).
 - **Signal layer weights (logit space).** L1 Student-t CDF drives decisions. L2-L5 adjust in logit space (weight x `logit_scale` max shift, default 4.0). Logit-space dampens adjustments near extremes. CDF must show direction before layers can push past 65% gate. `logit_scale` is pipeline-tunable.
 - **Real-time WebSocket + Gamma API for prices.** CLOB WS provides real-time books, BBA, last trades, resolution events. Event-driven loop, HTTP fallback if WS disconnected. Gamma API for contract discovery. `outcomePrices` are stale — never use for edge.
 - **Outcomes are "Up"/"Down".** Contract fields: `price_up`, `price_down`.
@@ -59,7 +61,8 @@ polybot/
   config/settings.yaml       # ALL tunable parameters (55)
   core/
     binance_feed.py          # WebSocket + candle buffer (ATR, indicators, strike)
-    coinbase_feed.py         # Coinbase Exchange BTC-USD ticker (faster price source)
+    coinbase_feed.py         # Coinbase Exchange BTC-USD ticker (fastest price source)
+    kraken_feed.py           # Kraken XBT/USD WebSocket ticker (secondary price, Chainlink oracle source)
     clob_ws.py               # Real-time CLOB WebSocket feed (order books, trades, resolution, price velocity)
     market_scanner.py        # Gamma API discovery + CLOB HTTP helpers (spread, midpoints, volume)
     signal_engine.py         # Probability model: P(Up) from BTC vs strike + time + vol
@@ -121,7 +124,7 @@ polybot/
 - `signal.entry_threshold:` — 0.04 (noise floor, range 0.01-0.10), `max_edge:` — 0.20 (safety net behind Platt, range 0.10-0.30)
 - `signal.min_kelly:` — 0.015 (primary gate, range 0.005-0.05)
 - `signal.exit_edge_threshold:` — -0.05
-- `signal.min_model_probability:` — 0.58 (lowered from 0.65 — near-ATM trades have highest crowd bias edge, SPRT still gates weak signals)
+- `signal.min_model_probability:` — 0.58 (near-ATM trades have highest crowd bias edge, SPRT still gates weak signals)
 - `signal.momentum_weight:` — -0.02 (L4, NEGATIVE = fade indicators for 5-min mean reversion. r=-0.04 is the signal with sign flipped. Range [-0.10, +0.10], pipeline-tunable), `regime_weight:` — 0.03 (L2), `flow_weight:` — 0.04 (L3)
 - `signal.spot_flow_weight:` — 0.04 (L3b), `wall_weight:` — 0.05 (L3c)
 - `signal.prev_margin_weight:` — 0.02 (L5), `liquidation_weight:` — 0.03 (L3e)
@@ -133,6 +136,7 @@ polybot/
 - `signal.weights:` — per-indicator weights for momentum
 - `deribit.iv_ratio_min:` — 0.5, `iv_ratio_max:` — 3.0
 - `coinbase.ws_url:` — `wss://ws-feed.exchange.coinbase.com`, `product_id:` — `BTC-USD`
+- `kraken.ws_url:` — `wss://ws.kraken.com`
 - `execution.max_concurrent_positions:` — 2, `max_bankroll_deployed:` — 0.80, `max_single_position_pct:` — 0.12, `max_book_fill_pct:` — 0.50, `concurrent_position_discount:` — 0.45 (binary outcome ρ≈0.45-0.55, lower than spot ρ)
 - `execution.slippage_impact_pct:` — 0.03, `use_maker_orders:` — true, `maker_timeout_s:` — 60.0
 - `market.entry_window_seconds:` — 300, `min_time_remaining_seconds:` — 20, `max_spread:` — 0.10
@@ -142,7 +146,7 @@ polybot/
 - `binance_depth.poll_interval_s:` — 5.0, `binance_trades` / `bybit` / `deribit` WS URLs in config
 - `entry_timing.observe_seconds:` — 60, `late_kelly_multiplier:` — 0.7, `final_min_probability:` — 0.90
 - `bankroll_acceleration.enabled:` — true (0.15 -> 0.18/0.22/0.25 as track record grows)
-- `sprt.alpha:` — 0.05, `sprt.beta:` — 0.10
+- `sprt.alpha:` — 0.05, `sprt.beta:` — 0.10, `sprt.observation_interval_s:` — 10.0 (downsamples autocorrelated ticks)
 - `regime.lookback:` — 50 (increased from 20 for stable autocorrelation), `vol_high_percentile:` — 75, `vol_low_percentile:` — 25, `autocorr_threshold:` — 0.25
 
 ## Running
@@ -152,7 +156,7 @@ python -m polybot.main --mode paper   # Paper trading (persistent bankroll acros
 python -m polybot.main --mode live    # Live trading (real USDC on Polymarket)
 python -m polybot.main                # Defaults to mode in settings.yaml
 python -m polybot.main --run-pipeline # Run daily learning pipeline once and exit (no trading)
-python -m pytest polybot/tests/       # 602 tests
+python -m pytest polybot/tests/       # 628 tests
 ```
 
 ## How the Probability Model Works
@@ -165,7 +169,7 @@ Resolution always uses Gamma API eventMetadata or closed+outcomePrices.
 Distance = current BTC price - strike
 Vol = ATR (average true range from 1-min candles, period=7) / atr_sigma_ratio (1.4)
 Time = minutes remaining in the window
-BTC price = Coinbase Exchange (primary, 0.5-2s faster) or Binance.US (fallback)
+BTC price = Coinbase Exchange (primary, 0.5-2s faster) > Kraken (secondary, Chainlink oracle source) > Binance.US (fallback)
 
 LAYER 1 — Fat-tailed base (Student-t CDF, df=5):
   ATR_effective = max(ATR, min_atr)                   [floor prevents extreme z in quiet markets]
@@ -252,6 +256,12 @@ All APIs are free, no auth required (except Claude and Discord).
 |----------|-------|
 | `WSS ticker` channel for BTC-USD | **Primary BTC price** (0.5-2s faster than Binance.US). Falls back to Binance when stale >5s. |
 
+### Kraken (`wss://ws.kraken.com`)
+
+| Endpoint | Usage |
+|----------|-------|
+| `WSS ticker` channel for XBT/USD | **Secondary BTC price** (Chainlink oracle data source). Falls in when Coinbase stale >5s. Binance.US as final fallback. |
+
 ### Binance.US (not .com — HTTP 451 for US IPs)
 
 | Endpoint | Usage |
@@ -307,14 +317,14 @@ Live trader preserves the same dataflow shape — same gates, ordering, invarian
 ### Phase 1: Market Discovery
 
 ```
-Coinbase WS (BTC-USD ticker)        Binance WS (1-min candles)          Gamma API (contract discovery)
-  fastest BTC price (primary)          candle buffer, ATR, indicators       btc-updown-5m-{window_ts}
-        |                                    |                              token IDs, seconds_remaining
-        +-----> btc_price <---------+        |                                    |
-                                             v                            CLOB WS subscribe(token_up, token_down)
-                                    200-candle rolling buffer              -> book snapshots, BBA, last trades, resolution
-                                    strike from Chainlink (preferred)         + price velocity tracking
-                                    or Binance candle boundary (fallback)
+Coinbase WS (BTC-USD ticker)   Kraken WS (XBT/USD ticker)   Binance WS (1-min candles)     Gamma API (contract discovery)
+  fastest BTC price (primary)    secondary (Chainlink source)   candle buffer, ATR, indicators   btc-updown-5m-{window_ts}
+        |                              |                              |                          token IDs, seconds_remaining
+        +-----> btc_price <-----------+--- (fallback) -------+       |                                |
+               (Coinbase > Kraken > Binance)                         v                        CLOB WS subscribe(token_up, token_down)
+                                                            200-candle rolling buffer          -> book snapshots, BBA, last trades, resolution
+                                                            strike from Chainlink (preferred)     + price velocity tracking
+                                                            or Binance candle boundary (fallback)
 ```
 
 ### Phase 2: Signal Generation

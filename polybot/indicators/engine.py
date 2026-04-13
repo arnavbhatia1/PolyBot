@@ -52,7 +52,7 @@ class IndicatorNormalizer:
             stats["var"] = (1 - self.alpha) * stats["var"] + self.alpha * delta * delta
 
         if stats["count"] < self.warmup:
-            return raw_score
+            return 0.0  # neutral during warmup, no adjustment
 
         std = max(math.sqrt(stats["var"]), 1e-6)
         z = (raw_score - stats["mean"]) / std

@@ -37,6 +37,7 @@ from polybot.core.binance_trades import BinanceTradesFeed, BinanceTradeAccumulat
 from polybot.core.bybit_feed import BybitFeed
 from polybot.core.deribit_iv import DeribitIVFeed
 from polybot.core.coinbase_feed import CoinbaseFeed
+from polybot.core.kraken_feed import KrakenFeed
 from polybot.core.bankroll_strategy import compute_kelly_tier, compute_uncertainty_discount, DrawdownVelocityTracker
 from polybot.core.sprt import SPRTAccumulator
 from polybot.core.regime import RegimeDetector
@@ -314,7 +315,8 @@ async def _evaluate_signal_and_enter(
         bybit_feed: Any = None,
         deribit_feed: Any = None,
         coinbase_feed: Any = None,
-        chainlink_feed: Any = None) -> tuple[str | None, int]:
+        chainlink_feed: Any = None,
+        kraken_feed: Any = None) -> tuple[str | None, int]:
     """Compute indicators/flow/signal, check for entry, size the trade, execute."""
     in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
 
@@ -440,7 +442,7 @@ async def _evaluate_signal_and_enter(
         logger.info(
             f"{_C.CYAN}{'-' * 60}{_C.RESET}\n"
             f"  {action_color}EVAL  {signal.action:<8}{_C.RESET} | {contract.get('question', cid)}\n"
-            f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]\n"
+            f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]  src={_price_source}\n"
             f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
             f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  iv {iv_ratio_val:.2f}\n"
             f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}  cvd_a {cvd_accel_val:+.2f}\n"
@@ -462,9 +464,13 @@ async def _evaluate_signal_and_enter(
     # --- LAYER DISAGREEMENT GATE: momentum opposing trade direction ---
     side = "Up" if signal.action == "BUY_YES" else "Down"
     momentum_score = signal_engine.compute_momentum(indicators)
+    # Account for negative momentum_weight: if weight < 0, model FADES indicators,
+    # so raw indicator direction opposing the bet is actually AGREEMENT
+    mw_sign = 1.0 if signal_engine.momentum_weight >= 0 else -1.0
+    effective_momentum = momentum_score * mw_sign
     momentum_opposes = (
-        (side == "Down" and momentum_score > 0.5) or
-        (side == "Up" and momentum_score < -0.5)
+        (side == "Down" and effective_momentum > 0.5) or
+        (side == "Up" and effective_momentum < -0.5)
     )
     if momentum_opposes and signal.edge * 0.5 < signal_engine.min_edge:
         logger.info(
@@ -560,9 +566,6 @@ async def _evaluate_signal_and_enter(
         concurrent_discount = config.get("execution", {}).get("concurrent_position_discount", 0.35)
         size = round(size * concurrent_discount, 2)
 
-    if size < 0.10:
-        logger.info(f"SKIP: Kelly size ${size:.2f} < $0.10 — edge too small to trade")
-        return None, last_eval_log_window
     if size > bankroll * max_bankroll_pct:
         size = round(bankroll * max_bankroll_pct, 2)
 
@@ -591,6 +594,11 @@ async def _evaluate_signal_and_enter(
         logger.info(
             f"SKIP: net edge {net_edge:+.1%} < min {signal_engine.min_edge:.0%} "
             f"after {est_slip:.2%} slippage (gross {signal.edge:+.1%})")
+        return None, last_eval_log_window
+
+    # Final minimum size check — after all caps have been applied
+    if size < 0.10:
+        logger.info(f"SKIP: size ${size:.2f} < $0.10 after caps")
         return None, last_eval_log_window
 
     # Fetch fee rate and tick size from Polymarket API
@@ -753,11 +761,18 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             logger.info(f"EVAL: no strike for window {contract_window_ts} — candle buffer has {buf_len} candles")
         return None, None, window_strikes, last_eval_log_window
 
-    # Use the fastest available BTC price: Coinbase leads Binance.US by 0.5-2s
+    # BTC price priority: Coinbase (fastest) > Kraken (Chainlink source) > Binance (fallback)
+    _price_source = "none"
+    kraken_feed_ref = kwargs.get("kraken_feed")
     if coinbase_feed and coinbase_feed.state.price > 0 and coinbase_feed.state.age_seconds < 5:
         btc_price = coinbase_feed.state.price
+        _price_source = f"coinbase ({coinbase_feed.state.age_seconds:.1f}s)"
+    elif kraken_feed_ref and kraken_feed_ref.state.price > 0 and kraken_feed_ref.state.age_seconds < 5:
+        btc_price = kraken_feed_ref.state.price
+        _price_source = f"kraken ({kraken_feed_ref.state.age_seconds:.1f}s)"
     else:
         btc_price = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+        _price_source = f"binance (fallback)"
     if btc_price <= 0:
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
@@ -922,10 +937,17 @@ async def _evaluate_and_exit_position(
         day_wins: int, day_losses: int, day_fees: float,
         depth_feed: Any = None, trades_feed: Any = None,
         bybit_feed: Any = None, deribit_feed: Any = None,
-        chainlink_feed: Any = None) -> tuple[int, int, float, str | None]:
+        chainlink_feed: Any = None,
+        kraken_feed: Any = None) -> tuple[int, int, float, str | None]:
     """Re-evaluate an active position and exit (scalp) if holding edge is gone."""
-    # Real-time BTC from Binance (fast) — speed edge over slow Chainlink oracle
-    btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+    # BTC price priority: Coinbase > Kraken > Binance
+    kraken_feed_ref = kraken_feed
+    if coinbase_feed and coinbase_feed.state.price > 0 and coinbase_feed.state.age_seconds < 5:
+        btc_now = coinbase_feed.state.price
+    elif kraken_feed_ref and kraken_feed_ref.state.price > 0 and kraken_feed_ref.state.age_seconds < 5:
+        btc_now = kraken_feed_ref.state.price
+    else:
+        btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
     if btc_now <= 0:
         return day_wins, day_losses, day_fees, None
 
@@ -1036,10 +1058,11 @@ async def _evaluate_and_exit_position(
             secs = live['seconds_remaining']
             edge_color = _C.GREEN if holding_edge > 0 else (_C.RESET if holding_edge == 0 else _C.RED)
             edge_str = f"{abs(holding_edge):.0%}" if holding_edge == 0 else f"{holding_edge:+.0%}"
+            cl_str = f"  cl ${chainlink_feed.price:,.0f}" if chainlink_feed and chainlink_feed.price > 0 else ""
             logger.info(
                 f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {secs:.0f}s  |  "
                 f"prob {model_prob:.0%}  {edge_color}edge {edge_str}{_C.RESET}  |  "
-                f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}")
+                f"BTC ${btc_now:,.0f}{cl_str}  mkt {market_price:.2f}")
         if counterfactual_tracker:
             counterfactual_tracker.track_hold_moment(pos["market_id"], pos, {
                 "holding_edge": holding_edge, "model_prob": model_prob,
@@ -1325,7 +1348,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                        bybit_feed: Any = None,
                        deribit_feed: Any = None,
                        chainlink_feed: Any = None,
-                       coinbase_feed: Any = None) -> None:
+                       coinbase_feed: Any = None,
+                       kraken_feed: Any = None) -> None:
     import httpx
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
@@ -1456,7 +1480,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                             day_wins, day_losses, day_fees,
                             depth_feed=depth_feed, trades_feed=trades_feed,
                             bybit_feed=bybit_feed, deribit_feed=deribit_feed,
-                            chainlink_feed=chainlink_feed)
+                            chainlink_feed=chainlink_feed, kraken_feed=kraken_feed)
                     if traded_mid:
                         traded_contracts[traded_mid] = int(time.time())
 
@@ -1511,7 +1535,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 _compute_strike_and_btc(cid, binance_feed, window_strikes,
                                         eval_window, last_eval_log_window,
                                         chainlink_feed=chainlink_feed,
-                                        coinbase_feed=coinbase_feed)
+                                        coinbase_feed=coinbase_feed,
+                                        kraken_feed=kraken_feed)
             if strike is None:
                 continue
 
@@ -1527,7 +1552,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 depth_feed=depth_feed, trades_feed=trades_feed,
                 bybit_feed=bybit_feed, deribit_feed=deribit_feed,
                 coinbase_feed=coinbase_feed,
-                chainlink_feed=chainlink_feed)
+                chainlink_feed=chainlink_feed,
+                kraken_feed=kraken_feed)
             if traded_cid:
                 traded_contracts[traded_cid] = now_ts
 
@@ -1833,11 +1859,15 @@ async def main() -> None:
         product_id=coinbase_cfg.get("product_id", "BTC-USD"),
     )
 
+    # Kraken feed — Chainlink oracle data source, secondary fast price
+    kraken_feed = KrakenFeed()
+
     # SPRT, regime detector, alpha decay — module-level state for trading loop
     global _sprt, _alpha_decay, _regime_detector
     _sprt = SPRTAccumulator(
         alpha=config.get("sprt", {}).get("alpha", 0.05),
         beta=config.get("sprt", {}).get("beta", 0.10),
+        min_interval_s=config.get("sprt", {}).get("observation_interval_s", 10.0),
     )
     regime_cfg = config.get("regime", {})
     _regime_detector = RegimeDetector(
@@ -1869,6 +1899,7 @@ async def main() -> None:
     await trades_feed.start()
     await bybit_feed_inst.start()
     await coinbase_feed.start()
+    await kraken_feed.start()
     # DeribitIVFeed.start() is a blocking loop — run as background task
     deribit_task = asyncio.create_task(deribit_feed.start())
 
@@ -1896,7 +1927,8 @@ async def main() -> None:
         http_client=http_client,
         depth_feed=depth_feed, trades_feed=trades_feed,
         bybit_feed=bybit_feed_inst, deribit_feed=deribit_feed,
-        chainlink_feed=chainlink_feed, coinbase_feed=coinbase_feed))
+        chainlink_feed=chainlink_feed, coinbase_feed=coinbase_feed,
+        kraken_feed=kraken_feed))
     background_tasks = [
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
