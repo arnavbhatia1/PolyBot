@@ -115,13 +115,11 @@ class SignalEngine:
                  spot_flow_weight: float = 0.04,
                  wall_weight: float = 0.05,
                  prev_margin_weight: float = 0.02,
-                 conviction_multiplier: bool = True,
                  min_atr: float = 8.0,
                  liquidation_weight: float = 0.03,
                  logit_scale: float = 4.0,
                  probability_compression: float = 1.0,
                  consensus_dead_zone: float = 0.05,
-                 conviction_config: dict | None = None,
                  consensus_config: dict | None = None,
                  exit_config: dict | None = None) -> None:
         self.min_edge: float = min_edge
@@ -140,17 +138,11 @@ class SignalEngine:
         self.spot_flow_weight: float = spot_flow_weight
         self.wall_weight: float = wall_weight
         self.prev_margin_weight: float = prev_margin_weight
-        self.conviction_multiplier: bool = conviction_multiplier
         self.min_atr: float = min_atr
         self.liquidation_weight: float = liquidation_weight
         self.logit_scale: float = logit_scale
         self.probability_compression: float = probability_compression
         self.consensus_dead_zone: float = consensus_dead_zone
-        self.conviction_config: dict = conviction_config or {
-            "high_prob": 0.90, "high_mult": 1.3,
-            "mid_prob": 0.85, "mid_mult": 1.15,
-            "low_prob": 0.72, "low_mult": 0.7,
-        }
         self.consensus_config: dict = consensus_config or {
             "very_high_pct": 0.80, "very_high_mult": 1.3,
             "high_pct": 0.60, "high_mult": 1.0,
@@ -199,8 +191,7 @@ class SignalEngine:
                             wall_pressure: float = 0.0,
                             prev_resolution_margin: float = 0.0,
                             iv_ratio: float = 1.0,
-                            liquidation_pressure: float = 0.0,
-                            gex_signal: float = 0.0) -> float:
+                            liquidation_pressure: float = 0.0) -> float:
         """Compute P(Up) — probability BTC finishes above the strike.
 
         Uses Brownian motion approximation with Student-t CDF (fat tails):
@@ -330,8 +321,7 @@ class SignalEngine:
 
                  prev_resolution_margin: float = 0.0,
                  iv_ratio: float = 1.0,
-                 liquidation_pressure: float = 0.0,
-                 gex_signal: float = 0.0) -> TradeSignal:
+                 liquidation_pressure: float = 0.0) -> TradeSignal:
 
         # Gate: already have position or outside window
         if not in_entry_window:
@@ -360,8 +350,7 @@ class SignalEngine:
 
                                            prev_resolution_margin=prev_resolution_margin,
                                            iv_ratio=iv_ratio,
-                                           liquidation_pressure=liquidation_pressure,
-                                           gex_signal=gex_signal)
+                                           liquidation_pressure=liquidation_pressure)
         prob_down = 1.0 - prob_up
 
         # Gate: model must be confident enough (not a coin flip)
@@ -414,8 +403,7 @@ class SignalEngine:
      
                       prev_resolution_margin: float = 0.0,
                       iv_ratio: float = 1.0,
-                      liquidation_pressure: float = 0.0,
-                      gex_signal: float = 0.0) -> tuple[str, float, float, str]:
+                      liquidation_pressure: float = 0.0) -> tuple[str, float, float, str]:
         """Continuously evaluate whether to hold or exit an existing position.
 
         Uses the same 4-layer probability model as entry. Compares the
@@ -442,8 +430,7 @@ class SignalEngine:
 
                                            prev_resolution_margin=prev_resolution_margin,
                                            iv_ratio=iv_ratio,
-                                           liquidation_pressure=liquidation_pressure,
-                                           gex_signal=gex_signal)
+                                           liquidation_pressure=liquidation_pressure)
         model_prob = prob_up if side == "Up" else 1.0 - prob_up
         holding_edge = model_prob - market_price_for_side
 
@@ -487,21 +474,11 @@ class SignalEngine:
                 f"edge={holding_edge:+.0%}")
 
     def _kelly(self, prob: float, market_price: float) -> float:
-        """Kelly for binary outcome with optional conviction scaling."""
+        """Kelly for binary outcome. No conviction scaling — Kelly already
+        encodes conviction through edge×prob. Double-counting is cut."""
         if market_price <= 0.01 or market_price >= 0.99:
             return 0
         b = (1.0 - market_price) / market_price
         q = 1.0 - prob
         raw = (prob * b - q) / b
-        base = max(0, raw * self.kelly_fraction)
-        if not self.conviction_multiplier:
-            return base
-        # Scale Kelly by conviction — thresholds and multipliers from config
-        cc = self.conviction_config
-        if prob >= cc["high_prob"]:
-            return base * cc["high_mult"]
-        elif prob >= cc["mid_prob"]:
-            return base * cc["mid_mult"]
-        elif prob < cc["low_prob"]:
-            return base * cc["low_mult"]
-        return base
+        return max(0, raw * self.kelly_fraction)

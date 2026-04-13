@@ -38,7 +38,7 @@ from polybot.core.bybit_feed import BybitFeed
 from polybot.core.deribit_iv import DeribitIVFeed
 from polybot.core.coinbase_feed import CoinbaseFeed
 from polybot.core.kraken_feed import KrakenFeed
-from polybot.core.bankroll_strategy import compute_kelly_tier, compute_uncertainty_discount, DrawdownVelocityTracker
+from polybot.core.bankroll_strategy import compute_uncertainty_discount, DrawdownVelocityTracker
 from polybot.core.sprt import SPRTAccumulator
 from polybot.core.regime import RegimeDetector
 from polybot.core.alpha_decay import AlphaDecayTracker
@@ -112,6 +112,9 @@ _crowd_bias: CrowdBiasTracker | None = None
 
 _realized_edge_history: list[tuple[float, float]] = []  # (predicted_edge, realized_gain_pct)
 
+# Per-window flip state: tracks blacklisted tokens, flip count, last side
+_window_flip_state: dict[str, dict] = {}  # window_id -> {blacklisted_tokens, flip_count, last_side}
+
 
 def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
     """Construct SignalEngine from config — shared between pipeline and main."""
@@ -131,36 +134,80 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
         spot_flow_weight=signal_cfg.get("spot_flow_weight", 0.04),
         wall_weight=signal_cfg.get("wall_weight", 0.05),
         prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
-        conviction_multiplier=config.get("bankroll_acceleration", {}).get("enabled", True),
         min_atr=signal_cfg.get("min_atr", 8.0),
         liquidation_weight=signal_cfg.get("liquidation_weight", 0.03),
         logit_scale=signal_cfg.get("logit_scale", 4.0),
         probability_compression=signal_cfg.get("probability_compression", 1.0),
         consensus_dead_zone=signal_cfg.get("consensus_dead_zone", 0.05),
-        conviction_config=signal_cfg.get("conviction"),
         consensus_config=signal_cfg.get("consensus"),
         exit_config=signal_cfg.get("exit"),
     )
 
 
-def compute_entry_phase(seconds_remaining: float, window_seconds: float = 300.0) -> dict:
-    """Determine entry phase based on time elapsed in window.
+def compute_time_multiplier(prob: float, seconds_remaining: float,
+                            window_seconds: float = 300.0,
+                            normal_fraction: float = 0.60,
+                            late_max_penalty: float = 0.60,
+                            final_min_probability: float = 0.90) -> dict:
+    """Continuous confidence-conditional time decay for Kelly sizing.
 
-    Phases (user requested 60s observe):
-      0-60s elapsed (300-240s remaining): OBSERVE — collect data, no entry
-      60-180s elapsed (240-120s remaining): NORMAL — full Kelly entry when gates pass
-      180-240s elapsed (120-60s remaining): LATE — reduced Kelly (0.7x)
-      240-300s elapsed (60-0s remaining): FINAL — only at >90% confidence, half Kelly
+    Instead of hard phase steps (1.0 → 0.7 → 0.5), uses a smooth function
+    where high-conviction trades are barely penalized late in the window,
+    but ATM trades near expiry are heavily penalized.
+
+    Key insight: time penalty should be inversely proportional to conviction.
+    A 92% prob at T-45s is a better trade than 72% at T-120s.
+
+    Args:
+        prob: Model probability for the chosen side (0-1).
+        seconds_remaining: Seconds until contract expiry.
+        normal_fraction: Fraction of window where full Kelly applies (default 0.60 = 180s).
+        late_max_penalty: Maximum Kelly reduction at expiry for ATM trades (default 0.60).
+        final_min_probability: Hard gate for last 60s (default 0.90).
+
+    Returns:
+        dict with:
+            allowed: bool (False only if < min_time_remaining)
+            kelly_multiplier: float (0.40-1.0, continuous)
+            min_prob_override: float|None (0.90 in final 60s, else None)
+            phase: str (for logging: "normal", "late", "final")
     """
-    elapsed = window_seconds - seconds_remaining
-    if elapsed < 60:
-        return {"allowed": False, "kelly_multiplier": 1.0, "min_prob_override": None, "phase": "observe"}
-    elif elapsed < 180:
-        return {"allowed": True, "kelly_multiplier": 1.0, "min_prob_override": None, "phase": "normal"}
-    elif elapsed < 240:
-        return {"allowed": True, "kelly_multiplier": 0.7, "min_prob_override": None, "phase": "late"}
+    T = window_seconds
+    t = seconds_remaining
+    time_fraction = t / T  # 1.0 at open, 0.0 at expiry
+
+    # Conviction: 0 at 50% prob, 1 at 100% prob
+    conviction = 2.0 * abs(prob - 0.5)
+
+    # Phase label for logging
+    if time_fraction >= normal_fraction:
+        phase = "normal"
+    elif t >= 30:
+        phase = "late"
     else:
-        return {"allowed": True, "kelly_multiplier": 0.5, "min_prob_override": 0.90, "phase": "final"}
+        phase = "final"
+
+    # In the normal window, no penalty
+    if time_fraction >= normal_fraction:
+        multiplier = 1.0
+    else:
+        # How deep into "late" territory
+        late_depth = (normal_fraction - time_fraction) / normal_fraction  # 0→1
+        # ATM exposure: high at 50% prob, low at extremes
+        atm_exposure = 1.0 - conviction
+        # Penalty scales with lateness AND ATM-ness
+        penalty = late_depth * atm_exposure * late_max_penalty
+        multiplier = max(0.40, 1.0 - penalty)
+
+    # Final 30s hard gate: require high confidence
+    min_prob_override = final_min_probability if t < 30 else None
+
+    return {
+        "allowed": True,  # SPRT owns observation, no hard block
+        "kelly_multiplier": multiplier,
+        "min_prob_override": min_prob_override,
+        "phase": phase,
+    }
 
 
 async def _get_contract_prices(market_scanner: Any, market_id: str, http_client: Any = None) -> dict[str, Any] | None:
@@ -320,40 +367,14 @@ async def _evaluate_signal_and_enter(
     """Compute indicators/flow/signal, check for entry, size the trade, execute."""
     in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
 
-    # Dynamic entry timing — observe first 60s, then phased entry
-    entry_phase = compute_entry_phase(contract["seconds_remaining"])
-    if not entry_phase["allowed"]:
-        # During observe phase: accumulate SPRT evidence + track alpha decay
-        global _sprt, _alpha_decay, _current_window_id, _early_entry_fired
-        window_id = contract.get("market_id", contract.get("slug", ""))
-        if window_id != _current_window_id:
-            _current_window_id = window_id
-            if _sprt: _sprt.reset()
-            if _alpha_decay: _alpha_decay.reset()
-            _early_entry_fired = False
-
-        prob_up_obs = 0.5
-        if _sprt:
-            indicators_obs = indicator_engine.compute_all(binance_feed.buffer)
-            closes_obs = binance_feed.buffer.get_closes()
-            prob_up_obs = signal_engine.compute_probability(
-                btc_price, strike, contract["seconds_remaining"],
-                indicators_obs.get("atr", {}).get("atr", 0), indicators_obs, closes_obs,
-                prev_resolution_margin=_prev_resolution_margin)
-            _sprt.update(prob_up_obs)
-        if _alpha_decay:
-            best_prob = max(prob_up_obs, 1 - prob_up_obs) if prob_up_obs != 0.5 else 0.5
-            _alpha_decay.add_observation(time.time(), best_prob)
-
-        # Adaptive alpha decay: if edge is decaying fast AND SPRT has strong evidence,
-        # break out of observe phase early — but only once per window
-        if (not _early_entry_fired
-                and _alpha_decay and _alpha_decay.should_enter_now()
-                and _sprt and _sprt.get_status() == "ENTER"):
-            _early_entry_fired = True
-            logger.info(f"EARLY ENTRY: alpha decay {_alpha_decay.get_decay_rate():+.4f}/s + SPRT ENTER — skipping remaining observe")
-        else:
-            return None, last_eval_log_window
+    # SPRT + alpha decay: accumulate evidence on new windows (no hard observe block)
+    global _sprt, _alpha_decay, _current_window_id, _early_entry_fired
+    window_id = contract.get("market_id", contract.get("slug", ""))
+    if window_id != _current_window_id:
+        _current_window_id = window_id
+        if _sprt: _sprt.reset()
+        if _alpha_decay: _alpha_decay.reset()
+        _early_entry_fired = False
 
     # Compute indicators and evaluate probability model
     indicators = indicator_engine.compute_all(binance_feed.buffer)
@@ -366,7 +387,7 @@ async def _evaluate_signal_and_enter(
 
     # --- New signals from extended feeds ---
     spot_flow_signal = 0.0
-    wall_pressure_val = 0.0
+    wall_pressure_val = 0.0  # L3c disabled: 1000-level book is gamed by HFT, flow cap limits impact anyway
     iv_ratio_val = 1.0
 
     if trades_feed and trades_feed.accumulator:
@@ -382,8 +403,8 @@ async def _evaluate_signal_and_enter(
         taker_component = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
         spot_flow_signal = max(-1.0, min(1.0, cvd_component + taker_component))
 
-    if depth_feed:
-        wall_pressure_val = depth_feed.get_wall_pressure(strike, btc_price)
+    # L3c wall pressure: disabled (1000-level REST polling gamed by HFT refresh)
+    # depth_feed still provides top-20 WS for book depth sizing check
 
     # Deribit IV: logged for pipeline analysis but NOT applied to CDF vol scaling.
     # 30-day IV is a regime mismatch for 5-min windows — ATR is the correct vol measure.
@@ -429,7 +450,23 @@ async def _evaluate_signal_and_enter(
         prev_resolution_margin=_prev_resolution_margin,
         iv_ratio=1.0,  # ATR is the correct 5-min vol; Deribit 30-day IV not applied
         liquidation_pressure=liquidation_val,
-        gex_signal=gex_val,
+    )
+
+    # SPRT/alpha_decay: feed the signal into accumulators (telemetry, not gating)
+    if _sprt:
+        _sprt.update(signal.prob if signal.action != "SKIP" else 0.5)
+    if _alpha_decay:
+        best_prob = max(signal.prob, 1 - signal.prob) if signal.prob != 0.5 else 0.5
+        _alpha_decay.add_observation(time.time(), best_prob)
+
+    # Continuous time multiplier: penalizes ATM trades late, barely penalizes high-conviction trades
+    timing_cfg = config.get("entry_timing", {})
+    entry_phase = compute_time_multiplier(
+        prob=signal.prob,
+        seconds_remaining=contract["seconds_remaining"],
+        normal_fraction=timing_cfg.get("normal_fraction", 0.60),
+        late_max_penalty=timing_cfg.get("late_max_penalty", 0.60),
+        final_min_probability=timing_cfg.get("final_min_probability", 0.90),
     )
 
     # Log signal evaluation once per window so we can see what the model sees
@@ -451,18 +488,33 @@ async def _evaluate_signal_and_enter(
     if signal.action not in ("BUY_YES", "BUY_NO"):
         return None, last_eval_log_window
 
-    # --- SPRT GATE: require accumulated evidence from observe phase ---
-    if _sprt and _sprt.get_status() == "SKIP":
-        logger.info(f"SKIP: SPRT rejected — insufficient evidence during observe phase")
-        return None, last_eval_log_window
+    # SPRT: logged for telemetry, not gating entries.
+    # The observe phase (60s) + phase multipliers (late=0.7x, final=0.5x) handle cautiousness.
 
     # --- EDGE CAP GATE: large edge = model miscalibration, not real alpha ---
     max_edge = config.get("signal", {}).get("max_edge", 0.20)
     if signal.edge > max_edge:
         return None, last_eval_log_window
 
-    # --- LAYER DISAGREEMENT GATE: momentum opposing trade direction ---
+    # --- FLIP GATE: token-level blacklist + escalating edge for re-entries ---
     side = "Up" if signal.action == "BUY_YES" else "Down"
+    token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
+    cid = contract.get("slug", contract.get("market_id", ""))
+    flip_state = _window_flip_state.setdefault(cid, {
+        "blacklisted_tokens": set(), "flip_count": 0, "last_side": None,
+    })
+    if token_id in flip_state["blacklisted_tokens"]:
+        return None, last_eval_log_window  # already traded this token
+    flip_count = flip_state["flip_count"]
+    if flip_count > 1:
+        return None, last_eval_log_window  # max 1 flip per window (original entry + 1 flip)
+    if flip_count == 1:
+        # Flat +1.5% edge premium for the flip (covers round-trip fee drag)
+        flip_premium = config.get("entry_timing", {}).get("flip_edge_premium", 0.015)
+        if signal.edge < signal_engine.min_edge + flip_premium:
+            return None, last_eval_log_window
+
+    # --- LAYER DISAGREEMENT GATE: momentum opposing trade direction ---
     momentum_score = signal_engine.compute_momentum(indicators)
     # Account for negative momentum_weight: if weight < 0, model FADES indicators,
     # so raw indicator direction opposing the bet is actually AGREEMENT
@@ -479,21 +531,15 @@ async def _evaluate_signal_and_enter(
         return None, last_eval_log_window
 
     price = price_up if side == "Up" else price_down
-    token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
     bankroll = await db.get_bankroll()
     kelly_mult = breaker.kelly_multiplier if breaker else 1.0
 
-    # Bankroll acceleration: ratchet Kelly up as track record grows (CLAUDE.md)
-    trade_count = 0
-    if config.get("bankroll_acceleration", {}).get("enabled", True):
-        trade_count, win_rate = await db.get_trade_stats()
-        dd_breach = _drawdown_tracker.is_velocity_breach() if _drawdown_tracker else False
-        accel_kelly = compute_kelly_tier(trade_count, win_rate, signal_engine.kelly_fraction,
-                                         drawdown_breach=dd_breach)
-        if accel_kelly != signal_engine.kelly_fraction:
-            signal_engine.kelly_fraction = accel_kelly
+    # Drawdown velocity check: force conservative Kelly if losing fast
+    if _drawdown_tracker and _drawdown_tracker.is_velocity_breach():
+        signal_engine.kelly_fraction = 0.15  # reset to base
 
     # Uncertainty-adjusted Kelly: f* = f_kelly x (1 - sigma^2/edge^2) -- Thorp 2006
+    trade_count = 0
     if trade_count == 0:
         trade_count, _ = await db.get_trade_stats()
     avg_edge = await db.get_avg_edge()
@@ -641,6 +687,8 @@ async def _evaluate_signal_and_enter(
         "funding_rate": bybit_feed.state.funding_rate if bybit_feed and bybit_feed.state else 0,
         "depth_usd_top20": depth_feed.get_depth_usd() if depth_feed else 0,
         "entry_phase": entry_phase.get("phase", "unknown"),
+        "flip_count": flip_count,
+        "is_flip": flip_count > 0,
         "cvd_120s": trades_feed.accumulator.get_cvd(120) if trades_feed and trades_feed.accumulator else 0,
         "taker_ratio_60s": trades_feed.accumulator.get_taker_ratio(60) if trades_feed and trades_feed.accumulator else 0,
         "volume_surge": trades_feed.accumulator.is_volume_surge() if trades_feed and trades_feed.accumulator else False,
@@ -682,6 +730,8 @@ async def _evaluate_signal_and_enter(
     )
 
     if result.success:
+        # Update flip state: record this token as active, track side
+        flip_state["last_side"] = side
         shares_ordered = size / price
         fee_shares = entry_fee_shares(shares_ordered, price, fee_rate)
         fee_usd = fee_shares * price
@@ -888,9 +938,16 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
     now_ts = int(time.time())
     traded_contracts = {k: v for k, v in traded_contracts.items() if now_ts - v < 600}
 
-    # One trade per contract
+    # Allow re-entry to same contract if flipping is possible (token-level blacklist, not contract-level)
+    # The per-token blacklist in _evaluate_signal_and_enter handles the actual gating
     if cid in traded_contracts:
-        return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
+        state = _window_flip_state.get(cid, {})
+        blacklisted = state.get("blacklisted_tokens", set())
+        token_up = contract.get("token_id_up", "")
+        token_down = contract.get("token_id_down", "")
+        if token_up in blacklisted and token_down in blacklisted:
+            # Both tokens traded — no flip possible
+            return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
 
     # Subscribe WebSocket to this contract's tokens (idempotent)
     token_up = contract["token_id_up"]
@@ -986,7 +1043,7 @@ async def _evaluate_and_exit_position(
 
     # New signals for hold evaluation
     hold_spot_flow = 0.0
-    hold_wall_pressure = 0.0
+    hold_wall_pressure = 0.0  # L3c disabled
     hold_iv_ratio = 1.0
 
     if trades_feed and trades_feed.accumulator:
@@ -999,8 +1056,7 @@ async def _evaluate_and_exit_position(
         taker_comp = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
         hold_spot_flow = max(-1.0, min(1.0, cvd_comp + taker_comp))
 
-    if depth_feed:
-        hold_wall_pressure = depth_feed.get_wall_pressure(strike_now, btc_now)
+    # L3c wall pressure: disabled for hold evaluation too
 
     if deribit_feed and deribit_feed.state.btc_iv > 0:
         atr_val = indicators.get("atr", {}).get("atr", 0)
@@ -1032,8 +1088,7 @@ async def _evaluate_and_exit_position(
         wall_pressure=hold_wall_pressure,
         prev_resolution_margin=_prev_resolution_margin,
         iv_ratio=1.0,  # ATR is the correct 5-min vol; Deribit 30-day IV not applied
-        liquidation_pressure=hold_liquidation,
-        gex_signal=hold_gex)
+        liquidation_pressure=hold_liquidation)
 
     # --- TRAILING PROFIT EXIT: don't ride cheap winners to zero ---
     mid = pos["market_id"]
@@ -1123,7 +1178,13 @@ async def _evaluate_and_exit_position(
                 _realized_edge_history[:] = _realized_edge_history[-500:]
             if _drawdown_tracker:
                 _drawdown_tracker.record_trade(gain_pct)
+            # Update flip state: blacklist this token, increment flip count
             traded_market_id = pos["market_id"]
+            fs = _window_flip_state.setdefault(traded_market_id, {
+                "blacklisted_tokens": set(), "flip_count": 0, "last_side": None,
+            })
+            fs["blacklisted_tokens"].add(pos.get("token_id", ""))
+            fs["flip_count"] += 1
             _peak_hold_price.pop(traded_market_id, None)
             if counterfactual_tracker:
                 counterfactual_tracker.watch(pos, {
@@ -1836,7 +1897,7 @@ async def main() -> None:
     depth_feed = BinanceDepthFeed(
         ws_url=depth_cfg.get("ws_url", "wss://stream.binance.us:9443/ws"),
         rest_url=depth_cfg.get("rest_url", "https://api.binance.us/api/v3"),
-        rest_interval=depth_cfg.get("poll_interval_s", 5.0),
+        rest_interval=86400,  # 1000-level REST disabled (gamed by HFT). Top-20 WS still runs for depth sizing.
     )
     trades_cfg = config.get("binance_trades", {})
     trades_accumulator = BinanceTradeAccumulator(max_age_s=trades_cfg.get("max_age_s", 300))

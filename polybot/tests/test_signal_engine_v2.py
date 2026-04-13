@@ -62,22 +62,6 @@ class TestIVRatioIntegration:
         assert abs(high_iv - 0.5) < abs(normal - 0.5)
 
 
-class TestConvictionMultiplier:
-    def test_high_prob_gets_higher_kelly(self):
-        engine = SignalEngine(conviction_multiplier=True)
-        k_high = engine._kelly(0.95, 0.80)
-        engine_no = SignalEngine(conviction_multiplier=False)
-        k_base = engine_no._kelly(0.95, 0.80)
-        assert k_high > k_base
-
-    def test_marginal_prob_gets_lower_kelly(self):
-        engine = SignalEngine(conviction_multiplier=True)
-        k_marginal = engine._kelly(0.68, 0.55)
-        engine_no = SignalEngine(conviction_multiplier=False)
-        k_base = engine_no._kelly(0.68, 0.55)
-        assert k_marginal < k_base
-
-
 class TestPrevResolutionMargin:
     def test_strong_up_carries_momentum(self):
         engine = SignalEngine(prev_margin_weight=0.02)

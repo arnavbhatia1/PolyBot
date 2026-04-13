@@ -39,20 +39,14 @@ class TestSizingChainRegression:
         k_large = engine._kelly(0.80, 0.60)
         assert k_large > k_small
 
-    def test_conviction_boost_at_high_prob(self):
-        """High probability gets conviction multiplier."""
+    def test_kelly_pure_no_conviction(self):
+        """Kelly no longer has conviction scaling — pure edge×prob sizing."""
         engine = self._make_engine()
-        k_normal = engine._kelly(0.85, 0.70)
-        k_high = engine._kelly(0.92, 0.70)
-        # 0.92 >= high_prob (0.90) -> 1.3x boost
-        assert k_high > k_normal * 1.2  # should be noticeably bigger
-
-    def test_conviction_dampen_at_low_prob(self):
-        """Low probability gets dampened."""
-        engine = self._make_engine()
-        k_low = engine._kelly(0.65, 0.58)   # below low_prob=0.72
-        k_mid = engine._kelly(0.78, 0.58)   # above low_prob
-        assert k_mid > k_low
+        # Higher prob = higher Kelly (monotonic, no conviction jumps)
+        k_low = engine._kelly(0.65, 0.58)
+        k_mid = engine._kelly(0.78, 0.58)
+        k_high = engine._kelly(0.92, 0.58)
+        assert k_low < k_mid < k_high
 
     def test_extreme_market_prices_safe(self):
         """Kelly doesn't blow up at extreme market prices."""

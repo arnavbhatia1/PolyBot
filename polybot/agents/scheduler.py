@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from polybot.config.loader import save_config

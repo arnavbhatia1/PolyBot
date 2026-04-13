@@ -16,11 +16,11 @@ execution:
   max_single_position_pct: 0.12  # No single trade > 12% of bankroll (prevents concentration risk)
   max_concurrent_positions: 2  # Allow hedged Up+Down positions
   max_book_fill_pct: 0.50     # Cap order to 50% of available ask depth (realistic fills)
-  concurrent_position_discount: 0.45  # Binary outcome correlation is lower than spot price correlation — outcomes decorrelate faster
+  concurrent_position_discount: 0.50  # Half-Kelly when concurrent
   slippage_impact_pct: 0.03   # 3% price impact at 100% depth consumption. Tune vs live fills.
   initial_bankroll: 100.0
-  use_maker_orders: true        # Post limit orders (0% fee), FOK fallback (1.8% fee) if not filled
-  maker_timeout_s: 60.0         # Seconds to wait for maker fill before FOK fallback
+  use_maker_orders: false       # FOK only — 60s maker timeout wastes 30% of window. Fee savings ($0.045) < timing cost.
+  maker_timeout_s: 60.0         # unused when use_maker_orders=false
 
 agents:
   outcome_reviewer_interval_seconds: 3600
@@ -83,7 +83,7 @@ signal:
   min_atr: 8.0                # Floor prevents extreme z-scores in quiet markets
   flow_weight: 0.04           # Layer 3 — CLOB order flow (r=+0.105, only predictive signal layer)
   spot_flow_weight: 0.04      # Layer 3b — CVD + taker ratio
-  wall_weight: 0.05           # Layer 3c — depth wall pressure
+  wall_weight: 0.00           # Layer 3c — DISABLED (1000-level book gamed by HFT, flow cap limits impact)
   prev_margin_weight: 0.02    # Layer 5 — previous window carry
   liquidation_weight: 0.03    # Layer 3e — OI-based liquidation pressure
   student_t_df: 5             # degrees of freedom for fat-tailed CDF
@@ -97,15 +97,6 @@ signal:
     obv: 0.15
     vwap: 0.20
   active_weights_version: "weights_v001"
-
-  # Conviction scaling on Kelly — pipeline can tune thresholds and multipliers
-  conviction:
-    high_prob: 0.90       # prob >= this: boost Kelly
-    high_mult: 1.3
-    mid_prob: 0.85        # prob >= this: moderate boost
-    mid_mult: 1.15
-    low_prob: 0.72        # prob < this: reduce Kelly
-    low_mult: 0.7
 
   # Signal consensus — agreement multiplier on Kelly
   consensus:
@@ -130,7 +121,7 @@ signal:
 market:
   contract_type: "btc_5min"
   entry_window_seconds: 300
-  min_time_remaining_seconds: 20  # Tunable by learning pipeline (range: 0-120)
+  min_time_remaining_seconds: 0  # No hard block — final 30s hard gate (>90% prob) handles this
   scan_cache_seconds: 5
   clob_url: "https://clob.polymarket.com"  # Real order book (public, no auth)
   clob_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"  # Real-time WebSocket feed
@@ -174,14 +165,13 @@ deribit:
   iv_ratio_min: 0.5    # floor for IV/ATR ratio (pipeline-tunable)
   iv_ratio_max: 3.0    # cap — was 2.0, always hit. 3.0 lets more dampening through (pipeline-tunable)
 
-# --- Dynamic entry timing ---
+# --- Dynamic entry timing (continuous, not step phases) ---
 entry_timing:
-  observe_seconds: 60
-  late_phase_seconds: 180
-  final_phase_seconds: 240
-  late_kelly_multiplier: 0.7
-  final_kelly_multiplier: 0.5
-  final_min_probability: 0.90
+  normal_fraction: 0.60        # fraction of 300s window where full Kelly applies (0.60 = first 180s)
+  late_max_penalty: 0.60       # max Kelly reduction at expiry for ATM trades (high-conviction barely penalized)
+  final_min_probability: 0.90  # hard gate in last 30s
+  flip_enabled: true           # allow re-entry to same window after scalp (opposite side only)
+  flip_edge_premium: 0.015    # flat +1.5% extra edge required for flip (covers fee drag)
 
 # --- Bankroll acceleration ---
 bankroll_acceleration:
