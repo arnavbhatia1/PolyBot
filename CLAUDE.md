@@ -91,7 +91,7 @@ polybot/
     base.py                  # BaseTrader ABC, TradeResult, FillResult, fee functions
     paper_trader.py          # PaperTrader(BaseTrader) — instant simulated fills
     live_trader.py           # LiveTrader(BaseTrader) — FOK-only market orders via py-clob-client SDK
-    circuit_breaker.py       # Drawdown-based Kelly scaling (from initial principal, not peak)
+    circuit_breaker.py       # Tiered floor Kelly scaling (locks in floor at each bankroll milestone)
   agents/
     scheduler.py             # Daily learning pipeline orchestrator
     outcome_reviewer.py      # Logs resolved trades to memory/outcomes/
@@ -119,7 +119,7 @@ polybot/
 ## Config
 
 `polybot/config/settings.yaml` (validated by `validate_config()` on startup):
-- `circuit_breaker.max_drawdown_pct:` — 0.30, `min_multiplier:` — 0.40, `losses_to_reduce:` — 3, `wins_to_restore:` — 2
+- `circuit_breaker.floor_pct:` — 0.85 (protect 85% of each locked tier), `min_multiplier:` — 0.40, `losses_to_reduce:` — 3, `wins_to_restore:` — 2
 - `math.kelly_fraction:` — 0.15
 - `signal.entry_threshold:` — 0.04 (noise floor, range 0.01-0.10), `max_edge:` — 0.20 (safety net behind Platt, range 0.10-0.30)
 - `signal.min_kelly:` — 0.015 (primary gate, range 0.005-0.05)
@@ -136,7 +136,7 @@ polybot/
 - `deribit.iv_ratio_min:` — 0.5, `iv_ratio_max:` — 3.0
 - `coinbase.ws_url:` — `wss://ws-feed.exchange.coinbase.com`, `product_id:` — `BTC-USD`
 - `kraken.ws_url:` — `wss://ws.kraken.com`
-- `execution.max_concurrent_positions:` — 2, `max_bankroll_deployed:` — 0.80, `max_single_position_pct:` — 0.12, `max_book_fill_pct:` — 0.50, `concurrent_position_discount:` — 0.50 (binary outcome ρ≈0.45-0.55, lower than spot ρ)
+- `execution.max_concurrent_positions:` — 2, `max_bankroll_deployed:` — 0.80, `max_single_position_pct:` — 0.12, `max_single_position_usd:` — 18.00 (hard dollar ceiling, tune manually as bankroll grows), `max_book_fill_pct:` — 0.50, `concurrent_position_discount:` — 0.50 (binary outcome ρ≈0.45-0.55, lower than spot ρ)
 - `execution.slippage_impact_pct:` — 0.03, `use_maker_orders:` — false (FOK only), `maker_timeout_s:` — 60.0 (unused)
 - `market.entry_window_seconds:` — 300, `min_time_remaining_seconds:` — 0 (no hard time block, final 30s gate handles this), `max_spread:` — 0.10
 - `market.clob_ws_url:` — `wss://ws-subscriptions-clob.polymarket.com/ws/market`
@@ -308,7 +308,7 @@ Real-time BTC/USDT perpetual ticker (lastPrice, fundingRate). REST backup: `GET 
 ### Claude API + Discord
 
 - **Claude**: `claude-sonnet-4-6` via SDK. TAEvolver sends analysis + trades, gets structured JSON recommendations. Falls back to local math.
-- **Discord**: Trade alerts, session banners, commands (`!status`, `!positions`, `!history`, `!performance`, `!pause`/`!resume`), daily reports to `#polybot-daily`. `!pause` blocks entries only — position management continues.
+- **Discord**: Trade alerts, session banners, commands (`!status`, `!positions`, `!history`, `!performance`, `!pause`/`!resume`), daily reports to `#polybot-daily`. `!pause` blocks entries only — position management continues. Trade closed format: `SCALP WIN UP` / `RESOLVED LOSS DOWN` / `ORPHANED UP` header with labeled Price/Gain/Loss/Day code block. Daily report filters by ET date (yesterday ET when pipeline runs at 12:05 AM), not UTC, so it captures the full trading day. Report includes P&L, Sharpe (per-trade), side breakdown (UP/DOWN), exit breakdown (Scalp/Resolution), edge calibration (≥8% vs 4–8%), config changes, and pipeline findings.
 
 ## Canonical Paper Trader Dataflow — DO NOT DEVIATE
 
@@ -362,7 +362,7 @@ NET EDGE: net_edge = gross_edge - (price x convex_slippage); if < min_edge -> RE
 Event-driven loop (~1-2ms per tick from CLOB WS):
 - **Expired + closed**: Resolve via Gamma/Chainlink ($1.00 or $0.00). Orphaned positions wait indefinitely (Discord alert after 1hr).
 - **Still active**: `evaluate_hold()` recomputes holding_edge. If below fee-aware threshold -> scalp exit. Trailing profit exit: cheap entries (<$0.50) that peaked above $0.65 then dropped 15%+ from peak.
-- **Counterfactuals**: Scalps tracked until window expires (what if held?). Holds track worst moment (what if scalped?). Both written to `memory/counterfactuals/`.
+- **Counterfactuals**: Scalps tracked until window expires (what if held?). Holds track worst moment (what if scalped?). Both written to `memory/counterfactuals/`. Verdict is CORRECT / SUBOPTIMAL / NEUTRAL — NEUTRAL when delta < $0.01 (same result either way, excluded from bias analysis to prevent skewing toward holding).
 
 ### Phase 6: Outcome -> Learning
 
@@ -430,7 +430,7 @@ Outcomes enriched with `trade_context` (btc_price, strike, seconds_remaining, ma
 - Don't use polymarket.us for crypto — US platform has sports only. All crypto trading is on polymarket.com.
 - Don't use Binance.com — use Binance.us.
 - Don't allow more than 2 concurrent positions — max 2 from different windows, 0.50x discount when concurrent. Same-window duplicates still blocked.
-- Don't bypass the circuit breaker — it scales Kelly proportionally to drawdown from initial principal (not peak), protecting against compounding losses while still trading. Growing from $60 to $80 and dipping to $75 does NOT trigger drawdown — only falling below $60 does.
+- Don't bypass the circuit breaker — it uses tiered floor protection. Every time the bankroll crosses a milestone tier ($100/$150/$200/$300...), the floor locks in at tier × floor_pct (85%). Kelly scales 1.0→0.40 between the locked tier and the floor. The floor never resets downward. `floor_pct` and `max_single_position_usd` are NOT pipeline-tunable — they are risk preferences set manually.
 - Don't auto-delete the DB — bankroll persists across sessions in both modes. Never delete `polybot/db/polybot.db` between runs.
 - Don't use limit orders in LiveTrader — FOK market orders for 5-min contract speed.
 - Don't resolve positions by comparing Binance BTC price vs Binance strike — always wait for Gamma API `eventMetadata` or `closed` + `outcomePrices`. Binance and Chainlink (Polymarket's oracle) can disagree by $20-200, causing false WIN/LOSS.

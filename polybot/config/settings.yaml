@@ -5,8 +5,8 @@ math:
   kelly_fraction: 0.15  # Fraction of Kelly to use (0.15 = conservative)
 
 circuit_breaker:
-  max_drawdown_pct: 0.30   # Kelly bottoms out at this drawdown from initial (was 0.15 — too aggressive for $100 bankroll)
-  min_multiplier: 0.40     # Floor Kelly multiplier at max drawdown (was 0.25 — strangled recovery)
+  floor_pct: 0.85          # Protect 85% of each locked tier (e.g. hit $200 → floor at $170)
+  min_multiplier: 0.40     # Kelly at the floor (still trading, not stopped)
   losses_to_reduce: 3      # consecutive losses before Discord streak alert
   wins_to_restore: 2       # consecutive wins before Discord streak alert
 
@@ -14,6 +14,7 @@ execution:
   max_slippage: 0.02
   max_bankroll_deployed: 0.80
   max_single_position_pct: 0.12  # No single trade > 12% of bankroll (prevents concentration risk)
+  max_single_position_usd: 18.00  # Hard dollar ceiling — compound through volume, not bigger bets
   max_concurrent_positions: 2  # Allow hedged Up+Down positions
   max_book_fill_pct: 0.50     # Cap order to 50% of available ask depth (realistic fills)
   concurrent_position_discount: 0.50  # Half-Kelly when concurrent

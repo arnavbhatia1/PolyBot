@@ -69,17 +69,30 @@ class AlertManager:
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
-        tag = "WIN" if pnl >= 0 else "LOSS"
+
+        # Build header: SCALP WIN UP / RESOLUTION LOSS DOWN / ORPHANED UP
+        r = reason.lower()
+        if r.startswith("scalp"):
+            exit_type = "SCALP"
+        elif "orphan" in r:
+            exit_type = "ORPHANED"
+        else:
+            exit_type = "RESOLVED"
+        result_word = ("WIN" if pnl >= 0 else "LOSS") if exit_type != "ORPHANED" else ""
+        header = " ".join(filter(None, [exit_type, result_word, side.upper()]))
+
         window = question.replace("Bitcoin Up or Down - ", "") if question else ""
-        day_line = ""
+
+        body = f"  Price    {entry_price:.3f} \u2192 {exit_price:.3f}\n"
+        if exit_type != "ORPHANED":
+            pnl_label = "Gain" if pnl >= 0 else "Loss"
+            body += f"  {pnl_label:<8} {gain_pct:+.1%}  (${pnl:+.2f})\n"
         if bankroll > 0:
-            total = day_wins + day_losses
-            day_line = f"  Day       {day_wins}W/{day_losses}L  |  ${bankroll:,.2f}\n"
+            body += f"  Day      {day_wins}W/{day_losses}L  |  ${bankroll:,.2f}\n"
+
         await channel.send(
-            f"**{tag} {side}**  {window}  |  {reason}\n"
-            f"```\n"
-            f"  {entry_price:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  (${pnl:+.2f})\n"
-            f"{day_line}```")
+            f"**{header}**  |  {window}\n"
+            f"```\n{body}```")
 
     async def send_pipeline_summary(self, summary: str) -> None:
         channel = self._get_channel(self.daily_channel_name)

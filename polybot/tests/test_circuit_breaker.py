@@ -10,10 +10,11 @@ from polybot.execution.circuit_breaker import CircuitBreaker
 
 class TestConstruction:
     def test_default_values(self):
-        cb = CircuitBreaker()
-        assert cb.peak_bankroll == 1000.0
-        assert cb.current_bankroll == 1000.0
-        assert cb.max_drawdown_pct == 0.30
+        cb = CircuitBreaker(initial_bankroll=100.0)
+        assert cb.current_bankroll == 100.0
+        assert cb.peak_bankroll == 100.0
+        assert cb.locked_tier == 100.0
+        assert cb.floor == pytest.approx(85.0)
         assert cb.min_multiplier == 0.40
         assert cb.kelly_multiplier == 1.0
 
@@ -21,13 +22,27 @@ class TestConstruction:
         cb = CircuitBreaker(initial_bankroll=500.0)
         assert cb.peak_bankroll == 500.0
         assert cb.current_bankroll == 500.0
-        assert cb.kelly_multiplier == 1.0
+        assert cb.locked_tier == 400.0       # highest tier <= 500
+        assert cb.floor == pytest.approx(340.0)  # 400 * 0.85
+        assert cb.kelly_multiplier == 1.0    # 500 > 400 → full Kelly
 
     def test_legacy_params_accepted(self):
         """Old-style params don't crash — just stored for streak alerts."""
         cb = CircuitBreaker(losses_to_reduce=5, wins_to_restore=3)
         assert cb.losses_to_reduce == 5
         assert cb.wins_to_restore == 3
+
+    def test_tier_locking_on_init(self):
+        """locked_tier is the highest tier at or below initial bankroll."""
+        assert CircuitBreaker(initial_bankroll=100.0).locked_tier == 100.0
+        assert CircuitBreaker(initial_bankroll=149.0).locked_tier == 100.0
+        assert CircuitBreaker(initial_bankroll=150.0).locked_tier == 150.0
+        assert CircuitBreaker(initial_bankroll=1000.0).locked_tier == 1000.0
+        assert CircuitBreaker(initial_bankroll=1200.0).locked_tier == 1000.0
+
+    def test_floor_computed_from_tier(self):
+        cb = CircuitBreaker(initial_bankroll=200.0, floor_pct=0.85)
+        assert cb.floor == pytest.approx(170.0)  # 200 * 0.85
 
 
 # ------------------------------------------------------------------
@@ -54,10 +69,12 @@ class TestDrawdown:
         cb.update_bankroll(700.0)
         assert cb.drawdown_pct == pytest.approx(0.30)
 
-    def test_drawdown_zero_peak(self):
-        """Edge case: peak is 0 (shouldn't happen, but don't divide by zero)."""
+    def test_drawdown_no_divide_by_zero(self):
+        """locked_tier is always >= first tier ($100), so division is always safe."""
         cb = CircuitBreaker(initial_bankroll=0.0)
-        assert cb.drawdown_pct == 0.0
+        # locked_tier=$100 (first tier), bankroll=0 → 100% drawdown, no crash
+        assert cb.drawdown_pct == pytest.approx(1.0)
+        assert cb.kelly_multiplier == pytest.approx(cb.min_multiplier)
 
     def test_drawdown_recovers(self):
         cb = CircuitBreaker(initial_bankroll=1000.0)
@@ -162,28 +179,81 @@ class TestUpdateBankroll:
         assert cb.peak_bankroll == 1000.0
 
     def test_sequence_of_updates(self):
-        cb = CircuitBreaker(initial_bankroll=1000.0, max_drawdown_pct=0.15, min_multiplier=0.25)
-        # Win some — still above initial, no drawdown
-        cb.update_bankroll(1050.0)
+        cb = CircuitBreaker(initial_bankroll=1000.0, min_multiplier=0.25)
+        # locked_tier=1000, floor=850
+        cb.update_bankroll(1050.0)   # still tier=1000 (1050 < 1500)
         assert cb.peak_bankroll == 1050.0
         assert cb.kelly_multiplier == 1.0
-        # Lose some — still above initial ($1000), no drawdown
+        # Drop to exactly the tier — still full Kelly
         cb.update_bankroll(1000.0)
         assert cb.drawdown_pct == 0.0
         assert cb.kelly_multiplier == 1.0
-        # Lose below initial — NOW drawdown kicks in
+        # Drop below tier into scaling zone
         cb.update_bankroll(950.0)
-        dd = (1000.0 - 950.0) / 1000.0  # 5% below initial
-        assert cb.drawdown_pct == pytest.approx(dd)
-        # Lose more
+        assert cb.drawdown_pct == pytest.approx((1000.0 - 950.0) / 1000.0)
+        # Drop more
         cb.update_bankroll(900.0)
-        dd2 = (1000.0 - 900.0) / 1000.0  # 10% below initial
-        assert cb.drawdown_pct == pytest.approx(dd2)
-        # Recover past initial — drawdown gone
+        assert cb.drawdown_pct == pytest.approx((1000.0 - 900.0) / 1000.0)
+        # Recover past tier — drawdown gone
         cb.update_bankroll(1100.0)
         assert cb.peak_bankroll == 1100.0
         assert cb.drawdown_pct == 0.0
         assert cb.kelly_multiplier == 1.0
+
+
+# ------------------------------------------------------------------
+# Tier ratcheting
+# ------------------------------------------------------------------
+
+class TestTierRatcheting:
+    def test_floor_ratchets_up_when_tier_crossed(self):
+        cb = CircuitBreaker(initial_bankroll=100.0)
+        assert cb.locked_tier == 100.0
+        assert cb.floor == pytest.approx(85.0)
+        cb.update_bankroll(155.0)    # crosses $150 tier
+        assert cb.locked_tier == 150.0
+        assert cb.floor == pytest.approx(127.5)
+
+    def test_floor_never_goes_down(self):
+        cb = CircuitBreaker(initial_bankroll=100.0)
+        cb.update_bankroll(205.0)    # crosses $200 tier → floor=$170
+        assert cb.floor == pytest.approx(170.0)
+        cb.update_bankroll(140.0)    # drops back well below $200
+        assert cb.locked_tier == 200.0   # tier locked in
+        assert cb.floor == pytest.approx(170.0)   # floor unchanged
+
+    def test_kelly_above_locked_tier_is_full(self):
+        cb = CircuitBreaker(initial_bankroll=100.0)
+        cb.update_bankroll(130.0)    # above $100 tier, below $150
+        assert cb.kelly_multiplier == 1.0
+
+    def test_kelly_at_floor_is_min(self):
+        cb = CircuitBreaker(initial_bankroll=200.0, floor_pct=0.85, min_multiplier=0.40)
+        # locked_tier=200, floor=170
+        cb.update_bankroll(170.0)
+        assert cb.kelly_multiplier == pytest.approx(0.40)
+
+    def test_kelly_below_floor_stays_at_min(self):
+        cb = CircuitBreaker(initial_bankroll=200.0, floor_pct=0.85, min_multiplier=0.40)
+        cb.update_bankroll(150.0)    # below floor of 170
+        assert cb.kelly_multiplier == pytest.approx(0.40)
+
+    def test_kelly_midpoint_between_floor_and_tier(self):
+        cb = CircuitBreaker(initial_bankroll=200.0, floor_pct=0.85, min_multiplier=0.40)
+        # tier=200, floor=170, midpoint=185
+        cb.update_bankroll(185.0)
+        expected = 0.40 + (1.0 - 0.40) * (185.0 - 170.0) / (200.0 - 170.0)  # 0.70
+        assert cb.kelly_multiplier == pytest.approx(expected)
+
+    def test_multiple_tier_crossings(self):
+        cb = CircuitBreaker(initial_bankroll=100.0)
+        cb.update_bankroll(155.0)
+        assert cb.locked_tier == 150.0
+        cb.update_bankroll(205.0)
+        assert cb.locked_tier == 200.0
+        cb.update_bankroll(310.0)
+        assert cb.locked_tier == 300.0
+        assert cb.floor == pytest.approx(255.0)
 
 
 # ------------------------------------------------------------------

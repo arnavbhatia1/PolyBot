@@ -106,7 +106,7 @@ python -m polybot.main --run-pipeline
 | `execution/base.py` | BaseTrader ABC, TradeResult, FillResult, shared fee math + gates |
 | `execution/paper_trader.py` | Realistic simulated trading -- real CLOB prices, dynamic fees, FOK fills |
 | `execution/live_trader.py` | Real Polymarket CLOB trading with FOK-only market orders |
-| `execution/circuit_breaker.py` | Drawdown-based Kelly scaling (1.0 at initial principal, 0.25 at 15% drawdown from principal) |
+| `execution/circuit_breaker.py` | Tiered floor Kelly scaling (locks in floor at each milestone tier, 1.0x at tier → 0.40x at floor) |
 | `agents/` | Self-learning pipeline (bias detector, TA evolver, weight optimizer, counterfactual tracker) |
 | `discord_bot/` | Commands, trade alerts, session management |
 | `db/models.py` | SQLite for positions, trade history, bankroll |
@@ -154,7 +154,7 @@ Key parameters (all tunable by learning pipeline):
 - **Min model probability** -- 58% confidence gate
 - **Layer weights** -- L2 regime 3%, L3 flow 4%, L3b spot flow 4%, L3c wall 0% (disabled), L3e liquidation 3%, L4 momentum -2% (negative = fade), L5 carry 2%
 - **Max concurrent positions** -- 2 (0.50x discount when concurrent)
-- **Circuit breaker** -- Kelly scales 1.0 to 0.40 as drawdown from initial principal reaches 30% (not peak-based)
+- **Circuit breaker** -- Tiered floor protection: bankroll milestones ($100/$150/$200/$300/...) lock in a floor at 85% of that tier. Kelly scales 1.0→0.40 between tier and floor. Floor never resets down. Hard per-trade cap: `max_single_position_usd` $18 (not pipeline-tunable)
 - **SPRT** -- alpha 0.05, beta 0.10, observation_interval 10s -- telemetry only (logged in trade_context, does not gate entries)
 - **Entry timing** -- continuous time multiplier: `normal_fraction` 0.60, `late_max_penalty` 0.60, `final_min_probability` 0.90 (last 30s gate). Flip trading: `flip_enabled` true, `flip_edge_premium` 0.015 (flat +1.5% extra edge for flip, max 1 flip per window)
 - **Execution** -- FOK only (`use_maker_orders` false). Maker orders disabled (60s timeout wastes window time)

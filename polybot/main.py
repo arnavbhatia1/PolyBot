@@ -621,6 +621,11 @@ async def _evaluate_signal_and_enter(
     if size > max_single:
         size = max_single
 
+    # Hard dollar ceiling — compounding happens through volume, not bigger bets
+    max_single_usd = config.get("execution", {}).get("max_single_position_usd", float("inf"))
+    if size > max_single_usd:
+        size = round(max_single_usd, 2)
+
     # Cap size to fraction of book depth (realistic fill constraint)
     side_depth = depth_usd_up if side == "Up" else depth_usd_down
     max_fill_pct = config.get("execution", {}).get("max_book_fill_pct", 0.50)
@@ -1112,8 +1117,15 @@ async def _evaluate_and_exit_position(
         if now_ts - _last_hold_log.get(mid, 0) >= 30:
             _last_hold_log[mid] = now_ts
             secs = live['seconds_remaining']
-            edge_color = _C.GREEN if holding_edge > 0 else (_C.RESET if holding_edge == 0 else _C.RED)
-            edge_str = f"{abs(holding_edge):.0%}" if holding_edge == 0 else f"{holding_edge:+.0%}"
+            if abs(holding_edge) < 0.005:
+                edge_color = _C.GREEN
+                edge_str = "0%"
+            elif holding_edge > 0:
+                edge_color = _C.GREEN
+                edge_str = f"{holding_edge:+.0%}"
+            else:
+                edge_color = _C.RED
+                edge_str = f"{holding_edge:+.0%}"
             cl_str = f"  cl ${chainlink_feed.price:,.0f}" if chainlink_feed and chainlink_feed.price > 0 else ""
             logger.info(
                 f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {secs:.0f}s  |  "
@@ -1826,14 +1838,17 @@ async def main() -> None:
     init_bankroll = await db.get_bankroll()
     breaker = CircuitBreaker(
         initial_bankroll=init_bankroll,
-        max_drawdown_pct=cb_cfg.get("max_drawdown_pct", 0.30),
+        floor_pct=cb_cfg.get("floor_pct", 0.85),
         min_multiplier=cb_cfg.get("min_multiplier", 0.40),
         losses_to_reduce=cb_cfg.get("losses_to_reduce", 3),
         wins_to_restore=cb_cfg.get("wins_to_restore", 2),
     )
+    # Restore locked_tier from persisted peak so floor survives restarts
     persisted_peak = await db.get_peak_bankroll()
     if persisted_peak is not None and persisted_peak > init_bankroll:
         breaker.peak_bankroll = persisted_peak
+        breaker.update_bankroll(persisted_peak)
+        breaker.current_bankroll = init_bankroll
         logger.info(f"CIRCUIT BREAKER: restored persisted peak ${persisted_peak:,.2f} (current ${init_bankroll:,.2f}, drawdown={breaker.drawdown_pct:.1%})")
     else:
         await db.set_peak_bankroll(init_bankroll)

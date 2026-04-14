@@ -122,6 +122,8 @@ class DeribitIVFeed:
         while self._running:
             try:
                 await self._poll()
+            except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as e:
+                logger.warning("DeribitIVFeed: network timeout (%s), retrying in %.0fs", type(e).__name__, self.poll_interval)
             except Exception:
                 logger.exception("DeribitIVFeed poll failed")
             await asyncio.sleep(self.poll_interval)
