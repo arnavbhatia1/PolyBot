@@ -178,19 +178,37 @@ class AlertManager:
 
     async def send_daily_report(self, outcomes: list[dict[str, Any]], analysis: dict[str, Any],
                                 recommendations: dict[str, Any], config_changes: dict[str, Any]) -> None:
-        """Post concise end-of-day report: P&L, findings, config changes."""
+        """Post end-of-day report: P&L, Sharpe, side/exit breakdown, edge calibration, findings."""
         channel = self._get_channel(self.daily_channel_name)
         if not channel:
             return
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        todays = [o for o in outcomes if o.get("timestamp", "").startswith(today)]
+        # Pipeline runs at 12:05 AM ET — the trading day was yesterday ET.
+        # If run manually after noon, use today ET instead.
+        et_now = datetime.now(ET)
+        if et_now.hour < 12:
+            trading_et_date = (et_now - timedelta(days=1)).date()
+        else:
+            trading_et_date = et_now.date()
+
+        def _et_date(o: dict) -> Any:
+            ts = o.get("timestamp", "")
+            if not ts:
+                return None
+            try:
+                dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                return dt_utc.astimezone(ET).date()
+            except Exception:
+                return None
+
+        todays = [o for o in outcomes if _et_date(o) == trading_et_date]
+        date_str = trading_et_date.strftime("%Y-%m-%d")
 
         if not todays:
-            await channel.send(f"**Daily Report — {today}**\nNo trades today.")
+            await channel.send(f"**Daily Report — {date_str} ET**\nNo trades today.")
             return
 
-        # P&L
+        # Core stats
         total_pnl = sum(o.get("pnl", 0) for o in todays)
         total_fees = sum(o.get("fees", 0) for o in todays)
         wins = sum(1 for o in todays if o.get("correct"))
@@ -198,35 +216,91 @@ class AlertManager:
         losses = total - wins
         wr = wins / total if total > 0 else 0
 
-        msg = (
-            f"**DAILY REPORT — {today}**\n"
+        # Sharpe — per-trade arithmetic return, consistent with bias_detector / weight_optimizer
+        gain_pcts = [o.get("gain_pct", 0.0) for o in todays]
+        avg_ret = sum(gain_pcts) / len(gain_pcts)
+        variance = sum((r - avg_ret) ** 2 for r in gain_pcts) / len(gain_pcts)
+        std_ret = math.sqrt(variance) if variance > 0 else 0.0
+        sharpe = avg_ret / std_ret if std_ret > 0 else 0.0
+
+        # Side breakdown helper
+        def _side_stats(trades: list) -> tuple[int, int, float]:
+            w = sum(1 for t in trades if t.get("correct"))
+            return w, len(trades), sum(t.get("pnl", 0) for t in trades)
+
+        up_trades = [o for o in todays if o.get("side", "").upper() == "UP"]
+        dn_trades = [o for o in todays if o.get("side", "").upper() == "DOWN"]
+
+        # Exit reason breakdown
+        scalp_trades = [o for o in todays if o.get("exit_reason") == "scalp"]
+        res_trades = [o for o in todays if o.get("exit_reason") == "resolution"]
+
+        # Edge calibration
+        high_edge = [o for o in todays
+                     if o.get("indicator_snapshot", {}).get("trade_context", {}).get("edge", 0) >= 0.08]
+        low_edge = [o for o in todays
+                    if 0.04 <= o.get("indicator_snapshot", {}).get("trade_context", {}).get("edge", 0) < 0.08]
+
+        def _side_line(label: str, trades: list) -> str:
+            if not trades:
+                return ""
+            w, n, p = _side_stats(trades)
+            return f"  {label:<6} {w:>3}/{n:<3}  {w/n:.0%}  ${p:+.2f}\n"
+
+        def _exit_line(label: str, trades: list) -> str:
+            if not trades:
+                return ""
+            w, n, p = _side_stats(trades)
+            return f"  {label:<12} {w:>3}/{n:<3}  {w/n:.0%}  ${p:+.2f}\n"
+
+        def _edge_line(label: str, trades: list) -> str:
+            if not trades:
+                return ""
+            w, n, _ = _side_stats(trades)
+            return f"  {label:<16} {w:>3}/{n:<3}  {w/n:.0%}\n"
+
+        # --- Message 1: core performance ---
+        msg1 = (
+            f"**DAILY REPORT — {date_str} ET**\n"
             f"```\n"
-            f"  P&L:    ${total_pnl:+,.2f}  (fees ${total_fees:.2f})\n"
-            f"  Trades: {total}  ({wins}W/{losses}L)  WR {wr:.0%}\n"
+            f"  P&L      ${total_pnl:+,.2f}  (fees ${total_fees:.2f})\n"
+            f"  Trades   {total}  ({wins}W/{losses}L)  WR {wr:.0%}\n"
+            f"  Sharpe   {sharpe:+.3f}  (per-trade)\n"
+            f"```\n"
+            f"**By Side**\n```\n"
+            f"{_side_line('UP', up_trades)}"
+            f"{_side_line('DOWN', dn_trades)}"
+            f"```\n"
+            f"**By Exit**\n```\n"
+            f"{_exit_line('Scalp', scalp_trades)}"
+            f"{_exit_line('Resolution', res_trades)}"
             f"```\n"
         )
+        if high_edge or low_edge:
+            msg1 += (
+                f"**Edge Calibration**\n```\n"
+                f"{_edge_line('edge ≥8%', high_edge)}"
+                f"{_edge_line('edge 4–8%', low_edge)}"
+                f"```\n"
+            )
+        await channel.send(msg1[:2000])
 
-        # Config changes
+        # --- Message 2: config changes + pipeline findings ---
+        msg2 = ""
         if config_changes:
-            msg += f"**Config Changes**\n```\n"
+            msg2 += "**Config Changes**\n```\n"
             for param, change in config_changes.items():
-                msg += f"  {param}: {change['old']} -> {change['new']}\n"
-            msg += f"```\n"
-        else:
-            msg += f"Config: no changes\n"
+                msg2 += f"  {param}: {change['old']} -> {change['new']}\n"
+            msg2 += "```\n"
 
-        # Top 3 findings
         findings = recommendations.get("key_findings", [])
-        if findings:
-            msg += f"**Findings**\n"
-            for f in findings[:3]:
-                msg += f"- {f}\n"
-
-        # Risk warnings (if any)
         warnings = recommendations.get("risk_warnings", [])
-        if warnings:
-            msg += f"**Warnings**\n"
+        if findings or warnings:
+            msg2 += "**Pipeline Findings**\n"
+            for f in findings[:4]:
+                msg2 += f"- {f}\n"
             for w in warnings[:2]:
-                msg += f"- {w}\n"
+                msg2 += f"**Warning:** {w}\n"
 
-        await channel.send(msg[:2000])
+        if msg2:
+            await channel.send(msg2[:2000])
