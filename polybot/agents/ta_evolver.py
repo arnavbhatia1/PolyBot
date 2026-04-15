@@ -190,7 +190,7 @@ class TAEvolver:
     # --- Logging ---
 
     def _save_claude_log(self, recommendations: dict[str, Any]) -> None:
-        """Append Claude's analysis to strategy_log.md."""
+        """Append Claude's analysis to strategy_log.md (compact — kept under ~60 lines)."""
         self.strategy_log_path.parent.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc).isoformat()
         confidence = recommendations.get("confidence", "?")
@@ -198,25 +198,27 @@ class TAEvolver:
         findings = recommendations.get("key_findings", [])
         warnings = recommendations.get("risk_warnings", [])
         weights = recommendations.get("recommended_weights", {})
-        mw = recommendations.get("recommended_momentum_weight", "?")
-        me = recommendations.get("recommended_min_edge", "?")
-        kf = recommendations.get("recommended_kelly_fraction", "?")
-        mk = recommendations.get("recommended_min_kelly", "?")
-        ar = recommendations.get("recommended_atr_sigma_ratio", "?")
 
-        findings_str = "\n".join(f"- {f}" for f in findings) if findings else "- None"
-        warnings_str = "\n".join(f"- {w}" for w in warnings) if warnings else "- None"
+        # Truncate for log brevity
+        findings_str = "\n".join(f"- {f[:120]}" for f in findings[:5]) if findings else "- None"
+        warnings_str = "\n".join(f"- {w[:120]}" for w in warnings[:3]) if warnings else "- None"
         weights_str = ", ".join(f"{k}={v:.2f}" for k, v in weights.items()) if weights else "unchanged"
+        # Keep first 500 chars of reasoning
+        reasoning_short = reasoning[:500] + "..." if len(reasoning) > 500 else reasoning
+
+        # Collect all recommended params
+        params = {k.replace("recommended_", ""): v
+                  for k, v in recommendations.items()
+                  if k.startswith("recommended_") and k != "recommended_weights"}
+        params_str = ", ".join(f"{k}={v}" for k, v in params.items()) if params else "unchanged"
 
         entry = (
             f"\n## {now}\n\n"
-            f"**Source:** Claude (confidence: {confidence})\n\n"
-            f"**Key Findings:**\n{findings_str}\n\n"
-            f"**Risk Warnings:**\n{warnings_str}\n\n"
-            f"**Reasoning:** {reasoning}\n\n"
-            f"**Recommended Weights:** {weights_str}\n"
-            f"**Recommended Parameters:** momentum_weight={mw}, min_edge={me}, kelly_fraction={kf}, "
-            f"min_kelly={mk}, atr_sigma_ratio={ar}\n"
+            f"**Source:** Claude ({confidence}) | **Weights:** {weights_str}\n"
+            f"**Params:** {params_str}\n\n"
+            f"**Findings:**\n{findings_str}\n\n"
+            f"**Warnings:**\n{warnings_str}\n\n"
+            f"**Reasoning:** {reasoning_short}\n"
         )
 
         existing = self.strategy_log_path.read_text(encoding="utf-8") if self.strategy_log_path.exists() else "# Strategy Evolution Log\n"

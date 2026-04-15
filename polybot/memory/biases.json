@@ -83,5 +83,35 @@
     "avg_edge": 0.1328,
     "avg_gain_pct": 0.095785,
     "sharpe": 0.1777
+  },
+  "by_regime": {
+    "volatile": {
+      "n": 43,
+      "win_rate": 0.5581,
+      "avg_edge": 0.1195,
+      "avg_gain_pct": 0.104641
+    },
+    "neutral": {
+      "n": 231,
+      "win_rate": 0.5065,
+      "avg_edge": 0.1347,
+      "avg_gain_pct": 0.09196
+    },
+    "mean_reverting": {
+      "n": 22,
+      "win_rate": 0.6364,
+      "avg_edge": 0.136,
+      "avg_gain_pct": 0.112517
+    }
+  },
+  "edge_realization_quartiles": [
+    1.467,
+    0.474,
+    1.082,
+    0.301
+  ],
+  "time_weighted": {
+    "win_rate": 0.525,
+    "sharpe": 0.177
   }
 }

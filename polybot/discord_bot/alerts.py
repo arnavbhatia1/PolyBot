@@ -296,87 +296,72 @@ class AlertManager:
             )
         await channel.send(msg1[:2000])
 
-        # --- Message 2: pipeline decisions ---
-        msg2 = "**PIPELINE SUMMARY**\n```\n"
-
-        # All-time stats
+        # --- Message 2: pipeline summary + findings + config ---
         at = pipeline_info.get("all_time", {})
-        if at:
-            msg2 += (
-                f"  All-time   {at.get('total_trades', 0)} trades  "
-                f"WR {at.get('win_rate', 0):.0%}  "
-                f"Sharpe {at.get('sharpe', 0):+.3f}  "
-                f"P&L ${at.get('total_pnl', 0):+,.2f}\n"
-            )
-        msg2 += f"  Data       {pipeline_info.get('total_outcomes', 0)} outcomes  ({pipeline_info.get('train_count', 0)} train / {pipeline_info.get('validation_count', 0)} validation)\n"
-
-        # Platt
         platt = pipeline_info.get("platt", {})
+        cf = pipeline_info.get("counterfactual", {})
+        wi = pipeline_info.get("weights", {})
+        source = pipeline_info.get("source", "?")
+        cfg = pipeline_info.get("current_config", {})
+
+        # Pipeline decisions block
+        lines = []
+        if at:
+            lines.append(f"All-time  {at.get('total_trades', 0)} trades | WR {at.get('win_rate', 0):.0%} | "
+                        f"Sharpe {at.get('sharpe', 0):+.3f} | ${at.get('total_pnl', 0):+,.2f}")
+        lines.append(f"Data      {pipeline_info.get('train_count', 0)} train / "
+                     f"{pipeline_info.get('validation_count', 0)} val (4 folds)")
+
         pd_dec = platt.get("decision", "skipped")
         if pd_dec == "adopted":
-            msg2 += f"  Platt      ADOPTED  log-loss {platt.get('old_loss', 0):.4f} -> {platt.get('new_loss', 0):.4f}  (a={platt.get('a', 0):.3f} b={platt.get('b', 0):.3f})\n"
+            lines.append(f"Platt     ADOPTED  loss {platt.get('old_loss', 0):.3f}->{platt.get('new_loss', 0):.3f}")
         elif pd_dec == "rejected":
-            msg2 += f"  Platt      rejected  log-loss {platt.get('old_loss', 0):.4f} -> {platt.get('new_loss', 0):.4f}\n"
-        else:
-            msg2 += f"  Platt      skipped\n"
+            lines.append(f"Platt     rejected  loss {platt.get('old_loss', 0):.3f}->{platt.get('new_loss', 0):.3f}")
 
-        # Counterfactual
-        cf = pipeline_info.get("counterfactual", {})
         if cf.get("total", 0) > 0:
-            msg2 += f"  Scalps     {cf['total']} tracked  accuracy {cf.get('accuracy', 0):.0%}\n"
+            lines.append(f"Scalps    {cf['total']} tracked | accuracy {cf.get('accuracy', 0):.0%}")
 
-        # Weights
-        wi = pipeline_info.get("weights", {})
         w_dec = wi.get("decision", "skipped")
-        source = pipeline_info.get("source", "?")
         if w_dec == "adopted":
-            msg2 += (f"  Weights    ADOPTED {wi.get('old_version', '?')} -> {wi.get('new_version', '?')}  "
-                     f"Sharpe {wi.get('old_sharpe', 0):.3f} -> {wi.get('new_sharpe', 0):.3f}  (via {source})\n")
+            lines.append(f"Weights   ADOPTED {wi.get('old_version', '?')}->{wi.get('new_version', '?')}  "
+                        f"Sharpe {wi.get('old_sharpe', 0):.3f}->{wi.get('new_sharpe', 0):.3f} ({source})")
         elif w_dec == "no_change":
-            msg2 += (f"  Weights    no change  Sharpe {wi.get('old_sharpe', 0):.3f} -> {wi.get('new_sharpe', 0):.3f}  "
-                     f"({wi.get('reason', '')})\n")
+            lines.append(f"Weights   no change  {wi.get('reason', '')}")
         elif w_dec == "rejected":
-            msg2 += f"  Weights    REJECTED  ({wi.get('reason', '')})\n"
+            lines.append(f"Weights   REJECTED  {wi.get('reason', '')}")
         else:
-            msg2 += f"  Weights    skipped  ({wi.get('reason', '')})\n"
+            reason = wi.get("reason", "")
+            lines.append(f"Weights   skipped  {reason}")
 
-        msg2 += "```\n"
+        pipeline_block = "\n".join(f"  {l}" for l in lines)
 
-        # Config changes
+        # Config block (compact two-column)
+        cfg_lines = []
+        if cfg:
+            cfg_lines = [
+                f"kelly {cfg.get('kelly_fraction', '?')}  |  entry_thresh {cfg.get('entry_threshold', '?')}  |  min_prob {cfg.get('min_model_prob', '?')}",
+                f"momentum {cfg.get('momentum_weight', '?')}  |  regime {cfg.get('regime_weight', '?')}  |  flow {cfg.get('flow_weight', '?')}  |  spot_flow {cfg.get('spot_flow_weight', '?')}",
+                f"t_df {cfg.get('student_t_df', '?')}  |  atr_sigma {cfg.get('atr_sigma_ratio', '?')}  |  exit_thresh {cfg.get('exit_edge_threshold', '?')}  |  min_kelly {cfg.get('min_kelly', '?')}",
+            ]
+        cfg_block = "\n".join(f"  {l}" for l in cfg_lines)
+
+        msg2 = f"**PIPELINE**\n```\n{pipeline_block}\n```\n"
         if config_changes:
-            msg2 += "**Config Changes**\n```\n"
+            msg2 += "**Changes**\n```\n"
             for param, change in config_changes.items():
                 msg2 += f"  {param}: {change['old']} -> {change['new']}\n"
             msg2 += "```\n"
+        if cfg_block:
+            msg2 += f"**Config**\n```\n{cfg_block}\n```\n"
 
-        # Claude findings
+        # Findings (truncate each to 140 chars for readability)
         findings = recommendations.get("key_findings", [])
         warnings = recommendations.get("risk_warnings", [])
         if findings or warnings:
             msg2 += "**Findings**\n"
-            for f in findings[:4]:
-                msg2 += f"- {f}\n"
+            for f in findings[:3]:
+                msg2 += f"- {f[:140]}\n"
             for w in warnings[:2]:
-                msg2 += f"- **Warning:** {w}\n"
+                msg2 += f"- **!** {w[:140]}\n"
 
         await channel.send(msg2[:2000])
-
-        # --- Message 3: current config snapshot ---
-        cfg = pipeline_info.get("current_config", {})
-        if cfg:
-            msg3 = (
-                "**Current Config**\n```\n"
-                f"  kelly_fraction     {cfg.get('kelly_fraction', '?')}\n"
-                f"  entry_threshold    {cfg.get('entry_threshold', '?')}\n"
-                f"  min_model_prob     {cfg.get('min_model_prob', '?')}\n"
-                f"  min_kelly          {cfg.get('min_kelly', '?')}\n"
-                f"  momentum_weight    {cfg.get('momentum_weight', '?')}\n"
-                f"  regime_weight      {cfg.get('regime_weight', '?')}\n"
-                f"  flow_weight        {cfg.get('flow_weight', '?')}\n"
-                f"  spot_flow_weight   {cfg.get('spot_flow_weight', '?')}\n"
-                f"  student_t_df       {cfg.get('student_t_df', '?')}\n"
-                f"  atr_sigma_ratio    {cfg.get('atr_sigma_ratio', '?')}\n"
-                f"  exit_edge_thresh   {cfg.get('exit_edge_threshold', '?')}\n"
-                "```"
-            )
-            await channel.send(msg3)
