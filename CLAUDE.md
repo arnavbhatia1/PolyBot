@@ -93,20 +93,23 @@ polybot/
     live_trader.py           # LiveTrader(BaseTrader) — FOK-only market orders via py-clob-client SDK
     circuit_breaker.py       # Tiered floor Kelly scaling (locks in floor at each bankroll milestone)
   agents/
-    scheduler.py             # Daily learning pipeline orchestrator
+    scheduler.py             # Daily learning pipeline orchestrator (walk-forward validation, cooldown)
     outcome_reviewer.py      # Logs resolved trades to memory/outcomes/
     counterfactual_tracker.py # Tracks what-if for both scalps and holds
-    bias_detector.py         # Per-indicator accuracy + counterfactual analysis
-    ta_evolver.py            # Claude API recommendations for weight adjustments
-    weight_optimizer.py      # Backtests and auto-adopts if Sharpe improves >= 3%
+    bias_detector.py         # Per-indicator/regime/time-weighted accuracy + counterfactual analysis
+    ta_evolver.py            # Claude API recommendations (principled local fallback when unavailable)
+    weight_optimizer.py      # Walk-forward backtest, statistical adoption (z >= 1.65)
+    pipeline_tracker.py      # Tracks adoption outcomes: predicted vs actual 7d/30d Sharpe
+    pipeline_analytics.py    # Time-weighting, KS shift detection, SPRT aggregation
   brain/
-    claude_client.py         # analyze_strategy() for daily pipeline
+    claude_client.py         # analyze_strategy() — sends distilled analysis card, not raw trades
   memory/
     outcomes/                # One JSON per trade
     counterfactuals/         # One JSON per scalp or hold
     calibration/             # platt_params.json (A, B parameters)
     weights/                 # Versioned weight configs
     biases.json              # Indicator correction factors
+    pipeline_history.json    # Adoption track record (predicted vs actual Sharpe)
   discord_bot/
     bot.py                   # Commands: status, positions, history, performance, clear, session, pause/resume
     commands.py              # Formatting helpers
@@ -391,28 +394,45 @@ Outcomes saved to `memory/outcomes/`. Daily pipeline (see "Learning Pipeline" se
 
 ## Learning Pipeline
 
-Daily at 12:05 AM ET (configurable via `agents.daily_pipeline_hour` and `daily_pipeline_minute`):
+Fully autonomous — no human in the loop. Runs daily at 12:05 AM ET (configurable). The `run_polybot.ps1` wrapper commits results to git and restarts the bot after the pipeline.
 
-**Hold-out split:** 60/40 chronological — first 60% for analysis, last 40% for backtest validation. Prevents in-sample overfitting.
+**Walk-forward validation:** First 60% of outcomes for training (BiasDetector, Claude, Platt). Weight optimizer tests recommendations across 4 expanding-window folds of the remaining 40%: [60:70%], [70:80%], [80:90%], [90:100%]. Each fold is genuinely out-of-sample.
 
-**Minimum data:** TAEvolver and WeightOptimizer skip if <200 trades (enforced in code). BiasDetector always runs. Platt calibrator requires >=200 outcomes for re-fitting.
+**Statistical adoption:** Sharpe improvement requires z >= 1.65 (95% one-tailed, Jobson-Korkie SE), minimum absolute delta >= 0.03, n >= 100, candidate Sharpe > 0, AND improvement in every walk-forward fold. SPRT evidence modulates the threshold: negative → 0.02 (more aggressive), positive → 0.05 (conservative).
 
-1. **BiasDetector** — Analyzes the **training set** (first 60% of outcomes):
+**3-day cooldown:** No adoption within 3 days of the last parameter change. Prevents confounded data from mixed-regime trades.
+
+**Pipeline self-tracking:** Each adoption is logged to `pipeline_history.json` with predicted Sharpe. After 7 and 30 days, actual Sharpe is computed from real outcomes. This track record is fed back to Claude so it can see whether its past recommendations helped.
+
+**Minimum data:** TAEvolver and WeightOptimizer skip if <200 trades. BiasDetector always runs. Platt calibrator requires >=200 outcomes.
+
+1. **PipelineTracker** — Reviews past adoptions. Fills in actual 7d/30d Sharpe for adoptions now old enough to evaluate. Track record fed to Claude.
+
+2. **BiasDetector** — Analyzes the **training set** (first 60% of outcomes):
    - Per-indicator accuracy (bullish/bearish breakdown, sample sizes)
    - Side analysis (Up vs Down win rate)
    - Edge calibration (do larger edges actually win more?)
    - Time patterns (win rate by seconds remaining at entry)
    - Volatility patterns (win rate by ATR regime)
+   - Per-regime stats (trending/reverting/volatile/quiet: win rate, avg edge, avg gain)
+   - Edge realization quartiles (does predicted edge actually realize?)
+   - Time-weighted stats (14-day half-life exponential decay)
    - Overall statistics (Sharpe, win rate, avg edge)
-   - Counterfactual analysis (both scalps AND holds): was the exit/hold decision optimal?
+   - Counterfactual analysis (scalps AND holds): CORRECT or SUBOPTIMAL (no NEUTRAL — delta < $0.01 is CORRECT)
 
-1.5. **PlattCalibrator** — Fits Platt scaling parameters (A, B) on training set model probabilities vs actual outcomes. Validates on holdout — only adopts if log-loss improves. Persists to `memory/calibration/platt_params.json`. Applied after all layers in `compute_probability()`.
+3. **PlattCalibrator** — Fits Platt scaling parameters (A, B) on training set model probabilities vs actual outcomes. Validates on holdout — only adopts if log-loss improves. Persists to `memory/calibration/platt_params.json`. Per-regime calibration tracked (activates when 200+ samples per regime).
 
-2. **TAEvolver** — Sends training-set analysis + trades + config to Claude API. Returns structured JSON with weight adjustments and parameter recommendations. Server-side validated (weights sum to 1.0, constraints enforced). Falls back to local math if API fails.
+4. **Distribution Shift Detection** — KS-test comparing recent 50 trades vs historical on edge, ATR, model_probability, seconds_remaining. Shifts flagged in Claude context and Discord.
 
-3. **WeightOptimizer** — Backtests recommendations against the **validation set** (last 40%). Auto-adopts if Sharpe improves >= 3%. Hot-swaps ALL signal weights and entry/exit params at runtime, persists to settings.yaml. Discord alerts with findings.
+5. **SPRT Aggregate Evidence** — Summarizes ENTER/SKIP ratios from recent 50 trades. Modulates adoption threshold.
 
-Outcomes enriched with `trade_context` (btc_price, strike, seconds_remaining, market prices, model_probability, edge, ATR, flow scores, clob_velocity, coinbase_btc, oracle_divergence, adverse_selection_30s, edge_realization_ratio, garch_vol_ratio, crowd_bias) plus `gain_pct`, `pnl`, and `fees`.
+6. **TAEvolver** — Sends distilled analysis card (regime breakdown, edge realization quartiles, time-weighted stats, pipeline track record) + last 25 trades to Claude. Returns structured JSON recommendations. Robust JSON extractor handles fences and prose. **Local fallback** (when Claude unavailable): rule-based recommendations with guardrails — max 2 params per run, max 15% change per param, derived from bias report (win rate declining → reduce kelly, edge realization low → raise threshold).
+
+7. **WeightOptimizer** — Walk-forward backtests across 4 folds. Statistical adoption via Jobson-Korkie z-test. Hot-swaps ALL signal weights and entry/exit params at runtime, persists to settings.yaml. Records adoption in pipeline_history.json.
+
+**Discord report (3 messages):** (1) Today's P&L, Sharpe, side/exit/edge breakdown. (2) Pipeline decisions: Platt, weights (adopted/rejected/cooldown/skipped with reason), findings. (3) Current config snapshot.
+
+Outcomes enriched with `trade_context` (btc_price, strike, seconds_remaining, market prices, model_probability, edge, ATR, flow scores, clob_velocity, coinbase_btc, oracle_divergence, adverse_selection_30s, edge_realization_ratio, garch_vol_ratio, crowd_bias, regime) plus `gain_pct`, `pnl`, and `fees`.
 
 **Performance metrics use `gain_pct` (arithmetic returns), NOT `log_return`.** Log returns are mathematically broken for binary outcomes where exit_price=0 produces log(0)=-infinity. The `gain_pct` metric is bounded [-1, +inf) and gives an honest, positive Sharpe for profitable strategies. The `log_return` field is still stored for backward compatibility but is never used for Sharpe calculation.
 

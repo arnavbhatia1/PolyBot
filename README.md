@@ -107,7 +107,7 @@ python -m polybot.main --run-pipeline
 | `execution/paper_trader.py` | Realistic simulated trading -- real CLOB prices, dynamic fees, FOK fills |
 | `execution/live_trader.py` | Real Polymarket CLOB trading with FOK-only market orders |
 | `execution/circuit_breaker.py` | Tiered floor Kelly scaling (locks in floor at each milestone tier, 1.0x at tier → 0.40x at floor) |
-| `agents/` | Self-learning pipeline (bias detector, TA evolver, weight optimizer, counterfactual tracker) |
+| `agents/` | Autonomous learning pipeline (walk-forward validation, statistical adoption, pipeline self-tracking) |
 | `discord_bot/` | Commands, trade alerts, session management |
 | `db/models.py` | SQLite for positions, trade history, bankroll |
 
@@ -162,12 +162,13 @@ Key parameters (all tunable by learning pipeline):
 
 ## Learning Pipeline
 
-Runs daily at 12:05 AM ET. Minimum 200 trades required (enforced in code). 60/40 hold-out split prevents overfitting.
+Fully autonomous — no human in the loop. Runs daily at 12:05 AM ET. Walk-forward validation with statistical adoption (z >= 1.65). 3-day cooldown between parameter changes. Pipeline tracks its own adoption outcomes (7d/30d actual vs predicted Sharpe).
 
-1. **BiasDetector** -- Per-indicator accuracy, side bias, edge calibration, time/vol patterns, counterfactual analysis (scalps AND holds)
-2. **PlattCalibrator** -- Fits Platt scaling (A, B) on training set. Validates on holdout -- adopts only if log-loss improves
-3. **TAEvolver** -- Sends analysis + trades to Claude API. Returns weight adjustments, all layer weights, kelly_fraction, atr_sigma_ratio, reasoning, risk warnings
-4. **WeightOptimizer** -- Backtests on validation set (last 40%). Auto-adopts if Sharpe improves >= 3%. Hot-swaps all params and persists to settings.yaml
+1. **PipelineTracker** -- Reviews past adoptions, fills in actual 7d/30d Sharpe, feeds track record to Claude
+2. **BiasDetector** -- Per-indicator/regime/time-weighted accuracy, edge realization quartiles, counterfactual analysis, distribution shift detection (KS-test)
+3. **PlattCalibrator** -- Fits Platt scaling (A, B) on training set. Validates on holdout -- adopts only if log-loss improves
+4. **TAEvolver** -- Sends distilled analysis card to Claude (regime stats, edge quartiles, SPRT evidence, pipeline track record). Robust JSON extractor. Principled local fallback: rule-based, max 2 params, max 15% change
+5. **WeightOptimizer** -- Walk-forward backtest across 4 expanding-window folds. Adoption requires Jobson-Korkie z >= 1.65, all folds positive, n >= 100. SPRT evidence modulates threshold. Hot-swaps all params and persists to settings.yaml
 
 Tunes 30+ parameters: indicator weights, all layer weights, student_t_df, min_edge, kelly_fraction, min_kelly, atr_sigma_ratio, min_model_probability, exit_edge_threshold, normal_fraction, late_max_penalty, flip_edge_premium, trading hours, logit_scale, probability_compression, liquidation_weight, consensus thresholds/multipliers, exit patience/urgency params, iv_ratio bounds.
 
