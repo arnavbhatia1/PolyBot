@@ -44,8 +44,9 @@ async def test_run_daily_pipeline_calls_agents_in_order():
     async def mock_ta_evolver(analysis, outcomes=None):
         call_order.append("ta_evolver")
         return {}
-    async def mock_weight_optimizer(recs, outcomes=None):
+    async def mock_weight_optimizer(recs, outcomes=None, **kwargs):
         call_order.append("weight_optimizer")
+        return {"decision": "skipped"}
     outcome_reviewer = MagicMock()
     outcome_reviewer.load_all_outcomes.return_value = _make_outcomes(250)
     scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=MagicMock(),
@@ -95,8 +96,9 @@ async def test_pipeline_runs_learning_at_exactly_200_trades():
     async def mock_ta_evolver(analysis, outcomes=None):
         call_order.append("ta_evolver")
         return {}
-    async def mock_weight_optimizer(recs, outcomes=None):
+    async def mock_weight_optimizer(recs, outcomes=None, **kwargs):
         call_order.append("weight_optimizer")
+        return {"decision": "skipped"}
     outcome_reviewer = MagicMock()
     outcome_reviewer.load_all_outcomes.return_value = _make_outcomes(200)
     scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=MagicMock(),

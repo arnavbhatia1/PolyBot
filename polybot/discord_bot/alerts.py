@@ -190,11 +190,14 @@ class AlertManager:
             return -1
 
     async def send_daily_report(self, outcomes: list[dict[str, Any]], analysis: dict[str, Any],
-                                recommendations: dict[str, Any], config_changes: dict[str, Any]) -> None:
-        """Post end-of-day report: P&L, Sharpe, side/exit breakdown, edge calibration, findings."""
+                                recommendations: dict[str, Any], config_changes: dict[str, Any],
+                                pipeline_info: dict[str, Any] | None = None) -> None:
+        """Post end-of-day report: P&L, Sharpe, side/exit breakdown, pipeline summary, current config."""
         channel = self._get_channel(self.daily_channel_name)
         if not channel:
             return
+
+        pipeline_info = pipeline_info or {}
 
         # Pipeline runs at 12:05 AM ET — the trading day was yesterday ET.
         # If run manually after noon, use today ET instead.
@@ -229,26 +232,21 @@ class AlertManager:
         losses = total - wins
         wr = wins / total if total > 0 else 0
 
-        # Sharpe — per-trade arithmetic return, consistent with bias_detector / weight_optimizer
+        # Sharpe — per-trade arithmetic return
         gain_pcts = [o.get("gain_pct", 0.0) for o in todays]
         avg_ret = sum(gain_pcts) / len(gain_pcts)
         variance = sum((r - avg_ret) ** 2 for r in gain_pcts) / len(gain_pcts)
         std_ret = math.sqrt(variance) if variance > 0 else 0.0
         sharpe = avg_ret / std_ret if std_ret > 0 else 0.0
 
-        # Side breakdown helper
         def _side_stats(trades: list) -> tuple[int, int, float]:
             w = sum(1 for t in trades if t.get("correct"))
             return w, len(trades), sum(t.get("pnl", 0) for t in trades)
 
         up_trades = [o for o in todays if o.get("side", "").upper() == "UP"]
         dn_trades = [o for o in todays if o.get("side", "").upper() == "DOWN"]
-
-        # Exit reason breakdown
         scalp_trades = [o for o in todays if o.get("exit_reason") == "scalp"]
         res_trades = [o for o in todays if o.get("exit_reason") == "resolution"]
-
-        # Edge calibration
         high_edge = [o for o in todays
                      if o.get("indicator_snapshot", {}).get("trade_context", {}).get("edge", 0) >= 0.08]
         low_edge = [o for o in todays
@@ -272,7 +270,7 @@ class AlertManager:
             w, n, _ = _side_stats(trades)
             return f"  {label:<16} {w:>3}/{n:<3}  {w/n:.0%}\n"
 
-        # --- Message 1: core performance ---
+        # --- Message 1: today's performance ---
         msg1 = (
             f"**DAILY REPORT — {date_str} ET**\n"
             f"```\n"
@@ -292,28 +290,93 @@ class AlertManager:
         if high_edge or low_edge:
             msg1 += (
                 f"**Edge Calibration**\n```\n"
-                f"{_edge_line('edge ≥8%', high_edge)}"
-                f"{_edge_line('edge 4–8%', low_edge)}"
+                f"{_edge_line('edge >= 8%', high_edge)}"
+                f"{_edge_line('edge 4-8%', low_edge)}"
                 f"```\n"
             )
         await channel.send(msg1[:2000])
 
-        # --- Message 2: config changes + pipeline findings ---
-        msg2 = ""
+        # --- Message 2: pipeline decisions ---
+        msg2 = "**PIPELINE SUMMARY**\n```\n"
+
+        # All-time stats
+        at = pipeline_info.get("all_time", {})
+        if at:
+            msg2 += (
+                f"  All-time   {at.get('total_trades', 0)} trades  "
+                f"WR {at.get('win_rate', 0):.0%}  "
+                f"Sharpe {at.get('sharpe', 0):+.3f}  "
+                f"P&L ${at.get('total_pnl', 0):+,.2f}\n"
+            )
+        msg2 += f"  Data       {pipeline_info.get('total_outcomes', 0)} outcomes  ({pipeline_info.get('train_count', 0)} train / {pipeline_info.get('validation_count', 0)} validation)\n"
+
+        # Platt
+        platt = pipeline_info.get("platt", {})
+        pd_dec = platt.get("decision", "skipped")
+        if pd_dec == "adopted":
+            msg2 += f"  Platt      ADOPTED  log-loss {platt.get('old_loss', 0):.4f} -> {platt.get('new_loss', 0):.4f}  (a={platt.get('a', 0):.3f} b={platt.get('b', 0):.3f})\n"
+        elif pd_dec == "rejected":
+            msg2 += f"  Platt      rejected  log-loss {platt.get('old_loss', 0):.4f} -> {platt.get('new_loss', 0):.4f}\n"
+        else:
+            msg2 += f"  Platt      skipped\n"
+
+        # Counterfactual
+        cf = pipeline_info.get("counterfactual", {})
+        if cf.get("total", 0) > 0:
+            msg2 += f"  Scalps     {cf['total']} tracked  accuracy {cf.get('accuracy', 0):.0%}\n"
+
+        # Weights
+        wi = pipeline_info.get("weights", {})
+        w_dec = wi.get("decision", "skipped")
+        source = pipeline_info.get("source", "?")
+        if w_dec == "adopted":
+            msg2 += (f"  Weights    ADOPTED {wi.get('old_version', '?')} -> {wi.get('new_version', '?')}  "
+                     f"Sharpe {wi.get('old_sharpe', 0):.3f} -> {wi.get('new_sharpe', 0):.3f}  (via {source})\n")
+        elif w_dec == "no_change":
+            msg2 += (f"  Weights    no change  Sharpe {wi.get('old_sharpe', 0):.3f} -> {wi.get('new_sharpe', 0):.3f}  "
+                     f"({wi.get('reason', '')})\n")
+        elif w_dec == "rejected":
+            msg2 += f"  Weights    REJECTED  ({wi.get('reason', '')})\n"
+        else:
+            msg2 += f"  Weights    skipped  ({wi.get('reason', '')})\n"
+
+        msg2 += "```\n"
+
+        # Config changes
         if config_changes:
             msg2 += "**Config Changes**\n```\n"
             for param, change in config_changes.items():
                 msg2 += f"  {param}: {change['old']} -> {change['new']}\n"
             msg2 += "```\n"
 
+        # Claude findings
         findings = recommendations.get("key_findings", [])
         warnings = recommendations.get("risk_warnings", [])
         if findings or warnings:
-            msg2 += "**Pipeline Findings**\n"
+            msg2 += "**Findings**\n"
             for f in findings[:4]:
                 msg2 += f"- {f}\n"
             for w in warnings[:2]:
-                msg2 += f"**Warning:** {w}\n"
+                msg2 += f"- **Warning:** {w}\n"
 
-        if msg2:
-            await channel.send(msg2[:2000])
+        await channel.send(msg2[:2000])
+
+        # --- Message 3: current config snapshot ---
+        cfg = pipeline_info.get("current_config", {})
+        if cfg:
+            msg3 = (
+                "**Current Config**\n```\n"
+                f"  kelly_fraction     {cfg.get('kelly_fraction', '?')}\n"
+                f"  entry_threshold    {cfg.get('entry_threshold', '?')}\n"
+                f"  min_model_prob     {cfg.get('min_model_prob', '?')}\n"
+                f"  min_kelly          {cfg.get('min_kelly', '?')}\n"
+                f"  momentum_weight    {cfg.get('momentum_weight', '?')}\n"
+                f"  regime_weight      {cfg.get('regime_weight', '?')}\n"
+                f"  flow_weight        {cfg.get('flow_weight', '?')}\n"
+                f"  spot_flow_weight   {cfg.get('spot_flow_weight', '?')}\n"
+                f"  student_t_df       {cfg.get('student_t_df', '?')}\n"
+                f"  atr_sigma_ratio    {cfg.get('atr_sigma_ratio', '?')}\n"
+                f"  exit_edge_thresh   {cfg.get('exit_edge_threshold', '?')}\n"
+                "```"
+            )
+            await channel.send(msg3)

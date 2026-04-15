@@ -1708,6 +1708,8 @@ async def run_pipeline() -> None:
         scores_path=str(base_dir / "memory" / "weight_scores.json"),
         min_improvement=0.03,
     )
+    from polybot.agents.pipeline_tracker import PipelineTracker
+    pipeline_tracker = PipelineTracker(path=base_dir / "memory" / "pipeline_history.json")
 
     agents_cfg = config["agents"]
     scheduler = AgentScheduler(
@@ -1723,6 +1725,7 @@ async def run_pipeline() -> None:
         math_config=config["math"],
         config=config,
         counterfactual_tracker=counterfactual_tracker,
+        pipeline_tracker=pipeline_tracker,
     )
     scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", -0.10)
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
@@ -1875,6 +1878,9 @@ async def main() -> None:
         daily_channel_name=config["discord"].get("daily_channel_name", "polybot-daily"))
     discord_bot.alert_manager = alert_manager
 
+    from polybot.agents.pipeline_tracker import PipelineTracker
+    pipeline_tracker = PipelineTracker(path=base_dir / "memory" / "pipeline_history.json")
+
     scheduler = AgentScheduler(
         outcome_reviewer=outcome_reviewer,
         bias_detector=bias_detector,
@@ -1890,6 +1896,7 @@ async def main() -> None:
         market_scanner=market_scanner,
         config=config,
         counterfactual_tracker=counterfactual_tracker,
+        pipeline_tracker=pipeline_tracker,
     )
     scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", -0.10)
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)

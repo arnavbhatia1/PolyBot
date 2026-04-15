@@ -81,7 +81,7 @@ class TestHoldoutSplit:
 
     @pytest.mark.asyncio
     async def test_split_passes_train_to_bias_and_evolver(self):
-        """BiasDetector and TAEvolver should receive the first 60% of outcomes."""
+        """BiasDetector and TAEvolver receive first 60%; optimizer gets ALL (walk-forward splits internally)."""
         received = {}
 
         async def mock_bias(outcomes=None):
@@ -92,8 +92,9 @@ class TestHoldoutSplit:
             received["ta_count"] = len(outcomes) if outcomes else 0
             return {}
 
-        async def mock_wo(recs, outcomes=None):
+        async def mock_wo(recs, outcomes=None, **kwargs):
             received["wo_count"] = len(outcomes) if outcomes else 0
+            return {"decision": "skipped"}
 
         outcomes = self._make_outcomes(250)
 
@@ -111,11 +112,11 @@ class TestHoldoutSplit:
 
         assert received["bias_count"] == 150   # 60% of 250
         assert received["ta_count"] == 150
-        assert received["wo_count"] == 100     # 40% of 250
+        assert received["wo_count"] == 250     # walk-forward: optimizer gets ALL outcomes
 
     @pytest.mark.asyncio
     async def test_split_is_chronological(self):
-        """Train set should contain the oldest outcomes, validation the newest."""
+        """Train set should contain the oldest outcomes; optimizer gets all for walk-forward."""
         received = {}
 
         async def mock_bias(outcomes=None):
@@ -123,10 +124,12 @@ class TestHoldoutSplit:
             return {}
 
         async def mock_ta(analysis, outcomes=None):
+            received["ta_timestamps"] = [o["timestamp"] for o in (outcomes or [])]
             return {}
 
-        async def mock_wo(recs, outcomes=None):
-            received["wo_timestamps"] = [o["timestamp"] for o in (outcomes or [])]
+        async def mock_wo(recs, outcomes=None, **kwargs):
+            received["wo_count"] = len(outcomes) if outcomes else 0
+            return {"decision": "skipped"}
 
         outcomes = self._make_outcomes(250)
 
@@ -142,8 +145,10 @@ class TestHoldoutSplit:
 
         await scheduler.run_daily_pipeline()
 
-        # Train = first 150 (oldest), validation = last 100 (newest)
-        assert received["bias_timestamps"][-1] < received["wo_timestamps"][0]
+        # Train = first 150 (oldest), optimizer gets all 250 for walk-forward
+        assert len(received["bias_timestamps"]) == 150
+        assert len(received["ta_timestamps"]) == 150
+        assert received["wo_count"] == 250
 
     @pytest.mark.asyncio
     async def test_small_dataset_still_works(self):

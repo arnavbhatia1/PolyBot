@@ -17,7 +17,8 @@ class AgentScheduler:
                  outcome_interval_seconds: int = 3600, daily_pipeline_hour: int = 2,
                  daily_pipeline_minute: int = 0, math_config: dict[str, Any] | None = None,
                  claude_client: Any = None, market_scanner: Any = None,
-                 config: dict[str, Any] | None = None, counterfactual_tracker: Any = None) -> None:
+                 config: dict[str, Any] | None = None, counterfactual_tracker: Any = None,
+                 pipeline_tracker: Any = None) -> None:
         self.outcome_reviewer: Any = outcome_reviewer
         self.bias_detector: Any = bias_detector
         self.ta_evolver: Any = ta_evolver
@@ -33,6 +34,7 @@ class AgentScheduler:
         self.market_scanner: Any = market_scanner
         self._config: dict[str, Any] | None = config  # Full config dict — written back to settings.yaml after pipeline adoption
         self.counterfactual_tracker: Any = counterfactual_tracker
+        self.pipeline_tracker: Any = pipeline_tracker
         self._exit_edge_threshold: float | None = None  # Set by main.py, updated by pipeline
         self._min_time_remaining: int | None = None   # Set by main.py, updated by pipeline
         self._trading_start: tuple[int, int] | None = None        # (hour, minute) UTC — updated by pipeline
@@ -90,96 +92,133 @@ class AgentScheduler:
         recommendations = await self.ta_evolver.evolve(outcomes, analysis, current_config)
         return recommendations
 
-    async def _run_weight_optimizer(self, recommendations: dict[str, Any], outcomes: list[dict[str, Any]] | None = None) -> None:
-        if outcomes is None:
-            outcomes = self.outcome_reviewer.load_all_outcomes()
-        if not outcomes or len(outcomes) < 10:
-            logger.info(f"Only {len(outcomes)} outcomes — need at least 10 for weight optimization")
-            return
-
-        # Score current weights
-        current_version = self.weight_optimizer.get_best_version()
-        current_outcomes = [o for o in outcomes if o.get("weight_version") == current_version]
-
-        current_sharpe = 0.0
-        if current_outcomes:
-            returns = [o.get("gain_pct", 0) for o in current_outcomes]
-            avg = sum(returns) / len(returns)
-            variance = sum((r - avg) ** 2 for r in returns) / len(returns) if len(returns) > 1 else 1
-            std = math.sqrt(variance) if variance > 0 else 1
-            current_sharpe = avg / std if std > 0 else 0
-            win_rate = sum(1 for o in current_outcomes if o.get("correct", False)) / len(current_outcomes)
-            self.weight_optimizer.record_score(current_version, current_sharpe, len(current_outcomes), win_rate)
-
-        # Extract recommended indicator weights
+    def _backtest_recommendations(self, recommendations: dict[str, Any],
+                                    outcomes: list[dict[str, Any]]) -> list[float]:
+        """Simulate trades with recommended weights. Returns list of gain_pcts."""
         recommended_weights = recommendations.get("recommended_weights", {})
-        if not recommended_weights:
-            return
-
-        # Simulate: what would outcomes look like with new weights?
-        scored_outcomes = [o for o in outcomes if o.get("indicator_snapshot")]
-        if len(scored_outcomes) < 5:
-            return
+        rec_mw = recommendations.get("recommended_momentum_weight",
+                    getattr(self.signal_engine, 'momentum_weight', 0.08))
+        rec_me = recommendations.get("recommended_min_edge",
+                    getattr(self.signal_engine, 'min_edge', 0.20))
+        old_mw = getattr(self.signal_engine, 'momentum_weight', 0.08)
 
         candidate_returns = []
-        for o in scored_outcomes:
+        for o in outcomes:
             snap = o.get("indicator_snapshot", {})
+            if not snap:
+                continue
             ctx = snap.get("trade_context", {})
 
-            # Preferred: use trade_context to evaluate with probability model
             if ctx.get("edge", 0) > 0:
-                # Recompute momentum with new weights (use norm_score — matches live engine)
                 new_momentum = sum(
                     snap.get(ind, {}).get("norm_score", snap.get(ind, {}).get("score", 0)) * recommended_weights.get(ind, 0)
                     for ind in ["rsi", "macd", "stochastic", "obv", "vwap"]
                 )
                 new_momentum = max(-1.0, min(1.0, new_momentum))
-
-                # Compute what the probability adjustment would have been
-                rec_mw = recommendations.get("recommended_momentum_weight",
-                            getattr(self.signal_engine, 'momentum_weight', 0.08))
-                rec_me = recommendations.get("recommended_min_edge",
-                            getattr(self.signal_engine, 'min_edge', 0.20))
-
-                # Original model_probability already includes old momentum
-                # Approximate: would the trade still have enough edge with new params?
                 original_edge = ctx.get("edge", 0)
                 old_momentum = ctx.get("momentum_score", 0)
-                old_mw = getattr(self.signal_engine, 'momentum_weight', 0.08)
-
-                # Estimate new edge by adjusting for momentum difference
                 momentum_delta = (new_momentum * rec_mw) - (old_momentum * old_mw)
                 estimated_new_edge = original_edge + momentum_delta
-
                 if estimated_new_edge >= rec_me:
                     candidate_returns.append(o.get("gain_pct", 0))
             else:
-                # Fallback: old-style backtest for outcomes without trade_context
                 new_score = sum(
                     snap.get(ind, {}).get("norm_score", snap.get(ind, {}).get("score", 0)) * recommended_weights.get(ind, 0)
                     for ind in ["rsi", "macd", "stochastic", "obv", "vwap"]
                 )
                 if abs(new_score) >= 0.10:
                     candidate_returns.append(o.get("gain_pct", 0))
+        return candidate_returns
 
-        if len(candidate_returns) < 3:
-            logger.info("Not enough hypothetical trades to evaluate new weights")
-            return
+    async def _run_weight_optimizer(self, recommendations: dict[str, Any],
+                                    all_outcomes: list[dict[str, Any]] | None = None,
+                                    pipeline_source: str = "local") -> dict[str, Any]:
+        """Run weight optimizer with walk-forward validation.
 
-        avg = sum(candidate_returns) / len(candidate_returns)
-        variance = sum((r - avg) ** 2 for r in candidate_returns) / len(candidate_returns)
-        std = math.sqrt(variance) if variance > 0 else 1
-        candidate_sharpe = avg / std if std > 0 else 0
-        candidate_win_rate = sum(1 for r in candidate_returns if r > 0) / len(candidate_returns)
+        Walk-forward folds (each fold's test set is genuinely out-of-sample):
+          Fold 1: Test [60%:70%]
+          Fold 2: Test [70%:80%]
+          Fold 3: Test [80%:90%]
+          Fold 4: Test [90%:100%]
 
-        # Decide: auto-adopt or flag as concerning
-        if self.weight_optimizer.should_adopt(current_sharpe, candidate_sharpe):
+        Adoption requires statistical significance (z >= 1.65) on aggregated
+        results AND positive improvement in every fold.
+
+        Returns info dict with decision details.
+        """
+        from polybot.agents.weight_optimizer import _sharpe
+
+        info: dict[str, Any] = {"decision": "skipped", "reason": ""}
+        if all_outcomes is None:
+            all_outcomes = self.outcome_reviewer.load_all_outcomes()
+        if not all_outcomes or len(all_outcomes) < 10:
+            info["reason"] = f"only {len(all_outcomes) if all_outcomes else 0} outcomes (need 10)"
+            return info
+
+        # Score current weights on FULL dataset
+        current_version = self.weight_optimizer.get_best_version()
+        current_outcomes = [o for o in all_outcomes if o.get("weight_version") == current_version]
+
+        current_sharpe = 0.0
+        if current_outcomes:
+            current_returns = [o.get("gain_pct", 0) for o in current_outcomes]
+            current_sharpe = _sharpe(current_returns)
+            win_rate = sum(1 for o in current_outcomes if o.get("correct", False)) / len(current_outcomes)
+            self.weight_optimizer.record_score(current_version, current_sharpe, len(current_outcomes), win_rate)
+        info["old_version"] = current_version
+        info["old_sharpe"] = round(current_sharpe, 4)
+
+        recommended_weights = recommendations.get("recommended_weights", {})
+        if not recommended_weights:
+            info["reason"] = "no recommended weights from evolver"
+            return info
+
+        # --- Walk-forward validation ---
+        n = len(all_outcomes)
+        fold_boundaries = [0.60, 0.70, 0.80, 0.90, 1.0]
+        fold_sharpes = []
+        all_candidate_returns = []
+
+        for i in range(len(fold_boundaries) - 1):
+            start_idx = int(n * fold_boundaries[i])
+            end_idx = int(n * fold_boundaries[i + 1])
+            fold_test = all_outcomes[start_idx:end_idx]
+            if len(fold_test) < 3:
+                continue
+            fold_returns = self._backtest_recommendations(recommendations, fold_test)
+            if len(fold_returns) < 3:
+                continue
+            fold_sharpes.append(_sharpe(fold_returns))
+            all_candidate_returns.extend(fold_returns)
+
+        if len(all_candidate_returns) < 10:
+            info["reason"] = f"only {len(all_candidate_returns)} hypothetical trades across folds (need 10)"
+            logger.info("Not enough hypothetical trades across walk-forward folds")
+            return info
+
+        candidate_sharpe = _sharpe(all_candidate_returns)
+        candidate_win_rate = sum(1 for r in all_candidate_returns if r > 0) / len(all_candidate_returns)
+        info["new_sharpe"] = round(candidate_sharpe, 4)
+        info["candidate_win_rate"] = round(candidate_win_rate, 4)
+        info["fold_sharpes"] = [round(s, 4) for s in fold_sharpes]
+        info["n_validation_trades"] = len(all_candidate_returns)
+
+        # --- Statistical adoption test ---
+        adopt, reason = self.weight_optimizer.should_adopt(
+            current_sharpe, candidate_sharpe,
+            n_trades=len(all_candidate_returns),
+            fold_sharpes=fold_sharpes,
+        )
+
+        if adopt:
+            info["decision"] = "adopted"
+            info["reason"] = reason
             new_version = self.weight_optimizer.get_next_version()
             new_weights = recommended_weights.copy()
             new_weights["version"] = new_version
             self.weight_optimizer.save_weights(new_version, new_weights)
             self.weight_optimizer.record_score(new_version, candidate_sharpe,
-                                               len(candidate_returns), candidate_win_rate)
+                                               len(all_candidate_returns), candidate_win_rate)
 
             # Hot-swap indicator weights
             if self.indicator_engine:
@@ -285,61 +324,45 @@ class AgentScheduler:
                 except Exception as e:
                     logger.error(f"Failed to persist config: {e}")
 
+            info["new_version"] = new_version
             logger.info(f"AUTO-ADOPTED {new_version}: Sharpe {current_sharpe:.3f} -> {candidate_sharpe:.3f}, "
-                        f"win rate {candidate_win_rate:.0%}")
+                        f"win rate {candidate_win_rate:.0%} ({reason})")
 
-            if self.alert_manager:
-                msg = (
-                    f"**Weights updated: {current_version} -> {new_version}**\n"
-                    f"Sharpe: `{current_sharpe:.3f}` -> `{candidate_sharpe:.3f}`  |  WR `{candidate_win_rate:.0%}`"
-                )
-                # List only params that changed
-                param_keys = [
-                    ("recommended_momentum_weight", "momentum"),
+            # Track adoption for future self-evaluation
+            if self.pipeline_tracker:
+                changes = {}
+                param_map = [
+                    ("recommended_momentum_weight", "momentum_weight"),
                     ("recommended_min_edge", "min_edge"),
-                    ("recommended_min_model_probability", "min_prob"),
-                    ("recommended_exit_edge_threshold", "exit_thresh"),
-                    ("recommended_min_kelly", "min_kelly"),
-                    ("recommended_atr_sigma_ratio", "atr_sigma"),
+                    ("recommended_kelly_fraction", "kelly_fraction"),
+                    ("recommended_min_model_probability", "min_model_probability"),
+                    ("recommended_exit_edge_threshold", "exit_edge_threshold"),
+                    ("recommended_atr_sigma_ratio", "atr_sigma_ratio"),
                 ]
-                changes = [f"{short}: `{recommendations[k]}`"
-                           for k, short in param_keys if k in recommendations]
-                if changes:
-                    msg += "\n" + "  |  ".join(changes)
-                findings = recommendations.get("key_findings", [])
-                if findings:
-                    msg += "\n" + "\n".join(f"- {f}" for f in findings[:3])
-                await self.alert_manager.send_pipeline_summary(msg)
+                for rec_key, param_name in param_map:
+                    if rec_key in recommendations:
+                        old_val = getattr(self.signal_engine, param_name, None) if self.signal_engine else None
+                        changes[param_name] = (old_val, recommendations[rec_key])
+                self.pipeline_tracker.record_adoption(
+                    source=pipeline_source,
+                    version=new_version,
+                    baseline_sharpe=current_sharpe,
+                    predicted_sharpe=candidate_sharpe,
+                    changes=changes,
+                    reason=reason,
+                )
 
-        elif candidate_sharpe < -0.5:
-            logger.warning(f"NEGATIVE SHARPE detected: {candidate_sharpe:.3f} — flagging in Discord")
-            warnings = recommendations.get("risk_warnings", [])
-            warnings_str = "\n".join(f"  - {w}" for w in warnings[:3]) if warnings else ""
-
-            msg = (
-                f"WARNING: Strategy performing poorly.\n"
-                f"Current Sharpe: {current_sharpe:.3f}\n"
-                f"Candidate Sharpe: {candidate_sharpe:.3f}\n"
-                f"Win rate: {candidate_win_rate:.0%}\n"
-                f"Consider pausing (!pause) and reviewing trades (!history 20)"
-            )
-            if warnings_str:
-                msg += f"\n\nRisk Warnings:\n{warnings_str}"
-
-            if self.alert_manager:
-                await self.alert_manager.send_error(msg)
         else:
-            logger.info(f"Weights not adopted: improvement {candidate_sharpe - current_sharpe:.3f} "
-                        f"below threshold {self.weight_optimizer.min_improvement}")
-            if self.alert_manager:
-                msg = f"**Pipeline: no change** (Sharpe {current_sharpe:.3f} -> {candidate_sharpe:.3f}, below threshold)"
-                findings = recommendations.get("key_findings", [])
-                if findings:
-                    msg += "\n" + "\n".join(f"- {f}" for f in findings[:2])
-                await self.alert_manager.send_pipeline_summary(msg)
+            info["decision"] = "no_change"
+            info["reason"] = reason
+            logger.info(f"Weights not adopted: {reason}")
+
+        return info
 
     async def run_daily_pipeline(self) -> None:
         logger.info("Starting daily learning pipeline")
+
+        pipeline_info: dict[str, Any] = {}
 
         # Snapshot current config before changes
         old_config = {}
@@ -357,29 +380,41 @@ class AgentScheduler:
                 "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.7),
             }
 
-        # Hold-out split: train on first 60% of outcomes (chronological),
-        # validate on last 40%.  Prevents in-sample overfitting — Claude's
-        # recommendations are based on older trades, adoption decision is
-        # based on newer trades the model hasn't seen.
+        # Walk-forward validation: train on first 60%, validate across 4 expanding
+        # folds of the remaining 40% (each fold is genuinely out-of-sample).
         all_outcomes = self.outcome_reviewer.load_all_outcomes()  # already sorted by timestamp
         split_idx = max(1, int(len(all_outcomes) * 0.6))
         train_outcomes = all_outcomes[:split_idx]
-        validation_outcomes = all_outcomes[split_idx:] if len(all_outcomes) > split_idx else all_outcomes
-        logger.info(f"Hold-out split: {len(train_outcomes)} train / {len(validation_outcomes)} validation "
-                    f"(of {len(all_outcomes)} total)")
+        validation_outcomes = all_outcomes[split_idx:]  # used for Platt holdout validation
+        logger.info(f"Walk-forward split: {len(train_outcomes)} train / {len(validation_outcomes)} validation "
+                    f"(4 folds, {len(all_outcomes)} total)")
+        pipeline_info["total_outcomes"] = len(all_outcomes)
+        pipeline_info["train_count"] = len(train_outcomes)
+        pipeline_info["validation_count"] = len(all_outcomes) - len(train_outcomes)
+
+        # Review past pipeline adoptions (fill in actual 7d/30d Sharpe)
+        if self.pipeline_tracker:
+            self.pipeline_tracker.review_past_adoptions(all_outcomes)
 
         analysis = await self._run_bias_detector(train_outcomes)
 
         # Counterfactual analysis: how accurate are our scalp exits?
+        cf_info: dict[str, Any] = {}
         if self.counterfactual_tracker:
             counterfactuals = self.counterfactual_tracker.load_all()
             if counterfactuals:
                 cf_analysis = self.bias_detector.analyze_counterfactuals(counterfactuals)
                 analysis["counterfactual_analysis"] = cf_analysis
-                logger.info(f"Counterfactual analysis: {cf_analysis.get('total_scalps_tracked', 0)} scalps tracked, "
-                           f"accuracy={cf_analysis.get('scalp_accuracy', 0):.0%}")
+                cf_info = {
+                    "total": cf_analysis.get("total_scalps_tracked", 0),
+                    "accuracy": cf_analysis.get("scalp_accuracy", 0),
+                }
+                logger.info(f"Counterfactual analysis: {cf_info['total']} scalps tracked, "
+                           f"accuracy={cf_info['accuracy']:.0%}")
+        pipeline_info["counterfactual"] = cf_info
 
         # Platt calibration fitting
+        platt_info: dict[str, Any] = {"decision": "skipped"}
         from polybot.core.calibrator import PlattCalibrator, compute_log_loss
         if len(train_outcomes) >= 200 and self.signal_engine:
             cal_probs = []
@@ -408,22 +443,134 @@ class AgentScheduler:
                         old_loss = compute_log_loss(val_probs, val_outs)
                         new_probs = [cal.calibrate(p) for p in val_probs]
                         new_loss = compute_log_loss(new_probs, val_outs)
+                        platt_info = {"old_loss": round(old_loss, 4), "new_loss": round(new_loss, 4),
+                                      "a": round(cal.a, 4), "b": round(cal.b, 4)}
                         if new_loss < old_loss:
+                            platt_info["decision"] = "adopted"
                             cal.save()
                             self.signal_engine.calibrator = cal
                             logger.info(f"Platt calibration adopted: log-loss {old_loss:.4f} -> {new_loss:.4f}")
                         else:
+                            platt_info["decision"] = "rejected"
                             logger.info(f"Platt calibration rejected: {old_loss:.4f} -> {new_loss:.4f}")
+        pipeline_info["platt"] = platt_info
 
-        # Gate: need at least 50 trades before running TAEvolver and WeightOptimizer.
-        # With fewer trades, win-rate variance is too high (±13pp at N=25) — noise, not signal.
+        # Distribution shift detection (recent 50 vs historical)
+        from polybot.agents.pipeline_analytics import detect_distribution_shift, aggregate_sprt_evidence
+        if len(all_outcomes) > 100:
+            recent_50 = all_outcomes[-50:]
+            historical = all_outcomes[:-50]
+            shifts = detect_distribution_shift(recent_50, historical)
+            if shifts:
+                analysis["distribution_shifts"] = shifts
+                pipeline_info["distribution_shifts"] = list(shifts.keys())
+                logger.info(f"Distribution shifts detected: {list(shifts.keys())}")
+
+        # SPRT aggregate evidence — modulates adoption urgency
+        sprt_agg = aggregate_sprt_evidence(all_outcomes, recent_n=50)
+        analysis["sprt_aggregate"] = sprt_agg
+        pipeline_info["sprt"] = sprt_agg
+
+        # Per-regime Platt calibration (when enough per-regime data)
+        if len(train_outcomes) >= 200 and self.signal_engine:
+            regime_buckets: dict[str, tuple[list, list]] = {}
+            for o in train_outcomes:
+                ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
+                regime = ctx.get("regime", "neutral")
+                if regime.startswith("trending"):
+                    regime = "trending"
+                mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
+                if mp > 0:
+                    if regime not in regime_buckets:
+                        regime_buckets[regime] = ([], [])
+                    regime_buckets[regime][0].append(mp)
+                    regime_buckets[regime][1].append(1 if o.get("correct", False) else 0)
+            regime_cal_info = {}
+            for regime, (probs, outs) in regime_buckets.items():
+                if len(probs) >= 200:
+                    regime_cal_info[regime] = {"samples": len(probs), "status": "sufficient"}
+                else:
+                    regime_cal_info[regime] = {"samples": len(probs), "status": "insufficient"}
+            if regime_cal_info:
+                analysis["regime_calibration_data"] = regime_cal_info
+                logger.info(f"Per-regime calibration data: {', '.join(f'{r}={v['samples']}' for r, v in regime_cal_info.items())}")
+
+        # Gate: need at least 200 trades before running TAEvolver and WeightOptimizer.
         MIN_TRADES_FOR_LEARNING = 200
+        weight_info: dict[str, Any] = {"decision": "skipped"}
         if len(all_outcomes) < MIN_TRADES_FOR_LEARNING:
             logger.info(f"Skipping learning pipeline: only {len(all_outcomes)} trades, need {MIN_TRADES_FOR_LEARNING}")
             recommendations = {}
+            weight_info["reason"] = f"only {len(all_outcomes)} trades (need {MIN_TRADES_FOR_LEARNING})"
         else:
+            # Build Claude context including pipeline track record
+            if self.pipeline_tracker:
+                track_record = self.pipeline_tracker.format_for_claude()
+                if track_record:
+                    analysis["pipeline_track_record"] = track_record
+
             recommendations = await self._run_ta_evolver(analysis, train_outcomes)
-            await self._run_weight_optimizer(recommendations, validation_outcomes)
+            source = "claude" if recommendations.get("confidence") else "local"
+            pipeline_info["source"] = source
+
+            # SPRT urgency: if edge evidence is negative, lower adoption bar
+            if sprt_agg.get("state") == "negative":
+                self.weight_optimizer.min_improvement = 0.02  # more aggressive
+                logger.info("SPRT negative — lowering adoption threshold to 0.02")
+            elif sprt_agg.get("state") == "positive":
+                self.weight_optimizer.min_improvement = 0.05  # more conservative
+                logger.info("SPRT positive — raising adoption threshold to 0.05")
+            else:
+                self.weight_optimizer.min_improvement = 0.03  # default
+
+            # Cooldown: don't adopt within 3 days of last change (confounded data)
+            COOLDOWN_DAYS = 3
+            cooldown_active = False
+            if self.pipeline_tracker:
+                days = self.pipeline_tracker.days_since_last_adoption()
+                if days is not None and days < COOLDOWN_DAYS:
+                    cooldown_active = True
+                    logger.info(f"Pipeline cooldown: {days:.1f} days since last adoption (need {COOLDOWN_DAYS}), analysis only")
+                    weight_info = {"decision": "cooldown", "reason": f"{days:.1f}d since last adoption (need {COOLDOWN_DAYS}d)"}
+
+            if not cooldown_active:
+                # Walk-forward optimizer gets ALL outcomes; it splits into 4 folds internally
+                weight_info = await self._run_weight_optimizer(recommendations, all_outcomes, pipeline_source=source)
+        pipeline_info["weights"] = weight_info
+
+        # All-time stats
+        all_gains = [o.get("gain_pct", 0) for o in all_outcomes]
+        all_pnl = sum(o.get("pnl", 0) for o in all_outcomes)
+        all_wins = sum(1 for o in all_outcomes if o.get("correct", False))
+        if all_gains:
+            avg_g = sum(all_gains) / len(all_gains)
+            var_g = sum((r - avg_g) ** 2 for r in all_gains) / len(all_gains) if len(all_gains) > 1 else 1
+            std_g = math.sqrt(var_g) if var_g > 0 else 1
+            all_sharpe = avg_g / std_g if std_g > 0 else 0
+        else:
+            all_sharpe = 0
+        pipeline_info["all_time"] = {
+            "total_trades": len(all_outcomes),
+            "win_rate": round(all_wins / len(all_outcomes), 4) if all_outcomes else 0,
+            "sharpe": round(all_sharpe, 4),
+            "total_pnl": round(all_pnl, 2),
+        }
+
+        # Current config snapshot (post-pipeline values)
+        if self.signal_engine:
+            pipeline_info["current_config"] = {
+                "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
+                "entry_threshold": getattr(self.signal_engine, 'min_edge', 0.04),
+                "min_model_prob": getattr(self.signal_engine, 'min_model_probability', 0.58),
+                "momentum_weight": getattr(self.signal_engine, 'momentum_weight', -0.02),
+                "regime_weight": getattr(self.signal_engine, 'regime_weight', 0.03),
+                "flow_weight": getattr(self.signal_engine, 'flow_weight', 0.04),
+                "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', 0.04),
+                "student_t_df": getattr(self.signal_engine, 'student_t_df', 5),
+                "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.4),
+                "exit_edge_threshold": self._exit_edge_threshold,
+                "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
+            }
 
         # Compute config diff
         config_changes = {}
@@ -447,10 +594,9 @@ class AgentScheduler:
 
         # Send daily report
         if self.alert_manager:
-            outcomes = self.outcome_reviewer.load_all_outcomes()
             try:
                 await self.alert_manager.send_daily_report(
-                    outcomes, analysis, recommendations, config_changes)
+                    all_outcomes, analysis, recommendations, config_changes, pipeline_info)
             except Exception as e:
                 logger.error(f"Failed to send daily report: {e}")
 

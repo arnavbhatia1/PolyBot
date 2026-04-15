@@ -154,12 +154,7 @@ class CounterfactualTracker:
         }
 
         self._save(record)
-        if abs(delta_pnl) < 0.01:
-            verdict = "NEUTRAL"
-        elif hold_was_optimal:
-            verdict = "CORRECT"
-        else:
-            verdict = "SUBOPTIMAL"
+        verdict = "CORRECT" if hold_was_optimal else "SUBOPTIMAL"
         logger.info(
             f"COUNTERFACTUAL HOLD: {market_id} — hold was {verdict} | "
             f"hold PnL=${actual_pnl:+.2f} vs worst-moment scalp PnL=${hypo_pnl:+.2f} "
@@ -282,12 +277,7 @@ class CounterfactualTracker:
             resolved.append(record)
             to_remove.append(market_id)
 
-            if abs(delta_pnl) < 0.01:
-                verdict = "NEUTRAL"
-            elif scalp_was_optimal:
-                verdict = "CORRECT"
-            else:
-                verdict = "SUBOPTIMAL"
+            verdict = "CORRECT" if scalp_was_optimal else "SUBOPTIMAL"
             logger.info(
                 f"COUNTERFACTUAL: {market_id} resolved — scalp was {verdict} | "
                 f"scalp PnL=${ctx['scalp_pnl']:+.2f} vs hold PnL=${hypothetical_pnl:+.2f} "

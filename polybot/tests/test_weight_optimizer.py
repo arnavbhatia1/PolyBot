@@ -35,8 +35,28 @@ def test_record_score(optimizer, scores_path):
     assert "weights_v002" in json.loads(scores_path.read_text())
 
 def test_should_adopt(optimizer):
-    assert optimizer.should_adopt(1.2, 1.3) is True
-    assert optimizer.should_adopt(1.2, 1.21) is False
+    # Significant improvement with enough trades: adopt
+    adopt, reason = optimizer.should_adopt(0.20, 0.50, n_trades=200)
+    assert adopt is True
+    assert "z=" in reason
+
+    # Tiny improvement: reject (below floor)
+    adopt, reason = optimizer.should_adopt(0.20, 0.22, n_trades=200)
+    assert adopt is False
+
+    # Not enough trades: reject
+    adopt, reason = optimizer.should_adopt(0.20, 0.50, n_trades=50)
+    assert adopt is False
+    assert "need 100" in reason
+
+    # Negative candidate: reject
+    adopt, reason = optimizer.should_adopt(0.20, -0.10, n_trades=200)
+    assert adopt is False
+
+    # Walk-forward fold fails: reject
+    adopt, reason = optimizer.should_adopt(0.20, 0.50, n_trades=200, fold_sharpes=[0.40, 0.10, 0.50, 0.45])
+    assert adopt is False
+    assert "folds below baseline" in reason
 
 def test_get_next_version(optimizer):
     assert optimizer.get_next_version() == "weights_v002"

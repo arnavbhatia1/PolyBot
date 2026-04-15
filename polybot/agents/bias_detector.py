@@ -10,6 +10,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 INDICATOR_NAMES = ["rsi", "macd", "stochastic", "obv", "vwap"]
+REGIME_NAMES = ["trending_up", "trending_down", "reverting", "volatile", "quiet", "neutral"]
 
 
 def _get_gain_pct(o: dict[str, Any]) -> float:
@@ -23,6 +24,12 @@ def _get_gain_pct(o: dict[str, Any]) -> float:
     return 0.0
 
 
+def _get_regime(o: dict[str, Any]) -> str:
+    """Extract regime label from trade_context."""
+    ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
+    return ctx.get("regime", "neutral")
+
+
 class BiasDetector:
     def __init__(self, biases_path: str) -> None:
         self.biases_path: Path = Path(biases_path)
@@ -31,12 +38,14 @@ class BiasDetector:
         """Produce a rich multi-dimensional analysis of trade outcomes.
 
         Returns a dict with sections: per_indicator, side_analysis,
-        edge_calibration, time_patterns, volatility_patterns, overall.
+        edge_calibration, time_patterns, volatility_patterns, overall,
+        by_regime, edge_realization_quartiles, time_weighted.
         Gracefully handles outcomes that lack trade_context.
         """
         if len(outcomes) < min_samples:
             return {"per_indicator": {}, "side_analysis": {}, "edge_calibration": {},
-                    "time_patterns": {}, "volatility_patterns": {}, "overall": {}}
+                    "time_patterns": {}, "volatility_patterns": {}, "overall": {},
+                    "by_regime": {}, "edge_realization_quartiles": [], "time_weighted": {}}
 
         return {
             "per_indicator": self._analyze_indicators(outcomes, min_samples),
@@ -45,6 +54,9 @@ class BiasDetector:
             "time_patterns": self._analyze_time(outcomes),
             "volatility_patterns": self._analyze_volatility(outcomes),
             "overall": self._analyze_overall(outcomes),
+            "by_regime": self._analyze_by_regime(outcomes),
+            "edge_realization_quartiles": self._analyze_edge_realization(outcomes),
+            "time_weighted": self._analyze_time_weighted(outcomes),
         }
 
     def _analyze_indicators(self, outcomes: list[dict[str, Any]], min_samples: int) -> dict[str, Any]:
@@ -179,6 +191,81 @@ class BiasDetector:
             result[label] = {"win_rate": round(wins / len(trades), 4), "count": len(trades)}
         return result
 
+    def _analyze_by_regime(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Per-regime stats: win rate, avg edge, avg gain, trade count."""
+        buckets: dict[str, list] = defaultdict(list)
+        for o in outcomes:
+            regime = _get_regime(o)
+            # Collapse trending_up/trending_down into "trending" for reporting
+            if regime.startswith("trending"):
+                buckets["trending"].append(o)
+            elif regime in ("reverting", "volatile", "quiet"):
+                buckets[regime].append(o)
+            else:
+                buckets["neutral"].append(o)
+
+        result = {}
+        for regime, trades in buckets.items():
+            if len(trades) < 3:
+                continue
+            wins = sum(1 for t in trades if t.get("correct", False))
+            returns = [_get_gain_pct(t) for t in trades]
+            edges = [
+                t.get("indicator_snapshot", {}).get("trade_context", {}).get("edge", 0)
+                for t in trades
+            ]
+            edges = [e for e in edges if e > 0]
+            result[regime] = {
+                "n": len(trades),
+                "win_rate": round(wins / len(trades), 4),
+                "avg_edge": round(sum(edges) / len(edges), 4) if edges else 0,
+                "avg_gain_pct": round(sum(returns) / len(returns), 6),
+            }
+        return result
+
+    def _analyze_edge_realization(self, outcomes: list[dict[str, Any]]) -> list[float]:
+        """Edge realization ratio by quartile of predicted edge.
+
+        Returns [Q1_ratio, Q2_ratio, Q3_ratio, Q4_ratio] where ratio = realized/predicted.
+        If predicted edge is 8% but realized is 5.7%, ratio is 0.71.
+        """
+        pairs = []  # (predicted_edge, realized_gain_pct)
+        for o in outcomes:
+            ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
+            predicted = ctx.get("edge", 0)
+            if predicted > 0:
+                realized = _get_gain_pct(o)
+                pairs.append((predicted, realized))
+
+        if len(pairs) < 8:
+            return []
+
+        pairs.sort(key=lambda x: x[0])
+        q_size = len(pairs) // 4
+        quartiles = []
+        for qi in range(4):
+            start = qi * q_size
+            end = start + q_size if qi < 3 else len(pairs)
+            q_pairs = pairs[start:end]
+            avg_predicted = sum(p for p, _ in q_pairs) / len(q_pairs)
+            avg_realized = sum(r for _, r in q_pairs) / len(q_pairs)
+            ratio = avg_realized / avg_predicted if avg_predicted > 0 else 0
+            quartiles.append(round(ratio, 3))
+        return quartiles
+
+    def _analyze_time_weighted(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Time-weighted overall stats using exponential decay (14-day half-life)."""
+        try:
+            from polybot.agents.pipeline_analytics import compute_sample_weights, weighted_win_rate, weighted_sharpe
+        except ImportError:
+            return {}
+
+        weights = compute_sample_weights(outcomes, half_life_days=14.0)
+        return {
+            "win_rate": round(weighted_win_rate(outcomes, weights), 4),
+            "sharpe": round(weighted_sharpe(outcomes, weights), 4),
+        }
+
     def analyze_counterfactuals(self, counterfactuals: list[dict[str, Any]]) -> dict[str, Any]:
         """Analyze counterfactual outcomes for both scalps and holds.
 
@@ -200,7 +287,7 @@ class BiasDetector:
 
         result = {}
 
-        # --- Scalp analysis (existing logic) ---
+        # --- Scalp analysis ---
         if scalps:
             s_total = len(scalps)
             s_optimal = sum(1 for c in scalps if c.get("scalp_was_optimal", True))
@@ -247,7 +334,7 @@ class BiasDetector:
 
             result.update({
                 "total_scalps_tracked": s_total,
-                "scalp_accuracy": round(s_optimal / s_total, 4),
+                "scalp_accuracy": round(s_optimal / s_total, 4) if s_total > 0 else 0,
                 "optimal_scalps": s_optimal,
                 "suboptimal_scalps": s_suboptimal,
                 "avg_missed_pnl": round(avg_missed_pnl, 4),
@@ -259,15 +346,13 @@ class BiasDetector:
                 "time_accuracy": time_accuracy,
             })
 
-        # --- Hold analysis (new) ---
+        # --- Hold analysis ---
         if holds:
             h_total = len(holds)
             h_optimal = sum(1 for c in holds if c.get("hold_was_optimal", True))
             h_suboptimal = h_total - h_optimal
-
             h_suboptimal_records = [c for c in holds if not c.get("hold_was_optimal", True)]
 
-            # How much did suboptimal holds cost vs scalping at worst moment?
             hold_missed = [abs(c.get("delta_pnl", 0)) for c in h_suboptimal_records]
             avg_hold_cost = sum(hold_missed) / len(hold_missed) if hold_missed else 0
 
@@ -277,7 +362,7 @@ class BiasDetector:
 
             result.update({
                 "total_holds_tracked": h_total,
-                "hold_accuracy": round(h_optimal / h_total, 4),
+                "hold_accuracy": round(h_optimal / h_total, 4) if h_total > 0 else 0,
                 "optimal_holds": h_optimal,
                 "suboptimal_holds": h_suboptimal,
                 "avg_hold_cost_when_suboptimal": round(avg_hold_cost, 4),

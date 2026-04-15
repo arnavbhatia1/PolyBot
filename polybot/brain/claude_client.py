@@ -2,11 +2,58 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 import anthropic
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_json(text: str) -> dict[str, Any]:
+    """Extract JSON from Claude's response, handling fences, prose, and partial output."""
+    # Strip markdown fences (```json ... ``` or ``` ... ```)
+    fence = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Find the outermost { ... } in the text
+    start = text.find("{")
+    if start == -1:
+        raise json.JSONDecodeError("No JSON object found in response", text, 0)
+
+    # Walk forward tracking brace depth to find the matching close
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            escape = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start:i + 1])
+
+    # Braces didn't balance — try parsing from start anyway (truncated response)
+    raise json.JSONDecodeError("Unbalanced braces in JSON response", text, start)
 
 
 STRATEGY_SYSTEM_PROMPT = """\
@@ -122,10 +169,8 @@ class ClaudeClient:
             messages=[{"role": "user", "content": user_message}],
         )
         text = response.content[0].text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
-        data = json.loads(text)
+        data = _extract_json(text)
         current_weights = context.get("current_config", {}).get("weights", {})
         total_trades = context.get("analysis", {}).get("overall", {}).get("total_trades", 0)
         return _validate_strategy_response(data, current_weights, total_trades)
@@ -329,11 +374,57 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
             )
             sections.append("\n".join(lines))
 
-    # Recent trades (compact format)
+    # Regime breakdown (distilled — more useful than raw trades)
+    by_regime = analysis.get("by_regime", {})
+    if by_regime:
+        lines = ["## Performance by Regime"]
+        for regime, stats in by_regime.items():
+            lines.append(f"- **{regime}**: n={stats.get('n', 0)} WR={stats.get('win_rate', 0):.0%} "
+                        f"avg_edge={stats.get('avg_edge', 0):.1%} avg_gain={stats.get('avg_gain_pct', 0):.4f}")
+        sections.append("\n".join(lines))
+
+    # Edge realization quartiles (does larger predicted edge actually realize?)
+    er_q = analysis.get("edge_realization_quartiles", [])
+    if er_q:
+        labels = ["Q1 (lowest edge)", "Q2", "Q3", "Q4 (highest edge)"]
+        lines = ["## Edge Realization by Predicted Edge Quartile",
+                 "(ratio = realized_gain / predicted_edge — 1.0 = perfect calibration)"]
+        for label, ratio in zip(labels, er_q):
+            lines.append(f"- {label}: {ratio:.2f}")
+        sections.append("\n".join(lines))
+
+    # Time-weighted stats (recent trades matter more)
+    tw = analysis.get("time_weighted", {})
+    if tw:
+        sections.append(
+            f"## Time-Weighted Stats (14-day half-life)\n"
+            f"WR: {tw.get('win_rate', 0):.0%}  |  Sharpe: {tw.get('sharpe', 0):+.3f}"
+        )
+
+    # Distribution shift warnings
+    shifts = analysis.get("distribution_shifts", {})
+    if shifts:
+        lines = ["## Distribution Shift Detected (recent vs historical)"]
+        for feat, info in shifts.items():
+            lines.append(f"- **{feat}**: KS={info['statistic']:.3f} p={info['p_value']:.3f} "
+                        f"(mean {info.get('hist_mean', 0):.3f} -> {info.get('recent_mean', 0):.3f})")
+        sections.append("\n".join(lines))
+
+    # SPRT aggregate evidence
+    sprt_agg = analysis.get("sprt_aggregate", {})
+    if sprt_agg:
+        sections.append(
+            f"## SPRT Edge Evidence (last 50 trades)\n"
+            f"State: {sprt_agg.get('state', '?')}  |  "
+            f"ENTER pct: {sprt_agg.get('enter_pct', 0):.0%}  |  "
+            f"Avg confidence: {sprt_agg.get('avg_confidence', 0):.2f}"
+        )
+
+    # Recent trades — compact, last 25 only (analysis card above is the real signal)
     trades = context.get("trades", [])
     if trades:
-        lines = [f"## Recent Trades ({len(trades)} total)"]
-        for i, t in enumerate(trades[-75:], 1):
+        lines = [f"## Recent Trades (last 25 of {len(trades)} total)"]
+        for i, t in enumerate(trades[-25:], 1):
             ctx = t.get("indicator_snapshot", {}).get("trade_context", {})
             snap = t.get("indicator_snapshot", {})
             won = "WIN" if t.get("correct") else "LOSS"
@@ -343,23 +434,13 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
             lr = t.get("gain_pct", 0)
             prob = ctx.get("model_probability", t.get("signal_score", 0))
             edge = ctx.get("edge", 0)
-            btc = ctx.get("btc_price", 0)
-            strike = ctx.get("strike_price", 0)
             secs = ctx.get("seconds_remaining", 0)
-            atr = ctx.get("atr", snap.get("atr", {}).get("atr", 0))
-            rsi = snap.get("rsi", {}).get("score", 0)
-            macd_s = snap.get("macd", {}).get("score", 0)
-            stoch = snap.get("stochastic", {}).get("score", 0)
-            obv_s = snap.get("obv", {}).get("score", 0)
-            vwap_s = snap.get("vwap", {}).get("score", 0)
-
+            regime = ctx.get("regime", "?")
             flow = ctx.get("flow_score", 0)
             exit_reason = t.get("exit_reason", "resolution")
             lines.append(
                 f"#{i} {won} {side} ({exit_reason}) | {entry:.3f}->{exit_:.3f} ret={lr:+.4f} | "
-                f"prob={prob:.0%} edge={edge:+.0%} flow={flow:+.2f} | "
-                f"BTC={btc:,.0f} str={strike:,.0f} {secs:.0f}s atr={atr:.1f} | "
-                f"rsi={rsi:+.2f} macd={macd_s:+.2f} stoch={stoch:+.2f} obv={obv_s:+.2f} vwap={vwap_s:+.2f}"
+                f"prob={prob:.0%} edge={edge:+.0%} flow={flow:+.2f} {secs:.0f}s regime={regime}"
             )
         sections.append("\n".join(lines))
 
@@ -368,9 +449,16 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
     if prev:
         sections.append(f"## Previous Recommendations (recent cycles)\n{prev}")
 
+    # Pipeline track record — did past adoptions actually help?
+    track_record = context.get("analysis", {}).get("pipeline_track_record", "")
+    if track_record:
+        sections.append(track_record)
+
     sections.append(
         "## Your Task\n"
         "Analyze all the data above. Identify patterns, biases, and opportunities for improvement. "
+        "If the pipeline track record shows your past recommendations hurt performance, "
+        "explain what went wrong and adjust accordingly. "
         "Return your recommendations as JSON per the format in your instructions."
     )
 

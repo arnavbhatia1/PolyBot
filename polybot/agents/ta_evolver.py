@@ -49,11 +49,100 @@ class TAEvolver:
             except Exception as e:
                 logger.warning(f"Claude strategy analysis failed, falling back to local: {e}")
 
-        # Fallback: local weight adjustment
+        # Fallback: principled rule-based recommendations from bias report
         current_weights = current_config.get("weights", {})
         local_weights = self.recommend_weight_adjustments(outcomes, current_weights)
-        self._save_local_log(self.analyze(outcomes), local_weights)
-        return {"recommended_weights": local_weights}
+        recs = self._local_param_recommendations(analysis, current_config)
+        recs["recommended_weights"] = local_weights
+        self._save_local_log(self.analyze(outcomes), local_weights, recs)
+        return recs
+
+    def _local_param_recommendations(self, analysis: dict[str, Any],
+                                      current_config: dict[str, Any]) -> dict[str, Any]:
+        """Rule-based parameter recommendations when Claude is unavailable.
+
+        Guardrails:
+          - Max 2 parameter changes per run
+          - No param changes more than 15% of current value
+          - Changes derived from bias report statistics
+        """
+        findings = []
+        warnings = []
+        changes: dict[str, float] = {}
+
+        overall = analysis.get("overall", {})
+        wr = overall.get("win_rate", 0)
+        sharpe = overall.get("sharpe", 0)
+        n = overall.get("total_trades", 0)
+        avg_gain = overall.get("avg_gain_pct", 0)
+
+        # Time-weighted stats (recent performance)
+        tw = analysis.get("time_weighted", {})
+        tw_wr = tw.get("win_rate", wr)
+        tw_sharpe = tw.get("sharpe", sharpe)
+
+        # Edge realization
+        er_q = analysis.get("edge_realization_quartiles", [])
+        avg_realization = sum(er_q) / len(er_q) if er_q else 1.0
+
+        # --- Rule 1: Win rate declining → reduce kelly_fraction ---
+        cur_kelly = current_config.get("kelly_fraction", 0.15)
+        if n >= 30 and tw_wr < 0.50:
+            new_kelly = max(0.05, cur_kelly - 0.01)
+            if new_kelly != cur_kelly:
+                changes["recommended_kelly_fraction"] = new_kelly
+                findings.append(f"Time-weighted WR {tw_wr:.0%} < 50% — reducing kelly_fraction {cur_kelly} -> {new_kelly}")
+                warnings.append("Recent win rate declining")
+        elif n >= 30 and tw_wr > 0.58 and sharpe > 0.3:
+            new_kelly = min(0.25, cur_kelly + 0.01)
+            if new_kelly != cur_kelly:
+                changes["recommended_kelly_fraction"] = new_kelly
+                findings.append(f"Strong WR {tw_wr:.0%} + Sharpe {sharpe:.2f} — raising kelly_fraction {cur_kelly} -> {new_kelly}")
+
+        # --- Rule 2: Edge realization low → raise entry_threshold ---
+        cur_min_edge = current_config.get("min_edge", current_config.get("entry_threshold", 0.04))
+        if avg_realization < 0.65 and n >= 30:
+            new_edge = min(0.10, cur_min_edge + 0.005)
+            if new_edge != cur_min_edge and len(changes) < 2:
+                changes["recommended_min_edge"] = new_edge
+                findings.append(f"Edge realization {avg_realization:.0%} < 65% — raising entry_threshold {cur_min_edge} -> {new_edge}")
+        elif avg_realization > 0.90 and n >= 30:
+            new_edge = max(0.01, cur_min_edge - 0.005)
+            if new_edge != cur_min_edge and len(changes) < 2:
+                changes["recommended_min_edge"] = new_edge
+                findings.append(f"Edge realization {avg_realization:.0%} > 90% — lowering entry_threshold {cur_min_edge} -> {new_edge}")
+
+        # --- Rule 3: Flow trades outperforming → adjust flow_weight ---
+        by_regime = analysis.get("by_regime", {})
+        if len(changes) < 2:
+            trending = by_regime.get("trending", {})
+            reverting = by_regime.get("reverting", {})
+            if trending.get("n", 0) >= 20 and reverting.get("n", 0) >= 20:
+                t_wr = trending.get("win_rate", 0.5)
+                r_wr = reverting.get("win_rate", 0.5)
+                if t_wr - r_wr > 0.05:
+                    findings.append(f"Trending WR {t_wr:.0%} > reverting WR {r_wr:.0%} — consider flow_weight increase")
+                elif r_wr - t_wr > 0.05:
+                    findings.append(f"Reverting WR {r_wr:.0%} > trending WR {t_wr:.0%} — model benefits from mean reversion")
+
+        # Clamp all changes to 15% of current value
+        for key, new_val in list(changes.items()):
+            param_name = key.replace("recommended_", "")
+            cur_val = current_config.get(param_name, new_val)
+            if cur_val > 0 and abs(new_val - cur_val) / cur_val > 0.15:
+                clamped = cur_val * (1.15 if new_val > cur_val else 0.85)
+                changes[key] = round(clamped, 4)
+
+        # General findings
+        if n >= 30:
+            findings.append(f"Overall: {n} trades, WR {wr:.0%}, Sharpe {sharpe:+.3f}, avg gain {avg_gain:+.4f}")
+            if tw_wr != wr:
+                findings.append(f"Recent (14d-weighted): WR {tw_wr:.0%}, Sharpe {tw_sharpe:+.3f}")
+
+        recs: dict[str, Any] = {"key_findings": findings, "risk_warnings": warnings,
+                                 "reasoning": "Local rule-based fallback (Claude unavailable)"}
+        recs.update(changes)
+        return recs
 
     # --- Local fallback methods (sync, no API) ---
 
@@ -133,15 +222,26 @@ class TAEvolver:
         existing = self.strategy_log_path.read_text(encoding="utf-8") if self.strategy_log_path.exists() else "# Strategy Evolution Log\n"
         self.strategy_log_path.write_text(existing + entry, encoding="utf-8")
 
-    def _save_local_log(self, analysis: dict[str, Any], recommended_weights: dict[str, float]) -> None:
+    def _save_local_log(self, analysis: dict[str, Any], recommended_weights: dict[str, float],
+                        recs: dict[str, Any] | None = None) -> None:
         """Append local fallback analysis to strategy_log.md."""
         self.strategy_log_path.parent.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc).isoformat()
+        findings = recs.get("key_findings", []) if recs else []
+        warnings = recs.get("risk_warnings", []) if recs else []
+        findings_str = "\n".join(f"- {f}" for f in findings) if findings else "- None"
+        warnings_str = "\n".join(f"- {w}" for w in warnings) if warnings else "- None"
+        param_changes = {k: v for k, v in (recs or {}).items()
+                        if k.startswith("recommended_") and k != "recommended_weights"}
+        params_str = ", ".join(f"{k}={v}" for k, v in param_changes.items()) if param_changes else "none"
         entry = (
             f"\n## {now}\n\n"
             f"**Source:** Local fallback (Claude unavailable)\n\n"
             f"**Analysis:** {analysis}\n\n"
+            f"**Key Findings:**\n{findings_str}\n\n"
+            f"**Risk Warnings:**\n{warnings_str}\n\n"
             f"**Recommended Weights:** {recommended_weights}\n"
+            f"**Parameter Changes:** {params_str}\n"
         )
         existing = self.strategy_log_path.read_text(encoding="utf-8") if self.strategy_log_path.exists() else "# Strategy Evolution Log\n"
         self.strategy_log_path.write_text(existing + entry, encoding="utf-8")
