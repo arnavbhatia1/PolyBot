@@ -139,9 +139,17 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
   "recommended_trading_end_minute": XX,
   "key_findings": ["finding 1", "finding 2", ...],
   "risk_warnings": ["warning 1", ...],
-  "reasoning": "Detailed multi-paragraph analysis of what the data shows and why you recommend these changes...",
+  "reasoning": "2-3 sentence summary of your reasoning",
   "confidence": "high|medium|low"
-}"""
+}
+
+IMPORTANT: key_findings and risk_warnings are shown in Discord.
+- Each finding must be ONE short sentence (under 100 characters).
+- Write in plain language a trader would use, not statistical jargon.
+- Good: "Down trades winning 59% vs Up at 50% — lean into bearish signals"
+- Bad: "Down trades significantly outperform Up trades (55.8% vs 51.0% WR, higher avg_ret 0.1322 vs 0.0786) — VWAP bearish signal (61.0%) is most predictive directionally"
+- Max 5 findings and 3 warnings.
+- reasoning should be 2-3 sentences, not paragraphs."""
 
 
 class ClaudeClient:

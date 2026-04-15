@@ -6,21 +6,21 @@
 
 **Recommended Weights:** {'rsi': 0.1967, 'macd': 0.2514, 'stochastic': 0.2002, 'obv': 0.1505, 'vwap': 0.2011}
 
-## 2026-04-15T05:26:17.403148+00:00
+## 2026-04-15T05:36:20.580217+00:00
 
 **Source:** Claude (medium) | **Weights:** rsi=0.15, macd=0.30, stochastic=0.20, obv=0.10, vwap=0.25
-**Params:** momentum_weight=0.03, regime_weight=0.04, flow_weight=0.05, student_t_df=4, min_edge=0.04, min_kelly=0.015, atr_sigma_ratio=1.6, kelly_fraction=0.13, min_model_probability=0.58, exit_edge_threshold=-0.08, min_time_remaining=60, trading_start_hour_et=0, trading_end_hour_et=23, trading_end_minute=59
+**Params:** momentum_weight=0.03, regime_weight=0.05, flow_weight=0.06, student_t_df=4, min_edge=0.04, min_kelly=0.015, atr_sigma_ratio=1.7, kelly_fraction=0.13, min_model_probability=0.6, exit_edge_threshold=-0.06, min_time_remaining=30, trading_start_hour_et=0, trading_end_hour_et=23, trading_end_minute=59
 
 **Findings:**
-- ATR distribution shift is severe: mean dropped from 38.7 to 17.8 (KS=0.516, p=0.000) — system is now operating in a stru
-- Low ATR regime shows 39.0% win rate (n=100) vs mid/high ATR at 58-61% — the new low-ATR environment is the primary perfo
-- Down trades significantly outperform Up trades: 55.8% WR vs 51.0%, avg_ret 0.1322 vs 0.0786 — VWAP bearish signal (61.0%
-- Mean-reverting regime: 64% WR (n=22) — highest performing regime; volatile 56% WR (n=43); neutral weakest at 51% WR (n=2
-- Edge calibration is badly non-monotonic: Q1 ratio=1.47, Q2=0.47, Q3=1.08, Q4=0.30 — highest predicted edges are worst re
+- RSI accuracy is 50.2% — essentially coin flip, cutting its weight in half
+- VWAP bearish signal wins 61% — boosting VWAP weight to capture directional edge
+- Down trades win 55.8% vs Up at 51% — model should lean harder on bearish signals
+- Scalp accuracy 57.2% means we exit too early — tightening exit threshold to hold longer
+- Late entries (0-60s) win 73% — lowering min_time_remaining to catch more late-stage setups
 
 **Warnings:**
-- CRITICAL: ATR has halved — the atr_sigma_ratio of 1.6 calibrated for higher volatility may now produce probability estim
-- Low ATR win rate of 39.0% is below break-even — if current environment persists as low-ATR, the system will lose money s
-- Edge overestimation at high confidence (Q4 ratio=0.30) means the model is badly miscalibrated at the top quartile — high
+- Low ATR regime still showing 39% WR — system struggles in low-volatility conditions
+- Q4 edge calibration ratio=0.30 means highest-confidence trades badly underperform — overconfidence risk
+- ATR mean halved (38.7→17.8) — if low-vol persists, overall edge may remain structurally compressed
 
-**Reasoning:** The dominant theme in this analysis cycle is the severe ATR distribution shift — the mean ATR has dropped from 38.7 to 17.8, a 54% reduction, confirmed by KS statistic of 0.516 at p=0.000. This is not a gradual drift but a structural regime change in BTC volatility. This shift likely explains the 39.0% win rate in low-ATR conditions, which is the most concerning single data point in the report. The system was calibrated for a higher-volatility environment, and many of its parameters (particularl...
+**Reasoning:** RSI is near-random at 50.2% accuracy and is being cut to free up weight for VWAP, which shows clear directional edge especially on bearish signals (61%). Scalp accuracy of 57.2% is below the 60% threshold indicating we exit too early, so the exit threshold is tightened from -0.08 to -0.06 to hold positions longer. The persistent low-ATR environment continues to suppress win rates, so atr_sigma_ratio is nudged higher to 1.7 to generate more conservative probabilities in low-volatility conditions.
