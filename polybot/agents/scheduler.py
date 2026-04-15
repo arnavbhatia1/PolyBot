@@ -94,13 +94,28 @@ class AgentScheduler:
 
     def _backtest_recommendations(self, recommendations: dict[str, Any],
                                     outcomes: list[dict[str, Any]]) -> list[float]:
-        """Simulate trades with recommended weights. Returns list of gain_pcts."""
+        """Simulate trades with recommended weights + atr_sigma_ratio. Returns list of gain_pcts.
+
+        Re-derives the CDF probability when atr_sigma_ratio changes, because that
+        shifts the entire probability estimate (and therefore edge). Without this,
+        the optimizer can't test Claude's most impactful recommendation.
+        """
+        from scipy.stats import t as t_dist
+
         recommended_weights = recommendations.get("recommended_weights", {})
         rec_mw = recommendations.get("recommended_momentum_weight",
                     getattr(self.signal_engine, 'momentum_weight', 0.08))
         rec_me = recommendations.get("recommended_min_edge",
                     getattr(self.signal_engine, 'min_edge', 0.20))
         old_mw = getattr(self.signal_engine, 'momentum_weight', 0.08)
+
+        # atr_sigma_ratio simulation
+        rec_asr = recommendations.get("recommended_atr_sigma_ratio")
+        old_asr = getattr(self.signal_engine, 'atr_sigma_ratio', 1.4)
+        asr_changed = rec_asr is not None and rec_asr != old_asr
+        rec_df = recommendations.get("recommended_student_t_df",
+                    getattr(self.signal_engine, 'student_t_df', 5))
+        min_atr = getattr(self.signal_engine, 'min_atr', 8.0)
 
         candidate_returns = []
         for o in outcomes:
@@ -110,6 +125,7 @@ class AgentScheduler:
             ctx = snap.get("trade_context", {})
 
             if ctx.get("edge", 0) > 0:
+                # --- Momentum delta (indicator weights) ---
                 new_momentum = sum(
                     snap.get(ind, {}).get("norm_score", snap.get(ind, {}).get("score", 0)) * recommended_weights.get(ind, 0)
                     for ind in ["rsi", "macd", "stochastic", "obv", "vwap"]
@@ -118,7 +134,41 @@ class AgentScheduler:
                 original_edge = ctx.get("edge", 0)
                 old_momentum = ctx.get("momentum_score", 0)
                 momentum_delta = (new_momentum * rec_mw) - (old_momentum * old_mw)
-                estimated_new_edge = original_edge + momentum_delta
+
+                # --- atr_sigma_ratio delta (re-derive CDF probability) ---
+                asr_edge_delta = 0.0
+                if asr_changed:
+                    btc = ctx.get("btc_price", 0)
+                    strike = ctx.get("strike_price", 0)
+                    atr = max(ctx.get("atr", 0), min_atr)
+                    secs = ctx.get("seconds_remaining", 0)
+                    iv_ratio = ctx.get("iv_ratio", 1.0)
+                    market_price = ctx.get("market_price_up", 0) if o.get("side", "").lower() == "up" else ctx.get("market_price_down", 0)
+
+                    if btc > 0 and strike > 0 and secs > 0 and market_price > 0:
+                        distance = btc - strike
+                        minutes = secs / 60.0
+                        df = rec_df
+
+                        # Old probability (with old atr_sigma_ratio)
+                        old_vol = (atr / old_asr) * math.sqrt(minutes) * iv_ratio
+                        old_z = (distance / old_vol) * math.sqrt(df / (df - 2)) if old_vol > 0 else 0
+                        old_prob = t_dist.cdf(old_z, df)
+
+                        # New probability (with recommended atr_sigma_ratio)
+                        new_vol = (atr / rec_asr) * math.sqrt(minutes) * iv_ratio
+                        new_z = (distance / new_vol) * math.sqrt(df / (df - 2)) if new_vol > 0 else 0
+                        new_prob = t_dist.cdf(new_z, df)
+
+                        # The edge shift from the CDF change
+                        # For "up" side: edge = prob - market_price
+                        # For "down" side: edge = (1-prob) - market_price
+                        if o.get("side", "").lower() == "up":
+                            asr_edge_delta = (new_prob - old_prob)
+                        else:
+                            asr_edge_delta = (old_prob - new_prob)
+
+                estimated_new_edge = original_edge + momentum_delta + asr_edge_delta
                 if estimated_new_edge >= rec_me:
                     candidate_returns.append(o.get("gain_pct", 0))
             else:
