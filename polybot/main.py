@@ -1651,7 +1651,7 @@ def parse_args() -> argparse.Namespace:
 
 
 async def run_pipeline() -> None:
-    """Run the daily learning pipeline once and exit. No trading, no WebSockets, no Discord."""
+    """Run the daily learning pipeline once and exit. No trading, no WebSockets."""
     config = load_config()
     base_dir = Path(__file__).parent
 
@@ -1711,6 +1711,21 @@ async def run_pipeline() -> None:
     from polybot.agents.pipeline_tracker import PipelineTracker
     pipeline_tracker = PipelineTracker(path=base_dir / "memory" / "pipeline_history.json")
 
+    # Discord — connect briefly to send pipeline report
+    alert_manager = None
+    discord_bot = None
+    discord_token = None
+    try:
+        discord_token = get_secret("DISCORD_BOT_TOKEN")
+    except Exception:
+        logger.info("No DISCORD_BOT_TOKEN — pipeline report will be logged only")
+    if discord_token:
+        discord_bot = create_bot(db=None, trader=None, scanner=None, scheduler=None, config=config)
+        alert_manager = AlertManager(bot=discord_bot,
+            trade_channel_name=config["discord"]["trade_channel_name"],
+            control_channel_name=config["discord"]["control_channel_name"],
+            daily_channel_name=config["discord"].get("daily_channel_name", "polybot-daily"))
+
     agents_cfg = config["agents"]
     scheduler = AgentScheduler(
         outcome_reviewer=outcome_reviewer,
@@ -1719,6 +1734,7 @@ async def run_pipeline() -> None:
         weight_optimizer=weight_optimizer,
         indicator_engine=indicator_engine,
         signal_engine=signal_engine,
+        alert_manager=alert_manager,
         outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
         daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
         daily_pipeline_minute=agents_cfg.get("daily_pipeline_minute", 0),
@@ -1732,9 +1748,23 @@ async def run_pipeline() -> None:
     scheduler._trading_start = (sched_cfg.get("trading_start_hour_et", 0), sched_cfg.get("trading_start_minute", 15))
     scheduler._trading_end = (sched_cfg.get("trading_end_hour_et", 23), sched_cfg.get("trading_end_minute", 59))
 
-    logger.info("Running daily learning pipeline (manual trigger)...")
-    await scheduler.run_daily_pipeline()
-    logger.info("Pipeline complete.")
+    async def _run_with_discord():
+        if discord_bot and discord_token:
+            @discord_bot.event
+            async def on_ready():
+                logger.info(f"Discord connected as {discord_bot.user} — running pipeline")
+                try:
+                    await scheduler.run_daily_pipeline()
+                finally:
+                    logger.info("Pipeline complete.")
+                    await discord_bot.close()
+            await discord_bot.start(discord_token)
+        else:
+            logger.info("Running daily learning pipeline (manual trigger, no Discord)...")
+            await scheduler.run_daily_pipeline()
+            logger.info("Pipeline complete.")
+
+    await _run_with_discord()
 
 
 async def main() -> None:

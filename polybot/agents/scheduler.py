@@ -476,7 +476,7 @@ class AgentScheduler:
             regime_buckets: dict[str, tuple[list, list]] = {}
             for o in train_outcomes:
                 ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
-                regime = ctx.get("regime", "neutral")
+                regime = ctx.get("regime_state", "neutral")
                 if regime.startswith("trending"):
                     regime = "trending"
                 mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))

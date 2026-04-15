@@ -27,7 +27,7 @@ def _get_gain_pct(o: dict[str, Any]) -> float:
 def _get_regime(o: dict[str, Any]) -> str:
     """Extract regime label from trade_context."""
     ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
-    return ctx.get("regime", "neutral")
+    return ctx.get("regime_state", "neutral")
 
 
 class BiasDetector:
@@ -199,7 +199,7 @@ class BiasDetector:
             # Collapse trending_up/trending_down into "trending" for reporting
             if regime.startswith("trending"):
                 buckets["trending"].append(o)
-            elif regime in ("reverting", "volatile", "quiet"):
+            elif regime in ("reverting", "mean_reverting", "volatile", "quiet"):
                 buckets[regime].append(o)
             else:
                 buckets["neutral"].append(o)

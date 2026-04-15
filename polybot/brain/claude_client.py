@@ -435,7 +435,7 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
             prob = ctx.get("model_probability", t.get("signal_score", 0))
             edge = ctx.get("edge", 0)
             secs = ctx.get("seconds_remaining", 0)
-            regime = ctx.get("regime", "?")
+            regime = ctx.get("regime_state", "?")
             flow = ctx.get("flow_score", 0)
             exit_reason = t.get("exit_reason", "resolution")
             lines.append(
