@@ -1390,8 +1390,8 @@ async def _check_trading_schedule(
             await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses, day_fees)
         current_trading_day = today_str
         day_open_bankroll = await db.get_bankroll()
-        # Restore from DB in case of mid-day restart
-        day_wins, day_losses, day_fees = await db.get_day_stats(today_str)
+        # Restore from DB in case of mid-day restart (4-tuple: wins, losses, fees, pnl_sum)
+        day_wins, day_losses, day_fees, _ = await db.get_day_stats(today_str)
         if breaker:
             breaker.reset()
         if alert_manager:
@@ -1466,9 +1466,10 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         day_fees: float = 0.0
         logger.info("Fresh day start (scheduled restart)")
     else:
-        _db_wins, _db_losses, _db_fees = await db.get_day_stats(_today_et)
+        _db_wins, _db_losses, _db_fees, _db_pnl_sum = await db.get_day_stats(_today_et)
         current_trading_day = _today_et if (_db_wins + _db_losses) > 0 else None
-        day_open_bankroll = await db.get_bankroll()
+        _current_bankroll = await db.get_bankroll()
+        day_open_bankroll = _current_bankroll - _db_pnl_sum  # Reconstruct opening bankroll from today's net PnL
         day_wins = _db_wins
         day_losses = _db_losses
         day_fees = _db_fees

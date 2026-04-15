@@ -62,7 +62,7 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         from datetime import datetime, timezone, timedelta
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         pnl_24h = sum(
-            t.get("size", 0) / t["entry_price"] * t.get("exit_price", 0) - t.get("size", 0)
+            t.get("pnl") or (t.get("size", 0) / t["entry_price"] * t.get("exit_price", 0) - t.get("size", 0))
             for t in history
             if t.get("exit_timestamp", "") >= cutoff and t.get("entry_price", 0) > 0
         )
@@ -97,9 +97,9 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             entry = t["entry_price"]
             exit_p = t["exit_price"]
             size = t.get("size", 0)
-            # Approximate dollar PnL (pre-fee, but directionally correct)
+            # Use stored pnl (fee-accurate); fall back to pre-fee approximation for old rows
             if entry > 0 and size > 0:
-                dollar_pnl = (size / entry) * exit_p - size
+                dollar_pnl = t.get("pnl") or ((size / entry) * exit_p - size)
             else:
                 dollar_pnl = 0
             won = "W" if dollar_pnl >= 0 else "L"
@@ -154,9 +154,17 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         hold_hours = []
         for t in trades:
             entry_p = t["entry_price"]
-            pnl = t["size"] * (t["exit_price"] - entry_p) / entry_p if entry_p > 0 else 0
+            size = t.get("size", 0)
+            stored_pnl = t.get("pnl")
+            if stored_pnl is not None and stored_pnl != 0:
+                pnl = stored_pnl
+            elif entry_p > 0 and size > 0:
+                pnl = (size / entry_p) * t["exit_price"] - size  # pre-fee fallback for old rows
+            else:
+                pnl = 0
+            gain_pct_val = pnl / size if size > 0 else 0
             pnls.append(pnl)
-            gain_pcts.append((t["exit_price"] - entry_p) / entry_p if entry_p > 0 else 0)
+            gain_pcts.append(gain_pct_val)
             try:
                 entry_dt = dt.fromisoformat(t["entry_timestamp"])
                 exit_dt = dt.fromisoformat(t["exit_timestamp"])
@@ -172,7 +180,7 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         mean_r = sum(gain_pcts) / len(gain_pcts)
         var_r = sum((r - mean_r) ** 2 for r in gain_pcts) / len(gain_pcts) if total > 1 else 1
         std_r = math.sqrt(var_r) if var_r > 0 else 1
-        sharpe = (mean_r / std_r) * math.sqrt(288) if std_r > 0 else 0  # 288 five-min periods/day
+        sharpe = mean_r / std_r if std_r > 0 else 0  # per-trade unannualized (matches pipeline)
         await ctx.send(format_performance(sharpe, win_rate, total_pnl, avg_hold, total, best, worst))
 
     @bot.command(name="clear")

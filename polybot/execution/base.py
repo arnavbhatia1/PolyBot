@@ -238,7 +238,9 @@ class BaseTrader(ABC):
         gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
 
         # --- Persist to DB ---
-        await self.db.close_position(position_id, exit_price=fill.fill_price, log_return=lr)
+        total_fees = entry_fee_usd + fee_usdc
+        await self.db.close_position(position_id, exit_price=fill.fill_price, log_return=lr,
+                                     pnl=pnl, fees=total_fees)
         bankroll = await self.db.get_bankroll()
         await self.db.set_bankroll(bankroll + revenue)
 
@@ -276,7 +278,9 @@ class BaseTrader(ABC):
 
         # --- Compute log return and close in DB ---
         lr = log_return(position["entry_price"], exit_price)
-        await self.db.close_position(position_id, exit_price=exit_price, log_return=lr)
+        total_fees = entry_fee_usd + exit_fee_usd_val
+        await self.db.close_position(position_id, exit_price=exit_price, log_return=lr,
+                                     pnl=pnl, fees=total_fees)
 
         # --- Delegate bankroll computation to subclass ---
         new_bankroll = await self._resolve_bankroll(position, exit_price)

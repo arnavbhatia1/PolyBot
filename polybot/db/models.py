@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import aiosqlite
-from datetime import datetime, timezone
+
+_ET = ZoneInfo("America/New_York")
 
 class Database:
     def __init__(self, db_path: str) -> None:
@@ -66,13 +69,19 @@ class Database:
                 amount REAL NOT NULL
             );
         """)
-        # Migrate existing DBs: add fee_rate and shares_held columns if missing
+        # Migrate existing DBs: add missing columns to positions and trade_history
         cursor = await self.conn.execute("PRAGMA table_info(positions)")
         cols = {row[1] for row in await cursor.fetchall()}
         if "fee_rate" not in cols:
             await self.conn.execute("ALTER TABLE positions ADD COLUMN fee_rate REAL")
         if "shares_held" not in cols:
             await self.conn.execute("ALTER TABLE positions ADD COLUMN shares_held REAL")
+        cursor = await self.conn.execute("PRAGMA table_info(trade_history)")
+        th_cols = {row[1] for row in await cursor.fetchall()}
+        if "pnl" not in th_cols:
+            await self.conn.execute("ALTER TABLE trade_history ADD COLUMN pnl REAL DEFAULT 0")
+        if "fees" not in th_cols:
+            await self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0")
         await self.conn.commit()
 
     async def close(self) -> None:
@@ -134,7 +143,8 @@ class Database:
         )
         await self.conn.commit()
 
-    async def close_position(self, position_id: int, exit_price: float, log_return: float) -> None:
+    async def close_position(self, position_id: int, exit_price: float, log_return: float,
+                             pnl: float = 0.0, fees: float = 0.0) -> None:
         now = datetime.now(timezone.utc).isoformat()
         await self.conn.execute(
             "UPDATE positions SET status='closed', exit_price=?, exit_timestamp=?, log_return=? WHERE id=?",
@@ -148,12 +158,12 @@ class Database:
             """INSERT INTO trade_history
             (position_id, market_id, question, side, entry_price, exit_price, size,
              signal_score, signal_strength, ev_at_entry, log_return,
-             weight_version, entry_timestamp, exit_timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             weight_version, entry_timestamp, exit_timestamp, pnl, fees)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (pos["id"], pos["market_id"], pos["question"], pos["side"],
              pos["entry_price"], exit_price, pos["size"],
              pos["signal_score"], pos["signal_strength"], pos["ev_at_entry"],
-             log_return, pos["weight_version"], pos["entry_timestamp"], now),
+             log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees),
         )
         await self.conn.commit()
 
@@ -180,24 +190,43 @@ class Database:
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
-    async def get_day_stats(self, date_str: str) -> tuple[int, int, float]:
-        """Return (wins, losses, fees) for a given trading day from trade_history.
+    async def get_day_stats(self, date_str: str) -> tuple[int, int, float, float]:
+        """Return (wins, losses, fees, pnl_sum) for a given trading day (ET date string).
 
-        Matches on exit_timestamp starting with date_str (e.g. '2026-04-12').
+        Converts the ET date to a UTC range so trades timestamped in UTC are
+        correctly bucketed into the Eastern trading day.
         """
+        day_start_et = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=_ET)
+        day_end_et = day_start_et + timedelta(days=1)
+        utc_start = day_start_et.astimezone(timezone.utc).isoformat()
+        utc_end = day_end_et.astimezone(timezone.utc).isoformat()
+
         cursor = await self.conn.execute(
-            "SELECT exit_price, entry_price FROM trade_history "
-            "WHERE exit_timestamp LIKE ?",
-            (f"{date_str}%",),
+            "SELECT pnl, fees, exit_price, entry_price FROM trade_history "
+            "WHERE exit_timestamp >= ? AND exit_timestamp < ?",
+            (utc_start, utc_end),
         )
         rows = await cursor.fetchall()
         wins = losses = 0
+        total_fees = 0.0
+        total_pnl = 0.0
         for row in rows:
-            if row[0] > row[1]:
+            pnl_val = row[0]
+            fee_val = row[1] or 0.0
+            exit_p = row[2]
+            entry_p = row[3]
+            total_fees += fee_val
+            total_pnl += (pnl_val or 0.0)
+            # Use stored pnl when available; fall back to price comparison for old rows
+            if pnl_val is not None and pnl_val != 0:
+                win = pnl_val > 0
+            else:
+                win = exit_p > entry_p
+            if win:
                 wins += 1
             else:
                 losses += 1
-        return wins, losses, 0.0
+        return wins, losses, total_fees, total_pnl
 
     async def get_trade_stats(self) -> tuple[int, float]:
         """Return (total_trades, win_rate) for bankroll acceleration."""
