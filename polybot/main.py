@@ -602,7 +602,7 @@ async def _evaluate_signal_and_enter(
 
     # Phase-based probability override (final phase needs >90%)
     if entry_phase["min_prob_override"] and signal.prob < entry_phase["min_prob_override"]:
-        logger.info(f"SKIP: final phase prob {signal.prob:.0%} < {entry_phase['min_prob_override']:.0%}")
+        logger.debug(f"SKIP: final phase prob {signal.prob:.0%} < {entry_phase['min_prob_override']:.0%}")
         return None, last_eval_log_window
 
     # Concurrent windows: correlated position discount (ρ≈0.75 for adjacent BTC windows)
