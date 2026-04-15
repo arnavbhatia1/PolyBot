@@ -103,7 +103,7 @@ class CircuitBreaker:
             self.locked_tier = new_tier
             self.floor = round(new_tier * self.floor_pct, 2)
             logger.info(
-                f"CIRCUIT BREAKER: tier locked ${new_tier:,.0f} → floor ${self.floor:,.2f}"
+                f"CIRCUIT BREAKER: tier locked ${new_tier:,.0f} -> floor ${self.floor:,.2f}"
             )
 
         logger.debug(

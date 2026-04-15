@@ -1224,7 +1224,7 @@ async def _resolve_expired_position(
         meta = live["event_metadata"]
         up_won = meta["final_price"] >= meta["price_to_beat"]
         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
-        logger.info(f"RESOLVE via eventMetadata: priceToBeat={meta['price_to_beat']:,.2f} final={meta['final_price']:,.2f} → {'Up' if up_won else 'Down'}")
+        logger.info(f"RESOLVE via eventMetadata: priceToBeat={meta['price_to_beat']:,.2f} final={meta['final_price']:,.2f} -> {'Up' if up_won else 'Down'}")
     else:
         # Gamma hasn't resolved yet — wait for next tick (polls every 2s)
         now_ts = time.time()
@@ -1311,7 +1311,7 @@ async def _manage_orphaned_position(
         meta = direct["event_metadata"]
         up_won = meta["final_price"] >= meta["price_to_beat"]
         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
-        logger.info(f"RESOLVE orphan via eventMetadata: priceToBeat={meta['price_to_beat']:,.2f} final={meta['final_price']:,.2f} → {'Up' if up_won else 'Down'}")
+        logger.info(f"RESOLVE orphan via eventMetadata: priceToBeat={meta['price_to_beat']:,.2f} final={meta['final_price']:,.2f} -> {'Up' if up_won else 'Down'}")
     elif direct and direct.get("closed") and (direct["price_up"] >= 0.99 or direct["price_up"] <= 0.01):
         exit_price = direct["price_up"] if pos["side"] == "Up" else direct["price_down"]
     else:
