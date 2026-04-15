@@ -1,81 +1,87 @@
 {
   "per_indicator": {
     "rsi": {
-      "accuracy": 0.6,
-      "bullish_accuracy": 0.7273,
-      "bearish_accuracy": 0.5152,
-      "sample_size": 55
+      "accuracy": 0.5019,
+      "bullish_accuracy": 0.5276,
+      "bearish_accuracy": 0.4769,
+      "sample_size": 257
     },
     "macd": {
-      "accuracy": 0.7333,
-      "bullish_accuracy": 0.6923,
-      "bearish_accuracy": 0.7895,
-      "sample_size": 45
+      "accuracy": 0.5421,
+      "bullish_accuracy": 0.5408,
+      "bearish_accuracy": 0.5431,
+      "sample_size": 214
     },
     "stochastic": {
-      "accuracy": 0.6316,
-      "bullish_accuracy": 0.6923,
-      "bearish_accuracy": 0.5806,
-      "sample_size": 57
+      "accuracy": 0.5187,
+      "bullish_accuracy": 0.5373,
+      "bearish_accuracy": 0.5,
+      "sample_size": 268
+    },
+    "obv": {
+      "accuracy": 0.6667,
+      "bullish_accuracy": 0.5,
+      "bearish_accuracy": 1.0,
+      "sample_size": 3
     },
     "vwap": {
-      "accuracy": 0.6604,
-      "bullish_accuracy": 0.5,
-      "bearish_accuracy": 0.6735,
-      "sample_size": 53
+      "accuracy": 0.5311,
+      "bullish_accuracy": 0.4492,
+      "bearish_accuracy": 0.6098,
+      "sample_size": 241
     }
   },
   "side_analysis": {
     "up": {
-      "win_rate": 0.619,
-      "avg_gain_pct": 0.27763,
-      "count": 42
+      "win_rate": 0.5099,
+      "avg_gain_pct": 0.078642,
+      "count": 202
     },
     "down": {
-      "win_rate": 0.64,
-      "avg_gain_pct": 0.242865,
-      "count": 25
+      "win_rate": 0.5579,
+      "avg_gain_pct": 0.132235,
+      "count": 95
     }
   },
   "edge_calibration": {
     "10-20%": {
-      "win_rate": 0.6269,
-      "count": 67
+      "win_rate": 0.5253,
+      "count": 297
     }
   },
   "time_patterns": {
     "0-60s": {
-      "win_rate": 1.0,
-      "count": 1
+      "win_rate": 0.7333,
+      "count": 15
     },
     "60-180s": {
-      "win_rate": 0.5556,
-      "count": 9
+      "win_rate": 0.4737,
+      "count": 38
     },
     "180-300s": {
-      "win_rate": 0.6316,
-      "count": 57
+      "win_rate": 0.5205,
+      "count": 244
     }
   },
   "volatility_patterns": {
     "low_atr": {
-      "win_rate": 0.6522,
-      "count": 23
+      "win_rate": 0.39,
+      "count": 100
     },
     "mid_atr": {
-      "win_rate": 0.6364,
-      "count": 22
+      "win_rate": 0.58,
+      "count": 100
     },
     "high_atr": {
-      "win_rate": 0.5909,
-      "count": 22
+      "win_rate": 0.6082,
+      "count": 97
     }
   },
   "overall": {
-    "total_trades": 67,
-    "win_rate": 0.6269,
-    "avg_edge": 0.1282,
-    "avg_gain_pct": 0.264658,
-    "sharpe": 0.3804
+    "total_trades": 297,
+    "win_rate": 0.5253,
+    "avg_edge": 0.1328,
+    "avg_gain_pct": 0.095785,
+    "sharpe": 0.1777
   }
 }
