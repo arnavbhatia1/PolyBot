@@ -2008,7 +2008,7 @@ async def main() -> None:
     bybit_cfg = config.get("bybit", {})
     bybit_feed_inst = BybitFeed(
         ws_url=bybit_cfg.get("ws_url", "wss://stream.bybit.com/v5/public/linear"),
-        rest_url=bybit_cfg.get("rest_url", "https://api.bybit.com/v5/market/tickers"),
+        rest_url=bybit_cfg.get("rest_url", "https://api.bybit.com"),
     )
     deribit_cfg = config.get("deribit", {})
     deribit_feed = DeribitIVFeed(

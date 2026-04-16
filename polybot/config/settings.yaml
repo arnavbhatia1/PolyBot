@@ -157,7 +157,7 @@ kraken:
 
 bybit:
   ws_url: "wss://stream.bybit.com/v5/public/linear"
-  rest_url: "https://api.bybit.com/v5/market"
+  rest_url: "https://api.bybit.com"   # base only — endpoint path is appended in bybit_feed
   funding_poll_s: 300.0
 
 deribit:
