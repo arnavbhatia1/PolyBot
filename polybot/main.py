@@ -1935,8 +1935,15 @@ async def main() -> None:
     else:
         trader = PaperTrader(db=db, max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
-            max_concurrent_positions=exec_cfg["max_concurrent_positions"])
-        logger.info("PAPER MODE — simulated trading")
+            max_concurrent_positions=exec_cfg["max_concurrent_positions"],
+            paper_latency_mean_s=exec_cfg.get("paper_latency_mean_s", 1.5),
+            paper_latency_jitter_s=exec_cfg.get("paper_latency_jitter_s", 0.8),
+            paper_network_fail_rate=exec_cfg.get("paper_network_fail_rate", 0.02))
+        logger.info(
+            f"PAPER MODE — simulated trading with live-realistic fills "
+            f"(latency={exec_cfg.get('paper_latency_mean_s', 1.5)}±{exec_cfg.get('paper_latency_jitter_s', 0.8)}s, "
+            f"net_fail={exec_cfg.get('paper_network_fail_rate', 0.02):.0%})"
+        )
 
     # Circuit breaker (drawdown-based Kelly scaling)
     cb_cfg = config.get("circuit_breaker", {})

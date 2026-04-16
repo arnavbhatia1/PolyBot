@@ -17,7 +17,17 @@ async def db():
 
 @pytest_asyncio.fixture
 async def trader(db):
-    return PaperTrader(db=db, max_slippage=0.02, max_bankroll_deployed=0.80, max_concurrent_positions=5)
+    # Tests assert deterministic fill behavior — disable the realism randomness
+    # (latency + network fail sim) that only matters in live paper runs.
+    return PaperTrader(
+        db=db,
+        max_slippage=0.02,
+        max_bankroll_deployed=0.80,
+        max_concurrent_positions=5,
+        paper_latency_mean_s=0.0,
+        paper_latency_jitter_s=0.0,
+        paper_network_fail_rate=0.0,
+    )
 
 
 @pytest.mark.asyncio
