@@ -13,13 +13,13 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. Computes P(Up) via an 8
 - L3b: Spot CVD from Binance aggTrades (taker-gated, min 5 trades)
 - L3c: Wall pressure — DISABLED (wall_weight=0.00, gamed by HFT)
 - L3e: Liquidation pressure (Bybit OI drop + price direction)
-- L4: Indicator momentum (RSI/MACD/Stochastic/OBV/VWAP). `momentum_weight=-0.02` = NEGATIVE = FADE indicators for mean reversion. Range [-0.10, +0.10].
+- L4: Indicator momentum (RSI/MACD/Stochastic/OBV/VWAP). Base `momentum_weight=-0.02` (fade). **Regime-conditional at runtime**: trending (L2 autocorr > +0.15) flips sign and amplifies 1.5× to ride momentum; mean-reverting (autocorr < -0.15) amplifies fade 1.5×; inside the ±0.15 band dampens 0.5×. Effective weight clamped to [-0.10, +0.10].
 - L5: Previous window momentum carry (prev_margin / ATR)
 - Platt scaling calibration applied after all layers
 
-**Entry gates (all must pass):** prob >= 58%, edge >= 4% (+ 1.5% for flips), Kelly >= 0.015, spread <= 10%, depth >= $50, price_sum in [0.98, 1.02], edge <= 20%, last 30s: prob >= 90%
+**Entry gates (all must pass):** prob >= 58%, edge >= 4% (+ 1.5% for flips), Kelly >= 0.015, spread <= 10%, depth >= $50, price_sum in [0.98, 1.02], edge <= 20%, adverse_rate_30s <= 0.55 (post-fill reversal rate; informed-flow detector), last 30s: prob >= 90%
 
-**Sizing chain:** `bankroll × kelly × breaker × uncertainty_discount(floor=0.50) × time_mult × concurrent_discount(0.50x)`
+**Sizing chain:** `bankroll × kelly × breaker × uncertainty_discount(floor=0.50) × time_mult × concurrent_multiplier`. `concurrent_multiplier` is **correlation-aware**: same-side concurrents (ρ≈0.75) get 0.35×, opposite-side (ρ≈-0.25) get 0.90×, with 0.55×/0.70× in between. Replaces the flat 0.50× discount that under-sized variance on correlated concurrents.
 
 **Exit:** `evaluate_hold()` — same model for entry and exit. Scalp when `holding_edge <= fee_aware_threshold`. Trailing exit: entry < $0.50, peaked > $0.65, drops 15%+ from peak.
 
@@ -27,7 +27,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. Computes P(Up) via an 8
 
 **Circuit breaker:** Tiered floor — locks at `tier × 0.85` each time bankroll crosses $100/$150/$200/$300... Kelly scales 1.0→0.40 between tier and floor. Never resets down. `floor_pct` and `max_single_position_usd` are manual-only, not pipeline-tunable.
 
-**Execution:** FOK-only market orders. 3 retries with exponential backoff. Live mode: `signature_type=2` (GNOSIS_SAFE), `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER` (.env). Bybit REST (`api.bybit.com`) is geo-blocked for US IPs (403) — falls back to WebSocket only.
+**Execution:** FOK-only market orders. 3 retries with exponential backoff. Live mode: `signature_type=2` (GNOSIS_SAFE), `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER` (.env). Bybit REST (`api.bybit.com/v5/market/tickers`) is geo-blocked for US IPs — on first 401/403/451 the poll loop stops permanently; WS is the primary OI/funding source regardless.
 
 **Auto-restart:** `run_polybot.ps1` — starts 12:15 AM ET, pipeline at 12:05 AM, commits outcomes/DB/config to git, restarts.
 
@@ -100,7 +100,7 @@ Key values — all pipeline-tunable unless noted:
 - `signal.momentum_weight` **-0.02** (NEGATIVE = fade indicators. Range -0.10 to +0.10)
 - `signal.regime_weight` 0.03, `flow_weight` 0.04, `spot_flow_weight` 0.04
 - `signal.liquidation_weight` 0.03, `prev_margin_weight` 0.02, `wall_weight` 0.00
-- `signal.atr_sigma_ratio` 1.4, `student_t_df` 5, `min_atr` 8.0
+- `signal.atr_sigma_ratio` 1.4, `student_t_df` 5, `min_atr` 8.0 (**dynamic floor at runtime**: `max(min_atr, 0.3 × rolling_mean_atr_20)` — adapts to macro vol regime)
 - `signal.exit_edge_threshold` -0.05, `logit_scale` 4.0
 - `signal.weights` rsi/macd/stochastic/obv/vwap (sum to 1.0, each >= 0.05)
 - `execution.max_concurrent_positions` 2, `max_bankroll_deployed` 0.80
@@ -119,7 +119,7 @@ python -m polybot.main --run-pipeline  # Run pipeline once, no trading
 python -m pytest polybot/tests/        # Test suite
 ```
 
-**Live preflight:** `verify_auth()` checks `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER`. Syncs DB bankroll from real Polymarket balance on startup. Circuit breaker first tier is $100 — start with $100+.
+**Live preflight:** `verify_auth(min_allowance_usd)` checks `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER`, **USDC balance, and USDC allowance** to the CTF Exchange. Main.py passes `max_single_position_usd × max_concurrent_positions × 10` as the allowance floor — a revoked or exhausted allowance is caught here before the bot starts "placing" orders that would silently fail at the exchange level. Syncs DB bankroll from real Polymarket balance on startup. Circuit breaker first tier is $100 — start with $100+.
 
 ## Probability Model (condensed)
 
@@ -174,11 +174,11 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 **Pipeline stages:**
 1. `PipelineTracker` — fills 7d/30d actual Sharpe for past adoptions, feeds to Claude
 2. `BiasDetector` — trains on 60% set. Edge buckets: 4-8%, 8-12%, 12-20%, 20%+. Per-indicator accuracy, side/time/regime/volatility patterns, edge realization quartiles
-3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if log-loss improves
+3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if **Kelly-sized-Sharpe** on validation improves (≥20 validation trades must pass production gates under both old and new calibrator, else rejected). Log-loss retained in telemetry, not adoption. Gated this way so a flatter/smoother calibrator that would silently shrink edges below the Kelly gate (and kill realized Sharpe) can't be adopted just because it improves log-loss.
 4. Distribution shift (KS-test recent 50 vs historical)
 5. SPRT aggregate (modulates adoption threshold: negative→0.02, positive→0.05)
 6. `TAEvolver` — sends analysis card + last 25 trades to Claude. Returns structured JSON. Local fallback when Claude unavailable (max 2 params, 15% change cap)
-7. `WeightOptimizer` — walk-forward backtest, statistical adoption, hot-swaps weights + persists to settings.yaml
+7. `WeightOptimizer` — walk-forward backtest, statistical adoption, hot-swaps weights + persists to settings.yaml. Baseline and candidate both use the same Kelly-sized portfolio-return metric (`kelly_fraction × edge/(1-price) × gain_pct`) on the same folds — apples-to-apples. `_kelly_bankroll_returns` replays the full logit composition (L1 CDF, L2 regime×direction [approximated from `regime_state` + prev-margin sign], L3 flow with 0.35-logit cap, L3b spot-flow, L3c wall, L3e liq, L5 prev-margin, L4 indicator momentum, Platt). Backtest freezes on `self.signal_engine.calibrator` (the calibrator that was adopted or kept earlier in this same pipeline run), so calibration can't drift mid-backtest.
 
 **Key pipeline invariants:**
 - `momentum_weight` can be negative (-0.10 to +0.10). Negative = fade indicators (current: -0.02). Claude knows this.
@@ -191,7 +191,7 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 
 - **No trades:** BTC near strike = no edge. Correct behavior.
 - **Binance 451:** Using .com — must use .us
-- **Bybit REST 403:** Geo-blocked for US IPs. WS still works. REST polling stops after first 403.
+- **Bybit REST 403:** Geo-blocked for US IPs. WS still works. REST poll loop exits permanently on first 401/403/451.
 - **Wrong strike:** Derived from Chainlink oracle or Binance candle boundary from slug, not `int(now // 300) * 300`
 - **Startup config error:** `validate_config()` raises ValueError listing all violations
 - **Orphaned position:** Waits indefinitely for Gamma resolution. Discord alert after 1hr. By design.

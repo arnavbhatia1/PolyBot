@@ -17,7 +17,6 @@ execution:
   max_single_position_usd: 18.00  # Hard dollar ceiling — compound through volume, not bigger bets
   max_concurrent_positions: 2  # Allow hedged Up+Down positions
   max_book_fill_pct: 0.50     # Cap order to 50% of available ask depth (realistic fills)
-  concurrent_position_discount: 0.50  # Half-Kelly when concurrent
   slippage_impact_pct: 0.03   # 3% price impact at 100% depth consumption. Tune vs live fills.
   initial_bankroll: 100.0
   use_maker_orders: false       # FOK only — 60s maker timeout wastes 30% of window. Fee savings ($0.045) < timing cost.
@@ -74,6 +73,7 @@ indicators:
 signal:
   entry_threshold: 0.04  # Minimum edge (range: 0.01-0.10)
   max_edge: 0.20          # Safety net — Platt calibration is the real fix (range: 0.10-0.30)
+  adverse_selection_threshold: 0.55  # Skip entries if rolling 30s post-fill reversal rate exceeds this (informed-flow detection)
   exit_edge_threshold: -0.05  # Exit when holding edge drops (range: -0.25 to 0.0)
   min_model_probability: 0.58  # Lowered from 0.65 — near-ATM trades have highest crowd bias edge. SPRT still gates weak signals.
   momentum_weight: -0.02      # Layer 4 — NEGATIVE: fade indicators (5-min BTC mean reverts). r=-0.04 is the signal with sign inverted. Pipeline can tune [-0.10, +0.10].
@@ -81,7 +81,7 @@ signal:
   regime_lookback: 50         # 1-min returns for autocorrelation
   min_kelly: 0.015            # minimum Kelly fraction — noise floor
   atr_sigma_ratio: 1.4        # ATR/sigma scaling (range: 1.2-2.5)
-  min_atr: 8.0                # Floor prevents extreme z-scores in quiet markets
+  min_atr: 8.0                # Static lower bound on the dynamic ATR floor (runtime uses max(min_atr, 0.3 * rolling_mean_atr_20))
   flow_weight: 0.04           # Layer 3 — CLOB order flow (r=+0.105, only predictive signal layer)
   spot_flow_weight: 0.04      # Layer 3b — CVD + taker ratio
   wall_weight: 0.00           # Layer 3c — DISABLED (1000-level book gamed by HFT, flow cap limits impact)

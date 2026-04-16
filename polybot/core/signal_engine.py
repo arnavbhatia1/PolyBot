@@ -2,12 +2,25 @@ from __future__ import annotations
 
 import math
 import logging
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
 from scipy.stats import t as student_t
 
 from polybot.core.exit_boundary import ExitBoundary
+
+# Regime-conditional momentum: |autocorr| beyond this threshold is treated as a
+# real regime signal (trending or mean-reverting); inside the band is noise.
+_REGIME_MOMENTUM_THRESHOLD = 0.15
+_REGIME_MOMENTUM_AMPLIFY = 1.5
+_REGIME_MOMENTUM_DAMPEN = 0.5
+_MOMENTUM_WEIGHT_CLAMP = 0.10  # Matches CLAUDE.md "Don't make momentum_weight magnitude > 0.10"
+
+# Dynamic ATR floor: floor = max(static_min_atr, FRACTION × rolling_mean_atr)
+_ATR_HISTORY_SIZE = 20
+_ATR_FLOOR_FRACTION = 0.30
+_ATR_HISTORY_MIN_SAMPLES = 5
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +169,42 @@ class SignalEngine:
             "low_price_hold": 0.15,
         }
         self._exit_boundary = ExitBoundary(df=self.student_t_df)
+        self._atr_history: deque[float] = deque(maxlen=_ATR_HISTORY_SIZE)
+
+    def _record_atr(self, atr: float) -> None:
+        """Append non-zero ATR to the rolling window used for the dynamic floor."""
+        if atr > 0:
+            self._atr_history.append(float(atr))
+
+    def _effective_atr_floor(self) -> float:
+        """Dynamic floor: max(static min_atr, 0.3 × rolling_mean_atr).
+
+        Adapts to macro vol regime so a $8 static floor doesn't underclip during vol
+        spikes (rolling_mean $200 → floor lifts to $60) while still applying the static
+        floor during dead markets.
+        """
+        if len(self._atr_history) < _ATR_HISTORY_MIN_SAMPLES:
+            return self.min_atr
+        rolling_mean = sum(self._atr_history) / len(self._atr_history)
+        return max(self.min_atr, _ATR_FLOOR_FRACTION * rolling_mean)
+
+    def effective_momentum_weight(self, regime_autocorr: float) -> float:
+        """Regime-conditional momentum weight.
+
+        Trending (autocorr > threshold): flip sign (ride momentum) and amplify.
+        Mean-reverting (autocorr < -threshold): keep sign (fade) and amplify.
+        Unclear (|autocorr| ≤ threshold): dampen — L4 signal is weak without regime backing.
+
+        Clamped to ±_MOMENTUM_WEIGHT_CLAMP per the "don't exceed 0.10 magnitude" invariant.
+        """
+        base = self.momentum_weight
+        if regime_autocorr > _REGIME_MOMENTUM_THRESHOLD:
+            effective = abs(base) * _REGIME_MOMENTUM_AMPLIFY
+        elif regime_autocorr < -_REGIME_MOMENTUM_THRESHOLD:
+            effective = -abs(base) * _REGIME_MOMENTUM_AMPLIFY
+        else:
+            effective = base * _REGIME_MOMENTUM_DAMPEN
+        return max(-_MOMENTUM_WEIGHT_CLAMP, min(_MOMENTUM_WEIGHT_CLAMP, effective))
 
     @property
     def entry_threshold(self) -> float:
@@ -206,8 +255,11 @@ class SignalEngine:
         distance = btc_price - strike_price
         minutes_remaining = max(seconds_remaining / 60.0, 0.01)
 
-        # ATR floor: prevent extreme z-scores in quiet markets
-        atr_effective = max(atr, self.min_atr)
+        # Record ATR for dynamic-floor rolling window, then apply the floor. Floor adapts
+        # to macro vol regime instead of using a fixed $8 threshold (see _effective_atr_floor).
+        self._record_atr(atr)
+        atr_floor = self._effective_atr_floor()
+        atr_effective = max(atr, atr_floor)
 
         # Scale ATR to standard deviation. ATR from 1-min candles is the correct
         # 5-minute vol measure. Deribit 30-day IV is NOT used here — it's a regime
@@ -242,10 +294,13 @@ class SignalEngine:
         # logit_weight = prob_weight * logit_scale preserves behavior at p=0.5
         logit_regime_w = self.regime_weight * self.logit_scale
         logit_flow_w = self.flow_weight * self.logit_scale
-        logit_momentum_w = self.momentum_weight * self.logit_scale
 
         # Fix 1: Layer 2 — Regime: direction from recent return, not prob sign
         regime = self.compute_regime_factor(closes) if closes is not None else 0.0
+        # Regime-conditional momentum weight: flip sign in trending regime, amplify in
+        # mean-reverting, dampen when autocorr is noise. Base `momentum_weight` stays
+        # pipeline-tunable; this just makes L4 conditional on L2.
+        logit_momentum_w = self.effective_momentum_weight(regime) * self.logit_scale
         if closes is not None and len(closes) >= 2:
             last_return = float(closes[-1] - closes[-2]) / float(closes[-2])
             direction = 1.0 if last_return > 0 else (-1.0 if last_return < 0 else 0.0)

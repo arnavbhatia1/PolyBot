@@ -71,6 +71,11 @@ class IVState:
     updated_at: float = 0.0
     net_gex: float = 0.0
 
+    # Max age before IV is treated as stale and the ratio defaults to 1.0 (no scaling).
+    # Two poll intervals plus buffer — covers a single failed poll but flags a sustained
+    # outage as "use ATR-only vol" rather than silently feeding week-old IV into L1.
+    STALE_SECONDS: float = 180.0
+
     def get_iv_ratio(self, atr: float, btc_price: float,
                      iv_min: float = IV_RATIO_MIN,
                      iv_max: float = IV_RATIO_MAX) -> float:
@@ -79,19 +84,16 @@ class IVState:
         Converts ATR (1-minute) to annualized vol:
             annualized_vol = (atr / btc_price) * sqrt(525600)
 
-        Args:
-            atr: Average true range from 1-min candles.
-            btc_price: Current BTC price in USD.
-            iv_min: Floor for the ratio (from config).
-            iv_max: Cap for the ratio (from config).
-
-        Returns:
-            IV ratio clamped to [iv_min, iv_max]. Returns 1.0 if no IV data available
-            or if btc_price/atr are invalid.
+        Returns 1.0 (neutral — defer to ATR-only vol) when IV is missing, stale, or
+        inputs are invalid. Staleness matters because a failed ATM extraction leaves
+        ``btc_iv`` pinned at its last value; we must not silently feed an hour-old IV
+        into the L1 CDF.
         """
         if self.btc_iv is None:
             return 1.0
         if btc_price <= 0.0 or atr <= 0.0:
+            return 1.0
+        if self.updated_at > 0 and (time.time() - self.updated_at) > self.STALE_SECONDS:
             return 1.0
         historical_iv = (atr / btc_price) * math.sqrt(MINUTES_PER_YEAR)
         return compute_iv_ratio(self.btc_iv, historical_iv, iv_min, iv_max)

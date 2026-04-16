@@ -64,10 +64,30 @@ def _get_balance_usd(client: ClobClient) -> float:
     return int(result.get("balance", "0")) / 1e6
 
 
-def verify_auth() -> tuple[bool, str, float]:
+def _get_balance_and_allowance_usd(client: ClobClient) -> tuple[float, float]:
+    """Fetch (USDC_balance_usd, USDC_allowance_usd) from Polymarket.
+
+    Allowance is the amount the Gnosis Safe has approved to the CTF Exchange.
+    When it hits zero orders silently fail at the exchange level — surfacing this
+    at preflight prevents the bot from "placing" orders that never get filled.
+    """
+    result = client.get_balance_allowance(
+        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+    )
+    balance = int(result.get("balance", "0")) / 1e6
+    allowance = int(result.get("allowance", "0")) / 1e6
+    return balance, allowance
+
+
+def verify_auth(min_allowance_usd: float | None = None) -> tuple[bool, str, float]:
     """Verify Polymarket auth and return (ok, message, balance).
 
-    Used by verify_keys.py and main.py preflight check.
+    If ``min_allowance_usd`` is provided, auth fails when the Safe's USDC allowance
+    to the CTF Exchange is below it. Typical production threshold:
+    ``max_single_position_usd × max_concurrent_positions × safety_multiplier``.
+
+    Used by verify_keys.py (no threshold — informational) and main.py preflight
+    (threshold passed from config — hard gate).
     """
     try:
         client = _create_clob_client()
@@ -77,13 +97,24 @@ def verify_auth() -> tuple[bool, str, float]:
         return False, f"Auth failed — check POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER: {e}", 0.0
 
     try:
-        balance = _get_balance_usd(client)
+        balance, allowance = _get_balance_and_allowance_usd(client)
     except Exception as e:
-        return False, f"Authenticated but balance fetch failed: {e}", 0.0
+        return False, f"Authenticated but balance/allowance fetch failed: {e}", 0.0
 
-    msg = f"Authenticated OK, USDC balance: ${balance:,.2f}"
+    msg = f"Authenticated OK, USDC balance: ${balance:,.2f}, allowance: ${allowance:,.2f}"
     if balance < 1.0:
         msg += " — WARNING: low balance, deposit USDC on Polymarket before trading"
+
+    if min_allowance_usd is not None and allowance < min_allowance_usd:
+        funder = os.environ.get("POLYMARKET_FUNDER", "<safe>")
+        return False, (
+            f"USDC allowance ${allowance:,.2f} below required ${min_allowance_usd:,.2f} "
+            f"(balance=${balance:,.2f}). Safe {funder} needs to re-approve USDC to the "
+            f"CTF Exchange contract — orders will silently fail until this is fixed. "
+            f"Deposit/withdraw any amount on Polymarket UI to trigger the auto-approval, "
+            f"or call USDC.approve(CTF_EXCHANGE, max_uint) directly."
+        ), balance
+
     return True, msg, balance
 
 

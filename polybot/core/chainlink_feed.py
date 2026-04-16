@@ -60,18 +60,26 @@ class ChainlinkFeed:
         return self._boundary_prices.get(window_ts)
 
     def _check_boundary(self) -> None:
-        """If we just crossed a 5-min boundary, record the price as the strike."""
+        """If we crossed a 5-min boundary since the last capture, record the current
+        price as that boundary's strike.
+
+        The original implementation only captured within 5 s of the boundary, which
+        silently dropped strikes when Chainlink's next push arrived >5 s after the
+        boundary (common during quiet periods). We now capture on the *first* price
+        update after any new boundary is crossed — the first post-boundary Chainlink
+        print is the closest approximation of the resolution oracle's boundary value.
+        """
         if self._price <= 0:
             return
         now_ts = int(time.time())
         boundary_ts = (now_ts // 300) * 300
-        if boundary_ts != self._last_boundary_ts and now_ts - boundary_ts < 5:
-            # We're within 5 seconds of a new boundary — capture
+        if boundary_ts != self._last_boundary_ts:
             self._boundary_prices[boundary_ts] = self._price
             self._last_boundary_ts = boundary_ts
+            lag = now_ts - boundary_ts
             logger.info(
                 f"ChainlinkFeed: captured strike ${self._price:,.2f} "
-                f"at boundary {boundary_ts}"
+                f"at boundary {boundary_ts} (lag {lag}s)"
             )
             # Clean old boundaries (keep last 10 minutes)
             cutoff = now_ts - 600

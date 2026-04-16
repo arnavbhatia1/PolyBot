@@ -92,93 +92,214 @@ class AgentScheduler:
         recommendations = await self.ta_evolver.evolve(outcomes, analysis, current_config)
         return recommendations
 
-    def _backtest_recommendations(self, recommendations: dict[str, Any],
-                                    outcomes: list[dict[str, Any]]) -> list[float]:
-        """Simulate trades with recommended weights + atr_sigma_ratio. Returns list of gain_pcts.
+    def _kelly_bankroll_returns(
+        self,
+        outcomes: list[dict[str, Any]],
+        recommended_weights: dict[str, float],
+        momentum_weight: float,
+        atr_sigma_ratio: float,
+        student_t_df: int,
+        min_edge: float,
+        calibrator: Any,
+        kelly_fraction: float,
+        min_kelly: float,
+        min_prob: float,
+        regime_weight: float = 0.03,
+        flow_weight: float = 0.04,
+        spot_flow_weight: float = 0.04,
+        wall_weight: float = 0.00,
+        liquidation_weight: float = 0.03,
+        prev_margin_weight: float = 0.02,
+    ) -> list[float]:
+        """Simulate Kelly-sized portfolio returns for a given config + calibrator.
 
-        Re-derives the CDF probability when atr_sigma_ratio changes, because that
-        shifts the entire probability estimate (and therefore edge). Without this,
-        the optimizer can't test Claude's most impactful recommendation.
+        Replays the full 8-layer logit composition used in production (`signal_engine`):
+        L1 Student-t CDF, L2 regime×direction, L3 CLOB flow (with 0.35-logit cap),
+        L3b spot flow, L3c wall pressure (subtractive), L3e liquidation pressure,
+        L5 previous-window margin, L4 indicator momentum — then Platt calibration,
+        then side-specific edge, then production gates (edge/prob/Kelly), then
+        ``kelly_fraction * full_kelly * gain_pct`` as the trade's bankroll-weighted return.
+
+        L2's `direction` and autocorr aren't stored per trade; we approximate from
+        ``regime_state`` and ``prev_resolution_margin`` sign. This is a known fidelity
+        gap — the approximation applies symmetrically to baseline and candidate so
+        *relative* Sharpe comparisons remain valid.
         """
         from scipy.stats import t as t_dist
 
-        recommended_weights = recommendations.get("recommended_weights", {})
-        rec_mw = recommendations.get("recommended_momentum_weight",
-                    getattr(self.signal_engine, 'momentum_weight', 0.08))
-        rec_me = recommendations.get("recommended_min_edge",
-                    getattr(self.signal_engine, 'min_edge', 0.20))
-        old_mw = getattr(self.signal_engine, 'momentum_weight', 0.08)
+        min_atr = getattr(self.signal_engine, 'min_atr', 8.0) if self.signal_engine else 8.0
+        logit_scale = getattr(self.signal_engine, 'logit_scale', 4.0) if self.signal_engine else 4.0
+        max_flow_logit = 0.35  # same multicollinearity cap signal_engine uses
+        returns: list[float] = []
 
-        # atr_sigma_ratio simulation
-        rec_asr = recommendations.get("recommended_atr_sigma_ratio")
-        old_asr = getattr(self.signal_engine, 'atr_sigma_ratio', 1.4)
-        asr_changed = rec_asr is not None and rec_asr != old_asr
-        rec_df = recommendations.get("recommended_student_t_df",
-                    getattr(self.signal_engine, 'student_t_df', 5))
-        min_atr = getattr(self.signal_engine, 'min_atr', 8.0)
-
-        candidate_returns = []
         for o in outcomes:
             snap = o.get("indicator_snapshot", {})
             if not snap:
                 continue
             ctx = snap.get("trade_context", {})
 
-            if ctx.get("edge", 0) > 0:
-                # --- Momentum delta (indicator weights) ---
-                new_momentum = sum(
-                    snap.get(ind, {}).get("norm_score", snap.get(ind, {}).get("score", 0)) * recommended_weights.get(ind, 0)
-                    for ind in ["rsi", "macd", "stochastic", "obv", "vwap"]
-                )
-                new_momentum = max(-1.0, min(1.0, new_momentum))
-                original_edge = ctx.get("edge", 0)
-                old_momentum = ctx.get("momentum_score", 0)
-                momentum_delta = (new_momentum * rec_mw) - (old_momentum * old_mw)
+            stored_raw = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
+            if stored_raw <= 0 or stored_raw >= 1:
+                continue
 
-                # --- atr_sigma_ratio delta (re-derive CDF probability) ---
-                asr_edge_delta = 0.0
-                if asr_changed:
-                    btc = ctx.get("btc_price", 0)
-                    strike = ctx.get("strike_price", 0)
-                    atr = max(ctx.get("atr", 0), min_atr)
-                    secs = ctx.get("seconds_remaining", 0)
-                    iv_ratio = ctx.get("iv_ratio", 1.0)
-                    market_price = ctx.get("market_price_up", 0) if o.get("side", "").lower() == "up" else ctx.get("market_price_down", 0)
+            side = (o.get("side") or "").lower()
+            if side not in ("up", "down"):
+                continue
 
-                    if btc > 0 and strike > 0 and secs > 0 and market_price > 0:
-                        distance = btc - strike
-                        minutes = secs / 60.0
-                        df = rec_df
+            market_price_side = ctx.get("market_price_up", 0) if side == "up" else ctx.get("market_price_down", 0)
+            if market_price_side <= 0 or market_price_side >= 1:
+                continue
 
-                        # Old probability (with old atr_sigma_ratio)
-                        old_vol = (atr / old_asr) * math.sqrt(minutes) * iv_ratio
-                        old_z = (distance / old_vol) * math.sqrt(df / (df - 2)) if old_vol > 0 else 0
-                        old_prob = t_dist.cdf(old_z, df)
+            # L1 — re-derive raw prob_up from CDF; fall back to stored when incomplete.
+            btc = ctx.get("btc_price", 0)
+            strike = ctx.get("strike_price", 0)
+            atr_raw = ctx.get("atr", 0)
+            atr = max(atr_raw, min_atr)
+            secs = ctx.get("seconds_remaining", 0)
+            iv_ratio = ctx.get("iv_ratio", 1.0)
 
-                        # New probability (with recommended atr_sigma_ratio)
-                        new_vol = (atr / rec_asr) * math.sqrt(minutes) * iv_ratio
-                        new_z = (distance / new_vol) * math.sqrt(df / (df - 2)) if new_vol > 0 else 0
-                        new_prob = t_dist.cdf(new_z, df)
+            raw_prob_up = stored_raw
+            if btc > 0 and strike > 0 and secs > 0 and student_t_df > 2:
+                minutes = secs / 60.0
+                vol = (atr / atr_sigma_ratio) * math.sqrt(minutes) * iv_ratio
+                if vol > 0:
+                    z = ((btc - strike) / vol) * math.sqrt(student_t_df / (student_t_df - 2))
+                    raw_prob_up = float(t_dist.cdf(z, student_t_df))
+            raw_prob_up = max(1e-6, min(1 - 1e-6, raw_prob_up))
+            logit_p = math.log(raw_prob_up / (1.0 - raw_prob_up))
 
-                        # The edge shift from the CDF change
-                        # For "up" side: edge = prob - market_price
-                        # For "down" side: edge = (1-prob) - market_price
-                        if o.get("side", "").lower() == "up":
-                            asr_edge_delta = (new_prob - old_prob)
-                        else:
-                            asr_edge_delta = (old_prob - new_prob)
-
-                estimated_new_edge = original_edge + momentum_delta + asr_edge_delta
-                if estimated_new_edge >= rec_me:
-                    candidate_returns.append(o.get("gain_pct", 0))
+            # L2 — regime × direction (approximated from stored regime_state + prev-margin sign).
+            regime_str = (ctx.get("regime_state") or "").lower()
+            if regime_str.startswith("trending"):
+                regime_factor = 0.20
+            elif regime_str.startswith("mean"):
+                regime_factor = -0.20
             else:
-                new_score = sum(
-                    snap.get(ind, {}).get("norm_score", snap.get(ind, {}).get("score", 0)) * recommended_weights.get(ind, 0)
-                    for ind in ["rsi", "macd", "stochastic", "obv", "vwap"]
-                )
-                if abs(new_score) >= 0.10:
-                    candidate_returns.append(o.get("gain_pct", 0))
-        return candidate_returns
+                regime_factor = 0.0
+            prev_margin = ctx.get("prev_resolution_margin", 0.0)
+            direction = 1.0 if prev_margin > 0 else (-1.0 if prev_margin < 0 else 0.0)
+            logit_p += regime_factor * direction * (regime_weight * logit_scale)
+
+            # L3 — CLOB flow (with the production multicollinearity cap on the total flow adj).
+            logit_before_flow = logit_p
+            flow_signal = ctx.get("flow_score", 0.0)
+            logit_p += flow_signal * (flow_weight * logit_scale)
+            # L3b — spot flow
+            spot_flow = ctx.get("spot_flow_signal", 0.0)
+            logit_p += spot_flow * (spot_flow_weight * logit_scale)
+            # L3c — wall pressure is SUBTRACTED (positive wall = bearish for Up)
+            wall = ctx.get("wall_pressure", 0.0)
+            logit_p -= wall * (wall_weight * logit_scale)
+            flow_total = logit_p - logit_before_flow
+            if abs(flow_total) > max_flow_logit:
+                logit_p = logit_before_flow + max_flow_logit * (1.0 if flow_total > 0 else -1.0)
+
+            # L3e — liquidation pressure
+            liq = ctx.get("liquidation_pressure", 0.0)
+            if liq != 0.0:
+                logit_p += liq * (liquidation_weight * logit_scale)
+
+            # L5 — previous-window margin carry (tanh-normalized by ATR)
+            if prev_margin != 0.0 and atr_raw > 0:
+                normalized = prev_margin / max(atr_raw, 1.0)
+                logit_p += math.tanh(normalized) * (prev_margin_weight * logit_scale)
+
+            # L4 — indicator momentum (recomputed from stored norm_scores × candidate weights).
+            momentum_score = sum(
+                snap.get(ind, {}).get("norm_score", snap.get(ind, {}).get("score", 0)) * recommended_weights.get(ind, 0)
+                for ind in ("rsi", "macd", "stochastic", "obv", "vwap")
+            )
+            momentum_score = max(-1.0, min(1.0, momentum_score))
+            logit_p += momentum_score * momentum_weight * logit_scale
+
+            prob_up_adj = 1.0 / (1.0 + math.exp(-logit_p))
+            if calibrator is not None and hasattr(calibrator, "calibrate"):
+                calibrated_up = calibrator.calibrate(prob_up_adj)
+            else:
+                calibrated_up = prob_up_adj
+
+            if side == "up":
+                prob_side = calibrated_up
+            else:
+                prob_side = 1.0 - calibrated_up
+            edge = prob_side - market_price_side
+
+            if edge < min_edge:
+                continue
+            if prob_side < min_prob:
+                continue
+            full_kelly = edge / (1.0 - market_price_side)
+            kelly_frac = kelly_fraction * full_kelly
+            if kelly_frac < min_kelly:
+                continue
+
+            returns.append(kelly_frac * o.get("gain_pct", 0.0))
+
+        return returns
+
+    def _config_for_helper(self, recommendations: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Resolve config for `_kelly_bankroll_returns` — recommendation first, live engine fallback."""
+        rec = recommendations or {}
+        live_weights = self.indicator_engine.get_weights() if self.indicator_engine else {}
+        return {
+            "weights": rec.get("recommended_weights") or {
+                k: live_weights.get(k, 0.0) for k in ("rsi", "macd", "stochastic", "obv", "vwap")
+            },
+            "momentum_weight": rec.get("recommended_momentum_weight",
+                getattr(self.signal_engine, 'momentum_weight', -0.02)),
+            "atr_sigma_ratio": rec.get("recommended_atr_sigma_ratio",
+                getattr(self.signal_engine, 'atr_sigma_ratio', 1.4)),
+            "student_t_df": int(rec.get("recommended_student_t_df",
+                getattr(self.signal_engine, 'student_t_df', 5))),
+            "min_edge": rec.get("recommended_min_edge",
+                getattr(self.signal_engine, 'min_edge', 0.04)),
+            "regime_weight": rec.get("recommended_regime_weight",
+                getattr(self.signal_engine, 'regime_weight', 0.03)),
+            "flow_weight": rec.get("recommended_flow_weight",
+                getattr(self.signal_engine, 'flow_weight', 0.04)),
+            "spot_flow_weight": rec.get("recommended_spot_flow_weight",
+                getattr(self.signal_engine, 'spot_flow_weight', 0.04)),
+            "wall_weight": rec.get("recommended_wall_weight",
+                getattr(self.signal_engine, 'wall_weight', 0.0)),
+            "liquidation_weight": rec.get("recommended_liquidation_weight",
+                getattr(self.signal_engine, 'liquidation_weight', 0.03)),
+            "prev_margin_weight": rec.get("recommended_prev_margin_weight",
+                getattr(self.signal_engine, 'prev_margin_weight', 0.02)),
+        }
+
+    def _backtest_recommendations(self, recommendations: dict[str, Any],
+                                    outcomes: list[dict[str, Any]]) -> list[float]:
+        """Kelly-sized portfolio returns under candidate recommendations.
+
+        Uses the currently adopted calibrator (``self.signal_engine.calibrator``) — Platt is
+        frozen for the duration of a weight backtest, preventing calibration/weight
+        co-optimization oscillation. Sharpe of the returned list is candidate_sharpe for
+        adoption testing.
+        """
+        cfg = self._config_for_helper(recommendations)
+        calibrator = self.signal_engine.calibrator if self.signal_engine else None
+        kelly_fraction = getattr(self.signal_engine, 'kelly_fraction', 0.15) if self.signal_engine else 0.15
+        min_kelly = getattr(self.signal_engine, 'min_kelly', 0.015) if self.signal_engine else 0.015
+        min_prob = getattr(self.signal_engine, 'min_model_probability', 0.58) if self.signal_engine else 0.58
+
+        return self._kelly_bankroll_returns(
+            outcomes=outcomes,
+            recommended_weights=cfg["weights"],
+            momentum_weight=cfg["momentum_weight"],
+            atr_sigma_ratio=cfg["atr_sigma_ratio"],
+            student_t_df=cfg["student_t_df"],
+            min_edge=cfg["min_edge"],
+            calibrator=calibrator,
+            kelly_fraction=kelly_fraction,
+            min_kelly=min_kelly,
+            min_prob=min_prob,
+            regime_weight=cfg["regime_weight"],
+            flow_weight=cfg["flow_weight"],
+            spot_flow_weight=cfg["spot_flow_weight"],
+            wall_weight=cfg["wall_weight"],
+            liquidation_weight=cfg["liquidation_weight"],
+            prev_margin_weight=cfg["prev_margin_weight"],
+        )
 
     async def _run_weight_optimizer(self, recommendations: dict[str, Any],
                                     all_outcomes: list[dict[str, Any]] | None = None,
@@ -205,18 +326,8 @@ class AgentScheduler:
             info["reason"] = f"only {len(all_outcomes) if all_outcomes else 0} outcomes (need 10)"
             return info
 
-        # Score current weights on FULL dataset
         current_version = self.weight_optimizer.get_best_version()
-        current_outcomes = [o for o in all_outcomes if o.get("weight_version") == current_version]
-
-        current_sharpe = 0.0
-        if current_outcomes:
-            current_returns = [o.get("gain_pct", 0) for o in current_outcomes]
-            current_sharpe = _sharpe(current_returns)
-            win_rate = sum(1 for o in current_outcomes if o.get("correct", False)) / len(current_outcomes)
-            self.weight_optimizer.record_score(current_version, current_sharpe, len(current_outcomes), win_rate)
         info["old_version"] = current_version
-        info["old_sharpe"] = round(current_sharpe, 4)
 
         recommended_weights = recommendations.get("recommended_weights", {})
         if not recommended_weights:
@@ -224,10 +335,17 @@ class AgentScheduler:
             return info
 
         # --- Walk-forward validation ---
+        # Baseline and candidate are BOTH backtested on the same folds with the same
+        # Kelly-sized-Sharpe metric, so adoption can't be driven by a population mismatch
+        # (previous code compared candidate fold-Sharpe against a raw-gain_pct Sharpe of
+        # trades that happened to run under current_version — not apples-to-apples).
         n = len(all_outcomes)
         fold_boundaries = [0.60, 0.70, 0.80, 0.90, 1.0]
-        fold_sharpes = []
-        all_candidate_returns = []
+        fold_sharpes: list[float] = []
+        all_candidate_returns: list[float] = []
+        all_current_returns: list[float] = []
+
+        baseline_request: dict[str, Any] = {}  # empty -> helper uses current engine state
 
         for i in range(len(fold_boundaries) - 1):
             start_idx = int(n * fold_boundaries[i])
@@ -236,10 +354,21 @@ class AgentScheduler:
             if len(fold_test) < 3:
                 continue
             fold_returns = self._backtest_recommendations(recommendations, fold_test)
+            current_fold_returns = self._backtest_recommendations(baseline_request, fold_test)
+            all_current_returns.extend(current_fold_returns)
             if len(fold_returns) < 3:
                 continue
             fold_sharpes.append(_sharpe(fold_returns))
             all_candidate_returns.extend(fold_returns)
+
+        current_sharpe = _sharpe(all_current_returns) if all_current_returns else 0.0
+        current_win_rate = (sum(1 for r in all_current_returns if r > 0) / len(all_current_returns)
+                            if all_current_returns else 0.0)
+        if all_current_returns:
+            self.weight_optimizer.record_score(current_version, current_sharpe,
+                                               len(all_current_returns), current_win_rate)
+        info["old_sharpe"] = round(current_sharpe, 4)
+        info["n_baseline_trades"] = len(all_current_returns)
 
         if len(all_candidate_returns) < 10:
             info["reason"] = f"only {len(all_candidate_returns)} hypothetical trades across folds (need 10)"
@@ -463,9 +592,12 @@ class AgentScheduler:
                            f"accuracy={cf_info['accuracy']:.0%}")
         pipeline_info["counterfactual"] = cf_info
 
-        # Platt calibration fitting
+        # Platt calibration fitting. Adoption is gated on Kelly-sized-Sharpe of validation
+        # trades (matches production PnL dynamics), not log-loss. Log-loss kept for telemetry.
         platt_info: dict[str, Any] = {"decision": "skipped"}
+        from polybot.agents.weight_optimizer import _sharpe
         from polybot.core.calibrator import PlattCalibrator, compute_log_loss
+        MIN_PLATT_VALIDATION_TRADES = 20
         if len(train_outcomes) >= 200 and self.signal_engine:
             cal_probs = []
             cal_outcomes = []
@@ -489,20 +621,76 @@ class AgentScheduler:
                         if mp > 0:
                             val_probs.append(mp)
                             val_outs.append(1 if o.get("correct", False) else 0)
-                    if val_probs:
-                        old_loss = compute_log_loss(val_probs, val_outs)
-                        new_probs = [cal.calibrate(p) for p in val_probs]
-                        new_loss = compute_log_loss(new_probs, val_outs)
-                        platt_info = {"old_loss": round(old_loss, 4), "new_loss": round(new_loss, 4),
-                                      "a": round(cal.a, 4), "b": round(cal.b, 4)}
-                        if new_loss < old_loss:
-                            platt_info["decision"] = "adopted"
-                            cal.save()
-                            self.signal_engine.calibrator = cal
-                            logger.info(f"Platt calibration adopted: log-loss {old_loss:.4f} -> {new_loss:.4f}")
-                        else:
-                            platt_info["decision"] = "rejected"
-                            logger.info(f"Platt calibration rejected: {old_loss:.4f} -> {new_loss:.4f}")
+
+                    # Log-loss: telemetry only, no adoption power.
+                    old_loss = compute_log_loss(val_probs, val_outs) if val_probs else float("nan")
+                    new_loss = (compute_log_loss([cal.calibrate(p) for p in val_probs], val_outs)
+                                if val_probs else float("nan"))
+
+                    # Adoption gate: Kelly-sized-Sharpe on validation under current weights.
+                    # Only the calibrator changes between old and new runs -> any Sharpe delta
+                    # is attributable to calibration, not weight/asr/df drift.
+                    cfg = self._config_for_helper()
+                    kelly_fraction = getattr(self.signal_engine, 'kelly_fraction', 0.15)
+                    min_kelly = getattr(self.signal_engine, 'min_kelly', 0.015)
+                    min_prob = getattr(self.signal_engine, 'min_model_probability', 0.58)
+                    helper_kwargs = dict(
+                        outcomes=validation_outcomes,
+                        recommended_weights=cfg["weights"],
+                        momentum_weight=cfg["momentum_weight"],
+                        atr_sigma_ratio=cfg["atr_sigma_ratio"],
+                        student_t_df=cfg["student_t_df"],
+                        min_edge=cfg["min_edge"],
+                        kelly_fraction=kelly_fraction,
+                        min_kelly=min_kelly,
+                        min_prob=min_prob,
+                        regime_weight=cfg["regime_weight"],
+                        flow_weight=cfg["flow_weight"],
+                        spot_flow_weight=cfg["spot_flow_weight"],
+                        wall_weight=cfg["wall_weight"],
+                        liquidation_weight=cfg["liquidation_weight"],
+                        prev_margin_weight=cfg["prev_margin_weight"],
+                    )
+                    old_returns = self._kelly_bankroll_returns(calibrator=self.signal_engine.calibrator, **helper_kwargs)
+                    new_returns = self._kelly_bankroll_returns(calibrator=cal, **helper_kwargs)
+                    old_kelly_sharpe = _sharpe(old_returns)
+                    new_kelly_sharpe = _sharpe(new_returns)
+
+                    platt_info = {
+                        "old_loss": round(old_loss, 4) if val_probs else None,
+                        "new_loss": round(new_loss, 4) if val_probs else None,
+                        "old_kelly_sharpe": round(old_kelly_sharpe, 4),
+                        "new_kelly_sharpe": round(new_kelly_sharpe, 4),
+                        "n_val_trades_old": len(old_returns),
+                        "n_val_trades_new": len(new_returns),
+                        "a": round(cal.a, 4),
+                        "b": round(cal.b, 4),
+                    }
+
+                    insufficient = (len(old_returns) < MIN_PLATT_VALIDATION_TRADES
+                                    or len(new_returns) < MIN_PLATT_VALIDATION_TRADES)
+                    if insufficient:
+                        platt_info["decision"] = "rejected"
+                        platt_info["reason"] = (f"validation trades below {MIN_PLATT_VALIDATION_TRADES} "
+                                                f"(old={len(old_returns)}, new={len(new_returns)})")
+                        logger.info(
+                            f"Platt calibration rejected: insufficient validation trades "
+                            f"(old={len(old_returns)}, new={len(new_returns)})"
+                        )
+                    elif new_kelly_sharpe > old_kelly_sharpe:
+                        platt_info["decision"] = "adopted"
+                        cal.save()
+                        self.signal_engine.calibrator = cal
+                        logger.info(
+                            f"Platt calibration adopted: kelly_sharpe {old_kelly_sharpe:.4f} -> "
+                            f"{new_kelly_sharpe:.4f} (log-loss {old_loss:.4f} -> {new_loss:.4f})"
+                        )
+                    else:
+                        platt_info["decision"] = "rejected"
+                        logger.info(
+                            f"Platt calibration rejected: kelly_sharpe {old_kelly_sharpe:.4f} -> "
+                            f"{new_kelly_sharpe:.4f} (log-loss {old_loss:.4f} -> {new_loss:.4f})"
+                        )
         pipeline_info["platt"] = platt_info
 
         # Distribution shift detection (recent 50 vs historical)
@@ -521,29 +709,9 @@ class AgentScheduler:
         analysis["sprt_aggregate"] = sprt_agg
         pipeline_info["sprt"] = sprt_agg
 
-        # Per-regime Platt calibration (when enough per-regime data)
-        if len(train_outcomes) >= 200 and self.signal_engine:
-            regime_buckets: dict[str, tuple[list, list]] = {}
-            for o in train_outcomes:
-                ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
-                regime = ctx.get("regime_state", "neutral")
-                if regime.startswith("trending"):
-                    regime = "trending"
-                mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
-                if mp > 0:
-                    if regime not in regime_buckets:
-                        regime_buckets[regime] = ([], [])
-                    regime_buckets[regime][0].append(mp)
-                    regime_buckets[regime][1].append(1 if o.get("correct", False) else 0)
-            regime_cal_info = {}
-            for regime, (probs, outs) in regime_buckets.items():
-                if len(probs) >= 200:
-                    regime_cal_info[regime] = {"samples": len(probs), "status": "sufficient"}
-                else:
-                    regime_cal_info[regime] = {"samples": len(probs), "status": "insufficient"}
-            if regime_cal_info:
-                analysis["regime_calibration_data"] = regime_cal_info
-                logger.info(f"Per-regime calibration data: {', '.join(f'{r}={v['samples']}' for r, v in regime_cal_info.items())}")
+        # (per-regime Platt stub removed — it only counted samples without fitting or
+        # adopting anything. If we re-introduce regime-conditional calibration it should
+        # use the same Kelly-sized-Sharpe adoption gate as the main Platt block above.)
 
         # Gate: need at least 200 trades before running TAEvolver and WeightOptimizer.
         MIN_TRADES_FOR_LEARNING = 200

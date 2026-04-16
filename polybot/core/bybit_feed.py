@@ -24,8 +24,11 @@ logger = logging.getLogger(__name__)
 
 # Bybit public linear perpetual WebSocket
 WS_URL = "wss://stream.bybit.com/v5/public/linear"
-REST_URL = "https://api.bybit.com/v5/market/tickers"
+REST_URL = "https://api.bybit.com"  # base; endpoints are appended by the caller
 FUNDING_POLL_INTERVAL = 300  # seconds — REST backup for funding rate
+# Bybit geo-blocks US IPs on REST (HTTP 403). After we see this once we stop polling
+# to avoid burning CPU and log-spamming — WS remains the primary source.
+_REST_STOP_STATUSES = frozenset({401, 403, 451})
 RECONNECT_BASE = 1
 RECONNECT_MAX = 30
 
@@ -224,12 +227,18 @@ class BybitFeed:
                 pass
 
     async def _poll_funding(self) -> None:
-        """REST backup: poll funding rate every FUNDING_POLL_INTERVAL seconds."""
+        """REST backup: poll funding rate every FUNDING_POLL_INTERVAL seconds.
+
+        Stops permanently on the first geo-block / auth response (403/401/451) so we
+        don't burn CPU and flood logs retrying a blocked endpoint — WS carries the
+        primary stream regardless.
+        """
+        endpoint = f"{self.rest_url}/v5/market/tickers"
         while self._running:
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
                     resp = await client.get(
-                        f"{self.rest_url}/tickers",
+                        endpoint,
                         params={"category": "linear", "symbol": "BTCUSDT"},
                     )
                     resp.raise_for_status()
@@ -257,6 +266,14 @@ class BybitFeed:
                         )
             except asyncio.CancelledError:
                 break
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in _REST_STOP_STATUSES:
+                    logger.warning(
+                        f"Bybit REST blocked (HTTP {e.response.status_code}) — "
+                        f"disabling REST poll, WS remains primary"
+                    )
+                    return
+                logger.warning(f"Bybit REST funding poll HTTP {e.response.status_code}: {e}")
             except Exception as e:
                 logger.warning(f"Bybit REST funding poll failed: {e}")
 

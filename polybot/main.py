@@ -31,6 +31,7 @@ from polybot.agents.counterfactual_tracker import CounterfactualTracker
 from polybot.discord_bot.bot import create_bot
 from polybot.discord_bot.alerts import AlertManager
 from polybot.execution.circuit_breaker import CircuitBreaker
+from polybot.execution.correlation import concurrent_multiplier
 import math
 from polybot.core.binance_depth import BinanceDepthFeed
 from polybot.core.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
@@ -284,6 +285,25 @@ async def _get_contract_prices(market_scanner: Any, market_id: str, http_client:
     return None
 
 
+def _get_token_midprice(clob_ws: Any):
+    """Return a callable ``token_id -> midprice`` for AdverseSelectionMonitor.
+
+    Mid is ``(best_bid + best_ask) / 2`` from CLOB WS; returns 0.0 when we have no
+    fresh book for that token, which the caller treats as "skip this checkpoint."
+    """
+    def _mid(token_id: str) -> float:
+        bba = clob_ws.best_bid_ask.get(token_id, {}) if clob_ws else {}
+        try:
+            bid = float(bba.get("best_bid", 0))
+            ask = float(bba.get("best_ask", 0))
+        except (TypeError, ValueError):
+            return 0.0
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2.0
+        return 0.0
+    return _mid
+
+
 def _btc_at_expiry(binance_feed: Any, market_id: str) -> float:
     """Get BTC price at contract expiry from candle buffer.
 
@@ -491,6 +511,20 @@ async def _evaluate_signal_and_enter(
     # SPRT: logged for telemetry, not gating entries.
     # The observe phase (60s) + phase multipliers (late=0.7x, final=0.5x) handle cautiousness.
 
+    # --- ADVERSE SELECTION GATE: bail when fills are consistently fading post-entry ---
+    # adverse_rate > 0.55 over the 30s window means the last ~10+ fills were followed by
+    # price moving against us, suggesting someone better-informed is picking us off.
+    # Uses a fresh-enough rate (needs >=10 resolved fills to exit the neutral 0.5 default).
+    if _adverse_monitor is not None:
+        adverse_threshold = config.get("signal", {}).get("adverse_selection_threshold", 0.55)
+        adverse_rate = _adverse_monitor.get_adverse_rate(30.0)
+        if adverse_rate > adverse_threshold:
+            logger.info(
+                f"SKIP: adverse selection rate {adverse_rate:.0%} > {adverse_threshold:.0%} "
+                f"(recent fills fading post-entry)"
+            )
+            return None, last_eval_log_window
+
     # --- EDGE CAP GATE: large edge = model miscalibration, not real alpha ---
     max_edge = config.get("signal", {}).get("max_edge", 0.20)
     if signal.edge > max_edge:
@@ -605,12 +639,16 @@ async def _evaluate_signal_and_enter(
         logger.debug(f"SKIP: final phase prob {signal.prob:.0%} < {entry_phase['min_prob_override']:.0%}")
         return None, last_eval_log_window
 
-    # Concurrent windows: correlated position discount (ρ≈0.75 for adjacent BTC windows)
-    # Portfolio Kelly with correlation: ~0.35 per position, not naive 0.50
+    # Concurrent windows: correlation-aware sizing. Same-side concurrents are ~0.75
+    # correlated (variance ~= full-Kelly even at 0.5x sizing), so they get deeper
+    # discount than opposite-side concurrents which are naturally hedged. Only
+    # status='open' positions contribute — 'pending_resolution' are frozen (outcome
+    # decided, waiting for Gamma) and carry no forward variance.
     open_positions = await db.get_open_positions()
-    if len(open_positions) > 0:
-        concurrent_discount = config.get("execution", {}).get("concurrent_position_discount", 0.45)
-        size = round(size * concurrent_discount, 2)
+    active_positions = [p for p in open_positions if p.get("status") == "open"]
+    if active_positions:
+        cc_mult = concurrent_multiplier(side, cid, active_positions)
+        size = round(size * cc_mult, 2)
 
     if size > bankroll * max_bankroll_pct:
         size = round(bankroll * max_bankroll_pct, 2)
@@ -1494,6 +1532,10 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     t.cancel()
                 if clob_ws.book_updated.is_set():
                     clob_ws.book_updated.clear()
+                    # Resolve pending adverse-selection checkpoints against the fresh book
+                    # so the adverse-rate gate has actual data to act on.
+                    if _adverse_monitor is not None:
+                        _adverse_monitor.update_prices(_get_token_midprice(clob_ws))
                 if clob_ws.market_resolved.is_set():
                     clob_ws.market_resolved.clear()
                     # Invalidate price cache — Gamma should have resolution data now
@@ -1851,7 +1893,12 @@ async def main() -> None:
     # Execution — route based on mode
     exec_cfg = config["execution"]
     if mode == "live":
-        ok, msg, live_balance = verify_auth()
+        # Allowance floor: cover at least 10 rounds of max-sized concurrent positions so a
+        # revoked or run-down allowance is caught before it silently kills order fills.
+        _max_single = exec_cfg.get("max_single_position_usd", 18.0)
+        _max_concurrent = exec_cfg.get("max_concurrent_positions", 2)
+        _min_allowance = _max_single * _max_concurrent * 10.0
+        ok, msg, live_balance = verify_auth(min_allowance_usd=_min_allowance)
         if not ok:
             logger.error(f"LIVE MODE preflight failed: {msg}")
             return

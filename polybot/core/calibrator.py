@@ -38,7 +38,9 @@ class PlattCalibrator:
 
     @property
     def is_identity(self) -> bool:
-        return self.a == -1.0 and self.b == 0.0
+        # Tolerant check — L-BFGS-B can converge to -0.9999999 etc. which is still
+        # effectively identity but would fail strict float equality.
+        return abs(self.a - (-1.0)) < 1e-4 and abs(self.b) < 1e-4
 
     def calibrate(self, raw_prob: float) -> float:
         """Apply Platt scaling. With defaults (a=-1, b=0), returns raw_prob unchanged."""

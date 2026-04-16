@@ -71,6 +71,17 @@ class BTCMarketScanner:
         price_up = price_down = 0.0
         token_id_up = token_id_down = ""
 
+        # Gamma should always return 2 prices and 2 token IDs for binary markets. If
+        # fewer come back the market is malformed — log once so it doesn't look like
+        # "no edge" in the entry evaluator.
+        if len(prices_raw) < len(outcomes) or len(clob_tokens_raw) < len(outcomes):
+            slug = market.get("slug") or event.get("slug") or "<unknown>"
+            logger.warning(
+                f"Gamma market '{slug}' has fewer prices/tokens than outcomes "
+                f"(outcomes={len(outcomes)}, prices={len(prices_raw)}, "
+                f"tokens={len(clob_tokens_raw)}) — trading disabled for this contract"
+            )
+
         for i, outcome in enumerate(outcomes):
             price = float(prices_raw[i]) if i < len(prices_raw) else 0.0
             token_id = clob_tokens_raw[i] if i < len(clob_tokens_raw) else ""
