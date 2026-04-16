@@ -65,18 +65,23 @@ def _get_balance_usd(client: ClobClient) -> float:
 
 
 def _get_balance_and_allowance_usd(client: ClobClient) -> tuple[float, float]:
-    """Fetch (USDC_balance_usd, USDC_allowance_usd) from Polymarket.
+    """Fetch (USDC_balance_usd, min_USDC_allowance_usd) from Polymarket.
 
-    Allowance is the amount the Gnosis Safe has approved to the CTF Exchange.
-    When it hits zero orders silently fail at the exchange level — surfacing this
-    at preflight prevents the bot from "placing" orders that never get filled.
+    Polymarket returns a dict ``allowances: {spender_addr: amount}`` keyed by the
+    three exchange/adapter contracts: CTF Exchange, Neg Risk Exchange, Neg Risk
+    Adapter. Any one of them at zero blocks that market type, so we return the
+    MIN across all three — if any spender is under-approved, preflight fails.
+    Returns (balance, 0.0) if the allowances dict is missing or empty.
     """
     result = client.get_balance_allowance(
         BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
     )
     balance = int(result.get("balance", "0")) / 1e6
-    allowance = int(result.get("allowance", "0")) / 1e6
-    return balance, allowance
+    allowances = result.get("allowances") or {}
+    if not allowances:
+        return balance, 0.0
+    min_allowance = min(int(v) for v in allowances.values()) / 1e6
+    return balance, min_allowance
 
 
 def verify_auth(min_allowance_usd: float | None = None) -> tuple[bool, str, float]:
