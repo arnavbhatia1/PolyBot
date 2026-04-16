@@ -109,6 +109,7 @@ _current_window_id: str = ""
 _early_entry_fired: bool = False
 _drawdown_tracker: DrawdownVelocityTracker | None = None
 _adverse_monitor: AdverseSelectionMonitor | None = None
+_last_adverse_skip_log_window: int = 0  # throttle adverse-skip logs to once per 5-min window
 _crowd_bias: CrowdBiasTracker | None = None
 
 _realized_edge_history: list[tuple[float, float]] = []  # (predicted_edge, realized_gain_pct)
@@ -519,10 +520,17 @@ async def _evaluate_signal_and_enter(
         adverse_threshold = config.get("signal", {}).get("adverse_selection_threshold", 0.55)
         adverse_rate = _adverse_monitor.get_adverse_rate(30.0)
         if adverse_rate > adverse_threshold:
-            logger.info(
-                f"SKIP: adverse selection rate {adverse_rate:.0%} > {adverse_threshold:.0%} "
-                f"(recent fills fading post-entry)"
-            )
+            global _last_adverse_skip_log_window
+            if eval_window != _last_adverse_skip_log_window:
+                _last_adverse_skip_log_window = eval_window
+                logger.info(
+                    f"SKIP: adverse selection rate {adverse_rate:.0%} > {adverse_threshold:.0%} "
+                    f"(recent fills fading post-entry)"
+                )
+            else:
+                logger.debug(
+                    f"SKIP: adverse selection rate {adverse_rate:.0%} > {adverse_threshold:.0%}"
+                )
             return None, last_eval_log_window
 
     # --- EDGE CAP GATE: large edge = model miscalibration, not real alpha ---
@@ -530,10 +538,26 @@ async def _evaluate_signal_and_enter(
     if signal.edge > max_edge:
         return None, last_eval_log_window
 
-    # --- FLIP GATE: token-level blacklist + escalating edge for re-entries ---
     side = "Up" if signal.action == "BUY_YES" else "Down"
     token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
     cid = contract.get("slug", contract.get("market_id", ""))
+
+    # --- PRE-ENTRY VELOCITY GATE: don't buy into a lift ---
+    # If the CLOB price for YOUR side is rising rapidly in the last 5s (ask being hit
+    # / book being swept), someone else is paying the informed-flow premium — you'd be
+    # the sucker taking the next fill. Skip when velocity > threshold cents/sec on your
+    # side. This directly addresses the "you keep entering right before moves against
+    # you" pattern the adverse selection monitor detects.
+    if clob_ws is not None:
+        velocity_threshold = config.get("signal", {}).get("velocity_skip_cents_per_s", 0.03)
+        side_velocity = clob_ws.get_price_velocity(token_id, window_s=5.0)
+        if side_velocity > velocity_threshold:
+            logger.debug(
+                f"SKIP: {side} token price lifting {side_velocity*100:.1f}¢/s > "
+                f"{velocity_threshold*100:.1f}¢/s — avoiding pre-adverse entry"
+            )
+            return None, last_eval_log_window
+
     flip_state = _window_flip_state.setdefault(cid, {
         "blacklisted_tokens": set(), "flip_count": 0, "last_side": None,
     })

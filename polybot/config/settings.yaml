@@ -73,7 +73,8 @@ indicators:
 signal:
   entry_threshold: 0.04  # Minimum edge (range: 0.01-0.10)
   max_edge: 0.20          # Safety net — Platt calibration is the real fix (range: 0.10-0.30)
-  adverse_selection_threshold: 0.55  # Skip entries if rolling 30s post-fill reversal rate exceeds this (informed-flow detection)
+  adverse_selection_threshold: 0.65  # Skip entries if rolling 30s post-fill reversal rate exceeds this (informed-flow detection)
+  velocity_skip_cents_per_s: 0.03    # Skip entries if token price on your side is lifting >3¢/s — classic pre-adverse-fill signal
   exit_edge_threshold: -0.05  # Exit when holding edge drops (range: -0.25 to 0.0)
   min_model_probability: 0.58  # Lowered from 0.65 — near-ATM trades have highest crowd bias edge. SPRT still gates weak signals.
   momentum_weight: -0.02      # Layer 4 — NEGATIVE: fade indicators (5-min BTC mean reverts). r=-0.04 is the signal with sign inverted. Pipeline can tune [-0.10, +0.10].

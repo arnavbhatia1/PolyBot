@@ -37,6 +37,25 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
                 bankroll=bankroll,
             )
 
+    @bot.event
+    async def on_command_error(ctx, error):
+        """Collapse noisy Discord tracebacks to single-line warnings.
+
+        Unknown commands (user typos) and Discord API hiccups (5xx) shouldn't dump
+        a 20-line stack trace — the bot's main trading loop is unaffected.
+        """
+        if isinstance(error, commands.CommandNotFound):
+            logger.debug(f"Unknown Discord command: {ctx.message.content!r}")
+            return
+        if isinstance(error, commands.CommandInvokeError):
+            root = error.original
+            if isinstance(root, discord.HTTPException) and 500 <= root.status < 600:
+                logger.warning(f"Discord API {root.status} on !{ctx.command}: transient, ignoring")
+                return
+            logger.error(f"!{ctx.command} failed: {type(root).__name__}: {root}")
+            return
+        logger.warning(f"Discord command error on !{ctx.command}: {type(error).__name__}: {error}")
+
     @bot.command(name="commands")
     async def commands_list(ctx):
         await ctx.send(
