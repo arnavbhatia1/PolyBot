@@ -542,22 +542,6 @@ async def _evaluate_signal_and_enter(
     token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
     cid = contract.get("slug", contract.get("market_id", ""))
 
-    # --- PRE-ENTRY VELOCITY GATE: don't buy into a lift ---
-    # If the CLOB price for YOUR side is rising rapidly in the last 5s (ask being hit
-    # / book being swept), someone else is paying the informed-flow premium — you'd be
-    # the sucker taking the next fill. Skip when velocity > threshold cents/sec on your
-    # side. This directly addresses the "you keep entering right before moves against
-    # you" pattern the adverse selection monitor detects.
-    if clob_ws is not None:
-        velocity_threshold = config.get("signal", {}).get("velocity_skip_cents_per_s", 0.03)
-        side_velocity = clob_ws.get_price_velocity(token_id, window_s=5.0)
-        if side_velocity > velocity_threshold:
-            logger.debug(
-                f"SKIP: {side} token price lifting {side_velocity*100:.1f}¢/s > "
-                f"{velocity_threshold*100:.1f}¢/s — avoiding pre-adverse entry"
-            )
-            return None, last_eval_log_window
-
     flip_state = _window_flip_state.setdefault(cid, {
         "blacklisted_tokens": set(), "flip_count": 0, "last_side": None,
     })
