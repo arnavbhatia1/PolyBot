@@ -24,3 +24,21 @@
 - ATR mean halved (38.7→17.8) — if low-vol persists, overall edge may remain structurally compressed
 
 **Reasoning:** RSI is near-random at 50.2% accuracy and is being cut to free up weight for VWAP, which shows clear directional edge especially on bearish signals (61%). Scalp accuracy of 57.2% is below the 60% threshold indicating we exit too early, so the exit threshold is tightened from -0.08 to -0.06 to hold positions longer. The persistent low-ATR environment continues to suppress win rates, so atr_sigma_ratio is nudged higher to 1.7 to generate more conservative probabilities in low-volatility conditions.
+## 2026-04-16T04:23:36.209255+00:00
+
+**Source:** Claude (medium) | **Weights:** rsi=0.15, macd=0.30, stochastic=0.20, obv=0.10, vwap=0.25
+**Params:** momentum_weight=0.03, regime_weight=0.05, flow_weight=0.06, student_t_df=4, min_edge=0.04, min_kelly=0.015, atr_sigma_ratio=1.8, kelly_fraction=0.12, min_model_probability=0.6, exit_edge_threshold=-0.04, min_time_remaining=30, trading_start_hour_et=0, trading_end_hour_et=23, trading_end_minute=59
+
+**Findings:**
+- Down trades win 59% vs Up at 52% — model still heavily over-trading bullish setups
+- Low ATR regime wins only 38% — system loses money in calm markets
+- Recent model_probability collapsed from 63% to 50% — model is drifting toward coin-flips
+- Scalp accuracy only 52% means we exit too early — tighten threshold to hold longer
+- High-edge trades (Q4) realizing only 22 cents per dollar predicted — severe overconfidence at top
+
+**Warnings:**
+- SPRT is negative with 0% edge entries in last 50 trades — possible regime breakdown
+- Recent edge dropped from 12.2% to 9.8% — execution quality or model drift worsening
+- Recent scalps show string of large losses (-28% to -38%) suggesting exits are too slow not too fast
+
+**Reasoning:** The model_probability distribution shift (63%→50%) combined with a negative SPRT signal suggests the model is losing its edge — raising atr_sigma_ratio to 1.8 makes probabilities more conservative to reduce marginal trades. The exit threshold is tightened slightly to -0.04 since scalp accuracy is only 52% (well below the 60% hold-longer trigger), but the recent large scalp losses suggest we need faster exits on deteriorating positions rather than slower. Kelly fraction is trimmed to 0.12 to redu...
