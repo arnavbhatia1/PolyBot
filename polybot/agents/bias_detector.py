@@ -114,18 +114,20 @@ class BiasDetector:
 
     def _analyze_edges(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         """Win rate bucketed by edge size at entry."""
-        buckets = {"10-20%": [], "20-35%": [], "35%+": []}
+        buckets = {"4-8%": [], "8-12%": [], "12-20%": [], "20%+": []}
         for o in outcomes:
             ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
             edge = ctx.get("edge", 0)
             if edge <= 0:
                 continue
-            if edge < 0.20:
-                buckets["10-20%"].append(o)
-            elif edge < 0.35:
-                buckets["20-35%"].append(o)
+            if edge < 0.08:
+                buckets["4-8%"].append(o)
+            elif edge < 0.12:
+                buckets["8-12%"].append(o)
+            elif edge < 0.20:
+                buckets["12-20%"].append(o)
             else:
-                buckets["35%+"].append(o)
+                buckets["20%+"].append(o)
 
         result = {}
         for label, trades in buckets.items():

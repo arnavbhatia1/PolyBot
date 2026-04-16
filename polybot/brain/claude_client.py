@@ -101,7 +101,7 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 ## Parameter Constraints (MUST respect)
 - Indicator weights (rsi, macd, stochastic, obv, vwap) MUST sum to 1.0
 - Each indicator weight must be >= 0.05
-- momentum_weight: 0.02 to 0.10 (Layer 4 — weakest signal, MUST be < min_edge)
+- momentum_weight: -0.10 to 0.10 (Layer 4 — NEGATIVE means FADE indicators (mean reversion), POSITIVE means follow them. Current value is -0.02 (fading). Only recommend positive if you see strong indicator predictive accuracy.)
 - regime_weight: 0.02 to 0.10 (Layer 2 — regime autocorrelation adjustment)
 - flow_weight: 0.02 to 0.12 (Layer 3 — order flow adjustment)
 - student_t_df: 3 to 8 (degrees of freedom — lower = fatter tails, more reversal edge)
@@ -175,19 +175,27 @@ class ClaudeClient:
             max_tokens=4096,
             system=STRATEGY_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
+            timeout=120.0,
         )
         text = response.content[0].text.strip()
 
         data = _extract_json(text)
-        current_weights = context.get("current_config", {}).get("weights", {})
+        current_config = context.get("current_config", {})
+        current_weights = current_config.get("weights", {})
         total_trades = context.get("analysis", {}).get("overall", {}).get("total_trades", 0)
-        return _validate_strategy_response(data, current_weights, total_trades)
+        return _validate_strategy_response(data, current_weights, total_trades, current_config)
 
 
 def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str, float] | None = None,
-                                total_trades: int = 0) -> dict[str, Any]:
-    """Enforce parameter constraints on Claude's recommendations."""
+                                total_trades: int = 0,
+                                current_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Enforce parameter constraints on Claude's recommendations.
+
+    Uses current_config as defaults so that params Claude omits are not silently
+    overwritten with stale hardcoded values.
+    """
     indicators = ["rsi", "macd", "stochastic", "obv", "vwap"]
+    cfg = current_config or {}
 
     # Insufficient data — return no changes
     if total_trades < 50 and current_weights:
@@ -203,12 +211,10 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     total = sum(weights.get(k, 0.20) for k in indicators)
     if total > 0:
         weights = {k: weights.get(k, 0.20) / total for k in indicators}
-    # Final floor + redistribute rounding dust to largest weight
     for k in indicators:
         if weights[k] < 0.05:
             weights[k] = 0.05
     largest = max(weights, key=weights.get)
-    # Round all except the largest, then set largest to exact remainder
     for k in indicators:
         if k != largest:
             weights[k] = round(weights[k], 4)
@@ -235,42 +241,39 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
 
     data["recommended_weights"] = weights
 
-    # Clamp ranges
-    data["recommended_kelly_fraction"] = max(0.05, min(0.25,
-        data.get("recommended_kelly_fraction", 0.15)))
-    data["recommended_min_edge"] = max(0.01, min(0.10,
-        data.get("recommended_min_edge", 0.03)))
-    data["recommended_min_kelly"] = max(0.005, min(0.05,
-        data.get("recommended_min_kelly", 0.015)))
-    data["recommended_atr_sigma_ratio"] = max(1.2, min(2.5,
-        float(data.get("recommended_atr_sigma_ratio", 1.7))))
-    data["recommended_momentum_weight"] = max(0.02, min(0.10,
-        data.get("recommended_momentum_weight", 0.04)))
-    data["recommended_regime_weight"] = max(0.02, min(0.10,
-        data.get("recommended_regime_weight", 0.05)))
-    data["recommended_flow_weight"] = max(0.02, min(0.12,
-        data.get("recommended_flow_weight", 0.06)))
-    data["recommended_student_t_df"] = max(3, min(8,
-        int(data.get("recommended_student_t_df", 4))))
-    data["recommended_min_model_probability"] = max(0.55, min(0.85,
-        data.get("recommended_min_model_probability", 0.65)))
-    data["recommended_exit_edge_threshold"] = max(-0.25, min(0.0,
-        data.get("recommended_exit_edge_threshold", -0.10)))
-    data["recommended_min_time_remaining"] = max(0, min(120,
-        int(data.get("recommended_min_time_remaining", 0))))
-    if "recommended_trading_start_hour_et" in data:
-        data["recommended_trading_start_hour_et"] = max(0, min(23,
-            int(data.get("recommended_trading_start_hour_et", 0))))
-    if "recommended_trading_end_hour_et" in data:
-        data["recommended_trading_end_hour_et"] = max(0, min(23,
-            int(data.get("recommended_trading_end_hour_et", 23))))
-    if "recommended_trading_end_minute" in data:
-        data["recommended_trading_end_minute"] = max(0, min(59,
-            int(data.get("recommended_trading_end_minute", 59))))
+    # Clamp ranges — use current_config values as defaults so omitted params stay unchanged
+    def _cur(key: str, fallback: float) -> float:
+        return cfg.get(key, fallback)
 
-    # Enforce momentum_weight < min_edge
-    if data["recommended_momentum_weight"] >= data["recommended_min_edge"]:
-        data["recommended_momentum_weight"] = round(data["recommended_min_edge"] - 0.02, 2)
+    # Only write clamped value if Claude explicitly included it — otherwise leave absent
+    # so scheduler's "if key in recommendations" guards don't fire for unchanged params.
+    def _clamp_if_present(key: str, lo: float, hi: float, cur_val: float) -> None:
+        if key in data:
+            data[key] = max(lo, min(hi, float(data[key])))
+        else:
+            data[key] = cur_val  # preserve current value exactly
+
+    _clamp_if_present("recommended_kelly_fraction",    0.05, 0.25, _cur("kelly_fraction", 0.15))
+    _clamp_if_present("recommended_min_edge",          0.01, 0.10, _cur("min_edge", 0.04))
+    _clamp_if_present("recommended_min_kelly",         0.005, 0.05, _cur("min_kelly", 0.015))
+    _clamp_if_present("recommended_atr_sigma_ratio",   1.2,  2.5,  _cur("atr_sigma_ratio", 1.4))
+    _clamp_if_present("recommended_momentum_weight",  -0.10, 0.10, _cur("momentum_weight", -0.02))
+    _clamp_if_present("recommended_regime_weight",     0.02, 0.10, _cur("regime_weight", 0.03))
+    _clamp_if_present("recommended_flow_weight",       0.02, 0.12, _cur("flow_weight", 0.04))
+    _clamp_if_present("recommended_min_model_probability", 0.55, 0.85, _cur("min_model_probability", 0.58))
+    _clamp_if_present("recommended_exit_edge_threshold", -0.25, 0.0, _cur("exit_edge_threshold", -0.05))
+    _clamp_if_present("recommended_min_time_remaining", 0, 120, _cur("min_time_remaining", 0))
+
+    data["recommended_student_t_df"] = max(3, min(8,
+        int(data["recommended_student_t_df"]) if "recommended_student_t_df" in data
+        else int(_cur("student_t_df", 5))))
+
+    if "recommended_trading_start_hour_et" in data:
+        data["recommended_trading_start_hour_et"] = max(0, min(23, int(data["recommended_trading_start_hour_et"])))
+    if "recommended_trading_end_hour_et" in data:
+        data["recommended_trading_end_hour_et"] = max(0, min(23, int(data["recommended_trading_end_hour_et"])))
+    if "recommended_trading_end_minute" in data:
+        data["recommended_trading_end_minute"] = max(0, min(59, int(data["recommended_trading_end_minute"])))
 
     return data
 

@@ -81,9 +81,10 @@ class TAEvolver:
         tw_wr = tw.get("win_rate", wr)
         tw_sharpe = tw.get("sharpe", sharpe)
 
-        # Edge realization
+        # Edge realization — skip Rule 2 entirely when no data rather than
+        # defaulting to 1.0 (perfect realization), which incorrectly fires "lower threshold"
         er_q = analysis.get("edge_realization_quartiles", [])
-        avg_realization = sum(er_q) / len(er_q) if er_q else 1.0
+        avg_realization = sum(er_q) / len(er_q) if er_q else None
 
         # --- Rule 1: Win rate declining → reduce kelly_fraction ---
         cur_kelly = current_config.get("kelly_fraction", 0.15)
@@ -101,12 +102,12 @@ class TAEvolver:
 
         # --- Rule 2: Edge realization low → raise entry_threshold ---
         cur_min_edge = current_config.get("min_edge", current_config.get("entry_threshold", 0.04))
-        if avg_realization < 0.65 and n >= 30:
+        if avg_realization is not None and avg_realization < 0.65 and n >= 30:
             new_edge = min(0.10, cur_min_edge + 0.005)
             if new_edge != cur_min_edge and len(changes) < 2:
                 changes["recommended_min_edge"] = new_edge
                 findings.append(f"Edge realization {avg_realization:.0%} < 65% — raising entry_threshold {cur_min_edge} -> {new_edge}")
-        elif avg_realization > 0.90 and n >= 30:
+        elif avg_realization is not None and avg_realization > 0.90 and n >= 30:
             new_edge = max(0.01, cur_min_edge - 0.005)
             if new_edge != cur_min_edge and len(changes) < 2:
                 changes["recommended_min_edge"] = new_edge
