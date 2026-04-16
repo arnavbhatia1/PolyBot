@@ -37,8 +37,8 @@ class AgentScheduler:
         self.pipeline_tracker: Any = pipeline_tracker
         self._exit_edge_threshold: float | None = None  # Set by main.py, updated by pipeline
         self._min_time_remaining: int | None = None   # Set by main.py, updated by pipeline
-        self._trading_start: tuple[int, int] | None = None        # (hour, minute) UTC — updated by pipeline
-        self._trading_end: tuple[int, int] | None = None          # (hour, minute) UTC — updated by pipeline
+        self._trading_start: tuple[int, int] | None = None        # (hour, minute) ET — updated by pipeline
+        self._trading_end: tuple[int, int] | None = None          # (hour, minute) ET — updated by pipeline
         self._running: bool = False
         self._auto_shutdown: bool = False
         self._shutdown_requested: bool = False
