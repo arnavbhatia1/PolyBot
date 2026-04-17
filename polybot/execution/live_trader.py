@@ -140,7 +140,36 @@ class LiveTrader(BaseTrader):
         self.client: ClobClient = _create_clob_client()
         self.use_maker_orders: bool = kwargs.get("use_maker_orders", False)
         self.maker_timeout_s: float = kwargs.get("maker_timeout_s", 60.0)
+        self._keepalive_task: asyncio.Task | None = None
         logger.info("LiveTrader authenticated with Polymarket CLOB")
+
+    async def start_keepalive(self) -> None:
+        """Ping the CLOB API every 30s to keep the HTTP/2 connection warm.
+
+        py-clob-client uses a persistent httpx.Client(http2=True). If the connection
+        goes idle between trades (>60s), the HTTP/2 stream may close and the next
+        order submission pays a full TLS handshake penalty (~100-200ms). Keepalive
+        pings prevent that by re-using the already-established connection.
+        """
+        async def _ping() -> None:
+            while True:
+                try:
+                    await asyncio.sleep(30)
+                    await asyncio.to_thread(self.client.get_sampling_simplified_markets)
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    pass  # best-effort — never crash trading on a keepalive failure
+        self._keepalive_task = asyncio.create_task(_ping())
+        logger.info("LiveTrader: HTTP keepalive started (ping every 30s)")
+
+    async def stop_keepalive(self) -> None:
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
+            try:
+                await self._keepalive_task
+            except asyncio.CancelledError:
+                pass
 
     async def get_balance(self) -> float:
         """Fetch USDC balance from Polymarket. Returns float in dollars."""

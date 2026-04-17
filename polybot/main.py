@@ -2055,6 +2055,8 @@ async def main() -> None:
     # Give LiveTrader access to CLOB WS for fast maker fill detection
     if hasattr(trader, "set_clob_ws"):
         trader.set_clob_ws(clob_ws)
+    if hasattr(trader, "start_keepalive"):
+        await trader.start_keepalive()
 
     # --- New data feeds ---
     depth_cfg = config.get("binance_depth", {})
