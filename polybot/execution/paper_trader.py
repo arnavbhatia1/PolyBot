@@ -130,15 +130,18 @@ class PaperTrader(BaseTrader):
             return FillResult(filled=False, reason="book empty during fill")
         vwap = spent / consumed
 
-        # FOK slippage check — same semantics live uses.
-        max_allowed = requested_price * (1 + self.max_slippage) if side == "buy" \
-                 else requested_price * (1 - self.max_slippage)
-        rejected = (vwap > max_allowed) if side == "buy" else (vwap < max_allowed)
-        if rejected:
-            return FillResult(
-                filled=False,
-                reason=f"slippage {abs(vwap - requested_price)/requested_price:.2%} exceeds max {self.max_slippage:.2%}",
-            )
+        # Slippage check — only enforced on buys. Sells always fill at VWAP regardless
+        # of how far below the requested price the bids are. In live trading, FOK market
+        # sells hit whatever bids exist; there's no pre-check. Enforcing slippage on
+        # sells caused fast-falling markets to reject repeated exit attempts (bids drop
+        # below the 2% tolerance) while the position bled — opposite of desired behavior.
+        if side == "buy":
+            max_allowed = requested_price * (1 + self.max_slippage)
+            if vwap > max_allowed:
+                return FillResult(
+                    filled=False,
+                    reason=f"slippage {abs(vwap - requested_price)/requested_price:.2%} exceeds max {self.max_slippage:.2%}",
+                )
 
         # Detect insufficient depth (book couldn't absorb the full order).
         if remaining > 1e-6:

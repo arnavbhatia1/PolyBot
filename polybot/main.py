@@ -664,6 +664,20 @@ async def _evaluate_signal_and_enter(
         logger.debug(f"SKIP: final phase prob {signal.prob:.0%} < {entry_phase['min_prob_override']:.0%}")
         return None, last_eval_log_window
 
+    # Late-window underdog gate: in the last 120s, require the CHOSEN side's probability
+    # to be at least 40%. The main min_model_probability gate checks max(prob_up, prob_down),
+    # which lets you buy a 32% underdog because the other side is 68% confident. That's
+    # fine in normal windows where there's time for edge to play out — but in the last
+    # 120s a 32% underdog almost never wins. This gate prevents late-window suicide bets.
+    if contract.get("seconds_remaining", 300) < 120:
+        late_underdog_floor = config.get("signal", {}).get("late_window_min_prob", 0.40)
+        if signal.prob < late_underdog_floor:
+            logger.debug(
+                f"SKIP: late window underdog — chosen side prob {signal.prob:.0%} < "
+                f"{late_underdog_floor:.0%} with {contract.get('seconds_remaining', 0):.0f}s left"
+            )
+            return None, last_eval_log_window
+
     # Concurrent windows: correlation-aware sizing, size-weighted so a tiny residual
     # position doesn't hit the new entry as hard as a full-size concurrent.
     open_positions = await db.get_open_positions()

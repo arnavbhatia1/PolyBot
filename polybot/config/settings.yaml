@@ -79,6 +79,7 @@ signal:
   entry_threshold: 0.04  # Minimum edge (range: 0.01-0.10)
   max_edge: 0.20          # Safety net — Platt calibration is the real fix (range: 0.10-0.30)
   adverse_selection_threshold: 0.65  # Skip entries if rolling 30s post-fill reversal rate exceeds this (informed-flow detection)
+  late_window_min_prob: 0.40         # In last 120s, chosen-side probability must be >= this. Prevents late-window underdog bets that almost always lose.
   exit_edge_threshold: -0.05  # Exit when holding edge drops (range: -0.25 to 0.0)
   min_model_probability: 0.58  # Lowered from 0.65 — near-ATM trades have highest crowd bias edge. SPRT still gates weak signals.
   momentum_weight: -0.02      # Layer 4 — NEGATIVE: fade indicators (5-min BTC mean reverts). r=-0.04 is the signal with sign inverted. Pipeline can tune [-0.10, +0.10].
@@ -169,7 +170,7 @@ deribit:
   rest_url: "https://www.deribit.com/api/v2/public"
   poll_interval_s: 60.0
   iv_ratio_min: 0.5    # floor for IV/ATR ratio (pipeline-tunable)
-  iv_ratio_max: 3.0    # cap — was 2.0, always hit. 3.0 lets more dampening through (pipeline-tunable)
+  iv_ratio_max: 2.0    # cap on Deribit IV / ATR-derived vol ratio. 3.0 inflated late-window underdog probs unrealistically.
 
 # --- Dynamic entry timing (continuous, not step phases) ---
 entry_timing:
