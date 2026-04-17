@@ -19,7 +19,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. Computes P(Up) via an 8
 
 **Entry gates (all must pass):** prob >= 58%, edge >= 4% (+ 1.5% for flips), Kelly >= 0.015, spread <= 10%, depth >= $50, price_sum in [0.98, 1.02], edge <= 20%, adverse_rate_30s <= 0.55 (post-fill reversal rate; informed-flow detector), last 30s: prob >= 90%
 
-**Sizing chain:** `bankroll × kelly × breaker × uncertainty_discount(floor=0.50) × time_mult × concurrent_multiplier`. `concurrent_multiplier` is **correlation-aware**: same-side concurrents (ρ≈0.75) get 0.35×, opposite-side (ρ≈-0.25) get 0.90×, with 0.55×/0.70× in between. Replaces the flat 0.50× discount that under-sized variance on correlated concurrents.
+**Sizing chain:** `min(bankroll × kelly, max_single_pct, max_single_usd) × breaker × uncertainty_discount(floor=0.40) × time_mult × concurrent_multiplier`. Absolute caps apply to the RAW Kelly size FIRST so the soft multiplicative discounts (uncertainty / breaker / phase / correlation) actually reduce below the cap instead of being no-ops when the cap binds. `concurrent_multiplier` is **correlation-aware + size-weighted**: same-side (ρ≈0.75) at full size gets 0.35×, opposite-side (ρ≈-0.25) gets 0.90×, with piecewise buckets in between. Correlation contribution is scaled by `existing_position_size / max_single_usd` so a tiny residual position no longer hits a new entry as hard as a full-size concurrent.
 
 **Exit:** `evaluate_hold()` — same model for entry and exit. Scalp when `holding_edge <= fee_aware_threshold`. Trailing exit: entry < $0.50, peaked > $0.65, drops 15%+ from peak.
 

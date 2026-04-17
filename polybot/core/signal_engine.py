@@ -165,7 +165,12 @@ class SignalEngine:
         self.exit_config: dict = exit_config or {
             "patience_seconds": 120, "patience_max_penalty": 0.05,
             "urgency_seconds": 120, "urgency_max_bonus": 0.05,
-            "hold_min_prob": 0.50, "panic_edge": -0.20,
+            # Tightened from 0.50/-0.20: the old defaults held through big scalp
+            # opportunities because any barely-favoring-our-side prob (>= 0.50) would
+            # override the exit. Now the override only fires when the model STRONGLY
+            # favors our side (>= 0.70) AND the edge isn't already meaningfully negative
+            # (> -0.10). Below either bar, trust the fee-aware threshold and exit.
+            "hold_min_prob": 0.70, "panic_edge": -0.10,
             "low_price_hold": 0.15,
         }
         self._exit_boundary = ExitBoundary(df=self.student_t_df)

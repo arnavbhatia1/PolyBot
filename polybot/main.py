@@ -551,9 +551,20 @@ async def _evaluate_signal_and_enter(
     if flip_count > 1:
         return None, last_eval_log_window  # max 1 flip per window (original entry + 1 flip)
     if flip_count == 1:
-        # Flat +1.5% edge premium for the flip (covers round-trip fee drag)
+        # Spread-aware flip premium: the flip has to clear min_edge PLUS the worst of
+        # (the configured premium, or the current market's half-spread + fee). On a
+        # 3%-spread market the old flat 1.5% was not actually covering round-trip costs.
         flip_premium = config.get("entry_timing", {}).get("flip_edge_premium", 0.015)
-        if signal.edge < signal_engine.min_edge + flip_premium:
+        spread_est = -1.0
+        if clob_ws:
+            bba = clob_ws.best_bid_ask.get(token_id, {})
+            try:
+                spread_est = float(bba.get("spread", -1)) if bba.get("spread") else -1.0
+            except (TypeError, ValueError):
+                spread_est = -1.0
+        spread_cost = (spread_est * 0.5 + DEFAULT_FEE_RATE) if spread_est >= 0 else flip_premium
+        flip_hurdle = signal_engine.min_edge + max(flip_premium, spread_cost)
+        if signal.edge < flip_hurdle:
             return None, last_eval_log_window
 
     # --- LAYER DISAGREEMENT GATE: momentum opposing trade direction ---
@@ -587,10 +598,16 @@ async def _evaluate_signal_and_enter(
     avg_edge = await db.get_avg_edge()
     uncertainty_discount = compute_uncertainty_discount(trade_count, avg_edge)
 
-    size = round(bankroll * signal.kelly_size * kelly_mult * uncertainty_discount, 2)
-
-    # Dynamic entry timing: apply phase Kelly multiplier
-    size = round(size * entry_phase["kelly_multiplier"], 2)
+    # Sizing: apply absolute caps FIRST (ceiling on position size), THEN soft discounts
+    # (uncertainty / breaker / entry-phase / correlation). This way, when a cap would
+    # otherwise bind, the discounts still reduce below it — they're not no-ops.
+    # Old order was: raw_kelly × all_discounts → clip to cap, which made discounts
+    # invisible whenever clipping happened (common at any non-trivial bankroll).
+    raw_kelly_size = bankroll * signal.kelly_size
+    max_single_pct_usd = bankroll * config.get("execution", {}).get("max_single_position_pct", 0.12)
+    max_single_abs_usd = config.get("execution", {}).get("max_single_position_usd", float("inf"))
+    capped_raw = min(raw_kelly_size, max_single_pct_usd, max_single_abs_usd)
+    size = round(capped_raw * kelly_mult * uncertainty_discount * entry_phase["kelly_multiplier"], 2)
 
     # Regime-based Kelly adjustment
     regime_state = None
@@ -647,32 +664,21 @@ async def _evaluate_signal_and_enter(
         logger.debug(f"SKIP: final phase prob {signal.prob:.0%} < {entry_phase['min_prob_override']:.0%}")
         return None, last_eval_log_window
 
-    # Concurrent windows: correlation-aware sizing. Same-side concurrents are ~0.75
-    # correlated (variance ~= full-Kelly even at 0.5x sizing), so they get deeper
-    # discount than opposite-side concurrents which are naturally hedged. Only
-    # status='open' positions contribute — 'pending_resolution' are frozen (outcome
-    # decided, waiting for Gamma) and carry no forward variance.
+    # Concurrent windows: correlation-aware sizing, size-weighted so a tiny residual
+    # position doesn't hit the new entry as hard as a full-size concurrent.
     open_positions = await db.get_open_positions()
     active_positions = [p for p in open_positions if p.get("status") == "open"]
     if active_positions:
-        cc_mult = concurrent_multiplier(side, cid, active_positions)
+        cc_mult = concurrent_multiplier(side, cid, active_positions, max_single_usd=max_single_abs_usd)
         size = round(size * cc_mult, 2)
 
+    # Total-deployment cap (across all open positions) stays at the single-trade level
+    # as a defensive clip; base.py also enforces it at the trader layer.
     if size > bankroll * max_bankroll_pct:
         size = round(bankroll * max_bankroll_pct, 2)
 
-    # Cap single position to prevent concentration risk
-    max_pos_pct = config.get("execution", {}).get("max_single_position_pct", 0.12)
-    max_single = round(bankroll * max_pos_pct, 2)
-    if size > max_single:
-        size = max_single
-
-    # Hard dollar ceiling — compounding happens through volume, not bigger bets
-    max_single_usd = config.get("execution", {}).get("max_single_position_usd", float("inf"))
-    if size > max_single_usd:
-        size = round(max_single_usd, 2)
-
-    # Cap size to fraction of book depth (realistic fill constraint)
+    # Cap size to fraction of book depth (realistic fill constraint — unlike risk caps,
+    # this is about whether the order can actually fill)
     side_depth = depth_usd_up if side == "Up" else depth_usd_down
     max_fill_pct = config.get("execution", {}).get("max_book_fill_pct", 0.50)
     if side_depth > 0:
@@ -763,6 +769,26 @@ async def _evaluate_signal_and_enter(
         "edge_realization_ratio": _get_edge_realization_ratio(),
     }
     snapshot_str = json.dumps(snapshot)
+
+    # Pre-submit edge re-check: the CLOB ask may have lifted between when the signal
+    # fired and now. Re-derive edge against the freshest ask and drop the trade if
+    # it no longer clears `min_edge`. Cheaper and more targeted than the velocity
+    # heuristic (which systematically filtered trending favorites).
+    if clob_ws is not None:
+        fresh_bba = clob_ws.best_bid_ask.get(token_id, {})
+        try:
+            fresh_ask = float(fresh_bba.get("best_ask", "0") or 0)
+        except (TypeError, ValueError):
+            fresh_ask = 0.0
+        if fresh_ask > 0 and fresh_ask != price:
+            fresh_edge = signal.prob - fresh_ask
+            if fresh_edge < signal_engine.min_edge:
+                logger.info(
+                    f"SKIP: pre-submit edge {fresh_edge:+.1%} < min {signal_engine.min_edge:.0%} "
+                    f"(ask drifted {price:.3f} -> {fresh_ask:.3f} since signal fired)"
+                )
+                return None, last_eval_log_window
+
     result = await trader.open_trade(
         market_id=cid,
         question=contract["question"],
@@ -922,9 +948,10 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
         price_down = contract["price_down"]
         price_source = "gamma"
 
-    # Price sanity gate
+    # Price sanity gate — tightened from 2% to 1% tolerance: liquid Polymarket
+    # binary markets arb to within 1c of $1.00; anything wider is stale-book.
     price_sum = price_up + price_down
-    if price_source == "clob" and (price_sum < 0.98 or price_sum > 1.02):
+    if price_source == "clob" and (price_sum < 0.99 or price_sum > 1.01):
         eval_window = int(now_ts // 300) * 300
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
@@ -950,7 +977,7 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
                 logger.info(f"EVAL: thin CLOB depth Up=${depth_usd_up:.0f} Dn=${depth_usd_down:.0f} — skipping window")
             return None, last_eval_log_window
 
-    # Skip if spread too wide
+    # Skip if effective execution cost (ask-distance + taker fee) too wide
     if price_source == "clob":
         spread_val = -1.0
         if clob_ws:
@@ -959,9 +986,18 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
                 spread_val = float(bba_up["spread"])
         if spread_val < 0:
             spread_val = await market_scanner.get_spread(token_up, http_client)
-        if spread_val >= 0 and spread_val > max_spread:
-            logger.debug(f"Wide spread {spread_val:.3f} > {max_spread} — skipping")
-            return None, last_eval_log_window
+        if spread_val >= 0:
+            # Paying the ask = roughly half-spread above mid; add the default taker
+            # fee as a proxy for full execution cost. Gate is still max_spread so
+            # we don't accidentally tighten into illiquid markets — we just account
+            # for the fee-eaten portion of tight-spread entries.
+            effective_cost = spread_val * 0.5 + DEFAULT_FEE_RATE
+            if effective_cost > max_spread:
+                logger.debug(
+                    f"Effective exec cost {effective_cost:.3f} (spread/2={spread_val/2:.3f} + fee={DEFAULT_FEE_RATE:.3f}) "
+                    f"> {max_spread:.3f} — skipping"
+                )
+                return None, last_eval_log_window
 
     return {
         "price_up": price_up, "price_down": price_down, "price_source": price_source,

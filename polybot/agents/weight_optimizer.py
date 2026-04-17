@@ -20,11 +20,32 @@ def _sharpe(returns: list[float]) -> float:
     return avg / std if std > 0 else 0.0
 
 
-def _sharpe_z_test(old_sharpe: float, new_sharpe: float, n_trades: int) -> float:
-    """Z-score for Sharpe ratio improvement (Jobson-Korkie 1981 SE approximation)."""
+def _lag1_autocorr(values: list[float]) -> float:
+    """1-lag autocorrelation of a returns series. Returns 0 when undefined."""
+    if len(values) < 3:
+        return 0.0
+    n = len(values)
+    mean = sum(values) / n
+    num = sum((values[i] - mean) * (values[i - 1] - mean) for i in range(1, n))
+    den = sum((v - mean) ** 2 for v in values)
+    return num / den if den > 0 else 0.0
+
+
+def _sharpe_z_test(old_sharpe: float, new_sharpe: float, n_trades: int,
+                   returns: list[float] | None = None) -> float:
+    """Z-score for Sharpe ratio improvement (Jobson-Korkie 1981 SE approximation).
+
+    When ``returns`` is supplied, inflates the standard error by
+    ``sqrt(1 + 2 × max(0, autocorr_1lag))`` — the iid assumption of the
+    vanilla Jobson-Korkie SE overstates confidence when outcomes are
+    positively autocorrelated (which they are for BTC 5-min regimes).
+    """
     if n_trades < 2:
         return 0.0
     se = math.sqrt((1.0 + 0.5 * old_sharpe ** 2) / max(n_trades, 1))
+    if returns and len(returns) >= 3:
+        rho = _lag1_autocorr(returns)
+        se *= math.sqrt(1.0 + 2.0 * max(0.0, rho))
     return (new_sharpe - old_sharpe) / se if se > 0 else 0.0
 
 
@@ -56,7 +77,8 @@ class WeightOptimizer:
         (self.weights_dir / f"{version}.json").write_text(json.dumps(weights, indent=2))
 
     def should_adopt(self, current_sharpe: float, candidate_sharpe: float,
-                     n_trades: int = 0, fold_sharpes: list[float] | None = None) -> tuple[bool, str]:
+                     n_trades: int = 0, fold_sharpes: list[float] | None = None,
+                     candidate_returns: list[float] | None = None) -> tuple[bool, str]:
         """Statistical significance test for Sharpe improvement.
 
         Uses Jobson-Korkie (1981) SE for Sharpe ratio difference.
@@ -80,9 +102,9 @@ class WeightOptimizer:
         if n_trades < 100:
             return False, f"only {n_trades} trades (need 100)"
 
-        z = _sharpe_z_test(current_sharpe, candidate_sharpe, n_trades)
+        z = _sharpe_z_test(current_sharpe, candidate_sharpe, n_trades, returns=candidate_returns)
         if z < 1.65:
-            return False, f"z={z:.2f} < 1.65 (not significant at 95%)"
+            return False, f"z={z:.2f} < 1.65 (not significant at 95%, autocorr-adjusted)"
 
         # Walk-forward consistency: every fold must show improvement
         if fold_sharpes:

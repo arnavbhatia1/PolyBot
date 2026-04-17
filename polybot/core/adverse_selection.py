@@ -6,15 +6,22 @@ the bot with better information.
 
 adverse_selection_rate = P(price moves against you | you just filled)
 If rolling rate > 0.55, the bot is being picked off.
+
+State is persisted to JSON on fill-record so it survives restart — without that,
+the first ~10 post-restart fills run with a neutral 0.5 rate (gate effectively off).
 """
 from __future__ import annotations
 
+import json
 import time
 import logging
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_STATE_PATH = Path("polybot/memory/adverse_state.json")
 
 
 @dataclass
@@ -45,10 +52,13 @@ class AdverseSelectionMonitor:
         if rate > 0.55: # being picked off
     """
 
-    def __init__(self, max_fills: int = 200, check_windows: tuple[float, ...] = (10.0, 30.0, 60.0)) -> None:
+    def __init__(self, max_fills: int = 200, check_windows: tuple[float, ...] = (10.0, 30.0, 60.0),
+                 state_path: Path | None = None) -> None:
         self.max_fills = max_fills
         self.check_windows = check_windows
         self._fills: deque[FillEvent] = deque(maxlen=max_fills)
+        self._state_path: Path = state_path or _DEFAULT_STATE_PATH
+        self._load()
 
     def record_fill(self, side: str, fill_price: float, token_id: str, midprice: float) -> None:
         """Record a new fill event for tracking."""
@@ -59,6 +69,53 @@ class AdverseSelectionMonitor:
             token_id=token_id,
             midprice_at_fill=midprice,
         ))
+        self._save()
+
+    def _save(self) -> None:
+        """Persist current fill deque to disk. Silent on I/O errors — don't crash trading."""
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "saved_at": time.time(),
+                "fills": [asdict(f) for f in self._fills],
+            }
+            self._state_path.write_text(json.dumps(payload))
+        except Exception as e:
+            logger.warning(f"AdverseSelectionMonitor save failed: {e}")
+
+    def _load(self) -> None:
+        """Restore fill deque from disk if a fresh-enough snapshot exists.
+
+        Discards stale snapshots (>1 hour old) since fill outcomes older than the
+        60-second checkpoint window are irrelevant and stale mid-prices would lie.
+        """
+        try:
+            if not self._state_path.exists():
+                return
+            data = json.loads(self._state_path.read_text())
+            saved_at = float(data.get("saved_at", 0))
+            age = time.time() - saved_at
+            if age > 3600:
+                logger.info(f"AdverseSelectionMonitor: discarding stale snapshot (age {age:.0f}s)")
+                return
+            fills_data = data.get("fills", [])
+            loaded = 0
+            for fd in fills_data[-self.max_fills:]:
+                self._fills.append(FillEvent(
+                    timestamp=float(fd.get("timestamp", 0)),
+                    side=fd.get("side", ""),
+                    fill_price=float(fd.get("fill_price", 0)),
+                    token_id=fd.get("token_id", ""),
+                    midprice_at_fill=float(fd.get("midprice_at_fill", 0)),
+                    midprice_10s=fd.get("midprice_10s"),
+                    midprice_30s=fd.get("midprice_30s"),
+                    midprice_60s=fd.get("midprice_60s"),
+                    resolved=bool(fd.get("resolved", False)),
+                ))
+                loaded += 1
+            logger.info(f"AdverseSelectionMonitor: restored {loaded} fills from disk")
+        except Exception as e:
+            logger.warning(f"AdverseSelectionMonitor load failed: {e} — starting fresh")
 
     def update_prices(self, get_midprice_fn) -> None:
         """Update pending fill events with current midprices.

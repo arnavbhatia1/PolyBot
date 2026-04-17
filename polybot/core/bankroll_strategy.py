@@ -51,13 +51,14 @@ class DrawdownVelocityTracker:
 def compute_uncertainty_discount(trade_count: int, avg_edge: float) -> float:
     """Uncertainty discount on Kelly: f* = f_kelly × (1 - σ²/edge²).
 
-    Floor at 0.50 (never discount more than 50%).
-    At 100 trades with 6% edge: floor keeps at 0.50.
-    At 500 trades: ~0.87. At 1000 trades: ~0.97.
+    Continuous: ~0.40 at n=0, ~0.65 at n=100, ~0.85 at n=300, ~0.95 at n=1000 (at
+    avg_edge=0.06). Regularization tightened (0.50 → 0.35) and floor lowered (0.50
+    → 0.40) so the discount smoothly decays instead of being pinned to the floor
+    for the first ~140 trades.
     """
     if trade_count <= 0 or avg_edge <= 0:
-        return 0.50
-    sigma_edge = 0.50 / math.sqrt(trade_count)
+        return 0.40
+    sigma_edge = 0.35 / math.sqrt(trade_count)
     ratio = (sigma_edge * sigma_edge) / (avg_edge * avg_edge)
-    discount = max(0.50, 1.0 - ratio)
+    discount = max(0.40, 1.0 - ratio)
     return min(1.0, discount)

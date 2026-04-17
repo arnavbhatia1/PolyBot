@@ -121,12 +121,16 @@ def test_exit_when_conditions_flip(engine):
     assert edge < -0.05
 
 def test_hold_when_model_still_favors(engine):
-    """Model says 88% Up but market at 95% — model still favors, HOLD."""
+    """Model still favors our side AND edge isn't catastrophically bad → HOLD.
+
+    Tightened override now requires model_prob >= 0.70 AND holding_edge > -0.10.
+    Both must hold; this case satisfies both (prob ~82%, edge ~-6%).
+    """
     action, prob, edge, _ = engine.evaluate_hold(
         _make_indicators(atr_value=50), btc_price=66450, strike_price=66400,
-        seconds_remaining=180, market_price_for_side=0.95, side="Up", exit_threshold=-0.05)
+        seconds_remaining=180, market_price_for_side=0.88, side="Up", exit_threshold=-0.05)
     assert action == "HOLD"
-    assert prob > 0.50
+    assert prob > 0.70
 
 def test_exit_when_edge_deeply_negative(engine):
     """Model says ~55% but market at 95% → edge deeply negative → EXIT."""

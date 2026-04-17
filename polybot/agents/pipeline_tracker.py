@@ -83,14 +83,27 @@ class PipelineTracker:
                 window_end = adopt_dt + timedelta(days=7)
                 rets = self._returns_in_window(outcomes, version, window_start, window_end)
                 if len(rets) >= 10:
+                    actual_sharpe = round(_sharpe(rets), 4)
                     rec["review_7d"] = {
-                        "sharpe": round(_sharpe(rets), 4),
+                        "sharpe": actual_sharpe,
                         "trades": len(rets),
                         "win_rate": round(sum(1 for r in rets if r > 0) / len(rets), 4),
                     }
                     changed = True
-                    logger.info(f"Pipeline review: {version} 7d Sharpe={rec['review_7d']['sharpe']:.3f} "
-                               f"({len(rets)} trades)")
+                    baseline = float(rec.get("baseline_sharpe", 0.0))
+                    logger.info(f"Pipeline review: {version} 7d Sharpe={actual_sharpe:.3f} "
+                               f"({len(rets)} trades, baseline={baseline:.3f})")
+                    # Rollback recommendation — flag adoptions that underperformed the
+                    # pre-adoption baseline by a meaningful margin. Doesn't auto-revert
+                    # (policy call left to user), but surfaces clearly in logs + record.
+                    if len(rets) >= 100 and actual_sharpe < baseline - 0.05:
+                        rec["rollback_recommended"] = True
+                        logger.warning(
+                            f"[ROLLBACK RECOMMENDED] {version}: in-live 7d Sharpe "
+                            f"{actual_sharpe:.3f} trails pre-adoption baseline "
+                            f"{baseline:.3f} by {baseline - actual_sharpe:.3f} "
+                            f"(n={len(rets)}). Consider reverting to prior version."
+                        )
 
             # 30-day review
             if rec.get("review_30d") is None and age_days >= 30:

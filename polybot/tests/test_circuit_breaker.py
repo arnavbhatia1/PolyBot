@@ -115,27 +115,39 @@ class TestKellyMultiplier:
         cb.update_bankroll(700.0)  # 30% drawdown — deeper than max
         assert cb.kelly_multiplier == pytest.approx(0.25)
 
-    def test_linear_scaling_midpoint(self):
-        """At half of max_drawdown (7.5%), multiplier should be halfway between 1.0 and 0.25."""
-        cb = CircuitBreaker(initial_bankroll=1000.0, max_drawdown_pct=0.15, min_multiplier=0.25)
-        cb.update_bankroll(925.0)  # 7.5% drawdown = half of 15%
-        expected = 1.0 - (1.0 - 0.25) * (0.075 / 0.15)  # 0.625
+    def test_concave_scaling_midpoint(self):
+        """At bankroll midway between floor and tier, concave (sqrt) curve gives
+        min + (1-min) × sqrt(0.5) ≈ 0.7803 — higher than the old linear 0.625.
+        """
+        import math
+        cb = CircuitBreaker(initial_bankroll=1000.0, min_multiplier=0.25, floor_pct=0.85)
+        midpoint = (cb.floor + cb.locked_tier) / 2.0
+        cb.update_bankroll(midpoint)
+        expected = 0.25 + (1.0 - 0.25) * math.sqrt(0.5)
         assert cb.kelly_multiplier == pytest.approx(expected)
 
-    def test_linear_scaling_quarter(self):
-        """At 25% of max drawdown (3.75%), multiplier should be 25% of the way down."""
-        cb = CircuitBreaker(initial_bankroll=1000.0, max_drawdown_pct=0.15, min_multiplier=0.25)
-        cb.update_bankroll(962.5)  # 3.75% drawdown = quarter of 15%
-        expected = 1.0 - (1.0 - 0.25) * (0.0375 / 0.15)  # 0.8125
+    def test_concave_scaling_quarter(self):
+        """At 25% of the way from floor to tier, concave gives sqrt(0.25) = 0.5 scaled."""
+        import math
+        cb = CircuitBreaker(initial_bankroll=1000.0, min_multiplier=0.25, floor_pct=0.85)
+        pos = cb.floor + 0.25 * (cb.locked_tier - cb.floor)
+        cb.update_bankroll(pos)
+        expected = 0.25 + (1.0 - 0.25) * math.sqrt(0.25)
         assert cb.kelly_multiplier == pytest.approx(expected)
 
     def test_kelly_recovers_as_bankroll_climbs(self):
-        cb = CircuitBreaker(initial_bankroll=1000.0, max_drawdown_pct=0.15, min_multiplier=0.25)
-        cb.update_bankroll(850.0)
+        import math
+        cb = CircuitBreaker(initial_bankroll=1000.0, min_multiplier=0.25, floor_pct=0.85)
+        # At floor: clamped to min
+        cb.update_bankroll(cb.floor)
         assert cb.kelly_multiplier == pytest.approx(0.25)
-        cb.update_bankroll(925.0)  # 7.5% drawdown
-        assert cb.kelly_multiplier == pytest.approx(0.625)
-        cb.update_bankroll(1000.0)
+        # Midway: concave sqrt curve
+        midpoint = (cb.floor + cb.locked_tier) / 2.0
+        cb.update_bankroll(midpoint)
+        expected_mid = 0.25 + (1.0 - 0.25) * math.sqrt(0.5)
+        assert cb.kelly_multiplier == pytest.approx(expected_mid)
+        # At tier: full Kelly
+        cb.update_bankroll(cb.locked_tier)
         assert cb.kelly_multiplier == 1.0
 
     def test_kelly_resets_at_new_high(self):
@@ -239,10 +251,11 @@ class TestTierRatcheting:
         assert cb.kelly_multiplier == pytest.approx(0.40)
 
     def test_kelly_midpoint_between_floor_and_tier(self):
+        import math
         cb = CircuitBreaker(initial_bankroll=200.0, floor_pct=0.85, min_multiplier=0.40)
-        # tier=200, floor=170, midpoint=185
+        # tier=200, floor=170, midpoint=185 -> concave sqrt(0.5) ≈ 0.707
         cb.update_bankroll(185.0)
-        expected = 0.40 + (1.0 - 0.40) * (185.0 - 170.0) / (200.0 - 170.0)  # 0.70
+        expected = 0.40 + (1.0 - 0.40) * math.sqrt(0.5)
         assert cb.kelly_multiplier == pytest.approx(expected)
 
     def test_multiple_tier_crossings(self):

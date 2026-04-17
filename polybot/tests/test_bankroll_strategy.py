@@ -22,23 +22,30 @@ class TestWilsonLower:
 
 class TestUncertaintyDiscount:
     def test_few_trades_hits_floor(self):
+        # Smoothed curve: floor lowered to 0.40; n=50 still floor-bound at avg_edge=0.06
         d = compute_uncertainty_discount(50, 0.06)
-        assert d == 0.50
+        assert d == 0.40
 
     def test_many_trades_light_discount(self):
         d = compute_uncertainty_discount(1000, 0.06)
         assert d > 0.90
 
     def test_zero_trades(self):
-        assert compute_uncertainty_discount(0, 0.06) == 0.50
+        assert compute_uncertainty_discount(0, 0.06) == 0.40
 
     def test_zero_edge(self):
-        assert compute_uncertainty_discount(100, 0.0) == 0.50
+        assert compute_uncertainty_discount(100, 0.0) == 0.40
 
     def test_large_edge_less_discount(self):
         d_small = compute_uncertainty_discount(200, 0.04)
         d_large = compute_uncertainty_discount(200, 0.10)
         assert d_large > d_small
+
+    def test_continuous_decay_past_prior_floor(self):
+        # Previously 0.50-floor-pinned until ~140 trades at 6% edge. New curve
+        # should show discount above the 0.40 floor at n=100 for avg_edge=0.06.
+        d = compute_uncertainty_discount(100, 0.06)
+        assert d > 0.40
 
 
 class TestDrawdownVelocity:

@@ -22,11 +22,14 @@ _CORR_OPPOSITE_SIDE = -0.25
 
 
 def estimate_correlation(new_side: str, new_market_id: str,
-                         open_position: dict[str, Any]) -> float | None:
+                         open_position: dict[str, Any],
+                         max_single_usd: float = 0.0) -> float | None:
     """Estimate correlation between a candidate trade and an open position.
 
-    Returns None for same-market positions (flip — handled by flip-trading logic,
-    not by the concurrent multiplier).
+    The base rho (±0.75 / ±0.25) is scaled by ``position_size / max_single_usd`` so a
+    tiny $0.50 leftover position contributes ~0.04 of correlation, not the full 0.75.
+    A full-sized position contributes the full base rho. Returns None for same-market
+    positions (flip — handled by flip-trading logic, not by this multiplier).
     """
     if open_position.get("market_id") == new_market_id:
         return None
@@ -34,22 +37,29 @@ def estimate_correlation(new_side: str, new_market_id: str,
     new = new_side.lower()
     if not open_side or new not in ("up", "down"):
         return None
-    return _CORR_SAME_SIDE if open_side == new else _CORR_OPPOSITE_SIDE
+    base_rho = _CORR_SAME_SIDE if open_side == new else _CORR_OPPOSITE_SIDE
+    if max_single_usd > 0:
+        pos_size = float(open_position.get("size", 0) or 0)
+        size_weight = max(0.0, min(1.0, pos_size / max_single_usd))
+        return base_rho * size_weight
+    return base_rho
 
 
 def concurrent_multiplier(new_side: str, new_market_id: str,
-                          open_positions: Iterable[dict[str, Any]]) -> float:
+                          open_positions: Iterable[dict[str, Any]],
+                          max_single_usd: float = 0.0) -> float:
     """Kelly multiplier for a new position given the current book of opens.
 
     Picks the worst (highest) correlation among open positions and maps it to a
-    sizing multiplier. Highly-correlated same-side concurrents get deeply discounted;
-    anti-correlated opposite-side concurrents get near-full sizing (the book is hedging).
+    sizing multiplier. When ``max_single_usd`` is supplied, correlations are
+    size-weighted so tiny residual positions don't penalize the new entry the
+    same as a full-size concurrent would.
 
     Returns 1.0 when no open positions (or none comparable — e.g., only a same-market flip).
     """
     correlations = [
         rho for p in open_positions
-        if (rho := estimate_correlation(new_side, new_market_id, p)) is not None
+        if (rho := estimate_correlation(new_side, new_market_id, p, max_single_usd)) is not None
     ]
     if not correlations:
         return 1.0

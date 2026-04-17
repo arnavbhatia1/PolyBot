@@ -1,12 +1,15 @@
 """Tiered floor circuit breaker — locks in a protected floor at each bankroll milestone.
 
 Every time the bankroll crosses a tier (100, 150, 200, 300, ...) the floor is
-raised to floor_pct of that tier. The floor never moves down. Kelly scales linearly
-from 1.0 at the locked tier to min_multiplier at the floor.
+raised to floor_pct of that tier. The floor never moves down. Kelly scales concavely
+from 1.0 at the locked tier to min_multiplier at the floor, so shallow drawdowns
+(noise in a 58% model) penalize lightly while deep drawdowns (real regime break)
+penalize aggressively.
 """
 from __future__ import annotations
 
 import logging
+import math
 
 logger = logging.getLogger("polybot")
 
@@ -80,16 +83,25 @@ class CircuitBreaker:
 
     @property
     def kelly_multiplier(self) -> float:
-        """1.0 at/above tier, min_multiplier at/below floor, linear between."""
+        """1.0 at/above tier, min_multiplier at/below floor, concave (sqrt) between.
+
+        Shallow drawdowns are mostly noise in a 58% model (3 losses in a row is ~7%
+        probability per window). Concave curve keeps Kelly near 1.0 for small
+        drawdowns and reserves the aggressive cut for deep drawdowns that are more
+        likely to reflect a real regime break.
+
+        Comparison at midpoint of a $100 tier / $85 floor:
+          Linear:  0.40 + 0.60 × 0.50        = 0.70
+          Concave: 0.40 + 0.60 × √0.50 ≈ 0.82
+        """
         b = self.current_bankroll
         if b >= self.locked_tier:
             return 1.0
         if b <= self.floor:
             return self.min_multiplier
-        # Linear: 1.0 at locked_tier, min_multiplier at floor
         span = self.locked_tier - self.floor
         ratio = (b - self.floor) / span
-        return self.min_multiplier + (1.0 - self.min_multiplier) * ratio
+        return self.min_multiplier + (1.0 - self.min_multiplier) * math.sqrt(ratio)
 
     def update_bankroll(self, amount: float) -> None:
         """Update current bankroll; ratchet the floor up if a new tier is crossed."""

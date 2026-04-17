@@ -18,6 +18,7 @@ execution:
   max_concurrent_positions: 2  # Allow hedged Up+Down positions
   max_book_fill_pct: 0.50     # Cap order to 50% of available ask depth (realistic fills)
   slippage_impact_pct: 0.03   # 3% price impact at 100% depth consumption. Tune vs live fills.
+  backtest_realism_factor: 0.85  # Per-trade gain_pct multiplier inside _kelly_bankroll_returns — paper's instant-fill physics overstates live Sharpe by ~15%, so discount candidate backtest returns by this factor.
   # --- Paper-mode realism: simulates live CLOB match latency + book walk + FOK rejects ---
   paper_latency_mean_s: 1.5       # mean order-to-fill latency (Polymarket typical: 0.5-3s)
   paper_latency_jitter_s: 0.8     # gaussian stddev — wider = more unpredictable fill timing

@@ -130,6 +130,13 @@ class AgentScheduler:
         min_atr = getattr(self.signal_engine, 'min_atr', 8.0) if self.signal_engine else 8.0
         logit_scale = getattr(self.signal_engine, 'logit_scale', 4.0) if self.signal_engine else 4.0
         max_flow_logit = 0.35  # same multicollinearity cap signal_engine uses
+        # Execution-realism penalty: paper/backtest fills at the tick price with no
+        # latency/slippage/rejects. Live fills eat ~10-20% of the apparent edge. The
+        # factor compresses returns so adoption decisions reflect what's recoverable
+        # in production, not what's visible in instant-fill backtest physics.
+        realism_factor = 1.0
+        if self._config:
+            realism_factor = float(self._config.get("execution", {}).get("backtest_realism_factor", 1.0))
         returns: list[float] = []
 
         for o in outcomes:
@@ -233,7 +240,7 @@ class AgentScheduler:
             if kelly_frac < min_kelly:
                 continue
 
-            returns.append(kelly_frac * o.get("gain_pct", 0.0))
+            returns.append(kelly_frac * o.get("gain_pct", 0.0) * realism_factor)
 
         return returns
 
@@ -387,6 +394,7 @@ class AgentScheduler:
             current_sharpe, candidate_sharpe,
             n_trades=len(all_candidate_returns),
             fold_sharpes=fold_sharpes,
+            candidate_returns=all_candidate_returns,
         )
 
         if adopt:
@@ -595,9 +603,12 @@ class AgentScheduler:
         # Platt calibration fitting. Adoption is gated on Kelly-sized-Sharpe of validation
         # trades (matches production PnL dynamics), not log-loss. Log-loss kept for telemetry.
         platt_info: dict[str, Any] = {"decision": "skipped"}
-        from polybot.agents.weight_optimizer import _sharpe
+        from polybot.agents.weight_optimizer import _sharpe, _sharpe_z_test
         from polybot.core.calibrator import PlattCalibrator, compute_log_loss
-        MIN_PLATT_VALIDATION_TRADES = 20
+        # Raised from 20 — Sharpe on 20 samples has huge variance, which meant small-
+        # sample noise was driving some Platt adoptions. 50 pushes the noise floor down.
+        MIN_PLATT_VALIDATION_TRADES = 50
+        PLATT_Z_FLOOR = 1.0  # additional gate: require statistically non-trivial improvement
         if len(train_outcomes) >= 200 and self.signal_engine:
             cal_probs = []
             cal_outcomes = []
@@ -669,6 +680,11 @@ class AgentScheduler:
 
                     insufficient = (len(old_returns) < MIN_PLATT_VALIDATION_TRADES
                                     or len(new_returns) < MIN_PLATT_VALIDATION_TRADES)
+                    # Z-test of Sharpe improvement — gated in addition to `new > old`
+                    # so small-sample noise doesn't drive adoption.
+                    n_for_z = min(len(old_returns), len(new_returns))
+                    z_score = _sharpe_z_test(old_kelly_sharpe, new_kelly_sharpe, n_for_z) if n_for_z else 0.0
+                    platt_info["z_score"] = round(z_score, 3)
                     if insufficient:
                         platt_info["decision"] = "rejected"
                         platt_info["reason"] = (f"validation trades below {MIN_PLATT_VALIDATION_TRADES} "
@@ -677,19 +693,22 @@ class AgentScheduler:
                             f"Platt calibration rejected: insufficient validation trades "
                             f"(old={len(old_returns)}, new={len(new_returns)})"
                         )
-                    elif new_kelly_sharpe > old_kelly_sharpe:
+                    elif new_kelly_sharpe > old_kelly_sharpe and z_score >= PLATT_Z_FLOOR:
                         platt_info["decision"] = "adopted"
                         cal.save()
                         self.signal_engine.calibrator = cal
                         logger.info(
                             f"Platt calibration adopted: kelly_sharpe {old_kelly_sharpe:.4f} -> "
-                            f"{new_kelly_sharpe:.4f} (log-loss {old_loss:.4f} -> {new_loss:.4f})"
+                            f"{new_kelly_sharpe:.4f} (z={z_score:.2f}, log-loss {old_loss:.4f} -> {new_loss:.4f})"
                         )
                     else:
                         platt_info["decision"] = "rejected"
+                        reason = ("below z-floor" if new_kelly_sharpe > old_kelly_sharpe
+                                  else "no Sharpe improvement")
+                        platt_info["reason"] = f"{reason} (z={z_score:.2f}, need >= {PLATT_Z_FLOOR})"
                         logger.info(
                             f"Platt calibration rejected: kelly_sharpe {old_kelly_sharpe:.4f} -> "
-                            f"{new_kelly_sharpe:.4f} (log-loss {old_loss:.4f} -> {new_loss:.4f})"
+                            f"{new_kelly_sharpe:.4f} (z={z_score:.2f}, log-loss {old_loss:.4f} -> {new_loss:.4f})"
                         )
         pipeline_info["platt"] = platt_info
 
