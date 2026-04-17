@@ -821,31 +821,30 @@ async def _evaluate_signal_and_enter(
     )
 
     if result.success:
+        # Use the actual fill price (may differ from signal-moment price due to
+        # paper trader latency + book-walk, or live FOK slippage).
+        fill_price = result.fill_price if result.fill_price > 0 else price
+        slip_note = f"  [filled @ {fill_price:.3f} vs signal {price:.3f}]" if abs(fill_price - price) > 0.001 else ""
+
         # Update flip state: record this token as active, track side
         flip_state["last_side"] = side
-        shares_ordered = size / price
-        fee_shares = entry_fee_shares(shares_ordered, price, fee_rate)
-        fee_usd = fee_shares * price
-        # Log fill vs last actual trade for realism validation
-        last_trade_info = ""
-        if clob_ws:
-            lt = clob_ws.last_trade.get(token_id, {})
-            if lt.get("price"):
-                last_trade_info = f" last_trade={lt['price']}"
+        shares_ordered = size / fill_price
+        fee_shares = entry_fee_shares(shares_ordered, fill_price, fee_rate)
+        fee_usd = fee_shares * fill_price
         bankroll_now = await db.get_bankroll()
         logger.info(
             f"{_C.GREEN}{'=' * 60}{_C.RESET}\n"
-            f"  {_C.GREEN}{_C.BOLD}OPEN {side}{_C.RESET}  @ {price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}\n"
+            f"  {_C.GREEN}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}{slip_note}\n"
             f"  {contract.get('question', cid)}  [{entry_phase['phase']}]\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}")
         if _adverse_monitor:
-            mkt_mid = (price_up + price_down) / 2 if price_up + price_down > 0 else price
-            _adverse_monitor.record_fill(side=side, fill_price=price, token_id=token_id, midprice=mkt_mid)
+            mkt_mid = (price_up + price_down) / 2 if price_up + price_down > 0 else fill_price
+            _adverse_monitor.record_fill(side=side, fill_price=fill_price, token_id=token_id, midprice=mkt_mid)
         if alert_manager:
             mkt_price = price_up if side == "Up" else price_down
             await alert_manager.send_trade_opened(
                 question=contract["question"], side=side, size=size,
-                entry_price=price, ev=signal.edge, exit_target=1.0,
+                entry_price=fill_price, ev=signal.edge, exit_target=1.0,
                 model_prob=signal.prob, market_price=mkt_price,
                 fee=fee_usd, flow=flow_score, bankroll=bankroll_now)
         return cid, last_eval_log_window

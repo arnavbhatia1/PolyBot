@@ -27,6 +27,7 @@ class TradeResult:
     exit_fee_usd: float = 0.0
     gain_pct: float = 0.0
     shares: float = 0.0
+    fill_price: float = 0.0  # actual fill price after latency/book-walk (may differ from signal-moment ask)
 
 
 @dataclass
@@ -196,7 +197,7 @@ class BaseTrader(ABC):
         # Bankroll debit = USDC spent only (fee is in shares, not extra USDC)
         await self.db.set_bankroll(bankroll - fill.fill_size)
 
-        return TradeResult(success=True, position_id=pos_id)
+        return TradeResult(success=True, position_id=pos_id, fill_price=fill.fill_price)
 
     # -- close_trade -----------------------------------------------------
 

@@ -20,8 +20,8 @@ execution:
   slippage_impact_pct: 0.03   # 3% price impact at 100% depth consumption. Tune vs live fills.
   backtest_realism_factor: 0.85  # Per-trade gain_pct multiplier inside _kelly_bankroll_returns — paper's instant-fill physics overstates live Sharpe by ~15%, so discount candidate backtest returns by this factor.
   # --- Paper-mode realism: simulates live CLOB match latency + book walk + FOK rejects ---
-  paper_latency_mean_s: 1.5       # mean order-to-fill latency (Polymarket typical: 0.5-3s)
-  paper_latency_jitter_s: 0.8     # gaussian stddev — wider = more unpredictable fill timing
+  paper_latency_mean_s: 0.4       # mean order-to-fill latency (~Spain VPN to Polymarket US: 150-400ms typical)
+  paper_latency_jitter_s: 0.2     # gaussian stddev — tighter now that we're calibrated to actual VPN RTT
   paper_network_fail_rate: 0.02   # fraction of orders that simulate transient network errors
   initial_bankroll: 100.0
   use_maker_orders: false       # FOK only — 60s maker timeout wastes 30% of window. Fee savings ($0.045) < timing cost.
