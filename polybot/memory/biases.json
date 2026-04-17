@@ -1,22 +1,22 @@
 {
   "per_indicator": {
     "rsi": {
-      "accuracy": 0.5264,
-      "bullish_accuracy": 0.5417,
-      "bearish_accuracy": 0.5114,
-      "sample_size": 435
+      "accuracy": 0.5462,
+      "bullish_accuracy": 0.557,
+      "bearish_accuracy": 0.5357,
+      "sample_size": 606
     },
     "macd": {
-      "accuracy": 0.547,
+      "accuracy": 0.5654,
       "bullish_accuracy": 0.5556,
-      "bearish_accuracy": 0.5393,
-      "sample_size": 362
+      "bearish_accuracy": 0.5741,
+      "sample_size": 497
     },
     "stochastic": {
-      "accuracy": 0.532,
-      "bullish_accuracy": 0.5371,
-      "bearish_accuracy": 0.5263,
-      "sample_size": 438
+      "accuracy": 0.5541,
+      "bullish_accuracy": 0.5594,
+      "bearish_accuracy": 0.548,
+      "sample_size": 601
     },
     "obv": {
       "accuracy": 0.6667,
@@ -25,99 +25,107 @@
       "sample_size": 3
     },
     "vwap": {
-      "accuracy": 0.5442,
-      "bullish_accuracy": 0.5,
-      "bearish_accuracy": 0.5939,
-      "sample_size": 419
+      "accuracy": 0.5616,
+      "bullish_accuracy": 0.5212,
+      "bearish_accuracy": 0.6065,
+      "sample_size": 584
     }
   },
   "side_analysis": {
     "up": {
-      "win_rate": 0.515,
-      "avg_gain_pct": 0.092589,
-      "count": 334
+      "win_rate": 0.5272,
+      "avg_gain_pct": 0.076511,
+      "count": 404
     },
     "down": {
-      "win_rate": 0.5871,
-      "avg_gain_pct": 0.140532,
-      "count": 155
+      "win_rate": 0.6073,
+      "avg_gain_pct": 0.144893,
+      "count": 275
     }
   },
   "edge_calibration": {
-    "10-20%": {
-      "win_rate": 0.5378,
-      "count": 489
+    "4-8%": {
+      "win_rate": 0.5723,
+      "count": 159
+    },
+    "8-12%": {
+      "win_rate": 0.5398,
+      "count": 176
+    },
+    "12-20%": {
+      "win_rate": 0.564,
+      "count": 344
     }
   },
   "time_patterns": {
     "0-60s": {
-      "win_rate": 0.7273,
-      "count": 22
+      "win_rate": 0.6452,
+      "count": 31
     },
     "60-180s": {
-      "win_rate": 0.5231,
-      "count": 65
+      "win_rate": 0.486,
+      "count": 107
     },
     "180-300s": {
-      "win_rate": 0.5299,
-      "count": 402
+      "win_rate": 0.5693,
+      "count": 541
     }
   },
   "volatility_patterns": {
     "low_atr": {
-      "win_rate": 0.3841,
-      "count": 164
+      "win_rate": 0.4956,
+      "count": 228
     },
     "mid_atr": {
-      "win_rate": 0.5951,
-      "count": 163
+      "win_rate": 0.5822,
+      "count": 225
     },
     "high_atr": {
-      "win_rate": 0.6358,
-      "count": 162
+      "win_rate": 0.6018,
+      "count": 226
     }
   },
   "overall": {
-    "total_trades": 489,
-    "win_rate": 0.5378,
-    "avg_edge": 0.1326,
-    "avg_gain_pct": 0.107786,
-    "sharpe": 0.2107
+    "total_trades": 679,
+    "win_rate": 0.5596,
+    "avg_edge": 0.1239,
+    "avg_gain_pct": 0.104206,
+    "sharpe": 0.1689
   },
   "by_regime": {
     "volatile": {
-      "n": 64,
-      "win_rate": 0.5781,
-      "avg_edge": 0.1175,
-      "avg_gain_pct": 0.16265
+      "n": 87,
+      "win_rate": 0.6207,
+      "avg_edge": 0.1131,
+      "avg_gain_pct": 0.150607
     },
     "neutral": {
-      "n": 381,
-      "win_rate": 0.5276,
-      "avg_edge": 0.1334,
-      "avg_gain_pct": 0.101644
+      "n": 528,
+      "win_rate": 0.5492,
+      "avg_edge": 0.1248,
+      "avg_gain_pct": 0.099712
     },
     "mean_reverting": {
-      "n": 22,
-      "win_rate": 0.6364,
-      "avg_edge": 0.136,
-      "avg_gain_pct": 0.112517
+      "n": 28,
+      "win_rate": 0.6429,
+      "avg_edge": 0.1286,
+      "avg_gain_pct": 0.148157
     },
     "trending": {
-      "n": 22,
+      "n": 36,
       "win_rate": 0.5,
-      "avg_edge": 0.1602,
-      "avg_gain_pct": 0.049809
+      "avg_edge": 0.1341,
+      "avg_gain_pct": 0.0238
     }
   },
   "edge_realization_quartiles": [
-    1.845,
-    1.142,
-    0.834,
-    0.221
+    2.013,
+    0.486,
+    1.471,
+    0.142
   ],
   "time_weighted": {
-    "win_rate": 0.5376,
-    "sharpe": 0.2106
+    "win_rate": 0.5601,
+    "sharpe": 0.1674
   }
 }

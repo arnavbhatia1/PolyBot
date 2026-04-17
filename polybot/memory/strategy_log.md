@@ -42,3 +42,22 @@
 - Recent scalps show string of large losses (-28% to -38%) suggesting exits are too slow not too fast
 
 **Reasoning:** The model_probability distribution shift (63%→50%) combined with a negative SPRT signal suggests the model is losing its edge — raising atr_sigma_ratio to 1.8 makes probabilities more conservative to reduce marginal trades. The exit threshold is tightened slightly to -0.04 since scalp accuracy is only 52% (well below the 60% hold-longer trigger), but the recent large scalp losses suggest we need faster exits on deteriorating positions rather than slower. Kelly fraction is trimmed to 0.12 to redu...
+
+## 2026-04-17T04:05:47.618272+00:00
+
+**Source:** Claude (medium) | **Weights:** rsi=0.16, macd=0.29, stochastic=0.19, obv=0.10, vwap=0.26
+**Params:** momentum_weight=-0.03, regime_weight=0.04, flow_weight=0.06, student_t_df=5, min_edge=0.04, min_kelly=0.018, atr_sigma_ratio=1.6, kelly_fraction=0.13, min_model_probability=0.62, exit_edge_threshold=-0.03, min_time_remaining=30.0, trading_start_hour_et=0, trading_end_hour_et=23, trading_end_minute=59
+
+**Findings:**
+- Down trades win 61% vs Up at 53% — bearish signals consistently outperforming
+- Low ATR regime loses money at 50% WR — calm markets are killing edge
+- Highest-edge trades realizing only 14 cents per dollar — model is overconfident at top
+- Scalp accuracy only 51% — exits are essentially random, hold positions longer
+- VWAP bearish signal hits 61% accuracy — strongest directional predictor in the model
+
+**Warnings:**
+- SPRT negative with 0% edge entries last 50 trades — possible model regime breakdown
+- Model probability collapsed from 59% to 44% recently — many low-confidence trades slipping through
+- Trending regime wins only 50% — avoid or discount trending regime signals
+
+**Reasoning:** The Q4 edge overconfidence (14 cents realized per dollar predicted) combined with model_probability distribution collapse signals systematic overconfidence at high-edge entries, so atr_sigma_ratio is raised to 1.6 and min_model_probability tightened to 0.62 to filter marginal trades. Scalp accuracy at 51% is essentially random, so exit_edge_threshold is tightened to -0.03 to hold winning positions longer rather than premature scalping. VWAP and MACD are the most predictive indicators so their we...
