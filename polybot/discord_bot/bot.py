@@ -72,11 +72,12 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         bankroll = await bot.db.get_bankroll()
         open_positions = await bot.db.get_open_positions()
         today_et = datetime.now(_ET).strftime("%Y-%m-%d")
-        _, _, _, pnl_24h = await bot.db.get_day_stats(today_et)
+        day_wins, day_losses, _, pnl_24h = await bot.db.get_day_stats(today_et)
 
         # Lifetime performance
         trades = await bot.db.get_trade_history(limit=2000)
         pnls, gain_pcts = [], []
+        today_gain_pcts = []
         for t in trades:
             size = t.get("size", 0)
             entry_p = t.get("entry_price", 0)
@@ -88,7 +89,12 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             else:
                 pnl = 0
             pnls.append(pnl)
-            gain_pcts.append(pnl / size if size > 0 else 0)
+            gp = pnl / size if size > 0 else 0
+            gain_pcts.append(gp)
+            # Bucket today's trades for daily Sharpe/WR
+            exit_ts = t.get("exit_timestamp", "")
+            if exit_ts and exit_ts[:10] == today_et:
+                today_gain_pcts.append(gp)
 
         total = len(pnls)
         wins = sum(1 for p in pnls if p > 0)
@@ -98,6 +104,16 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         var_r = sum((r - mean_r) ** 2 for r in gain_pcts) / total if total > 1 else 1
         sharpe = mean_r / math.sqrt(var_r) if var_r > 0 else 0
 
+        # Today's Sharpe
+        day_total = day_wins + day_losses
+        day_wr = day_wins / day_total if day_total else 0
+        if len(today_gain_pcts) > 1:
+            m = sum(today_gain_pcts) / len(today_gain_pcts)
+            v = sum((r - m) ** 2 for r in today_gain_pcts) / len(today_gain_pcts)
+            day_sharpe = m / math.sqrt(v) if v > 0 else 0
+        else:
+            day_sharpe = 0
+
         # Build message
         state = "PAUSED" if bot.is_paused else "ACTIVE"
         mode = bot.config.get("mode", "paper").upper()
@@ -106,7 +122,8 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
 
         lines = [
             f"**PolyBot** `{mode}` | `{state}`",
-            f"Bankroll: `${bankroll:.2f}` | Today: `{pnl_sign}${pnl_24h:.2f}`",
+            f"Bankroll: `${bankroll:.2f}`",
+            f"Today: `{pnl_sign}${pnl_24h:.2f}` | `{day_wr:.0%}` WR ({day_wins}W/{day_losses}L) | Sharpe: `{day_sharpe:.3f}`",
             f"All-time: `{total_sign}${total_pnl:.2f}` | WR: `{win_rate:.0%}` ({total} trades) | Sharpe: `{sharpe:.3f}`",
         ]
 
