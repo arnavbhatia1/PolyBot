@@ -1,0 +1,31 @@
+{
+  "position_id": 1164,
+  "market_id": "btc-updown-5m-1776406500",
+  "side": "Down",
+  "weight_version": "weights_v001",
+  "timestamp": "2026-04-17T06:22:19.327784+00:00",
+  "actual": {
+    "exit_reason": "hold",
+    "exit_price": 1.0,
+    "pnl": 11.70373,
+    "gain_pct": 3.287565
+  },
+  "counterfactual": {
+    "exit_reason": "hypothetical_scalp",
+    "exit_price": 0.09,
+    "pnl": -2.208766,
+    "gain_pct": -0.62044
+  },
+  "delta_pnl": 13.912496,
+  "hold_was_optimal": true,
+  "context_at_worst_moment": {
+    "holding_edge": 0.08166614767555733,
+    "model_prob": 0.17166614767555732,
+    "market_price": 0.09,
+    "seconds_remaining": 23.124735,
+    "exit_threshold_used": -0.05,
+    "strike_price": 74763.99767578847,
+    "btc_at_worst": 74798.86,
+    "worst_at": 1776406777.1033556
+  }
+}
