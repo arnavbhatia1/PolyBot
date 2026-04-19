@@ -146,13 +146,76 @@ class GhostTracker:
         return resolved
 
     def load_all(self) -> list[dict[str, Any]]:
+        """Load all resolved ghost records, handling individual and rollup files."""
         records = []
+        seen: set = set()
         for fp in self._dir.glob("*.json"):
             try:
-                records.append(json.loads(fp.read_text()))
+                raw = json.loads(fp.read_text())
+                items = raw if isinstance(raw, list) else [raw]
+                for item in items:
+                    key = (item.get("market_id", ""), item.get("gate_name", ""), item.get("recorded_at", 0))
+                    if key not in seen:
+                        seen.add(key)
+                        records.append(item)
             except (json.JSONDecodeError, OSError):
                 pass
         return sorted(records, key=lambda x: x.get("timestamp", ""))
+
+    def rollup_old_ghosts(self) -> int:
+        """Roll up previous days' resolved ghost files into one file per day.
+
+        Same pattern as outcome rollup — keeps git manageable at high ghost volumes.
+        Only touches resolved ghosts from before today. Returns number rolled up.
+        """
+        from collections import defaultdict
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        files_by_date: dict[str, list[Path]] = defaultdict(list)
+
+        for fp in self._dir.glob("*.json"):
+            if fp.name.startswith("rollup_"):
+                continue
+            try:
+                data = json.loads(fp.read_text())
+                if isinstance(data, list):
+                    continue
+                if not data.get("resolved", False):
+                    continue
+                ts = data.get("timestamp", "")
+                date = ts[:10] if ts else ""
+                if date and date < today:
+                    files_by_date[date].append(fp)
+            except Exception:
+                pass
+
+        rolled = 0
+        for date, fps in files_by_date.items():
+            rollup_path = self._dir / f"rollup_{date}.json"
+            existing: list[dict] = []
+            if rollup_path.exists():
+                try:
+                    existing = json.loads(rollup_path.read_text())
+                except Exception:
+                    existing = []
+            existing_keys = {(o.get("market_id"), o.get("gate_name"), o.get("recorded_at")) for o in existing}
+            new_records = []
+            for fp in fps:
+                try:
+                    d = json.loads(fp.read_text())
+                    key = (d.get("market_id"), d.get("gate_name"), d.get("recorded_at"))
+                    if key not in existing_keys:
+                        new_records.append(d)
+                except Exception:
+                    pass
+            combined = sorted(existing + new_records, key=lambda x: x.get("timestamp", ""))
+            tmp = rollup_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(combined, indent=2))
+            tmp.rename(rollup_path)
+            for fp in fps:
+                fp.unlink(missing_ok=True)
+            rolled += len(fps)
+
+        return rolled
 
     def _save(self, record: dict[str, Any]) -> None:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")

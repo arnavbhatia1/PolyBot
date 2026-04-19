@@ -593,7 +593,11 @@ class AgentScheduler:
         # folds of the remaining 40% (each fold is genuinely out-of-sample).
         rolled = self.outcome_reviewer.rollup_old_outcomes()
         if rolled:
-            logger.info(f"Daily rollup: consolidated {rolled} individual outcome files")
+            logger.info(f"Daily rollup: consolidated {rolled} outcome files")
+        if self.ghost_tracker:
+            ghost_rolled = self.ghost_tracker.rollup_old_ghosts()
+            if ghost_rolled:
+                logger.info(f"Daily rollup: consolidated {ghost_rolled} ghost files")
         all_outcomes = self.outcome_reviewer.load_all_outcomes()
         split_idx = max(1, int(len(all_outcomes) * 0.6))
         train_outcomes = all_outcomes[:split_idx]
