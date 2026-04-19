@@ -98,8 +98,11 @@ def test_edge_calibration_with_trade_context(detector):
     ]
     result = detector.detect(outcomes)
     cal = result["edge_calibration"]
-    assert "10-20%" in cal
-    assert cal["10-20%"]["count"] == 2
+    # Buckets: "4-8%", "8-12%", "12-20%", "20%+". Edge 0.12 → "12-20%", 0.15 → "12-20%", 0.25 → "20%+"
+    assert "12-20%" in cal
+    assert cal["12-20%"]["count"] == 2
+    assert "20%+" in cal
+    assert cal["20%+"]["count"] == 1
 
 def test_time_patterns_with_trade_context(detector):
     outcomes = [
