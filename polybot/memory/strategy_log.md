@@ -80,3 +80,22 @@
 - Trending regime wins only 46% — regime signal is actively losing money when trending
 
 **Reasoning:** ATR has collapsed 40% (35 to 21) putting us firmly in low-volatility territory where our win rate drops to 50% — raising atr_sigma_ratio to 1.6 and min_model_probability to 0.62 filters out marginal trades in this regime. Scalp accuracy at 49.7% is essentially random, so tightening exit_edge_threshold to -0.03 forces holding positions longer rather than premature exits. MACD and VWAP continue to outperform RSI and OBV, so weights shift incrementally toward those indicators while staying within c...
+
+## 2026-04-19T04:05:50.383144+00:00
+
+**Source:** Claude (medium) | **Weights:** rsi=0.18, macd=0.27, stochastic=0.22, obv=0.10, vwap=0.23
+**Params:** momentum_weight=-0.03, regime_weight=0.04, flow_weight=0.07, student_t_df=5, min_edge=0.04, min_kelly=0.018, atr_sigma_ratio=1.6, kelly_fraction=0.13, min_model_probability=0.62, exit_edge_threshold=-0.03, min_time_remaining=30.0, trading_start_hour_et=0, trading_end_hour_et=23, trading_end_minute=59
+
+**Findings:**
+- Down trades win 60% vs Up at 54% — bearish bias is consistent and exploitable
+- Trending regime wins only 49% — avoid or fade trending signals
+- Q4 highest-edge trades realize only 22% of predicted edge — model is overconfident at top
+- Scalp exits only correct 49% of the time — holding longer beats scalping
+- Mid/high ATR regimes win 58%+ while low ATR wins just 53% — volatility helps us
+
+**Warnings:**
+- ATR collapsed from 33 to 12 recently — current low-vol environment cuts win rate sharply
+- SPRT negative last 50 trades — model edge may be impaired in current conditions
+- Q4 edge severely underperforming — reduce kelly_fraction to avoid overbetting big-edge trades
+
+**Reasoning:** The current low-ATR environment is the dominant risk — win rates drop to 53% in low volatility, and the SPRT is negative, so holding atr_sigma_ratio at 1.6 and min_model_probability at 0.62 is correct to filter marginal trades. Scalp accuracy at 49% is coin-flip territory so keeping exit_edge_threshold at -0.03 to hold longer is right. Stochastic is the third-best indicator at 56.8% accuracy and was underweighted, so a small nudge up from 0.20 to 0.22 (offset by reducing OBV from 0.12 to 0.10, w...
