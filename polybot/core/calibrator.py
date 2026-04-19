@@ -49,8 +49,14 @@ class PlattCalibrator:
         return 1.0 / (1.0 + math.exp(self.a * logit + self.b))
 
     def fit(self, probs: list[float], outcomes: list[int],
-            min_samples: int = 200) -> bool:
-        """Fit calibration parameters from historical data. Returns True if successful."""
+            min_samples: int = 200,
+            sample_weights: list[float] | None = None) -> bool:
+        """Fit calibration parameters from historical data. Returns True if successful.
+
+        ``sample_weights`` applies recency or importance weights to each sample.
+        Both are applied multiplicatively in the log-likelihood, equivalent to
+        weighted MLE. If None, all samples are weighted equally.
+        """
         if len(probs) < min_samples:
             logger.info(f"Platt calibration: {len(probs)} samples < {min_samples} minimum, skipping")
             return False
@@ -58,12 +64,17 @@ class PlattCalibrator:
         probs_arr = np.clip(np.array(probs), 1e-6, 1 - 1e-6)
         outcomes_arr = np.array(outcomes, dtype=float)
         logits = np.log(probs_arr / (1 - probs_arr))
+        if sample_weights is not None and len(sample_weights) == len(probs):
+            w_arr = np.array(sample_weights, dtype=float)
+            w_arr = w_arr / w_arr.sum() * len(w_arr)  # normalise so total weight = n
+        else:
+            w_arr = np.ones(len(probs))
 
         def neg_log_likelihood(params):
             a, b_param = params
             p = 1.0 / (1.0 + np.exp(a * logits + b_param))
             p = np.clip(p, 1e-10, 1 - 1e-10)
-            return -np.sum(outcomes_arr * np.log(p) + (1 - outcomes_arr) * np.log(1 - p))
+            return -np.sum(w_arr * (outcomes_arr * np.log(p) + (1 - outcomes_arr) * np.log(1 - p)))
 
         result = minimize(neg_log_likelihood, x0=[-1.0, 0.0], method="L-BFGS-B")
         if result.success:

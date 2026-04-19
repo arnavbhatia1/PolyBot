@@ -35,6 +35,7 @@ class AgentScheduler:
         self._config: dict[str, Any] | None = config  # Full config dict — written back to settings.yaml after pipeline adoption
         self.counterfactual_tracker: Any = counterfactual_tracker
         self.pipeline_tracker: Any = pipeline_tracker
+        self.ghost_tracker: Any = None  # injected by main.py after construction
         self._exit_edge_threshold: float | None = None  # Set by main.py, updated by pipeline
         self._min_time_remaining: int | None = None   # Set by main.py, updated by pipeline
         self._trading_start: tuple[int, int] | None = None        # (hour, minute) ET — updated by pipeline
@@ -130,13 +131,13 @@ class AgentScheduler:
         min_atr = getattr(self.signal_engine, 'min_atr', 8.0) if self.signal_engine else 8.0
         logit_scale = getattr(self.signal_engine, 'logit_scale', 4.0) if self.signal_engine else 4.0
         max_flow_logit = 0.35  # same multicollinearity cap signal_engine uses
-        # Execution-realism penalty: paper/backtest fills at the tick price with no
-        # latency/slippage/rejects. Live fills eat ~10-20% of the apparent edge. The
-        # factor compresses returns so adoption decisions reflect what's recoverable
-        # in production, not what's visible in instant-fill backtest physics.
         realism_factor = 1.0
         if self._config:
             realism_factor = float(self._config.get("execution", {}).get("backtest_realism_factor", 1.0))
+        # Recency weighting: more recent trades carry more weight in the Sharpe estimate.
+        # Decay 0.995/day ≈ 50% half-life at 140 days. Applied symmetrically to baseline
+        # and candidate so relative comparisons remain valid; both see the same weighting.
+        now_ts = datetime.now(timezone.utc).timestamp()
         returns: list[float] = []
 
         for o in outcomes:
@@ -245,7 +246,16 @@ class AgentScheduler:
             if kelly_frac < min_kelly:
                 continue
 
-            returns.append(kelly_frac * o.get("gain_pct", 0.0) * realism_factor)
+            # Recency weight: recent trades count more (0.995^days_ago decay)
+            ts_str = o.get("exit_timestamp", o.get("timestamp", ""))
+            try:
+                from datetime import datetime as _dt2, timezone as _tz2
+                trade_ts = _dt2.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp() if ts_str else now_ts
+                days_ago = max(0.0, (now_ts - trade_ts) / 86400.0)
+            except Exception:
+                days_ago = 0.0
+            recency_w = 0.995 ** days_ago
+            returns.append(kelly_frac * o.get("gain_pct", 0.0) * realism_factor * recency_w)
 
         return returns
 
@@ -605,16 +615,29 @@ class AgentScheduler:
             except Exception:
                 pass
 
-        # Realized edge and fill slippage stats from outcomes
+        # Realized edge, fill slippage, and live fill rate stats
         realized_edges = [o.get("realized_edge", 0) for o in all_outcomes if o.get("realized_edge") is not None]
         fill_slippages = [o.get("fill_slippage", 0) for o in all_outcomes if o.get("fill_slippage") is not None]
+        exec_quality: dict[str, Any] = {}
         if realized_edges:
-            analysis["execution_quality"] = {
+            exec_quality.update({
                 "avg_realized_edge": round(sum(realized_edges) / len(realized_edges), 4),
                 "avg_fill_slippage": round(sum(fill_slippages) / len(fill_slippages), 4) if fill_slippages else 0,
                 "n_trades_with_data": len(realized_edges),
                 "pct_positive_slippage": round(sum(1 for s in fill_slippages if s > 0.001) / len(fill_slippages), 3) if fill_slippages else 0,
-            }
+            })
+        _fill_stats_path = _Path("polybot/memory/fill_stats.json")
+        if _fill_stats_path.exists():
+            try:
+                fill_stats = _json.loads(_fill_stats_path.read_text())
+                exec_quality["fok_fill_rate"] = fill_stats.get("fill_rate", None)
+                exec_quality["fok_total_attempts"] = fill_stats.get("total_attempts", 0)
+                exec_quality["fok_buy_fill_rate"] = round(
+                    fill_stats.get("buy_fills", 0) / max(fill_stats.get("buy_attempts", 1), 1), 4)
+            except Exception:
+                pass
+        if exec_quality:
+            analysis["execution_quality"] = exec_quality
 
         # Counterfactual analysis: how accurate are our scalp exits?
         cf_info: dict[str, Any] = {}
@@ -630,6 +653,15 @@ class AgentScheduler:
                 logger.info(f"Counterfactual analysis: {cf_info['total']} scalps tracked, "
                            f"accuracy={cf_info['accuracy']:.0%}")
         pipeline_info["counterfactual"] = cf_info
+
+        # Ghost trade analysis: which downstream gates are blocking profitable trades?
+        ghost_tracker = getattr(self, 'ghost_tracker', None)
+        if ghost_tracker:
+            ghosts = ghost_tracker.load_all()
+            resolved_ghosts = [g for g in ghosts if g.get("resolved", False)]
+            if resolved_ghosts:
+                analysis["ghost_analysis"] = self.bias_detector.analyze_ghosts(resolved_ghosts)
+                logger.info(f"Ghost analysis: {len(resolved_ghosts)} resolved ghost trades")
 
         # Platt calibration fitting. Adoption is gated on Kelly-sized-Sharpe of validation
         # trades (matches production PnL dynamics), not log-loss. Log-loss kept for telemetry.
@@ -655,7 +687,21 @@ class AgentScheduler:
                 if self.signal_engine.calibrator:
                     cal.a = self.signal_engine.calibrator.a
                     cal.b = self.signal_engine.calibrator.b
-                if cal.fit(cal_probs, cal_outcomes):
+                # Recency weights for Platt fitting — recent outcomes carry more signal
+                platt_now_ts = datetime.now(timezone.utc).timestamp()
+                cal_weights = []
+                for o in train_outcomes:
+                    ctx2 = o.get("indicator_snapshot", {}).get("trade_context", {})
+                    if ctx2.get("model_probability_raw", ctx2.get("model_probability", 0)) <= 0:
+                        continue
+                    ts2 = o.get("exit_timestamp", o.get("timestamp", ""))
+                    try:
+                        t2 = datetime.fromisoformat(ts2.replace("Z", "+00:00")).timestamp() if ts2 else platt_now_ts
+                        w2 = 0.995 ** max(0.0, (platt_now_ts - t2) / 86400.0)
+                    except Exception:
+                        w2 = 1.0
+                    cal_weights.append(w2)
+                if cal.fit(cal_probs, cal_outcomes, sample_weights=cal_weights):
                     val_probs, val_outs = [], []
                     for o in validation_outcomes:
                         ctx = o.get("indicator_snapshot", {}).get("trade_context", {})

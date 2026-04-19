@@ -57,6 +57,9 @@ class BiasDetector:
             "by_regime": self._analyze_by_regime(outcomes),
             "edge_realization_quartiles": self._analyze_edge_realization(outcomes),
             "time_weighted": self._analyze_time_weighted(outcomes),
+            "calibration_curve": self._analyze_calibration_curve(outcomes),
+            "time_to_resolution": self._analyze_time_to_resolution(outcomes),
+            "cross_window_correlation": self._analyze_cross_window_correlation(outcomes),
         }
 
     def _analyze_indicators(self, outcomes: list[dict[str, Any]], min_samples: int) -> dict[str, Any]:
@@ -399,6 +402,173 @@ class BiasDetector:
             "avg_gain_pct": round(avg_ret, 6),
             "sharpe": sharpe,
         }
+
+    def _analyze_calibration_curve(self, outcomes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Reliability diagram: bucket model probabilities and compare to actual win rates.
+
+        Shows where the model is over- or under-confident. Each bucket reports
+        expected_win_rate (midpoint of the probability range) vs actual_win_rate.
+        """
+        buckets: dict[tuple[float, float], list[bool]] = {}
+        edges_pct = [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.01]
+        for i in range(len(edges_pct) - 1):
+            buckets[(edges_pct[i], edges_pct[i + 1])] = []
+
+        for o in outcomes:
+            ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
+            raw = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
+            if not raw:
+                continue
+            for (lo, hi), bucket in buckets.items():
+                if lo <= raw < hi:
+                    bucket.append(bool(o.get("correct", False)))
+                    break
+
+        result = []
+        for (lo, hi), bucket in buckets.items():
+            if len(bucket) < 3:
+                continue
+            actual_wr = sum(bucket) / len(bucket)
+            expected_wr = (lo + hi) / 2
+            result.append({
+                "bucket": f"{lo:.0%}-{hi:.0%}",
+                "n": len(bucket),
+                "actual_win_rate": round(actual_wr, 4),
+                "expected_win_rate": round(expected_wr, 4),
+                "calibration_error": round(actual_wr - expected_wr, 4),
+            })
+        return result
+
+    def _analyze_time_to_resolution(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Scalp timing analysis: at what seconds_remaining do scalps tend to be profitable?
+
+        For scalps: records seconds_remaining_at_exit and outcome. Identifies the
+        windows in which scalping adds value vs waiting for resolution.
+        """
+        buckets: dict[str, list[float]] = {
+            "0-30s": [], "30-60s": [], "60-120s": [], "120-180s": [], "180-300s": []
+        }
+        scalp_count = 0
+        for o in outcomes:
+            if o.get("exit_reason") != "scalp":
+                continue
+            scalp_count += 1
+            secs = o.get("seconds_remaining_at_exit", 0.0)
+            gp = _get_gain_pct(o)
+            if secs < 30:
+                buckets["0-30s"].append(gp)
+            elif secs < 60:
+                buckets["30-60s"].append(gp)
+            elif secs < 120:
+                buckets["60-120s"].append(gp)
+            elif secs < 180:
+                buckets["120-180s"].append(gp)
+            else:
+                buckets["180-300s"].append(gp)
+
+        result: dict[str, Any] = {"total_scalps": scalp_count}
+        for label, gains in buckets.items():
+            if not gains:
+                continue
+            result[label] = {
+                "n": len(gains),
+                "avg_gain_pct": round(sum(gains) / len(gains), 4),
+                "win_rate": round(sum(1 for g in gains if g > 0) / len(gains), 4),
+            }
+        return result
+
+    def _analyze_cross_window_correlation(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Adjacent window correlation: does window N outcome predict window N+1?
+
+        Encodes Up-won as +1, Down-won as -1. Computes 1-lag autocorr across
+        consecutive windows (window_ts diff == 300s). Regime-conditional.
+        """
+        def _window_result(o: dict[str, Any]) -> int | None:
+            side = (o.get("side") or "").lower()
+            correct = bool(o.get("correct", False))
+            if o.get("exit_reason") != "resolution":
+                return None  # scalps don't represent full window outcomes
+            return 1 if (side == "up") == correct else -1
+
+        def _window_ts(o: dict[str, Any]) -> int:
+            try:
+                return int(o.get("market_id", "").rsplit("-", 1)[-1])
+            except (ValueError, IndexError):
+                return 0
+
+        def _lag1_autocorr(series: list[int]) -> float:
+            if len(series) < 4:
+                return 0.0
+            n = len(series)
+            mean = sum(series) / n
+            num = sum((series[i] - mean) * (series[i - 1] - mean) for i in range(1, n))
+            den = sum((v - mean) ** 2 for v in series)
+            return round(num / den, 4) if den > 0 else 0.0
+
+        # Build consecutive window pairs, regime-split
+        regime_series: dict[str, list[int]] = defaultdict(list)
+        all_series: list[int] = []
+
+        resolution_outcomes = [o for o in outcomes if o.get("exit_reason") == "resolution"]
+        resolution_outcomes.sort(key=lambda o: _window_ts(o))
+
+        prev_ts, prev_result = 0, None
+        for o in resolution_outcomes:
+            ts = _window_ts(o)
+            result = _window_result(o)
+            if result is None or ts == 0:
+                prev_ts, prev_result = ts, result
+                continue
+            if prev_ts > 0 and (ts - prev_ts) == 300 and prev_result is not None:
+                regime = _get_regime(o)
+                for key in (regime, "__all__"):
+                    regime_series[key].append(prev_result)
+                    regime_series[key].append(result)
+                all_series.append(result)
+            prev_ts, prev_result = ts, result
+
+        output: dict[str, Any] = {}
+        for regime, series in regime_series.items():
+            if len(series) < 8:
+                continue
+            output[regime] = {
+                "autocorr": _lag1_autocorr(series),
+                "n_windows": len(series),
+            }
+        return output
+
+    def analyze_ghosts(self, ghost_outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Analyze ghost trade outcomes: which rejected gates were actually profitable?
+
+        Ghost trades are signals that passed model gates but failed a downstream entry
+        gate. Their resolution tells us whether each gate is correctly filtering noise
+        or blocking profitable trades.
+        """
+        if not ghost_outcomes:
+            return {}
+
+        by_gate: dict[str, list[dict]] = defaultdict(list)
+        for g in ghost_outcomes:
+            gate = g.get("gate_name", "unknown")
+            if g.get("resolved", False):
+                by_gate[gate].append(g)
+
+        result: dict[str, Any] = {"total_resolved": sum(len(v) for v in by_gate.values())}
+        for gate, records in by_gate.items():
+            wins = sum(1 for r in records if r.get("ghost_correct", False))
+            gain_pcts = [r.get("ghost_gain_pct", 0) for r in records]
+            avg_gain = sum(gain_pcts) / len(gain_pcts) if gain_pcts else 0
+            result[gate] = {
+                "n": len(records),
+                "win_rate": round(wins / len(records), 4) if records else 0,
+                "avg_gain_pct": round(avg_gain, 4),
+                "interpretation": (
+                    "gate blocking mostly winners — consider loosening"
+                    if wins / len(records) > 0.55 else
+                    "gate correctly filtering — keep"
+                ) if records else "insufficient data",
+            }
+        return result
 
     def save(self, analysis: dict[str, Any]) -> None:
         self.biases_path.parent.mkdir(parents=True, exist_ok=True)

@@ -28,6 +28,7 @@ from polybot.agents.ta_evolver import TAEvolver
 from polybot.agents.weight_optimizer import WeightOptimizer
 from polybot.agents.scheduler import AgentScheduler
 from polybot.agents.counterfactual_tracker import CounterfactualTracker
+from polybot.agents.ghost_tracker import GhostTracker
 from polybot.discord_bot.bot import create_bot
 from polybot.discord_bot.alerts import AlertManager
 from polybot.execution.circuit_breaker import CircuitBreaker
@@ -367,7 +368,8 @@ def _btc_at_expiry(binance_feed: Any, market_id: str) -> float:
 async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price: float,
                           log_return: float, gain_pct: float,
                           exit_reason: str = "resolution", pnl: float = 0.0,
-                          fees: float = 0.0) -> None:
+                          fees: float = 0.0,
+                          seconds_remaining_at_exit: float = 0.0) -> None:
     """Record a trade outcome for the learning pipeline."""
     try:
         outcome_reviewer.record_outcome(
@@ -388,6 +390,7 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
             pnl=pnl,
             fees=fees,
             exit_timestamp=pos.get("exit_timestamp", ""),
+            seconds_remaining_at_exit=seconds_remaining_at_exit,
         )
     except Exception as e:
         logger.error(f"Failed to record outcome: {e}")
@@ -422,8 +425,27 @@ async def _evaluate_signal_and_enter(
         deribit_feed: Any = None,
         coinbase_feed: Any = None,
         chainlink_feed: Any = None,
-        kraken_feed: Any = None) -> tuple[str | None, int]:
+        kraken_feed: Any = None,
+        ghost_tracker: Any = None) -> tuple[str | None, int]:
     """Compute indicators/flow/signal, check for entry, size the trade, execute."""
+
+    def _ghost(gate: str, signal: Any, snap: dict) -> None:
+        """Record a ghost trade when a downstream gate rejects a real BUY signal."""
+        if ghost_tracker is None or signal is None:
+            return
+        if signal.action not in ("BUY_YES", "BUY_NO"):
+            return  # model-level skip — not a valid ghost
+        side = "Up" if signal.action == "BUY_YES" else "Down"
+        ghost_tracker.record_rejection(
+            gate_name=gate,
+            side=side,
+            signal_prob=signal.prob,
+            signal_edge=signal.edge,
+            market_id=cid,
+            seconds_remaining=float(contract.get("seconds_remaining", 0)),
+            indicator_snapshot=snap,
+        )
+
     in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
 
     # SPRT + alpha decay: accumulate evidence on new windows (no hard observe block)
@@ -557,6 +579,7 @@ async def _evaluate_signal_and_enter(
         adverse_rate = _adverse_monitor.get_adverse_rate(30.0)
         if adverse_rate > adverse_threshold:
             _record_skip("adverse_selection")
+            _ghost("adverse_selection", signal, {})
             global _last_adverse_skip_log_window
             if eval_window != _last_adverse_skip_log_window:
                 _last_adverse_skip_log_window = eval_window
@@ -574,6 +597,7 @@ async def _evaluate_signal_and_enter(
     max_edge = config.get("signal", {}).get("max_edge", 0.20)
     if signal.edge > max_edge:
         _record_skip("edge_cap")
+        _ghost("edge_cap", signal, {})
         return None, last_eval_log_window
 
     side = "Up" if signal.action == "BUY_YES" else "Down"
@@ -615,6 +639,7 @@ async def _evaluate_signal_and_enter(
     )
     if momentum_opposes and signal.edge * 0.5 < signal_engine.min_edge:
         _record_skip("layer_disagreement")
+        _ghost("layer_disagreement", signal, {})
         logger.info(
             f"SKIP: layer disagreement — momentum={momentum_score:+.2f} opposes {side}, "
             f"penalized edge {signal.edge * 0.5:+.1%} < min {signal_engine.min_edge:.0%}")
@@ -708,6 +733,7 @@ async def _evaluate_signal_and_enter(
         late_underdog_floor = config.get("signal", {}).get("late_window_min_prob", 0.40)
         if signal.prob < late_underdog_floor:
             _record_skip("late_window_underdog")
+            _ghost("late_window_underdog", signal, {})
             logger.debug(
                 f"SKIP: late window underdog — chosen side prob {signal.prob:.0%} < "
                 f"{late_underdog_floor:.0%} with {contract.get('seconds_remaining', 0):.0f}s left"
@@ -746,6 +772,7 @@ async def _evaluate_signal_and_enter(
     net_edge = signal.edge - price * est_slip
     if net_edge < signal_engine.min_edge:
         _record_skip("net_edge_after_slippage")
+        _ghost("net_edge_after_slippage", signal, snapshot)
         logger.info(
             f"SKIP: net edge {net_edge:+.1%} < min {signal_engine.min_edge:.0%} "
             f"after {est_slip:.2%} slippage (gross {signal.edge:+.1%})")
@@ -838,6 +865,7 @@ async def _evaluate_signal_and_enter(
             fresh_edge = signal.prob - fresh_ask
             if fresh_edge < signal_engine.min_edge:
                 _record_skip("pre_submit_edge_drift")
+                _ghost("pre_submit_edge_drift", signal, snapshot)
                 logger.info(
                     f"SKIP: pre-submit edge {fresh_edge:+.1%} < min {signal_engine.min_edge:.0%} "
                     f"(ask drifted {price:.3f} -> {fresh_ask:.3f} since signal fired)"
@@ -1113,20 +1141,30 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
     return contract, cid, traded_contracts, ws_subscribed_tokens, current_tokens
 
 
-async def _check_counterfactuals(counterfactual_tracker: Any, market_scanner: Any,
-                                 http_client: Any, binance_feed: Any) -> None:
-    """Pre-fetch Gamma metadata for watched scalps and check resolutions."""
-    cf_event_metadata = {}
+async def _check_counterfactuals(counterfactual_tracker: Any, ghost_tracker: Any,
+                                 market_scanner: Any,
+                                 http_client: Any, binance_feed: Any,
+                                 event_metadata_cache: dict[str, Any] | None = None) -> None:
+    """Pre-fetch Gamma metadata for watched scalps/ghosts and check resolutions."""
+    cf_event_metadata = dict(event_metadata_cache or {})
     for cf_mid in counterfactual_tracker.watched_markets:
-        cf_live = await _get_contract_prices(market_scanner, cf_mid, http_client)
-        if cf_live and cf_live.get("event_metadata"):
-            cf_event_metadata[cf_mid] = cf_live["event_metadata"]
+        if cf_mid not in cf_event_metadata:
+            cf_live = await _get_contract_prices(market_scanner, cf_mid, http_client)
+            if cf_live and cf_live.get("event_metadata"):
+                cf_event_metadata[cf_mid] = cf_live["event_metadata"]
     cf_resolved = counterfactual_tracker.check_resolutions(
         binance_feed, _btc_at_expiry, event_metadata=cf_event_metadata
     )
     for cf in cf_resolved:
         verdict = "CORRECT" if cf["scalp_was_optimal"] else "MISSED +${:.2f}".format(cf["delta_pnl"])
         logger.info(f"COUNTERFACTUAL resolved: {cf['side']} {cf['market_id']} — {verdict}")
+
+    if ghost_tracker is not None:
+        ghost_tracker.check_resolutions(
+            event_metadata=cf_event_metadata,
+            btc_at_expiry_fn=_btc_at_expiry,
+            binance_feed=binance_feed,
+        )
 
 
 async def _evaluate_and_exit_position(
@@ -1323,7 +1361,8 @@ async def _evaluate_and_exit_position(
                     gain_pct=gain_pct, reason=f"scalp {won.lower()}", fees=total_fees,
                     bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
             await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
-                                  exit_reason="scalp", pnl=pnl, fees=total_fees)
+                                  exit_reason="scalp", pnl=pnl, fees=total_fees,
+                                  seconds_remaining_at_exit=float(live.get("seconds_remaining", 0)))
             _realized_edge_history.append((pos.get("ev_at_entry", 0), gain_pct))
             if len(_realized_edge_history) > 500:
                 _realized_edge_history[:] = _realized_edge_history[-500:]
@@ -1707,8 +1746,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
             # --- COUNTERFACTUAL: check watched scalps for resolution ---
             if counterfactual_tracker:
-                await _check_counterfactuals(counterfactual_tracker, market_scanner,
-                                             http_client, binance_feed)
+                await _check_counterfactuals(counterfactual_tracker, ghost_tracker,
+                                             market_scanner, http_client, binance_feed)
 
             # --- ENTRY: find contract and evaluate for edge ---
             # Skip new entries when paused (positions still managed above)
@@ -1845,6 +1884,7 @@ async def run_pipeline() -> None:
 
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
     counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
+    ghost_tracker = GhostTracker(memory_dir=str(base_dir / "memory"))
     bias_detector = BiasDetector(biases_path=str(base_dir / "memory" / "biases.json"))
     ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"),
                           claude_client=claude)
@@ -2048,6 +2088,7 @@ async def main() -> None:
     agents_cfg = config["agents"]
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
     counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
+    ghost_tracker = GhostTracker(memory_dir=str(base_dir / "memory"))
     bias_detector = BiasDetector(biases_path=str(base_dir / "memory" / "biases.json"))
     ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"),
                           claude_client=claude)
@@ -2088,6 +2129,7 @@ async def main() -> None:
     scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", -0.10)
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
     scheduler._auto_shutdown = args.auto_restart
+    scheduler.ghost_tracker = ghost_tracker
     discord_bot.scheduler = scheduler
     if mode == "live":
         # Sync DB bankroll with real Polymarket balance (fetched during preflight)

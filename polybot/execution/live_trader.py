@@ -32,6 +32,45 @@ _NON_RETRYABLE_ERRORS = frozenset({
     "INVALID_ORDER_EXPIRATION",
 })
 
+# ---------------------------------------------------------------------------
+# Fill rate tracking (live mode only)
+# ---------------------------------------------------------------------------
+import json as _json
+from pathlib import Path as _Path
+from datetime import datetime as _dt, timezone as _tz
+
+_FILL_STATS_PATH = _Path("polybot/memory/fill_stats.json")
+
+
+def _update_fill_stats(filled: bool, side: str) -> None:
+    """Atomically update FOK fill rate stats. Silent on I/O errors."""
+    try:
+        stats = {"total_attempts": 0, "total_fills": 0,
+                 "buy_attempts": 0, "buy_fills": 0,
+                 "sell_attempts": 0, "sell_fills": 0}
+        if _FILL_STATS_PATH.exists():
+            try:
+                stats.update(_json.loads(_FILL_STATS_PATH.read_text()))
+            except Exception:
+                pass
+        stats["total_attempts"] += 1
+        if filled:
+            stats["total_fills"] += 1
+        if side == BUY:
+            stats["buy_attempts"] += 1
+            if filled:
+                stats["buy_fills"] += 1
+        else:
+            stats["sell_attempts"] += 1
+            if filled:
+                stats["sell_fills"] += 1
+        stats["fill_rate"] = round(stats["total_fills"] / max(stats["total_attempts"], 1), 4)
+        stats["last_updated"] = _dt.now(_tz.utc).isoformat()
+        _FILL_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _FILL_STATS_PATH.write_text(_json.dumps(stats, indent=2))
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
@@ -363,6 +402,7 @@ class LiveTrader(BaseTrader):
                         "FOK %s filled: order=%s, price=%.4f, amount=%.4f",
                         side, order_id, fill_price, amount,
                     )
+                    _update_fill_stats(filled=True, side=side)
                     return FillResult(
                         filled=True,
                         fill_price=fill_price,
@@ -385,6 +425,7 @@ class LiveTrader(BaseTrader):
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
 
+        _update_fill_stats(filled=False, side=side)
         return FillResult(
             filled=False,
             reason=f"Failed after {_MAX_RETRIES} attempts: {last_error}",

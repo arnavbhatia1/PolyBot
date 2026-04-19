@@ -20,7 +20,8 @@ class OutcomeReviewer:
                        category: str = "", indicator_snapshot: dict[str, Any] | None = None,
                        exit_reason: str = "resolution", size: float = 0.0,
                        pnl: float = 0.0, fees: float = 0.0,
-                       exit_timestamp: str = "") -> None:
+                       exit_timestamp: str = "",
+                       seconds_remaining_at_exit: float = 0.0) -> None:
         now_utc = datetime.now(timezone.utc).isoformat()
         # Realized edge: model prob for the chosen side minus actual fill price.
         # Compares what the model expected at signal time to what it actually cost.
@@ -44,6 +45,8 @@ class OutcomeReviewer:
                   "weight_version": weight_version, "category": category,
                   "indicator_snapshot": indicator_snapshot or {},
                   "exit_reason": exit_reason,
+                  # 0.0 = held to resolution; > 0 = scalp with this many seconds left in window
+                  "seconds_remaining_at_exit": seconds_remaining_at_exit,
                   "exit_timestamp": exit_timestamp or now_utc,
                   "timestamp": now_utc}
         filename = f"{position_id}_{market_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}.json"

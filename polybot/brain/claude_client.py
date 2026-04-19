@@ -431,11 +431,20 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
             f"Avg confidence: {sprt_agg.get('avg_confidence', 0):.2f}"
         )
 
-    # Recent trades — compact, last 25 only (analysis card above is the real signal)
+    # Recent trades — stratified sample across the full history so Claude sees
+    # trades spread throughout the day, not just the final 3 hours.
+    # Always anchors the last 15 for recency, evenly samples the rest for coverage.
     trades = context.get("trades", [])
     if trades:
-        lines = [f"## Recent Trades (last 25 of {len(trades)} total)"]
-        for i, t in enumerate(trades[-25:], 1):
+        if len(trades) <= 100:
+            sampled = trades
+        else:
+            recent = trades[-50:]                          # last 50 for recency
+            rest = trades[:-50]
+            step = max(1, len(rest) // 50)
+            sampled = rest[::step][:50] + recent          # 50 spaced + 50 recent = 100
+        lines = [f"## Recent Trades ({len(sampled)} sampled from {len(trades)} total)"]
+        for i, t in enumerate(sampled, 1):
             ctx = t.get("indicator_snapshot", {}).get("trade_context", {})
             snap = t.get("indicator_snapshot", {})
             won = "WIN" if t.get("correct") else "LOSS"
