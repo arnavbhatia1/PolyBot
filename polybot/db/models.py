@@ -1,3 +1,8 @@
+"""SQLite database models for positions, trade history, and bankroll.
+
+Single-file SQLite database (polybot.db). All async via aiosqlite.
+Bankroll is the single source of truth for capital — never reconstruct it from trades.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

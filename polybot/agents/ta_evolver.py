@@ -1,3 +1,9 @@
+"""TAEvolver: sends a distilled strategy analysis card to Claude and returns weight recommendations.
+
+Builds a context including BiasDetector output, gate skip stats, realized edge, ghost
+trade analysis, and 100 stratified trades (50 recent + 50 spaced). Falls back to
+rule-based local recommendations when Claude is unavailable.
+"""
 from __future__ import annotations
 
 import logging

@@ -1,3 +1,10 @@
+"""AgentScheduler: orchestrates the nightly learning pipeline (12:05 AM ET).
+
+Runs BiasDetector, Platt calibration (with recency-weighted MLE), distribution shift
+detection, SPRT aggregation, TA Evolver (Claude), and WeightOptimizer in sequence.
+Adopts parameter changes only when they pass strict statistical gates (z >= 1.65,
+all walk-forward folds positive, 3-day cooldown).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -584,7 +591,10 @@ class AgentScheduler:
 
         # Walk-forward validation: train on first 60%, validate across 4 expanding
         # folds of the remaining 40% (each fold is genuinely out-of-sample).
-        all_outcomes = self.outcome_reviewer.load_all_outcomes()  # already sorted by timestamp
+        rolled = self.outcome_reviewer.rollup_old_outcomes()
+        if rolled:
+            logger.info(f"Daily rollup: consolidated {rolled} individual outcome files")
+        all_outcomes = self.outcome_reviewer.load_all_outcomes()
         split_idx = max(1, int(len(all_outcomes) * 0.6))
         train_outcomes = all_outcomes[:split_idx]
         validation_outcomes = all_outcomes[split_idx:]  # used for Platt holdout validation

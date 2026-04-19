@@ -1,3 +1,8 @@
+"""Return calculation utilities.
+
+Uses arithmetic gain_pct (pnl / size) throughout — never log returns.
+log(0) = -inf for total losses, which breaks Sharpe and other statistics.
+"""
 from __future__ import annotations
 
 import math

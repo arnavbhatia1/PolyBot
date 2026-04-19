@@ -1,3 +1,8 @@
+"""Binance.US WebSocket feed for 1-minute BTC/USDT candles, ATR, and technical indicators.
+
+Provides BTC price history for signal_engine L1 volatility scaling and the full indicator
+suite (RSI, MACD, Stochastic, OBV, VWAP, ATR). Uses Binance.US — not .com (returns 451).
+"""
 from __future__ import annotations
 
 import asyncio

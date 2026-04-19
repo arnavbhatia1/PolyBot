@@ -1,3 +1,9 @@
+"""ClaudeClient: Anthropic API wrapper for nightly strategy analysis.
+
+Formats the BiasDetector analysis card and recent trade sample into a structured prompt,
+calls Claude, validates and clamps the returned recommendations against safe parameter
+ranges, and returns a recommendations dict for the WeightOptimizer.
+"""
 from __future__ import annotations
 
 import json
@@ -258,6 +264,12 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     _clamp_if_present("recommended_min_kelly",         0.005, 0.05, _cur("min_kelly", 0.015))
     _clamp_if_present("recommended_atr_sigma_ratio",   1.2,  2.5,  _cur("atr_sigma_ratio", 1.4))
     _clamp_if_present("recommended_momentum_weight",  -0.10, 0.10, _cur("momentum_weight", -0.02))
+    # Momentum magnitude must stay below min_edge so the indicator layer can't
+    # single-handedly push a sub-threshold signal past the entry gate.
+    mw = data.get("recommended_momentum_weight", 0.0)
+    me = data.get("recommended_min_edge", 0.04)
+    if abs(mw) >= me:
+        data["recommended_momentum_weight"] = (me - 0.001) * (1.0 if mw >= 0 else -1.0)
     _clamp_if_present("recommended_regime_weight",     0.02, 0.10, _cur("regime_weight", 0.03))
     _clamp_if_present("recommended_flow_weight",       0.02, 0.12, _cur("flow_weight", 0.04))
     _clamp_if_present("recommended_min_model_probability", 0.55, 0.85, _cur("min_model_probability", 0.58))

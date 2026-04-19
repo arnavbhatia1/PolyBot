@@ -106,7 +106,7 @@ def _extract_feature(outcomes: list[dict[str, Any]], feature: str) -> list[float
     for o in outcomes:
         ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
         v = ctx.get(feature, 0)
-        if v and isinstance(v, (int, float)):
+        if isinstance(v, (int, float)) and v is not None:
             vals.append(float(v))
     return vals
 

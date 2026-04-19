@@ -279,7 +279,8 @@ class SignalEngine:
 
         z = distance / vol_scaled
 
-        # Fix 5: Normalize z for Student-t variance (df=4 → variance=2, scale=√2)
+        # Normalize z for Student-t variance: ATR is treated as σ_true, so the CDF
+        # needs z scaled by √(df/(df-2)) to match the t-distribution's actual variance.
         if self.student_t_df > 2:
             t_scale = math.sqrt(self.student_t_df / (self.student_t_df - 2))
         else:
@@ -292,7 +293,8 @@ class SignalEngine:
         if self.probability_compression < 1.0:
             prob_up = 0.5 + (prob_up - 0.5) * self.probability_compression
 
-        # --- Fix 2: Convert to logit space for Bayesian-correct evidence combination ---
+        # Convert to logit space — layers L2-L5 apply additive adjustments in log-odds,
+        # preserving (0,1) bounds naturally and enabling Bayesian-correct evidence combination.
         prob_up = max(0.001, min(0.999, prob_up))
         logit_p = math.log(prob_up / (1.0 - prob_up))
 
@@ -301,7 +303,7 @@ class SignalEngine:
         logit_regime_w = self.regime_weight * self.logit_scale
         logit_flow_w = self.flow_weight * self.logit_scale
 
-        # Fix 1: Layer 2 — Regime: direction from recent return, not prob sign
+        # Layer 2 — Regime: direction from most recent 1-min return (sign of last close delta).
         regime = self.compute_regime_factor(closes) if closes is not None else 0.0
         self.last_regime_autocorr = regime  # expose for snapshot storage
         # Regime-conditional momentum weight: flip sign in trending regime, amplify in
@@ -353,7 +355,8 @@ class SignalEngine:
         # Convert back via sigmoid — natural (0, 1) bounds, no clamping needed
         prob_up = 1.0 / (1.0 + math.exp(-logit_p))
 
-        # Fix 9: Platt calibration (identity if no calibrator loaded)
+        # Platt calibration — maps raw probability to historically-calibrated output.
+        # Identity (no-op) when no calibrator is loaded.
         if self.calibrator:
             prob_up = self.calibrator.calibrate(prob_up)
 

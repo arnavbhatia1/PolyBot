@@ -35,7 +35,7 @@ class CircuitBreaker:
     Kelly multiplier:
       - 1.0x at or above locked_tier
       - min_multiplier at or below floor (= locked_tier × floor_pct)
-      - linear interpolation between floor and locked_tier
+      - concave (sqrt) interpolation between floor and locked_tier
 
     When bankroll crosses a higher tier the floor ratchets up. It never resets down.
 

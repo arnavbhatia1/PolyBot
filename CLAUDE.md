@@ -177,15 +177,19 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if **Kelly-sized-Sharpe** on validation improves (≥20 validation trades must pass production gates under both old and new calibrator, else rejected). Log-loss retained in telemetry, not adoption. Gated this way so a flatter/smoother calibrator that would silently shrink edges below the Kelly gate (and kill realized Sharpe) can't be adopted just because it improves log-loss.
 4. Distribution shift (KS-test recent 50 vs historical)
 5. SPRT aggregate (modulates adoption threshold: negative→0.02, positive→0.05)
-6. `TAEvolver` — sends analysis card + last 25 trades to Claude. Returns structured JSON. Local fallback when Claude unavailable (max 2 params, 15% change cap)
+6. `TAEvolver` — sends analysis card + 100 stratified trades (50 recent + 50 spaced across the day) to Claude. Returns structured JSON. Local fallback when Claude unavailable (max 2 params, 15% change cap). Analysis card includes: calibration curve (reliability diagram), gate skip stats, realized edge vs predicted edge, ghost trade gate analysis, time-to-resolution distribution, cross-window correlation, execution quality metrics.
 7. `WeightOptimizer` — walk-forward backtest, statistical adoption, hot-swaps weights + persists to settings.yaml. Baseline and candidate both use the same Kelly-sized portfolio-return metric (`kelly_fraction × edge/(1-price) × gain_pct`) on the same folds — apples-to-apples. `_kelly_bankroll_returns` replays the full logit composition (L1 CDF, L2 regime×direction [approximated from `regime_state` + prev-margin sign], L3 flow with 0.35-logit cap, L3b spot-flow, L3c wall, L3e liq, L5 prev-margin, L4 indicator momentum, Platt). Backtest freezes on `self.signal_engine.calibrator` (the calibrator that was adopted or kept earlier in this same pipeline run), so calibration can't drift mid-backtest.
 
 **Key pipeline invariants:**
 - `momentum_weight` can be negative (-0.10 to +0.10). Negative = fade indicators (current: -0.02). Claude knows this.
 - `_validate_strategy_response` uses current_config as defaults — params Claude omits are NOT silently overwritten with hardcoded stale values
-- Outcomes sorted by UTC timestamp for correct walk-forward ordering
-- All timestamps stored UTC, converted to ET only for date-bucketing (daily report, get_day_stats)
+- Outcomes sorted by `exit_timestamp` (actual trade close time) for correct walk-forward ordering; old outcomes fall back to write-time `timestamp`
+- Daily rollup: at 12:05 AM pipeline, previous days' individual outcome files are consolidated into one file per day (`rollup_YYYY-MM-DD.json`) to keep git manageable. `load_all_outcomes()` handles both formats transparently.
 - `gain_pct = pnl / size` (arithmetic). Never use `log_return` for Sharpe (log(0) = -inf for losses)
+- Recency weighting: `0.995^days_ago` applied to each trade's return in backtest — recent trades count ~2x more than 3-week-old trades
+- Ghost trades: downstream-gate rejections (not model-level skips) are tracked to resolution in `memory/ghost_outcomes/`. Pipeline uses them to calibrate which gates block profitable trades. NOT used for Platt calibration.
+- Realized edge (`signal_prob - fill_price`) and fill slippage stored per outcome — pipeline reports avg slippage to Claude for min_edge tuning
+- All timestamps stored UTC, converted to ET only for date-bucketing (daily report, get_day_stats)
 
 ## Common Issues
 
@@ -197,15 +201,18 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 - **Orphaned position:** Waits indefinitely for Gamma resolution. Discord alert after 1hr. By design.
 - **Pipeline not adopting:** z >= 1.65 is a high bar by design. "No change" = current weights are defensible. Check BiasDetector output and edge calibration bucketing.
 
-## Frozen Baseline — DO NOT CHANGE WITHOUT APPROVAL
+## Frozen Baseline — DO NOT CHANGE
+
+The bot execution logic and architecture are complete. Do not modify:
 
 - `signal_engine.py` — 8-layer model + evaluate_hold
 - `order_flow.py` — book imbalance + trade flow
-- Entry/exit/pricing logic in `main.py`
+- Entry/exit/pricing/sizing logic in `main.py`
 - `base.py` — BaseTrader ABC, fee math, shared gates
-- `paper_trader.py` / `live_trader.py` — only 3 abstract methods each
+- `paper_trader.py` / `live_trader.py`
+- `circuit_breaker.py`, `correlation.py`, `bankroll_strategy.py`
 
-Only the 12:05 AM pipeline tunes params. New features go in new files.
+**Pipeline optimizations only going forward.** The learning pipeline (`scheduler.py`, `bias_detector.py`, `outcome_reviewer.py`, `ghost_tracker.py`) may be improved. New features go in new files. Only the 12:05 AM pipeline tunes params.
 
 ## What NOT to Change
 
