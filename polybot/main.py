@@ -772,7 +772,7 @@ async def _evaluate_signal_and_enter(
     net_edge = signal.edge - price * est_slip
     if net_edge < signal_engine.min_edge:
         _record_skip("net_edge_after_slippage")
-        _ghost("net_edge_after_slippage", signal, snapshot)
+        _ghost("net_edge_after_slippage", signal, {})
         logger.info(
             f"SKIP: net edge {net_edge:+.1%} < min {signal_engine.min_edge:.0%} "
             f"after {est_slip:.2%} slippage (gross {signal.edge:+.1%})")
