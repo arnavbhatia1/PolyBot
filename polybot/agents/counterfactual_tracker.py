@@ -69,8 +69,15 @@ class CounterfactualTracker:
         Called on every HOLD tick. Updates only if this tick's holding_edge is
         lower than the previous worst. After resolution, record_hold_resolution()
         uses this to compute "what if I had scalped at the worst moment?"
+
+        Only tracks while the window is still live (seconds_remaining > 0). After
+        expiry the CLOB market converges toward $1.00/$0.00, producing a degenerate
+        worst-moment at the resolution price and a meaningless $0 delta.
         """
         if not market_id:
+            return
+
+        if hold_context.get("seconds_remaining", 1) <= 0:
             return
 
         holding_edge = hold_context.get("holding_edge", 0)
@@ -155,9 +162,12 @@ class CounterfactualTracker:
 
         self._save(record)
         verdict = "CORRECT" if hold_was_optimal else "SUBOPTIMAL"
+        # For wins the exit moment was the worst (lowest market price = least you'd have gotten).
+        # For losses it was the best (highest market price = most you could have extracted before reversal).
+        moment_label = "worst-moment" if hold_was_optimal else "best-moment"
         logger.info(
             f"COUNTERFACTUAL HOLD: {market_id} — hold was {verdict} | "
-            f"hold PnL=${actual_pnl:+.2f} vs worst-moment scalp PnL=${hypo_pnl:+.2f} "
+            f"hold PnL=${actual_pnl:+.2f} vs {moment_label} scalp PnL=${hypo_pnl:+.2f} "
             f"(delta=${delta_pnl:+.2f})"
         )
         return record

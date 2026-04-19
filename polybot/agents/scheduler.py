@@ -175,14 +175,19 @@ class AgentScheduler:
             raw_prob_up = max(1e-6, min(1 - 1e-6, raw_prob_up))
             logit_p = math.log(raw_prob_up / (1.0 - raw_prob_up))
 
-            # L2 — regime × direction (approximated from stored regime_state + prev-margin sign).
-            regime_str = (ctx.get("regime_state") or "").lower()
-            if regime_str.startswith("trending"):
-                regime_factor = 0.20
-            elif regime_str.startswith("mean"):
-                regime_factor = -0.20
+            # L2 — regime × direction. Use stored autocorr float when available (exact),
+            # fall back to the regime_state string approximation for old outcomes.
+            stored_autocorr = ctx.get("regime_autocorr")
+            if stored_autocorr is not None:
+                regime_factor = float(stored_autocorr)
             else:
-                regime_factor = 0.0
+                regime_str = (ctx.get("regime_state") or "").lower()
+                if regime_str.startswith("trending"):
+                    regime_factor = 0.20
+                elif regime_str.startswith("mean"):
+                    regime_factor = -0.20
+                else:
+                    regime_factor = 0.0
             prev_margin = ctx.get("prev_resolution_margin", 0.0)
             direction = 1.0 if prev_margin > 0 else (-1.0 if prev_margin < 0 else 0.0)
             logit_p += regime_factor * direction * (regime_weight * logit_scale)
@@ -584,6 +589,32 @@ class AgentScheduler:
             self.pipeline_tracker.review_past_adoptions(all_outcomes)
 
         analysis = await self._run_bias_detector(train_outcomes)
+
+        # Gate skip stats: how often did each entry gate fire?
+        # Tells Claude which gates are over-filtering and whether adverse selection /
+        # pre-submit drift / late-window guards are actually affecting trade count.
+        from pathlib import Path as _Path
+        import json as _json
+        _gate_stats_path = _Path("polybot/memory/gate_stats.json")
+        if _gate_stats_path.exists():
+            try:
+                gate_stats = _json.loads(_gate_stats_path.read_text())
+                analysis["gate_skip_stats"] = gate_stats
+                total = gate_stats.get("total_skips", 0)
+                logger.info(f"Gate stats loaded: {total} total skips since last reset")
+            except Exception:
+                pass
+
+        # Realized edge and fill slippage stats from outcomes
+        realized_edges = [o.get("realized_edge", 0) for o in all_outcomes if o.get("realized_edge") is not None]
+        fill_slippages = [o.get("fill_slippage", 0) for o in all_outcomes if o.get("fill_slippage") is not None]
+        if realized_edges:
+            analysis["execution_quality"] = {
+                "avg_realized_edge": round(sum(realized_edges) / len(realized_edges), 4),
+                "avg_fill_slippage": round(sum(fill_slippages) / len(fill_slippages), 4) if fill_slippages else 0,
+                "n_trades_with_data": len(realized_edges),
+                "pct_positive_slippage": round(sum(1 for s in fill_slippages if s > 0.001) / len(fill_slippages), 3) if fill_slippages else 0,
+            }
 
         # Counterfactual analysis: how accurate are our scalp exits?
         cf_info: dict[str, Any] = {}

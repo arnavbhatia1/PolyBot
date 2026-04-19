@@ -99,6 +99,23 @@ _peak_hold_price: dict[str, float] = {}  # market_id -> peak market_price_for_si
 
 # Previous window resolution margin for adjacent window momentum (D2)
 _prev_resolution_margin: float = 0.0
+_PREV_MARGIN_PATH = Path("polybot/memory/prev_resolution_margin.json")
+
+def _load_prev_resolution_margin() -> float:
+    """Restore margin from last session so L5 signal isn't zeroed out on restart."""
+    try:
+        if _PREV_MARGIN_PATH.exists():
+            return float(json.loads(_PREV_MARGIN_PATH.read_text()).get("margin", 0.0))
+    except Exception:
+        pass
+    return 0.0
+
+def _save_prev_resolution_margin(margin: float) -> None:
+    try:
+        _PREV_MARGIN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PREV_MARGIN_PATH.write_text(json.dumps({"margin": margin}))
+    except Exception:
+        pass
 
 _sprt: SPRTAccumulator | None = None
 _alpha_decay: AlphaDecayTracker | None = None
@@ -110,6 +127,26 @@ _early_entry_fired: bool = False
 _drawdown_tracker: DrawdownVelocityTracker | None = None
 _adverse_monitor: AdverseSelectionMonitor | None = None
 _last_adverse_skip_log_window: int = 0  # throttle adverse-skip logs to once per 5-min window
+_gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count since last reset
+_GATE_STATS_PATH = Path("polybot/memory/gate_stats.json")
+
+
+def _record_skip(gate: str) -> None:
+    """Increment the per-gate skip counter. Called at every entry skip point."""
+    _gate_skip_counts[gate] = _gate_skip_counts.get(gate, 0) + 1
+
+
+def flush_gate_stats() -> None:
+    """Write accumulated skip counts to disk for the pipeline to read."""
+    try:
+        _GATE_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _GATE_STATS_PATH.write_text(json.dumps({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "counts": dict(_gate_skip_counts),
+            "total_skips": sum(_gate_skip_counts.values()),
+        }, indent=2))
+    except Exception:
+        pass
 _crowd_bias: CrowdBiasTracker | None = None
 
 _realized_edge_history: list[tuple[float, float]] = []  # (predicted_edge, realized_gain_pct)
@@ -350,6 +387,7 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
             size=pos.get("size", 0.0),
             pnl=pnl,
             fees=fees,
+            exit_timestamp=pos.get("exit_timestamp", ""),
         )
     except Exception as e:
         logger.error(f"Failed to record outcome: {e}")
@@ -507,19 +545,18 @@ async def _evaluate_signal_and_enter(
             f"  {_C.DIM}{signal.reason}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
+        _record_skip(f"model:{signal.reason[:30]}")
         return None, last_eval_log_window
 
     # SPRT: logged for telemetry, not gating entries.
     # The observe phase (60s) + phase multipliers (late=0.7x, final=0.5x) handle cautiousness.
 
-    # --- ADVERSE SELECTION GATE: bail when fills are consistently fading post-entry ---
-    # adverse_rate > 0.55 over the 30s window means the last ~10+ fills were followed by
-    # price moving against us, suggesting someone better-informed is picking us off.
-    # Uses a fresh-enough rate (needs >=10 resolved fills to exit the neutral 0.5 default).
+    # --- ADVERSE SELECTION GATE ---
     if _adverse_monitor is not None:
         adverse_threshold = config.get("signal", {}).get("adverse_selection_threshold", 0.55)
         adverse_rate = _adverse_monitor.get_adverse_rate(30.0)
         if adverse_rate > adverse_threshold:
+            _record_skip("adverse_selection")
             global _last_adverse_skip_log_window
             if eval_window != _last_adverse_skip_log_window:
                 _last_adverse_skip_log_window = eval_window
@@ -533,9 +570,10 @@ async def _evaluate_signal_and_enter(
                 )
             return None, last_eval_log_window
 
-    # --- EDGE CAP GATE: large edge = model miscalibration, not real alpha ---
+    # --- EDGE CAP GATE ---
     max_edge = config.get("signal", {}).get("max_edge", 0.20)
     if signal.edge > max_edge:
+        _record_skip("edge_cap")
         return None, last_eval_log_window
 
     side = "Up" if signal.action == "BUY_YES" else "Down"
@@ -546,14 +584,13 @@ async def _evaluate_signal_and_enter(
         "blacklisted_tokens": set(), "flip_count": 0, "last_side": None,
     })
     if token_id in flip_state["blacklisted_tokens"]:
-        return None, last_eval_log_window  # already traded this token
+        _record_skip("flip_blacklisted")
+        return None, last_eval_log_window
     flip_count = flip_state["flip_count"]
     if flip_count > 1:
-        return None, last_eval_log_window  # max 1 flip per window (original entry + 1 flip)
+        _record_skip("flip_max_exceeded")
+        return None, last_eval_log_window
     if flip_count == 1:
-        # Spread-aware flip premium: the flip has to clear min_edge PLUS the worst of
-        # (the configured premium, or the current market's half-spread + fee). On a
-        # 3%-spread market the old flat 1.5% was not actually covering round-trip costs.
         flip_premium = config.get("entry_timing", {}).get("flip_edge_premium", 0.015)
         spread_est = -1.0
         if clob_ws:
@@ -565,12 +602,11 @@ async def _evaluate_signal_and_enter(
         spread_cost = (spread_est * 0.5 + DEFAULT_FEE_RATE) if spread_est >= 0 else flip_premium
         flip_hurdle = signal_engine.min_edge + max(flip_premium, spread_cost)
         if signal.edge < flip_hurdle:
+            _record_skip("flip_insufficient_edge")
             return None, last_eval_log_window
 
-    # --- LAYER DISAGREEMENT GATE: momentum opposing trade direction ---
+    # --- LAYER DISAGREEMENT GATE ---
     momentum_score = signal_engine.compute_momentum(indicators)
-    # Account for negative momentum_weight: if weight < 0, model FADES indicators,
-    # so raw indicator direction opposing the bet is actually AGREEMENT
     mw_sign = 1.0 if signal_engine.momentum_weight >= 0 else -1.0
     effective_momentum = momentum_score * mw_sign
     momentum_opposes = (
@@ -578,6 +614,7 @@ async def _evaluate_signal_and_enter(
         (side == "Up" and effective_momentum < -0.5)
     )
     if momentum_opposes and signal.edge * 0.5 < signal_engine.min_edge:
+        _record_skip("layer_disagreement")
         logger.info(
             f"SKIP: layer disagreement — momentum={momentum_score:+.2f} opposes {side}, "
             f"penalized edge {signal.edge * 0.5:+.1%} < min {signal_engine.min_edge:.0%}")
@@ -617,6 +654,7 @@ async def _evaluate_signal_and_enter(
         cvd_now = trades_feed.accumulator.get_cvd(120) if trades_feed and trades_feed.accumulator else 0
         regime_state = _regime_detector.classify(closes, atr_val, atr_history, cvd_now)
         if regime_state.skip:
+            _record_skip(f"regime:{regime_state.name}")
             logger.info(f"SKIP: regime={regime_state.name} — no edge in this market state")
             return None, last_eval_log_window
         # Regime: logged for pipeline, NOT applied to sizing (operates near noise at SE=0.14)
@@ -661,17 +699,15 @@ async def _evaluate_signal_and_enter(
 
     # Phase-based probability override (final phase needs >90%)
     if entry_phase["min_prob_override"] and signal.prob < entry_phase["min_prob_override"]:
+        _record_skip("final_phase_prob")
         logger.debug(f"SKIP: final phase prob {signal.prob:.0%} < {entry_phase['min_prob_override']:.0%}")
         return None, last_eval_log_window
 
-    # Late-window underdog gate: in the last 120s, require the CHOSEN side's probability
-    # to be at least 40%. The main min_model_probability gate checks max(prob_up, prob_down),
-    # which lets you buy a 32% underdog because the other side is 68% confident. That's
-    # fine in normal windows where there's time for edge to play out — but in the last
-    # 120s a 32% underdog almost never wins. This gate prevents late-window suicide bets.
+    # Late-window underdog gate
     if contract.get("seconds_remaining", 300) < 120:
         late_underdog_floor = config.get("signal", {}).get("late_window_min_prob", 0.40)
         if signal.prob < late_underdog_floor:
+            _record_skip("late_window_underdog")
             logger.debug(
                 f"SKIP: late window underdog — chosen side prob {signal.prob:.0%} < "
                 f"{late_underdog_floor:.0%} with {contract.get('seconds_remaining', 0):.0f}s left"
@@ -700,6 +736,7 @@ async def _evaluate_signal_and_enter(
         if size > max_fill:
             size = round(max_fill, 2)
             if size < 0.10:
+                _record_skip("thin_book_depth")
                 logger.info(f"SKIP: size capped to ${size:.2f} by book depth ${side_depth:.0f} — too small")
                 return None, last_eval_log_window
 
@@ -708,6 +745,7 @@ async def _evaluate_signal_and_enter(
     est_slip = slippage_pct(size, side_depth, impact)
     net_edge = signal.edge - price * est_slip
     if net_edge < signal_engine.min_edge:
+        _record_skip("net_edge_after_slippage")
         logger.info(
             f"SKIP: net edge {net_edge:+.1%} < min {signal_engine.min_edge:.0%} "
             f"after {est_slip:.2%} slippage (gross {signal.edge:+.1%})")
@@ -715,6 +753,7 @@ async def _evaluate_signal_and_enter(
 
     # Final minimum size check — after all caps have been applied
     if size < 0.10:
+        _record_skip("min_size")
         logger.info(f"SKIP: size ${size:.2f} < $0.10 after caps")
         return None, last_eval_log_window
 
@@ -772,6 +811,7 @@ async def _evaluate_signal_and_enter(
         "coinbase_btc": coinbase_feed.state.price if coinbase_feed and coinbase_feed.state.price > 0 else 0,
         "regime_state": regime_state.name if regime_state else "unknown",
         "regime_kelly_mult": regime_state.kelly_mult if regime_state else 1.0,
+        "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
         "sprt_confidence": _sprt.get_confidence() if _sprt else 0,
         "sprt_status": _sprt.get_status() if _sprt else "N/A",
         "signal_consensus": consensus_mult,
@@ -797,6 +837,7 @@ async def _evaluate_signal_and_enter(
         if fresh_ask > 0 and fresh_ask != price:
             fresh_edge = signal.prob - fresh_ask
             if fresh_edge < signal_engine.min_edge:
+                _record_skip("pre_submit_edge_drift")
                 logger.info(
                     f"SKIP: pre-submit edge {fresh_edge:+.1%} < min {signal_engine.min_edge:.0%} "
                     f"(ask drifted {price:.3f} -> {fresh_ask:.3f} since signal fired)"
@@ -965,6 +1006,7 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
     # binary markets arb to within 1c of $1.00; anything wider is stale-book.
     price_sum = price_up + price_down
     if price_source == "clob" and (price_sum < 0.99 or price_sum > 1.01):
+        _record_skip("stale_prices")
         eval_window = int(now_ts // 300) * 300
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
@@ -985,6 +1027,7 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
     if price_source == "clob":
         min_depth = market_scanner.min_book_depth_usd
         if depth_usd_up < min_depth and depth_usd_down < min_depth:
+            _record_skip("thin_clob_depth")
             if eval_window != last_eval_log_window:
                 last_eval_log_window = eval_window
                 logger.info(f"EVAL: thin CLOB depth Up=${depth_usd_up:.0f} Dn=${depth_usd_down:.0f} — skipping window")
@@ -1006,6 +1049,7 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
             # for the fee-eaten portion of tight-spread entries.
             effective_cost = spread_val * 0.5 + DEFAULT_FEE_RATE
             if effective_cost > max_spread:
+                _record_skip("spread_too_wide")
                 logger.debug(
                     f"Effective exec cost {effective_cost:.3f} (spread/2={spread_val/2:.3f} + fee={DEFAULT_FEE_RATE:.3f}) "
                     f"> {max_spread:.3f} — skipping"
@@ -1379,6 +1423,8 @@ async def _resolve_expired_position(
         meta = live.get("event_metadata")
         if meta and meta.get("final_price") and meta.get("price_to_beat"):
             _prev_resolution_margin = meta["final_price"] - meta["price_to_beat"]
+            _save_prev_resolution_margin(_prev_resolution_margin)
+            flush_gate_stats()  # keep on-disk stats current for pipeline reads
         # Record winning side for crowd bias recency tracking
         if _crowd_bias:
             winning_side = pos["side"] if gain_pct > 0 else ("Down" if pos["side"] == "Up" else "Up")
@@ -2090,6 +2136,18 @@ async def main() -> None:
 
     # Kraken feed — Chainlink oracle data source, secondary fast price
     kraken_feed = KrakenFeed()
+
+    # Restore L5 prev_resolution_margin from last session — without this, every restart
+    # zeroes out the feature for the first few trades, creating a systematic training bias.
+    global _prev_resolution_margin
+    _prev_resolution_margin = _load_prev_resolution_margin()
+    if _prev_resolution_margin != 0.0:
+        logger.info(f"Restored prev_resolution_margin: {_prev_resolution_margin:+.2f}")
+
+    # Reset skip counter for this session — pipeline reads the persisted stats before reset.
+    global _gate_skip_counts
+    _gate_skip_counts = {}
+    flush_gate_stats()  # write empty baseline so pipeline always has a fresh file to read
 
     # SPRT, regime detector, alpha decay — module-level state for trading loop
     global _sprt, _alpha_decay, _regime_detector

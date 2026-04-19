@@ -175,6 +175,7 @@ class SignalEngine:
         }
         self._exit_boundary = ExitBoundary(df=self.student_t_df)
         self._atr_history: deque[float] = deque(maxlen=_ATR_HISTORY_SIZE)
+        self.last_regime_autocorr: float = 0.0  # actual 1-lag autocorr used in last compute_probability call
 
     def _record_atr(self, atr: float) -> None:
         """Append non-zero ATR to the rolling window used for the dynamic floor."""
@@ -302,6 +303,7 @@ class SignalEngine:
 
         # Fix 1: Layer 2 — Regime: direction from recent return, not prob sign
         regime = self.compute_regime_factor(closes) if closes is not None else 0.0
+        self.last_regime_autocorr = regime  # expose for snapshot storage
         # Regime-conditional momentum weight: flip sign in trending regime, amplify in
         # mean-reverting, dampen when autocorr is noise. Base `momentum_weight` stays
         # pipeline-tunable; this just makes L4 conditional on L2.
