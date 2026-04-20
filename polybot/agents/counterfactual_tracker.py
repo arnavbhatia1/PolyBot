@@ -177,9 +177,10 @@ class CounterfactualTracker:
 
         self._save(record)
         verdict = "CORRECT" if hold_was_optimal else "SUBOPTIMAL"
+        moment = "scalp@worst" if hold_was_optimal else "scalp@best"
         logger.info(
             f"HOLD {verdict} {_slug_to_window(market_id)} | "
-            f"held=${actual_pnl:+.2f}, scalp@worst=${hypo_pnl:+.2f} (delta=${delta_pnl:+.2f})"
+            f"held=${actual_pnl:+.2f}, {moment}=${hypo_pnl:+.2f} (delta=${delta_pnl:+.2f})"
         )
         return record
 
