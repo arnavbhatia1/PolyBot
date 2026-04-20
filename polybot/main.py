@@ -1408,7 +1408,7 @@ async def _resolve_expired_position(
         # Gamma hasn't resolved yet — wait for next tick (polls every 2s)
         now_ts = time.time()
         mid = pos["market_id"]
-        if now_ts - _last_resolve_wait_log.get(mid, 0) >= 60:
+        if mid not in _last_resolve_wait_log:
             _last_resolve_wait_log[mid] = now_ts
             logger.info(f"WAITING for Gamma resolution: {mid} | closed={live.get('closed')} "
                         f"meta={'yes' if live.get('event_metadata') else 'no'} "
