@@ -19,6 +19,18 @@ logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
 
 
+def _slug_to_window(slug: str) -> str:
+    """Convert btc-updown-5m-1776691500 to '9:25-9:30 ET'."""
+    try:
+        from datetime import timedelta
+        ts = int(slug.rsplit("-", 1)[-1])
+        start = datetime.fromtimestamp(ts, tz=_ET)
+        end = start + timedelta(minutes=5)
+        return f"{start.strftime('%I:%M').lstrip('0')}-{end.strftime('%I:%M ET').lstrip('0')}"
+    except Exception:
+        return slug
+
+
 def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
                config: dict[str, Any]) -> commands.Bot:
     intents = discord.Intents.default()
@@ -145,7 +157,7 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             contract = await bot.scanner.find_active_contract()
             if contract:
                 lines.append(
-                    f"\n**Current Window** `{contract['slug']}`  "
+                    f"\n**Current Window** `{_slug_to_window(contract['slug'])}`  "
                     f"`{contract['seconds_remaining']:.0f}s` left  "
                     f"Up=`{contract['price_up']:.3f}` Dn=`{contract['price_down']:.3f}`"
                 )
@@ -160,17 +172,33 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         if not trades:
             await ctx.send("No trade history yet.")
             return
-        lines = [f"**Last {len(trades)} Trades**\n"]
+
+        lines = [f"**Last {len(trades)} Trades**"]
+        lines.append("```")
+        lines.append(f"{'Time':<12} {'Side':<5} {'Type':<6} {'Entry':<7} {'Exit':<7} {'Size':<7} {'PnL':<9} {'R%'}")
+        lines.append("-" * 65)
         for t in trades:
-            entry = t["entry_price"]
-            exit_p = t["exit_price"]
+            entry = t.get("entry_price", 0)
+            exit_p = t.get("exit_price", 0)
             size = t.get("size", 0)
-            if entry > 0 and size > 0:
-                dollar_pnl = t.get("pnl") or ((size / entry) * exit_p - size)
-            else:
-                dollar_pnl = 0
-            won = "W" if dollar_pnl >= 0 else "L"
-            lines.append(f"  `{won}` {t['side']} | `{entry:.3f}`->`{exit_p:.3f}` | `${dollar_pnl:+,.2f}` | ${size:.0f}")
+            pnl = t.get("pnl") or ((size / entry) * exit_p - size if entry > 0 and size > 0 else 0)
+            gain_pct = pnl / size if size > 0 else 0
+            exit_reason = t.get("exit_reason", "res")
+            trade_type = "SCALP" if exit_reason == "scalp" else "HOLD"
+            side = t.get("side", "?")
+            # Format time from exit_timestamp
+            exit_ts = t.get("exit_timestamp", "")
+            try:
+                dt = datetime.fromisoformat(exit_ts.replace("Z", "+00:00")).astimezone(_ET)
+                time_str = dt.strftime("%I:%M %p").lstrip("0")
+            except Exception:
+                time_str = "?"
+            pnl_str = f"${pnl:+.2f}"
+            lines.append(
+                f"{time_str:<12} {side:<5} {trade_type:<6} {entry:<7.3f} {exit_p:<7.3f} "
+                f"${size:<6.0f} {pnl_str:<9} {gain_pct:+.0%}"
+            )
+        lines.append("```")
         await ctx.send("\n".join(lines))
 
     @bot.command(name="pause")

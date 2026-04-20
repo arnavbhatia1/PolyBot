@@ -581,7 +581,8 @@ async def _evaluate_signal_and_enter(
             f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
             f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  iv {iv_ratio_val:.2f}\n"
             f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}  cvd_a {cvd_accel_val:+.4f}\n"
-            f"  {_C.DIM}{signal.reason}{_C.RESET}")
+            f"  {_C.DIM}{signal.reason}{_C.RESET}\n"
+            f"{_C.CYAN}{'-' * 60}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         _record_skip(f"model:{signal.reason[:30]}")
@@ -909,11 +910,22 @@ async def _evaluate_signal_and_enter(
         fee_shares = entry_fee_shares(shares_ordered, fill_price, fee_rate)
         fee_usd = fee_shares * fill_price
         bankroll_now = await db.get_bankroll()
+        _dist = btc_price - strike
+        _why_parts = [f"BTC {_dist:+,.0f} vs strike"]
+        if abs(flow_score) >= 0.02:
+            _why_parts.append(f"flow {flow_score:+.2f}")
+        if regime_state and regime_state.name != "neutral":
+            _why_parts.append(f"regime={regime_state.name}")
+        if abs(spot_flow_signal) >= 0.05:
+            _why_parts.append(f"CVD {spot_flow_signal:+.2f}")
+        _why = " | ".join(_why_parts)
         logger.info(
             f"{_C.GREEN}{'=' * 60}{_C.RESET}\n"
             f"  {_C.GREEN}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}{slip_note}\n"
             f"  {contract.get('question', cid)}  [{entry_phase['phase']}]\n"
-            f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}")
+            f"  {_C.YELLOW}Why: {_why}{_C.RESET}\n"
+            f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}\n"
+            f"{_C.GREEN}{'=' * 60}{_C.RESET}")
         if _adverse_monitor:
             mkt_mid = (price_up + price_down) / 2 if price_up + price_down > 0 else fill_price
             _adverse_monitor.record_fill(side=side, fill_price=fill_price, token_id=token_id, midprice=mkt_mid)
@@ -1365,7 +1377,9 @@ async def _evaluate_and_exit_position(
                 f"{color}{'=' * 60}{_C.RESET}\n"
                 f"  {color}{_C.BOLD}SCALP {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_fill:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
                 f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
-                f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
+                f"  {_C.YELLOW}Why: {reason}{_C.RESET}\n"
+                f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
+                f"{color}{'=' * 60}{_C.RESET}")
             if breaker:
                 breaker.update_bankroll(bankroll_after)
                 await db.set_peak_bankroll(breaker.peak_bankroll)
@@ -1447,7 +1461,8 @@ async def _resolve_expired_position(
             f"{color}{'=' * 60}{_C.RESET}\n"
             f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
             f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
-            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
+            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
+            f"{color}{'=' * 60}{_C.RESET}")
         if breaker:
             breaker.update_bankroll(bankroll_after)
             await db.set_peak_bankroll(breaker.peak_bankroll)
@@ -1537,7 +1552,8 @@ async def _manage_orphaned_position(
             f"{color}{'=' * 60}{_C.RESET}\n"
             f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']} (orphan){_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
             f"  {pos.get('question', pos['market_id'])}\n"
-            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
+            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
+            f"{color}{'=' * 60}{_C.RESET}")
         if breaker:
             breaker.update_bankroll(bankroll_after)
             await db.set_peak_bankroll(breaker.peak_bankroll)
