@@ -119,3 +119,22 @@
 - Many recent resolution losses at extreme probabilities (9-18%) — tail risk is real, watch leverage
 
 **Reasoning:** The prior cycle's recommendations were directionally correct — down bias persists, scalp accuracy remains coin-flip so holding longer is right, and high min_model_probability filters weak trades. The main adjustment this cycle is trimming kelly_fraction from 0.13 to 0.12 given the SPRT negative signal and the compressed edge distribution (mean edge fell from 11.5% to 8.6%), reducing exposure while conditions are uncertain. All other parameters hold steady since the indicator weights and regime/f...
+
+## 2026-04-20T04:50:42.696948+00:00
+
+**Source:** Claude (medium) | **Weights:** rsi=0.18, macd=0.27, stochastic=0.22, obv=0.10, vwap=0.23
+**Params:** momentum_weight=-0.03, regime_weight=0.04, flow_weight=0.07, student_t_df=5, min_edge=0.04, min_kelly=0.018, atr_sigma_ratio=1.5, kelly_fraction=0.15, min_model_probability=0.62, exit_edge_threshold=-0.03, min_time_remaining=30.0, trading_start_hour_et=0, trading_end_hour_et=23, trading_end_minute=59
+
+**Findings:**
+- Down trades win 59% vs Up at 53% — bearish signal bias remains real and persistent
+- Highest-edge trades (Q4) only realizing 72% of predicted edge — model overconfident at extremes
+- 60-180s entry window wins only 50% vs 57% elsewhere — mid-window entries are weakest
+- Scalp exits still wrong 51% of time — holding longer beats exiting early
+- High ATR wins 58% vs low ATR 54% — volatile regimes are the sweet spot
+
+**Warnings:**
+- Edge mean dropped from 11.5% to 8.6% — market pricing more efficiently, edge is compressing
+- Many recent resolution losses at very low probabilities (9-18%) — tail risk trades destroying PnL
+- Mean-reverting regime wins only 53% with near-zero avg gain — these trades add little value
+
+**Reasoning:** The down-trade edge and high-ATR outperformance continue to be the dominant patterns worth leaning into. Raising atr_sigma_ratio from 1.4 to 1.5 modestly reduces overconfidence at high-edge trades where Q4 realization is only 72%, and keeping min_model_probability at 0.62 filters weak coin-flip entries. Kelly fraction stays at 0.15 — SPRT negative is an observation, not a sizing signal, and reducing it further risks adoption rejection.
