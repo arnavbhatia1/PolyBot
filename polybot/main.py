@@ -1699,12 +1699,12 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             _header = f"  PolyBot {_weight_ver}  |  {_mode_label}"
         _feed_status = (
             f"  Feeds: "
-            f"Binance {'✓' if binance_feed is not None else '✗'}  "
-            f"Coinbase {'✓' if coinbase_feed is not None else '✗'}  "
-            f"Kraken {'✓' if kraken_feed is not None else '✗'}  "
-            f"Bybit {'✓' if bybit_feed is not None else '✗'}  "
-            f"Deribit {'✓' if deribit_feed is not None else '✗'}  "
-            f"Chainlink {'✓' if chainlink_feed is not None else '✗'}"
+            f"Binance {'OK' if binance_feed is not None else '--'}  "
+            f"Coinbase {'OK' if coinbase_feed is not None else '--'}  "
+            f"Kraken {'OK' if kraken_feed is not None else '--'}  "
+            f"Bybit {'OK' if bybit_feed is not None else '--'}  "
+            f"Deribit {'OK' if deribit_feed is not None else '--'}  "
+            f"Chainlink {'OK' if chainlink_feed is not None else '--'}"
         )
         _clob_status = (
             f"  CLOB WS: {'connected' if clob_ws is not None else 'disconnected'}  |  "
@@ -2373,7 +2373,10 @@ async def main() -> None:
 
 if __name__ == "__main__":
     args = parse_args()
-    if args.run_pipeline:
-        asyncio.run(run_pipeline())
-    else:
-        asyncio.run(main())
+    try:
+        if args.run_pipeline:
+            asyncio.run(run_pipeline())
+        else:
+            asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
