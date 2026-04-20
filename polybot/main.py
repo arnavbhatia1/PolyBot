@@ -1203,8 +1203,14 @@ async def _evaluate_and_exit_position(
     # NegRisk execution sell price via /price endpoint
     hold_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
     exec_sell = await market_scanner.fetch_market_price(hold_token, "SELL", http_client)
-    gamma_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
-    market_price = exec_sell if exec_sell > 0 else gamma_price
+    if exec_sell > 0:
+        market_price = exec_sell
+    elif clob_ws:
+        bba = clob_ws.best_bid_ask.get(hold_token, {})
+        ws_bid = float(bba.get("best_bid", 0) or 0)
+        market_price = ws_bid if ws_bid > 0 else (live["price_up"] if pos["side"] == "Up" else live["price_down"])
+    else:
+        market_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
 
     exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
                       else default_exit_threshold)
