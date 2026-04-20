@@ -94,6 +94,14 @@ class AgentScheduler:
             "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', 0.04),
             "wall_weight": getattr(self.signal_engine, 'wall_weight', 0.05),
             "prev_margin_weight": getattr(self.signal_engine, 'prev_margin_weight', 0.02),
+            "logit_scale": getattr(self.signal_engine, 'logit_scale', 4.0),
+            "probability_compression": getattr(self.signal_engine, 'probability_compression', 1.0),
+            "liquidation_weight": getattr(self.signal_engine, 'liquidation_weight', 0.03),
+            "adverse_selection_threshold": (self._config or {}).get("signal", {}).get("adverse_selection_threshold", 0.65),
+            "normal_fraction": (self._config or {}).get("entry_timing", {}).get("normal_fraction", 0.60),
+            "late_max_penalty": (self._config or {}).get("entry_timing", {}).get("late_max_penalty", 0.60),
+            "min_atr": getattr(self.signal_engine, 'min_atr', 8.0),
+            "max_edge": getattr(self.signal_engine, 'max_edge', 0.20),
             "active_weights_version": getattr(self.indicator_engine, 'active_version', 'weights_v001')
                                       if self.indicator_engine else "weights_v001",
         }
@@ -473,7 +481,26 @@ class AgentScheduler:
                 if "recommended_wall_weight" in recommendations:
                     self.signal_engine.wall_weight = _clamp(recommendations["recommended_wall_weight"], 0.0, 0.15)
                 if "recommended_prev_margin_weight" in recommendations:
-                    self.signal_engine.prev_margin_weight = _clamp(recommendations["recommended_prev_margin_weight"], 0.0, 0.05)
+                    self.signal_engine.prev_margin_weight = _clamp(recommendations["recommended_prev_margin_weight"], 0.01, 0.05)
+                if "recommended_logit_scale" in recommendations:
+                    self.signal_engine.logit_scale = _clamp(float(recommendations["recommended_logit_scale"]), 2.0, 6.0)
+                if "recommended_probability_compression" in recommendations:
+                    self.signal_engine.probability_compression = _clamp(float(recommendations["recommended_probability_compression"]), 0.5, 1.0)
+                if "recommended_liquidation_weight" in recommendations:
+                    self.signal_engine.liquidation_weight = _clamp(recommendations["recommended_liquidation_weight"], 0.01, 0.06)
+                if "recommended_adverse_selection_threshold" in recommendations:
+                    if self._config:
+                        self._config.setdefault("signal", {})["adverse_selection_threshold"] = _clamp(recommendations["recommended_adverse_selection_threshold"], 0.45, 0.75)
+                if "recommended_normal_fraction" in recommendations:
+                    if self._config:
+                        self._config.setdefault("entry_timing", {})["normal_fraction"] = _clamp(float(recommendations["recommended_normal_fraction"]), 0.40, 0.80)
+                if "recommended_late_max_penalty" in recommendations:
+                    if self._config:
+                        self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(recommendations["recommended_late_max_penalty"]), 0.20, 0.80)
+                if "recommended_min_atr" in recommendations:
+                    self.signal_engine.min_atr = _clamp(float(recommendations["recommended_min_atr"]), 5.0, 15.0)
+                if "recommended_max_edge" in recommendations:
+                    self.signal_engine.max_edge = _clamp(float(recommendations["recommended_max_edge"]), 0.10, 0.30)
                 if "recommended_trading_start_hour_et" in recommendations:
                     start_h = recommendations["recommended_trading_start_hour_et"]
                     self._trading_start = (start_h, 0)
@@ -502,7 +529,23 @@ class AgentScheduler:
                 if "recommended_wall_weight" in recommendations:
                     sig["wall_weight"] = _clamp(recommendations["recommended_wall_weight"], 0.0, 0.15)
                 if "recommended_prev_margin_weight" in recommendations:
-                    sig["prev_margin_weight"] = _clamp(recommendations["recommended_prev_margin_weight"], 0.0, 0.05)
+                    sig["prev_margin_weight"] = _clamp(recommendations["recommended_prev_margin_weight"], 0.01, 0.05)
+                if "recommended_logit_scale" in recommendations:
+                    sig["logit_scale"] = _clamp(float(recommendations["recommended_logit_scale"]), 2.0, 6.0)
+                if "recommended_probability_compression" in recommendations:
+                    sig["probability_compression"] = _clamp(float(recommendations["recommended_probability_compression"]), 0.5, 1.0)
+                if "recommended_liquidation_weight" in recommendations:
+                    sig["liquidation_weight"] = _clamp(recommendations["recommended_liquidation_weight"], 0.01, 0.06)
+                if "recommended_adverse_selection_threshold" in recommendations:
+                    sig["adverse_selection_threshold"] = _clamp(recommendations["recommended_adverse_selection_threshold"], 0.45, 0.75)
+                if "recommended_normal_fraction" in recommendations:
+                    self._config.setdefault("entry_timing", {})["normal_fraction"] = _clamp(float(recommendations["recommended_normal_fraction"]), 0.40, 0.80)
+                if "recommended_late_max_penalty" in recommendations:
+                    self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(recommendations["recommended_late_max_penalty"]), 0.20, 0.80)
+                if "recommended_min_atr" in recommendations:
+                    sig["min_atr"] = _clamp(float(recommendations["recommended_min_atr"]), 5.0, 15.0)
+                if "recommended_max_edge" in recommendations:
+                    sig["max_edge"] = _clamp(float(recommendations["recommended_max_edge"]), 0.10, 0.30)
                 if "recommended_momentum_weight" in recommendations:
                     sig["momentum_weight"] = _clamp(recommendations["recommended_momentum_weight"], -0.10, 0.10)
                 if "recommended_regime_weight" in recommendations:
@@ -858,8 +901,8 @@ class AgentScheduler:
             else:
                 self.weight_optimizer.min_improvement = 0.03  # default
 
-            # Cooldown: don't adopt within 3 days of last change (confounded data)
-            COOLDOWN_DAYS = 3
+            # Cooldown: don't adopt on back-to-back days (need at least 1 day of data to validate)
+            COOLDOWN_DAYS = 2
             cooldown_active = False
             if self.pipeline_tracker:
                 days = self.pipeline_tracker.days_since_last_adoption()

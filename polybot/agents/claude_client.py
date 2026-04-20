@@ -121,14 +121,36 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - trading_start_hour_et: 0 to 23 (ET hour to start trading)
 - trading_end_hour_et: 0 to 23 (ET hour to stop trading)
 - trading_end_minute: 0 to 59 (minute component of end time)
+- logit_scale: 2.0 to 6.0. Amplifies how much L2-L5 signal weights shift the final probability. Higher = signals have more impact. Lower = more conservative. If signals are noisy, lower it. If they're predictive but weak, raise it.
+- probability_compression: 0.5 to 1.0. Shrinks final probability toward 0.5 after CDF. 1.0 = no compression. Use 0.7-0.85 if Q4 edge realization is poor (model overconfident at extremes).
+- liquidation_weight: 0.01 to 0.06. L3e — Bybit OI drop signals liquidation cascades. Raise if large OI drops precede your wins.
+- prev_margin_weight: 0.01 to 0.05. L5 — previous window momentum carry. Raise if consecutive windows trend together.
+- adverse_selection_threshold: 0.45 to 0.75. Skip entries if 30s post-fill reversal rate exceeds this. Lower = stricter informed-flow filter.
+- normal_fraction: 0.40 to 0.80. Fraction of 300s window with full Kelly. After this, late penalty applies to ATM trades.
+- late_max_penalty: 0.20 to 0.80. Max Kelly reduction for ATM trades late in window.
+- min_atr: 5.0 to 15.0. Floor on ATR (runtime: max(min_atr, 0.3 × rolling_20)). Raise in calm markets to avoid overtrading low-volatility windows.
+- max_edge: 0.10 to 0.30. Safety cap — filters suspiciously high edges that may indicate stale prices.
+- spot_flow_weight: 0.01 to 0.10. L3b — Binance CVD + taker ratio. Raise if CVD is predictive.
 - Only recommend schedule changes if there's clear evidence from time-of-day patterns
 - Be conservative — no single weight should change by more than 0.05 per cycle
 - If fewer than 50 trades in the dataset, recommend NO CHANGES (insufficient data — win rate variance at N=25 is ±13 percentage points, which is noise)
 
+## Parameter Impact Hierarchy (most to least leverage on the adoption metric)
+1. **atr_sigma_ratio** — controls how aggressive L1 probability is. Lower = more aggressive (wider edge). If Q4 edge realization is poor (overconfident), raise it. HIGHEST leverage parameter.
+2. **logit_scale** — amplifies ALL signal layers (L2-L5). Raising from 4.0 to 5.0 makes flow/regime/momentum signals 25% more impactful. Lower if signals are noisy, raise if they're predictive but weak.
+3. **probability_compression** — shrinks probabilities toward 0.5. Use 0.75-0.85 if the model is overconfident at extremes (Q4 edge realization < 0.5).
+4. **min_model_probability** — filters out weak trades. Raising eliminates low-confidence losers.
+5. **exit_edge_threshold** — scalp vs hold timing. Counterfactual scalp accuracy <50% = tighten (less negative = hold longer). >65% = loosen.
+6. **flow_weight / spot_flow_weight / liquidation_weight** — L3/L3b/L3e nudge the signal. Raise if those signals show consistent directional accuracy.
+7. **adverse_selection_threshold** — informed flow filter. Lower if post-fill reversals are hurting you.
+8. **regime_weight / prev_margin_weight** — L2/L5 momentum signals. Adjust based on regime and carry analysis.
+9. **Indicator weights (rsi/macd/etc)** — LOWEST leverage. L4 is mostly disabled (momentum_weight=-0.02). Only adjust if an indicator shows >65% accuracy.
+
 ## Critical Behavioral Rules
-1. SPRT negative means recent win rate is below expectation. It is an observation, NOT a sizing instruction. Do NOT reduce kelly_fraction in response to SPRT negative — this guarantees rejection. Instead improve entry quality: tighten min_model_probability, min_edge, or indicator weights.
+1. SPRT negative means recent win rate is below expectation. It is an observation, NOT a sizing instruction. Do NOT reduce kelly_fraction in response to SPRT negative — this guarantees rejection. Instead improve entry quality: tighten min_model_probability or raise atr_sigma_ratio.
 2. "Trending regime wins only 49%" is NOT a problem to fix. The bot already handles trending regimes at runtime by flipping momentum_weight sign and amplifying 1.5×. Do not recommend regime_weight changes based on trending win rate alone.
 3. If the Last Pipeline Rejection section appears, your previous proposal was rejected for that reason. Address it directly.
+4. Do NOT shuffle indicator weights unless you have a specific indicator showing >65% accuracy. Changing RSI from 0.18 to 0.15 has near-zero effect on performance. Focus on parameters 1-4 above.
 
 ## Response Format
 Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
@@ -148,6 +170,16 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
   "recommended_trading_start_hour_et": XX,
   "recommended_trading_end_hour_et": XX,
   "recommended_trading_end_minute": XX,
+  "recommended_logit_scale": X.X,
+  "recommended_probability_compression": 0.XX,
+  "recommended_liquidation_weight": 0.XX,
+  "recommended_prev_margin_weight": 0.XX,
+  "recommended_spot_flow_weight": 0.XX,
+  "recommended_adverse_selection_threshold": 0.XX,
+  "recommended_normal_fraction": 0.XX,
+  "recommended_late_max_penalty": 0.XX,
+  "recommended_min_atr": X.X,
+  "recommended_max_edge": 0.XX,
   "key_findings": ["finding 1", "finding 2", ...],
   "risk_warnings": ["warning 1", ...],
   "reasoning": "2-3 sentence summary of your reasoning",
@@ -285,6 +317,16 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     _clamp_if_present("recommended_min_model_probability", 0.55, 0.85, _cur("min_model_probability", 0.58))
     _clamp_if_present("recommended_exit_edge_threshold", -0.25, 0.0, _cur("exit_edge_threshold", -0.05))
     _clamp_if_present("recommended_min_time_remaining", 0, 120, _cur("min_time_remaining", 0))
+    _clamp_if_present("recommended_logit_scale",            2.0,  6.0,  _cur("logit_scale", 4.0))
+    _clamp_if_present("recommended_probability_compression", 0.5,  1.0,  _cur("probability_compression", 1.0))
+    _clamp_if_present("recommended_liquidation_weight",      0.01, 0.06, _cur("liquidation_weight", 0.03))
+    _clamp_if_present("recommended_prev_margin_weight",      0.01, 0.05, _cur("prev_margin_weight", 0.02))
+    _clamp_if_present("recommended_spot_flow_weight",        0.01, 0.10, _cur("spot_flow_weight", 0.04))
+    _clamp_if_present("recommended_adverse_selection_threshold", 0.45, 0.75, _cur("adverse_selection_threshold", 0.65))
+    _clamp_if_present("recommended_normal_fraction",         0.40, 0.80, _cur("normal_fraction", 0.60))
+    _clamp_if_present("recommended_late_max_penalty",        0.20, 0.80, _cur("late_max_penalty", 0.60))
+    _clamp_if_present("recommended_min_atr",                 5.0,  15.0, _cur("min_atr", 8.0))
+    _clamp_if_present("recommended_max_edge",                0.10, 0.30, _cur("max_edge", 0.20))
 
     data["recommended_student_t_df"] = max(3, min(8,
         int(data["recommended_student_t_df"]) if "recommended_student_t_df" in data
@@ -321,7 +363,17 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         f"atr_sigma_ratio: {cfg.get('atr_sigma_ratio', 1.7)}\n"
         f"trading_start_hour (ET): {cfg.get('trading_start_hour_et', 0)}\n"
         f"trading_end_hour (ET): {cfg.get('trading_end_hour_et', 23)}\n"
-        f"trading_end_minute: {cfg.get('trading_end_minute', 59)}"
+        f"trading_end_minute: {cfg.get('trading_end_minute', 59)}\n"
+        f"logit_scale: {cfg.get('logit_scale', 4.0)}\n"
+        f"probability_compression: {cfg.get('probability_compression', 1.0)}\n"
+        f"liquidation_weight (L3e): {cfg.get('liquidation_weight', 0.03)}\n"
+        f"prev_margin_weight (L5): {cfg.get('prev_margin_weight', 0.02)}\n"
+        f"spot_flow_weight (L3b): {cfg.get('spot_flow_weight', 0.04)}\n"
+        f"adverse_selection_threshold: {cfg.get('adverse_selection_threshold', 0.65)}\n"
+        f"normal_fraction (entry timing): {cfg.get('normal_fraction', 0.60)}\n"
+        f"late_max_penalty (entry timing): {cfg.get('late_max_penalty', 0.60)}\n"
+        f"min_atr: {cfg.get('min_atr', 8.0)}\n"
+        f"max_edge: {cfg.get('max_edge', 0.20)}"
     )
 
     # Performance analysis from BiasDetector

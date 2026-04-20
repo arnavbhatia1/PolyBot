@@ -169,7 +169,7 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 
 **Walk-forward split:** 60% train, 40% validation across 4 folds [60:70], [70:80], [80:90], [90:100].
 
-**Adoption gates:** z >= 1.28 (Jobson-Korkie), delta >= 0.03 absolute, n >= 100, candidate Sharpe > 0, improvement in 3/4 folds. 3-day cooldown after last adoption.
+**Adoption gates:** z >= 1.28 (Jobson-Korkie), delta >= 0.03 absolute, n >= 100, candidate Sharpe > 0, improvement in 3/4 folds. 2-day cooldown after last adoption.
 
 **Pipeline stages:**
 1. `PipelineTracker` — fills 7d/30d actual Sharpe for past adoptions, feeds to Claude
