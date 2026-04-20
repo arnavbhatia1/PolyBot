@@ -280,13 +280,8 @@ async def _get_contract_prices(market_scanner: Any, market_id: str, http_client:
     for ts in [window_ts, window_ts + 300, window_ts - 300]:
         slug = market_scanner._make_slug(ts)
         try:
-            if http_client:
-                resp = await http_client.get(f"{market_scanner.GAMMA_API}/events",
-                                             params={"slug": slug})
-            else:
-                async with httpx.AsyncClient(timeout=3) as client:
-                    resp = await client.get(f"{market_scanner.GAMMA_API}/events",
-                                            params={"slug": slug})
+            resp = await http_client.get(f"{market_scanner.GAMMA_API}/events",
+                                         params={"slug": slug})
             resp.raise_for_status()
             data = resp.json()
             if data:
@@ -303,13 +298,8 @@ async def _get_contract_prices(market_scanner: Any, market_id: str, http_client:
 
     # Fallback: fetch directly by stored slug (handles expired contracts outside ±1 window)
     try:
-        if http_client:
-            resp = await http_client.get(f"{market_scanner.GAMMA_API}/events",
-                                         params={"slug": market_id})
-        else:
-            async with httpx.AsyncClient(timeout=3) as client:
-                resp = await client.get(f"{market_scanner.GAMMA_API}/events",
-                                        params={"slug": market_id})
+        resp = await http_client.get(f"{market_scanner.GAMMA_API}/events",
+                                     params={"slug": market_id})
         resp.raise_for_status()
         data = resp.json()
         if data:
@@ -419,6 +409,7 @@ async def _evaluate_signal_and_enter(
         token_up: str, token_down: str, signal_config: dict[str, Any],
         max_bankroll_pct: float,
         now_ts: int,
+        bankroll: float = 0.0,
         depth_feed: Any = None,
         trades_feed: Any = None,
         bybit_feed: Any = None,
@@ -643,7 +634,8 @@ async def _evaluate_signal_and_enter(
         return None, last_eval_log_window
 
     price = price_up if side == "Up" else price_down
-    bankroll = await db.get_bankroll()
+    if not bankroll:
+        bankroll = await db.get_bankroll()
     kelly_mult = breaker.kelly_multiplier if breaker else 1.0
 
     # Drawdown velocity check: force conservative Kelly if losing fast
@@ -781,15 +773,18 @@ async def _evaluate_signal_and_enter(
         logger.info(f"SKIP: size ${size:.2f} < $0.10 after caps")
         return None, last_eval_log_window
 
-    # Fetch fee rate and tick size from Polymarket API
-    fee_rate = await market_scanner.fetch_fee_rate(token_id, http_client)
+    # Fetch fee rate, tick size, and fresh execution price in parallel
+    fee_rate, tick_size, fresh_ask = await asyncio.gather(
+        market_scanner.fetch_fee_rate(token_id, http_client),
+        market_scanner.fetch_tick_size(token_id, http_client),
+        market_scanner.fetch_market_price(token_id, "BUY", http_client),
+    )
     # Simulate maker/FOK blend: ~65% of orders fill as maker (0% fee),
     # ~35% fall back to FOK (full taker fee). Randomize per trade.
     if config.get("execution", {}).get("use_maker_orders", False):
         import random
         if random.random() < 0.65:
             fee_rate = 0.0  # maker fill
-    tick_size = await market_scanner.fetch_tick_size(token_id, http_client)
 
     # Apply slippage to the execution price already fetched in _fetch_market_prices
     # (price already comes from GET /price?side=BUY — no need to refetch)
@@ -848,9 +843,7 @@ async def _evaluate_signal_and_enter(
     }
     snapshot_str = json.dumps(snapshot)
 
-    # Pre-submit edge re-check: fetch fresh execution price (same source as signal)
-    # to catch genuine drift between signal evaluation and order submission.
-    fresh_ask = await market_scanner.fetch_market_price(token_id, "BUY", http_client)
+    # Pre-submit edge re-check: use fresh_ask already fetched above (zero extra round trip).
     if fresh_ask > 0 and fresh_ask != price:
         fresh_edge = signal.prob - fresh_ask
         if fresh_edge < signal_engine.min_edge:
@@ -994,22 +987,22 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
     """Read order books, fetch negRisk prices, apply sanity/depth/spread gates."""
     now_ts = int(time.time())
 
-    # Read order books — WebSocket state (instant) with HTTP fallback
-    if clob_ws and clob_ws.connected:
-        book_up = clob_ws.get_book(token_up)
-        book_down = clob_ws.get_book(token_down)
-        # Fall back to HTTP if WS book is empty or has no asks
-        if not book_up or not book_up.get("asks"):
-            book_up = await market_scanner.fetch_clob_book(token_up, http_client)
-        if not book_down or not book_down.get("asks"):
-            book_down = await market_scanner.fetch_clob_book(token_down, http_client)
-    else:
-        book_up = await market_scanner.fetch_clob_book(token_up, http_client)
-        book_down = await market_scanner.fetch_clob_book(token_down, http_client)
+    # Read order books — WebSocket state (instant) with HTTP fallback, parallelized
+    ws_book_up = clob_ws.get_book(token_up) if (clob_ws and clob_ws.connected) else None
+    ws_book_down = clob_ws.get_book(token_down) if (clob_ws and clob_ws.connected) else None
 
-    # NegRisk execution prices: GET /price accounts for cross-matching
-    exec_up = await market_scanner.fetch_market_price(token_up, "BUY", http_client)
-    exec_down = await market_scanner.fetch_market_price(token_down, "BUY", http_client)
+    async def _get_book(ws_book: Any, token: str) -> dict:
+        if ws_book and ws_book.get("asks"):
+            return ws_book
+        return await market_scanner.fetch_clob_book(token, http_client)
+
+    # Gather all 4 HTTP calls in parallel: both books + both execution prices
+    book_up, book_down, exec_up, exec_down = await asyncio.gather(
+        _get_book(ws_book_up, token_up),
+        _get_book(ws_book_down, token_down),
+        market_scanner.fetch_market_price(token_up, "BUY", http_client),
+        market_scanner.fetch_market_price(token_down, "BUY", http_client),
+    )
 
     if exec_up > 0 or exec_down > 0:
         price_up = exec_up if exec_up > 0 else contract["price_up"]
@@ -1136,9 +1129,15 @@ async def _check_counterfactuals(counterfactual_tracker: Any, ghost_tracker: Any
                                  event_metadata_cache: dict[str, Any] | None = None) -> None:
     """Pre-fetch Gamma metadata for watched scalps/ghosts and check resolutions."""
     cf_event_metadata = dict(event_metadata_cache or {})
-    for cf_mid in counterfactual_tracker.watched_markets:
-        if cf_mid not in cf_event_metadata:
-            cf_live = await _get_contract_prices(market_scanner, cf_mid, http_client)
+    markets_to_fetch = [m for m in counterfactual_tracker.watched_markets if m not in cf_event_metadata]
+    if markets_to_fetch:
+        results = await asyncio.gather(
+            *[_get_contract_prices(market_scanner, m, http_client) for m in markets_to_fetch],
+            return_exceptions=True,
+        )
+        for cf_mid, cf_live in zip(markets_to_fetch, results):
+            if isinstance(cf_live, Exception):
+                continue
             if cf_live and cf_live.get("event_metadata"):
                 cf_event_metadata[cf_mid] = cf_live["event_metadata"]
     cf_resolved = counterfactual_tracker.check_resolutions(
@@ -1338,7 +1337,7 @@ async def _evaluate_and_exit_position(
                 f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
                 f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
             if breaker:
-                breaker.update_bankroll(await db.get_bankroll())
+                breaker.update_bankroll(bankroll_after)
                 await db.set_peak_bankroll(breaker.peak_bankroll)
                 cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
                 if cb_event and alert_manager:
@@ -1420,7 +1419,7 @@ async def _resolve_expired_position(
             f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
             f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
         if breaker:
-            breaker.update_bankroll(await db.get_bankroll())
+            breaker.update_bankroll(bankroll_after)
             await db.set_peak_bankroll(breaker.peak_bankroll)
             cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
             if cb_event and alert_manager:
@@ -1513,7 +1512,7 @@ async def _manage_orphaned_position(
             f"  {pos.get('question', pos['market_id'])}\n"
             f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}")
         if breaker:
-            breaker.update_bankroll(await db.get_bankroll())
+            breaker.update_bankroll(bankroll_after)
             await db.set_peak_bankroll(breaker.peak_bankroll)
             cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
             if cb_event and alert_manager:
@@ -1616,7 +1615,10 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     prev_contract_tokens: list[str] = []       # tokens from previous contract (for unsubscribe)
 
     if http_client is None:
-        http_client = httpx.AsyncClient(timeout=5)
+        http_client = httpx.AsyncClient(
+            timeout=5,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=60),
+        )
 
     # Day tracking for open/close banners
     # At scheduled restart (12:15 AM ET), start fresh at 0W/0L.
@@ -1789,6 +1791,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             if strike is None:
                 continue
 
+            current_bankroll = await db.get_bankroll()
             traded_cid, last_eval_log_window = await _evaluate_signal_and_enter(
                 contract, cid, binance_feed, indicator_engine,
                 signal_engine, market_scanner, http_client, clob_ws,
@@ -1797,7 +1800,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 book_up, book_down, depth_usd_up, depth_usd_down,
                 btc_price, strike, eval_window, last_eval_log_window,
                 token_up, token_down, signal_config, max_bankroll_pct,
-                now_ts,
+                now_ts, bankroll=current_bankroll,
                 depth_feed=depth_feed, trades_feed=trades_feed,
                 bybit_feed=bybit_feed, deribit_feed=deribit_feed,
                 coinbase_feed=coinbase_feed,
@@ -2228,7 +2231,10 @@ async def main() -> None:
 
     # Shared HTTP client — lifecycle managed here in main()
     import httpx
-    http_client = httpx.AsyncClient(timeout=5)
+    http_client = httpx.AsyncClient(
+        timeout=5,
+        limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=60),
+    )
 
     async def run_discord():
         try:
