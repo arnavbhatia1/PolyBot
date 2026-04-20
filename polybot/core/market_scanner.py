@@ -161,11 +161,7 @@ class BTCMarketScanner:
 
         try:
             url = f"{self.CLOB_API}/book"
-            if http_client:
-                resp = await http_client.get(url, params={"token_id": token_id})
-            else:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(url, params={"token_id": token_id})
+            resp = await http_client.get(url, params={"token_id": token_id})
             resp.raise_for_status()
             book = resp.json()
             self._book_cache[token_id] = (now, book)
@@ -190,11 +186,7 @@ class BTCMarketScanner:
             # NOT the actual taker fee. The real rate is in Gamma's feeSchedule.rate.
             # Fetch from Gamma market metadata for the accurate rate.
             url = f"{self.CLOB_API}/fee-rate"
-            if http_client:
-                resp = await http_client.get(url, params={"token_id": token_id})
-            else:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(url, params={"token_id": token_id})
+            resp = await http_client.get(url, params={"token_id": token_id})
             resp.raise_for_status()
             data = resp.json()
             # CLOB base_fee is an internal multiplier, NOT the actual taker fee.
@@ -223,11 +215,7 @@ class BTCMarketScanner:
 
         try:
             url = f"{self.CLOB_API}/tick-size"
-            if http_client:
-                resp = await http_client.get(url, params={"token_id": token_id})
-            else:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(url, params={"token_id": token_id})
+            resp = await http_client.get(url, params={"token_id": token_id})
             resp.raise_for_status()
             data = resp.json()
             tick = str(data.get("minimum_tick_size", "0.01"))
@@ -364,11 +352,7 @@ class BTCMarketScanner:
         try:
             url = f"{self.CLOB_API}/price"
             params = {"token_id": token_id, "side": side}
-            if http_client:
-                resp = await http_client.get(url, params=params)
-            else:
-                async with httpx.AsyncClient(timeout=3) as client:
-                    resp = await client.get(url, params=params)
+            resp = await http_client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
             return float(data.get("price", 0))
@@ -384,11 +368,7 @@ class BTCMarketScanner:
         """GET /spread — bid-ask spread as a float. Returns -1 on error."""
         try:
             url = f"{self.CLOB_API}/spread"
-            if http_client:
-                resp = await http_client.get(url, params={"token_id": token_id})
-            else:
-                async with httpx.AsyncClient(timeout=3) as client:
-                    resp = await client.get(url, params={"token_id": token_id})
+            resp = await http_client.get(url, params={"token_id": token_id})
             resp.raise_for_status()
             return float(resp.json().get("spread", "-1"))
         except Exception as e:
@@ -400,11 +380,7 @@ class BTCMarketScanner:
         try:
             url = f"{self.CLOB_API}/midpoints"
             ids_str = ",".join(token_ids)
-            if http_client:
-                resp = await http_client.get(url, params={"token_ids": ids_str})
-            else:
-                async with httpx.AsyncClient(timeout=3) as client:
-                    resp = await client.get(url, params={"token_ids": ids_str})
+            resp = await http_client.get(url, params={"token_ids": ids_str})
             resp.raise_for_status()
             return {k: float(v) for k, v in resp.json().items()}
         except Exception as e:
@@ -416,11 +392,7 @@ class BTCMarketScanner:
         try:
             url = f"{self.CLOB_API}/last-trades-prices"
             ids_str = ",".join(token_ids)
-            if http_client:
-                resp = await http_client.get(url, params={"token_ids": ids_str})
-            else:
-                async with httpx.AsyncClient(timeout=3) as client:
-                    resp = await client.get(url, params={"token_ids": ids_str})
+            resp = await http_client.get(url, params={"token_ids": ids_str})
             resp.raise_for_status()
             data = resp.json()
             return {item["token_id"]: {"price": float(item["price"]), "side": item.get("side", "")}
@@ -433,11 +405,7 @@ class BTCMarketScanner:
         """GET /live-volume — total volume for an event. Returns 0 on error."""
         try:
             url = f"{self.DATA_API}/live-volume"
-            if http_client:
-                resp = await http_client.get(url, params={"id": event_id})
-            else:
-                async with httpx.AsyncClient(timeout=3) as client:
-                    resp = await client.get(url, params={"id": event_id})
+            resp = await http_client.get(url, params={"id": event_id})
             resp.raise_for_status()
             data = resp.json()
             if isinstance(data, list) and data:
@@ -447,7 +415,7 @@ class BTCMarketScanner:
             logger.debug(f"Live volume fetch failed for event {event_id}: {e}")
             return 0.0
 
-    async def find_active_contract(self) -> dict[str, Any] | None:
+    async def find_active_contract(self, http_client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:
         now = time.time()
 
         # Return cache if fresh
@@ -470,11 +438,15 @@ class BTCMarketScanner:
         for ts in [window_ts, window_ts + self.WINDOW_SECONDS]:
             slug = self._make_slug(ts)
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.get(f"{self.GAMMA_API}/events",
-                                            params={"slug": slug})
+                if http_client:
+                    resp = await http_client.get(f"{self.GAMMA_API}/events", params={"slug": slug})
                     resp.raise_for_status()
                     data = resp.json()
+                else:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        resp = await client.get(f"{self.GAMMA_API}/events", params={"slug": slug})
+                        resp.raise_for_status()
+                        data = resp.json()
             except Exception as e:
                 logger.error(f"Gamma API error for {slug}: {e}")
                 continue
@@ -506,11 +478,7 @@ class BTCMarketScanner:
         try:
             url = f"{self.CLOB_API}/prices-history"
             params = {"market": token_id, "interval": interval, "fidelity": fidelity}
-            if http_client:
-                resp = await http_client.get(url, params=params)
-            else:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(url, params=params)
+            resp = await http_client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
             return data.get("history", [])
@@ -526,11 +494,7 @@ class BTCMarketScanner:
         """
         try:
             url = f"{self.DATA_API}/oi"
-            if http_client:
-                resp = await http_client.get(url, params={"market": condition_id})
-            else:
-                async with httpx.AsyncClient(timeout=3) as client:
-                    resp = await client.get(url, params={"market": condition_id})
+            resp = await http_client.get(url, params={"market": condition_id})
             resp.raise_for_status()
             data = resp.json()
             if isinstance(data, list) and data:

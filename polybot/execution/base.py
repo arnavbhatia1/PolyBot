@@ -242,8 +242,7 @@ class BaseTrader(ABC):
         total_fees = entry_fee_usd + fee_usdc
         await self.db.close_position(position_id, exit_price=fill.fill_price, log_return=lr,
                                      pnl=pnl, fees=total_fees)
-        bankroll = await self.db.get_bankroll()
-        await self.db.set_bankroll(bankroll + revenue)
+        await self.db.adjust_bankroll(revenue)
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
                            pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=fee_usdc,

@@ -1084,7 +1084,7 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
     """Find an active contract and subscribe its WebSocket tokens. Returns (contract, cid, ..., prev_tokens)."""
     if prev_contract_tokens is None:
         prev_contract_tokens = []
-    contract = await market_scanner.find_active_contract()
+    contract = await market_scanner.find_active_contract(http_client=http_client)
     if not contract:
         return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
 
@@ -1690,8 +1690,13 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             # --- POSITION MANAGEMENT: resolution check + active re-evaluation ---
             positions = await db.get_open_positions()
             has_active_position = False  # Track if any position has a live (non-expired) contract
-            for pos in positions:
-                live = await _get_contract_prices(market_scanner, pos["market_id"], http_client)
+            live_results = await asyncio.gather(
+                *[_get_contract_prices(market_scanner, pos["market_id"], http_client) for pos in positions],
+                return_exceptions=True,
+            )
+            for pos, live in zip(positions, live_results):
+                if isinstance(live, Exception):
+                    live = None
 
                 if not live:
                     handled, day_wins, day_losses, day_fees, traded_mid = \

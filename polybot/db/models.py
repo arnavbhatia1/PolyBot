@@ -252,6 +252,10 @@ class Database:
         row = await cursor.fetchone()
         return row[0] if row[0] is not None else 0.0
 
+    async def adjust_bankroll(self, delta: float) -> None:
+        await self.conn.execute("UPDATE bankroll SET amount = amount + ? WHERE id = 1", (delta,))
+        await self.conn.commit()
+
     async def set_bankroll(self, amount: float) -> None:
         await self.conn.execute(
             "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
