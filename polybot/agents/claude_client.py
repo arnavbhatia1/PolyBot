@@ -495,6 +495,42 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
                         f"(mean {info.get('hist_mean', 0):.3f} -> {info.get('recent_mean', 0):.3f})")
         sections.append("\n".join(lines))
 
+    # Execution quality (fill slippage, realized edge)
+    eq = analysis.get("execution_quality", {})
+    if eq:
+        sections.append(
+            f"## Execution Quality\n"
+            f"Avg realized edge (model_prob - fill_price): {eq.get('avg_realized_edge', 0):+.3f}\n"
+            f"Avg fill slippage (fill - signal_price): {eq.get('avg_fill_slippage', 0):+.4f}\n"
+            f"Pct trades with positive slippage (paid more than signal): {eq.get('pct_positive_slippage', 0):.0%}\n"
+            f"NOTE: If avg_fill_slippage > 0.005, raise min_edge to compensate for execution costs."
+        )
+
+    # Gate skip stats (which entry gates are blocking trades)
+    gate_stats = analysis.get("gate_skip_stats", {})
+    if gate_stats:
+        counts = {k: v for k, v in gate_stats.items() if k != "total_skips" and isinstance(v, (int, float)) and v > 0}
+        if counts:
+            lines = [f"## Gate Skip Stats (total skips: {gate_stats.get('total_skips', 0)})"]
+            lines.append("Which entry gates are blocking the most trades:")
+            for gate, count in sorted(counts.items(), key=lambda x: -x[1])[:10]:
+                lines.append(f"- **{gate}**: {count}")
+            lines.append("NOTE: High counts on adverse_selection or layer_disagreement may mean those gates are too strict.")
+            sections.append("\n".join(lines))
+
+    # Ghost trade analysis (downstream gate rejections that resolved profitably)
+    ghost = analysis.get("ghost_analysis", {})
+    if ghost:
+        lines = ["## Ghost Trade Analysis (trades blocked by gates, tracked to resolution)"]
+        lines.append(f"Total resolved ghosts: {ghost.get('total_ghosts', 0)} | Profitable if entered: {ghost.get('pct_profitable', 0):.0%}")
+        by_gate = ghost.get("by_gate", {})
+        if by_gate:
+            lines.append("Profitability by gate that blocked the trade:")
+            for gate, stats in sorted(by_gate.items(), key=lambda x: -x[1].get('count', 0))[:8]:
+                lines.append(f"- **{gate}**: {stats.get('count', 0)} blocked, {stats.get('pct_profitable', 0):.0%} would have been profitable")
+        lines.append("NOTE: If a gate blocks >60% profitable trades, it may be over-filtering. Consider loosening that parameter.")
+        sections.append("\n".join(lines))
+
     # SPRT aggregate evidence
     sprt_agg = analysis.get("sprt_aggregate", {})
     if sprt_agg:

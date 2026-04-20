@@ -36,7 +36,7 @@ class TAEvolver:
         prev = ""
         if self.strategy_log_path.exists():
             text = self.strategy_log_path.read_text(encoding="utf-8")
-            prev = text[-2000:] if len(text) > 2000 else text
+            prev = text[-6000:] if len(text) > 6000 else text
 
         context = {
             "current_config": current_config,
