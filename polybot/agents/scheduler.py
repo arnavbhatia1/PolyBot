@@ -2,15 +2,15 @@
 
 Runs BiasDetector, Platt calibration (with recency-weighted MLE), distribution shift
 detection, SPRT aggregation, TA Evolver (Claude), and WeightOptimizer in sequence.
-Adopts parameter changes only when they pass strict statistical gates (z >= 1.65,
-all walk-forward folds positive, 3-day cooldown).
+Adopts parameter changes only when they pass strict statistical gates (z >= 1.28,
+3/4 walk-forward folds positive, 3-day cooldown).
 """
 from __future__ import annotations
 
 import asyncio
 import math
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from polybot.config.loader import save_config
@@ -256,8 +256,7 @@ class AgentScheduler:
             # Recency weight: recent trades count more (0.995^days_ago decay)
             ts_str = o.get("exit_timestamp", o.get("timestamp", ""))
             try:
-                from datetime import datetime as _dt2, timezone as _tz2
-                trade_ts = _dt2.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp() if ts_str else now_ts
+                trade_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp() if ts_str else now_ts
                 days_ago = max(0.0, (now_ts - trade_ts) / 86400.0)
             except Exception:
                 days_ago = 0.0
@@ -598,6 +597,10 @@ class AgentScheduler:
             ghost_rolled = self.ghost_tracker.rollup_old_ghosts()
             if ghost_rolled:
                 logger.info(f"Daily rollup: consolidated {ghost_rolled} ghost files")
+        if self.counterfactual_tracker:
+            cf_rolled = self.counterfactual_tracker.rollup_old_counterfactuals()
+            if cf_rolled:
+                logger.info(f"Daily rollup: consolidated {cf_rolled} counterfactual files")
         all_outcomes = self.outcome_reviewer.load_all_outcomes()
         split_idx = max(1, int(len(all_outcomes) * 0.6))
         train_outcomes = all_outcomes[:split_idx]

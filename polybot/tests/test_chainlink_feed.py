@@ -1,6 +1,6 @@
 import pytest
 import time
-from polybot.core.chainlink_feed import ChainlinkFeed
+from polybot.feeds.chainlink_feed import ChainlinkFeed
 
 
 class TestChainlinkFeed:

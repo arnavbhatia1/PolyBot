@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from polybot.core.binance_feed import CandleBuffer
+from polybot.feeds.binance_feed import CandleBuffer
 from polybot.indicators.rsi import compute_rsi_signal
 from polybot.indicators.macd import compute_macd_signal
 from polybot.indicators.stochastic import compute_stochastic_signal

@@ -104,7 +104,7 @@ class OutcomeReviewer:
                     continue
                 ts = data.get("exit_timestamp", data.get("timestamp", ""))
                 date = ts[:10] if ts else ""
-                if date and date < today:
+                if date and date <= today:
                     files_by_date[date].append((filepath, data))
             except Exception:
                 pass

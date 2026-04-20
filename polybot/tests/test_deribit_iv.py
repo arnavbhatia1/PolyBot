@@ -1,5 +1,5 @@
 import pytest
-from polybot.core.deribit_iv import compute_iv_ratio, IVState
+from polybot.feeds.deribit_iv import compute_iv_ratio, IVState
 
 
 class TestIVRatio:

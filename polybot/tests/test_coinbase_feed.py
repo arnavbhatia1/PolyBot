@@ -1,5 +1,5 @@
 import pytest
-from polybot.core.coinbase_feed import CoinbaseFeed, CoinbaseState
+from polybot.feeds.coinbase_feed import CoinbaseFeed, CoinbaseState
 
 
 class TestCoinbaseState:

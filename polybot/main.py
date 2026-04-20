@@ -13,13 +13,13 @@ from typing import Any
 from polybot.config.loader import load_config, get_secret
 from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE
 from polybot.db.models import Database
-from polybot.core.binance_feed import BinanceFeed
-from polybot.core.market_scanner import BTCMarketScanner
-from polybot.core.clob_ws import ClobWebSocket
+from polybot.feeds.binance_feed import BinanceFeed
+from polybot.feeds.market_scanner import BTCMarketScanner
+from polybot.feeds.clob_ws import ClobWebSocket
 from polybot.indicators.engine import IndicatorEngine, IndicatorNormalizer
 from polybot.core.signal_engine import SignalEngine
 from polybot.core.order_flow import compute_flow_signal
-from polybot.brain.claude_client import ClaudeClient
+from polybot.agents.claude_client import ClaudeClient
 from polybot.execution.paper_trader import PaperTrader
 from polybot.execution.live_trader import LiveTrader, verify_auth
 from polybot.agents.outcome_reviewer import OutcomeReviewer
@@ -34,12 +34,12 @@ from polybot.discord_bot.alerts import AlertManager
 from polybot.execution.circuit_breaker import CircuitBreaker
 from polybot.execution.correlation import concurrent_multiplier
 import math
-from polybot.core.binance_depth import BinanceDepthFeed
-from polybot.core.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
-from polybot.core.bybit_feed import BybitFeed
-from polybot.core.deribit_iv import DeribitIVFeed
-from polybot.core.coinbase_feed import CoinbaseFeed
-from polybot.core.kraken_feed import KrakenFeed
+from polybot.feeds.binance_depth import BinanceDepthFeed
+from polybot.feeds.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
+from polybot.feeds.bybit_feed import BybitFeed
+from polybot.feeds.deribit_iv import DeribitIVFeed
+from polybot.feeds.coinbase_feed import CoinbaseFeed
+from polybot.feeds.kraken_feed import KrakenFeed
 from polybot.core.bankroll_strategy import compute_uncertainty_discount, DrawdownVelocityTracker
 from polybot.core.sprt import SPRTAccumulator
 from polybot.core.regime import RegimeDetector
@@ -63,7 +63,7 @@ class _StripAnsiFormatter(logging.Formatter):
 
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
-_file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=3, mode="a")
+_file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="a")
 _file_handler.setFormatter(_StripAnsiFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
 logging.basicConfig(
     level=logging.ERROR,
@@ -1573,12 +1573,15 @@ async def _check_trading_schedule(
             await alert_manager.send_day_open(config.get("mode", "paper"), day_open_bankroll)
 
     if not in_trading_hours and current_trading_day is not None:
-        # Trading hours ended — send day close banner
-        if alert_manager:
-            bankroll = await db.get_bankroll()
-            day_pnl = bankroll - day_open_bankroll
-            await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses, day_fees)
-        current_trading_day = None
+        # Wait for all pending_resolution positions to resolve before closing the day
+        open_positions = await db.get_open_positions()
+        pending = [p for p in open_positions if p["status"] == "pending_resolution"]
+        if not pending:
+            if alert_manager:
+                bankroll = await db.get_bankroll()
+                day_pnl = bankroll - day_open_bankroll
+                await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses, day_fees)
+            current_trading_day = None
 
     return in_trading_hours, current_trading_day, day_open_bankroll, day_wins, day_losses, day_fees
 
@@ -1818,7 +1821,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 bybit_feed=bybit_feed, deribit_feed=deribit_feed,
                 coinbase_feed=coinbase_feed,
                 chainlink_feed=chainlink_feed,
-                kraken_feed=kraken_feed)
+                kraken_feed=kraken_feed,
+                ghost_tracker=ghost_tracker)
             if traded_cid:
                 traded_contracts[traded_cid] = now_ts
 
@@ -2238,7 +2242,7 @@ async def main() -> None:
     deribit_task = asyncio.create_task(deribit_feed.start())
 
     # Chainlink oracle feed — resolution price source (Polymarket uses this, not Binance)
-    from polybot.core.chainlink_feed import ChainlinkFeed
+    from polybot.feeds.chainlink_feed import ChainlinkFeed
     chainlink_feed = ChainlinkFeed()
     await chainlink_feed.start()
 

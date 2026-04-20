@@ -2,7 +2,7 @@ import pytest
 import json
 import numpy as np
 from polybot.indicators.engine import IndicatorEngine
-from polybot.core.binance_feed import Candle, CandleBuffer
+from polybot.feeds.binance_feed import Candle, CandleBuffer
 
 def _make_trending_buffer(direction="up", size=60):
     """

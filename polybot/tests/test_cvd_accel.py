@@ -1,6 +1,6 @@
 import pytest
 import time
-from polybot.core.binance_trades import BinanceTradeAccumulator
+from polybot.feeds.binance_trades import BinanceTradeAccumulator
 
 class TestCVDAcceleration:
     def test_accelerating_buying(self):

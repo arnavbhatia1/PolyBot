@@ -1,7 +1,7 @@
 import pytest
 import pytest_asyncio
 import json
-from polybot.core.binance_feed import Candle, CandleBuffer
+from polybot.feeds.binance_feed import Candle, CandleBuffer
 from polybot.indicators.engine import IndicatorEngine
 from polybot.core.signal_engine import SignalEngine
 from polybot.db.models import Database

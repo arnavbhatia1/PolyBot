@@ -1,6 +1,6 @@
 import pytest
 import time
-from polybot.core.bybit_feed import BybitState, compute_perp_lead, compute_funding_signal
+from polybot.feeds.bybit_feed import BybitState, compute_perp_lead, compute_funding_signal
 
 
 class TestPerpLead:

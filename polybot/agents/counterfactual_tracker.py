@@ -309,14 +309,61 @@ class CounterfactualTracker:
         filepath.write_text(json.dumps(record, indent=2))
 
     def load_all(self) -> list[dict[str, Any]]:
-        """Load all counterfactual records sorted by timestamp."""
+        """Load all counterfactual records from individual and rollup files, sorted by timestamp."""
         records = []
+        seen: set = set()
         for filepath in self.memory_dir.glob("*.json"):
             try:
-                records.append(json.loads(filepath.read_text()))
+                data = json.loads(filepath.read_text())
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    key = (item.get("position_id"), item.get("market_id"))
+                    if key not in seen:
+                        seen.add(key)
+                        records.append(item)
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"Failed to load counterfactual {filepath}: {e}")
         return sorted(records, key=lambda x: x.get("timestamp", ""))
+
+    def rollup_old_counterfactuals(self) -> int:
+        """Roll up previous days' counterfactual files into one file per day."""
+        from collections import defaultdict
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        files_by_date: dict[str, list[tuple[Path, dict]]] = defaultdict(list)
+
+        for filepath in self.memory_dir.glob("*.json"):
+            if filepath.name.startswith("rollup_"):
+                continue
+            try:
+                data = json.loads(filepath.read_text())
+                ts = data.get("timestamp", "")
+                date = ts[:10] if ts else ""
+                if date and date <= today:
+                    files_by_date[date].append((filepath, data))
+            except Exception:
+                pass
+
+        rolled = 0
+        for date, pairs in files_by_date.items():
+            rollup_path = self.memory_dir / f"rollup_{date}.json"
+            existing: list[dict] = []
+            if rollup_path.exists():
+                try:
+                    existing = json.loads(rollup_path.read_text())
+                except Exception:
+                    existing = []
+            existing_keys = {(o.get("position_id"), o.get("market_id")) for o in existing}
+            new_records = [d for _, d in pairs if (d.get("position_id"), d.get("market_id")) not in existing_keys]
+            combined = sorted(existing + new_records, key=lambda x: x.get("timestamp", ""))
+            tmp = rollup_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(combined, indent=2))
+            tmp.rename(rollup_path)
+            for fp, _ in pairs:
+                fp.unlink(missing_ok=True)
+            rolled += len(pairs)
+            logger.info(f"Rolled up {len(pairs)} counterfactuals into {rollup_path.name}")
+
+        return rolled
 
     @property
     def watching_count(self) -> int:

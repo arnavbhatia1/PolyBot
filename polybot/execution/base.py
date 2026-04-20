@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from polybot.db.models import Database
-from polybot.math_engine.returns import log_return
+from polybot.core.returns import log_return
 
 logger = logging.getLogger(__name__)
 

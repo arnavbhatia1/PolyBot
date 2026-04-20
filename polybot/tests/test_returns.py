@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from polybot.math_engine.returns import log_return, sharpe_ratio
+from polybot.core.returns import log_return, sharpe_ratio
 
 
 def test_log_return_basic():

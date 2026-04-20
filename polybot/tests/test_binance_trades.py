@@ -1,6 +1,6 @@
 import pytest
 import time
-from polybot.core.binance_trades import BinanceTradeAccumulator
+from polybot.feeds.binance_trades import BinanceTradeAccumulator
 
 class TestCVD:
     def test_net_buying_positive_cvd(self):

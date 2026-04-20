@@ -1,5 +1,5 @@
 import pytest
-from polybot.core.kraken_feed import KrakenFeed, KrakenState
+from polybot.feeds.kraken_feed import KrakenFeed, KrakenState
 
 
 class TestKrakenState:

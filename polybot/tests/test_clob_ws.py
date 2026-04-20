@@ -1,7 +1,7 @@
 import asyncio
 import json
 import pytest
-from polybot.core.clob_ws import ClobWebSocket
+from polybot.feeds.clob_ws import ClobWebSocket
 
 
 @pytest.fixture

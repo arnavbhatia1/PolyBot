@@ -41,6 +41,14 @@ polybot/
     signal_engine.py         # 8-layer probability model + evaluate_hold
     calibrator.py            # Platt scaling (fitted daily)
     order_flow.py            # CLOB book imbalance + trade flow
+    returns.py               # gain_pct (arithmetic, not log — log(0)=-inf)
+    bankroll_strategy.py     # Uncertainty-adjusted Kelly + drawdown velocity
+    regime.py                # Multi-state regime classifier
+    liquidation.py           # OI-based liquidation pressure (L3e)
+    exit_boundary.py         # Optimal binary exit curve (MDP-based)
+    sprt.py, alpha_decay.py, adverse_selection.py
+    garch_vol.py, crowd_bias.py, gamma_exposure.py
+  feeds/
     binance_feed.py          # 1-min candles, ATR, indicators, strike
     coinbase_feed.py         # Primary BTC price (fastest)
     kraken_feed.py           # Secondary BTC price (Chainlink oracle source)
@@ -51,12 +59,6 @@ polybot/
     bybit_feed.py            # Perp price lead + OI (WS only, REST geo-blocked)
     deribit_iv.py            # IV + GEX from options chain
     chainlink_feed.py        # Chainlink BTC/USD oracle (resolution source)
-    bankroll_strategy.py     # Uncertainty-adjusted Kelly + drawdown velocity
-    regime.py                # Multi-state regime classifier
-    liquidation.py           # OI-based liquidation pressure (L3e)
-    exit_boundary.py         # Optimal binary exit curve (MDP-based)
-    sprt.py, alpha_decay.py, adverse_selection.py
-    edge_halflife.py, garch_vol.py, crowd_bias.py, gamma_exposure.py
   indicators/
     ema.py, rsi.py, macd.py, stochastic.py, obv.py, vwap.py, atr.py
     engine.py                # Combines all, manages weight versions
@@ -74,7 +76,6 @@ polybot/
     weight_optimizer.py      # Walk-forward backtest, z-test adoption
     pipeline_tracker.py      # Adoption track record (predicted vs actual Sharpe)
     pipeline_analytics.py    # Time-weighting, KS shift, SPRT aggregation
-  brain/
     claude_client.py         # analyze_strategy() — distilled card to Claude
   memory/
     outcomes/                # One JSON per trade (timestamped UTC)
@@ -87,7 +88,6 @@ polybot/
     bot.py                   # !status !history !pause !resume !clear !session
     alerts.py                # Trade alerts, banners, daily report, purge
   db/models.py               # SQLite: positions, trade_history, bankroll
-  math_engine/returns.py     # gain_pct (arithmetic, not log — log(0)=-inf)
 ```
 
 ## Config (`config/settings.yaml`)
@@ -169,7 +169,7 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 
 **Walk-forward split:** 60% train, 40% validation across 4 folds [60:70], [70:80], [80:90], [90:100].
 
-**Adoption gates:** z >= 1.65 (Jobson-Korkie), delta >= 0.03 absolute, n >= 100, candidate Sharpe > 0, improvement in every fold. 3-day cooldown after last adoption.
+**Adoption gates:** z >= 1.28 (Jobson-Korkie), delta >= 0.03 absolute, n >= 100, candidate Sharpe > 0, improvement in 3/4 folds. 3-day cooldown after last adoption.
 
 **Pipeline stages:**
 1. `PipelineTracker` — fills 7d/30d actual Sharpe for past adoptions, feeds to Claude

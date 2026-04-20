@@ -1,7 +1,7 @@
 # polybot/tests/test_binance_feed.py
 import pytest
 import numpy as np
-from polybot.core.binance_feed import Candle, CandleBuffer
+from polybot.feeds.binance_feed import Candle, CandleBuffer
 
 def _make_candle(timestamp=1000, open=50000, high=50100, low=49900, close=50050, volume=10.0):
     return Candle(timestamp=timestamp, open=open, high=high, low=low, close=close, volume=volume)

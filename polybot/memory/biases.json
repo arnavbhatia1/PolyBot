@@ -1,22 +1,22 @@
 {
   "per_indicator": {
     "rsi": {
-      "accuracy": 0.5518,
-      "bullish_accuracy": 0.5442,
+      "accuracy": 0.5501,
+      "bullish_accuracy": 0.5409,
       "bearish_accuracy": 0.5593,
-      "sample_size": 1004
+      "sample_size": 1007
     },
     "macd": {
-      "accuracy": 0.5602,
+      "accuracy": 0.5595,
       "bullish_accuracy": 0.5654,
-      "bearish_accuracy": 0.5556,
-      "sample_size": 814
+      "bearish_accuracy": 0.5543,
+      "sample_size": 815
     },
     "stochastic": {
-      "accuracy": 0.562,
-      "bullish_accuracy": 0.5579,
+      "accuracy": 0.5614,
+      "bullish_accuracy": 0.5568,
       "bearish_accuracy": 0.5665,
-      "sample_size": 984
+      "sample_size": 985
     },
     "obv": {
       "accuracy": 0.7273,
@@ -25,72 +25,72 @@
       "sample_size": 11
     },
     "vwap": {
-      "accuracy": 0.5575,
-      "bullish_accuracy": 0.5375,
+      "accuracy": 0.5558,
+      "bullish_accuracy": 0.5343,
       "bearish_accuracy": 0.5788,
-      "sample_size": 956
+      "sample_size": 959
     }
   },
   "side_analysis": {
     "up": {
-      "win_rate": 0.5329,
-      "avg_gain_pct": 0.097389,
-      "count": 578
+      "win_rate": 0.532,
+      "avg_gain_pct": 0.095493,
+      "count": 579
     },
     "down": {
-      "win_rate": 0.5888,
-      "avg_gain_pct": 0.171416,
-      "count": 535
+      "win_rate": 0.5866,
+      "avg_gain_pct": 0.167053,
+      "count": 537
     }
   },
   "edge_calibration": {
     "4-8%": {
-      "win_rate": 0.5533,
-      "count": 300
+      "win_rate": 0.5515,
+      "count": 301
     },
     "8-12%": {
       "win_rate": 0.5773,
       "count": 362
     },
     "12-20%": {
-      "win_rate": 0.5499,
-      "count": 451
+      "win_rate": 0.5475,
+      "count": 453
     }
   },
   "time_patterns": {
     "0-60s": {
-      "win_rate": 0.5962,
-      "count": 52
+      "win_rate": 0.5849,
+      "count": 53
     },
     "60-180s": {
-      "win_rate": 0.5044,
-      "count": 226
+      "win_rate": 0.5022,
+      "count": 227
     },
     "180-300s": {
-      "win_rate": 0.5725,
-      "count": 835
+      "win_rate": 0.5718,
+      "count": 836
     }
   },
   "volatility_patterns": {
     "low_atr": {
-      "win_rate": 0.5362,
-      "count": 373
+      "win_rate": 0.5348,
+      "count": 374
     },
     "mid_atr": {
-      "win_rate": 0.5649,
-      "count": 370
+      "win_rate": 0.5606,
+      "count": 371
     },
     "high_atr": {
-      "win_rate": 0.5784,
-      "count": 370
+      "win_rate": 0.5795,
+      "count": 371
     }
   },
   "overall": {
-    "total_trades": 1113,
-    "win_rate": 0.5597,
+    "total_trades": 1116,
+    "win_rate": 0.5582,
     "avg_edge": 0.1151,
-    "avg_gain_pct": 0.132972,
-    "sharpe": 0.1395
+    "avg_gain_pct": 0.129927,
+    "sharpe": 0.1362
   },
   "by_regime": {
     "volatile": {
@@ -100,10 +100,10 @@
       "avg_gain_pct": 0.109288
     },
     "neutral": {
-      "n": 850,
-      "win_rate": 0.5624,
+      "n": 853,
+      "win_rate": 0.5604,
       "avg_edge": 0.1152,
-      "avg_gain_pct": 0.151348
+      "avg_gain_pct": 0.147298
     },
     "mean_reverting": {
       "n": 57,
@@ -119,14 +119,14 @@
     }
   },
   "edge_realization_quartiles": [
-    1.387,
-    1.325,
-    1.541,
+    1.327,
+    1.315,
+    1.48,
     0.716
   ],
   "time_weighted": {
-    "win_rate": 0.5597,
-    "sharpe": 0.1381
+    "win_rate": 0.5581,
+    "sharpe": 0.1346
   },
   "calibration_curve": [
     {
@@ -145,10 +145,10 @@
     },
     {
       "bucket": "65%-70%",
-      "n": 129,
-      "actual_win_rate": 0.5581,
+      "n": 130,
+      "actual_win_rate": 0.5538,
       "expected_win_rate": 0.675,
-      "calibration_error": -0.1169
+      "calibration_error": -0.1212
     },
     {
       "bucket": "70%-75%",
@@ -207,12 +207,12 @@
       "n_windows": 82
     },
     "__all__": {
-      "autocorr": 0.2355,
-      "n_windows": 590
+      "autocorr": 0.2335,
+      "n_windows": 596
     },
     "neutral": {
-      "autocorr": 0.211,
-      "n_windows": 450
+      "autocorr": 0.2088,
+      "n_windows": 456
     },
     "mean_reverting": {
       "autocorr": 0.093,

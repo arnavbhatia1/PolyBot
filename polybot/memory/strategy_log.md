@@ -24,6 +24,7 @@
 - ATR mean halved (38.7→17.8) — if low-vol persists, overall edge may remain structurally compressed
 
 **Reasoning:** RSI is near-random at 50.2% accuracy and is being cut to free up weight for VWAP, which shows clear directional edge especially on bearish signals (61%). Scalp accuracy of 57.2% is below the 60% threshold indicating we exit too early, so the exit threshold is tightened from -0.08 to -0.06 to hold positions longer. The persistent low-ATR environment continues to suppress win rates, so atr_sigma_ratio is nudged higher to 1.7 to generate more conservative probabilities in low-volatility conditions.
+
 ## 2026-04-16T04:23:36.209255+00:00
 
 **Source:** Claude (medium) | **Weights:** rsi=0.15, macd=0.30, stochastic=0.20, obv=0.10, vwap=0.25
@@ -99,3 +100,22 @@
 - Q4 edge severely underperforming — reduce kelly_fraction to avoid overbetting big-edge trades
 
 **Reasoning:** The current low-ATR environment is the dominant risk — win rates drop to 53% in low volatility, and the SPRT is negative, so holding atr_sigma_ratio at 1.6 and min_model_probability at 0.62 is correct to filter marginal trades. Scalp accuracy at 49% is coin-flip territory so keeping exit_edge_threshold at -0.03 to hold longer is right. Stochastic is the third-best indicator at 56.8% accuracy and was underweighted, so a small nudge up from 0.20 to 0.22 (offset by reducing OBV from 0.12 to 0.10, w...
+
+## 2026-04-20T04:34:35.145484+00:00
+
+**Source:** Claude (medium) | **Weights:** rsi=0.18, macd=0.27, stochastic=0.22, obv=0.10, vwap=0.23
+**Params:** momentum_weight=-0.03, regime_weight=0.04, flow_weight=0.07, student_t_df=5, min_edge=0.04, min_kelly=0.018, atr_sigma_ratio=1.6, kelly_fraction=0.12, min_model_probability=0.62, exit_edge_threshold=-0.03, min_time_remaining=30.0, trading_start_hour_et=0, trading_end_hour_et=23, trading_end_minute=59
+
+**Findings:**
+- Down trades win 59% vs Up at 53% — bearish edge remains consistent and real
+- Scalp exits are wrong 51% of the time — holding longer still beats early exits
+- Trending regime wins only 49% — these trades destroy edge, regime signal is working
+- High ATR wins 58% vs low ATR 54% — model performs better in volatile conditions
+- Q4 highest-edge trades realizing only 72% of predicted edge — model overconfident at extremes
+
+**Warnings:**
+- SPRT negative last 50 trades — current conditions may be impaired, size conservatively
+- Edge distribution shifted down (11.5% to 8.6%) — market is pricing more efficiently recently
+- Many recent resolution losses at extreme probabilities (9-18%) — tail risk is real, watch leverage
+
+**Reasoning:** The prior cycle's recommendations were directionally correct — down bias persists, scalp accuracy remains coin-flip so holding longer is right, and high min_model_probability filters weak trades. The main adjustment this cycle is trimming kelly_fraction from 0.13 to 0.12 given the SPRT negative signal and the compressed edge distribution (mean edge fell from 11.5% to 8.6%), reducing exposure while conditions are uncertain. All other parameters hold steady since the indicator weights and regime/f...

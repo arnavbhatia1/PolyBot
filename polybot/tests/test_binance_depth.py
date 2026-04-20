@@ -1,5 +1,5 @@
 import pytest
-from polybot.core.binance_depth import compute_spot_imbalance, compute_wall_pressure, compute_depth_usd
+from polybot.feeds.binance_depth import compute_spot_imbalance, compute_wall_pressure, compute_depth_usd
 
 class TestSpotImbalance:
     def test_balanced_book(self):

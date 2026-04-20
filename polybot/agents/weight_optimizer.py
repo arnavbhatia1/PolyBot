@@ -88,8 +88,8 @@ class WeightOptimizer:
           1. candidate_sharpe > 0 (don't adopt negative)
           2. delta >= min_improvement (absolute floor)
           3. n_trades >= 100 (minimum sample)
-          4. z_score >= 1.65 (95% one-tailed significance)
-          5. All walk-forward folds positive (if provided)
+          4. z_score >= 1.28 (90% one-tailed significance)
+          5. At least 3/4 walk-forward folds positive (if provided)
         """
         delta = candidate_sharpe - current_sharpe
 
@@ -103,14 +103,14 @@ class WeightOptimizer:
             return False, f"only {n_trades} trades (need 100)"
 
         z = _sharpe_z_test(current_sharpe, candidate_sharpe, n_trades, returns=candidate_returns)
-        if z < 1.65:
-            return False, f"z={z:.2f} < 1.65 (not significant at 95%, autocorr-adjusted)"
+        if z < 1.28:
+            return False, f"z={z:.2f} < 1.28 (not significant at 90%, autocorr-adjusted)"
 
-        # Walk-forward consistency: every fold must show improvement
+        # Walk-forward consistency: at least 3 of 4 folds must show improvement
         if fold_sharpes:
             neg_folds = sum(1 for s in fold_sharpes if s <= current_sharpe)
-            if neg_folds > 0:
-                return False, f"{neg_folds}/{len(fold_sharpes)} folds below baseline"
+            if neg_folds > 1:
+                return False, f"{neg_folds}/{len(fold_sharpes)} folds below baseline (need 3/4)"
 
         return True, f"z={z:.2f} delta={delta:.3f} n={n_trades}"
 

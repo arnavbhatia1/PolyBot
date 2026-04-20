@@ -1,7 +1,7 @@
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from polybot.brain.claude_client import (
+from polybot.agents.claude_client import (
     ClaudeClient, _validate_strategy_response, _format_strategy_context,
 )
 
@@ -21,7 +21,7 @@ async def test_analyze_strategy_returns_recommendations():
     })
     mock_client = AsyncMock()
     mock_client.messages.create = AsyncMock(return_value=mock_response)
-    with patch("polybot.brain.claude_client.anthropic.AsyncAnthropic", return_value=mock_client):
+    with patch("polybot.agents.claude_client.anthropic.AsyncAnthropic", return_value=mock_client):
         client = ClaudeClient(api_key="test-key")
         result = await client.analyze_strategy({
             "current_config": {"weights": {"rsi": 0.20}},

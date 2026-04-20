@@ -1,5 +1,5 @@
 import pytest
-from polybot.core.market_scanner import BTCMarketScanner
+from polybot.feeds.market_scanner import BTCMarketScanner
 
 SAMPLE_EVENT = {
     "title": "Bitcoin Up or Down - March 30, 3:25PM-3:30PM ET",
