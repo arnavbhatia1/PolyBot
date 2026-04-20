@@ -129,6 +129,9 @@ class AgentScheduler:
         wall_weight: float = 0.00,
         liquidation_weight: float = 0.03,
         prev_margin_weight: float = 0.02,
+        logit_scale: float = 4.0,
+        min_atr: float = 8.0,
+        probability_compression: float = 1.0,
     ) -> list[float]:
         """Simulate Kelly-sized portfolio returns for a given config + calibrator.
 
@@ -146,8 +149,8 @@ class AgentScheduler:
         """
         from scipy.stats import t as t_dist
 
-        min_atr = getattr(self.signal_engine, 'min_atr', 8.0) if self.signal_engine else 8.0
-        logit_scale = getattr(self.signal_engine, 'logit_scale', 4.0) if self.signal_engine else 4.0
+        # logit_scale, min_atr, probability_compression passed as params (not read from engine)
+        # so candidate values differ from baseline in the backtest
         max_flow_logit = 0.35  # same multicollinearity cap signal_engine uses
         realism_factor = 1.0
         if self._config:
@@ -244,6 +247,9 @@ class AgentScheduler:
             logit_p += momentum_score * momentum_weight * logit_scale
 
             prob_up_adj = 1.0 / (1.0 + math.exp(-logit_p))
+            # Apply probability compression (shrink toward 0.5)
+            if probability_compression < 1.0:
+                prob_up_adj = 0.5 + (prob_up_adj - 0.5) * probability_compression
             if calibrator is not None and hasattr(calibrator, "calibrate"):
                 calibrated_up = calibrator.calibrate(prob_up_adj)
             else:
@@ -292,6 +298,12 @@ class AgentScheduler:
                 getattr(self.signal_engine, 'student_t_df', 5))),
             "min_edge": rec.get("recommended_min_edge",
                 getattr(self.signal_engine, 'min_edge', 0.04)),
+            "kelly_fraction": rec.get("recommended_kelly_fraction",
+                getattr(self.signal_engine, 'kelly_fraction', 0.15)),
+            "min_kelly": rec.get("recommended_min_kelly",
+                getattr(self.signal_engine, 'min_kelly', 0.015)),
+            "min_model_probability": rec.get("recommended_min_model_probability",
+                getattr(self.signal_engine, 'min_model_probability', 0.58)),
             "regime_weight": rec.get("recommended_regime_weight",
                 getattr(self.signal_engine, 'regime_weight', 0.03)),
             "flow_weight": rec.get("recommended_flow_weight",
@@ -304,6 +316,12 @@ class AgentScheduler:
                 getattr(self.signal_engine, 'liquidation_weight', 0.03)),
             "prev_margin_weight": rec.get("recommended_prev_margin_weight",
                 getattr(self.signal_engine, 'prev_margin_weight', 0.02)),
+            "logit_scale": rec.get("recommended_logit_scale",
+                getattr(self.signal_engine, 'logit_scale', 4.0)),
+            "min_atr": rec.get("recommended_min_atr",
+                getattr(self.signal_engine, 'min_atr', 8.0)),
+            "probability_compression": rec.get("recommended_probability_compression",
+                getattr(self.signal_engine, 'probability_compression', 1.0)),
         }
 
     def _backtest_recommendations(self, recommendations: dict[str, Any],
@@ -317,9 +335,6 @@ class AgentScheduler:
         """
         cfg = self._config_for_helper(recommendations)
         calibrator = self.signal_engine.calibrator if self.signal_engine else None
-        kelly_fraction = getattr(self.signal_engine, 'kelly_fraction', 0.15) if self.signal_engine else 0.15
-        min_kelly = getattr(self.signal_engine, 'min_kelly', 0.015) if self.signal_engine else 0.015
-        min_prob = getattr(self.signal_engine, 'min_model_probability', 0.58) if self.signal_engine else 0.58
 
         return self._kelly_bankroll_returns(
             outcomes=outcomes,
@@ -329,15 +344,18 @@ class AgentScheduler:
             student_t_df=cfg["student_t_df"],
             min_edge=cfg["min_edge"],
             calibrator=calibrator,
-            kelly_fraction=kelly_fraction,
-            min_kelly=min_kelly,
-            min_prob=min_prob,
+            kelly_fraction=cfg["kelly_fraction"],
+            min_kelly=cfg["min_kelly"],
+            min_prob=cfg["min_model_probability"],
             regime_weight=cfg["regime_weight"],
             flow_weight=cfg["flow_weight"],
             spot_flow_weight=cfg["spot_flow_weight"],
             wall_weight=cfg["wall_weight"],
             liquidation_weight=cfg["liquidation_weight"],
             prev_margin_weight=cfg["prev_margin_weight"],
+            logit_scale=cfg["logit_scale"],
+            min_atr=cfg["min_atr"],
+            probability_compression=cfg["probability_compression"],
         )
 
     async def _run_weight_optimizer(self, recommendations: dict[str, Any],
