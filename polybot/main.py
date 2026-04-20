@@ -617,6 +617,13 @@ async def _evaluate_signal_and_enter(
             _record_skip("flip_insufficient_edge")
             return None, last_eval_log_window
 
+    # --- SPRT FAVORED SIDE GATE ---
+    if _sprt and _sprt.get_confidence() > 0.30 and _sprt.favored_side() != side:
+        _record_skip("sprt_side_mismatch")
+        logger.info(
+            f"SKIP: SPRT favors {_sprt.favored_side()} ({_sprt.get_confidence():.0%} conf), opposes {side}")
+        return None, last_eval_log_window
+
     # --- LAYER DISAGREEMENT GATE ---
     momentum_score = signal_engine.compute_momentum(indicators)
     mw_sign = 1.0 if signal_engine.momentum_weight >= 0 else -1.0

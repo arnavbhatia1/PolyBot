@@ -59,21 +59,6 @@ class AlphaDecayTracker:
         slope = (n * sum_tp - sum_t * sum_p) / denom
         return slope
 
-    def should_enter_now(self, threshold: float = -0.001) -> bool:
-        """True if edge is decaying faster than threshold.
-
-        A decay rate of -0.001 means probability drops 0.1% per second, so 10%
-        of edge disappears in ~100 seconds. When edge is decaying, enter now
-        before it vanishes.
-
-        Returns:
-            True if decay_rate < threshold and we have enough data.
-        """
-        rate = self.get_decay_rate()
-        if rate == 0.0 and len(self._observations) < 3:
-            return False
-        return rate < threshold
-
     def reset(self) -> None:
         """Clear all observations."""
         self._observations.clear()
