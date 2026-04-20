@@ -2020,6 +2020,7 @@ async def run_pipeline() -> None:
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
     scheduler._trading_start = (sched_cfg.get("trading_start_hour_et", 0), sched_cfg.get("trading_start_minute", 15))
     scheduler._trading_end = (sched_cfg.get("trading_end_hour_et", 23), sched_cfg.get("trading_end_minute", 59))
+    scheduler.ghost_tracker = ghost_tracker
 
     async def _run_with_discord():
         if discord_bot and discord_token:
