@@ -15,7 +15,7 @@ powercfg -change -standby-timeout-ac 0
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  PolyBot Auto-Restart Loop" -ForegroundColor Cyan
 Write-Host "  Trading: 12:15 AM - 11:59 PM ET" -ForegroundColor Cyan
-Write-Host "  Pipeline: 12:05 AM ET" -ForegroundColor Cyan
+Write-Host "  Pipeline: 12:10 AM ET" -ForegroundColor Cyan
 Write-Host "  Bot exits after pipeline, commits, pushes, restarts" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 

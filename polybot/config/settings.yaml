@@ -29,8 +29,8 @@ execution:
 
 agents:
   outcome_reviewer_interval_seconds: 3600
-  daily_pipeline_hour: 0    # 12:05 AM ET (auto-adjusts for EST/EDT)
-  daily_pipeline_minute: 5
+  daily_pipeline_hour: 0    # 12:10 AM ET (auto-adjusts for EST/EDT)
+  daily_pipeline_minute: 10
 
 discord:
   trade_channel_name: "polybot-trades"
