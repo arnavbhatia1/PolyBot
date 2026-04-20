@@ -96,6 +96,12 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 
   Layer 4 — Indicator momentum (±momentum_weight max):
     Weighted RSI/MACD/Stochastic/OBV/VWAP score. Weakest signal.
+    IMPORTANT: The bot already adapts momentum_weight at runtime based on regime:
+    - Trending regime (autocorr > +0.15): flips sign and amplifies 1.5× to ride momentum
+    - Mean-reverting regime (autocorr < -0.15): amplifies fade 1.5×
+    - Neutral: dampens 0.5×
+    So if you see "trending regime wins only 49%", DO NOT interpret this as a failure of
+    the regime signal — the bot is already handling it. Focus on other signals instead.
 
 - Edge = model_probability - market_execution_price. Dual entry gate: edge >= min_edge (noise floor) AND Kelly >= min_kelly (primary gate)
 - Kelly sizing: f* = (p*b - q)/b * kelly_fraction, where b = (1-price)/price
@@ -111,7 +117,8 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - regime_weight: 0.02 to 0.10 (Layer 2 — regime autocorrelation adjustment)
 - flow_weight: 0.02 to 0.12 (Layer 3 — order flow adjustment)
 - student_t_df: 3 to 8 (degrees of freedom — lower = fatter tails, more reversal edge)
-- kelly_fraction: 0.05 to 0.25 range (binary outcomes = total loss risk)
+- kelly_fraction: 0.05 to 0.25 range (binary outcomes = total loss risk). CRITICAL: the pipeline adoption metric is kelly_fraction × edge/(1-price) × gain_pct — reducing kelly_fraction directly reduces this metric and will cause your recommendations to be REJECTED. Only reduce kelly_fraction if you have strong evidence of excess risk. When in doubt, leave it unchanged.
+- SPRT negative signal means recent win rate is below expectation — it is an OBSERVATION, not a sizing instruction. Do NOT respond to SPRT negative by reducing kelly_fraction. Instead, improve entry quality: tighten min_model_probability, min_edge, or indicator weights to filter out bad trades. Reducing kelly_fraction when SPRT is negative guarantees your proposal will be rejected.
 - min_edge (entry_threshold): 0.01 to 0.10 range (noise floor, not primary gate)
 - min_kelly: 0.005 to 0.05 range (Kelly-based entry gate — minimum fraction of bankroll)
 - atr_sigma_ratio: 1.2 to 2.5 range (ATR-to-σ conversion — lower = more aggressive probabilities)
@@ -480,6 +487,16 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
     prev = context.get("previous_recommendations", "")
     if prev:
         sections.append(f"## Previous Recommendations (recent cycles)\n{prev}")
+
+    # Last rejection reason — tell Claude why its previous proposal was rejected
+    last_rejection = context.get("analysis", {}).get("last_rejection_reason", "")
+    if last_rejection:
+        sections.append(
+            f"## Last Pipeline Rejection\n"
+            f"Your previous recommendations were NOT adopted. Reason: **{last_rejection}**\n"
+            f"Adjust your recommendations to address this. If the reason is a negative delta, "
+            f"your proposed changes made the backtest WORSE — reconsider those parameters."
+        )
 
     # Pipeline track record — did past adoptions actually help?
     track_record = context.get("analysis", {}).get("pipeline_track_record", "")

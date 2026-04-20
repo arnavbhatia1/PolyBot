@@ -49,6 +49,7 @@ class AgentScheduler:
         self._trading_end: tuple[int, int] | None = None          # (hour, minute) ET — updated by pipeline
         self._running: bool = False
         self._auto_shutdown: bool = False
+        self._last_rejection_reason: str = ""  # why last weight proposal was rejected
         self._shutdown_requested: bool = False
 
         # Inject claude_client into ta_evolver if not already set
@@ -97,6 +98,8 @@ class AgentScheduler:
                                       if self.indicator_engine else "weights_v001",
         }
 
+        if self._last_rejection_reason:
+            analysis["last_rejection_reason"] = self._last_rejection_reason
         recommendations = await self.ta_evolver.evolve(outcomes, analysis, current_config)
         return recommendations
 
@@ -563,6 +566,7 @@ class AgentScheduler:
         else:
             info["decision"] = "no_change"
             info["reason"] = reason
+            self._last_rejection_reason = reason
             logger.info(f"Weights not adopted: {reason}")
 
         return info

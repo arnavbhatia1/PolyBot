@@ -206,12 +206,9 @@ class TAEvolver:
         warnings = recommendations.get("risk_warnings", [])
         weights = recommendations.get("recommended_weights", {})
 
-        # Truncate for log brevity
-        findings_str = "\n".join(f"- {f[:120]}" for f in findings[:5]) if findings else "- None"
-        warnings_str = "\n".join(f"- {w[:120]}" for w in warnings[:3]) if warnings else "- None"
+        findings_str = "\n".join(f"- {f}" for f in findings) if findings else "- None"
+        warnings_str = "\n".join(f"- {w}" for w in warnings) if warnings else "- None"
         weights_str = ", ".join(f"{k}={v:.2f}" for k, v in weights.items()) if weights else "unchanged"
-        # Keep first 500 chars of reasoning
-        reasoning_short = reasoning[:500] + "..." if len(reasoning) > 500 else reasoning
 
         # Collect all recommended params
         params = {k.replace("recommended_", ""): v
@@ -225,7 +222,7 @@ class TAEvolver:
             f"**Params:** {params_str}\n\n"
             f"**Findings:**\n{findings_str}\n\n"
             f"**Warnings:**\n{warnings_str}\n\n"
-            f"**Reasoning:** {reasoning_short}\n"
+            f"**Reasoning:** {reasoning}\n"
         )
 
         existing = self.strategy_log_path.read_text(encoding="utf-8") if self.strategy_log_path.exists() else "# Strategy Evolution Log\n"
