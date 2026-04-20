@@ -580,7 +580,7 @@ async def _evaluate_signal_and_enter(
             f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]  src={price_source}\n"
             f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
             f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  iv {iv_ratio_val:.2f}\n"
-            f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}  cvd_a {cvd_accel_val:+.2f}\n"
+            f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}  cvd_a {cvd_accel_val:+.4f}\n"
             f"  {_C.DIM}{signal.reason}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
