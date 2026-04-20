@@ -965,7 +965,7 @@ class AgentScheduler:
 
     async def start(self) -> None:
         self._running = True
-        logger.info("Agent scheduler started")
+        logger.debug("Agent scheduler started")
 
     async def stop(self) -> None:
         self._running = False

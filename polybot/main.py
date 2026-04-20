@@ -1677,9 +1677,9 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         if _db_wins + _db_losses > 0:
             logger.debug(f"Mid-day restart: restored {_db_wins}W/{_db_losses}L from DB")
 
-    # --- Startup banner (logged once after all systems are ready) ---
+    # --- Startup banner (logged once after tokens are subscribed) ---
     global _startup_banner_logged
-    if not _startup_banner_logged:
+    if not _startup_banner_logged and ws_subscribed_tokens:
         _startup_banner_logged = True
         _mode_label = "LIVE MODE" if not isinstance(trader, PaperTrader) else "PAPER MODE"
         _bankroll = await db.get_bankroll()
