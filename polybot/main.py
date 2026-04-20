@@ -55,6 +55,20 @@ import numpy as np
 import re
 _ANSI_RE = re.compile(r'\033\[[0-9;]*m')
 
+
+def _slug_to_window(slug: str) -> str:
+    """Convert btc-updown-5m-1776691500 to '9:25-9:30 ET'."""
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime, timezone, timedelta
+        ts = int(slug.rsplit("-", 1)[-1])
+        ET = ZoneInfo("America/New_York")
+        start = datetime.fromtimestamp(ts, tz=ET)
+        end = start + timedelta(minutes=5)
+        return f"{start.strftime('%I:%M').lstrip('0')}-{end.strftime('%I:%M ET').lstrip('0')}"
+    except Exception:
+        return slug
+
 class _StripAnsiFormatter(logging.Formatter):
     """Strips ANSI color codes so log files stay clean."""
     def format(self, record):
@@ -130,6 +144,17 @@ _adverse_monitor: AdverseSelectionMonitor | None = None
 _last_adverse_skip_log_window: int = 0  # throttle adverse-skip logs to once per 5-min window
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count since last reset
 _GATE_STATS_PATH = Path("polybot/memory/gate_stats.json")
+_last_skip_log: dict[str, str] = {}  # cid -> last logged skip reason (suppresses repeat skips per window)
+
+
+def _log_skip_once(cid: str, key: str, msg: str) -> None:
+    """Log a skip message only if the reason changed since last log for this contract."""
+    if _last_skip_log.get(cid) != key:
+        _last_skip_log[cid] = key
+        logger.info(msg)
+
+# Startup banner — emitted once after all systems are ready, inside trading_loop
+_startup_banner_logged: bool = False
 
 
 def _record_skip(gate: str) -> None:
@@ -447,6 +472,7 @@ async def _evaluate_signal_and_enter(
         if _sprt: _sprt.reset()
         if _alpha_decay: _alpha_decay.reset()
         _early_entry_fired = False
+        _last_skip_log.pop(cid, None)  # fresh window — allow skip reasons to log again
 
     # Compute indicators and evaluate probability model
     indicators = indicator_engine.compute_all(binance_feed.buffer)
@@ -620,8 +646,7 @@ async def _evaluate_signal_and_enter(
     # --- SPRT FAVORED SIDE GATE ---
     if _sprt and _sprt.get_confidence() > 0.30 and _sprt.favored_side() != side:
         _record_skip("sprt_side_mismatch")
-        logger.info(
-            f"SKIP: SPRT favors {_sprt.favored_side()} ({_sprt.get_confidence():.0%} conf), opposes {side}")
+        _log_skip_once(cid, f"sprt_{side}", f"SKIP: SPRT favors {_sprt.favored_side()} ({_sprt.get_confidence():.0%} conf), opposes {side}")
         return None, last_eval_log_window
 
     # --- LAYER DISAGREEMENT GATE ---
@@ -635,9 +660,7 @@ async def _evaluate_signal_and_enter(
     if momentum_opposes and signal.edge * 0.5 < signal_engine.min_edge:
         _record_skip("layer_disagreement")
         _ghost("layer_disagreement", signal, {})
-        logger.info(
-            f"SKIP: layer disagreement — momentum={momentum_score:+.2f} opposes {side}, "
-            f"penalized edge {signal.edge * 0.5:+.1%} < min {signal_engine.min_edge:.0%}")
+        _log_skip_once(cid, f"layer_disagree_{side}", f"SKIP: layer disagreement — momentum={momentum_score:+.2f} opposes {side}, penalized edge {signal.edge * 0.5:+.1%} < min {signal_engine.min_edge:.0%}")
         return None, last_eval_log_window
 
     price = price_up if side == "Up" else price_down
@@ -676,7 +699,7 @@ async def _evaluate_signal_and_enter(
         regime_state = _regime_detector.classify(closes, atr_val, atr_history, cvd_now)
         if regime_state.skip:
             _record_skip(f"regime:{regime_state.name}")
-            logger.info(f"SKIP: regime={regime_state.name} — no edge in this market state")
+            _log_skip_once(cid, f"regime_{regime_state.name}", f"SKIP: regime={regime_state.name} — no edge in this market state")
             return None, last_eval_log_window
         # Regime: logged for pipeline, NOT applied to sizing (operates near noise at SE=0.14)
 
@@ -759,7 +782,7 @@ async def _evaluate_signal_and_enter(
             size = round(max_fill, 2)
             if size < 0.10:
                 _record_skip("thin_book_depth")
-                logger.info(f"SKIP: size capped to ${size:.2f} by book depth ${side_depth:.0f} — too small")
+                _log_skip_once(cid, "thin_book_depth", f"SKIP: size capped to ${size:.2f} by book depth ${side_depth:.0f} — too small")
                 return None, last_eval_log_window
 
     # Net-edge gate: reject if slippage eats the edge below threshold.
@@ -769,15 +792,13 @@ async def _evaluate_signal_and_enter(
     if net_edge < signal_engine.min_edge:
         _record_skip("net_edge_after_slippage")
         _ghost("net_edge_after_slippage", signal, {})
-        logger.info(
-            f"SKIP: net edge {net_edge:+.1%} < min {signal_engine.min_edge:.0%} "
-            f"after {est_slip:.2%} slippage (gross {signal.edge:+.1%})")
+        _log_skip_once(cid, "net_edge_slippage", f"SKIP: net edge {net_edge:+.1%} < min {signal_engine.min_edge:.0%} after {est_slip:.2%} slippage (gross {signal.edge:+.1%})")
         return None, last_eval_log_window
 
     # Final minimum size check — after all caps have been applied
     if size < 0.10:
         _record_skip("min_size")
-        logger.info(f"SKIP: size ${size:.2f} < $0.10 after caps")
+        _log_skip_once(cid, "min_size", f"SKIP: size ${size:.2f} < $0.10 after caps")
         return None, last_eval_log_window
 
     # Fetch fee rate, tick size, and fresh execution price in parallel
@@ -856,10 +877,7 @@ async def _evaluate_signal_and_enter(
         if fresh_edge < signal_engine.min_edge:
             _record_skip("pre_submit_edge_drift")
             _ghost("pre_submit_edge_drift", signal, snapshot)
-            logger.info(
-                f"SKIP: pre-submit edge {fresh_edge:+.1%} < min {signal_engine.min_edge:.0%} "
-                f"(ask drifted {price:.3f} -> {fresh_ask:.3f} since signal fired)"
-            )
+            _log_skip_once(cid, f"drift_{fresh_ask:.3f}", f"SKIP: pre-submit edge {fresh_edge:+.1%} < min {signal_engine.min_edge:.0%} (ask drifted {price:.3f} -> {fresh_ask:.3f})")
             return None, last_eval_log_window
 
     result = await trader.open_trade(
@@ -931,7 +949,8 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             cl_strike = chainlink_feed.get_strike(contract_window_ts)
             if cl_strike:
                 window_strikes[contract_window_ts] = cl_strike
-                logger.info(f"STRIKE: using Chainlink ${cl_strike:,.2f} for window {contract_window_ts}")
+                logger.info(f"NEW WINDOW {_slug_to_window(cid)} | strike ${cl_strike:,.2f} (Chainlink)")
+                logger.debug(f"STRIKE: using Chainlink ${cl_strike:,.2f} for window {contract_window_ts}")
 
         # Fall back to Binance candle if Chainlink didn't capture it
         if contract_window_ts not in window_strikes:
@@ -1148,12 +1167,9 @@ async def _check_counterfactuals(counterfactual_tracker: Any, ghost_tracker: Any
                 continue
             if cf_live and cf_live.get("event_metadata"):
                 cf_event_metadata[cf_mid] = cf_live["event_metadata"]
-    cf_resolved = counterfactual_tracker.check_resolutions(
+    counterfactual_tracker.check_resolutions(
         binance_feed, _btc_at_expiry, event_metadata=cf_event_metadata
     )
-    for cf in cf_resolved:
-        verdict = "CORRECT" if cf["scalp_was_optimal"] else "MISSED +${:.2f}".format(cf["delta_pnl"])
-        logger.info(f"COUNTERFACTUAL resolved: {cf['side']} {cf['market_id']} — {verdict}")
 
     if ghost_tracker is not None:
         ghost_tracker.check_resolutions(
@@ -1410,7 +1426,7 @@ async def _resolve_expired_position(
         mid = pos["market_id"]
         if mid not in _last_resolve_wait_log:
             _last_resolve_wait_log[mid] = now_ts
-            logger.info(f"WAITING for Gamma resolution: {mid} | closed={live.get('closed')} "
+            logger.info(f"WAITING for Gamma resolution: {_slug_to_window(mid)} | closed={live.get('closed')} "
                         f"meta={'yes' if live.get('event_metadata') else 'no'} "
                         f"prices=Up:{live.get('price_up', 0):.2f}/Dn:{live.get('price_down', 0):.2f}")
         return False, day_wins, day_losses, day_fees, None
@@ -1452,11 +1468,8 @@ async def _resolve_expired_position(
         if _drawdown_tracker:
             _drawdown_tracker.record_trade(gain_pct)
         if counterfactual_tracker:
-            cf_hold = counterfactual_tracker.record_hold_resolution(
+            counterfactual_tracker.record_hold_resolution(
                 pos["market_id"], exit_price, pnl, gain_pct)
-            if cf_hold:
-                verdict = "CORRECT" if cf_hold["hold_was_optimal"] else "MISSED scalp +${:.2f}".format(-cf_hold["delta_pnl"])
-                logger.info(f"COUNTERFACTUAL HOLD resolved: {pos['side']} {pos['market_id']} — {verdict}")
         traded_market_id = pos["market_id"]
         _peak_hold_price.pop(traded_market_id, None)
         # Track resolution margin for adjacent window momentum (D2)
@@ -1652,7 +1665,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         day_wins: int = 0
         day_losses: int = 0
         day_fees: float = 0.0
-        logger.info("Fresh day start (scheduled restart)")
+        logger.debug("Fresh day start (scheduled restart)")
     else:
         _db_wins, _db_losses, _db_fees, _db_pnl_sum = await db.get_day_stats(_today_et)
         current_trading_day = _today_et if (_db_wins + _db_losses) > 0 else None
@@ -1662,7 +1675,51 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         day_losses = _db_losses
         day_fees = _db_fees
         if _db_wins + _db_losses > 0:
-            logger.info(f"Mid-day restart: restored {_db_wins}W/{_db_losses}L from DB")
+            logger.debug(f"Mid-day restart: restored {_db_wins}W/{_db_losses}L from DB")
+
+    # --- Startup banner (logged once after all systems are ready) ---
+    global _startup_banner_logged
+    if not _startup_banner_logged:
+        _startup_banner_logged = True
+        _mode_label = "LIVE MODE" if not isinstance(trader, PaperTrader) else "PAPER MODE"
+        _bankroll = await db.get_bankroll()
+        _cal = signal_engine.calibrator
+        _cal_str = (f"Platt a={_cal.a:.4f} b={_cal.b:.4f}"
+                    if _cal is not None else "Platt uncalibrated")
+        _wins = day_wins
+        _losses = day_losses
+        _prev_margin_str = f"{_prev_resolution_margin:+.2f}"
+        _adverse_fills = len(_adverse_monitor._fills) if _adverse_monitor is not None else 0
+        _weight_ver = signal_config.get("active_weights_version", "weights_v001")
+        if isinstance(trader, PaperTrader):
+            _lat_str = f"latency={trader.latency_mean_s:.2f}±{trader.latency_jitter_s:.2f}s"
+            _fail_str = f"net_fail={trader.network_fail_rate:.0%}"
+            _header = f"  PolyBot {_weight_ver}  |  {_mode_label}  |  {_lat_str}  {_fail_str}"
+        else:
+            _header = f"  PolyBot {_weight_ver}  |  {_mode_label}"
+        _feed_status = (
+            f"  Feeds: "
+            f"Binance {'✓' if binance_feed is not None else '✗'}  "
+            f"Coinbase {'✓' if coinbase_feed is not None else '✗'}  "
+            f"Kraken {'✓' if kraken_feed is not None else '✗'}  "
+            f"Bybit {'✓' if bybit_feed is not None else '✗'}  "
+            f"Deribit {'✓' if deribit_feed is not None else '✗'}  "
+            f"Chainlink {'✓' if chainlink_feed is not None else '✗'}"
+        )
+        _clob_status = (
+            f"  CLOB WS: {'connected' if clob_ws is not None else 'disconnected'}  |  "
+            f"{len(ws_subscribed_tokens)} tokens subscribed"
+        )
+        _sep = "=" * 60
+        logger.info(
+            f"\n{_sep}\n"
+            f"{_header}\n"
+            f"  Bankroll ${_bankroll:,.2f}  |  {_cal_str}\n"
+            f"  Restored: {_wins}W/{_losses}L  |  prev_margin={_prev_margin_str}  |  {_adverse_fills} adverse fills\n"
+            f"{_feed_status}\n"
+            f"{_clob_status}\n"
+            f"{_sep}"
+        )
 
     while True:
         # Check if scheduler requested shutdown (auto-restart cycle after pipeline)
@@ -2060,7 +2117,7 @@ async def main() -> None:
         if not ok:
             logger.error(f"LIVE MODE preflight failed: {msg}")
             return
-        logger.info(f"LIVE MODE — {msg}")
+        logger.debug(f"LIVE MODE — {msg}")
         trader = LiveTrader(db=db, max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
             max_concurrent_positions=exec_cfg["max_concurrent_positions"],
@@ -2073,7 +2130,7 @@ async def main() -> None:
             paper_latency_mean_s=exec_cfg.get("paper_latency_mean_s", 1.5),
             paper_latency_jitter_s=exec_cfg.get("paper_latency_jitter_s", 0.8),
             paper_network_fail_rate=exec_cfg.get("paper_network_fail_rate", 0.02))
-        logger.info(
+        logger.debug(
             f"PAPER MODE — simulated trading with live-realistic fills "
             f"(latency={exec_cfg.get('paper_latency_mean_s', 1.5)}±{exec_cfg.get('paper_latency_jitter_s', 0.8)}s, "
             f"net_fail={exec_cfg.get('paper_network_fail_rate', 0.02):.0%})"
@@ -2095,7 +2152,7 @@ async def main() -> None:
         breaker.peak_bankroll = persisted_peak
         breaker.update_bankroll(persisted_peak)
         breaker.current_bankroll = init_bankroll
-        logger.info(f"CIRCUIT BREAKER: restored persisted peak ${persisted_peak:,.2f} (current ${init_bankroll:,.2f}, drawdown={breaker.drawdown_pct:.1%})")
+        logger.debug(f"CIRCUIT BREAKER: restored persisted peak ${persisted_peak:,.2f} (current ${init_bankroll:,.2f}, drawdown={breaker.drawdown_pct:.1%})")
     else:
         await db.set_peak_bankroll(init_bankroll)
 
@@ -2199,7 +2256,7 @@ async def main() -> None:
     global _prev_resolution_margin
     _prev_resolution_margin = _load_prev_resolution_margin()
     if _prev_resolution_margin != 0.0:
-        logger.info(f"Restored prev_resolution_margin: {_prev_resolution_margin:+.2f}")
+        logger.debug(f"Restored prev_resolution_margin: {_prev_resolution_margin:+.2f}")
 
     # Reset skip counter for this session — pipeline reads the persisted stats before reset.
     global _gate_skip_counts
@@ -2282,15 +2339,14 @@ async def main() -> None:
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(run_discord()),
     ]
-    logger.info("PolyBot started — all systems running (WebSocket + event-driven)")
+    logger.debug("PolyBot started — all systems running (WebSocket + event-driven)")
 
     try:
         # Wait for trading loop — it exits after pipeline sets _shutdown_requested
         await trading_task
     except asyncio.CancelledError:
-        logger.info("Shutting down...")
+        pass
     finally:
-        # Pipeline already completed before trading_loop exited — cancel lingering tasks
         for t in background_tasks:
             t.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
@@ -2304,7 +2360,14 @@ async def main() -> None:
         await chainlink_feed.stop()
         deribit_feed.stop()
         deribit_task.cancel()
+        bankroll = await db.get_bankroll()
         await db.close()
+        logger.info(
+            f"{'=' * 60}\n"
+            f"  PolyBot stopped  |  Bankroll ${bankroll:.2f}\n"
+            f"  Feeds stopped  |  WS closed  |  DB closed\n"
+            f"{'=' * 60}"
+        )
         await discord_bot.close()
 
 

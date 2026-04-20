@@ -77,7 +77,7 @@ class ChainlinkFeed:
             self._boundary_prices[boundary_ts] = self._price
             self._last_boundary_ts = boundary_ts
             lag = now_ts - boundary_ts
-            logger.info(
+            logger.debug(
                 f"ChainlinkFeed: captured strike ${self._price:,.2f} "
                 f"at boundary {boundary_ts} (lag {lag}s)"
             )
@@ -102,7 +102,7 @@ class ChainlinkFeed:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info("ChainlinkFeed: stopped")
+        logger.debug("ChainlinkFeed: stopped")
 
     async def _run(self) -> None:
         while self._running:

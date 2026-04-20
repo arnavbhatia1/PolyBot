@@ -133,7 +133,7 @@ class DeribitIVFeed:
     def stop(self) -> None:
         """Signal the polling loop to stop."""
         self._running = False
-        logger.info("DeribitIVFeed stopped")
+        logger.debug("DeribitIVFeed stopped")
 
     async def _poll(self) -> None:
         """Fetch book summaries and extract ATM IV."""

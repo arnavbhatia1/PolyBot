@@ -59,7 +59,7 @@ class OutcomeReviewer:
         filename = f"{position_id}_{market_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}.json"
         filepath = self.outcomes_dir / filename
         filepath.write_text(json.dumps(record, indent=2))
-        logger.info(f"Recorded outcome for position {position_id}: profitable={profitable}")
+        logger.debug(f"Recorded outcome for position {position_id}: profitable={profitable}")
 
     def load_all_outcomes(self) -> list[dict[str, Any]]:
         """Load all outcomes from both individual files and daily rollup files.

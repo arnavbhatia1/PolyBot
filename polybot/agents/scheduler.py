@@ -969,4 +969,4 @@ class AgentScheduler:
 
     async def stop(self) -> None:
         self._running = False
-        logger.info("Agent scheduler stopped")
+        logger.debug("Agent scheduler stopped")

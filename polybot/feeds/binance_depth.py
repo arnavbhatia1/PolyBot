@@ -213,7 +213,7 @@ class BinanceDepthFeed:
                     await task
                 except asyncio.CancelledError:
                     pass
-        logger.info("BinanceDepthFeed stopped")
+        logger.debug("BinanceDepthFeed stopped")
 
     # -- WebSocket loop (depth20 @ 100ms) -----------------------------------
 

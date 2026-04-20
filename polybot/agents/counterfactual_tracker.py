@@ -22,6 +22,20 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _slug_to_window(slug: str) -> str:
+    """Convert btc-updown-5m-1776691500 to '9:25-9:30 ET'."""
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime, timedelta
+        ts = int(slug.rsplit("-", 1)[-1])
+        ET = ZoneInfo("America/New_York")
+        start = datetime.fromtimestamp(ts, tz=ET)
+        end = start + timedelta(minutes=5)
+        return f"{start.strftime('%I:%M').lstrip('0')}-{end.strftime('%I:%M ET').lstrip('0')}"
+    except Exception:
+        return slug
+
+
 class CounterfactualTracker:
     def __init__(self, memory_dir: str) -> None:
         self.memory_dir: Path = Path(memory_dir) / "counterfactuals"
@@ -61,8 +75,8 @@ class CounterfactualTracker:
             "btc_at_scalp": scalp_context.get("btc_price", 0),
             "watched_at": time.time(),
         }
-        logger.info(f"COUNTERFACTUAL: watching {market_id} (scalped {pos.get('side', '?')} @ "
-                     f"{scalp_context.get('exit_fill', 0):.3f}, edge={scalp_context.get('holding_edge', 0):+.2f})")
+        logger.info(f"SCALP watching {_slug_to_window(market_id)} | {pos.get('side', '?')} @ "
+                    f"{scalp_context.get('exit_fill', 0):.3f}, edge={scalp_context.get('holding_edge', 0):+.2f}")
 
     def track_hold_moment(self, market_id: str, pos: dict[str, Any], hold_context: dict[str, Any]) -> None:
         """Track the worst holding moment for a position being held to resolution.
@@ -163,13 +177,9 @@ class CounterfactualTracker:
 
         self._save(record)
         verdict = "CORRECT" if hold_was_optimal else "SUBOPTIMAL"
-        # For wins the exit moment was the worst (lowest market price = least you'd have gotten).
-        # For losses it was the best (highest market price = most you could have extracted before reversal).
-        moment_label = "worst-moment" if hold_was_optimal else "best-moment"
         logger.info(
-            f"COUNTERFACTUAL HOLD: {market_id} — hold was {verdict} | "
-            f"hold PnL=${actual_pnl:+.2f} vs {moment_label} scalp PnL=${hypo_pnl:+.2f} "
-            f"(delta=${delta_pnl:+.2f})"
+            f"HOLD {verdict} {_slug_to_window(market_id)} | "
+            f"held=${actual_pnl:+.2f}, scalp@worst=${hypo_pnl:+.2f} (delta=${delta_pnl:+.2f})"
         )
         return record
 
@@ -292,9 +302,8 @@ class CounterfactualTracker:
 
             verdict = "CORRECT" if scalp_was_optimal else "SUBOPTIMAL"
             logger.info(
-                f"COUNTERFACTUAL: {market_id} resolved — scalp was {verdict} | "
-                f"scalp PnL=${ctx['scalp_pnl']:+.2f} vs hold PnL=${hypothetical_pnl:+.2f} "
-                f"(delta=${delta_pnl:+.2f}) | BTC@expiry={btc_at_expiry:,.2f}"
+                f"SCALP {verdict} {_slug_to_window(market_id)} | "
+                f"got=${ctx['scalp_pnl']:+.2f}, held=${hypothetical_pnl:+.2f} (delta=${delta_pnl:+.2f})"
             )
 
         for mid in to_remove:
