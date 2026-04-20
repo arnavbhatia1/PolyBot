@@ -164,6 +164,7 @@ def _record_skip(gate: str) -> None:
 
 def flush_gate_stats() -> None:
     """Write accumulated skip counts to disk for the pipeline to read."""
+    from datetime import datetime, timezone
     try:
         _GATE_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
         _GATE_STATS_PATH.write_text(json.dumps({
@@ -582,7 +583,7 @@ async def _evaluate_signal_and_enter(
             f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  iv {iv_ratio_val:.2f}\n"
             f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}  cvd_a {cvd_accel_val:+.4f}\n"
             f"  {_C.DIM}{signal.reason}{_C.RESET}\n"
-            f"{_C.CYAN}{'-' * 60}{_C.RESET}")
+            f"{_C.CYAN}{'-' * 69}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         _record_skip(f"model:{signal.reason[:30]}")
@@ -925,7 +926,7 @@ async def _evaluate_signal_and_enter(
             f"  {contract.get('question', cid)}  [{entry_phase['phase']}]\n"
             f"  {_C.YELLOW}Why: {_why}{_C.RESET}\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}\n"
-            f"{_C.GREEN}{'=' * 60}{_C.RESET}")
+            f\"{_C.GREEN}{'=' * 69}{_C.RESET}\")
         if _adverse_monitor:
             mkt_mid = (price_up + price_down) / 2 if price_up + price_down > 0 else fill_price
             _adverse_monitor.record_fill(side=side, fill_price=fill_price, token_id=token_id, midprice=mkt_mid)
@@ -1379,7 +1380,7 @@ async def _evaluate_and_exit_position(
                 f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
                 f"  {_C.YELLOW}Why: {reason}{_C.RESET}\n"
                 f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
-                f"{color}{'=' * 60}{_C.RESET}")
+                f"{color}{'=' * 69}{_C.RESET}")
             if breaker:
                 breaker.update_bankroll(bankroll_after)
                 await db.set_peak_bankroll(breaker.peak_bankroll)
@@ -1462,7 +1463,7 @@ async def _resolve_expired_position(
             f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
             f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
             f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
-            f"{color}{'=' * 60}{_C.RESET}")
+            f"{color}{'=' * 69}{_C.RESET}")
         if breaker:
             breaker.update_bankroll(bankroll_after)
             await db.set_peak_bankroll(breaker.peak_bankroll)
@@ -1553,7 +1554,7 @@ async def _manage_orphaned_position(
             f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']} (orphan){_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
             f"  {pos.get('question', pos['market_id'])}\n"
             f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
-            f"{color}{'=' * 60}{_C.RESET}")
+            f"{color}{'=' * 69}{_C.RESET}")
         if breaker:
             breaker.update_bankroll(bankroll_after)
             await db.set_peak_bankroll(breaker.peak_bankroll)
