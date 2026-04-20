@@ -37,8 +37,8 @@ class PaperTrader(BaseTrader):
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
         # Realism knobs (all overridable via settings.yaml -> execution.*)
-        self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 1.5)
-        self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.8)
+        self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.4)
+        self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.15)
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.02)
         self._clob_ws: Any = None
 
@@ -74,7 +74,7 @@ class PaperTrader(BaseTrader):
     # ------------------------------------------------------------------
 
     async def _simulate_latency(self) -> None:
-        """Gaussian-jittered sleep approximating Polymarket match latency (0.5-3s typical)."""
+        """Gaussian-jittered sleep approximating Polymarket match latency (~250-600ms typical)."""
         latency = max(0.2, random.gauss(self.latency_mean_s, self.latency_jitter_s))
         await asyncio.sleep(latency)
 
