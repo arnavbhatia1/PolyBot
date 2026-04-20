@@ -1080,6 +1080,7 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
                                            clob_ws: Any,
                                            prev_contract_tokens: list[str] | None = None,
                                            db: Any = None,
+                                           http_client: Any = None,
                                            ) -> tuple[dict[str, Any] | None, str | None, dict[str, int], list[str], list[str]]:
     """Find an active contract and subscribe its WebSocket tokens. Returns (contract, cid, ..., prev_tokens)."""
     if prev_contract_tokens is None:
@@ -1764,7 +1765,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             contract, cid, traded_contracts, ws_subscribed_tokens, prev_contract_tokens = \
                 await _discover_contract_and_subscribe(
                     market_scanner, traded_contracts, ws_subscribed_tokens, clob_ws,
-                    prev_contract_tokens, db=db)
+                    prev_contract_tokens, db=db, http_client=http_client)
             if not contract:
                 continue
 
