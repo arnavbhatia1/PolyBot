@@ -99,8 +99,8 @@ class WeightOptimizer:
         if delta < self.min_improvement:
             return False, f"delta {delta:.3f} below floor {self.min_improvement}"
 
-        if n_trades < 100:
-            return False, f"only {n_trades} trades (need 100)"
+        if n_trades < 50:
+            return False, f"only {n_trades} candidate trades (need 50) — your min_model_probability or min_edge may be filtering too aggressively in the backtest, leaving too few qualifying trades to measure improvement"
 
         z = _sharpe_z_test(current_sharpe, candidate_sharpe, n_trades, returns=candidate_returns)
         if z < 1.28:
