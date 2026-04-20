@@ -375,46 +375,6 @@ class BTCMarketScanner:
             logger.debug(f"Spread fetch failed for {token_id}: {e}")
             return -1.0
 
-    async def get_midpoints(self, token_ids: list[str], http_client: httpx.AsyncClient | None = None) -> dict[str, float]:
-        """GET /midpoints — {token_id: midpoint_price}. Skips failures."""
-        try:
-            url = f"{self.CLOB_API}/midpoints"
-            ids_str = ",".join(token_ids)
-            resp = await http_client.get(url, params={"token_ids": ids_str})
-            resp.raise_for_status()
-            return {k: float(v) for k, v in resp.json().items()}
-        except Exception as e:
-            logger.debug(f"Midpoints fetch failed: {e}")
-            return {}
-
-    async def get_last_trade_prices(self, token_ids: list[str], http_client: httpx.AsyncClient | None = None) -> dict[str, dict[str, Any]]:
-        """GET /last-trades-prices — {token_id: {price, side}}."""
-        try:
-            url = f"{self.CLOB_API}/last-trades-prices"
-            ids_str = ",".join(token_ids)
-            resp = await http_client.get(url, params={"token_ids": ids_str})
-            resp.raise_for_status()
-            data = resp.json()
-            return {item["token_id"]: {"price": float(item["price"]), "side": item.get("side", "")}
-                    for item in data if "token_id" in item}
-        except Exception as e:
-            logger.debug(f"Last trade prices fetch failed: {e}")
-            return {}
-
-    async def get_live_volume(self, event_id: int, http_client: httpx.AsyncClient | None = None) -> float:
-        """GET /live-volume — total volume for an event. Returns 0 on error."""
-        try:
-            url = f"{self.DATA_API}/live-volume"
-            resp = await http_client.get(url, params={"id": event_id})
-            resp.raise_for_status()
-            data = resp.json()
-            if isinstance(data, list) and data:
-                return float(data[0].get("total", 0))
-            return 0.0
-        except Exception as e:
-            logger.debug(f"Live volume fetch failed for event {event_id}: {e}")
-            return 0.0
-
     async def find_active_contract(self, http_client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:
         now = time.time()
 
@@ -468,38 +428,3 @@ class BTCMarketScanner:
 
         return None
 
-    async def fetch_prices_history(self, token_id: str, interval: str = "1h",
-                                   fidelity: int = 1, http_client: httpx.AsyncClient | None = None) -> list[dict[str, Any]]:
-        """GET /prices-history — CLOB price history for a token.
-
-        No auth required. Returns list of {t: timestamp, p: price}.
-        Used for detecting CLOB price momentum divergence from model.
-        """
-        try:
-            url = f"{self.CLOB_API}/prices-history"
-            params = {"market": token_id, "interval": interval, "fidelity": fidelity}
-            resp = await http_client.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("history", [])
-        except Exception as e:
-            logger.debug(f"Prices history failed for {token_id}: {e}")
-            return []
-
-    async def fetch_open_interest(self, condition_id: str, http_client: httpx.AsyncClient | None = None) -> float:
-        """GET /oi — open interest for a market.
-
-        No auth required. Returns total OI value, 0 on error.
-        Requires condition_id in Hash64 format (0x-prefixed 64 hex chars).
-        """
-        try:
-            url = f"{self.DATA_API}/oi"
-            resp = await http_client.get(url, params={"market": condition_id})
-            resp.raise_for_status()
-            data = resp.json()
-            if isinstance(data, list) and data:
-                return float(data[0].get("value", 0))
-            return 0.0
-        except Exception as e:
-            logger.debug(f"Open interest failed for {condition_id}: {e}")
-            return 0.0

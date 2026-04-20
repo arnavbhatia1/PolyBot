@@ -213,51 +213,6 @@ async def test_get_spread_returns_neg_on_error():
     result = await scanner.get_spread("tok123", mock_client)
     assert result == -1.0
 
-@pytest.mark.asyncio
-async def test_get_midpoints_returns_dict():
-    scanner = BTCMarketScanner()
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"tok_up": "0.55", "tok_down": "0.45"}
-    mock_resp.raise_for_status = MagicMock()
-    mock_client = AsyncMock()
-    mock_client.get.return_value = mock_resp
-    result = await scanner.get_midpoints(["tok_up", "tok_down"], mock_client)
-    assert result == {"tok_up": 0.55, "tok_down": 0.45}
-
-@pytest.mark.asyncio
-async def test_get_last_trade_prices_returns_dict():
-    scanner = BTCMarketScanner()
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = [
-        {"token_id": "tok_up", "price": "0.55", "side": "BUY"},
-        {"token_id": "tok_down", "price": "0.45", "side": "SELL"},
-    ]
-    mock_resp.raise_for_status = MagicMock()
-    mock_client = AsyncMock()
-    mock_client.get.return_value = mock_resp
-    result = await scanner.get_last_trade_prices(["tok_up", "tok_down"], mock_client)
-    assert result["tok_up"]["price"] == 0.55
-    assert result["tok_down"]["side"] == "SELL"
-
-@pytest.mark.asyncio
-async def test_get_live_volume_returns_total():
-    scanner = BTCMarketScanner()
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = [{"total": 50000, "markets": []}]
-    mock_resp.raise_for_status = MagicMock()
-    mock_client = AsyncMock()
-    mock_client.get.return_value = mock_resp
-    result = await scanner.get_live_volume(12345, mock_client)
-    assert result == 50000.0
-
-@pytest.mark.asyncio
-async def test_get_live_volume_returns_zero_on_error():
-    scanner = BTCMarketScanner()
-    mock_client = AsyncMock()
-    mock_client.get.side_effect = Exception("timeout")
-    result = await scanner.get_live_volume(12345, mock_client)
-    assert result == 0.0
-
 
 def test_parse_contract_extracts_event_metadata():
     event = {
