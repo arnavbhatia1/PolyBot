@@ -2028,6 +2028,8 @@ async def run_pipeline() -> None:
                 logger.info(f"Discord connected as {discord_bot.user} — running pipeline")
                 try:
                     await scheduler.run_daily_pipeline()
+                except Exception as e:
+                    logger.error(f"Daily pipeline error: {e}", exc_info=True)
                 finally:
                     logger.info("Pipeline complete.")
                     await discord_bot.close()

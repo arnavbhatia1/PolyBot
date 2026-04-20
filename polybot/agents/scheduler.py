@@ -811,15 +811,18 @@ class AgentScheduler:
                         atr_sigma_ratio=cfg["atr_sigma_ratio"],
                         student_t_df=cfg["student_t_df"],
                         min_edge=cfg["min_edge"],
-                        kelly_fraction=kelly_fraction,
-                        min_kelly=min_kelly,
-                        min_prob=min_prob,
+                        kelly_fraction=cfg["kelly_fraction"],
+                        min_kelly=cfg["min_kelly"],
+                        min_prob=cfg["min_model_probability"],
                         regime_weight=cfg["regime_weight"],
                         flow_weight=cfg["flow_weight"],
                         spot_flow_weight=cfg["spot_flow_weight"],
                         wall_weight=cfg["wall_weight"],
                         liquidation_weight=cfg["liquidation_weight"],
                         prev_margin_weight=cfg["prev_margin_weight"],
+                        logit_scale=cfg["logit_scale"],
+                        min_atr=cfg["min_atr"],
+                        probability_compression=cfg["probability_compression"],
                     )
                     old_returns = self._kelly_bankroll_returns(calibrator=self.signal_engine.calibrator, **helper_kwargs)
                     new_returns = self._kelly_bankroll_returns(calibrator=cal, **helper_kwargs)
