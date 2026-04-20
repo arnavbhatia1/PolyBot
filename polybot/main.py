@@ -926,7 +926,7 @@ async def _evaluate_signal_and_enter(
             f"  {contract.get('question', cid)}  [{entry_phase['phase']}]\n"
             f"  {_C.YELLOW}Why: {_why}{_C.RESET}\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}\n"
-            f\"{_C.GREEN}{'=' * 69}{_C.RESET}\")
+            f"{_C.GREEN}{'=' * 69}{_C.RESET}")
         if _adverse_monitor:
             mkt_mid = (price_up + price_down) / 2 if price_up + price_down > 0 else fill_price
             _adverse_monitor.record_fill(side=side, fill_price=fill_price, token_id=token_id, midprice=mkt_mid)
@@ -2371,13 +2371,16 @@ async def main() -> None:
             t.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
         await http_client.aclose()
-        await clob_ws.close()
-        await scheduler.stop()
-        await binance_feed.stop()
-        await depth_feed.stop()
-        await trades_feed.stop()
-        await bybit_feed_inst.stop()
-        await chainlink_feed.stop()
+        async def _stop(coro):
+            try: await asyncio.wait_for(coro, timeout=2.0)
+            except Exception: pass
+        await _stop(clob_ws.close())
+        await _stop(scheduler.stop())
+        await _stop(binance_feed.stop())
+        await _stop(depth_feed.stop())
+        await _stop(trades_feed.stop())
+        await _stop(bybit_feed_inst.stop())
+        await _stop(chainlink_feed.stop())
         deribit_feed.stop()
         deribit_task.cancel()
         bankroll = await db.get_bankroll()
