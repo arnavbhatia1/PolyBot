@@ -152,8 +152,8 @@ _crowd_bias: CrowdBiasTracker | None = None
 
 _realized_edge_history: list[tuple[float, float]] = []  # (predicted_edge, realized_gain_pct)
 
-# Per-window flip state: tracks blacklisted tokens, flip count, last side
-_window_flip_state: dict[str, dict] = {}  # window_id -> {blacklisted_tokens, flip_count, last_side}
+# Per-window flip state: tracks flip count and last side
+_window_flip_state: dict[str, dict] = {}  # window_id -> {flip_count, last_side}
 
 
 def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
@@ -605,11 +605,8 @@ async def _evaluate_signal_and_enter(
     cid = contract.get("slug", contract.get("market_id", ""))
 
     flip_state = _window_flip_state.setdefault(cid, {
-        "blacklisted_tokens": set(), "flip_count": 0, "last_side": None,
+        "flip_count": 0, "last_side": None,
     })
-    if token_id in flip_state["blacklisted_tokens"]:
-        _record_skip("flip_blacklisted")
-        return None, last_eval_log_window
     flip_count = flip_state["flip_count"]
     if flip_count > 1:
         _record_skip("flip_max_exceeded")
@@ -851,26 +848,19 @@ async def _evaluate_signal_and_enter(
     }
     snapshot_str = json.dumps(snapshot)
 
-    # Pre-submit edge re-check: the CLOB ask may have lifted between when the signal
-    # fired and now. Re-derive edge against the freshest ask and drop the trade if
-    # it no longer clears `min_edge`. Cheaper and more targeted than the velocity
-    # heuristic (which systematically filtered trending favorites).
-    if clob_ws is not None:
-        fresh_bba = clob_ws.best_bid_ask.get(token_id, {})
-        try:
-            fresh_ask = float(fresh_bba.get("best_ask", "0") or 0)
-        except (TypeError, ValueError):
-            fresh_ask = 0.0
-        if fresh_ask > 0 and fresh_ask != price:
-            fresh_edge = signal.prob - fresh_ask
-            if fresh_edge < signal_engine.min_edge:
-                _record_skip("pre_submit_edge_drift")
-                _ghost("pre_submit_edge_drift", signal, snapshot)
-                logger.info(
-                    f"SKIP: pre-submit edge {fresh_edge:+.1%} < min {signal_engine.min_edge:.0%} "
-                    f"(ask drifted {price:.3f} -> {fresh_ask:.3f} since signal fired)"
-                )
-                return None, last_eval_log_window
+    # Pre-submit edge re-check: fetch fresh execution price (same source as signal)
+    # to catch genuine drift between signal evaluation and order submission.
+    fresh_ask = await market_scanner.fetch_market_price(token_id, "BUY", http_client)
+    if fresh_ask > 0 and fresh_ask != price:
+        fresh_edge = signal.prob - fresh_ask
+        if fresh_edge < signal_engine.min_edge:
+            _record_skip("pre_submit_edge_drift")
+            _ghost("pre_submit_edge_drift", signal, snapshot)
+            logger.info(
+                f"SKIP: pre-submit edge {fresh_edge:+.1%} < min {signal_engine.min_edge:.0%} "
+                f"(ask drifted {price:.3f} -> {fresh_ask:.3f} since signal fired)"
+            )
+            return None, last_eval_log_window
 
     result = await trader.open_trade(
         market_id=cid,
@@ -1096,6 +1086,7 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
                                            ws_subscribed_tokens: list[str],
                                            clob_ws: Any,
                                            prev_contract_tokens: list[str] | None = None,
+                                           db: Any = None,
                                            ) -> tuple[dict[str, Any] | None, str | None, dict[str, int], list[str], list[str]]:
     """Find an active contract and subscribe its WebSocket tokens. Returns (contract, cid, ..., prev_tokens)."""
     if prev_contract_tokens is None:
@@ -1110,15 +1101,13 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
     now_ts = int(time.time())
     traded_contracts = {k: v for k, v in traded_contracts.items() if now_ts - v < 600}
 
-    # Allow re-entry to same contract if flipping is possible (token-level blacklist, not contract-level)
-    # The per-token blacklist in _evaluate_signal_and_enter handles the actual gating
+    # Block re-entry if position is still open; allow flip after scalp (flip_count > 0)
     if cid in traded_contracts:
         state = _window_flip_state.get(cid, {})
-        blacklisted = state.get("blacklisted_tokens", set())
-        token_up = contract.get("token_id_up", "")
-        token_down = contract.get("token_id_down", "")
-        if token_up in blacklisted and token_down in blacklisted:
-            # Both tokens traded — no flip possible
+        flip_count = state.get("flip_count", 0)
+        if flip_count > 1:
+            return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
+        if flip_count == 0 and await db.has_position_for_market(cid):
             return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
 
     # Subscribe WebSocket to this contract's tokens (idempotent)
@@ -1368,12 +1357,11 @@ async def _evaluate_and_exit_position(
                 _realized_edge_history[:] = _realized_edge_history[-500:]
             if _drawdown_tracker:
                 _drawdown_tracker.record_trade(gain_pct)
-            # Update flip state: blacklist this token, increment flip count
+            # Update flip state: increment flip count
             traded_market_id = pos["market_id"]
             fs = _window_flip_state.setdefault(traded_market_id, {
-                "blacklisted_tokens": set(), "flip_count": 0, "last_side": None,
+                "flip_count": 0, "last_side": None,
             })
-            fs["blacklisted_tokens"].add(pos.get("token_id", ""))
             fs["flip_count"] += 1
             _peak_hold_price.pop(traded_market_id, None)
             if counterfactual_tracker:
@@ -1769,7 +1757,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             contract, cid, traded_contracts, ws_subscribed_tokens, prev_contract_tokens = \
                 await _discover_contract_and_subscribe(
                     market_scanner, traded_contracts, ws_subscribed_tokens, clob_ws,
-                    prev_contract_tokens)
+                    prev_contract_tokens, db=db)
             if not contract:
                 continue
 

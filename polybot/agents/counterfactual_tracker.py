@@ -35,12 +35,13 @@ class CounterfactualTracker:
         Called immediately after a scalp exit in main.py. All data needed to
         compute the counterfactual is captured here — no DB lookups later.
         """
+        position_id = pos.get("id", 0)
         market_id = pos.get("market_id", "")
-        if not market_id:
+        if not market_id or not position_id:
             return
 
-        self._watchlist[market_id] = {
-            "position_id": pos.get("id", 0),
+        self._watchlist[position_id] = {
+            "position_id": position_id,
             "market_id": market_id,
             "side": pos.get("side", ""),
             "entry_price": pos.get("entry_price", 0),
@@ -194,13 +195,14 @@ class CounterfactualTracker:
         resolved = []
         to_remove = []
 
-        for market_id, ctx in self._watchlist.items():
+        for position_id, ctx in self._watchlist.items():
+            market_id = ctx["market_id"]
             # Parse window_ts from slug: btc-updown-5m-{window_ts}
             try:
                 window_ts = int(market_id.rsplit("-", 1)[-1])
             except (ValueError, IndexError):
                 logger.warning(f"COUNTERFACTUAL: cannot parse window_ts from {market_id}, removing")
-                to_remove.append(market_id)
+                to_remove.append(position_id)
                 continue
 
             expiry_ts = window_ts + 300  # 5-min window
@@ -211,7 +213,7 @@ class CounterfactualTracker:
             # Expire stale entries (watched for > 10 min — candle data may be gone)
             if now > expiry_ts + 600:
                 logger.warning(f"COUNTERFACTUAL: {market_id} expired > 10 min ago, removing without record")
-                to_remove.append(market_id)
+                to_remove.append(position_id)
                 continue
 
             # Resolve: prefer Chainlink eventMetadata, fall back to Binance
@@ -234,7 +236,7 @@ class CounterfactualTracker:
 
                 strike = ctx["strike_price"]
                 if strike <= 0:
-                    to_remove.append(market_id)
+                    to_remove.append(position_id)
                     continue
 
                 up_won = btc_at_expiry >= strike
@@ -285,7 +287,7 @@ class CounterfactualTracker:
 
             self._save(record)
             resolved.append(record)
-            to_remove.append(market_id)
+            to_remove.append(position_id)
 
             verdict = "CORRECT" if scalp_was_optimal else "SUBOPTIMAL"
             logger.info(
