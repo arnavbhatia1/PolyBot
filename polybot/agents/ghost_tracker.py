@@ -15,6 +15,16 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+_ET = ZoneInfo("America/New_York")
+
+
+def _utc_ts_to_et_date(ts: str) -> str:
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.astimezone(_ET).strftime("%Y-%m-%d")
+    except Exception:
+        return ts[:10] if ts else ""
 from pathlib import Path
 from typing import Any
 
@@ -169,7 +179,7 @@ class GhostTracker:
         Only touches resolved ghosts from before today. Returns number rolled up.
         """
         from collections import defaultdict
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(_ET).strftime("%Y-%m-%d")
         files_by_date: dict[str, list[Path]] = defaultdict(list)
 
         for fp in self._dir.glob("*.json"):
@@ -182,7 +192,7 @@ class GhostTracker:
                 if not data.get("resolved", False):
                     continue
                 ts = data.get("timestamp", "")
-                date = ts[:10] if ts else ""
+                date = _utc_ts_to_et_date(ts)
                 if date and date <= today:
                     files_by_date[date].append(fp)
             except Exception:
@@ -210,7 +220,7 @@ class GhostTracker:
             combined = sorted(existing + new_records, key=lambda x: x.get("timestamp", ""))
             tmp = rollup_path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(combined, indent=2))
-            tmp.rename(rollup_path)
+            tmp.replace(rollup_path)
             for fp in fps:
                 fp.unlink(missing_ok=True)
             rolled += len(fps)

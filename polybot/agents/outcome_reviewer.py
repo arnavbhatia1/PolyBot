@@ -10,6 +10,17 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
+_ET = ZoneInfo("America/New_York")
+
+
+def _utc_ts_to_et_date(ts: str) -> str:
+    """Convert a UTC ISO timestamp string to ET date string YYYY-MM-DD."""
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.astimezone(_ET).strftime("%Y-%m-%d")
+    except Exception:
+        return ts[:10] if ts else ""
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +103,7 @@ class OutcomeReviewer:
         means a crash leaves data intact. Returns number of files rolled up.
         """
         from collections import defaultdict
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(_ET).strftime("%Y-%m-%d")
         files_by_date: dict[str, list[tuple[Path, dict]]] = defaultdict(list)
 
         for filepath in self.outcomes_dir.glob("*.json"):
@@ -103,7 +114,7 @@ class OutcomeReviewer:
                 if isinstance(data, list):
                     continue
                 ts = data.get("exit_timestamp", data.get("timestamp", ""))
-                date = ts[:10] if ts else ""
+                date = _utc_ts_to_et_date(ts)
                 if date and date <= today:
                     files_by_date[date].append((filepath, data))
             except Exception:
@@ -126,7 +137,7 @@ class OutcomeReviewer:
             )
             tmp = rollup_path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(combined, indent=2))
-            tmp.rename(rollup_path)
+            tmp.replace(rollup_path)
             for fp, _ in pairs:
                 fp.unlink(missing_ok=True)
             rolled += len(pairs)

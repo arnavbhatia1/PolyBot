@@ -16,6 +16,16 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+_ET = ZoneInfo("America/New_York")
+
+
+def _utc_ts_to_et_date(ts: str) -> str:
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.astimezone(_ET).strftime("%Y-%m-%d")
+    except Exception:
+        return ts[:10] if ts else ""
 from pathlib import Path
 from typing import Any
 
@@ -339,7 +349,7 @@ class CounterfactualTracker:
     def rollup_old_counterfactuals(self) -> int:
         """Roll up previous days' counterfactual files into one file per day."""
         from collections import defaultdict
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(_ET).strftime("%Y-%m-%d")
         files_by_date: dict[str, list[tuple[Path, dict]]] = defaultdict(list)
 
         for filepath in self.memory_dir.glob("*.json"):
@@ -348,7 +358,7 @@ class CounterfactualTracker:
             try:
                 data = json.loads(filepath.read_text())
                 ts = data.get("timestamp", "")
-                date = ts[:10] if ts else ""
+                date = _utc_ts_to_et_date(ts)
                 if date and date <= today:
                     files_by_date[date].append((filepath, data))
             except Exception:
@@ -368,7 +378,7 @@ class CounterfactualTracker:
             combined = sorted(existing + new_records, key=lambda x: x.get("timestamp", ""))
             tmp = rollup_path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(combined, indent=2))
-            tmp.rename(rollup_path)
+            tmp.replace(rollup_path)
             for fp, _ in pairs:
                 fp.unlink(missing_ok=True)
             rolled += len(pairs)
