@@ -534,7 +534,7 @@ class AgentScheduler:
         adopted_changes: list[dict[str, Any]] = []
         any_adopted = False
 
-        for change in changes_list[:3]:
+        for change in changes_list[:5]:
             param = change.get("param", "")
             value = change.get("value")
             reason_str = change.get("reason", "")
