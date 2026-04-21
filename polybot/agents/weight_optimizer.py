@@ -81,15 +81,16 @@ class WeightOptimizer:
                      candidate_returns: list[float] | None = None) -> tuple[bool, str]:
         """Statistical significance test for Sharpe improvement.
 
-        Uses Jobson-Korkie (1981) SE for Sharpe ratio difference.
+        Uses Jobson-Korkie (1981) SE for Sharpe ratio difference, inflated by
+        lag-1 autocorrelation when returns are positively autocorrelated.
         Returns (adopt, reason) tuple.
 
-        Gates:
-          1. candidate_sharpe > 0 (don't adopt negative)
-          2. delta >= min_improvement (absolute floor)
-          3. n_trades >= 100 (minimum sample)
-          4. z_score >= 1.28 (90% one-tailed significance)
-          5. At least 3/4 walk-forward folds positive (if provided)
+        Gates (all must pass):
+          1. candidate_sharpe > 0 (don't adopt negative Sharpe)
+          2. delta >= min_improvement (absolute floor; default 0.03, SPRT-modulated 0.02–0.05)
+          3. n_trades >= 100 (minimum candidate sample)
+          4. z >= 1.0 (one-tailed 84% confidence, autocorr-adjusted)
+          5. At most 1/4 walk-forward folds below baseline (3/4 must improve)
         """
         delta = candidate_sharpe - current_sharpe
 

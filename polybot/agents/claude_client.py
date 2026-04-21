@@ -285,10 +285,13 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     if not isinstance(data.get("changes"), list):
         data["changes"] = []
 
-    # Insufficient data guard — drop all changes
+    # Insufficient data guard — drop all changes and reset weights to current
     if total_trades < 50:
         data["changes"] = []
         data.setdefault("risk_warnings", []).append(f"Only {total_trades} trades — insufficient data, no changes applied")
+        # Reset recommended_weights to current so callers don't act on stale proposals
+        if current_weights:
+            data["recommended_weights"] = dict(current_weights)
 
     # Read-only gate params: silently drop any Claude attempt to change them
     READ_ONLY_PARAMS = {"min_model_probability", "min_edge", "min_kelly"}
@@ -535,28 +538,70 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
 
         cf = analysis.get("counterfactual_analysis", {})
         if cf and cf.get("total_scalps_tracked", 0) > 0:
-            lines = [
-                "## Counterfactual Analysis (scalps that resolved)",
-                f"Tracks what would have happened if scalped positions were held to resolution.",
-                f"Total scalps tracked: {cf.get('total_scalps_tracked', 0)}",
-                f"Scalp accuracy: {cf.get('scalp_accuracy', 0):.1%} (% where exiting was actually better than holding)",
-                f"Optimal scalps: {cf.get('optimal_scalps', 0)} | Suboptimal: {cf.get('suboptimal_scalps', 0)}",
-                f"Avg missed PnL on suboptimal scalps: ${cf.get('avg_missed_pnl', 0):+.2f}",
-                f"Avg missed gain_pct on suboptimal scalps: {cf.get('avg_missed_gain_pct', 0):+.4f}",
-                f"Avg holding_edge at scalp (optimal): {cf.get('avg_holding_edge_optimal', 0):+.4f}",
-                f"Avg holding_edge at scalp (suboptimal): {cf.get('avg_holding_edge_suboptimal', 0):+.4f}",
-                f"Avg seconds_remaining (optimal): {cf.get('avg_seconds_remaining_optimal', 0):.0f}s",
-                f"Avg seconds_remaining (suboptimal): {cf.get('avg_seconds_remaining_suboptimal', 0):.0f}s",
-            ]
+            s_total = cf.get("total_scalps_tracked", 0)
+            s_acc = cf.get("scalp_accuracy", 0)
+            actual_pnl = cf.get("total_actual_scalp_pnl", 0)
+            cf_pnl = cf.get("total_counterfactual_hold_pnl", 0)
+            pnl_gap = cf.get("pnl_gap_from_early_scalps", 0)
+            net_dir = cf.get("net_exit_direction", "calibrated")
+
+            lines = [f"## Counterfactual Exit Analysis (scalps N={s_total})"]
+            lines.append(
+                f"Scalp accuracy: {s_acc:.1%} ({cf.get('optimal_scalps', 0)} correct, "
+                f"{cf.get('suboptimal_scalps', 0)} suboptimal)"
+            )
+            lines.append(
+                f"Scalp P&L: actual ${actual_pnl:+.2f} | if held to resolution ${cf_pnl:+.2f} "
+                f"| gap ${pnl_gap:+.2f}"
+            )
+            if net_dir == "scalp_early":
+                lines.append(
+                    f"→ SCALPING TOO EARLY: ${pnl_gap:+.2f} left on table. "
+                    f"Raise exit_edge_threshold (less negative = hold longer)."
+                )
+            elif net_dir == "hold_long":
+                lines.append(
+                    f"→ HOLDING TOO LONG: scalp would have added value. "
+                    f"Lower exit_edge_threshold (more negative = scalp sooner)."
+                )
+            else:
+                lines.append("→ Exit threshold appears well-calibrated.")
+
+            # Holding-edge accuracy buckets — the direct signal for exit_edge_threshold
+            hedge_acc = cf.get("holding_edge_accuracy", {})
+            if hedge_acc:
+                lines.append("\nScalp accuracy by holding_edge at exit (KEY for exit_edge_threshold tuning):")
+                lines.append("  If accuracy < 50% in a bucket → scalping wrong in that edge range")
+                for bucket, stats in hedge_acc.items():
+                    lines.append(
+                        f"  {bucket:>16}: {stats.get('scalp_accuracy', 0):.0%} accuracy "
+                        f"n={stats.get('count', 0)} — {stats.get('signal', '')}"
+                    )
+                lines.append(
+                    "  TIP: The crossover bucket (where accuracy ~50%) is where exit_edge_threshold belongs."
+                )
+
             time_acc = cf.get("time_accuracy", {})
             if time_acc:
-                lines.append("Scalp accuracy by time remaining:")
+                lines.append("Scalp accuracy by time remaining at exit:")
                 for bucket, stats in time_acc.items():
-                    lines.append(f"  - **{bucket}**: accuracy={stats.get('scalp_accuracy', 0):.1%} n={stats.get('count', 0)}")
-            lines.append(
-                "NOTE: If scalp accuracy is low (<60%), consider tightening exit_edge_threshold "
-                "(less negative = hold longer). If high (>80%), current threshold is well-calibrated."
-            )
+                    lines.append(f"  {bucket}: accuracy={stats.get('scalp_accuracy', 0):.1%} n={stats.get('count', 0)}")
+
+            # Hold counterfactual summary
+            h_total = cf.get("total_holds_tracked", 0)
+            if h_total > 0:
+                hold_pnl = cf.get("total_actual_hold_pnl", 0)
+                cf_scalp = cf.get("total_counterfactual_scalp_pnl", 0)
+                hold_gap = cf.get("pnl_gap_from_holding", 0)
+                lines.append(
+                    f"\nHolds (N={h_total}): actual ${hold_pnl:+.2f} | if scalped at worst ${cf_scalp:+.2f} "
+                    f"| holding was better by ${hold_gap:+.2f}"
+                )
+                lines.append(
+                    f"  Hold accuracy: {cf.get('hold_accuracy', 0):.1%} "
+                    f"({cf.get('optimal_holds', 0)} correct, {cf.get('suboptimal_holds', 0)} suboptimal)"
+                )
+
             sections.append("\n".join(lines))
 
     # Regime breakdown — key for regime-targeted changes
@@ -604,16 +649,56 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
                         f"(mean {info.get('hist_mean', 0):.3f} -> {info.get('recent_mean', 0):.3f})")
         sections.append("\n".join(lines))
 
-    # Execution quality (fill slippage, realized edge)
+    # Execution quality (fill slippage, realized edge, breakdown by spread/time)
     eq = analysis.get("execution_quality", {})
     if eq:
-        sections.append(
-            f"## Execution Quality\n"
-            f"Avg realized edge (model_prob - fill_price): {eq.get('avg_realized_edge', 0):+.3f}\n"
-            f"Avg fill slippage (fill - signal_price): {eq.get('avg_fill_slippage', 0):+.4f}\n"
-            f"Pct trades with positive slippage (paid more than signal): {eq.get('pct_positive_slippage', 0):.0%}\n"
-            f"NOTE: If avg_fill_slippage > 0.005, raise min_edge to compensate for execution costs."
+        lines = ["## Execution Quality"]
+        avg_re = eq.get("avg_realized_edge", 0)
+        avg_slip = eq.get("avg_fill_slippage", 0)
+        pct_pos = eq.get("pct_positive_slippage", 0)
+        sharpe_hit = eq.get("sharpe_impact_from_slippage")
+        lines.append(f"Avg realized edge (signal_prob - fill_price): {avg_re:+.3f}")
+        lines.append(f"Avg fill slippage (fill - signal_price): {avg_slip:+.4f}  |  {pct_pos:.0%} of fills paid above signal")
+        if sharpe_hit is not None:
+            lines.append(
+                f"Sharpe impact from slippage: -{sharpe_hit:.3f} "
+                f"(your Sharpe would be ~{sharpe_hit:.3f} higher with zero slippage)"
+            )
+        fok_rate = eq.get("fok_fill_rate")
+        if fok_rate is not None:
+            lines.append(f"FOK fill rate: {fok_rate:.0%} ({eq.get('fok_total_attempts', 0)} attempts)")
+
+        # Slippage by spread bucket
+        slip_spread = eq.get("slippage_by_spread", {})
+        if slip_spread:
+            lines.append("\nSlippage by market spread (wide spread = stale/illiquid market):")
+            for bucket, stats in slip_spread.items():
+                s = stats.get("avg_slippage")
+                lines.append(f"  {bucket}: avg_slip={s:+.4f} n={stats.get('count', 0)}" if s is not None else f"  {bucket}: n={stats.get('count', 0)}")
+            lines.append(
+                "  → If wide-spread trades show high slippage, raise max_edge to avoid stale prices."
+            )
+
+        # Slippage by time-in-window
+        slip_time = eq.get("slippage_by_time", {})
+        if slip_time:
+            lines.append("\nSlippage by time remaining at entry:")
+            for bucket, stats in slip_time.items():
+                s = stats.get("avg_slippage")
+                lines.append(f"  {bucket}: avg_slip={s:+.4f} n={stats.get('count', 0)}" if s is not None else f"  {bucket}: n={stats.get('count', 0)}")
+            lines.append(
+                "  → Late-window slippage is highest (thin book near expiry). "
+                "If late (0-60s) slippage >> early, raise late_max_penalty or normal_fraction."
+            )
+
+        lines.append(
+            "\nActionable params for slippage: max_edge (filter stale-price entries), "
+            "logit_scale (amplified signals fake-edge if slippage eats it), "
+            "kelly_fraction (slippage is hidden cost reducing true Kelly)."
         )
+        if avg_slip > 0.005:
+            lines.append("WARNING: avg_fill_slippage > 0.005 — slippage is eating significant realized edge.")
+        sections.append("\n".join(lines))
 
     # Gate skip stats (which entry gates are blocking trades)
     gate_stats = analysis.get("gate_skip_stats", {})

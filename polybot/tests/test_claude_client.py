@@ -38,29 +38,23 @@ def test_validate_renormalizes_weights():
         "recommended_min_edge": 0.10,
         "recommended_kelly_fraction": 0.15,
     }
-    result = _validate_strategy_response(data)
+    result = _validate_strategy_response(data, total_trades=50)
     total = sum(result["recommended_weights"].values())
     assert abs(total - 1.0) < 0.01
 
 def test_validate_enforces_momentum_below_min_edge():
-    data = {
-        "recommended_weights": {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20},
-        "recommended_momentum_weight": 0.15,
-        "recommended_min_edge": 0.10,
-        "recommended_kelly_fraction": 0.15,
-    }
-    result = _validate_strategy_response(data)
-    assert result["recommended_momentum_weight"] < result["recommended_min_edge"]
+    # Uses new changes-list format — clamped values are in result["changes"], not old top-level keys
+    data = {"changes": [{"param": "momentum_weight", "value": 0.15, "reason": "test"}]}
+    result = _validate_strategy_response(data, total_trades=50, current_config={"min_edge": 0.10})
+    changes = {c["param"]: c["value"] for c in result["changes"]}
+    assert changes["momentum_weight"] < 0.10
 
 def test_validate_clamps_kelly_fraction():
-    data = {
-        "recommended_weights": {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20},
-        "recommended_momentum_weight": 0.08,
-        "recommended_min_edge": 0.10,
-        "recommended_kelly_fraction": 0.50,
-    }
-    result = _validate_strategy_response(data)
-    assert result["recommended_kelly_fraction"] == 0.25
+    # Uses new changes-list format — clamped values are in result["changes"], not old top-level keys
+    data = {"changes": [{"param": "kelly_fraction", "value": 0.50, "reason": "test"}]}
+    result = _validate_strategy_response(data, total_trades=50)
+    changes = {c["param"]: c["value"] for c in result["changes"]}
+    assert changes["kelly_fraction"] == 0.25
 
 def test_validate_enforces_min_weight():
     data = {

@@ -80,10 +80,15 @@ polybot/
   memory/
     outcomes/                # One JSON per trade (timestamped UTC)
     counterfactuals/         # One JSON per scalp or hold what-if
+    ghost_outcomes/          # Downstream-gate rejections tracked to resolution
     calibration/platt_params.json
     weights/                 # Versioned weight configs
     biases.json              # BiasDetector output
-    pipeline_history.json    # Adoption track record
+    pipeline_history.json    # Adoption track record (1d/3d/7d/14d/30d reviews, decay status)
+    pipeline_run_log.json    # Every change tested per cycle (direction, backtest Δ, Claude prediction)
+    gate_stats.json          # Entry gate skip counts (reset each restart)
+    fill_stats.json          # FOK fill rate (total/buy/sell attempts vs fills)
+    adverse_state.json       # Per-fill post-fill price evolution (30s/60s) for adverse selection
   discord_bot/
     bot.py                   # !status !history !pause !resume !clear !session
     alerts.py                # Trade alerts, banners, daily report, purge
@@ -169,20 +174,20 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 
 **Walk-forward split:** 60% train, 40% validation across 4 folds [60:70], [70:80], [80:90], [90:100].
 
-**Adoption gates:** z >= 1.0 (Jobson-Korkie), delta >= 0.02 absolute, n >= 50, candidate Sharpe > 0, improvement in 3/4 folds. 2-day cooldown after last adoption.
+**Adoption gates:** z >= 1.0 (Jobson-Korkie), delta >= min_improvement (default 0.03, SPRT-modulated 0.02–0.05), n >= 100 candidate trades, candidate Sharpe > 0, improvement in 3/4 walk-forward folds, regime-stratified Sharpe check (≥2/3 regimes improve OR dominant+no >0.10 degradation). 2-day cooldown after last adoption.
 
 **Pipeline stages:**
 1. `PipelineTracker` — fills 1d/3d/7d/14d/30d actual Sharpe for past adoptions; computes decay status (PERSISTED/PARTIAL/DECAYED/REVERSED) and 14d retention ratio; prediction accuracy (directional hit rate, MAE vs Claude's predicted_delta_sharpe_7d); empirical directional table from pipeline_run_log.json; all fed back to Claude
 2. `BiasDetector` — trains on 60% set. Edge buckets: 4-8%, 8-12%, 12-20%, 20%+. Per-indicator accuracy, side/time/regime/volatility patterns, edge realization quartiles
-3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if **Kelly-sized-Sharpe** on validation improves (≥20 validation trades must pass production gates under both old and new calibrator, else rejected). Log-loss retained in telemetry, not adoption. Gated this way so a flatter/smoother calibrator that would silently shrink edges below the Kelly gate (and kill realized Sharpe) can't be adopted just because it improves log-loss.
+3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if **Kelly-sized-Sharpe** on validation improves AND z >= 1.0 (≥50 validation trades must pass production gates under both old and new calibrator, else rejected). Log-loss retained in telemetry, not adoption. Gated this way so a flatter/smoother calibrator that would silently shrink edges below the Kelly gate (and kill realized Sharpe) can't be adopted just because it improves log-loss.
 4. Distribution shift (KS-test recent 50 vs historical)
 5. SPRT aggregate (modulates adoption threshold: negative→0.02, positive→0.05)
-6. `TAEvolver` — sends analysis card + 100 stratified trades (50 recent + 50 spaced across the day) to Claude. Returns structured JSON with a ranked `changes` list (max 3 changes, each with param/value/reason). Local fallback when Claude unavailable (max 2 params, 15% change cap). Analysis card includes: calibration curve (reliability diagram), gate skip stats, realized edge vs predicted edge, ghost trade gate analysis, time-to-resolution distribution, cross-window correlation, execution quality metrics, **parameter change history** (last 5 adoptions with actual vs predicted Sharpe).
-7. `WeightOptimizer` — **per-parameter** walk-forward backtests (one backtest per proposed change, not one combined). Each change tested in isolation against baseline on the same 4 folds; changes that pass are adopted independently. `_kelly_bankroll_returns` replays the full logit composition (L1 CDF, L2 regime×direction, L3 flow with 0.35-logit cap, L3b spot-flow, L3c wall, L3e liq, L5 prev-margin, L4 indicator momentum, Platt). Backtest freezes on `self.signal_engine.calibrator`. Entry gates (`min_model_probability`, `min_edge`, `min_kelly`) are held constant in ALL backtests — never varied by candidate — so the trade population stays identical between baseline and candidate runs.
+6. `TAEvolver` — sends analysis card + 100 stratified trades (50 recent + 50 spaced across the day) to Claude. Returns structured JSON with a `changes` list (0–5 entries, empty is valid). Each change requires `param`, `value`, `reason`, `predicted_delta_sharpe_7d`, `confidence_interval`. Local fallback when Claude unavailable (max 2 params, 15% change cap). Analysis card includes: calibration curve (reliability diagram), gate skip stats, realized edge vs predicted edge, ghost trade gate analysis (by_gate with sim_pnl), time-to-resolution distribution, cross-window correlation, execution quality with slippage breakdown by spread/time, counterfactual exit analysis with holding_edge accuracy buckets, statistical noise reference, prediction accuracy track record, empirical directional table, adoption decay analysis, **parameter change history** (last 5 adoptions with actual vs predicted Sharpe and decay status).
+7. `WeightOptimizer` — **per-parameter** walk-forward backtests (one backtest per proposed change). Each change tested in isolation against baseline on the same 4 folds, then through regime-stratified gate. Changes that pass all gates are adopted independently. If ≥2 changes are adopted, a **combined backtest** runs: if combined Δ < 0.7 × sum(individual Δ), the lowest-z-score change is backed out (interaction detected). `_kelly_bankroll_returns` replays the full logit composition (L1 CDF, L2 regime×direction, L3 flow with 0.35-logit cap, L3b spot-flow, L3c wall, L3e liq, L5 prev-margin, L4 indicator momentum, Platt). Backtest freezes on `self.signal_engine.calibrator`. Entry gates (`min_model_probability`, `min_edge`, `min_kelly`) are held constant in ALL backtests — never varied by candidate — so the trade population stays identical between baseline and candidate runs.
 
 **Key pipeline invariants:**
 - `momentum_weight` can be negative (-0.10 to +0.10). Negative = fade indicators (current: -0.02). Claude knows this.
-- Claude response format: `{"changes": [{"param": ..., "value": ..., "reason": ...}, ...], "key_findings": [...], ...}`. Max 3 changes. `min_model_probability`, `min_edge`, `min_kelly` are READ-ONLY (not in changes list).
+- Claude response format: `{"changes": [{"param": ..., "value": ..., "reason": ..., "predicted_delta_sharpe_7d": ..., "confidence_interval": [lo, hi]}, ...], "key_findings": [...], ...}`. 0–5 changes (empty is valid). `min_model_probability`, `min_edge`, `min_kelly` are READ-ONLY (not in changes list).
 - `_validate_strategy_response` uses current_config as defaults — params Claude omits are NOT silently overwritten with hardcoded stale values
 - Strategy log reads back last 15,000 chars (up from 6,000) for more context
 - Outcomes sorted by `exit_timestamp` (actual trade close time) for correct walk-forward ordering; old outcomes fall back to write-time `timestamp`
@@ -197,7 +202,7 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 - **Statistical noise reference**: injected into Claude context based on N — win rate noise ±1/sqrt(N), Sharpe noise ±sqrt(1.125/N). Findings must exceed 2× noise.
 - Claude changes now require `predicted_delta_sharpe_7d` and `confidence_interval` per change. After 7 days, actual delta compared to predicted — hit rate and MAE fed back as "Your Prediction Track Record".
 - **Flexible change count**: 0-5 changes per cycle (was "exactly 5"). Empty list is valid and appropriate when current config is performing well.
-- Realized edge (`signal_prob - fill_price`) and fill slippage stored per outcome — pipeline reports avg slippage to Claude for min_edge tuning
+- Realized edge (`signal_prob - fill_price`) and fill slippage stored per outcome — pipeline reports slippage breakdown (by spread bucket and time-in-window) to Claude; actionable for `max_edge`, `logit_scale`, `kelly_fraction` — NOT `min_edge` (read-only)
 - All timestamps stored UTC, converted to ET only for date-bucketing (daily report, get_day_stats)
 
 ## Common Issues

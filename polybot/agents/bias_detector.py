@@ -351,11 +351,59 @@ class BiasDetector:
                     "count": len(bucket),
                 }
 
+            # Total P&L: actual scalp vs. counterfactual hold-to-resolution
+            actual_scalp_pnl = sum(c.get("actual", {}).get("pnl", 0) for c in scalps)
+            cf_hold_pnl = sum(c.get("counterfactual", {}).get("pnl", 0) for c in scalps)
+            pnl_gap = cf_hold_pnl - actual_scalp_pnl  # positive = could have made more by holding
+
+            # Holding-edge accuracy buckets: the direct signal for exit_edge_threshold tuning.
+            # Bucket scalps by their holding_edge at scalp time, show scalp accuracy per bucket.
+            # If scalp accuracy is low at e.g. -0.01 to -0.05, the threshold is too aggressive there.
+            edge_buckets = {
+                "0 to -0.02":    [],   # very close to threshold — should rarely scalp here
+                "-0.02 to -0.05": [],  # threshold zone — key diagnostic bucket
+                "-0.05 to -0.10": [],  # moderate edge remaining
+                "< -0.10":        [],  # strong signal to exit — scalp should be correct here
+            }
+            for c in scalps:
+                edge = c.get("context_at_scalp", {}).get("holding_edge", 0)
+                optimal = c.get("scalp_was_optimal", True)
+                if edge >= -0.02:
+                    edge_buckets["0 to -0.02"].append(optimal)
+                elif edge >= -0.05:
+                    edge_buckets["-0.02 to -0.05"].append(optimal)
+                elif edge >= -0.10:
+                    edge_buckets["-0.05 to -0.10"].append(optimal)
+                else:
+                    edge_buckets["< -0.10"].append(optimal)
+
+            holding_edge_accuracy = {}
+            for label, vals in edge_buckets.items():
+                if not vals:
+                    continue
+                acc = sum(vals) / len(vals)
+                holding_edge_accuracy[label] = {
+                    "scalp_accuracy": round(acc, 4),
+                    "count": len(vals),
+                    "signal": (
+                        "scalp WRONG here — threshold too aggressive" if acc < 0.45 else
+                        "borderline — monitor" if acc < 0.55 else
+                        "scalp correct here" if acc >= 0.65 else
+                        "roughly neutral"
+                    ),
+                }
+
+            # Net recommendation: compare scalp_accuracy to a 50% baseline
+            net_pnl_direction = "scalp_early" if pnl_gap > 0.5 else ("hold_long" if pnl_gap < -0.5 else "calibrated")
             result.update({
                 "total_scalps_tracked": s_total,
                 "scalp_accuracy": round(s_optimal / s_total, 4) if s_total > 0 else 0,
                 "optimal_scalps": s_optimal,
                 "suboptimal_scalps": s_suboptimal,
+                "total_actual_scalp_pnl": round(actual_scalp_pnl, 2),
+                "total_counterfactual_hold_pnl": round(cf_hold_pnl, 2),
+                "pnl_gap_from_early_scalps": round(pnl_gap, 2),
+                "net_exit_direction": net_pnl_direction,
                 "avg_missed_pnl": round(avg_missed_pnl, 4),
                 "avg_missed_gain_pct": round(avg_missed_gain_pct, 4),
                 "avg_holding_edge_optimal": _avg_edge_scalp(s_optimal_records),
@@ -363,6 +411,7 @@ class BiasDetector:
                 "avg_seconds_remaining_optimal": _avg_secs_scalp(s_optimal_records),
                 "avg_seconds_remaining_suboptimal": _avg_secs_scalp(s_suboptimal_records),
                 "time_accuracy": time_accuracy,
+                "holding_edge_accuracy": holding_edge_accuracy,
             })
 
         # --- Hold analysis ---
@@ -379,11 +428,16 @@ class BiasDetector:
                 edges = [c.get("context_at_worst_moment", {}).get("holding_edge", 0) for c in records]
                 return round(sum(edges) / len(edges), 4) if edges else 0
 
+            actual_hold_pnl = sum(c.get("actual", {}).get("pnl", 0) for c in holds)
+            cf_scalp_pnl = sum(c.get("counterfactual", {}).get("pnl", 0) for c in holds)
             result.update({
                 "total_holds_tracked": h_total,
                 "hold_accuracy": round(h_optimal / h_total, 4) if h_total > 0 else 0,
                 "optimal_holds": h_optimal,
                 "suboptimal_holds": h_suboptimal,
+                "total_actual_hold_pnl": round(actual_hold_pnl, 2),
+                "total_counterfactual_scalp_pnl": round(cf_scalp_pnl, 2),
+                "pnl_gap_from_holding": round(actual_hold_pnl - cf_scalp_pnl, 2),
                 "avg_hold_cost_when_suboptimal": round(avg_hold_cost, 4),
                 "avg_worst_edge_optimal_holds": _avg_edge_hold([c for c in holds if c.get("hold_was_optimal", True)]),
                 "avg_worst_edge_suboptimal_holds": _avg_edge_hold(h_suboptimal_records),
@@ -567,22 +621,129 @@ class BiasDetector:
             if g.get("resolved", False):
                 by_gate[gate].append(g)
 
-        result: dict[str, Any] = {"total_resolved": sum(len(v) for v in by_gate.values())}
+        all_resolved = [g for gs in by_gate.values() for g in gs]
+        total = len(all_resolved)
+        if total == 0:
+            return {}
+
+        total_wins = sum(1 for g in all_resolved if g.get("ghost_correct", False))
+
+        # Gates where LOW win_rate is expected/good — filtering informed flow.
+        PROTECTIVE_GATES = {"adverse_rate_30s", "adverse_selection", "adverse_selection_30s"}
+
+        by_gate_result: dict[str, Any] = {}
         for gate, records in by_gate.items():
             wins = sum(1 for r in records if r.get("ghost_correct", False))
             gain_pcts = [r.get("ghost_gain_pct", 0) for r in records]
-            avg_gain = sum(gain_pcts) / len(gain_pcts) if gain_pcts else 0
-            result[gate] = {
-                "n": len(records),
-                "win_rate": round(wins / len(records), 4) if records else 0,
+            avg_gain = sum(gain_pcts) / len(gain_pcts) if gain_pcts else 0.0
+            wr = wins / len(records) if records else 0.0
+            simulated_pnl = round(sum(
+                r.get("indicator_snapshot", {}).get("trade_context", {}).get("size", 1.0)
+                * r.get("ghost_gain_pct", 0)
+                for r in records
+            ), 2)
+            if gate in PROTECTIVE_GATES:
+                if wr < 0.40:
+                    interp = f"CORRECTLY filtering informed-flow losers ({wr:.0%} win) — DO NOT loosen"
+                elif wr < 0.55:
+                    interp = f"filtering mostly losers ({wr:.0%} win) — keep current threshold"
+                else:
+                    interp = f"WARNING: adverse-selection gate showing {wr:.0%} winners — investigate"
+            else:
+                if wr > 0.60:
+                    interp = "blocking mostly winners — consider loosening"
+                elif wr > 0.50:
+                    interp = "blocking slight majority of winners — borderline, monitor"
+                else:
+                    interp = "correctly filtering — keep"
+            by_gate_result[gate] = {
+                "count": len(records),
+                "pct_profitable": round(wr, 4),
                 "avg_gain_pct": round(avg_gain, 4),
-                "interpretation": (
-                    "gate blocking mostly winners — consider loosening"
-                    if wins / len(records) > 0.55 else
-                    "gate correctly filtering — keep"
-                ) if records else "insufficient data",
+                "simulated_pnl": simulated_pnl,
+                "interpretation": interp,
             }
-        return result
+
+        return {
+            "total_ghosts": total,
+            "pct_profitable": round(total_wins / total, 4) if total > 0 else 0.0,
+            "by_gate": by_gate_result,
+        }
+
+    def analyze_execution_quality_detailed(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Slippage breakdown by spread bucket and time-in-window.
+
+        Returns actionable data for max_edge, logit_scale, and kelly_fraction tuning.
+        Slippage is always a cost — its distribution reveals WHERE execution quality degrades.
+        """
+        spread_buckets: dict[str, list[float]] = {
+            "tight (<3%)":    [],
+            "medium (3-7%)":  [],
+            "wide (>7%)":     [],
+        }
+        time_buckets: dict[str, list[float]] = {
+            "early (>180s)": [],
+            "mid (60-180s)": [],
+            "late (0-60s)":  [],
+        }
+        all_returns: list[float] = []
+        all_slippages: list[float] = []
+
+        for o in outcomes:
+            slip = o.get("fill_slippage")
+            if slip is None:
+                continue
+            ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
+            up_p = ctx.get("market_price_up", 0)
+            down_p = ctx.get("market_price_down", 0)
+            secs = ctx.get("seconds_remaining", 0)
+
+            if up_p > 0 and down_p > 0:
+                spread = max(0.0, 1.0 - up_p - down_p)
+                if spread < 0.03:
+                    spread_buckets["tight (<3%)"].append(slip)
+                elif spread < 0.07:
+                    spread_buckets["medium (3-7%)"].append(slip)
+                else:
+                    spread_buckets["wide (>7%)"].append(slip)
+
+            if secs > 180:
+                time_buckets["early (>180s)"].append(slip)
+            elif secs > 60:
+                time_buckets["mid (60-180s)"].append(slip)
+            else:
+                time_buckets["late (0-60s)"].append(slip)
+
+            all_returns.append(o.get("gain_pct", 0))
+            all_slippages.append(slip)
+
+        def _avg(lst: list[float]) -> float | None:
+            return round(sum(lst) / len(lst), 4) if lst else None
+
+        slippage_by_spread = {
+            k: {"avg_slippage": _avg(v), "count": len(v)}
+            for k, v in spread_buckets.items() if v
+        }
+        slippage_by_time = {
+            k: {"avg_slippage": _avg(v), "count": len(v)}
+            for k, v in time_buckets.items() if v
+        }
+
+        # Sharpe impact: E[slippage] / std(returns) gives first-order Sharpe hit
+        sharpe_impact = None
+        if all_returns and all_slippages:
+            avg_r = sum(all_returns) / len(all_returns)
+            var_r = sum((r - avg_r) ** 2 for r in all_returns) / len(all_returns)
+            std_r = math.sqrt(var_r) if var_r > 0 else 0.0
+            avg_slip = sum(all_slippages) / len(all_slippages)
+            if std_r > 0:
+                sharpe_impact = round(avg_slip / std_r, 3)
+
+        return {
+            "slippage_by_spread": slippage_by_spread,
+            "slippage_by_time": slippage_by_time,
+            "sharpe_impact_from_slippage": sharpe_impact,
+        }
 
     def save(self, analysis: dict[str, Any]) -> None:
         self.biases_path.parent.mkdir(parents=True, exist_ok=True)

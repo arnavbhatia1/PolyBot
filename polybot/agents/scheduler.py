@@ -2,8 +2,11 @@
 
 Runs BiasDetector, Platt calibration (with recency-weighted MLE), distribution shift
 detection, SPRT aggregation, TA Evolver (Claude), and WeightOptimizer in sequence.
-Adopts parameter changes only when they pass strict statistical gates (z >= 1.28,
-3/4 walk-forward folds positive, 3-day cooldown).
+Adopts parameter changes only when they pass: z >= 1.0 (Jobson-Korkie), delta >=
+min_improvement (0.02–0.05, SPRT-modulated), n >= 100 candidate trades, 3/4 walk-forward
+folds positive, regime-stratified Sharpe check. 2-day cooldown after last adoption.
+After ≥2 adoptions: combined backtest interaction check (backs out weakest if combined
+Δ < 0.7 × sum of individual Δ).
 """
 from __future__ import annotations
 
@@ -1119,6 +1122,14 @@ class AgentScheduler:
                     fill_stats.get("buy_fills", 0) / max(fill_stats.get("buy_attempts", 1), 1), 4)
             except Exception:
                 pass
+        # Slippage breakdown by spread and time-in-window (actionable for max_edge, logit_scale, kelly_fraction)
+        try:
+            exec_detail = self.bias_detector.analyze_execution_quality_detailed(all_outcomes)
+            if exec_detail:
+                exec_quality.update(exec_detail)
+        except Exception as e:
+            logger.debug(f"Execution quality detail failed: {e}")
+
         if exec_quality:
             analysis["execution_quality"] = exec_quality
 
