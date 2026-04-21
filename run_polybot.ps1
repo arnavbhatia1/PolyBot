@@ -27,7 +27,7 @@ while ($true) {
     Write-Host "[$timestamp] Starting PolyBot..." -ForegroundColor Green
 
     # Run the bot — blocks until pipeline completes and bot exits
-    python -m polybot.main --mode paper --auto-restart 2>$null
+    python -m polybot.main --mode paper --auto-restart
 
     $exitCode = $LASTEXITCODE
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
