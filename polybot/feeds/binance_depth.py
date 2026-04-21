@@ -199,7 +199,7 @@ class BinanceDepthFeed:
         self._running = True
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._rest_task = asyncio.create_task(self._rest_loop())
-        logger.info("BinanceDepthFeed started")
+        logger.debug("BinanceDepthFeed started")
 
     async def stop(self) -> None:
         """Stop all background tasks and close connections."""

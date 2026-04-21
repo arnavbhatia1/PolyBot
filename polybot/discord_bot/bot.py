@@ -42,10 +42,12 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
     bot.scheduler = scheduler
     bot.config = config
     bot.is_paused = False
+    bot.ready_event = asyncio.Event()
 
     @bot.event
     async def on_ready():
-        logger.info(f"Discord bot connected as {bot.user}")
+        logger.debug(f"Discord bot connected as {bot.user}")
+        bot.ready_event.set()
         if hasattr(bot, 'alert_manager') and bot.alert_manager:
             bankroll = await bot.db.get_bankroll()
             await bot.alert_manager.send_session_banner(

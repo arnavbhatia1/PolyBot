@@ -576,14 +576,14 @@ async def _evaluate_signal_and_enter(
         dist = btc_price - strike
         action_color = _C.GREEN if signal.action in ("BUY_YES", "BUY_NO") else _C.DIM
         logger.info(
-            f"{_C.CYAN}{'-' * 60}{_C.RESET}\n"
+            f"{_C.CYAN}{'=' * 60}{_C.RESET}\n"
             f"  {action_color}EVAL  {signal.action:<8}{_C.RESET} | {contract.get('question', cid)}\n"
             f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]  src={price_source}\n"
             f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
             f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  iv {iv_ratio_val:.2f}\n"
             f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}  cvd_a {cvd_accel_val:+.4f}\n"
             f"  {_C.DIM}{signal.reason}{_C.RESET}\n"
-            f"{_C.CYAN}{'-' * 69}{_C.RESET}")
+            f"{_C.CYAN}{'=' * 69}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         _record_skip(f"model:{signal.reason[:30]}")
@@ -921,12 +921,12 @@ async def _evaluate_signal_and_enter(
             _why_parts.append(f"CVD {spot_flow_signal:+.2f}")
         _why = " | ".join(_why_parts)
         logger.info(
-            f"{_C.GREEN}{'=' * 60}{_C.RESET}\n"
-            f"  {_C.GREEN}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}{slip_note}\n"
+            f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
+            f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}{slip_note}\n"
             f"  {contract.get('question', cid)}  [{entry_phase['phase']}]\n"
             f"  {_C.YELLOW}Why: {_why}{_C.RESET}\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}\n"
-            f"{_C.GREEN}{'=' * 69}{_C.RESET}")
+            f"{_C.YELLOW}{'=' * 69}{_C.RESET}")
         if _adverse_monitor:
             mkt_mid = (price_up + price_down) / 2 if price_up + price_down > 0 else fill_price
             _adverse_monitor.record_fill(side=side, fill_price=fill_price, token_id=token_id, midprice=mkt_mid)
@@ -1368,6 +1368,7 @@ async def _evaluate_and_exit_position(
             pnl = result.pnl
             gain_pct = result.gain_pct
             total_fees = result.entry_fee_usd + result.exit_fee_usd
+            exit_fill = result.fill_price  # use actual fill from book walk, not requested price
             won = "WIN" if pnl > 0 else "LOSS"
             if pnl > 0: day_wins += 1
             else: day_losses += 1
@@ -1723,6 +1724,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             f"Deribit {'OK' if deribit_feed is not None else '--'}  "
             f"Chainlink {'OK' if chainlink_feed is not None else '--'}"
         )
+        _discord_status = f"  Discord: {'connected' if alert_manager is not None else 'unavailable'}"
         _clob_status = (
             f"  CLOB WS: {'connected' if clob_ws is not None else 'disconnected'}  |  "
             f"{len(ws_subscribed_tokens)} tokens subscribed"
@@ -1735,6 +1737,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             f"  Restored: {_wins}W/{_losses}L  |  prev_margin={_prev_margin_str}  |  {_adverse_fills} adverse fills\n"
             f"{_feed_status}\n"
             f"{_clob_status}\n"
+            f"{_discord_status}\n"
             f"{_sep}"
         )
 
@@ -2342,6 +2345,13 @@ async def main() -> None:
         except Exception as e:
             logger.error(f"Discord bot error: {e}")
 
+    # Wait for Discord to connect before starting the trading loop
+    discord_task = asyncio.create_task(run_discord())
+    try:
+        await asyncio.wait_for(discord_bot.ready_event.wait(), timeout=15.0)
+    except asyncio.TimeoutError:
+        logger.warning("Discord did not connect within 15s — starting trading loop anyway")
+
     trading_task = asyncio.create_task(trading_loop(
         binance_feed, market_scanner, indicator_engine, signal_engine,
         trader, alert_manager, db, config, outcome_reviewer,
@@ -2357,7 +2367,7 @@ async def main() -> None:
     background_tasks = [
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
-        asyncio.create_task(run_discord()),
+        discord_task,
     ]
     logger.debug("PolyBot started — all systems running (WebSocket + event-driven)")
 

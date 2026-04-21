@@ -73,7 +73,7 @@ class CoinbaseFeed:
         """Start consuming the Coinbase ticker stream."""
         self._running = True
         self._task = asyncio.create_task(self._connect_ws())
-        logger.info("CoinbaseFeed starting for %s", self.product_id)
+        logger.debug("CoinbaseFeed starting for %s", self.product_id)
 
     async def stop(self) -> None:
         """Cleanly shut down."""

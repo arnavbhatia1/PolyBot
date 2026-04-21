@@ -96,4 +96,4 @@ class PlattCalibrator:
             data = json.loads(path.read_text())
             self.a = data.get("a", -1.0)
             self.b = data.get("b", 0.0)
-            logger.info(f"Platt calibration loaded: a={self.a:.4f}, b={self.b:.4f}")
+            logger.debug(f"Platt calibration loaded: a={self.a:.4f}, b={self.b:.4f}")

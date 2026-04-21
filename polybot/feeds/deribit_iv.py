@@ -120,7 +120,7 @@ class DeribitIVFeed:
     async def start(self) -> None:
         """Start the polling loop. Runs until stop() is called."""
         self._running = True
-        logger.info("DeribitIVFeed starting (poll every %.0fs)", self.poll_interval)
+        logger.debug("DeribitIVFeed starting (poll every %.0fs)", self.poll_interval)
         while self._running:
             try:
                 await self._poll()

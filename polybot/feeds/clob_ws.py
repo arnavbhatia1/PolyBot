@@ -81,7 +81,7 @@ class ClobWebSocket:
             })
             try:
                 await self._ws.send(msg)
-                logger.info(f"WS subscribed to {len(new_ids)} tokens")
+                logger.debug(f"WS subscribed to {len(new_ids)} tokens")
             except Exception as e:
                 logger.warning(f"WS subscribe send failed: {e}")
 
@@ -148,7 +148,7 @@ class ClobWebSocket:
                     self._ws = ws
                     self.connected = True
                     backoff = RECONNECT_BASE
-                    logger.info("CLOB WebSocket connected")
+                    logger.debug("CLOB WebSocket connected")
 
                     # Send initial subscription
                     if self._subscribed_ids:

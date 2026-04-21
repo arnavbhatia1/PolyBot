@@ -62,7 +62,7 @@ class KrakenFeed:
     async def start(self) -> None:
         self._running = True
         self._task = asyncio.create_task(self._connect_ws())
-        logger.info("KrakenFeed starting for %s", KRAKEN_PAIR)
+        logger.debug("KrakenFeed starting for %s", KRAKEN_PAIR)
 
     async def stop(self) -> None:
         self._running = False

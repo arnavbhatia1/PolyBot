@@ -90,7 +90,7 @@ class ChainlinkFeed:
     async def start(self) -> None:
         self._running = True
         self._task = asyncio.create_task(self._run())
-        logger.info("ChainlinkFeed: starting RTDS WebSocket for btc/usd")
+        logger.debug("ChainlinkFeed: starting RTDS WebSocket for btc/usd")
 
     async def stop(self) -> None:
         self._running = False
@@ -117,7 +117,7 @@ class ChainlinkFeed:
                             "type": "*",
                         }],
                     }))
-                    logger.info("ChainlinkFeed: subscribed to crypto_prices_chainlink btc/usd")
+                    logger.debug("ChainlinkFeed: subscribed to crypto_prices_chainlink btc/usd")
 
                     async for raw in ws:
                         if not self._running:
