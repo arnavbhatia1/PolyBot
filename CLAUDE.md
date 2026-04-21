@@ -74,7 +74,7 @@ polybot/
     bias_detector.py         # Per-indicator/regime/time accuracy analysis
     ta_evolver.py            # Claude recommendations + local fallback
     weight_optimizer.py      # Walk-forward backtest, z-test adoption
-    pipeline_tracker.py      # Adoption track record (predicted vs actual Sharpe)
+    pipeline_tracker.py      # Adoption track record + run log (directional table, prediction accuracy, decay)
     pipeline_analytics.py    # Time-weighting, KS shift, SPRT aggregation
     claude_client.py         # analyze_strategy() — distilled card to Claude
   memory/
@@ -172,7 +172,7 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 **Adoption gates:** z >= 1.0 (Jobson-Korkie), delta >= 0.02 absolute, n >= 50, candidate Sharpe > 0, improvement in 3/4 folds. 2-day cooldown after last adoption.
 
 **Pipeline stages:**
-1. `PipelineTracker` — fills 7d/30d actual Sharpe for past adoptions, feeds to Claude
+1. `PipelineTracker` — fills 1d/3d/7d/14d/30d actual Sharpe for past adoptions; computes decay status (PERSISTED/PARTIAL/DECAYED/REVERSED) and 14d retention ratio; prediction accuracy (directional hit rate, MAE vs Claude's predicted_delta_sharpe_7d); empirical directional table from pipeline_run_log.json; all fed back to Claude
 2. `BiasDetector` — trains on 60% set. Edge buckets: 4-8%, 8-12%, 12-20%, 20%+. Per-indicator accuracy, side/time/regime/volatility patterns, edge realization quartiles
 3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if **Kelly-sized-Sharpe** on validation improves (≥20 validation trades must pass production gates under both old and new calibrator, else rejected). Log-loss retained in telemetry, not adoption. Gated this way so a flatter/smoother calibrator that would silently shrink edges below the Kelly gate (and kill realized Sharpe) can't be adopted just because it improves log-loss.
 4. Distribution shift (KS-test recent 50 vs historical)
@@ -189,7 +189,14 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 - Daily rollup: at 12:05 AM pipeline, previous days' individual outcome files are consolidated into one file per day (`rollup_YYYY-MM-DD.json`) to keep git manageable. `load_all_outcomes()` handles both formats transparently.
 - `gain_pct = pnl / size` (arithmetic). Never use `log_return` for Sharpe (log(0) = -inf for losses)
 - Recency weighting: `0.995^days_ago` applied to each trade's return in backtest — recent trades count ~2x more than 3-week-old trades
-- Ghost trades: downstream-gate rejections (not model-level skips) are tracked to resolution in `memory/ghost_outcomes/`. Pipeline uses them to calibrate which gates block profitable trades. NOT used for Platt calibration.
+- Ghost trades: downstream-gate rejections tracked to resolution in `memory/ghost_outcomes/`. `analyze_ghosts` returns `{total_ghosts, pct_profitable, by_gate}` — each gate shows `count`, `pct_profitable`, `simulated_pnl` (dollar impact if removed), and `interpretation`. `adverse_rate_30s` is a PROTECTIVE gate — low win_rate means it's correctly filtering informed flow, not over-filtering. NOT used for Platt calibration.
+- **Pipeline run log** (`memory/pipeline_run_log.json`): every change tested (adopted + rejected) is logged with direction (`up`/`down`), backtest delta Sharpe, and Claude's `predicted_delta_sharpe_7d`. Powers the empirical directional table and prediction accuracy tracking.
+- **Adoption decay tracking**: 1d/3d/7d/14d/30d reviews computed per adoption. `decay_status`: PERSISTED (>80% retention), PARTIAL (50-80%), DECAYED (<50%), REVERSED (negative). If >50% of adoptions DECAYED, pipeline warns Claude to reduce proposal volume.
+- **Pairwise interaction check**: if ≥2 changes adopted in one cycle, a combined backtest runs. If combined Δ < 0.7 × sum(individual Δ), the lowest-z-score change is backed out. Known pairs: `{momentum_weight, regime_weight}`, `{flow_weight, spot_flow_weight}`, `{logit_scale, atr_sigma_ratio}`.
+- **Regime-stratified adoption gate**: after passing main gates, each change must improve Sharpe in ≥2/3 populated regimes (trending/reverting/neutral) OR improve the dominant regime without degrading any other by >0.10 Sharpe.
+- **Statistical noise reference**: injected into Claude context based on N — win rate noise ±1/sqrt(N), Sharpe noise ±sqrt(1.125/N). Findings must exceed 2× noise.
+- Claude changes now require `predicted_delta_sharpe_7d` and `confidence_interval` per change. After 7 days, actual delta compared to predicted — hit rate and MAE fed back as "Your Prediction Track Record".
+- **Flexible change count**: 0-5 changes per cycle (was "exactly 5"). Empty list is valid and appropriate when current config is performing well.
 - Realized edge (`signal_prob - fill_price`) and fill slippage stored per outcome — pipeline reports avg slippage to Claude for min_edge tuning
 - All timestamps stored UTC, converted to ET only for date-bucketing (daily report, get_day_stats)
 

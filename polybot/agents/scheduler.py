@@ -119,7 +119,22 @@ class AgentScheduler:
         if hasattr(self, '_cumulative_failures') and self._cumulative_failures:
             analysis["cumulative_failures"] = self._cumulative_failures
 
-        # Build parameter change history for Claude (Change 4)
+        # Inject prediction accuracy, empirical directional table, and decay analysis
+        if self.pipeline_tracker:
+            try:
+                pred_accuracy = self.pipeline_tracker.format_prediction_accuracy()
+                if pred_accuracy:
+                    analysis["prediction_accuracy"] = pred_accuracy
+                dir_table = self.pipeline_tracker.format_directional_table()
+                if dir_table:
+                    analysis["directional_table"] = dir_table
+                decay_analysis = self.pipeline_tracker.format_decay_analysis()
+                if decay_analysis:
+                    analysis["decay_analysis"] = decay_analysis
+            except Exception as e:
+                logger.debug(f"Failed to build prediction/directional/decay context: {e}")
+
+        # Build parameter change history for Claude
         if self.pipeline_tracker:
             try:
                 history_lines = []
@@ -470,6 +485,85 @@ class AgentScheduler:
         )
         return {"returns": returns, "sharpe": _s(returns), "candidate_trades": len(returns)}
 
+    def _check_regime_adoption(
+        self,
+        change: dict[str, Any],
+        all_outcomes: list[dict[str, Any]],
+        baseline_sharpe: float,
+    ) -> tuple[bool, str]:
+        """Regime-stratified adoption gate.
+
+        Segments outcomes into trending / reverting / neutral buckets.
+        The change must either:
+          a) improve Sharpe in ≥2 of the 3 populated regimes, OR
+          b) improve the dominant regime AND not degrade any other regime by >0.10 Sharpe
+
+        Skipped (returns True) when fewer than 2 regimes have ≥ 20 qualifying trades.
+        """
+        from polybot.agents.weight_optimizer import _sharpe as _s
+
+        # Segment outcomes by regime
+        regime_buckets: dict[str, list] = {"trending": [], "reverting": [], "neutral": []}
+        for o in all_outcomes:
+            ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
+            r = (ctx.get("regime_state") or "neutral").lower()
+            if r.startswith("trending"):
+                regime_buckets["trending"].append(o)
+            elif r in ("reverting", "mean_reverting"):
+                regime_buckets["reverting"].append(o)
+            else:
+                regime_buckets["neutral"].append(o)
+
+        MIN_REGIME_N = 20
+        populated = {k: v for k, v in regime_buckets.items() if len(v) >= MIN_REGIME_N}
+        if len(populated) < 2:
+            return True, "regime check skipped (insufficient per-regime sample)"
+
+        dominant = max(populated, key=lambda k: len(populated[k]))
+
+        baseline_by_regime: dict[str, float] = {}
+        candidate_by_regime: dict[str, float] = {}
+        for regime, outcomes_r in populated.items():
+            base_result = self._backtest_single_change({}, outcomes_r)  # empty = baseline
+            cand_result = self._backtest_single_change(change, outcomes_r)
+            baseline_by_regime[regime] = base_result["sharpe"]
+            candidate_by_regime[regime] = cand_result["sharpe"]
+
+        improved = sum(
+            1 for r in populated
+            if candidate_by_regime[r] > baseline_by_regime[r]
+        )
+        regressed_hard = [
+            r for r in populated
+            if baseline_by_regime[r] - candidate_by_regime[r] > 0.10
+        ]
+
+        # Gate (a): improve ≥2/3
+        if improved >= 2:
+            detail = " | ".join(
+                f"{r}: {baseline_by_regime[r]:+.3f}→{candidate_by_regime[r]:+.3f}"
+                for r in sorted(populated)
+            )
+            return True, f"regime check passed ({improved}/{len(populated)} improved) [{detail}]"
+
+        # Gate (b): dominant improves, no hard regression
+        dom_improved = candidate_by_regime[dominant] > baseline_by_regime[dominant]
+        if dom_improved and not regressed_hard:
+            detail = " | ".join(
+                f"{r}: {baseline_by_regime[r]:+.3f}→{candidate_by_regime[r]:+.3f}"
+                for r in sorted(populated)
+            )
+            return True, f"regime check passed (dominant {dominant} improved, no hard regression) [{detail}]"
+
+        # Failed
+        detail = " | ".join(
+            f"{r}: {baseline_by_regime[r]:+.3f}→{candidate_by_regime[r]:+.3f}"
+            for r in sorted(populated)
+        )
+        if regressed_hard:
+            return False, (f"regime check failed: {regressed_hard} regressed >0.10 Sharpe [{detail}]")
+        return False, (f"regime check failed: only {improved}/{len(populated)} regimes improved [{detail}]")
+
     async def _run_weight_optimizer(self, recommendations: dict[str, Any],
                                     all_outcomes: list[dict[str, Any]] | None = None,
                                     pipeline_source: str = "local") -> dict[str, Any]:
@@ -547,6 +641,17 @@ class AgentScheduler:
             reason_str = change.get("reason", "")
             change_info: dict[str, Any] = {"param": param, "value": value}
 
+            # Capture old value for directional tracking (before any adoption mutates the engine)
+            if self.signal_engine and param != "weights":
+                old_val = getattr(self.signal_engine, param, None)
+                if old_val is not None:
+                    change_info["old_value"] = old_val
+
+            # Pass through Claude's per-change predictions
+            for pred_key in ("predicted_delta_sharpe_7d", "confidence_interval"):
+                if pred_key in change:
+                    change_info[pred_key] = change[pred_key]
+
             fold_sharpes: list[float] = []
             all_candidate_returns: list[float] = []
 
@@ -586,6 +691,16 @@ class AgentScheduler:
                 fold_sharpes=fold_sharpes,
                 candidate_returns=all_candidate_returns,
             )
+
+            # Regime-stratified check: a change that passes aggregate stats
+            # but hurts a specific regime is likely overfitting to the dominant sample.
+            if adopt and all_outcomes:
+                regime_ok, regime_reason = self._check_regime_adoption(change, all_outcomes, current_sharpe)
+                if not regime_ok:
+                    adopt = False
+                    adopt_reason = f"regime gate: {regime_reason}"
+                else:
+                    adopt_reason += f" | {regime_reason}"
 
             if adopt:
                 change_info.update({"decision": "adopted", "reason": adopt_reason})
@@ -629,9 +744,121 @@ class AgentScheduler:
             for c in info["per_change"]
         ]
 
+        # Record all changes tested this cycle (adopted + rejected) for directional table
+        if self.pipeline_tracker:
+            try:
+                self.pipeline_tracker.record_pipeline_run(
+                    source=pipeline_source,
+                    baseline_sharpe=current_sharpe,
+                    per_change_results=info["per_change"],
+                )
+            except Exception as e:
+                logger.debug(f"Failed to record pipeline run: {e}")
+
         if not any_adopted:
             info["decision"] = "no_change"
             info["reason"] = "no changes passed adoption gates"
+            return info
+
+        # --- Pairwise interaction check ---
+        # If ≥2 changes were adopted, run ONE combined backtest.
+        # If combined Δ < sum(individual Δ) × 0.7, the changes interact and one is riding
+        # on the other's signal. Back out the lowest-conviction change (smallest z-score).
+        KNOWN_INTERACTING_PAIRS = [
+            ("momentum_weight", "regime_weight"),
+            ("flow_weight", "spot_flow_weight"),
+            ("logit_scale", "atr_sigma_ratio"),
+        ]
+        if len(adopted_changes) >= 2:
+            try:
+                combined_rec: dict[str, Any] = {}
+                sum_individual_delta = 0.0
+                for c in adopted_changes:
+                    param = c["param"]
+                    value = c["value"]
+                    if param == "weights":
+                        combined_rec["recommended_weights"] = value
+                    elif param in (
+                        "momentum_weight", "atr_sigma_ratio", "student_t_df", "kelly_fraction",
+                        "regime_weight", "flow_weight", "spot_flow_weight", "wall_weight",
+                        "liquidation_weight", "prev_margin_weight", "logit_scale", "min_atr",
+                        "probability_compression",
+                    ):
+                        combined_rec[f"recommended_{param}"] = value
+                    ci = next((x for x in info["per_change"]
+                               if x.get("param") == param and x.get("decision") == "adopted"), {})
+                    sum_individual_delta += (ci.get("candidate_sharpe", current_sharpe) - current_sharpe)
+
+                cfg_combined = self._config_for_helper(combined_rec)
+                calibrator = self.signal_engine.calibrator if self.signal_engine else None
+                combined_returns = self._kelly_bankroll_returns(
+                    outcomes=all_outcomes,
+                    recommended_weights=cfg_combined["weights"],
+                    momentum_weight=cfg_combined["momentum_weight"],
+                    atr_sigma_ratio=cfg_combined["atr_sigma_ratio"],
+                    student_t_df=cfg_combined["student_t_df"],
+                    min_edge=cfg_combined["min_edge"],
+                    calibrator=calibrator,
+                    kelly_fraction=cfg_combined["kelly_fraction"],
+                    min_kelly=cfg_combined["min_kelly"],
+                    min_prob=cfg_combined["min_model_probability"],
+                    regime_weight=cfg_combined["regime_weight"],
+                    flow_weight=cfg_combined["flow_weight"],
+                    spot_flow_weight=cfg_combined["spot_flow_weight"],
+                    wall_weight=cfg_combined["wall_weight"],
+                    liquidation_weight=cfg_combined["liquidation_weight"],
+                    prev_margin_weight=cfg_combined["prev_margin_weight"],
+                    logit_scale=cfg_combined["logit_scale"],
+                    min_atr=cfg_combined["min_atr"],
+                    probability_compression=cfg_combined["probability_compression"],
+                )
+                combined_sharpe = _sharpe(combined_returns) if combined_returns else 0.0
+                combined_delta = combined_sharpe - current_sharpe
+                info["combined_sharpe"] = round(combined_sharpe, 4)
+                info["combined_delta"] = round(combined_delta, 4)
+                info["sum_individual_delta"] = round(sum_individual_delta, 4)
+
+                if sum_individual_delta > 0 and combined_delta < sum_individual_delta * 0.7:
+                    # Interaction detected — back out the weakest change
+                    z_scores = {}
+                    for c in info["per_change"]:
+                        if c.get("decision") == "adopted":
+                            reason_str = c.get("reason", "")
+                            try:
+                                z_val = float(reason_str.split("z=")[1].split()[0]) if "z=" in reason_str else 0.0
+                            except (IndexError, ValueError):
+                                z_val = 0.0
+                            z_scores[c["param"]] = z_val
+                    weakest_param = min(z_scores, key=z_scores.get) if z_scores else None
+                    if weakest_param:
+                        adopted_changes = [c for c in adopted_changes if c["param"] != weakest_param]
+                        for c in info["per_change"]:
+                            if c.get("param") == weakest_param and c.get("decision") == "adopted":
+                                c["decision"] = "backed_out"
+                                c["reason"] = (
+                                    f"interaction detected: combined Δ={combined_delta:+.3f} < "
+                                    f"sum_individual Δ={sum_individual_delta:+.3f} × 0.7 — "
+                                    f"weakest change (z={z_scores[weakest_param]:.2f}) removed"
+                                )
+                        info["interaction_detected"] = True
+                        info["backed_out_param"] = weakest_param
+                        logger.info(
+                            f"Interaction detected: combined Δ={combined_delta:+.3f} vs "
+                            f"sum_individual Δ={sum_individual_delta:+.3f}. "
+                            f"Backing out {weakest_param} (z={z_scores.get(weakest_param, 0):.2f})"
+                        )
+
+                # Flag known interacting pairs for Claude's awareness
+                adopted_params = {c["param"] for c in adopted_changes}
+                for p1, p2 in KNOWN_INTERACTING_PAIRS:
+                    if p1 in adopted_params and p2 in adopted_params:
+                        logger.info(f"Known interacting pair adopted: {p1} + {p2}")
+            except Exception as e:
+                logger.debug(f"Combined backtest failed (non-critical): {e}")
+
+        if not adopted_changes:
+            info["decision"] = "no_change"
+            info["reason"] = "all changes backed out (interactions)"
             return info
 
         # --- Apply and persist all adopted changes ---
@@ -787,6 +1014,13 @@ class AgentScheduler:
                  if ci.get("decision") == "adopted"),
                 default=current_sharpe,
             )
+            # Sum of Claude's per-change predicted deltas for adopted changes
+            adopted_preds = [
+                c["predicted_delta_sharpe_7d"]
+                for c in info["per_change"]
+                if c.get("decision") == "adopted" and c.get("predicted_delta_sharpe_7d") is not None
+            ]
+            run_predicted_delta = round(sum(adopted_preds), 4) if adopted_preds else None
             self.pipeline_tracker.record_adoption(
                 source=pipeline_source,
                 version=new_version if new_version != current_version else f"{current_version}+params",
@@ -794,6 +1028,7 @@ class AgentScheduler:
                 predicted_sharpe=best_candidate_sharpe,
                 changes=tracker_changes,
                 reason=f"{len(adopted_changes)} change(s) adopted",
+                run_predicted_delta=run_predicted_delta,
             )
 
         return info

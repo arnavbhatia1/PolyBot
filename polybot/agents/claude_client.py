@@ -128,7 +128,7 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - Only recommend schedule changes if there's clear evidence from time-of-day patterns
 - Be conservative — no single weight should change by more than 0.05 per cycle
 - If fewer than 50 trades in the dataset, recommend NO CHANGES (insufficient data — win rate variance at N=25 is ±13 percentage points, which is noise)
-- You MUST propose exactly 5 changes every cycle — no fewer. Each change is tested independently. Cast a wide net across parameter families: signal computation (logit_scale, atr_sigma_ratio, student_t_df, probability_compression), flow signals (flow_weight, spot_flow_weight, liquidation_weight, regime_weight), exit/timing (exit_edge_threshold, normal_fraction, late_max_penalty), and other (momentum_weight, prev_margin_weight, kelly_fraction). Cover at least 3 different families per cycle.
+- Propose between 0 and 5 changes. An empty changes list is valid and appropriate when the current config is performing well or when no finding exceeds 2× the noise floor. Each proposed change MUST cite specific evidence that exceeds the noise threshold (see "Statistical Noise Reference" section in your context). Frivolous or noise-level changes waste pipeline cycles and hurt your track record. Cover at least 3 different parameter families per cycle when you do propose changes.
 
 ## Parameter Impact Hierarchy (most to least leverage on the adoption metric)
 1. **atr_sigma_ratio** — controls how aggressive L1 probability is. Lower = more aggressive (wider edge). If Q4 edge realization is poor (overconfident), raise it. HIGHEST leverage parameter.
@@ -140,6 +140,14 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 7. **adverse_selection_threshold** — informed flow filter. Lower if post-fill reversals are hurting you.
 8. **regime_weight / prev_margin_weight** — L2/L5 momentum signals. Adjust based on regime and carry analysis.
 9. **Indicator weights (rsi/macd/etc)** — LOWEST leverage. L4 is mostly disabled (momentum_weight=-0.02). Only adjust if an indicator shows >65% accuracy.
+
+## Known Parameter Interactions
+These pairs share signal components — changes to one amplify or counteract the other.
+When proposing BOTH parameters in a pair, explicitly explain the interaction in your reasoning.
+Combined adoption backtests run automatically — if they show <70% of sum-individual delta, the weaker change is backed out.
+- **momentum_weight + regime_weight**: regime autocorr amplifies momentum 1.5× at runtime — raising both compounds
+- **flow_weight + spot_flow_weight**: both draw from CVD/order-flow signal — highly correlated
+- **logit_scale + atr_sigma_ratio**: both control L1 aggressiveness — raising both can over-sharpen probabilities
 
 ## Critical Behavioral Rules
 1. SPRT negative means recent win rate is below expectation. It is an observation, NOT a sizing instruction. Do NOT reduce kelly_fraction in response to SPRT negative — this guarantees rejection. Instead improve entry quality: tighten min_model_probability or raise atr_sigma_ratio.
@@ -171,7 +179,7 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
 }
 
 IMPORTANT:
-- `changes` is a ranked list (most impactful first), max 3 entries.
+- `changes` is a ranked list (most impactful first), 0 to 5 entries. Empty list is valid.
 - Valid param names: atr_sigma_ratio, logit_scale, probability_compression, liquidation_weight, prev_margin_weight, spot_flow_weight, flow_weight, regime_weight, momentum_weight, student_t_df, exit_edge_threshold, kelly_fraction, normal_fraction, late_max_penalty, min_atr, max_edge, adverse_selection_threshold, weights (indicator weights dict).
 - DO NOT include min_model_probability, min_edge, or min_kelly in changes — they are read-only.
 - If you have no high-confidence improvements, return an empty changes list: "changes": []
@@ -271,7 +279,7 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
                 old_changes.append({"param": param, "value": data[old_key], "reason": "legacy format"})
         if data.get("recommended_weights"):
             old_changes.append({"param": "weights", "value": data["recommended_weights"], "reason": "legacy format"})
-        data["changes"] = old_changes[:3]  # cap at 3
+        data["changes"] = old_changes[:5]  # cap at 5
 
     # Normalize: ensure changes is a list
     if not isinstance(data.get("changes"), list):
@@ -309,7 +317,7 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     validated_changes: list[dict[str, Any]] = []
     extracted_weights: dict[str, float] = {}
 
-    for change in data["changes"][:3]:  # enforce max 3
+    for change in data["changes"][:5]:  # enforce max 5
         if not isinstance(change, dict):
             continue
         param = change.get("param", "")
@@ -363,7 +371,11 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
                             w[k] = round(w[k], 4)
                     w[largest] = round(1.0 - sum(v for kk, v in w.items() if kk != largest), 4)
             extracted_weights = w
-            validated_changes.append({"param": "weights", "value": w, "reason": reason})
+            weight_entry: dict[str, Any] = {"param": "weights", "value": w, "reason": reason}
+            for pred_key in ("predicted_delta_sharpe_7d", "confidence_interval"):
+                if pred_key in change:
+                    weight_entry[pred_key] = change[pred_key]
+            validated_changes.append(weight_entry)
             continue
 
         # Scalar param: clamp to range
@@ -378,7 +390,11 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
                 min_edge_live = cfg.get("min_edge", 0.04)
                 if abs(clamped) >= min_edge_live:
                     clamped = float((min_edge_live - 0.001) * (1.0 if clamped >= 0 else -1.0))
-            validated_changes.append({"param": param, "value": clamped, "reason": reason})
+            entry: dict[str, Any] = {"param": param, "value": clamped, "reason": reason}
+            for pred_key in ("predicted_delta_sharpe_7d", "confidence_interval"):
+                if pred_key in change:
+                    entry[pred_key] = change[pred_key]
+            validated_changes.append(entry)
         elif param in ("trading_start_hour_et", "trading_end_hour_et"):
             try:
                 validated_changes.append({"param": param, "value": max(0, min(23, int(value))), "reason": reason})
@@ -454,6 +470,26 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
                 f"Sharpe ratio: {overall.get('sharpe', 0):.3f}"
             )
 
+        # Statistical noise floors — findings must exceed 2× noise to be actionable
+        n = overall.get("total_trades", 0)
+        if n >= 10:
+            import math as _math
+            wr_noise = round(_math.sqrt(0.25 / max(n, 1)), 3)   # ±1σ at 50% WR
+            sharpe_noise = round(_math.sqrt((1.0 + 0.5 * 0.25) / max(n, 1)), 3)  # JK SE at S=0.5
+            per_ind_n = max(n // 5, 1)  # ~N/5 per indicator on average
+            sig_noise = round(_math.sqrt(0.25 / per_ind_n), 3)
+            q_noise = round(_math.sqrt(0.25 / max(n // 4, 1)), 3)
+            sections.append(
+                f"## Statistical Noise Reference (at N={n} trades)\n"
+                f"A finding must exceed 2× noise to be actionable — below that it's sampling variation.\n"
+                f"- Win rate noise: ±{wr_noise:.1%} (1σ) → actionable only if difference > ±{2*wr_noise:.1%}\n"
+                f"- Sharpe noise: ±{sharpe_noise:.3f} → actionable only if Sharpe delta > {2*sharpe_noise:.3f}\n"
+                f"- Per-signal accuracy noise (~{per_ind_n} samples/indicator): ±{sig_noise:.1%} → actionable if accuracy > {0.50 + 2*sig_noise:.1%}\n"
+                f"- Edge realization quartile noise (~{n//4} samples/quartile): ±{q_noise:.1%}\n"
+                f"Example: 'flow_weight accuracy 68% at N={per_ind_n}' = "
+                f"{(0.68 - 0.50) / sig_noise:.1f}× noise — {'ACTIONABLE' if (0.68 - 0.50) / sig_noise > 2 else 'marginal'}"
+            )
+
         per_ind = analysis.get("per_indicator", {})
         if per_ind:
             lines = ["## Per-Indicator Analysis"]
@@ -523,13 +559,22 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
             )
             sections.append("\n".join(lines))
 
-    # Regime breakdown (distilled — more useful than raw trades)
+    # Regime breakdown — key for regime-targeted changes
     by_regime = analysis.get("by_regime", {})
     if by_regime:
-        lines = ["## Performance by Regime"]
-        for regime, stats in by_regime.items():
-            lines.append(f"- **{regime}**: n={stats.get('n', 0)} WR={stats.get('win_rate', 0):.0%} "
-                        f"avg_edge={stats.get('avg_edge', 0):.1%} avg_gain={stats.get('avg_gain_pct', 0):.4f}")
+        dominant = max(by_regime.items(), key=lambda x: x[1].get("n", 0), default=(None, {}))[0]
+        lines = [f"## Performance by Regime (dominant: {dominant})"]
+        lines.append("When proposing a change, identify which regime it targets. "
+                     "A change that helps one regime must not degrade any other regime's Sharpe by >0.10.")
+        for regime, stats in sorted(by_regime.items(), key=lambda x: -x[1].get("n", 0)):
+            dom_mark = " ← dominant" if regime == dominant else ""
+            lines.append(
+                f"- **{regime}**{dom_mark}: n={stats.get('n', 0)} "
+                f"WR={stats.get('win_rate', 0):.0%} "
+                f"Sharpe={stats.get('sharpe', 0):+.3f} "
+                f"avg_edge={stats.get('avg_edge', 0):.1%} "
+                f"avg_gain={stats.get('avg_gain_pct', 0):.4f}"
+            )
         sections.append("\n".join(lines))
 
     # Edge realization quartiles (does larger predicted edge actually realize?)
@@ -586,13 +631,25 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
     ghost = analysis.get("ghost_analysis", {})
     if ghost:
         lines = ["## Ghost Trade Analysis (trades blocked by gates, tracked to resolution)"]
-        lines.append(f"Total resolved ghosts: {ghost.get('total_ghosts', 0)} | Profitable if entered: {ghost.get('pct_profitable', 0):.0%}")
+        lines.append(
+            f"Total resolved ghosts: {ghost.get('total_ghosts', 0)} | "
+            f"Profitable if entered: {ghost.get('pct_profitable', 0):.0%}"
+        )
         by_gate = ghost.get("by_gate", {})
         if by_gate:
-            lines.append("Profitability by gate that blocked the trade:")
+            lines.append("Per-gate — sim_pnl = estimated dollar impact if gate were removed:")
             for gate, stats in sorted(by_gate.items(), key=lambda x: -x[1].get('count', 0))[:8]:
-                lines.append(f"- **{gate}**: {stats.get('count', 0)} blocked, {stats.get('pct_profitable', 0):.0%} would have been profitable")
-        lines.append("NOTE: If a gate blocks >60% profitable trades, it may be over-filtering. Consider loosening that parameter.")
+                pnl = stats.get("simulated_pnl")
+                pnl_str = f" | sim_pnl={pnl:+.2f}" if pnl is not None else ""
+                lines.append(
+                    f"- **{gate}**: {stats.get('count', 0)} blocked, "
+                    f"{stats.get('pct_profitable', 0):.0%} profitable{pnl_str} | "
+                    f"{stats.get('interpretation', '')}"
+                )
+        lines.append(
+            "CRITICAL: adverse_rate_30s with LOW win-rate (< 50%) is WORKING — it filters "
+            "informed-flow losers. Only loosen gates with >60% profitable AND positive sim_pnl."
+        )
         sections.append("\n".join(lines))
 
     # SPRT aggregate evidence
@@ -690,11 +747,27 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
     if track_record:
         sections.append(track_record)
 
+    # Adoption decay analysis — are changes persisting or fading within 14 days?
+    decay_analysis = context.get("analysis", {}).get("decay_analysis", "")
+    if decay_analysis:
+        sections.append(decay_analysis)
+
+    # Prediction accuracy — how well-calibrated are Claude's own delta predictions?
+    pred_accuracy = context.get("analysis", {}).get("prediction_accuracy", "")
+    if pred_accuracy:
+        sections.append(pred_accuracy)
+
+    # Empirical directional table — replaces hardcoded "test HIGHER" rules
+    dir_table = context.get("analysis", {}).get("directional_table", "")
+    if dir_table:
+        sections.append(dir_table)
+
     sections.append(
         "## Your Task\n"
         "Analyze all the data above. Identify patterns, biases, and opportunities for improvement. "
         "If the pipeline track record shows your past recommendations hurt performance, "
         "explain what went wrong and adjust accordingly. "
+        "If the decay analysis shows >50% of adoptions are decaying, prioritize an empty or very small changes list. "
         "Return your recommendations as JSON per the format in your instructions."
     )
 

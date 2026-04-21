@@ -203,15 +203,18 @@ class BiasDetector:
         return result
 
     def _analyze_by_regime(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
-        """Per-regime stats: win rate, avg edge, avg gain, trade count."""
+        """Per-regime stats: win rate, Sharpe, avg edge, avg gain, trade count.
+
+        Collapses trending_up/trending_down into 'trending',
+        reverting/mean_reverting into 'reverting', and everything else into 'neutral'.
+        """
         buckets: dict[str, list] = defaultdict(list)
         for o in outcomes:
             regime = _get_regime(o)
-            # Collapse trending_up/trending_down into "trending" for reporting
             if regime.startswith("trending"):
                 buckets["trending"].append(o)
-            elif regime in ("reverting", "mean_reverting", "volatile", "quiet"):
-                buckets[regime].append(o)
+            elif regime in ("reverting", "mean_reverting"):
+                buckets["reverting"].append(o)
             else:
                 buckets["neutral"].append(o)
 
@@ -226,11 +229,16 @@ class BiasDetector:
                 for t in trades
             ]
             edges = [e for e in edges if e > 0]
+            avg_r = sum(returns) / len(returns)
+            var_r = sum((r - avg_r) ** 2 for r in returns) / len(returns)
+            std_r = math.sqrt(var_r) if var_r > 0 else 0.0
+            sharpe = round(avg_r / std_r, 4) if std_r > 0 else 0.0
             result[regime] = {
                 "n": len(trades),
                 "win_rate": round(wins / len(trades), 4),
+                "sharpe": sharpe,
                 "avg_edge": round(sum(edges) / len(edges), 4) if edges else 0,
-                "avg_gain_pct": round(sum(returns) / len(returns), 6),
+                "avg_gain_pct": round(avg_r, 6),
             }
         return result
 
