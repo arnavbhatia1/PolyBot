@@ -51,6 +51,8 @@ class AgentScheduler:
         self._auto_shutdown: bool = False
         self._last_rejection_reason: str = ""  # why last weight proposal was rejected
         self._last_per_change_results: list[str] = []  # per-parameter backtest results for Claude
+        self._baseline_kelly_sharpe: float = 0.0  # current baseline Kelly-Sharpe for Claude context
+        self._cumulative_failures: dict[str, list[str]] = {}  # param -> list of tried values that failed
         self._shutdown_requested: bool = False
 
         # Inject claude_client into ta_evolver if not already set
@@ -111,6 +113,11 @@ class AgentScheduler:
             analysis["last_rejection_reason"] = self._last_rejection_reason
         if hasattr(self, '_last_per_change_results') and self._last_per_change_results:
             analysis["last_per_change_results"] = self._last_per_change_results
+        if hasattr(self, '_baseline_kelly_sharpe'):
+            analysis["baseline_kelly_sharpe"] = self._baseline_kelly_sharpe
+            analysis["adoption_target"] = round(self._baseline_kelly_sharpe + self.weight_optimizer.min_improvement, 4)
+        if hasattr(self, '_cumulative_failures') and self._cumulative_failures:
+            analysis["cumulative_failures"] = self._cumulative_failures
 
         # Build parameter change history for Claude (Change 4)
         if self.pipeline_tracker:
@@ -598,6 +605,21 @@ class AgentScheduler:
                 logger.info(f"REJECTED {param}: {value} — {adopt_reason} (n={n_trades} candidates, baseline={current_sharpe:.3f}, candidate={candidate_sharpe:.3f})")
 
             info["per_change"].append(change_info)
+
+        # Store baseline sharpe for Claude's context
+        self._baseline_kelly_sharpe = round(current_sharpe, 4)
+
+        # Update cumulative failures
+        for c in info["per_change"]:
+            if c.get("decision") == "rejected":
+                param = c["param"]
+                val = str(c.get("value", "?"))
+                reason = c.get("reason", "")
+                entry = f"{val} ({reason})"
+                if param not in self._cumulative_failures:
+                    self._cumulative_failures[param] = []
+                if entry not in self._cumulative_failures[param]:
+                    self._cumulative_failures[param].append(entry)
 
         # Store per-change results for Claude's next cycle
         self._last_per_change_results = [

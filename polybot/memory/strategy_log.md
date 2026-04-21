@@ -198,3 +198,25 @@
 - Many resolution losses at extreme low probabilities (2-9%) — tail trades destroying PnL
 
 **Reasoning:** Q4 edge realization at 0.59 is the dominant calibration problem — raising atr_sigma_ratio to 1.6 and applying probability_compression of 0.90 are the two highest-leverage fixes for model overconfidence at high-edge trades. Scalp accuracy at 49.2% has been persistently coin-flip across multiple cycles, confirming that tightening exit_edge_threshold to -0.03 to hold longer is the correct exit management adjustment.
+
+## 2026-04-21T04:50:30.916628+00:00
+
+**Source:** Claude (medium)
+**Proposed Changes (3):**
+  - atr_sigma_ratio=1.5 (Q4 edge realization at 0.59 confirms L1 probability is overconfident at high edges — wider sigma makes it more conservative.)
+  - logit_scale=3.5 (Signal layers are noisy (scalp accuracy 49%, trending/mean-reverting regimes both underperform) — reducing amplification dampens unreliable signals.)
+  - late_max_penalty=0.7 (60-180s entry window wins only 48.4% — raising the late Kelly penalty reduces sizing on these weaker mid-to-late entries.)
+
+**Findings:**
+- Q4 highest-edge trades realizing only 59 cents per dollar — model overconfident at extremes
+- 60-180s entry window wins just 48.4% vs 56% elsewhere — mid-window is a clear drag
+- Down trades win 55.6% vs Up 53.3% — bearish edge is persistent
+- Scalp exits wrong 51% of the time — holding longer beats early exits
+- High ATR wins 56.4% vs low ATR 52.9% — edge compresses in calm markets
+
+**Warnings:**
+- ATR fell 22% recently — lower volatility environment reduces edge across all trades
+- SPRT negative last 50 trades — recent win rate below expectation, monitor closely
+- Edge mean compressed to 8.6% from 10.4% — market pricing more efficiently
+
+**Reasoning:** The three changes cover distinct parameter families: atr_sigma_ratio addresses L1 overconfidence (Q4=0.59), logit_scale reduces noise amplification from weak L2-L4 signals, and late_max_penalty directly penalizes the 48.4%-win 60-180s entry window. Previous cycles repeatedly proposed atr_sigma_ratio=1.6 and probability_compression=0.9 — this cycle diversifies into exit timing and logit scaling to avoid repetition and test new parameter families.

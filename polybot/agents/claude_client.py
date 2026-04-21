@@ -128,7 +128,7 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - Only recommend schedule changes if there's clear evidence from time-of-day patterns
 - Be conservative — no single weight should change by more than 0.05 per cycle
 - If fewer than 50 trades in the dataset, recommend NO CHANGES (insufficient data — win rate variance at N=25 is ±13 percentage points, which is noise)
-- MAX 5 changes per cycle. Rank them by expected impact. Each change is tested independently — you can adopt 0 to 5 of them. Cast a wide net: test different parameter families each cycle (signal computation, timing, flow, exit). Do NOT propose the same parameters every night — if a parameter was rejected last cycle, try a different one or try a larger/smaller magnitude change.
+- You MUST propose exactly 5 changes every cycle — no fewer. Each change is tested independently. Cast a wide net across parameter families: signal computation (logit_scale, atr_sigma_ratio, student_t_df, probability_compression), flow signals (flow_weight, spot_flow_weight, liquidation_weight, regime_weight), exit/timing (exit_edge_threshold, normal_fraction, late_max_penalty), and other (momentum_weight, prev_margin_weight, kelly_fraction). Cover at least 3 different families per cycle.
 
 ## Parameter Impact Hierarchy (most to least leverage on the adoption metric)
 1. **atr_sigma_ratio** — controls how aggressive L1 probability is. Lower = more aggressive (wider edge). If Q4 edge realization is poor (overconfident), raise it. HIGHEST leverage parameter.
@@ -147,7 +147,14 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 3. If the Last Pipeline Rejection section appears, your previous proposal was rejected for that reason. Address it directly.
 4. Do NOT shuffle indicator weights unless you have a specific indicator showing >65% accuracy. Changing RSI from 0.18 to 0.15 has near-zero effect on performance. Focus on parameters 1-4 above.
 5. CRITICAL — Do NOT raise min_model_probability, min_edge, or min_kelly above their current live values.
-6. DIVERSIFY your proposals — each cycle must cover at least 3 different parameter families: (a) signal computation: logit_scale, atr_sigma_ratio, student_t_df, probability_compression; (b) flow signals: flow_weight, spot_flow_weight, liquidation_weight, regime_weight; (c) exit/timing: exit_edge_threshold, normal_fraction, late_max_penalty; (d) other: momentum_weight, prev_margin_weight, kelly_fraction. If you proposed atr_sigma_ratio last cycle, propose logit_scale or student_t_df this cycle instead. The validation set was collected under the current gates — raising them filters historical trades out of the backtest, leaving too few candidate trades and causing "only N candidate trades" rejection. These can only safely be LOWERED. If you think entry quality needs improving, use atr_sigma_ratio, logit_scale, or probability_compression instead.
+6. DIVERSIFY your proposals — cover at least 3 different parameter families per cycle. If a parameter showed NEGATIVE delta last cycle, do NOT propose it in the same direction again — try the opposite direction or a different parameter entirely.
+7. DIRECTION RULES based on what works in this market:
+   - atr_sigma_ratio: if raising it showed negative delta, DO NOT raise it further. Try lowering it instead, or skip it entirely.
+   - logit_scale: test HIGHER values (4.5, 5.0, 5.5) — higher logit_scale amplifies good signals more. Lowering it weakens signals and typically hurts.
+   - flow_weight: test HIGHER (0.06, 0.08, 0.10) — L3 order flow has the strongest documented correlation with outcomes.
+   - spot_flow_weight: test HIGHER (0.06, 0.08) — CVD is predictive, currently underweighted.
+   - student_t_df: test LOWER (3, 4) — fatter tails find more edge on extreme positions.
+   - late_max_penalty: changing this has near-zero effect on Kelly-Sharpe — deprioritize it. The validation set was collected under the current gates — raising them filters historical trades out of the backtest, leaving too few candidate trades and causing "only N candidate trades" rejection. These can only safely be LOWERED. If you think entry quality needs improving, use atr_sigma_ratio, logit_scale, or probability_compression instead.
 
 ## Response Format
 Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
@@ -640,6 +647,25 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
     prev = context.get("previous_recommendations", "")
     if prev:
         sections.append(f"## Previous Recommendations (recent cycles)\n{prev}")
+
+    # Baseline Kelly-Sharpe and adoption target
+    baseline_ks = context.get("analysis", {}).get("baseline_kelly_sharpe")
+    adoption_target = context.get("analysis", {}).get("adoption_target")
+    if baseline_ks is not None:
+        sections.append(
+            f"## Adoption Target\n"
+            f"Current baseline Kelly-Sharpe: **{baseline_ks:.4f}**\n"
+            f"Your change must reach: **{adoption_target:.4f}** (baseline + delta floor)\n"
+            f"This is the exact number your proposed change must beat to be adopted."
+        )
+
+    # Cumulative failures — all parameter values tried across all cycles
+    cum_failures = context.get("analysis", {}).get("cumulative_failures", {})
+    if cum_failures:
+        lines = ["## Cumulative Failed Attempts (do NOT repeat these)"]
+        for param, attempts in cum_failures.items():
+            lines.append(f"- **{param}**: tried {', '.join(attempts[:5])} — all failed")
+        sections.append("\n".join(lines))
 
     # Per-change backtest results from last cycle — exact attribution of what worked/hurt
     per_change = context.get("analysis", {}).get("last_per_change_results", [])
