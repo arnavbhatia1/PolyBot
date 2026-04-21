@@ -78,7 +78,7 @@ indicators:
 signal:
   entry_threshold: 0.04  # Minimum edge (range: 0.01-0.10)
   max_edge: 0.20          # Safety net — Platt calibration is the real fix (range: 0.10-0.30)
-  adverse_selection_threshold: 0.65  # Skip entries if rolling 30s post-fill reversal rate exceeds this (informed-flow detection)
+  adverse_selection_threshold: 0.75  # Skip entries if rolling 30s post-fill reversal rate exceeds this (informed-flow detection)
   late_window_min_prob: 0.40         # In last 120s, chosen-side probability must be >= this. Prevents late-window underdog bets that almost always lose.
   exit_edge_threshold: -0.05  # Exit when holding edge drops (range: -0.25 to 0.0)
   min_model_probability: 0.58  # Lowered from 0.65 — near-ATM trades have highest crowd bias edge. SPRT still gates weak signals.
