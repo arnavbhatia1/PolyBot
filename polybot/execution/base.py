@@ -246,7 +246,7 @@ class BaseTrader(ABC):
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
                            pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=fee_usdc,
-                           gain_pct=gain_pct, shares=shares)
+                           gain_pct=gain_pct, shares=shares, fill_price=fill.fill_price)
 
     # -- resolve_position ------------------------------------------------
 
