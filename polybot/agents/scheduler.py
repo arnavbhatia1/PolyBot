@@ -589,11 +589,13 @@ class AgentScheduler:
                     old_val = getattr(self.signal_engine, param, None)
                     if old_val is not None:
                         old_val_str = f"{old_val}->"
-                logger.info(f"ADOPTED {param}: {old_val_str}{value} ({adopt_reason})")
+                n_trades = len(all_candidate_returns)
+                logger.info(f"ADOPTED {param}: {old_val_str}{value} ({adopt_reason}, n={n_trades} candidates, baseline={current_sharpe:.3f}, candidate={candidate_sharpe:.3f})")
             else:
                 change_info.update({"decision": "rejected", "reason": adopt_reason})
                 self._last_rejection_reason = f"{param}: {adopt_reason}"
-                logger.info(f"REJECTED {param}: {value} — {adopt_reason}")
+                n_trades = len(all_candidate_returns)
+                logger.info(f"REJECTED {param}: {value} — {adopt_reason} (n={n_trades} candidates, baseline={current_sharpe:.3f}, candidate={candidate_sharpe:.3f})")
 
             info["per_change"].append(change_info)
 
