@@ -94,7 +94,7 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         day_wins, day_losses, _, pnl_24h = await bot.db.get_day_stats(today_et)
 
         # Lifetime performance
-        trades = await bot.db.get_trade_history(limit=2000)
+        trades = await bot.db.get_trade_history(limit=999999)
         pnls, gain_pcts = [], []
         today_gain_pcts = []
         for t in trades:
