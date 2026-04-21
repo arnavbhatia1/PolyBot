@@ -220,3 +220,25 @@
 - Edge mean compressed to 8.6% from 10.4% — market pricing more efficiently
 
 **Reasoning:** The three changes cover distinct parameter families: atr_sigma_ratio addresses L1 overconfidence (Q4=0.59), logit_scale reduces noise amplification from weak L2-L4 signals, and late_max_penalty directly penalizes the 48.4%-win 60-180s entry window. Previous cycles repeatedly proposed atr_sigma_ratio=1.6 and probability_compression=0.9 — this cycle diversifies into exit timing and logit scaling to avoid repetition and test new parameter families.
+
+## 2026-04-21T04:56:50.486696+00:00
+
+**Source:** Claude (medium)
+**Proposed Changes (3):**
+  - atr_sigma_ratio=1.6 (Q4 edge realization at 0.59 confirms persistent L1 overconfidence — wider sigma makes high-edge probabilities more conservative and reduces overbetting the tails.)
+  - logit_scale=4.5 (Direction rules call for testing higher logit_scale (4.5-5.0) since signals are predictive but weak — raising from 4.0 to 4.5 amplifies flow/regime signals that show consistent directional accuracy.)
+  - flow_weight=0.06 (Order flow (L3) has strongest documented correlation with outcomes and is underweighted at 0.04 — raising to 0.06 increases signal impact where it matters most.)
+
+**Findings:**
+- Q4 top-edge trades realizing only 59 cents per dollar — model is overconfident at extremes
+- Scalp exits wrong 51% of time — holding longer beats early exits consistently
+- Down trades win 55.6% vs Up 53.3% — bearish edge is real and persistent
+- High ATR wins 56.4% vs low ATR 52.9% — edge compresses in calm markets
+- ATR dropped 22% recently — lower vol environment, tighter calibration needed
+
+**Warnings:**
+- SPRT negative last 50 trades — recent win rate below expectation, monitor closely
+- Edge mean compressed from 10.4% to 8.6% — market pricing more efficiently
+- Many resolution losses at extreme low probabilities (2-9%) — tail trades destroying PnL
+
+**Reasoning:** Q4 edge realization at 0.59 is the dominant calibration problem across multiple cycles, so raising atr_sigma_ratio to 1.6 is the highest-leverage fix for L1 overconfidence. Raising logit_scale to 4.5 follows direction rules (test higher) and amplifies the flow/regime signals that show consistent directional accuracy rather than dampening them. Flow_weight raised from 0.04 to 0.06 since L3 order flow has the strongest documented correlation with outcomes and is currently underweighted relative to what previous cycles found effective.
