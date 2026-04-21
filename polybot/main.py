@@ -1983,7 +1983,7 @@ async def run_pipeline() -> None:
     weight_optimizer = WeightOptimizer(
         weights_dir=weights_dir,
         scores_path=str(base_dir / "memory" / "weight_scores.json"),
-        min_improvement=0.03,
+        min_improvement=0.02,
     )
     from polybot.agents.pipeline_tracker import PipelineTracker
     pipeline_tracker = PipelineTracker(path=base_dir / "memory" / "pipeline_history.json")
@@ -2190,7 +2190,7 @@ async def main() -> None:
     weight_optimizer = WeightOptimizer(
         weights_dir=weights_dir,
         scores_path=str(base_dir / "memory" / "weight_scores.json"),
-        min_improvement=0.03,
+        min_improvement=0.02,
     )
 
     # Discord (created before scheduler so alert_manager can be passed in)

@@ -108,6 +108,45 @@ class AgentScheduler:
 
         if self._last_rejection_reason:
             analysis["last_rejection_reason"] = self._last_rejection_reason
+
+        # Build parameter change history for Claude (Change 4)
+        if self.pipeline_tracker:
+            try:
+                history_lines = []
+                records = self.pipeline_tracker.get_track_record()
+                # Last 5 adoptions with Sharpe outcome
+                adoptions = [r for r in records if r.get("changes")]
+                for rec in adoptions[-5:]:
+                    date = rec.get("date", "?")[:10]
+                    baseline = rec.get("baseline_sharpe", 0)
+                    predicted = rec.get("predicted_sharpe", 0)
+                    changes_dict = rec.get("changes", {})
+                    r7 = rec.get("review_7d")
+                    actual_str = f"7d actual Sharpe={r7['sharpe']:.3f}" if r7 else "7d: pending"
+                    change_strs = [f"{k}: {v[0]}->{v[1]}" for k, v in list(changes_dict.items())[:4]]
+                    history_lines.append(
+                        f"ADOPTED {date}: {', '.join(change_strs)} | "
+                        f"predicted {baseline:.3f}->{predicted:.3f} | {actual_str}"
+                    )
+
+                # Last 5 rejections from the rejection log embedded in records
+                # Pipeline records don't store rejections, so use _last_rejection_reason + pipeline source
+                # We instead pull any records with review_7d showing the change hurt
+                rollback_recs = [r for r in records if r.get("rollback_recommended")]
+                for rec in rollback_recs[-3:]:
+                    date = rec.get("date", "?")[:10]
+                    r7 = rec.get("review_7d", {})
+                    baseline = rec.get("baseline_sharpe", 0)
+                    history_lines.append(
+                        f"ROLLBACK {date}: 7d Sharpe={r7.get('sharpe', 0):.3f} trailed baseline {baseline:.3f} — "
+                        f"changes: {', '.join(f'{k}: {v[0]}->{v[1]}' for k, v in list(rec.get('changes', {}).items())[:4])}"
+                    )
+
+                if history_lines:
+                    analysis["parameter_history"] = "\n".join(history_lines)
+            except Exception as e:
+                logger.debug(f"Failed to build parameter history: {e}")
+
         recommendations = await self.ta_evolver.evolve(outcomes, analysis, current_config)
         return recommendations
 
@@ -283,7 +322,13 @@ class AgentScheduler:
         return returns
 
     def _config_for_helper(self, recommendations: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Resolve config for `_kelly_bankroll_returns` — recommendation first, live engine fallback."""
+        """Resolve config for `_kelly_bankroll_returns` — recommendation first, live engine fallback.
+
+        Entry gates (min_model_probability, min_edge, min_kelly) always use live signal_engine
+        values — never candidate recommendations — so the backtest population stays constant
+        across baseline and candidate runs. Changing these gates would alter which trades
+        appear in both runs and corrupt the comparison.
+        """
         rec = recommendations or {}
         live_weights = self.indicator_engine.get_weights() if self.indicator_engine else {}
         return {
@@ -296,14 +341,14 @@ class AgentScheduler:
                 getattr(self.signal_engine, 'atr_sigma_ratio', 1.4)),
             "student_t_df": int(rec.get("recommended_student_t_df",
                 getattr(self.signal_engine, 'student_t_df', 5))),
-            "min_edge": rec.get("recommended_min_edge",
-                getattr(self.signal_engine, 'min_edge', 0.04)),
+            # Entry gates — always use live engine values, never candidate recommendations.
+            # These define which trades qualify for backtesting; varying them between
+            # baseline and candidate would change the sample, not just the signal.
+            "min_edge": getattr(self.signal_engine, 'min_edge', 0.04),
+            "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
+            "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.58),
             "kelly_fraction": rec.get("recommended_kelly_fraction",
                 getattr(self.signal_engine, 'kelly_fraction', 0.15)),
-            "min_kelly": rec.get("recommended_min_kelly",
-                getattr(self.signal_engine, 'min_kelly', 0.015)),
-            "min_model_probability": rec.get("recommended_min_model_probability",
-                getattr(self.signal_engine, 'min_model_probability', 0.58)),
             "regime_weight": rec.get("recommended_regime_weight",
                 getattr(self.signal_engine, 'regime_weight', 0.03)),
             "flow_weight": rec.get("recommended_flow_weight",
@@ -358,10 +403,67 @@ class AgentScheduler:
             probability_compression=cfg["probability_compression"],
         )
 
+    def _backtest_single_change(self, change: dict[str, Any],
+                                outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Run a Kelly-backtest with exactly ONE change applied on top of live values.
+
+        Builds a synthetic recommendations dict that only contains the single change,
+        so _config_for_helper applies that change while all other params remain at
+        their live engine values. Returns {"returns": [...], "sharpe": float,
+        "candidate_trades": int}.
+        """
+        from polybot.agents.weight_optimizer import _sharpe as _s
+
+        param = change.get("param", "")
+        value = change.get("value")
+
+        # Build a thin recommendations dict for _config_for_helper
+        single_rec: dict[str, Any] = {}
+        if param == "weights":
+            single_rec["recommended_weights"] = value
+        elif param in (
+            "momentum_weight", "atr_sigma_ratio", "student_t_df", "kelly_fraction",
+            "regime_weight", "flow_weight", "spot_flow_weight", "wall_weight",
+            "liquidation_weight", "prev_margin_weight", "logit_scale", "min_atr",
+            "probability_compression",
+        ):
+            single_rec[f"recommended_{param}"] = value
+        else:
+            # Params not plumbed through _config_for_helper (timing/exit/etc.) —
+            # still attempt to backtest by re-using current config unchanged; the
+            # change will be applied at hot-swap time if adopted.
+            pass
+
+        cfg = self._config_for_helper(single_rec)
+        calibrator = self.signal_engine.calibrator if self.signal_engine else None
+
+        returns = self._kelly_bankroll_returns(
+            outcomes=outcomes,
+            recommended_weights=cfg["weights"],
+            momentum_weight=cfg["momentum_weight"],
+            atr_sigma_ratio=cfg["atr_sigma_ratio"],
+            student_t_df=cfg["student_t_df"],
+            min_edge=cfg["min_edge"],
+            calibrator=calibrator,
+            kelly_fraction=cfg["kelly_fraction"],
+            min_kelly=cfg["min_kelly"],
+            min_prob=cfg["min_model_probability"],
+            regime_weight=cfg["regime_weight"],
+            flow_weight=cfg["flow_weight"],
+            spot_flow_weight=cfg["spot_flow_weight"],
+            wall_weight=cfg["wall_weight"],
+            liquidation_weight=cfg["liquidation_weight"],
+            prev_margin_weight=cfg["prev_margin_weight"],
+            logit_scale=cfg["logit_scale"],
+            min_atr=cfg["min_atr"],
+            probability_compression=cfg["probability_compression"],
+        )
+        return {"returns": returns, "sharpe": _s(returns), "candidate_trades": len(returns)}
+
     async def _run_weight_optimizer(self, recommendations: dict[str, Any],
                                     all_outcomes: list[dict[str, Any]] | None = None,
                                     pipeline_source: str = "local") -> dict[str, Any]:
-        """Run weight optimizer with walk-forward validation.
+        """Run per-parameter walk-forward backtests and adopt each change independently.
 
         Walk-forward folds (each fold's test set is genuinely out-of-sample):
           Fold 1: Test [60%:70%]
@@ -369,14 +471,15 @@ class AgentScheduler:
           Fold 3: Test [80%:90%]
           Fold 4: Test [90%:100%]
 
-        Adoption requires statistical significance (z >= 1.65) on aggregated
-        results AND positive improvement in every fold.
+        Each proposed change is backtested in isolation against the baseline so the
+        signal-to-noise of any single parameter is measured cleanly. Changes that pass
+        the adoption gates are applied and persisted; the rest are logged as rejected.
 
-        Returns info dict with decision details.
+        Returns info dict with per-change decision details.
         """
         from polybot.agents.weight_optimizer import _sharpe
 
-        info: dict[str, Any] = {"decision": "skipped", "reason": ""}
+        info: dict[str, Any] = {"decision": "skipped", "reason": "", "per_change": []}
         if all_outcomes is None:
             all_outcomes = self.outcome_reviewer.load_all_outcomes()
         if not all_outcomes or len(all_outcomes) < 10:
@@ -386,22 +489,24 @@ class AgentScheduler:
         current_version = self.weight_optimizer.get_best_version()
         info["old_version"] = current_version
 
-        recommended_weights = recommendations.get("recommended_weights", {})
-        if not recommended_weights:
-            info["reason"] = "no recommended weights from evolver"
+        # Get the changes list (new format) or fall back to checking for recommended_weights
+        changes_list: list[dict[str, Any]] = recommendations.get("changes", [])
+
+        # Backward compat: if no changes list but we have recommended_weights, wrap it
+        if not changes_list and recommendations.get("recommended_weights"):
+            changes_list = [{"param": "weights", "value": recommendations["recommended_weights"],
+                             "reason": "indicator weights (legacy format)"}]
+
+        if not changes_list:
+            info["reason"] = "no changes proposed by evolver"
             return info
 
-        # --- Walk-forward validation ---
-        # Baseline and candidate are BOTH backtested on the same folds with the same
-        # Kelly-sized-Sharpe metric, so adoption can't be driven by a population mismatch
-        # (previous code compared candidate fold-Sharpe against a raw-gain_pct Sharpe of
-        # trades that happened to run under current_version — not apples-to-apples).
+        def _clamp(val, lo, hi): return max(lo, min(hi, val))
+
+        # --- Compute baseline once across all folds ---
         n = len(all_outcomes)
         fold_boundaries = [0.60, 0.70, 0.80, 0.90, 1.0]
-        fold_sharpes: list[float] = []
-        all_candidate_returns: list[float] = []
         all_current_returns: list[float] = []
-
         baseline_request: dict[str, Any] = {}  # empty -> helper uses current engine state
 
         for i in range(len(fold_boundaries) - 1):
@@ -410,13 +515,8 @@ class AgentScheduler:
             fold_test = all_outcomes[start_idx:end_idx]
             if len(fold_test) < 3:
                 continue
-            fold_returns = self._backtest_recommendations(recommendations, fold_test)
             current_fold_returns = self._backtest_recommendations(baseline_request, fold_test)
             all_current_returns.extend(current_fold_returns)
-            if len(fold_returns) < 3:
-                continue
-            fold_sharpes.append(_sharpe(fold_returns))
-            all_candidate_returns.extend(fold_returns)
 
         current_sharpe = _sharpe(all_current_returns) if all_current_returns else 0.0
         current_win_rate = (sum(1 for r in all_current_returns if r > 0) / len(all_current_returns)
@@ -427,208 +527,239 @@ class AgentScheduler:
         info["old_sharpe"] = round(current_sharpe, 4)
         info["n_baseline_trades"] = len(all_current_returns)
 
-        if len(all_candidate_returns) < 10:
-            info["reason"] = f"only {len(all_candidate_returns)} hypothetical trades across folds (need 10)"
-            logger.info("Not enough hypothetical trades across walk-forward folds")
+        # --- Per-change walk-forward backtests ---
+        adopted_changes: list[dict[str, Any]] = []
+        any_adopted = False
+
+        for change in changes_list[:3]:
+            param = change.get("param", "")
+            value = change.get("value")
+            reason_str = change.get("reason", "")
+            change_info: dict[str, Any] = {"param": param, "value": value}
+
+            fold_sharpes: list[float] = []
+            all_candidate_returns: list[float] = []
+
+            for i in range(len(fold_boundaries) - 1):
+                start_idx = int(n * fold_boundaries[i])
+                end_idx = int(n * fold_boundaries[i + 1])
+                fold_test = all_outcomes[start_idx:end_idx]
+                if len(fold_test) < 3:
+                    continue
+                fold_result = self._backtest_single_change(change, fold_test)
+                fold_returns = fold_result["returns"]
+                if len(fold_returns) < 3:
+                    continue
+                fold_sharpes.append(_sharpe(fold_returns))
+                all_candidate_returns.extend(fold_returns)
+
+            if len(all_candidate_returns) < 10:
+                msg = f"only {len(all_candidate_returns)} hypothetical trades (need 10)"
+                change_info.update({"decision": "rejected", "reason": msg})
+                logger.info(f"REJECTED {param}: {msg}")
+                info["per_change"].append(change_info)
+                self._last_rejection_reason = f"{param}: {msg}"
+                continue
+
+            candidate_sharpe = _sharpe(all_candidate_returns)
+            candidate_win_rate = sum(1 for r in all_candidate_returns if r > 0) / len(all_candidate_returns)
+            change_info.update({
+                "candidate_sharpe": round(candidate_sharpe, 4),
+                "candidate_win_rate": round(candidate_win_rate, 4),
+                "fold_sharpes": [round(s, 4) for s in fold_sharpes],
+                "n_candidate_trades": len(all_candidate_returns),
+            })
+
+            adopt, adopt_reason = self.weight_optimizer.should_adopt(
+                current_sharpe, candidate_sharpe,
+                n_trades=len(all_candidate_returns),
+                fold_sharpes=fold_sharpes,
+                candidate_returns=all_candidate_returns,
+            )
+
+            if adopt:
+                change_info.update({"decision": "adopted", "reason": adopt_reason})
+                adopted_changes.append(change)
+                any_adopted = True
+                old_val_str = ""
+                if self.signal_engine and param != "weights":
+                    old_val = getattr(self.signal_engine, param, None)
+                    if old_val is not None:
+                        old_val_str = f"{old_val}->"
+                logger.info(f"ADOPTED {param}: {old_val_str}{value} ({adopt_reason})")
+            else:
+                change_info.update({"decision": "rejected", "reason": adopt_reason})
+                self._last_rejection_reason = f"{param}: {adopt_reason}"
+                logger.info(f"REJECTED {param}: {value} — {adopt_reason}")
+
+            info["per_change"].append(change_info)
+
+        if not any_adopted:
+            info["decision"] = "no_change"
+            info["reason"] = "no changes passed adoption gates"
             return info
 
-        candidate_sharpe = _sharpe(all_candidate_returns)
-        candidate_win_rate = sum(1 for r in all_candidate_returns if r > 0) / len(all_candidate_returns)
-        info["new_sharpe"] = round(candidate_sharpe, 4)
-        info["candidate_win_rate"] = round(candidate_win_rate, 4)
-        info["fold_sharpes"] = [round(s, 4) for s in fold_sharpes]
-        info["n_validation_trades"] = len(all_candidate_returns)
+        # --- Apply and persist all adopted changes ---
+        info["decision"] = "adopted"
+        info["adopted_params"] = [c["param"] for c in adopted_changes]
 
-        # --- Statistical adoption test ---
-        adopt, reason = self.weight_optimizer.should_adopt(
-            current_sharpe, candidate_sharpe,
-            n_trades=len(all_candidate_returns),
-            fold_sharpes=fold_sharpes,
-            candidate_returns=all_candidate_returns,
-        )
+        # Determine new weights version (needed if any weights change was adopted)
+        weights_change = next((c for c in adopted_changes if c["param"] == "weights"), None)
+        new_weights: dict[str, Any] = {}
+        new_version = current_version
 
-        if adopt:
-            info["decision"] = "adopted"
-            info["reason"] = reason
+        if weights_change:
             new_version = self.weight_optimizer.get_next_version()
-            new_weights = recommended_weights.copy()
+            new_weights = dict(weights_change["value"])
             new_weights["version"] = new_version
             self.weight_optimizer.save_weights(new_version, new_weights)
-            self.weight_optimizer.record_score(new_version, candidate_sharpe,
-                                               len(all_candidate_returns), candidate_win_rate)
-
-            # Hot-swap indicator weights
             if self.indicator_engine:
                 self.indicator_engine.set_active_version(new_version)
+            info["new_version"] = new_version
 
-            # Hot-swap signal engine parameters (weights + Claude's parameter recommendations)
-            # Clamp all values to safe ranges to prevent runaway pipeline recommendations
-            def _clamp(val, lo, hi): return max(lo, min(hi, val))
-
-            if self.signal_engine:
-                self.signal_engine.weights = {k: v for k, v in new_weights.items()
-                                               if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
-                if "recommended_momentum_weight" in recommendations:
-                    self.signal_engine.momentum_weight = _clamp(recommendations["recommended_momentum_weight"], -0.10, 0.10)
-                if "recommended_regime_weight" in recommendations:
-                    self.signal_engine.regime_weight = _clamp(recommendations["recommended_regime_weight"], 0.02, 0.10)
-                if "recommended_flow_weight" in recommendations:
-                    self.signal_engine.flow_weight = _clamp(recommendations["recommended_flow_weight"], 0.02, 0.12)
-                if "recommended_student_t_df" in recommendations:
-                    self.signal_engine.student_t_df = _clamp(int(recommendations["recommended_student_t_df"]), 3, 8)
-                if "recommended_min_edge" in recommendations:
-                    val = _clamp(recommendations["recommended_min_edge"], 0.01, 0.10)
-                    self.signal_engine.min_edge = val
-                    self.signal_engine.entry_threshold = val
-                if "recommended_kelly_fraction" in recommendations:
-                    self.signal_engine.kelly_fraction = _clamp(recommendations["recommended_kelly_fraction"], 0.05, 0.25)
-                if "recommended_min_model_probability" in recommendations:
-                    self.signal_engine.min_model_probability = _clamp(recommendations["recommended_min_model_probability"], 0.55, 0.85)
-                if "recommended_exit_edge_threshold" in recommendations:
-                    self._exit_edge_threshold = _clamp(recommendations["recommended_exit_edge_threshold"], -0.25, 0.0)
-                if "recommended_min_time_remaining" in recommendations:
-                    self._min_time_remaining = _clamp(recommendations["recommended_min_time_remaining"], 0, 120)
-                    if self.market_scanner:
-                        self.market_scanner.min_time_remaining = self._min_time_remaining
-                if "recommended_min_kelly" in recommendations:
-                    self.signal_engine.min_kelly = _clamp(recommendations["recommended_min_kelly"], 0.005, 0.05)
-                if "recommended_atr_sigma_ratio" in recommendations:
-                    self.signal_engine.atr_sigma_ratio = _clamp(float(recommendations["recommended_atr_sigma_ratio"]), 1.2, 2.5)
-                if "recommended_spot_flow_weight" in recommendations:
-                    self.signal_engine.spot_flow_weight = _clamp(recommendations["recommended_spot_flow_weight"], 0.0, 0.10)
-                if "recommended_wall_weight" in recommendations:
-                    self.signal_engine.wall_weight = _clamp(recommendations["recommended_wall_weight"], 0.0, 0.15)
-                if "recommended_prev_margin_weight" in recommendations:
-                    self.signal_engine.prev_margin_weight = _clamp(recommendations["recommended_prev_margin_weight"], 0.01, 0.05)
-                if "recommended_logit_scale" in recommendations:
-                    self.signal_engine.logit_scale = _clamp(float(recommendations["recommended_logit_scale"]), 2.0, 6.0)
-                if "recommended_probability_compression" in recommendations:
-                    self.signal_engine.probability_compression = _clamp(float(recommendations["recommended_probability_compression"]), 0.5, 1.0)
-                if "recommended_liquidation_weight" in recommendations:
-                    self.signal_engine.liquidation_weight = _clamp(recommendations["recommended_liquidation_weight"], 0.01, 0.06)
-                if "recommended_adverse_selection_threshold" in recommendations:
+        if self.signal_engine:
+            for change in adopted_changes:
+                param = change["param"]
+                value = change["value"]
+                if param == "weights":
+                    self.signal_engine.weights = {k: v for k, v in new_weights.items()
+                                                   if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
+                elif param == "momentum_weight":
+                    self.signal_engine.momentum_weight = _clamp(float(value), -0.10, 0.10)
+                elif param == "regime_weight":
+                    self.signal_engine.regime_weight = _clamp(float(value), 0.02, 0.10)
+                elif param == "flow_weight":
+                    self.signal_engine.flow_weight = _clamp(float(value), 0.02, 0.12)
+                elif param == "student_t_df":
+                    self.signal_engine.student_t_df = _clamp(int(value), 3, 8)
+                elif param == "kelly_fraction":
+                    self.signal_engine.kelly_fraction = _clamp(float(value), 0.05, 0.25)
+                elif param == "exit_edge_threshold":
+                    self._exit_edge_threshold = _clamp(float(value), -0.25, 0.0)
+                elif param == "atr_sigma_ratio":
+                    self.signal_engine.atr_sigma_ratio = _clamp(float(value), 1.2, 2.5)
+                elif param == "spot_flow_weight":
+                    self.signal_engine.spot_flow_weight = _clamp(float(value), 0.0, 0.10)
+                elif param == "wall_weight":
+                    self.signal_engine.wall_weight = _clamp(float(value), 0.0, 0.15)
+                elif param == "prev_margin_weight":
+                    self.signal_engine.prev_margin_weight = _clamp(float(value), 0.01, 0.05)
+                elif param == "logit_scale":
+                    self.signal_engine.logit_scale = _clamp(float(value), 2.0, 6.0)
+                elif param == "probability_compression":
+                    self.signal_engine.probability_compression = _clamp(float(value), 0.5, 1.0)
+                elif param == "liquidation_weight":
+                    self.signal_engine.liquidation_weight = _clamp(float(value), 0.01, 0.06)
+                elif param == "min_atr":
+                    self.signal_engine.min_atr = _clamp(float(value), 5.0, 15.0)
+                elif param == "max_edge":
+                    self.signal_engine.max_edge = _clamp(float(value), 0.10, 0.30)
+                elif param == "adverse_selection_threshold":
                     if self._config:
-                        self._config.setdefault("signal", {})["adverse_selection_threshold"] = _clamp(recommendations["recommended_adverse_selection_threshold"], 0.45, 0.75)
-                if "recommended_normal_fraction" in recommendations:
+                        self._config.setdefault("signal", {})["adverse_selection_threshold"] = _clamp(float(value), 0.45, 0.75)
+                elif param == "normal_fraction":
                     if self._config:
-                        self._config.setdefault("entry_timing", {})["normal_fraction"] = _clamp(float(recommendations["recommended_normal_fraction"]), 0.40, 0.80)
-                if "recommended_late_max_penalty" in recommendations:
+                        self._config.setdefault("entry_timing", {})["normal_fraction"] = _clamp(float(value), 0.40, 0.80)
+                elif param == "late_max_penalty":
                     if self._config:
-                        self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(recommendations["recommended_late_max_penalty"]), 0.20, 0.80)
-                if "recommended_min_atr" in recommendations:
-                    self.signal_engine.min_atr = _clamp(float(recommendations["recommended_min_atr"]), 5.0, 15.0)
-                if "recommended_max_edge" in recommendations:
-                    self.signal_engine.max_edge = _clamp(float(recommendations["recommended_max_edge"]), 0.10, 0.30)
-                if "recommended_trading_start_hour_et" in recommendations:
-                    start_h = recommendations["recommended_trading_start_hour_et"]
-                    self._trading_start = (start_h, 0)
-                if "recommended_trading_end_hour_et" in recommendations:
-                    end_h = recommendations["recommended_trading_end_hour_et"]
-                    end_m = recommendations.get("recommended_trading_end_minute", 59)
-                    self._trading_end = (end_h, end_m)
+                        self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(value), 0.20, 0.80)
+                elif param == "trading_start_hour_et":
+                    self._trading_start = (int(value), 0)
+                elif param == "trading_end_hour_et":
+                    self._trading_end = (int(value), 59)
 
-            # Persist tuned parameters to settings.yaml so they survive restarts
-            # Apply same _clamp bounds as hot-swap to prevent unclamped values on restart
-            if self._config:
-                sig = self._config.setdefault("signal", {})
-                mkt = self._config.setdefault("market", {})
-                sched = self._config.setdefault("schedule", {})
-                math_sec = self._config.setdefault("math", {})
+        # Persist to settings.yaml
+        if self._config:
+            sig = self._config.setdefault("signal", {})
+            mkt = self._config.setdefault("market", {})
+            sched = self._config.setdefault("schedule", {})
+            math_sec = self._config.setdefault("math", {})
 
+            if weights_change:
                 sig["active_weights_version"] = new_version
                 sig["weights"] = {k: v for k, v in new_weights.items()
-                                  if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
-                if "recommended_min_kelly" in recommendations:
-                    sig["min_kelly"] = _clamp(recommendations["recommended_min_kelly"], 0.005, 0.05)
-                if "recommended_atr_sigma_ratio" in recommendations:
-                    sig["atr_sigma_ratio"] = _clamp(float(recommendations["recommended_atr_sigma_ratio"]), 1.2, 2.5)
-                if "recommended_spot_flow_weight" in recommendations:
-                    sig["spot_flow_weight"] = _clamp(recommendations["recommended_spot_flow_weight"], 0.0, 0.10)
-                if "recommended_wall_weight" in recommendations:
-                    sig["wall_weight"] = _clamp(recommendations["recommended_wall_weight"], 0.0, 0.15)
-                if "recommended_prev_margin_weight" in recommendations:
-                    sig["prev_margin_weight"] = _clamp(recommendations["recommended_prev_margin_weight"], 0.01, 0.05)
-                if "recommended_logit_scale" in recommendations:
-                    sig["logit_scale"] = _clamp(float(recommendations["recommended_logit_scale"]), 2.0, 6.0)
-                if "recommended_probability_compression" in recommendations:
-                    sig["probability_compression"] = _clamp(float(recommendations["recommended_probability_compression"]), 0.5, 1.0)
-                if "recommended_liquidation_weight" in recommendations:
-                    sig["liquidation_weight"] = _clamp(recommendations["recommended_liquidation_weight"], 0.01, 0.06)
-                if "recommended_adverse_selection_threshold" in recommendations:
-                    sig["adverse_selection_threshold"] = _clamp(recommendations["recommended_adverse_selection_threshold"], 0.45, 0.75)
-                if "recommended_normal_fraction" in recommendations:
-                    self._config.setdefault("entry_timing", {})["normal_fraction"] = _clamp(float(recommendations["recommended_normal_fraction"]), 0.40, 0.80)
-                if "recommended_late_max_penalty" in recommendations:
-                    self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(recommendations["recommended_late_max_penalty"]), 0.20, 0.80)
-                if "recommended_min_atr" in recommendations:
-                    sig["min_atr"] = _clamp(float(recommendations["recommended_min_atr"]), 5.0, 15.0)
-                if "recommended_max_edge" in recommendations:
-                    sig["max_edge"] = _clamp(float(recommendations["recommended_max_edge"]), 0.10, 0.30)
-                if "recommended_momentum_weight" in recommendations:
-                    sig["momentum_weight"] = _clamp(recommendations["recommended_momentum_weight"], -0.10, 0.10)
-                if "recommended_regime_weight" in recommendations:
-                    sig["regime_weight"] = _clamp(recommendations["recommended_regime_weight"], 0.02, 0.10)
-                if "recommended_flow_weight" in recommendations:
-                    sig["flow_weight"] = _clamp(recommendations["recommended_flow_weight"], 0.02, 0.12)
-                if "recommended_student_t_df" in recommendations:
-                    sig["student_t_df"] = _clamp(int(recommendations["recommended_student_t_df"]), 3, 8)
-                if "recommended_min_edge" in recommendations:
-                    sig["entry_threshold"] = _clamp(recommendations["recommended_min_edge"], 0.01, 0.10)
-                if "recommended_kelly_fraction" in recommendations:
-                    math_sec["kelly_fraction"] = _clamp(recommendations["recommended_kelly_fraction"], 0.05, 0.25)
-                if "recommended_min_model_probability" in recommendations:
-                    sig["min_model_probability"] = _clamp(recommendations["recommended_min_model_probability"], 0.55, 0.85)
-                if "recommended_exit_edge_threshold" in recommendations:
-                    sig["exit_edge_threshold"] = _clamp(recommendations["recommended_exit_edge_threshold"], -0.25, 0.0)
-                if "recommended_min_time_remaining" in recommendations:
-                    mkt["min_time_remaining_seconds"] = _clamp(recommendations["recommended_min_time_remaining"], 0, 120)
-                if "recommended_trading_start_hour_et" in recommendations:
-                    sched["trading_start_hour_et"] = recommendations["recommended_trading_start_hour_et"]
-                if "recommended_trading_end_hour_et" in recommendations:
-                    sched["trading_end_hour_et"] = recommendations["recommended_trading_end_hour_et"]
-                if "recommended_trading_end_minute" in recommendations:
-                    sched["trading_end_minute"] = recommendations["recommended_trading_end_minute"]
+                                   if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
 
-                try:
-                    config_to_save = dict(self._config)
-                    save_config(config_to_save)
-                    logger.info("Pipeline parameters persisted to settings.yaml")
-                except Exception as e:
-                    logger.error(f"Failed to persist config: {e}")
+            for change in adopted_changes:
+                param = change["param"]
+                value = change["value"]
+                if param == "weights":
+                    pass  # handled above
+                elif param == "atr_sigma_ratio":
+                    sig["atr_sigma_ratio"] = _clamp(float(value), 1.2, 2.5)
+                elif param == "spot_flow_weight":
+                    sig["spot_flow_weight"] = _clamp(float(value), 0.0, 0.10)
+                elif param == "wall_weight":
+                    sig["wall_weight"] = _clamp(float(value), 0.0, 0.15)
+                elif param == "prev_margin_weight":
+                    sig["prev_margin_weight"] = _clamp(float(value), 0.01, 0.05)
+                elif param == "logit_scale":
+                    sig["logit_scale"] = _clamp(float(value), 2.0, 6.0)
+                elif param == "probability_compression":
+                    sig["probability_compression"] = _clamp(float(value), 0.5, 1.0)
+                elif param == "liquidation_weight":
+                    sig["liquidation_weight"] = _clamp(float(value), 0.01, 0.06)
+                elif param == "adverse_selection_threshold":
+                    sig["adverse_selection_threshold"] = _clamp(float(value), 0.45, 0.75)
+                elif param == "normal_fraction":
+                    self._config.setdefault("entry_timing", {})["normal_fraction"] = _clamp(float(value), 0.40, 0.80)
+                elif param == "late_max_penalty":
+                    self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(value), 0.20, 0.80)
+                elif param == "min_atr":
+                    sig["min_atr"] = _clamp(float(value), 5.0, 15.0)
+                elif param == "max_edge":
+                    sig["max_edge"] = _clamp(float(value), 0.10, 0.30)
+                elif param == "momentum_weight":
+                    sig["momentum_weight"] = _clamp(float(value), -0.10, 0.10)
+                elif param == "regime_weight":
+                    sig["regime_weight"] = _clamp(float(value), 0.02, 0.10)
+                elif param == "flow_weight":
+                    sig["flow_weight"] = _clamp(float(value), 0.02, 0.12)
+                elif param == "student_t_df":
+                    sig["student_t_df"] = _clamp(int(value), 3, 8)
+                elif param == "kelly_fraction":
+                    math_sec["kelly_fraction"] = _clamp(float(value), 0.05, 0.25)
+                elif param == "exit_edge_threshold":
+                    sig["exit_edge_threshold"] = _clamp(float(value), -0.25, 0.0)
+                elif param == "trading_start_hour_et":
+                    sched["trading_start_hour_et"] = int(value)
+                elif param == "trading_end_hour_et":
+                    sched["trading_end_hour_et"] = int(value)
+                elif param == "trading_end_minute":
+                    sched["trading_end_minute"] = int(value)
 
-            info["new_version"] = new_version
-            logger.info(f"AUTO-ADOPTED {new_version}: Sharpe {current_sharpe:.3f} -> {candidate_sharpe:.3f}, "
-                        f"win rate {candidate_win_rate:.0%} ({reason})")
+            try:
+                config_to_save = dict(self._config)
+                save_config(config_to_save)
+                logger.info("Pipeline parameters persisted to settings.yaml")
+            except Exception as e:
+                logger.error(f"Failed to persist config: {e}")
 
-            # Track adoption for future self-evaluation
-            if self.pipeline_tracker:
-                changes = {}
-                param_map = [
-                    ("recommended_momentum_weight", "momentum_weight"),
-                    ("recommended_min_edge", "min_edge"),
-                    ("recommended_kelly_fraction", "kelly_fraction"),
-                    ("recommended_min_model_probability", "min_model_probability"),
-                    ("recommended_exit_edge_threshold", "exit_edge_threshold"),
-                    ("recommended_atr_sigma_ratio", "atr_sigma_ratio"),
-                ]
-                for rec_key, param_name in param_map:
-                    if rec_key in recommendations:
-                        old_val = getattr(self.signal_engine, param_name, None) if self.signal_engine else None
-                        changes[param_name] = (old_val, recommendations[rec_key])
-                self.pipeline_tracker.record_adoption(
-                    source=pipeline_source,
-                    version=new_version,
-                    baseline_sharpe=current_sharpe,
-                    predicted_sharpe=candidate_sharpe,
-                    changes=changes,
-                    reason=reason,
-                )
+        # Track adoption in pipeline_tracker (one record per run, listing all adopted changes)
+        if self.pipeline_tracker and adopted_changes:
+            tracker_changes: dict[str, tuple] = {}
+            for change in adopted_changes:
+                param = change["param"]
+                value = change["value"]
+                if param != "weights" and self.signal_engine:
+                    old_val = getattr(self.signal_engine, param, None)
+                    tracker_changes[param] = (old_val, value)
+                elif param == "weights":
+                    tracker_changes["weights"] = ("(prev)", "(new)")
 
-        else:
-            info["decision"] = "no_change"
-            info["reason"] = reason
-            self._last_rejection_reason = reason
-            logger.info(f"Weights not adopted: {reason}")
+            best_candidate_sharpe = max(
+                (ci.get("candidate_sharpe", current_sharpe) for ci in info["per_change"]
+                 if ci.get("decision") == "adopted"),
+                default=current_sharpe,
+            )
+            self.pipeline_tracker.record_adoption(
+                source=pipeline_source,
+                version=new_version if new_version != current_version else f"{current_version}+params",
+                baseline_sharpe=current_sharpe,
+                predicted_sharpe=best_candidate_sharpe,
+                changes=tracker_changes,
+                reason=f"{len(adopted_changes)} change(s) adopted",
+            )
 
         return info
 

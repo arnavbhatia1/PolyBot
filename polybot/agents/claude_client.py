@@ -112,15 +112,8 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - flow_weight: 0.02 to 0.12 (Layer 3 — order flow adjustment)
 - student_t_df: 3 to 8 (degrees of freedom — lower = fatter tails, more reversal edge)
 - kelly_fraction: 0.05 to 0.25 range (binary outcomes = total loss risk). CRITICAL: the pipeline adoption metric is kelly_fraction × edge/(1-price) × gain_pct — reducing kelly_fraction directly reduces this metric and will cause your recommendations to be REJECTED. Only reduce kelly_fraction if you have strong evidence of excess risk. When in doubt, leave it unchanged.
-- min_edge (entry_threshold): 0.01 to 0.10 range (noise floor, not primary gate)
-- min_kelly: 0.005 to 0.05 range (Kelly-based entry gate — minimum fraction of bankroll)
 - atr_sigma_ratio: 1.2 to 2.5 range (ATR-to-σ conversion — lower = more aggressive probabilities)
-- min_model_probability: 0.55 to 0.85 range (skip coin-flip trades)
 - exit_edge_threshold: -0.25 to 0.0 range (when to exit held positions)
-- min_time_remaining: 0 to 120 seconds (don't enter too late)
-- trading_start_hour_et: 0 to 23 (ET hour to start trading)
-- trading_end_hour_et: 0 to 23 (ET hour to stop trading)
-- trading_end_minute: 0 to 59 (minute component of end time)
 - logit_scale: 2.0 to 6.0. Amplifies how much L2-L5 signal weights shift the final probability. Higher = signals have more impact. Lower = more conservative. If signals are noisy, lower it. If they're predictive but weak, raise it.
 - probability_compression: 0.5 to 1.0. Shrinks final probability toward 0.5 after CDF. 1.0 = no compression. Use 0.7-0.85 if Q4 edge realization is poor (model overconfident at extremes).
 - liquidation_weight: 0.01 to 0.06. L3e — Bybit OI drop signals liquidation cascades. Raise if large OI drops precede your wins.
@@ -131,9 +124,11 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - min_atr: 5.0 to 15.0. Floor on ATR (runtime: max(min_atr, 0.3 × rolling_20)). Raise in calm markets to avoid overtrading low-volatility windows.
 - max_edge: 0.10 to 0.30. Safety cap — filters suspiciously high edges that may indicate stale prices.
 - spot_flow_weight: 0.01 to 0.10. L3b — Binance CVD + taker ratio. Raise if CVD is predictive.
+- min_model_probability, min_edge, min_kelly: READ-ONLY for Claude — these entry gates cannot be changed via pipeline recommendations as they corrupt the backtest (changing them alters which trades appear in both baseline and candidate runs). They are shown in Current Configuration for context only.
 - Only recommend schedule changes if there's clear evidence from time-of-day patterns
 - Be conservative — no single weight should change by more than 0.05 per cycle
 - If fewer than 50 trades in the dataset, recommend NO CHANGES (insufficient data — win rate variance at N=25 is ±13 percentage points, which is noise)
+- MAX 3 changes per cycle. Rank them by expected impact. If you have fewer than 3 high-confidence improvements, recommend fewer changes — do not pad.
 
 ## Parameter Impact Hierarchy (most to least leverage on the adoption metric)
 1. **atr_sigma_ratio** — controls how aggressive L1 probability is. Lower = more aggressive (wider edge). If Q4 edge realization is poor (overconfident), raise it. HIGHEST leverage parameter.
@@ -151,42 +146,29 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 2. "Trending regime wins only 49%" is NOT a problem to fix. The bot already handles trending regimes at runtime by flipping momentum_weight sign and amplifying 1.5×. Do not recommend regime_weight changes based on trending win rate alone.
 3. If the Last Pipeline Rejection section appears, your previous proposal was rejected for that reason. Address it directly.
 4. Do NOT shuffle indicator weights unless you have a specific indicator showing >65% accuracy. Changing RSI from 0.18 to 0.15 has near-zero effect on performance. Focus on parameters 1-4 above.
+5. CRITICAL — Do NOT raise min_model_probability, min_edge, or min_kelly above their current live values. The validation set was collected under the current gates — raising them filters historical trades out of the backtest, leaving too few candidate trades and causing "only N candidate trades" rejection. These can only safely be LOWERED. If you think entry quality needs improving, use atr_sigma_ratio, logit_scale, or probability_compression instead.
 
 ## Response Format
 Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
 {
-  "recommended_weights": {"rsi": 0.XX, "macd": 0.XX, "stochastic": 0.XX, "obv": 0.XX, "vwap": 0.XX},
-  "recommended_momentum_weight": 0.XX,
-  "recommended_regime_weight": 0.XX,
-  "recommended_flow_weight": 0.XX,
-  "recommended_student_t_df": X,
-  "recommended_min_edge": 0.XX,
-  "recommended_min_kelly": 0.XX,
-  "recommended_atr_sigma_ratio": X.X,
-  "recommended_kelly_fraction": 0.XX,
-  "recommended_min_model_probability": 0.XX,
-  "recommended_exit_edge_threshold": -0.XX,
-  "recommended_min_time_remaining": XX,
-  "recommended_trading_start_hour_et": XX,
-  "recommended_trading_end_hour_et": XX,
-  "recommended_trading_end_minute": XX,
-  "recommended_logit_scale": X.X,
-  "recommended_probability_compression": 0.XX,
-  "recommended_liquidation_weight": 0.XX,
-  "recommended_prev_margin_weight": 0.XX,
-  "recommended_spot_flow_weight": 0.XX,
-  "recommended_adverse_selection_threshold": 0.XX,
-  "recommended_normal_fraction": 0.XX,
-  "recommended_late_max_penalty": 0.XX,
-  "recommended_min_atr": X.X,
-  "recommended_max_edge": 0.XX,
+  "changes": [
+    {"param": "atr_sigma_ratio", "value": 1.5, "reason": "one sentence why"},
+    {"param": "logit_scale", "value": 4.5, "reason": "one sentence why"},
+    {"param": "weights", "value": {"rsi": 0.20, "macd": 0.20, "stochastic": 0.20, "obv": 0.20, "vwap": 0.20}, "reason": "one sentence why"}
+  ],
   "key_findings": ["finding 1", "finding 2", ...],
   "risk_warnings": ["warning 1", ...],
   "reasoning": "2-3 sentence summary of your reasoning",
   "confidence": "high|medium|low"
 }
 
-IMPORTANT: key_findings and risk_warnings are shown in Discord.
+IMPORTANT:
+- `changes` is a ranked list (most impactful first), max 3 entries.
+- Valid param names: atr_sigma_ratio, logit_scale, probability_compression, liquidation_weight, prev_margin_weight, spot_flow_weight, flow_weight, regime_weight, momentum_weight, student_t_df, exit_edge_threshold, kelly_fraction, normal_fraction, late_max_penalty, min_atr, max_edge, adverse_selection_threshold, weights (indicator weights dict).
+- DO NOT include min_model_probability, min_edge, or min_kelly in changes — they are read-only.
+- If you have no high-confidence improvements, return an empty changes list: "changes": []
+- Each change must have: "param" (exact name from valid list), "value" (the new value), "reason" (one sentence).
+- key_findings and risk_warnings are shown in Discord.
 - Each finding must be ONE short sentence (under 100 characters).
 - Write in plain language a trader would use, not statistical jargon.
 - Good: "Down trades winning 59% vs Up at 50% — lean into bearish signals"
@@ -237,107 +219,181 @@ class ClaudeClient:
 def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str, float] | None = None,
                                 total_trades: int = 0,
                                 current_config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Enforce parameter constraints on Claude's recommendations.
+    """Validate and clamp Claude's recommendations.
 
-    Uses current_config as defaults so that params Claude omits are not silently
-    overwritten with stale hardcoded values.
+    Accepts the new `changes` list format. For backward compatibility, also accepts the
+    old flat `recommended_X` format and converts it to the new format automatically.
+
+    Returns a dict with:
+      - `changes`: list of validated change dicts [{param, value, reason}, ...]
+      - `recommended_weights`: extracted from any weights change (for backward compat)
+      - metadata: key_findings, risk_warnings, reasoning, confidence
     """
     indicators = ["rsi", "macd", "stochastic", "obv", "vwap"]
     cfg = current_config or {}
 
-    # Insufficient data — return no changes
-    if total_trades < 50 and current_weights:
-        data["recommended_weights"] = {k: current_weights.get(k, 0.20) for k in indicators}
-        data.setdefault("risk_warnings", []).append(f"Only {total_trades} trades — insufficient data, no changes applied")
-
-    weights = data.get("recommended_weights", {})
-
-    # Floor, renormalize, then final floor (to handle rounding)
-    for k in indicators:
-        if weights.get(k, 0.05) < 0.05:
-            weights[k] = 0.05
-    total = sum(weights.get(k, 0.20) for k in indicators)
-    if total > 0:
-        weights = {k: weights.get(k, 0.20) / total for k in indicators}
-    for k in indicators:
-        if weights[k] < 0.05:
-            weights[k] = 0.05
-    largest = max(weights, key=weights.get)
-    for k in indicators:
-        if k != largest:
-            weights[k] = round(weights[k], 4)
-    weights[largest] = round(1.0 - sum(v for k, v in weights.items() if k != largest), 4)
-
-    # Enforce max 0.05 change per cycle if we have current weights
-    if current_weights:
-        changed = False
-        for k in indicators:
-            old = current_weights.get(k, 0.20)
-            new = weights.get(k, old)
-            if abs(new - old) > 0.05:
-                weights[k] = old + 0.05 * (1 if new > old else -1)
-                changed = True
-        if changed:
-            total = sum(weights[k] for k in indicators)
-            if total > 0:
-                weights = {k: weights[k] / total for k in indicators}
-            largest = max(weights, key=weights.get)
-            for k in indicators:
-                if k != largest:
-                    weights[k] = round(weights[k], 4)
-            weights[largest] = round(1.0 - sum(v for k, v in weights.items() if k != largest), 4)
-
-    data["recommended_weights"] = weights
-
-    # Clamp ranges — use current_config values as defaults so omitted params stay unchanged
     def _cur(key: str, fallback: float) -> float:
         return cfg.get(key, fallback)
 
-    # Only write clamped value if Claude explicitly included it — otherwise leave absent
-    # so scheduler's "if key in recommendations" guards don't fire for unchanged params.
-    def _clamp_if_present(key: str, lo: float, hi: float, cur_val: float) -> None:
-        if key in data:
-            data[key] = max(lo, min(hi, float(data[key])))
+    # --- Backward compatibility: convert old flat format to new changes list ---
+    if "changes" not in data and any(k.startswith("recommended_") for k in data):
+        old_changes = []
+        # Map old recommended_X keys to new param names
+        param_map = {
+            "recommended_atr_sigma_ratio": "atr_sigma_ratio",
+            "recommended_logit_scale": "logit_scale",
+            "recommended_probability_compression": "probability_compression",
+            "recommended_liquidation_weight": "liquidation_weight",
+            "recommended_prev_margin_weight": "prev_margin_weight",
+            "recommended_spot_flow_weight": "spot_flow_weight",
+            "recommended_flow_weight": "flow_weight",
+            "recommended_regime_weight": "regime_weight",
+            "recommended_momentum_weight": "momentum_weight",
+            "recommended_student_t_df": "student_t_df",
+            "recommended_exit_edge_threshold": "exit_edge_threshold",
+            "recommended_kelly_fraction": "kelly_fraction",
+            "recommended_normal_fraction": "normal_fraction",
+            "recommended_late_max_penalty": "late_max_penalty",
+            "recommended_min_atr": "min_atr",
+            "recommended_max_edge": "max_edge",
+            "recommended_adverse_selection_threshold": "adverse_selection_threshold",
+        }
+        for old_key, param in param_map.items():
+            if old_key in data:
+                old_changes.append({"param": param, "value": data[old_key], "reason": "legacy format"})
+        if data.get("recommended_weights"):
+            old_changes.append({"param": "weights", "value": data["recommended_weights"], "reason": "legacy format"})
+        data["changes"] = old_changes[:3]  # cap at 3
+
+    # Normalize: ensure changes is a list
+    if not isinstance(data.get("changes"), list):
+        data["changes"] = []
+
+    # Insufficient data guard — drop all changes
+    if total_trades < 50:
+        data["changes"] = []
+        data.setdefault("risk_warnings", []).append(f"Only {total_trades} trades — insufficient data, no changes applied")
+
+    # Read-only gate params: silently drop any Claude attempt to change them
+    READ_ONLY_PARAMS = {"min_model_probability", "min_edge", "min_kelly"}
+
+    # Per-param clamp ranges
+    CLAMP_RANGES: dict[str, tuple] = {
+        "atr_sigma_ratio":              (1.2,   2.5,   float),
+        "logit_scale":                  (2.0,   6.0,   float),
+        "probability_compression":      (0.5,   1.0,   float),
+        "liquidation_weight":           (0.01,  0.06,  float),
+        "prev_margin_weight":           (0.01,  0.05,  float),
+        "spot_flow_weight":             (0.01,  0.10,  float),
+        "flow_weight":                  (0.02,  0.12,  float),
+        "regime_weight":                (0.02,  0.10,  float),
+        "momentum_weight":             (-0.10,  0.10,  float),
+        "student_t_df":                 (3,     8,     int),
+        "exit_edge_threshold":         (-0.25,  0.0,   float),
+        "kelly_fraction":               (0.05,  0.25,  float),
+        "normal_fraction":              (0.40,  0.80,  float),
+        "late_max_penalty":             (0.20,  0.80,  float),
+        "min_atr":                      (5.0,   15.0,  float),
+        "max_edge":                     (0.10,  0.30,  float),
+        "adverse_selection_threshold":  (0.45,  0.75,  float),
+    }
+
+    validated_changes: list[dict[str, Any]] = []
+    extracted_weights: dict[str, float] = {}
+
+    for change in data["changes"][:3]:  # enforce max 3
+        if not isinstance(change, dict):
+            continue
+        param = change.get("param", "")
+        value = change.get("value")
+        reason = change.get("reason", "")
+
+        if not param or value is None:
+            continue
+
+        # Drop read-only params silently
+        if param in READ_ONLY_PARAMS:
+            logger.debug(f"Dropping read-only param change: {param}")
+            continue
+
+        # Handle indicator weights dict
+        if param == "weights":
+            if not isinstance(value, dict):
+                continue
+            w = dict(value)
+            # Floor and renormalize
+            for k in indicators:
+                if w.get(k, 0.05) < 0.05:
+                    w[k] = 0.05
+            tot = sum(w.get(k, 0.20) for k in indicators)
+            if tot > 0:
+                w = {k: w.get(k, 0.20) / tot for k in indicators}
+            for k in indicators:
+                if w[k] < 0.05:
+                    w[k] = 0.05
+            largest = max(w, key=w.get)
+            for k in indicators:
+                if k != largest:
+                    w[k] = round(w[k], 4)
+            w[largest] = round(1.0 - sum(v for kk, v in w.items() if kk != largest), 4)
+            # Enforce max 0.05 change per cycle
+            if current_weights:
+                changed = False
+                for k in indicators:
+                    old = current_weights.get(k, 0.20)
+                    nw = w.get(k, old)
+                    if abs(nw - old) > 0.05:
+                        w[k] = old + 0.05 * (1 if nw > old else -1)
+                        changed = True
+                if changed:
+                    tot = sum(w[k] for k in indicators)
+                    if tot > 0:
+                        w = {k: w[k] / tot for k in indicators}
+                    largest = max(w, key=w.get)
+                    for k in indicators:
+                        if k != largest:
+                            w[k] = round(w[k], 4)
+                    w[largest] = round(1.0 - sum(v for kk, v in w.items() if kk != largest), 4)
+            extracted_weights = w
+            validated_changes.append({"param": "weights", "value": w, "reason": reason})
+            continue
+
+        # Scalar param: clamp to range
+        if param in CLAMP_RANGES:
+            lo, hi, cast = CLAMP_RANGES[param]
+            try:
+                clamped = cast(max(lo, min(hi, cast(value))))
+            except (TypeError, ValueError):
+                continue
+            # Extra: momentum magnitude must stay below min_edge
+            if param == "momentum_weight":
+                min_edge_live = cfg.get("min_edge", 0.04)
+                if abs(clamped) >= min_edge_live:
+                    clamped = float((min_edge_live - 0.001) * (1.0 if clamped >= 0 else -1.0))
+            validated_changes.append({"param": param, "value": clamped, "reason": reason})
+        elif param in ("trading_start_hour_et", "trading_end_hour_et"):
+            try:
+                validated_changes.append({"param": param, "value": max(0, min(23, int(value))), "reason": reason})
+            except (TypeError, ValueError):
+                continue
+        elif param == "trading_end_minute":
+            try:
+                validated_changes.append({"param": param, "value": max(0, min(59, int(value))), "reason": reason})
+            except (TypeError, ValueError):
+                continue
         else:
-            data[key] = cur_val  # preserve current value exactly
+            # Unknown param — skip
+            logger.warning(f"Unknown param in changes list: {param!r}")
 
-    _clamp_if_present("recommended_kelly_fraction",    0.05, 0.25, _cur("kelly_fraction", 0.15))
-    _clamp_if_present("recommended_min_edge",          0.01, 0.10, _cur("min_edge", 0.04))
-    _clamp_if_present("recommended_min_kelly",         0.005, 0.05, _cur("min_kelly", 0.015))
-    _clamp_if_present("recommended_atr_sigma_ratio",   1.2,  2.5,  _cur("atr_sigma_ratio", 1.4))
-    _clamp_if_present("recommended_momentum_weight",  -0.10, 0.10, _cur("momentum_weight", -0.02))
-    # Momentum magnitude must stay below min_edge so the indicator layer can't
-    # single-handedly push a sub-threshold signal past the entry gate.
-    mw = data.get("recommended_momentum_weight", 0.0)
-    me = data.get("recommended_min_edge", 0.04)
-    if abs(mw) >= me:
-        data["recommended_momentum_weight"] = (me - 0.001) * (1.0 if mw >= 0 else -1.0)
-    _clamp_if_present("recommended_regime_weight",     0.02, 0.10, _cur("regime_weight", 0.03))
-    _clamp_if_present("recommended_flow_weight",       0.02, 0.12, _cur("flow_weight", 0.04))
-    _clamp_if_present("recommended_min_model_probability", 0.55, 0.85, _cur("min_model_probability", 0.58))
-    _clamp_if_present("recommended_exit_edge_threshold", -0.25, 0.0, _cur("exit_edge_threshold", -0.05))
-    _clamp_if_present("recommended_min_time_remaining", 0, 120, _cur("min_time_remaining", 0))
-    _clamp_if_present("recommended_logit_scale",            2.0,  6.0,  _cur("logit_scale", 4.0))
-    _clamp_if_present("recommended_probability_compression", 0.5,  1.0,  _cur("probability_compression", 1.0))
-    _clamp_if_present("recommended_liquidation_weight",      0.01, 0.06, _cur("liquidation_weight", 0.03))
-    _clamp_if_present("recommended_prev_margin_weight",      0.01, 0.05, _cur("prev_margin_weight", 0.02))
-    _clamp_if_present("recommended_spot_flow_weight",        0.01, 0.10, _cur("spot_flow_weight", 0.04))
-    _clamp_if_present("recommended_adverse_selection_threshold", 0.45, 0.75, _cur("adverse_selection_threshold", 0.65))
-    _clamp_if_present("recommended_normal_fraction",         0.40, 0.80, _cur("normal_fraction", 0.60))
-    _clamp_if_present("recommended_late_max_penalty",        0.20, 0.80, _cur("late_max_penalty", 0.60))
-    _clamp_if_present("recommended_min_atr",                 5.0,  15.0, _cur("min_atr", 8.0))
-    _clamp_if_present("recommended_max_edge",                0.10, 0.30, _cur("max_edge", 0.20))
+    data["changes"] = validated_changes
 
-    data["recommended_student_t_df"] = max(3, min(8,
-        int(data["recommended_student_t_df"]) if "recommended_student_t_df" in data
-        else int(_cur("student_t_df", 5))))
-
-    if "recommended_trading_start_hour_et" in data:
-        data["recommended_trading_start_hour_et"] = max(0, min(23, int(data["recommended_trading_start_hour_et"])))
-    if "recommended_trading_end_hour_et" in data:
-        data["recommended_trading_end_hour_et"] = max(0, min(23, int(data["recommended_trading_end_hour_et"])))
-    if "recommended_trading_end_minute" in data:
-        data["recommended_trading_end_minute"] = max(0, min(59, int(data["recommended_trading_end_minute"])))
+    # Extract recommended_weights for backward compat (scheduler still reads this key)
+    if extracted_weights:
+        data["recommended_weights"] = extracted_weights
+    elif not data.get("recommended_weights") and current_weights:
+        # No weights change recommended — leave recommended_weights absent so
+        # scheduler's weight adoption gate fires correctly (no weights = skip weight opt)
+        pass
 
     return data
 
@@ -573,6 +629,11 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
                 f"prob={prob:.0%} edge={edge:+.0%} flow={flow:+.2f} {secs:.0f}s regime={regime}"
             )
         sections.append("\n".join(lines))
+
+    # Parameter change history — what worked and what didn't (shown before previous recs)
+    param_history = context.get("analysis", {}).get("parameter_history", "")
+    if param_history:
+        sections.append(f"## Parameter Change History (what worked and what didn't)\n{param_history}")
 
     # Previous recommendations
     prev = context.get("previous_recommendations", "")

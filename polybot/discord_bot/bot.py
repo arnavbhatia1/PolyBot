@@ -5,6 +5,7 @@ Alerts fire on trade open/close, circuit breaker events, and daily session banne
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from datetime import datetime, timezone

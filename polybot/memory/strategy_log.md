@@ -157,3 +157,22 @@
 - Many resolution losses at extreme low probabilities (2-9%) — tail trades destroying PnL
 
 **Reasoning:** Q4 edge realization at 0.59 confirms the model is overconfident at high-edge trades — raising atr_sigma_ratio to 1.6 and adding probability_compression of 0.92 directly addresses this overconfidence. Scalp accuracy at 49.2% is random so tightening exit_edge_threshold to -0.03 forces holding longer, and min_model_probability raised to 0.62 filters the weak 60-180s window trades that win only 48.4%. Kelly fraction stays at 0.15 since SPRT negative is an observation, not a sizing signal.
+
+## 2026-04-21T04:18:00.793264+00:00
+
+**Source:** Claude (medium) | **Weights:** rsi=0.18, macd=0.27, stochastic=0.22, obv=0.10, vwap=0.23
+**Params:** momentum_weight=-0.03, regime_weight=0.04, flow_weight=0.07, student_t_df=5, min_edge=0.04, min_kelly=0.018, atr_sigma_ratio=1.6, kelly_fraction=0.15, min_model_probability=0.62, exit_edge_threshold=-0.03, min_time_remaining=45.0, trading_start_hour_et=0, trading_end_hour_et=23, trading_end_minute=59, logit_scale=4.0, probability_compression=0.9, liquidation_weight=0.03, prev_margin_weight=0.02, spot_flow_weight=0.05, adverse_selection_threshold=0.75, normal_fraction=0.6, late_max_penalty=0.6, min_atr=8.0, max_edge=0.2
+
+**Findings:**
+- Down trades win 55.6% vs Up 53.3% — bearish edge is real and persistent
+- Q4 highest-edge trades realizing only 59 cents per dollar — model overconfident at extremes
+- 60-180s entries win just 48.4% — avoiding mid-window entries protects edge
+- Scalp exits wrong 51% of time — holding longer consistently beats early exits
+- ATR dropped 22% recently — lower vol compresses edge, filter weak trades harder
+
+**Warnings:**
+- SPRT negative last 50 trades — recent win rate below expectation, monitor closely
+- Edge mean compressed from 10.4% to 8.6% — market pricing more efficiently
+- Many resolution losses at extreme low probabilities (2-9%) — tail trades destroying PnL
+
+**Reasoning:** Q4 edge realization at 0.59 is the dominant problem — raising atr_sigma_ratio to 1.6 and applying probability_compression of 0.90 directly reduces model overconfidence at high-edge trades. The 60-180s entry window losing at 48.4% justifies raising min_time_remaining to 45s, and scalp accuracy at 49.2% confirms that tightening exit_edge_threshold to -0.03 (hold longer) is correct. Kelly fraction stays at 0.15 since SPRT negative is an observation, not a sizing signal.

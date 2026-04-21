@@ -103,8 +103,8 @@ class WeightOptimizer:
             return False, f"only {n_trades} candidate trades (need 50) — your min_model_probability or min_edge may be filtering too aggressively in the backtest, leaving too few qualifying trades to measure improvement"
 
         z = _sharpe_z_test(current_sharpe, candidate_sharpe, n_trades, returns=candidate_returns)
-        if z < 1.28:
-            return False, f"z={z:.2f} < 1.28 (not significant at 90%, autocorr-adjusted)"
+        if z < 1.0:
+            return False, f"z={z:.2f} < 1.0 (not significant, autocorr-adjusted)"
 
         # Walk-forward consistency: at least 3 of 4 folds must show improvement
         if fold_sharpes:

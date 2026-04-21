@@ -36,7 +36,7 @@ class TAEvolver:
         prev = ""
         if self.strategy_log_path.exists():
             text = self.strategy_log_path.read_text(encoding="utf-8")
-            prev = text[-6000:] if len(text) > 6000 else text
+            prev = text[-15000:] if len(text) > 15000 else text
 
         context = {
             "current_config": current_config,
@@ -204,22 +204,32 @@ class TAEvolver:
         reasoning = recommendations.get("reasoning", "")
         findings = recommendations.get("key_findings", [])
         warnings = recommendations.get("risk_warnings", [])
-        weights = recommendations.get("recommended_weights", {})
 
         findings_str = "\n".join(f"- {f}" for f in findings) if findings else "- None"
         warnings_str = "\n".join(f"- {w}" for w in warnings) if warnings else "- None"
-        weights_str = ", ".join(f"{k}={v:.2f}" for k, v in weights.items()) if weights else "unchanged"
 
-        # Collect all recommended params
-        params = {k.replace("recommended_", ""): v
-                  for k, v in recommendations.items()
-                  if k.startswith("recommended_") and k != "recommended_weights"}
-        params_str = ", ".join(f"{k}={v}" for k, v in params.items()) if params else "unchanged"
+        # Format the changes list (new format)
+        changes_list = recommendations.get("changes", [])
+        if changes_list:
+            changes_lines = []
+            for c in changes_list:
+                param = c.get("param", "?")
+                value = c.get("value", "?")
+                reason = c.get("reason", "")
+                changes_lines.append(f"  - {param}={value} ({reason})")
+            changes_str = "\n".join(changes_lines)
+        else:
+            # Fallback: show recommended_weights if present (legacy or weights-only run)
+            weights = recommendations.get("recommended_weights", {})
+            if weights:
+                changes_str = "  - weights: " + ", ".join(f"{k}={v:.2f}" for k, v in weights.items())
+            else:
+                changes_str = "  - none"
 
         entry = (
             f"\n## {now}\n\n"
-            f"**Source:** Claude ({confidence}) | **Weights:** {weights_str}\n"
-            f"**Params:** {params_str}\n\n"
+            f"**Source:** Claude ({confidence})\n"
+            f"**Proposed Changes ({len(changes_list)}):**\n{changes_str}\n\n"
             f"**Findings:**\n{findings_str}\n\n"
             f"**Warnings:**\n{warnings_str}\n\n"
             f"**Reasoning:** {reasoning}\n"

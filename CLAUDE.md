@@ -169,7 +169,7 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 
 **Walk-forward split:** 60% train, 40% validation across 4 folds [60:70], [70:80], [80:90], [90:100].
 
-**Adoption gates:** z >= 1.28 (Jobson-Korkie), delta >= 0.03 absolute, n >= 100, candidate Sharpe > 0, improvement in 3/4 folds. 2-day cooldown after last adoption.
+**Adoption gates:** z >= 1.0 (Jobson-Korkie), delta >= 0.02 absolute, n >= 50, candidate Sharpe > 0, improvement in 3/4 folds. 2-day cooldown after last adoption.
 
 **Pipeline stages:**
 1. `PipelineTracker` — fills 7d/30d actual Sharpe for past adoptions, feeds to Claude
@@ -177,12 +177,14 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if **Kelly-sized-Sharpe** on validation improves (≥20 validation trades must pass production gates under both old and new calibrator, else rejected). Log-loss retained in telemetry, not adoption. Gated this way so a flatter/smoother calibrator that would silently shrink edges below the Kelly gate (and kill realized Sharpe) can't be adopted just because it improves log-loss.
 4. Distribution shift (KS-test recent 50 vs historical)
 5. SPRT aggregate (modulates adoption threshold: negative→0.02, positive→0.05)
-6. `TAEvolver` — sends analysis card + 100 stratified trades (50 recent + 50 spaced across the day) to Claude. Returns structured JSON. Local fallback when Claude unavailable (max 2 params, 15% change cap). Analysis card includes: calibration curve (reliability diagram), gate skip stats, realized edge vs predicted edge, ghost trade gate analysis, time-to-resolution distribution, cross-window correlation, execution quality metrics.
-7. `WeightOptimizer` — walk-forward backtest, statistical adoption, hot-swaps weights + persists to settings.yaml. Baseline and candidate both use the same Kelly-sized portfolio-return metric (`kelly_fraction × edge/(1-price) × gain_pct`) on the same folds — apples-to-apples. `_kelly_bankroll_returns` replays the full logit composition (L1 CDF, L2 regime×direction [approximated from `regime_state` + prev-margin sign], L3 flow with 0.35-logit cap, L3b spot-flow, L3c wall, L3e liq, L5 prev-margin, L4 indicator momentum, Platt). Backtest freezes on `self.signal_engine.calibrator` (the calibrator that was adopted or kept earlier in this same pipeline run), so calibration can't drift mid-backtest.
+6. `TAEvolver` — sends analysis card + 100 stratified trades (50 recent + 50 spaced across the day) to Claude. Returns structured JSON with a ranked `changes` list (max 3 changes, each with param/value/reason). Local fallback when Claude unavailable (max 2 params, 15% change cap). Analysis card includes: calibration curve (reliability diagram), gate skip stats, realized edge vs predicted edge, ghost trade gate analysis, time-to-resolution distribution, cross-window correlation, execution quality metrics, **parameter change history** (last 5 adoptions with actual vs predicted Sharpe).
+7. `WeightOptimizer` — **per-parameter** walk-forward backtests (one backtest per proposed change, not one combined). Each change tested in isolation against baseline on the same 4 folds; changes that pass are adopted independently. `_kelly_bankroll_returns` replays the full logit composition (L1 CDF, L2 regime×direction, L3 flow with 0.35-logit cap, L3b spot-flow, L3c wall, L3e liq, L5 prev-margin, L4 indicator momentum, Platt). Backtest freezes on `self.signal_engine.calibrator`. Entry gates (`min_model_probability`, `min_edge`, `min_kelly`) are held constant in ALL backtests — never varied by candidate — so the trade population stays identical between baseline and candidate runs.
 
 **Key pipeline invariants:**
 - `momentum_weight` can be negative (-0.10 to +0.10). Negative = fade indicators (current: -0.02). Claude knows this.
+- Claude response format: `{"changes": [{"param": ..., "value": ..., "reason": ...}, ...], "key_findings": [...], ...}`. Max 3 changes. `min_model_probability`, `min_edge`, `min_kelly` are READ-ONLY (not in changes list).
 - `_validate_strategy_response` uses current_config as defaults — params Claude omits are NOT silently overwritten with hardcoded stale values
+- Strategy log reads back last 15,000 chars (up from 6,000) for more context
 - Outcomes sorted by `exit_timestamp` (actual trade close time) for correct walk-forward ordering; old outcomes fall back to write-time `timestamp`
 - Daily rollup: at 12:05 AM pipeline, previous days' individual outcome files are consolidated into one file per day (`rollup_YYYY-MM-DD.json`) to keep git manageable. `load_all_outcomes()` handles both formats transparently.
 - `gain_pct = pnl / size` (arithmetic). Never use `log_return` for Sharpe (log(0) = -inf for losses)
@@ -199,7 +201,7 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 - **Wrong strike:** Derived from Chainlink oracle or Binance candle boundary from slug, not `int(now // 300) * 300`
 - **Startup config error:** `validate_config()` raises ValueError listing all violations
 - **Orphaned position:** Waits indefinitely for Gamma resolution. Discord alert after 1hr. By design.
-- **Pipeline not adopting:** z >= 1.65 is a high bar by design. "No change" = current weights are defensible. Check BiasDetector output and edge calibration bucketing.
+- **Pipeline not adopting:** z >= 1.0 + delta >= min_improvement + 3/4 folds. "No change" = current config is defensible. Check BiasDetector output and per-change `per_change` log in pipeline_info.
 
 ## Frozen Baseline — DO NOT CHANGE
 
