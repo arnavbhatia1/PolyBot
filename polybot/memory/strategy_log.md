@@ -176,3 +176,25 @@
 - Many resolution losses at extreme low probabilities (2-9%) — tail trades destroying PnL
 
 **Reasoning:** Q4 edge realization at 0.59 is the dominant problem — raising atr_sigma_ratio to 1.6 and applying probability_compression of 0.90 directly reduces model overconfidence at high-edge trades. The 60-180s entry window losing at 48.4% justifies raising min_time_remaining to 45s, and scalp accuracy at 49.2% confirms that tightening exit_edge_threshold to -0.03 (hold longer) is correct. Kelly fraction stays at 0.15 since SPRT negative is an observation, not a sizing signal.
+
+## 2026-04-21T04:41:59.625773+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (3):**
+  - atr_sigma_ratio=1.6 (Q4 edge realization at 0.59 confirms model overconfidence at high-edge trades — wider sigma makes L1 probabilities more conservative.)
+  - probability_compression=0.9 (Compresses extreme probabilities toward 0.5 to directly reduce overconfidence where Q4 realization is only 59 cents per dollar predicted.)
+  - exit_edge_threshold=-0.03 (Scalp accuracy at 49.2% is well below the 60% hold-longer trigger — less negative threshold forces holding positions longer instead of premature exits.)
+
+**Findings:**
+- Q4 highest-edge trades realizing only 59 cents per dollar — model overconfident at extremes
+- Scalp exits wrong 51% of time — holding longer beats early exits consistently
+- Down trades win 55.6% vs Up 53.3% — bearish edge is real and persistent
+- ATR fell 22% recently — lower vol environment compresses edge
+- 60-180s entry window wins only 48.4% — mid-window entries are a drag
+
+**Warnings:**
+- SPRT negative last 50 trades — recent win rate below expectation, monitor closely
+- Edge mean compressed from 10.4% to 8.6% — market pricing more efficiently
+- Many resolution losses at extreme low probabilities (2-9%) — tail trades destroying PnL
+
+**Reasoning:** Q4 edge realization at 0.59 is the dominant calibration problem — raising atr_sigma_ratio to 1.6 and applying probability_compression of 0.90 are the two highest-leverage fixes for model overconfidence at high-edge trades. Scalp accuracy at 49.2% has been persistently coin-flip across multiple cycles, confirming that tightening exit_edge_threshold to -0.03 to hold longer is the correct exit management adjustment.

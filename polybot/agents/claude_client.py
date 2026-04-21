@@ -640,14 +640,22 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
     if prev:
         sections.append(f"## Previous Recommendations (recent cycles)\n{prev}")
 
-    # Last rejection reason — tell Claude why its previous proposal was rejected
-    last_rejection = context.get("analysis", {}).get("last_rejection_reason", "")
-    if last_rejection:
+    # Per-change backtest results from last cycle — exact attribution of what worked/hurt
+    per_change = context.get("analysis", {}).get("last_per_change_results", [])
+    if per_change:
+        lines = ["## Last Cycle Per-Parameter Results (CRITICAL — read before proposing anything)"]
+        lines.append("These are the EXACT backtest results for each change you proposed last cycle:")
+        for r in per_change:
+            lines.append(f"- {r}")
+        lines.append("If a change had NEGATIVE delta — it made Sharpe WORSE. Do NOT propose it again.")
+        lines.append("If z was low but delta was positive — consider proposing a LARGER change to that parameter.")
+        sections.append("\n".join(lines))
+    elif context.get("analysis", {}).get("last_rejection_reason", ""):
+        last_rejection = context["analysis"]["last_rejection_reason"]
         sections.append(
             f"## Last Pipeline Rejection\n"
-            f"Your previous recommendations were NOT adopted. Reason: **{last_rejection}**\n"
-            f"Adjust your recommendations to address this. If the reason is a negative delta, "
-            f"your proposed changes made the backtest WORSE — reconsider those parameters."
+            f"Reason: **{last_rejection}**\n"
+            f"If negative delta — your change made Sharpe WORSE. Do not repeat it."
         )
 
     # Pipeline track record — did past adoptions actually help?

@@ -50,6 +50,7 @@ class AgentScheduler:
         self._running: bool = False
         self._auto_shutdown: bool = False
         self._last_rejection_reason: str = ""  # why last weight proposal was rejected
+        self._last_per_change_results: list[str] = []  # per-parameter backtest results for Claude
         self._shutdown_requested: bool = False
 
         # Inject claude_client into ta_evolver if not already set
@@ -108,6 +109,8 @@ class AgentScheduler:
 
         if self._last_rejection_reason:
             analysis["last_rejection_reason"] = self._last_rejection_reason
+        if hasattr(self, '_last_per_change_results') and self._last_per_change_results:
+            analysis["last_per_change_results"] = self._last_per_change_results
 
         # Build parameter change history for Claude (Change 4)
         if self.pipeline_tracker:
@@ -593,6 +596,14 @@ class AgentScheduler:
                 logger.info(f"REJECTED {param}: {value} — {adopt_reason}")
 
             info["per_change"].append(change_info)
+
+        # Store per-change results for Claude's next cycle
+        self._last_per_change_results = [
+            f"{c['param']}={c.get('value', '?')}: {c['decision'].upper()} — {c['reason']} "
+            f"(baseline={current_sharpe:.3f}, candidate={c.get('candidate_sharpe', 'N/A')}, "
+            f"n={c.get('n_candidate_trades', '?')})"
+            for c in info["per_change"]
+        ]
 
         if not any_adopted:
             info["decision"] = "no_change"
