@@ -97,23 +97,56 @@ polybot/
 
 ## Config (`config/settings.yaml`)
 
-Key values — all pipeline-tunable unless noted:
-- `math.kelly_fraction` 0.15
-- `signal.entry_threshold` 0.04 (min 0.01, max 0.10)
-- `signal.min_kelly` 0.015 (primary gate)
-- `signal.min_model_probability` 0.58
+Parameters fall into three ownership classes. Which class a param lives in is
+determined by whether the walk-forward backtest (`_kelly_bankroll_returns`) can
+simulate its change and whether the value is user-owned risk policy.
+
+### Pipeline-Tunable (Claude + backtest adoption)
+These flow through `_kelly_bankroll_returns`, so the nightly pipeline can test them
+in backtest and adopt when the candidate Sharpe clears the dynamic floor.
+- `math.kelly_fraction` 0.15 (range 0.05-0.25)
 - `signal.momentum_weight` **-0.02** (NEGATIVE = fade indicators. Range -0.10 to +0.10)
-- `signal.regime_weight` 0.03, `flow_weight` 0.04, `spot_flow_weight` 0.04
-- `signal.liquidation_weight` 0.03, `prev_margin_weight` 0.02, `wall_weight` 0.00
-- `signal.atr_sigma_ratio` 1.4, `student_t_df` 5, `min_atr` 8.0 (**dynamic floor at runtime**: `max(min_atr, 0.3 × rolling_mean_atr_20)` — adapts to macro vol regime)
-- `signal.exit_edge_threshold` -0.05, `logit_scale` 4.0
+- `signal.regime_weight` 0.03 (range 0.02-0.10)
+- `signal.flow_weight` 0.04 (range 0.02-0.12)
+- `signal.spot_flow_weight` 0.04 (range 0.01-0.10)
+- `signal.liquidation_weight` 0.03 (range 0.01-0.06)
+- `signal.prev_margin_weight` 0.02 (range 0.01-0.05)
+- `signal.wall_weight` 0.00 (disabled — gamed by HFT)
+- `signal.atr_sigma_ratio` 1.4 (range 1.2-2.5)
+- `signal.student_t_df` 5 (range 3-8, int)
+- `signal.logit_scale` 4.0 (range 2.0-6.0)
+- `signal.probability_compression` 1.0 (range 0.5-1.0)
+- `signal.min_atr` 8.0 (range 5.0-15.0; runtime floor = `max(min_atr, 0.3 × rolling_mean_atr_20)`)
 - `signal.weights` rsi/macd/stochastic/obv/vwap (sum to 1.0, each >= 0.05)
-- `execution.max_concurrent_positions` 2, `max_bankroll_deployed` 0.80
-- `execution.max_single_position_pct` 0.12, `max_single_position_usd` 18.00 (**manual only**)
-- `circuit_breaker.floor_pct` 0.85, `min_multiplier` 0.40 (**manual only**)
-- `entry_timing.normal_fraction` 0.60, `late_max_penalty` 0.60, `final_min_probability` 0.90
+
+### Read-Only for Claude (entry gates — corrupt the backtest comparison)
+The backtest replays stored outcomes. Raising any gate filters historical trades
+out of BOTH baseline and candidate runs, so the comparison is no longer apples-to-apples.
+Change these manually in `settings.yaml` only.
+- `signal.min_model_probability` 0.58
+- `signal.entry_threshold` (min_edge) 0.04
+- `signal.min_kelly` 0.015 (primary gate)
+
+### Manual-Only (unbacktestable or user-owned risk policy)
+Either the backtest cannot simulate the change (exit/timing/schedule) or these are
+operator-owned risk caps. Claude is instructed not to propose them; the pipeline
+silently drops any attempt.
+- `signal.exit_edge_threshold` -0.05 — backtest can't re-simulate scalp vs hold on stored gain_pct
+- `signal.max_edge` 0.20 — stale-price filter (entry-time only)
+- `entry_timing.normal_fraction` 0.60 — time-of-day Kelly envelope (backtest ignores)
+- `entry_timing.late_max_penalty` 0.60 — late-window Kelly penalty (backtest ignores)
+- `entry_timing.final_min_probability` 0.90 — last-30s hard gate (entry-time only)
+- `entry_timing.adverse_selection_threshold` 0.55 — informed-flow filter (entry-time only)
 - `entry_timing.flip_enabled` true, `flip_edge_premium` 0.015
-- `schedule.trading_start_hour_et` 0 (12:15 AM), `trading_end_hour_et` 23:59
+- `schedule.trading_start_hour_et` 0, `trading_end_hour_et` 23, `trading_end_minute` 59
+- `execution.max_concurrent_positions` 2, `max_bankroll_deployed` 0.80
+- `execution.max_single_position_pct` 0.12, `max_single_position_usd` 18.00 (risk cap)
+- `circuit_breaker.floor_pct` 0.85, `min_multiplier` 0.40 (risk cap)
+
+**When Claude proposes a manual-only param** (e.g., from counterfactual scalp analysis
+pointing at `exit_edge_threshold`): the validator in `claude_client.py` drops it before
+it ever reaches the backtest. The pipeline will translate the finding into a proposable
+param (e.g., scalp-too-early → raise `logit_scale` or lower `atr_sigma_ratio`).
 
 ## Running
 
@@ -174,7 +207,7 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 
 **Walk-forward split:** 60% train, 40% validation across 4 folds [60:70], [70:80], [80:90], [90:100].
 
-**Adoption gates:** z >= 1.0 (Jobson-Korkie), delta >= min_improvement (default 0.03, SPRT-modulated 0.02–0.05), n >= 100 candidate trades, candidate Sharpe > 0, improvement in 3/4 walk-forward folds, regime-stratified Sharpe check (≥2/3 regimes improve OR dominant+no >0.10 degradation). 2-day cooldown after last adoption.
+**Adoption gates:** candidate Sharpe > 0, n >= 100 candidate trades, `delta >= max(min_improvement, 0.25 × JK_SE)` (noise-scaled floor — absolute floor default 0.020, SPRT-modulated to 0.015/0.020/0.035, but the 0.25×SE term dominates at low N), improvement in 3/4 walk-forward folds, regime-stratified Sharpe check (≥2/3 regimes improve OR dominant+no >0.10 degradation). 2-day cooldown after last adoption. The old fixed `z >= 1.0` Jobson-Korkie gate was removed because at realistic N=150-250 with Sharpe~0.2, JK_SE is ~0.08 so z≥1 required Δ≥0.08+ — effectively rejecting every candidate. Fold consistency is now the primary noise guard.
 
 **Pipeline stages:**
 1. `PipelineTracker` — fills 1d/3d/7d/14d/30d actual Sharpe for past adoptions; computes decay status (PERSISTED/PARTIAL/DECAYED/REVERSED) and 14d retention ratio; prediction accuracy (directional hit rate, MAE vs Claude's predicted_delta_sharpe_7d); empirical directional table from pipeline_run_log.json; all fed back to Claude
@@ -213,7 +246,7 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 - **Wrong strike:** Derived from Chainlink oracle or Binance candle boundary from slug, not `int(now // 300) * 300`
 - **Startup config error:** `validate_config()` raises ValueError listing all violations
 - **Orphaned position:** Waits indefinitely for Gamma resolution. Discord alert after 1hr. By design.
-- **Pipeline not adopting:** z >= 1.0 + delta >= min_improvement + 3/4 folds. "No change" = current config is defensible. Check BiasDetector output and per-change `per_change` log in pipeline_info.
+- **Pipeline not adopting:** candidate must clear `delta >= max(abs_floor, 0.25 × JK_SE)` AND improve in 3/4 folds AND pass regime-stratified check. "No change" = current config is defensible or proposed changes were too small relative to backtest noise. Check `per_change` log in pipeline_info — if delta is positive but below floor, Claude needs to propose LARGER moves. If a change is on a manual-only param (e.g. `exit_edge_threshold`), the validator dropped it before backtest.
 
 ## Frozen Baseline — DO NOT CHANGE
 

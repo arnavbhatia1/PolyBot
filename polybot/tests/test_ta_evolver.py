@@ -25,19 +25,17 @@ def test_recommend_weights(evolver):
         {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20})
     assert isinstance(recs, dict) and "rsi" in recs
 
-def test_save_log(evolver, tmp_path):
-    evolver.save_log({"win_rate": 0.65, "total_trades": 15}, {"rsi": 0.22})
-    assert (tmp_path / "strategy_log.md").exists()
-
 @pytest.mark.asyncio
 async def test_evolve_with_claude_success(tmp_path):
     """When Claude returns valid recommendations, evolve() uses them."""
     mock_claude = AsyncMock()
     mock_claude.analyze_strategy = AsyncMock(return_value={
-        "recommended_weights": {"rsi": 0.22, "macd": 0.23, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20},
-        "recommended_momentum_weight": 0.07,
-        "recommended_min_edge": 0.12,
-        "recommended_kelly_fraction": 0.14,
+        "changes": [
+            {"param": "weights",
+             "value": {"rsi": 0.22, "macd": 0.23, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20},
+             "reason": "rebalance"},
+            {"param": "momentum_weight", "value": 0.07, "reason": "test"},
+        ],
         "key_findings": ["RSI outperforms"],
         "risk_warnings": [],
         "reasoning": "Based on analysis...",
@@ -48,8 +46,9 @@ async def test_evolve_with_claude_success(tmp_path):
     outcomes = _make_outcomes(20)
     result = await evolver.evolve(outcomes, {"overall": {"total_trades": 20}},
                                   {"weights": {"rsi": 0.20}, "momentum_weight": 0.08})
-    assert result["recommended_weights"]["rsi"] == 0.22
-    assert result["recommended_momentum_weight"] == 0.07
+    by_param = {c["param"]: c["value"] for c in result["changes"]}
+    assert by_param["weights"]["rsi"] == 0.22
+    assert by_param["momentum_weight"] == 0.07
     mock_claude.analyze_strategy.assert_called_once()
     assert (tmp_path / "strategy_log.md").exists()
 
@@ -64,8 +63,9 @@ async def test_evolve_falls_back_on_claude_failure(tmp_path):
     result = await evolver.evolve(outcomes, {},
                                   {"weights": {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                                "obv": 0.15, "vwap": 0.20}})
-    assert "recommended_weights" in result
-    assert "rsi" in result["recommended_weights"]
+    assert "changes" in result
+    # Local fallback always proposes a weights change
+    assert any(c["param"] == "weights" for c in result["changes"])
 
 @pytest.mark.asyncio
 async def test_evolve_without_claude_client(tmp_path):
@@ -76,7 +76,7 @@ async def test_evolve_without_claude_client(tmp_path):
     result = await evolver.evolve(outcomes, {},
                                   {"weights": {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                                "obv": 0.15, "vwap": 0.20}})
-    assert "recommended_weights" in result
+    assert "changes" in result
 
 @pytest.mark.asyncio
 async def test_evolve_empty_outcomes(tmp_path):

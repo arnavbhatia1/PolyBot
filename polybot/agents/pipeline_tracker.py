@@ -283,6 +283,29 @@ class PipelineTracker:
         runs.append(entry)
         self._save_runs(runs)
 
+    def get_cumulative_failures(self, max_per_param: int = 5) -> dict[str, list[str]]:
+        """Derive {param: ["value (delta)", ...]} for all historically rejected changes.
+
+        Reads from pipeline_run_log.json so survives restarts and isn't duplicated
+        in-memory. Most recent rejections first, capped per-param to keep prompts tight.
+        """
+        result: dict[str, list[str]] = {}
+        runs = self._load_runs()
+        for run in reversed(runs):  # newest first
+            for c in run.get("changes", []):
+                if c.get("decision") != "rejected":
+                    continue
+                param = c.get("param", "")
+                if not param:
+                    continue
+                val = c.get("new_value", "?")
+                delta = c.get("backtest_delta_sharpe")
+                entry = f"{val} (Δ={delta:+.4f})" if isinstance(delta, (int, float)) else f"{val}"
+                bucket = result.setdefault(param, [])
+                if entry not in bucket and len(bucket) < max_per_param:
+                    bucket.append(entry)
+        return result
+
     # ------------------------------------------------------------------ #
     #  Claude context formatters                                          #
     # ------------------------------------------------------------------ #

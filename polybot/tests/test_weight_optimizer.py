@@ -53,8 +53,8 @@ def test_should_adopt(optimizer):
     adopt, reason = optimizer.should_adopt(0.20, -0.10, n_trades=200)
     assert adopt is False
 
-    # Walk-forward fold fails: reject
-    adopt, reason = optimizer.should_adopt(0.20, 0.50, n_trades=200, fold_sharpes=[0.40, 0.10, 0.50, 0.45])
+    # Walk-forward fold fails: reject (need > 1 fold below baseline to trip the rule)
+    adopt, reason = optimizer.should_adopt(0.20, 0.50, n_trades=200, fold_sharpes=[0.40, 0.10, 0.50, 0.15])
     assert adopt is False
     assert "folds below baseline" in reason
 

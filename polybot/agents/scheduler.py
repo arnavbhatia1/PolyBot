@@ -52,10 +52,8 @@ class AgentScheduler:
         self._trading_end: tuple[int, int] | None = None          # (hour, minute) ET — updated by pipeline
         self._running: bool = False
         self._auto_shutdown: bool = False
-        self._last_rejection_reason: str = ""  # why last weight proposal was rejected
         self._last_per_change_results: list[str] = []  # per-parameter backtest results for Claude
         self._baseline_kelly_sharpe: float = 0.0  # current baseline Kelly-Sharpe for Claude context
-        self._cumulative_failures: dict[str, list[str]] = {}  # param -> list of tried values that failed
         self._shutdown_requested: bool = False
 
         # Inject claude_client into ta_evolver if not already set
@@ -112,15 +110,31 @@ class AgentScheduler:
                                       if self.indicator_engine else "weights_v001",
         }
 
-        if self._last_rejection_reason:
-            analysis["last_rejection_reason"] = self._last_rejection_reason
         if hasattr(self, '_last_per_change_results') and self._last_per_change_results:
             analysis["last_per_change_results"] = self._last_per_change_results
         if hasattr(self, '_baseline_kelly_sharpe'):
             analysis["baseline_kelly_sharpe"] = self._baseline_kelly_sharpe
-            analysis["adoption_target"] = round(self._baseline_kelly_sharpe + self.weight_optimizer.min_improvement, 4)
-        if hasattr(self, '_cumulative_failures') and self._cumulative_failures:
-            analysis["cumulative_failures"] = self._cumulative_failures
+            # Compute the actual dynamic floor Claude's change must clear:
+            #   delta >= max(min_improvement, 0.25 × JK_SE)
+            abs_floor = self.weight_optimizer.min_improvement
+            jk_se = getattr(self, '_baseline_jk_se', None)
+            if jk_se is not None:
+                dyn_floor = max(abs_floor, 0.25 * jk_se)
+                analysis["baseline_jk_se"] = jk_se
+                analysis["baseline_n_trades"] = getattr(self, '_baseline_n_trades', None)
+                analysis["adoption_abs_floor"] = abs_floor
+                analysis["adoption_dynamic_floor"] = round(dyn_floor, 4)
+                analysis["adoption_target"] = round(self._baseline_kelly_sharpe + dyn_floor, 4)
+            else:
+                analysis["adoption_target"] = round(self._baseline_kelly_sharpe + abs_floor, 4)
+        # Cumulative failures derived from pipeline_run_log.json (restart-safe, no duplicate state)
+        if self.pipeline_tracker:
+            try:
+                cum = self.pipeline_tracker.get_cumulative_failures()
+                if cum:
+                    analysis["cumulative_failures"] = cum
+            except Exception as e:
+                logger.debug(f"Failed to derive cumulative failures: {e}")
 
         # Inject prediction accuracy, empirical directional table, and decay analysis
         if self.pipeline_tracker:
@@ -157,9 +171,7 @@ class AgentScheduler:
                         f"predicted {baseline:.3f}->{predicted:.3f} | {actual_str}"
                     )
 
-                # Last 5 rejections from the rejection log embedded in records
-                # Pipeline records don't store rejections, so use _last_rejection_reason + pipeline source
-                # We instead pull any records with review_7d showing the change hurt
+                # Rollback-recommended adoptions (7d review showed the change hurt)
                 rollback_recs = [r for r in records if r.get("rollback_recommended")]
                 for rec in rollback_recs[-3:]:
                     date = rec.get("date", "?")[:10]
@@ -599,11 +611,6 @@ class AgentScheduler:
         # Get the changes list (new format) or fall back to checking for recommended_weights
         changes_list: list[dict[str, Any]] = recommendations.get("changes", [])
 
-        # Backward compat: if no changes list but we have recommended_weights, wrap it
-        if not changes_list and recommendations.get("recommended_weights"):
-            changes_list = [{"param": "weights", "value": recommendations["recommended_weights"],
-                             "reason": "indicator weights (legacy format)"}]
-
         if not changes_list:
             info["reason"] = "no changes proposed by evolver"
             return info
@@ -633,6 +640,18 @@ class AgentScheduler:
                                                len(all_current_returns), current_win_rate)
         info["old_sharpe"] = round(current_sharpe, 4)
         info["n_baseline_trades"] = len(all_current_returns)
+
+        # Compute baseline JK SE for Claude's adoption-target context.
+        # Stored so build_claude_context can inject it into next cycle's context.
+        from polybot.agents.weight_optimizer import _lag1_autocorr as _ac
+        n_base = len(all_current_returns)
+        if n_base >= 2:
+            base_se = math.sqrt((1.0 + 0.5 * current_sharpe ** 2) / n_base)
+            if n_base >= 3:
+                rho = _ac(all_current_returns)
+                base_se *= math.sqrt(1.0 + 2.0 * max(0.0, rho))
+            self._baseline_jk_se = round(base_se, 4)
+            self._baseline_n_trades = n_base
 
         # --- Per-change walk-forward backtests ---
         adopted_changes: list[dict[str, Any]] = []
@@ -676,7 +695,6 @@ class AgentScheduler:
                 change_info.update({"decision": "rejected", "reason": msg})
                 logger.info(f"REJECTED {param}: {msg}")
                 info["per_change"].append(change_info)
-                self._last_rejection_reason = f"{param}: {msg}"
                 continue
 
             candidate_sharpe = _sharpe(all_candidate_returns)
@@ -718,7 +736,6 @@ class AgentScheduler:
                 logger.info(f"ADOPTED {param}: {old_val_str}{value} ({adopt_reason}, n={n_trades} candidates, baseline={current_sharpe:.3f}, candidate={candidate_sharpe:.3f})")
             else:
                 change_info.update({"decision": "rejected", "reason": adopt_reason})
-                self._last_rejection_reason = f"{param}: {adopt_reason}"
                 n_trades = len(all_candidate_returns)
                 logger.info(f"REJECTED {param}: {value} — {adopt_reason} (n={n_trades} candidates, baseline={current_sharpe:.3f}, candidate={candidate_sharpe:.3f})")
 
@@ -726,18 +743,6 @@ class AgentScheduler:
 
         # Store baseline sharpe for Claude's context
         self._baseline_kelly_sharpe = round(current_sharpe, 4)
-
-        # Update cumulative failures
-        for c in info["per_change"]:
-            if c.get("decision") == "rejected":
-                param = c["param"]
-                val = str(c.get("value", "?"))
-                reason = c.get("reason", "")
-                entry = f"{val} ({reason})"
-                if param not in self._cumulative_failures:
-                    self._cumulative_failures[param] = []
-                if entry not in self._cumulative_failures[param]:
-                    self._cumulative_failures[param].append(entry)
 
         # Store per-change results for Claude's next cycle
         self._last_per_change_results = [
@@ -1324,15 +1329,17 @@ class AgentScheduler:
             source = "claude" if recommendations.get("confidence") else "local"
             pipeline_info["source"] = source
 
-            # SPRT urgency: if edge evidence is negative, lower adoption bar
+            # SPRT urgency: if edge evidence is negative, lower adoption bar.
+            # Floors are the ABSOLUTE minimum — the runtime gate uses max(this, 0.25×JK_SE),
+            # so noise-scaled floor still dominates at low N.
             if sprt_agg.get("state") == "negative":
-                self.weight_optimizer.min_improvement = 0.02  # more aggressive
-                logger.info("SPRT negative — lowering adoption threshold to 0.02")
+                self.weight_optimizer.min_improvement = 0.015
+                logger.info("SPRT negative — lowering absolute adoption floor to 0.015")
             elif sprt_agg.get("state") == "positive":
-                self.weight_optimizer.min_improvement = 0.05  # more conservative
-                logger.info("SPRT positive — raising adoption threshold to 0.05")
+                self.weight_optimizer.min_improvement = 0.035
+                logger.info("SPRT positive — raising absolute adoption floor to 0.035")
             else:
-                self.weight_optimizer.min_improvement = 0.03  # default
+                self.weight_optimizer.min_improvement = 0.020
 
             # Cooldown: don't adopt on back-to-back days (need at least 1 day of data to validate)
             COOLDOWN_DAYS = 2

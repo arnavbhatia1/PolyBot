@@ -79,41 +79,56 @@ class WeightOptimizer:
     def should_adopt(self, current_sharpe: float, candidate_sharpe: float,
                      n_trades: int = 0, fold_sharpes: list[float] | None = None,
                      candidate_returns: list[float] | None = None) -> tuple[bool, str]:
-        """Statistical significance test for Sharpe improvement.
+        """Noise-scaled adoption check for Sharpe improvement.
 
-        Uses Jobson-Korkie (1981) SE for Sharpe ratio difference, inflated by
-        lag-1 autocorrelation when returns are positively autocorrelated.
-        Returns (adopt, reason) tuple.
+        Replaces the prior fixed-floor-plus-z-test gate. At realistic N=150-250 with
+        Sharpe~0.2 the Jobson-Korkie SE is ~0.07-0.09, so z>=1.0 required Δ >= 0.07+
+        — an unachievable bar that rejected all positive-delta candidates. The new
+        gate scales the delta floor by actual noise and relies on fold consistency
+        as the independent confirmation.
 
         Gates (all must pass):
-          1. candidate_sharpe > 0 (don't adopt negative Sharpe)
-          2. delta >= min_improvement (absolute floor; default 0.03, SPRT-modulated 0.02–0.05)
-          3. n_trades >= 100 (minimum candidate sample)
-          4. z >= 1.0 (one-tailed 84% confidence, autocorr-adjusted)
-          5. At most 1/4 walk-forward folds below baseline (3/4 must improve)
+          1. candidate_sharpe > 0
+          2. n_trades >= 100
+          3. delta >= max(min_improvement, 0.25 × JK_SE) — scales floor with noise
+          4. At most 1/4 walk-forward folds below baseline (fold-consistency check)
         """
         delta = candidate_sharpe - current_sharpe
 
         if candidate_sharpe <= 0:
             return False, f"candidate Sharpe {candidate_sharpe:.3f} <= 0"
 
-        if delta < self.min_improvement:
-            return False, f"delta {delta:.3f} below floor {self.min_improvement}"
-
         if n_trades < 100:
-            return False, f"only {n_trades} candidate trades (need 100) — your min_model_probability or min_edge may be filtering too aggressively in the backtest, leaving too few qualifying trades to measure improvement"
+            return False, (
+                f"only {n_trades} candidate trades (need 100) — your min_model_probability "
+                f"or min_edge may be filtering too aggressively in the backtest"
+            )
 
-        z = _sharpe_z_test(current_sharpe, candidate_sharpe, n_trades, returns=candidate_returns)
-        if z < 1.0:
-            return False, f"z={z:.2f} < 1.0 (not significant, autocorr-adjusted)"
+        # Jobson-Korkie SE, autocorr-adjusted. Used to scale the floor, not as a hard z-gate.
+        se = math.sqrt((1.0 + 0.5 * current_sharpe ** 2) / max(n_trades, 1))
+        if candidate_returns and len(candidate_returns) >= 3:
+            rho = _lag1_autocorr(candidate_returns)
+            se *= math.sqrt(1.0 + 2.0 * max(0.0, rho))
 
-        # Walk-forward consistency: at least 3 of 4 folds must show improvement
+        # Noise-scaled floor: 0.25 × SE is ~z=0.25 / p≈0.40 (more-likely-than-not better).
+        # We get the actual statistical rigor from the 3/4 fold-consistency check below.
+        dynamic_floor = max(self.min_improvement, 0.25 * se)
+
+        if delta < dynamic_floor:
+            return False, (
+                f"delta {delta:+.4f} below floor {dynamic_floor:.4f} "
+                f"(abs_floor={self.min_improvement:.3f}, SE={se:.3f})"
+            )
+
+        # Walk-forward consistency: at least 3 of 4 folds must show improvement.
+        # This is the primary guard against adopting backtest noise.
         if fold_sharpes:
             neg_folds = sum(1 for s in fold_sharpes if s <= current_sharpe)
             if neg_folds > 1:
                 return False, f"{neg_folds}/{len(fold_sharpes)} folds below baseline (need 3/4)"
 
-        return True, f"z={z:.2f} delta={delta:.3f} n={n_trades}"
+        z = delta / se if se > 0 else 0.0
+        return True, f"delta={delta:+.4f} floor={dynamic_floor:.4f} z={z:.2f} n={n_trades}"
 
     def get_next_version(self) -> str:
         existing = list(self.weights_dir.glob("weights_v*.json"))

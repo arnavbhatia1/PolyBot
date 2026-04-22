@@ -113,33 +113,45 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - student_t_df: 3 to 8 (degrees of freedom — lower = fatter tails, more reversal edge)
 - kelly_fraction: 0.05 to 0.25 range (binary outcomes = total loss risk). CRITICAL: the pipeline adoption metric is kelly_fraction × edge/(1-price) × gain_pct — reducing kelly_fraction directly reduces this metric and will cause your recommendations to be REJECTED. Only reduce kelly_fraction if you have strong evidence of excess risk. When in doubt, leave it unchanged.
 - atr_sigma_ratio: 1.2 to 2.5 range (ATR-to-σ conversion — lower = more aggressive probabilities)
-- exit_edge_threshold: -0.25 to 0.0 range (when to exit held positions)
 - logit_scale: 2.0 to 6.0. Amplifies how much L2-L5 signal weights shift the final probability. Higher = signals have more impact. Lower = more conservative. If signals are noisy, lower it. If they're predictive but weak, raise it.
 - probability_compression: 0.5 to 1.0. Shrinks final probability toward 0.5 after CDF. 1.0 = no compression. Use 0.7-0.85 if Q4 edge realization is poor (model overconfident at extremes).
 - liquidation_weight: 0.01 to 0.06. L3e — Bybit OI drop signals liquidation cascades. Raise if large OI drops precede your wins.
 - prev_margin_weight: 0.01 to 0.05. L5 — previous window momentum carry. Raise if consecutive windows trend together.
-- adverse_selection_threshold: 0.45 to 0.75. Skip entries if 30s post-fill reversal rate exceeds this. Lower = stricter informed-flow filter.
-- normal_fraction: 0.40 to 0.80. Fraction of 300s window with full Kelly. After this, late penalty applies to ATM trades.
-- late_max_penalty: 0.20 to 0.80. Max Kelly reduction for ATM trades late in window.
 - min_atr: 5.0 to 15.0. Floor on ATR (runtime: max(min_atr, 0.3 × rolling_20)). Raise in calm markets to avoid overtrading low-volatility windows.
-- max_edge: 0.10 to 0.30. Safety cap — filters suspiciously high edges that may indicate stale prices.
 - spot_flow_weight: 0.01 to 0.10. L3b — Binance CVD + taker ratio. Raise if CVD is predictive.
-- min_model_probability, min_edge, min_kelly: READ-ONLY for Claude — these entry gates cannot be changed via pipeline recommendations as they corrupt the backtest (changing them alters which trades appear in both baseline and candidate runs). They are shown in Current Configuration for context only.
+
+## Parameters NOT In Your Toolkit
+These cannot be proposed — the pipeline will silently drop them. Read sections that
+mention them as DIAGNOSTIC context about the entry-side model, and translate findings
+into parameters you CAN propose (above).
+
+**Manual-only (backtest cannot simulate the change):**
+- `exit_edge_threshold` — backtest replays stored gain_pct; scalp-vs-hold cannot be re-simulated
+- `adverse_selection_threshold`, `normal_fraction`, `late_max_penalty`, `max_edge` — entry-timing / informed-flow filters; backtest ignores them
+- `trading_start_hour_et`, `trading_end_hour_et`, `trading_end_minute` — backtest ignores time-of-day
+
+**Read-only (would corrupt backtest population):**
+- `min_model_probability`, `min_edge`, `min_kelly` — changing these alters which trades qualify in both baseline and candidate, breaking the comparison.
+
+**User-owned risk caps (changed only by operator):**
+- `kelly_fraction` bounds, `max_single_position_usd`, `max_single_position_pct`
+- `circuit_breaker.floor_pct`, `circuit_breaker.min_multiplier`
+
+If counterfactual scalp analysis points at `exit_edge_threshold` → actually fix the entry model overconfidence via `probability_compression` or `atr_sigma_ratio`. If gate skip stats point at `adverse_selection_threshold` → those gates are filtering informed flow correctly; use `flow_weight`/`spot_flow_weight` to improve signal quality instead.
 - Only recommend schedule changes if there's clear evidence from time-of-day patterns
 - Be conservative — no single weight should change by more than 0.05 per cycle
 - If fewer than 50 trades in the dataset, recommend NO CHANGES (insufficient data — win rate variance at N=25 is ±13 percentage points, which is noise)
 - Propose between 0 and 5 changes. An empty changes list is valid and appropriate when the current config is performing well or when no finding exceeds 2× the noise floor. Each proposed change MUST cite specific evidence that exceeds the noise threshold (see "Statistical Noise Reference" section in your context). Frivolous or noise-level changes waste pipeline cycles and hurt your track record. Cover at least 3 different parameter families per cycle when you do propose changes.
 
-## Parameter Impact Hierarchy (most to least leverage on the adoption metric)
-1. **atr_sigma_ratio** — controls how aggressive L1 probability is. Lower = more aggressive (wider edge). If Q4 edge realization is poor (overconfident), raise it. HIGHEST leverage parameter.
+## Parameter Impact Hierarchy (most to least leverage — backtestable params only)
+1. **atr_sigma_ratio** — controls L1 aggressiveness. Lower = more aggressive (wider edge). If Q4 edge realization is poor (overconfident), RAISE it. HIGHEST leverage.
 2. **logit_scale** — amplifies ALL signal layers (L2-L5). Raising from 4.0 to 5.0 makes flow/regime/momentum signals 25% more impactful. Lower if signals are noisy, raise if they're predictive but weak.
-3. **probability_compression** — shrinks probabilities toward 0.5. Use 0.75-0.85 if the model is overconfident at extremes (Q4 edge realization < 0.5).
-4. **min_model_probability** — filters out weak trades. Raising eliminates low-confidence losers.
-5. **exit_edge_threshold** — scalp vs hold timing. Counterfactual scalp accuracy <50% = tighten (less negative = hold longer). >65% = loosen.
-6. **flow_weight / spot_flow_weight / liquidation_weight** — L3/L3b/L3e nudge the signal. Raise if those signals show consistent directional accuracy.
-7. **adverse_selection_threshold** — informed flow filter. Lower if post-fill reversals are hurting you.
-8. **regime_weight / prev_margin_weight** — L2/L5 momentum signals. Adjust based on regime and carry analysis.
-9. **Indicator weights (rsi/macd/etc)** — LOWEST leverage. L4 is mostly disabled (momentum_weight=-0.02). Only adjust if an indicator shows >65% accuracy.
+3. **probability_compression** — shrinks probabilities toward 0.5. Use 0.75-0.90 if the model is overconfident at extremes (Q4 edge realization < 0.7). Directly addresses overconfidence without the side effects of raising atr_sigma_ratio.
+4. **flow_weight / spot_flow_weight / liquidation_weight** — L3/L3b/L3e nudge the signal. Raise if those signals show consistent directional accuracy.
+5. **regime_weight / prev_margin_weight** — L2/L5 momentum signals. Adjust based on regime and carry analysis.
+6. **student_t_df** — tail fatness. Lower (3-4) for more reversal edge on extreme positions.
+7. **kelly_fraction** — sizing. Leave unchanged unless strong risk evidence (see rules below).
+8. **Indicator weights (rsi/macd/etc)** — LOWEST leverage. L4 is mostly disabled (momentum_weight≈-0.02). Only adjust if an indicator shows >65% accuracy.
 
 ## Known Parameter Interactions
 These pairs share signal components — changes to one amplify or counteract the other.
@@ -150,19 +162,19 @@ Combined adoption backtests run automatically — if they show <70% of sum-indiv
 - **logit_scale + atr_sigma_ratio**: both control L1 aggressiveness — raising both can over-sharpen probabilities
 
 ## Critical Behavioral Rules
-1. SPRT negative means recent win rate is below expectation. It is an observation, NOT a sizing instruction. Do NOT reduce kelly_fraction in response to SPRT negative — this guarantees rejection. Instead improve entry quality: tighten min_model_probability or raise atr_sigma_ratio.
+1. SPRT negative means recent win rate is below expectation. It is an observation, NOT a sizing instruction. Do NOT reduce kelly_fraction in response to SPRT negative — this guarantees rejection. Instead improve entry quality via atr_sigma_ratio or probability_compression.
 2. "Trending regime wins only 49%" is NOT a problem to fix. The bot already handles trending regimes at runtime by flipping momentum_weight sign and amplifying 1.5×. Do not recommend regime_weight changes based on trending win rate alone.
 3. If the Last Pipeline Rejection section appears, your previous proposal was rejected for that reason. Address it directly.
-4. Do NOT shuffle indicator weights unless you have a specific indicator showing >65% accuracy. Changing RSI from 0.18 to 0.15 has near-zero effect on performance. Focus on parameters 1-4 above.
-5. CRITICAL — Do NOT raise min_model_probability, min_edge, or min_kelly above their current live values.
+4. Do NOT shuffle indicator weights unless you have a specific indicator showing >65% accuracy. Changing RSI from 0.18 to 0.15 has near-zero effect on performance. Focus on parameters 1-3 of the hierarchy.
+5. Do NOT propose any parameter listed in the "Parameters NOT In Your Toolkit" section. The pipeline will silently drop them and the slot is wasted.
 6. DIVERSIFY your proposals — cover at least 3 different parameter families per cycle. If a parameter showed NEGATIVE delta last cycle, do NOT propose it in the same direction again — try the opposite direction or a different parameter entirely.
-7. DIRECTION RULES based on what works in this market:
+7. HIT THE ADOPTION FLOOR. Your change must clear the `adoption_dynamic_floor` shown in the Adoption Target section, not just be positive. That floor scales with backtest noise — at low N it's ~0.02-0.04 in Sharpe units. A 0.92→0.90 tweak on probability_compression is too small; try 0.92→0.85 or combine with a second param that moves the same direction. Small changes die to noise; decisive moves adopt.
+8. DIRECTION RULES based on what works in this market:
    - atr_sigma_ratio: if raising it showed negative delta, DO NOT raise it further. Try lowering it instead, or skip it entirely.
    - logit_scale: test HIGHER values (4.5, 5.0, 5.5) — higher logit_scale amplifies good signals more. Lowering it weakens signals and typically hurts.
    - flow_weight: test HIGHER (0.06, 0.08, 0.10) — L3 order flow has the strongest documented correlation with outcomes.
    - spot_flow_weight: test HIGHER (0.06, 0.08) — CVD is predictive, currently underweighted.
    - student_t_df: test LOWER (3, 4) — fatter tails find more edge on extreme positions.
-   - late_max_penalty: changing this has near-zero effect on Kelly-Sharpe — deprioritize it. The validation set was collected under the current gates — raising them filters historical trades out of the backtest, leaving too few candidate trades and causing "only N candidate trades" rejection. These can only safely be LOWERED. If you think entry quality needs improving, use atr_sigma_ratio, logit_scale, or probability_compression instead.
 
 ## Response Format
 Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
@@ -180,8 +192,8 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
 
 IMPORTANT:
 - `changes` is a ranked list (most impactful first), 0 to 5 entries. Empty list is valid.
-- Valid param names: atr_sigma_ratio, logit_scale, probability_compression, liquidation_weight, prev_margin_weight, spot_flow_weight, flow_weight, regime_weight, momentum_weight, student_t_df, exit_edge_threshold, kelly_fraction, normal_fraction, late_max_penalty, min_atr, max_edge, adverse_selection_threshold, weights (indicator weights dict).
-- DO NOT include min_model_probability, min_edge, or min_kelly in changes — they are read-only.
+- Valid param names (BACKTESTABLE ONLY): atr_sigma_ratio, logit_scale, probability_compression, liquidation_weight, prev_margin_weight, spot_flow_weight, flow_weight, regime_weight, momentum_weight, student_t_df, kelly_fraction, min_atr, weights (indicator weights dict).
+- DO NOT include any param listed under "Parameters NOT In Your Toolkit" — they will be silently dropped (exit_edge_threshold, normal_fraction, late_max_penalty, max_edge, adverse_selection_threshold, trading_start/end, min_model_probability, min_edge, min_kelly).
 - If you have no high-confidence improvements, return an empty changes list: "changes": []
 - Each change must have: "param" (exact name from valid list), "value" (the new value), "reason" (one sentence).
 - key_findings and risk_warnings are shown in Discord.
@@ -235,68 +247,45 @@ class ClaudeClient:
 def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str, float] | None = None,
                                 total_trades: int = 0,
                                 current_config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Validate and clamp Claude's recommendations.
-
-    Accepts the new `changes` list format. For backward compatibility, also accepts the
-    old flat `recommended_X` format and converts it to the new format automatically.
+    """Validate and clamp Claude's `changes` list recommendations.
 
     Returns a dict with:
       - `changes`: list of validated change dicts [{param, value, reason}, ...]
-      - `recommended_weights`: extracted from any weights change (for backward compat)
       - metadata: key_findings, risk_warnings, reasoning, confidence
     """
     indicators = ["rsi", "macd", "stochastic", "obv", "vwap"]
     cfg = current_config or {}
 
-    def _cur(key: str, fallback: float) -> float:
-        return cfg.get(key, fallback)
-
-    # --- Backward compatibility: convert old flat format to new changes list ---
-    if "changes" not in data and any(k.startswith("recommended_") for k in data):
-        old_changes = []
-        # Map old recommended_X keys to new param names
-        param_map = {
-            "recommended_atr_sigma_ratio": "atr_sigma_ratio",
-            "recommended_logit_scale": "logit_scale",
-            "recommended_probability_compression": "probability_compression",
-            "recommended_liquidation_weight": "liquidation_weight",
-            "recommended_prev_margin_weight": "prev_margin_weight",
-            "recommended_spot_flow_weight": "spot_flow_weight",
-            "recommended_flow_weight": "flow_weight",
-            "recommended_regime_weight": "regime_weight",
-            "recommended_momentum_weight": "momentum_weight",
-            "recommended_student_t_df": "student_t_df",
-            "recommended_exit_edge_threshold": "exit_edge_threshold",
-            "recommended_kelly_fraction": "kelly_fraction",
-            "recommended_normal_fraction": "normal_fraction",
-            "recommended_late_max_penalty": "late_max_penalty",
-            "recommended_min_atr": "min_atr",
-            "recommended_max_edge": "max_edge",
-            "recommended_adverse_selection_threshold": "adverse_selection_threshold",
-        }
-        for old_key, param in param_map.items():
-            if old_key in data:
-                old_changes.append({"param": param, "value": data[old_key], "reason": "legacy format"})
-        if data.get("recommended_weights"):
-            old_changes.append({"param": "weights", "value": data["recommended_weights"], "reason": "legacy format"})
-        data["changes"] = old_changes[:5]  # cap at 5
-
     # Normalize: ensure changes is a list
     if not isinstance(data.get("changes"), list):
         data["changes"] = []
 
-    # Insufficient data guard — drop all changes and reset weights to current
+    # Insufficient data guard — drop all changes
     if total_trades < 50:
         data["changes"] = []
         data.setdefault("risk_warnings", []).append(f"Only {total_trades} trades — insufficient data, no changes applied")
-        # Reset recommended_weights to current so callers don't act on stale proposals
-        if current_weights:
-            data["recommended_weights"] = dict(current_weights)
 
-    # Read-only gate params: silently drop any Claude attempt to change them
+    # Read-only gate params: silently drop any Claude attempt to change them.
+    # These entry-gate params corrupt the baseline/candidate comparison (they alter
+    # which trades qualify in the backtest). Change manually in settings.yaml only.
     READ_ONLY_PARAMS = {"min_model_probability", "min_edge", "min_kelly"}
 
-    # Per-param clamp ranges
+    # Non-backtestable exit/timing/schedule params — the Kelly replay can't simulate
+    # different exits on stored outcomes (gain_pct is fixed), and time-of-day filtering
+    # isn't applied to the replayed trade universe. Proposing these guarantees a
+    # zero-delta backtest and wastes a proposal slot. Change manually in settings.yaml.
+    MANUAL_ONLY_PARAMS = {
+        "exit_edge_threshold",
+        "adverse_selection_threshold",
+        "normal_fraction",
+        "late_max_penalty",
+        "max_edge",
+        "trading_start_hour_et",
+        "trading_end_hour_et",
+        "trading_end_minute",
+    }
+
+    # Per-param clamp ranges — only backtestable params appear here.
     CLAMP_RANGES: dict[str, tuple] = {
         "atr_sigma_ratio":              (1.2,   2.5,   float),
         "logit_scale":                  (2.0,   6.0,   float),
@@ -308,17 +297,11 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         "regime_weight":                (0.02,  0.10,  float),
         "momentum_weight":             (-0.10,  0.10,  float),
         "student_t_df":                 (3,     8,     int),
-        "exit_edge_threshold":         (-0.25,  0.0,   float),
         "kelly_fraction":               (0.05,  0.25,  float),
-        "normal_fraction":              (0.40,  0.80,  float),
-        "late_max_penalty":             (0.20,  0.80,  float),
         "min_atr":                      (5.0,   15.0,  float),
-        "max_edge":                     (0.10,  0.30,  float),
-        "adverse_selection_threshold":  (0.45,  0.75,  float),
     }
 
     validated_changes: list[dict[str, Any]] = []
-    extracted_weights: dict[str, float] = {}
 
     for change in data["changes"][:5]:  # enforce max 5
         if not isinstance(change, dict):
@@ -330,9 +313,15 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         if not param or value is None:
             continue
 
-        # Drop read-only params silently
+        # Drop read-only params silently (entry gates that corrupt the backtest)
         if param in READ_ONLY_PARAMS:
             logger.debug(f"Dropping read-only param change: {param}")
+            continue
+
+        # Drop manual-only params — they aren't backtestable (scheduler would reject
+        # with zero delta anyway). Log at info so Claude's drift back toward them is visible.
+        if param in MANUAL_ONLY_PARAMS:
+            logger.info(f"Dropping manual-only (non-backtestable) param change: {param}={value}")
             continue
 
         # Handle indicator weights dict
@@ -373,7 +362,6 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
                         if k != largest:
                             w[k] = round(w[k], 4)
                     w[largest] = round(1.0 - sum(v for kk, v in w.items() if kk != largest), 4)
-            extracted_weights = w
             weight_entry: dict[str, Any] = {"param": "weights", "value": w, "reason": reason}
             for pred_key in ("predicted_delta_sharpe_7d", "confidence_interval"):
                 if pred_key in change:
@@ -398,30 +386,11 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
                 if pred_key in change:
                     entry[pred_key] = change[pred_key]
             validated_changes.append(entry)
-        elif param in ("trading_start_hour_et", "trading_end_hour_et"):
-            try:
-                validated_changes.append({"param": param, "value": max(0, min(23, int(value))), "reason": reason})
-            except (TypeError, ValueError):
-                continue
-        elif param == "trading_end_minute":
-            try:
-                validated_changes.append({"param": param, "value": max(0, min(59, int(value))), "reason": reason})
-            except (TypeError, ValueError):
-                continue
         else:
             # Unknown param — skip
             logger.warning(f"Unknown param in changes list: {param!r}")
 
     data["changes"] = validated_changes
-
-    # Extract recommended_weights for backward compat (scheduler still reads this key)
-    if extracted_weights:
-        data["recommended_weights"] = extracted_weights
-    elif not data.get("recommended_weights") and current_weights:
-        # No weights change recommended — leave recommended_weights absent so
-        # scheduler's weight adoption gate fires correctly (no weights = skip weight opt)
-        pass
-
     return data
 
 
@@ -429,34 +398,37 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
     """Format context into a structured prompt for Claude."""
     sections = []
 
-    # Current config
+    # Current config — organized by whether Claude can change each param.
     cfg = context.get("current_config", {})
     sections.append(
         "## Current Configuration\n"
+        "### YOU CAN CHANGE THESE (backtestable):\n"
         f"Indicator weights: {json.dumps(cfg.get('weights', {}))}\n"
         f"momentum_weight (Layer 4): {cfg.get('momentum_weight', 0.04)}\n"
         f"regime_weight (Layer 2): {cfg.get('regime_weight', 0.05)}\n"
         f"flow_weight (Layer 3): {cfg.get('flow_weight', 0.06)}\n"
-        f"student_t_df (Layer 1): {cfg.get('student_t_df', 4)}\n"
-        f"min_edge (entry_threshold): {cfg.get('min_edge', 0.20)}\n"
-        f"kelly_fraction: {cfg.get('kelly_fraction', 0.15)}\n"
-        f"min_model_probability: {cfg.get('min_model_probability', 0.65)}\n"
-        f"exit_edge_threshold: {cfg.get('exit_edge_threshold', -0.10)}\n"
-        f"min_kelly (entry gate): {cfg.get('min_kelly', 0.015)}\n"
-        f"atr_sigma_ratio: {cfg.get('atr_sigma_ratio', 1.7)}\n"
-        f"trading_start_hour (ET): {cfg.get('trading_start_hour_et', 0)}\n"
-        f"trading_end_hour (ET): {cfg.get('trading_end_hour_et', 23)}\n"
-        f"trading_end_minute: {cfg.get('trading_end_minute', 59)}\n"
-        f"logit_scale: {cfg.get('logit_scale', 4.0)}\n"
-        f"probability_compression: {cfg.get('probability_compression', 1.0)}\n"
+        f"spot_flow_weight (L3b): {cfg.get('spot_flow_weight', 0.04)}\n"
         f"liquidation_weight (L3e): {cfg.get('liquidation_weight', 0.03)}\n"
         f"prev_margin_weight (L5): {cfg.get('prev_margin_weight', 0.02)}\n"
-        f"spot_flow_weight (L3b): {cfg.get('spot_flow_weight', 0.04)}\n"
+        f"atr_sigma_ratio: {cfg.get('atr_sigma_ratio', 1.7)}\n"
+        f"student_t_df (Layer 1): {cfg.get('student_t_df', 4)}\n"
+        f"logit_scale: {cfg.get('logit_scale', 4.0)}\n"
+        f"probability_compression: {cfg.get('probability_compression', 1.0)}\n"
+        f"kelly_fraction: {cfg.get('kelly_fraction', 0.15)}\n"
+        f"min_atr: {cfg.get('min_atr', 8.0)}\n"
+        "\n### READ-ONLY (entry gates — changes corrupt backtest):\n"
+        f"min_model_probability: {cfg.get('min_model_probability', 0.65)}\n"
+        f"min_edge (entry_threshold): {cfg.get('min_edge', 0.20)}\n"
+        f"min_kelly (entry gate): {cfg.get('min_kelly', 0.015)}\n"
+        "\n### MANUAL-ONLY (not backtestable — do NOT propose):\n"
+        f"exit_edge_threshold: {cfg.get('exit_edge_threshold', -0.10)}\n"
         f"adverse_selection_threshold: {cfg.get('adverse_selection_threshold', 0.65)}\n"
         f"normal_fraction (entry timing): {cfg.get('normal_fraction', 0.60)}\n"
         f"late_max_penalty (entry timing): {cfg.get('late_max_penalty', 0.60)}\n"
-        f"min_atr: {cfg.get('min_atr', 8.0)}\n"
-        f"max_edge: {cfg.get('max_edge', 0.20)}"
+        f"max_edge: {cfg.get('max_edge', 0.20)}\n"
+        f"trading_start_hour (ET): {cfg.get('trading_start_hour_et', 0)}\n"
+        f"trading_end_hour (ET): {cfg.get('trading_end_hour_et', 23)}\n"
+        f"trading_end_minute: {cfg.get('trading_end_minute', 59)}"
     )
 
     # Performance analysis from BiasDetector
@@ -556,30 +528,34 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
             )
             if net_dir == "scalp_early":
                 lines.append(
-                    f"→ SCALPING TOO EARLY: ${pnl_gap:+.2f} left on table. "
-                    f"Raise exit_edge_threshold (less negative = hold longer)."
+                    f"→ SCALPING TOO EARLY (${pnl_gap:+.2f} left on table). "
+                    f"exit_edge_threshold is manual-only — the signal you CAN act on: "
+                    f"if the model is holding good positions that get scalped, it means "
+                    f"model probability is DROPPING during the window. Raise logit_scale "
+                    f"so the initial signal is stronger, or lower atr_sigma_ratio so "
+                    f"high-confidence entries are more confident."
                 )
             elif net_dir == "hold_long":
                 lines.append(
                     f"→ HOLDING TOO LONG: scalp would have added value. "
-                    f"Lower exit_edge_threshold (more negative = scalp sooner)."
+                    f"exit_edge_threshold is manual-only — the actionable finding is that "
+                    f"the entry-side model is OVERCONFIDENT (positions look good at entry "
+                    f"but decay). Raise probability_compression (pull toward 0.5) or "
+                    f"atr_sigma_ratio (wider L1 sigma)."
                 )
             else:
-                lines.append("→ Exit threshold appears well-calibrated.")
+                lines.append("→ Exit threshold appears well-calibrated (informational only — manual param).")
 
-            # Holding-edge accuracy buckets — the direct signal for exit_edge_threshold
+            # Holding-edge accuracy buckets — DIAGNOSTIC ONLY (exit_edge_threshold is manual).
             hedge_acc = cf.get("holding_edge_accuracy", {})
             if hedge_acc:
-                lines.append("\nScalp accuracy by holding_edge at exit (KEY for exit_edge_threshold tuning):")
-                lines.append("  If accuracy < 50% in a bucket → scalping wrong in that edge range")
+                lines.append("\nScalp accuracy by holding_edge at exit (diagnostic — exit_edge_threshold is MANUAL-ONLY):")
+                lines.append("  If accuracy <50% across buckets, the entry model is overconfident — fix via probability_compression.")
                 for bucket, stats in hedge_acc.items():
                     lines.append(
                         f"  {bucket:>16}: {stats.get('scalp_accuracy', 0):.0%} accuracy "
                         f"n={stats.get('count', 0)} — {stats.get('signal', '')}"
                     )
-                lines.append(
-                    "  TIP: The crossover bucket (where accuracy ~50%) is where exit_edge_threshold belongs."
-                )
 
             time_acc = cf.get("time_accuracy", {})
             if time_acc:
@@ -676,7 +652,9 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
                 s = stats.get("avg_slippage")
                 lines.append(f"  {bucket}: avg_slip={s:+.4f} n={stats.get('count', 0)}" if s is not None else f"  {bucket}: n={stats.get('count', 0)}")
             lines.append(
-                "  → If wide-spread trades show high slippage, raise max_edge to avoid stale prices."
+                "  → Wide-spread high-slippage pattern is diagnostic — max_edge is manual-only. "
+                "If slippage is eating edge, the fix is to improve signal quality (logit_scale, flow_weight) "
+                "so higher-probability entries wait for tighter spreads naturally."
             )
 
         # Slippage by time-in-window
@@ -688,13 +666,16 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
                 lines.append(f"  {bucket}: avg_slip={s:+.4f} n={stats.get('count', 0)}" if s is not None else f"  {bucket}: n={stats.get('count', 0)}")
             lines.append(
                 "  → Late-window slippage is highest (thin book near expiry). "
-                "If late (0-60s) slippage >> early, raise late_max_penalty or normal_fraction."
+                "late_max_penalty / normal_fraction are manual-only — flag high late-window "
+                "slippage in key_findings for the operator, and tighten the entry model "
+                "(logit_scale, probability_compression) so marginal late entries self-filter."
             )
 
         lines.append(
-            "\nActionable params for slippage: max_edge (filter stale-price entries), "
+            "\nActionable (backtestable) params for slippage: "
             "logit_scale (amplified signals fake-edge if slippage eats it), "
-            "kelly_fraction (slippage is hidden cost reducing true Kelly)."
+            "kelly_fraction (slippage is hidden cost reducing true Kelly). "
+            "max_edge is manual-only."
         )
         if avg_slip > 0.005:
             lines.append("WARNING: avg_fill_slippage > 0.005 — slippage is eating significant realized edge.")
@@ -709,7 +690,12 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
             lines.append("Which entry gates are blocking the most trades:")
             for gate, count in sorted(counts.items(), key=lambda x: -x[1])[:10]:
                 lines.append(f"- **{gate}**: {count}")
-            lines.append("NOTE: High counts on adverse_selection or layer_disagreement may mean those gates are too strict.")
+            lines.append(
+                "NOTE: adverse_selection_threshold is MANUAL-ONLY — if adverse_selection "
+                "dominates skips, flag in key_findings for the operator. High layer_disagreement "
+                "skips can be reduced via logit_scale (harmonize L2-L5 strength) or "
+                "probability_compression (pull extreme L1 toward center)."
+            )
             sections.append("\n".join(lines))
 
     # Ghost trade analysis (downstream gate rejections that resolved profitably)
@@ -790,16 +776,43 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
     if prev:
         sections.append(f"## Previous Recommendations (recent cycles)\n{prev}")
 
-    # Baseline Kelly-Sharpe and adoption target
+    # Baseline Kelly-Sharpe and adoption target — includes noise (JK_SE) so Claude
+    # can size its proposals to actually clear the floor.
     baseline_ks = context.get("analysis", {}).get("baseline_kelly_sharpe")
     adoption_target = context.get("analysis", {}).get("adoption_target")
     if baseline_ks is not None:
-        sections.append(
-            f"## Adoption Target\n"
-            f"Current baseline Kelly-Sharpe: **{baseline_ks:.4f}**\n"
-            f"Your change must reach: **{adoption_target:.4f}** (baseline + delta floor)\n"
-            f"This is the exact number your proposed change must beat to be adopted."
-        )
+        ana = context.get("analysis", {})
+        jk_se = ana.get("baseline_jk_se")
+        abs_floor = ana.get("adoption_abs_floor")
+        dyn_floor = ana.get("adoption_dynamic_floor")
+        n_base = ana.get("baseline_n_trades")
+        lines = [
+            "## Adoption Target (the exact bar your change must clear)",
+            f"Baseline Kelly-Sharpe: **{baseline_ks:.4f}** (N={n_base} trades)",
+        ]
+        if jk_se is not None and dyn_floor is not None:
+            lines.append(
+                f"Backtest noise (Jobson-Korkie SE, autocorr-adjusted): **±{jk_se:.4f}**"
+            )
+            lines.append(
+                f"Required delta = max(abs_floor={abs_floor:.3f}, 0.25 × SE={0.25*jk_se:.4f}) = **{dyn_floor:.4f}**"
+            )
+            lines.append(
+                f"Target Sharpe: **{adoption_target:.4f}** = baseline + {dyn_floor:.4f}"
+            )
+            lines.append(
+                f"Interpretation: a Δ of {jk_se:.3f} is 1 SD of noise. Changes with Δ < "
+                f"{dyn_floor:.3f} are statistically indistinguishable from noise at this N. "
+                f"Aim for Δ >= {2*dyn_floor:.3f} to have meaningful safety margin."
+            )
+            lines.append(
+                f"**Also required:** candidate must improve in ≥3 of 4 walk-forward folds "
+                f"AND pass regime-stratified check (≥2 of 3 regimes improve, OR dominant "
+                f"regime improves without any regime degrading >0.10 Sharpe)."
+            )
+        else:
+            lines.append(f"Target Sharpe: **{adoption_target:.4f}** (baseline + floor)")
+        sections.append("\n".join(lines))
 
     # Cumulative failures — all parameter values tried across all cycles
     cum_failures = context.get("analysis", {}).get("cumulative_failures", {})
@@ -819,13 +832,6 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         lines.append("If a change had NEGATIVE delta — it made Sharpe WORSE. Do NOT propose it again.")
         lines.append("If z was low but delta was positive — consider proposing a LARGER change to that parameter.")
         sections.append("\n".join(lines))
-    elif context.get("analysis", {}).get("last_rejection_reason", ""):
-        last_rejection = context["analysis"]["last_rejection_reason"]
-        sections.append(
-            f"## Last Pipeline Rejection\n"
-            f"Reason: **{last_rejection}**\n"
-            f"If negative delta — your change made Sharpe WORSE. Do not repeat it."
-        )
 
     # Pipeline track record — did past adoptions actually help?
     track_record = context.get("analysis", {}).get("pipeline_track_record", "")
