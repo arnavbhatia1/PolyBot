@@ -443,3 +443,23 @@
 - SPRT negative last 50 trades with 0% edge entries — recent entry quality may be structurally impaired
 
 **Reasoning:** After exhausting nearly every parameter direction, the only validated path is atr_sigma_ratio ↓ — pushing it to the constraint floor (1.2) maximizes the one direction that has actually adopted. Momentum_weight and logit_scale ↓ are both completely untested families that cover fresh territory; given all indicators are scoring ~53-54% (far below the 65% action threshold), fading them harder and reducing signal amplification are internally consistent with the noise-dominated signal environment.
+
+## 2026-04-22T05:26:50.063161+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (0):**
+  - none
+
+**Findings:**
+- 10 parameter directions tested — zero walk-forward adoptions, structural noise floor too high
+- Q4 edge realization at 0.49 persists — model overconfident but no parameter has fixed it yet
+- High ATR trades win 56.2% vs 52.3% low ATR — volatility surge is net positive for the model
+- Down trades win 54.6% vs Up 53.1% — mild persistent bearish edge across all cycles
+- SPRT negative last 50 trades — recent entry quality below expectation, monitor closely
+
+**Warnings:**
+- ATR surged 44% and model_probability dropped (57.8%→54.6%) — regime shift may be degrading signal quality
+- Zero adoptions after 20+ cycles suggests backtest noise (SE=±0.071) is too large for single-param changes to clear
+- SPRT negative with 0% edge-positive entries last 50 trades — live conditions may be structurally impaired
+
+**Reasoning:** After 20+ proposal cycles with zero walk-forward adoptions across 10 parameter families, the evidence is clear: individual parameter changes cannot clear the ±0.071 SE noise floor at N=204 baseline trades — even when BT delta is positive (+0.014 to +0.027), fold consistency fails. The only honest recommendation this cycle is no changes — proposing more small tweaks wastes pipeline cycles and risks adopting noise. The operator should investigate whether the baseline population (N=204) can be expanded or whether the walk-forward fold structure is suppressing adoption of genuinely positive signals.

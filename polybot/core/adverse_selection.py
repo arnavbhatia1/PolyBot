@@ -139,17 +139,22 @@ class AdverseSelectionMonitor:
                 fill.midprice_60s = mid
                 fill.resolved = True
 
-    def get_adverse_rate(self, window_s: float = 30.0) -> float:
+    def get_adverse_rate(self, window_s: float = 30.0, lookback_s: float = 7200.0) -> float:
         """Fraction of fills where price moved AGAINST us within window_s.
 
         For Up bets: adverse = midprice dropped after fill
         For Down bets: adverse = midprice rose after fill
 
-        Returns 0.5 (neutral) if insufficient data.
+        Only fills recorded within ``lookback_s`` seconds are counted — older
+        fills reflect stale market regimes and must not gate current entries.
+        Returns 0.5 (neutral) if insufficient recent data.
         """
+        now = time.time()
         adverse = 0
         total = 0
         for fill in self._fills:
+            if now - fill.timestamp > lookback_s:
+                continue  # stale — different market regime, drop from sample
             if window_s <= 10.0:
                 post = fill.midprice_10s
             elif window_s <= 30.0:
@@ -164,7 +169,7 @@ class AdverseSelectionMonitor:
             elif fill.side == "Down" and post > fill.midprice_at_fill:
                 adverse += 1
         if total < 10:
-            return 0.5  # not enough data
+            return 0.5  # not enough recent data
         return adverse / total
 
     def get_stats(self) -> dict:
