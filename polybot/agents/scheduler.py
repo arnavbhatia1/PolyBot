@@ -70,6 +70,60 @@ class AgentScheduler:
         self.bias_detector.save(analysis)
         return analysis
 
+    def _ghost_to_outcome(self, g: dict[str, Any]) -> dict[str, Any] | None:
+        """Normalize a resolved ghost record into the same shape as outcomes/.
+
+        Ghosts are trades rejected at live entry gates (min_edge, min_prob, min_kelly, etc.).
+        Including them in the backtest population unlocks those gates from read-only:
+        raising a gate now filters the same fills out of baseline and candidate equally,
+        and lowering a gate includes the ghosts that would have fired — and we know how
+        each ghost resolved.
+
+        Gain_pct is re-derived from the recorded market_price_<side> so it matches the
+        execution-price accounting used by real outcomes (ghost_gain_pct stored on-disk
+        is computed against signal_prob, which doesn't match real fills).
+        """
+        if not g.get("resolved"):
+            return None
+        side = (g.get("side") or "").lower()
+        if side not in ("up", "down"):
+            return None
+        ctx = g.get("indicator_snapshot", {}).get("trade_context", {}) or {}
+        mp = ctx.get("market_price_up", 0) if side == "up" else ctx.get("market_price_down", 0)
+        if not mp or mp <= 0 or mp >= 1:
+            return None
+        correct = bool(g.get("ghost_correct"))
+        gain_pct = ((1.0 - mp) / mp) if correct else -1.0
+        return {
+            "side": side,
+            "correct": correct,
+            "gain_pct": round(gain_pct, 4),
+            "indicator_snapshot": g.get("indicator_snapshot", {}),
+            "entry_price": mp,
+            "exit_price": 1.0 if correct else 0.0,
+            "exit_timestamp": g.get("resolved_at") or g.get("timestamp", ""),
+            "timestamp": g.get("timestamp", ""),
+            "is_ghost": True,
+        }
+
+    def _load_combined_outcomes(self) -> list[dict[str, Any]]:
+        """Real outcomes + normalized resolved ghosts, sorted by exit_timestamp."""
+        real = self.outcome_reviewer.load_all_outcomes() if self.outcome_reviewer else []
+        real = real or []
+        ghost_outcomes: list[dict[str, Any]] = []
+        gt = getattr(self, 'ghost_tracker', None)
+        if gt is not None:
+            try:
+                for g in gt.load_all():
+                    norm = self._ghost_to_outcome(g)
+                    if norm is not None:
+                        ghost_outcomes.append(norm)
+            except Exception as e:
+                logger.debug(f"Ghost load failed (non-critical): {e}")
+        combined = real + ghost_outcomes
+        combined.sort(key=lambda x: x.get("exit_timestamp") or x.get("timestamp", ""))
+        return combined
+
     def _precompute_baseline(self, all_outcomes: list[dict[str, Any]]) -> None:
         """Compute baseline Kelly-Sharpe + JK_SE + N and cache on self BEFORE Claude runs.
 
@@ -218,6 +272,76 @@ class AgentScheduler:
                     analysis["parameter_history"] = "\n".join(history_lines)
             except Exception as e:
                 logger.debug(f"Failed to build parameter history: {e}")
+
+        # Active adoptions table — which past proposals are currently LIVE, IN_COOLDOWN,
+        # or ROLLED_BACK. Prevents Claude wasting proposal slots on cooldowned or reversed
+        # params because it didn't know they were off-limits.
+        if self.pipeline_tracker:
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                now = _dt.now(_tz.utc)
+                cooldown_set = self.pipeline_tracker.params_in_cooldown(cooldown_days=2.0)
+                active_lines: list[str] = []
+                rolled_lines: list[str] = []
+                cooldown_lines: list[str] = []
+                records = self.pipeline_tracker.get_track_record()
+                for rec in records:
+                    try:
+                        rec_dt = _dt.fromisoformat(rec.get("date", ""))
+                    except (ValueError, TypeError):
+                        continue
+                    age_days = (now - rec_dt).total_seconds() / 86400.0
+                    if age_days > 30:
+                        continue
+                    for param, (old_val, new_val) in (rec.get("changes") or {}).items():
+                        # Look up the current live value from the built current_config
+                        if param == "weights":
+                            continue  # multi-value; skip from this compact table
+                        cur = current_config.get(param)
+                        r7 = rec.get("review_7d") or {}
+                        pred = rec.get("predicted_sharpe", 0)
+                        baseline = rec.get("baseline_sharpe", 0)
+                        pred_delta = round(pred - baseline, 3)
+                        actual_delta = round(r7.get("sharpe", 0) - baseline, 3) if r7 else None
+                        actual_str = f"7d_actual={actual_delta:+.3f}" if actual_delta is not None else "7d=pending"
+                        # Rolled back = current live value no longer matches what was adopted
+                        try:
+                            drifted = (cur is None) or (abs(float(cur) - float(new_val)) > 1e-6)
+                        except (TypeError, ValueError):
+                            drifted = (cur != new_val)
+                        if drifted:
+                            rolled_lines.append(
+                                f"  {param}: was adopted {old_val}->{new_val} {age_days:.0f}d ago, "
+                                f"now at {cur} — {actual_str} vs pred={pred_delta:+.3f}"
+                            )
+                        elif param in cooldown_set:
+                            cooldown_end_days = max(0.0, 2.0 - age_days)
+                            cooldown_lines.append(
+                                f"  {param}: {old_val}->{new_val} (adopted {age_days:.1f}d ago, "
+                                f"IN_COOLDOWN ~{cooldown_end_days:.1f}d more) — LIVE"
+                            )
+                        else:
+                            active_lines.append(
+                                f"  {param}: {old_val}->{new_val} (adopted {age_days:.0f}d ago) "
+                                f"{actual_str} vs pred={pred_delta:+.3f} — LIVE"
+                            )
+                # Also list cooldown params with no adoption in last 30d (edge case: older adoption still blocking)
+                seen_in_sections = {ln.strip().split(":")[0] for ln in (active_lines + rolled_lines + cooldown_lines)}
+                extra_cooldown = [p for p in cooldown_set if p not in seen_in_sections]
+
+                sections_out: list[str] = []
+                if active_lines:
+                    sections_out.append("ACTIVE ADOPTIONS (last 30 days, currently LIVE):\n" + "\n".join(active_lines))
+                if cooldown_lines:
+                    sections_out.append("IN COOLDOWN (cannot re-propose):\n" + "\n".join(cooldown_lines))
+                if rolled_lines:
+                    sections_out.append("ROLLED BACK (adopted value no longer live):\n" + "\n".join(rolled_lines))
+                if extra_cooldown:
+                    sections_out.append("ALSO IN COOLDOWN: " + ", ".join(sorted(extra_cooldown)))
+                if sections_out:
+                    analysis["active_adoptions"] = "\n\n".join(sections_out)
+            except Exception as e:
+                logger.debug(f"Failed to build active adoptions table: {e}")
 
         recommendations = await self.ta_evolver.evolve(outcomes, analysis, current_config)
         return recommendations
@@ -396,10 +520,10 @@ class AgentScheduler:
     def _config_for_helper(self, recommendations: dict[str, Any] | None = None) -> dict[str, Any]:
         """Resolve config for `_kelly_bankroll_returns` — recommendation first, live engine fallback.
 
-        Entry gates (min_model_probability, min_edge, min_kelly) always use live signal_engine
-        values — never candidate recommendations — so the backtest population stays constant
-        across baseline and candidate runs. Changing these gates would alter which trades
-        appear in both runs and corrupt the comparison.
+        Entry gates (min_model_probability, min_edge, min_kelly) are now pipeline-tunable:
+        the backtest sample includes resolved ghosts (trades rejected at live gates), so
+        raising or lowering any gate filters both baseline and candidate identically and
+        the comparison stays clean.
         """
         rec = recommendations or {}
         live_weights = self.indicator_engine.get_weights() if self.indicator_engine else {}
@@ -413,12 +537,14 @@ class AgentScheduler:
                 getattr(self.signal_engine, 'atr_sigma_ratio', 1.4)),
             "student_t_df": int(rec.get("recommended_student_t_df",
                 getattr(self.signal_engine, 'student_t_df', 5))),
-            # Entry gates — always use live engine values, never candidate recommendations.
-            # These define which trades qualify for backtesting; varying them between
-            # baseline and candidate would change the sample, not just the signal.
-            "min_edge": getattr(self.signal_engine, 'min_edge', 0.04),
-            "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
-            "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.58),
+            # Entry gates — candidate-overridable since the backtest includes ghosts
+            # (resolved rejections) alongside real fills.
+            "min_edge": rec.get("recommended_min_edge",
+                getattr(self.signal_engine, 'min_edge', 0.04)),
+            "min_kelly": rec.get("recommended_min_kelly",
+                getattr(self.signal_engine, 'min_kelly', 0.015)),
+            "min_model_probability": rec.get("recommended_min_model_probability",
+                getattr(self.signal_engine, 'min_model_probability', 0.58)),
             "kelly_fraction": rec.get("recommended_kelly_fraction",
                 getattr(self.signal_engine, 'kelly_fraction', 0.15)),
             "regime_weight": rec.get("recommended_regime_weight",
@@ -498,6 +624,7 @@ class AgentScheduler:
             "regime_weight", "flow_weight", "spot_flow_weight", "wall_weight",
             "liquidation_weight", "prev_margin_weight", "logit_scale", "min_atr",
             "probability_compression",
+            "min_edge", "min_kelly", "min_model_probability",
         ):
             single_rec[f"recommended_{param}"] = value
         else:
@@ -1129,12 +1256,17 @@ class AgentScheduler:
             cf_rolled = self.counterfactual_tracker.rollup_old_counterfactuals()
             if cf_rolled:
                 logger.info(f"Daily rollup: consolidated {cf_rolled} counterfactual files")
-        all_outcomes = self.outcome_reviewer.load_all_outcomes()
+        # Merge real outcomes + resolved ghosts so the backtest sample contains both
+        # trades that fired AND trades rejected at entry gates. Required for
+        # min_edge / min_model_probability / min_kelly to be pipeline-tunable:
+        # without ghosts, raising/lowering a gate would asymmetrically filter trades.
+        all_outcomes = self._load_combined_outcomes()
+        n_ghosts = sum(1 for o in all_outcomes if o.get("is_ghost"))
         split_idx = max(1, int(len(all_outcomes) * 0.6))
         train_outcomes = all_outcomes[:split_idx]
         validation_outcomes = all_outcomes[split_idx:]  # used for Platt holdout validation
         logger.info(f"Walk-forward split: {len(train_outcomes)} train / {len(validation_outcomes)} validation "
-                    f"(4 folds, {len(all_outcomes)} total)")
+                    f"(4 folds, {len(all_outcomes)} total incl. {n_ghosts} resolved ghosts)")
         pipeline_info["total_outcomes"] = len(all_outcomes)
         pipeline_info["train_count"] = len(train_outcomes)
         pipeline_info["validation_count"] = len(all_outcomes) - len(train_outcomes)

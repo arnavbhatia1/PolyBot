@@ -119,13 +119,14 @@ in backtest and adopt when the candidate Sharpe clears the dynamic floor.
 - `signal.min_atr` 8.0 (range 5.0-15.0; runtime floor = `max(min_atr, 0.3 × rolling_mean_atr_20)`)
 - `signal.weights` rsi/macd/stochastic/obv/vwap (sum to 1.0, each >= 0.05)
 
-### Read-Only for Claude (entry gates — corrupt the backtest comparison)
-The backtest replays stored outcomes. Raising any gate filters historical trades
-out of BOTH baseline and candidate runs, so the comparison is no longer apples-to-apples.
-Change these manually in `settings.yaml` only.
-- `signal.min_model_probability` 0.58
-- `signal.entry_threshold` (min_edge) 0.04
-- `signal.min_kelly` 0.015 (primary gate)
+### Entry gates — pipeline-tunable (since ghosts joined the backtest sample)
+Previously read-only because the backtest replayed only trades that fired. Now
+`_load_combined_outcomes()` merges real outcomes with **resolved ghosts** (trades
+rejected at live entry gates, tracked to resolution). Raising a gate filters both
+baseline and candidate identically; lowering includes ghosts that would have fired.
+- `signal.min_model_probability` 0.58 (range 0.52–0.70)
+- `signal.entry_threshold` (min_edge) 0.04 (range 0.02–0.10)
+- `signal.min_kelly` 0.015 (range 0.005–0.04) — primary gate
 
 ### Manual-Only (unbacktestable or user-owned risk policy)
 Either the backtest cannot simulate the change (exit/timing/schedule) or these are
@@ -174,17 +175,15 @@ These flow through `_kelly_bankroll_returns` so the backtest can simulate change
 
 Adoption gates: candidate Sharpe > 0, n ≥ 100, Δ ≥ max(0.020, 0.25 × JK_SE), ≥ 2/4 folds improve, dominant regime improves without any regime degrading > 0.10, param not in 2-day cooldown.
 
-### 🟡 Read-Only for Claude (entry gates — corrupt the backtest comparison)
+### 🟡 Entry gates — NOW pipeline-tunable (ghosts in backtest sample)
 
-The backtest replays stored outcomes. Changing these alters which trades qualify in BOTH baseline and candidate → comparison no longer apples-to-apples. Claude sees them for context; validator silently drops any change attempt.
+Previously read-only. The backtest now loads real outcomes PLUS resolved ghosts via `_load_combined_outcomes()`, so raising a gate filters baseline + candidate identically, and lowering one includes ghosts that would have fired. Comparison stays apples-to-apples.
 
-| Param | Value | Why off-limits |
+| Param | Value | Range |
 |---|---|---|
-| `min_model_probability` | 0.58 | Filters historical trades out of backtest when raised |
-| `min_edge` (entry_threshold) | 0.04 | Same issue |
-| `min_kelly` | 0.015 | Same issue — primary entry gate |
-
-Could migrate to pipeline-tunable if the backtest was re-derived from raw signal/price data rather than stored outcomes.
+| `min_model_probability` | 0.58 | 0.52–0.70 |
+| `min_edge` (entry_threshold) | 0.04 | 0.02–0.10 |
+| `min_kelly` | 0.015 | 0.005–0.04 (primary gate) |
 
 ### 🔴 Manual-Only (operator — edit settings.yaml directly)
 
@@ -288,7 +287,7 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 4. Distribution shift (KS-test recent 50 vs historical)
 5. SPRT aggregate (diagnostic only — reports edge-state of recent 50 trades; no longer modulates the adoption floor)
 6. `TAEvolver` — sends analysis card + 100 stratified trades (50 recent + 50 spaced across the day) to Claude. Returns structured JSON with a `changes` list (0–5 entries, empty is valid). Each change requires `param`, `value`, `reason`, `predicted_delta_sharpe_7d`, `confidence_interval`. Local fallback when Claude unavailable (max 2 params, 15% change cap). Analysis card includes: calibration curve (reliability diagram), gate skip stats, realized edge vs predicted edge, ghost trade gate analysis (by_gate with sim_pnl), time-to-resolution distribution, cross-window correlation, execution quality with slippage breakdown by spread/time, counterfactual exit analysis with holding_edge accuracy buckets, statistical noise reference, prediction accuracy track record, empirical directional table, adoption decay analysis, **parameter change history** (last 5 adoptions with actual vs predicted Sharpe and decay status).
-7. `WeightOptimizer` — **per-parameter** walk-forward backtests (one backtest per proposed change). Each change tested in isolation against baseline on the same 4 folds, then through regime-stratified gate (dominant improves + no regime degrades >0.10). Params in per-param cooldown are skipped before backtest. Changes that pass all gates are adopted independently. If ≥2 changes are adopted, a **combined backtest** runs: if combined Δ < 0.7 × sum(individual Δ), the lowest-z-score change is backed out (interaction detected). `_kelly_bankroll_returns` replays the full logit composition (L1 CDF, L2 regime×direction, L3 flow with 0.35-logit cap, L3b spot-flow, L3c wall, L3e liq, L5 prev-margin, L4 indicator momentum, Platt). Backtest freezes on `self.signal_engine.calibrator`. Entry gates (`min_model_probability`, `min_edge`, `min_kelly`) are held constant in ALL backtests — never varied by candidate — so the trade population stays identical between baseline and candidate runs.
+7. `WeightOptimizer` — **per-parameter** walk-forward backtests (one backtest per proposed change). Each change tested in isolation against baseline on the same 4 folds, then through regime-stratified gate (dominant improves + no regime degrades >0.10). Params in per-param cooldown are skipped before backtest. Changes that pass all gates are adopted independently. If ≥2 changes are adopted, a **combined backtest** runs: if combined Δ < 0.7 × sum(individual Δ), the lowest-z-score change is backed out (interaction detected). `_kelly_bankroll_returns` replays the full logit composition (L1 CDF, L2 regime×direction, L3 flow with 0.35-logit cap, L3b spot-flow, L3c wall, L3e liq, L5 prev-margin, L4 indicator momentum, Platt). Backtest freezes on `self.signal_engine.calibrator`. The sample is built by `_load_combined_outcomes()` which merges real outcomes with resolved ghosts (trades rejected at live entry gates, tracked to resolution). This makes entry gates (`min_model_probability`, `min_edge`, `min_kelly`) candidate-overridable: raising a gate filters baseline + candidate identically, and lowering one includes the relevant ghosts — both stay apples-to-apples.
 
 **Key pipeline invariants:**
 - `momentum_weight` can be negative (-0.10 to +0.10). Negative = fade indicators (current: -0.02). Claude knows this.

@@ -130,9 +130,6 @@ into parameters you CAN propose (above).
 - `adverse_selection_threshold`, `normal_fraction`, `late_max_penalty`, `max_edge` — entry-timing / informed-flow filters; backtest ignores them
 - `trading_start_hour_et`, `trading_end_hour_et`, `trading_end_minute` — backtest ignores time-of-day
 
-**Read-only (would corrupt backtest population):**
-- `min_model_probability`, `min_edge`, `min_kelly` — changing these alters which trades qualify in both baseline and candidate, breaking the comparison.
-
 **User-owned risk caps (changed only by operator):**
 - `kelly_fraction` bounds, `max_single_position_usd`, `max_single_position_pct`
 - `circuit_breaker.floor_pct`, `circuit_breaker.min_multiplier`
@@ -192,8 +189,8 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
 
 IMPORTANT:
 - `changes` is a ranked list (most impactful first), 0 to 5 entries. Empty list is valid.
-- Valid param names (BACKTESTABLE ONLY): atr_sigma_ratio, logit_scale, probability_compression, liquidation_weight, prev_margin_weight, spot_flow_weight, flow_weight, regime_weight, momentum_weight, student_t_df, kelly_fraction, min_atr, weights (indicator weights dict).
-- DO NOT include any param listed under "Parameters NOT In Your Toolkit" — they will be silently dropped (exit_edge_threshold, normal_fraction, late_max_penalty, max_edge, adverse_selection_threshold, trading_start/end, min_model_probability, min_edge, min_kelly).
+- Valid param names (BACKTESTABLE): atr_sigma_ratio, logit_scale, probability_compression, liquidation_weight, prev_margin_weight, spot_flow_weight, flow_weight, regime_weight, momentum_weight, student_t_df, kelly_fraction, min_atr, min_edge, min_kelly, min_model_probability, weights (indicator weights dict).
+- DO NOT include any param listed under "Parameters NOT In Your Toolkit" — they will be silently dropped (exit_edge_threshold, normal_fraction, late_max_penalty, max_edge, adverse_selection_threshold, trading_start/end).
 - If you have no high-confidence improvements, return an empty changes list: "changes": []
 - Each change must have: "param" (exact name from valid list), "value" (the new value), "reason" (one sentence).
 - key_findings and risk_warnings are shown in Discord.
@@ -265,10 +262,9 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         data["changes"] = []
         data.setdefault("risk_warnings", []).append(f"Only {total_trades} trades — insufficient data, no changes applied")
 
-    # Read-only gate params: silently drop any Claude attempt to change them.
-    # These entry-gate params corrupt the baseline/candidate comparison (they alter
-    # which trades qualify in the backtest). Change manually in settings.yaml only.
-    READ_ONLY_PARAMS = {"min_model_probability", "min_edge", "min_kelly"}
+    # Entry gates are now pipeline-tunable: the backtest sample includes resolved
+    # ghosts, so raising or lowering a gate filters baseline and candidate identically.
+    READ_ONLY_PARAMS: set[str] = set()
 
     # Non-backtestable exit/timing/schedule params — the Kelly replay can't simulate
     # different exits on stored outcomes (gain_pct is fixed), and time-of-day filtering
@@ -299,6 +295,11 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         "student_t_df":                 (3,     8,     int),
         "kelly_fraction":               (0.05,  0.25,  float),
         "min_atr":                      (5.0,   15.0,  float),
+        # Entry gates — pipeline-tunable now that ghosts are in the backtest sample.
+        # Ranges are conservative; Claude should move them in small steps.
+        "min_edge":                     (0.02,  0.10,  float),
+        "min_kelly":                    (0.005, 0.04,  float),
+        "min_model_probability":        (0.52,  0.70,  float),
     }
 
     validated_changes: list[dict[str, Any]] = []
@@ -416,10 +417,9 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         f"probability_compression: {cfg.get('probability_compression', 1.0)}\n"
         f"kelly_fraction: {cfg.get('kelly_fraction', 0.15)}\n"
         f"min_atr: {cfg.get('min_atr', 8.0)}\n"
-        "\n### READ-ONLY (entry gates — changes corrupt backtest):\n"
-        f"min_model_probability: {cfg.get('min_model_probability', 0.65)}\n"
-        f"min_edge (entry_threshold): {cfg.get('min_edge', 0.20)}\n"
-        f"min_kelly (entry gate): {cfg.get('min_kelly', 0.015)}\n"
+        f"min_model_probability: {cfg.get('min_model_probability', 0.58)}  (pipeline-tunable since ghosts joined backtest)\n"
+        f"min_edge (entry_threshold): {cfg.get('min_edge', 0.04)}  (pipeline-tunable since ghosts joined backtest)\n"
+        f"min_kelly (entry gate): {cfg.get('min_kelly', 0.015)}  (pipeline-tunable since ghosts joined backtest)\n"
         "\n### MANUAL-ONLY (not backtestable — do NOT propose):\n"
         f"exit_edge_threshold: {cfg.get('exit_edge_threshold', -0.10)}\n"
         f"adverse_selection_threshold: {cfg.get('adverse_selection_threshold', 0.65)}\n"
@@ -765,6 +765,17 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
                 f"prob={prob:.0%} edge={edge:+.0%} flow={flow:+.2f} {secs:.0f}s regime={regime}"
             )
         sections.append("\n".join(lines))
+
+    # Active adoptions — which of your past proposals are currently LIVE, IN_COOLDOWN,
+    # or ROLLED_BACK. Do NOT propose params listed as IN_COOLDOWN; reconsider direction
+    # for params in ROLLED_BACK.
+    active_adoptions = context.get("analysis", {}).get("active_adoptions", "")
+    if active_adoptions:
+        sections.append(
+            "## Current Parameter State (your past proposals right now)\n"
+            "Use this to avoid re-proposing cooldowned params or re-proposing the same direction "
+            "on a rolled-back change.\n\n" + active_adoptions
+        )
 
     # Parameter change history — what worked and what didn't (shown before previous recs)
     param_history = context.get("analysis", {}).get("parameter_history", "")
