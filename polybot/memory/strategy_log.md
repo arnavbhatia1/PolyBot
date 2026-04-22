@@ -266,3 +266,25 @@
 - logit_scale and atr_sigma_ratio both raised — monitor for over-sharpening interaction; combined backtest will validate
 
 **Reasoning:** Q4 edge realization at 0.49 is the dominant problem — the model is severely overconfident at high-edge trades, and raising atr_sigma_ratio to 1.6 combined with probability_compression 0.92 directly addresses this. Scalp exit analysis shows the 0 to -0.02 holding_edge bucket is only 43% accurate, so tightening exit_edge_threshold to -0.02 stops bad premature scalps. Flow_weight raised to 0.07 and logit_scale to 4.5 follow direction rules to amplify the most predictive signal layer.
+
+## 2026-04-22T04:11:35.988654+00:00
+
+**Source:** Claude (medium)
+**Proposed Changes (3):**
+  - probability_compression=0.92 (Only direction with positive BT delta (+0.017) and Q4 edge realization at 0.49 confirms severe overconfidence at extremes that compression directly fixes.)
+  - exit_edge_threshold=-0.03 (Scalp accuracy is wrong in 3 of 4 holding_edge buckets (43%, 52%, 39%) — tightening to -0.03 stops premature exits where scalping is demonstrably destroying value.)
+  - spot_flow_weight=0.06 (CVD-based spot flow signal is directionally recommended to raise and hasn't been backtested yet — testing at 0.06 from current 0.04 covers a new parameter family.)
+
+**Findings:**
+- Q4 highest-edge trades realizing only 49 cents per dollar — model severely overconfident
+- Scalp exits wrong in 3 of 4 edge buckets — holding longer beats exiting early
+- ATR surged 44% recently — now in high-vol regime where model wins 56%
+- atr_sigma_ratio raised last cycle gave -0.024 BT delta — do not raise again
+- probability_compression is the only tested direction with positive backtest delta
+
+**Warnings:**
+- atr_sigma_ratio raising has negative BT delta — previous cycles' dominant fix is not working
+- Model probability shifted down (57.8% to 54.6%) — weaker signals, more marginal trades entering
+- SPRT negative with 0% edge entries last 50 trades — recent conditions may be impaired
+
+**Reasoning:** The empirical direction table is clear: raising atr_sigma_ratio gave -0.024 BT delta and should not be repeated — probability_compression is the only tested direction showing positive delta (+0.017) and directly addresses the Q4 overconfidence (0.49 realization). Exit management is the second priority since scalp accuracy is below 50% in 3 of 4 holding_edge buckets, confirming the -0.05 threshold is too loose. Spot_flow_weight at 0.06 covers a third parameter family per the diversification requirement without overlapping the failed directions.
