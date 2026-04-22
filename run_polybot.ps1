@@ -59,12 +59,10 @@ while ($true) {
     }
     $waitSeconds = ($next1215am - $now).TotalSeconds
 
-    if ($waitSeconds -gt 300) {
-        Write-Host "[$timestamp] Waiting $([math]::Round($waitSeconds/60)) minutes until 12:15 AM ET..." -ForegroundColor DarkGray
+    if ($waitSeconds -gt 10) {
+        Write-Host "[$timestamp] Waiting $([math]::Round($waitSeconds/60, 1)) minutes until 12:15 AM ET..." -ForegroundColor DarkGray
         Start-Sleep -Seconds $waitSeconds
     } else {
-        # Less than 5 minutes to 12:15 AM, just restart now
-        Write-Host "[$timestamp] Near 12:15 AM, restarting immediately..." -ForegroundColor Green
         Start-Sleep -Seconds 10
     }
 }
