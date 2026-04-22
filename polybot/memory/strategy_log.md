@@ -310,3 +310,25 @@
 - SPRT negative with 0% edge entries last 50 trades — recent conditions may be impaired, monitor
 
 **Reasoning:** Probability_compression is the highest-conviction change — it's the only empirically positive-delta direction (+0.017 over 2 tests) and the current value of 1.0 means zero compression is applied despite Q4 realization at 0.49 screaming model overconfidence. Exit threshold at -0.03 aligns with the scalp crossover analysis where the -0.02 to -0.05 bucket is the only one near 50% accuracy. Spot_flow_weight at 0.06 is a low-risk diversification into a third parameter family with a positive (if single-test) BT delta.
+
+## 2026-04-22T04:13:24.794059+00:00
+
+**Source:** Claude (medium)
+**Proposed Changes (3):**
+  - probability_compression=0.88 (Only parameter with consistent positive BT delta (+0.014 avg over 3 tests) and current value is 1.0 — Q4 realization at 0.49 confirms severe overconfidence that compression directly fixes; going to 0.88 instead of 0.90/0.92 increases the delta beyond the 0.0200 adoption floor.)
+  - exit_edge_threshold=-0.03 (The 0-to-(-0.02) scalp bucket is 43% accurate and the <-0.10 bucket is 39% accurate while -0.02-to-(-0.05) is 60% — crossover analysis places the optimal threshold near -0.03, stopping premature exits where scalping demonstrably destroys value.)
+  - spot_flow_weight=0.06 (CVD-based spot flow has +0.007 avg BT delta over 2 tests and is directionally recommended to raise — increasing from 0.04 to 0.06 covers a third parameter family without overlapping the failed atr_sigma_ratio or logit_scale directions.)
+
+**Findings:**
+- Q4 top-edge trades realizing only 49 cents per dollar — model is severely overconfident
+- Scalp exits wrong in 3 of 4 edge buckets (43%, 52%, 39%) — hold longer beats exiting early
+- ATR surged 44% recently — high-vol regime where model wins 56% vs 52% in calm markets
+- probability_compression is the only tested direction with positive BT delta (+0.014)
+- Down trades win 54.6% vs Up 53.1% — mild bearish edge persists across all cycles
+
+**Warnings:**
+- atr_sigma_ratio raised in past cycles showed -0.024 BT delta — do not raise further
+- SPRT negative with 0% edge entries last 50 trades — recent conditions may be impaired
+- ATR distribution shift (KS=0.282) and model_probability shift (KS=0.272) — both significant regime changes
+
+**Reasoning:** Probability_compression at 1.0 (no compression) combined with Q4 realization of 0.49 is the clearest miscalibration in the data — pushing to 0.88 is the highest-conviction change with three tests supporting a positive BT delta. Exit threshold at -0.05 is confirmed too aggressive by the bucket analysis (43% accuracy at 0-to-(-0.02)), and -0.03 aligns with the crossover zone. Spot_flow_weight at 0.06 diversifies into a third parameter family with a modestly positive BT delta track record.
