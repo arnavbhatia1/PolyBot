@@ -332,3 +332,26 @@
 - ATR distribution shift (KS=0.282) and model_probability shift (KS=0.272) — both significant regime changes
 
 **Reasoning:** Probability_compression at 1.0 (no compression) combined with Q4 realization of 0.49 is the clearest miscalibration in the data — pushing to 0.88 is the highest-conviction change with three tests supporting a positive BT delta. Exit threshold at -0.05 is confirmed too aggressive by the bucket analysis (43% accuracy at 0-to-(-0.02)), and -0.03 aligns with the crossover zone. Spot_flow_weight at 0.06 diversifies into a third parameter family with a modestly positive BT delta track record.
+
+## 2026-04-22T04:14:28.137920+00:00
+
+**Source:** Claude (medium)
+**Proposed Changes (4):**
+  - probability_compression=0.85 (4 tests all show positive BT delta (+0.016 avg) and current value is 1.0 (no compression) — pushing to 0.85 from previously tested 0.88-0.92 range increases delta to clear the 0.0200 adoption floor, directly fixing Q4 realization at 0.49.)
+  - spot_flow_weight=0.07 (3 tests show consistent positive BT delta (+0.007 avg) — stepping up from 0.04 to 0.07 increases incremental contribution to push combined delta above adoption floor; CVD signal is predictive and currently underweighted.)
+  - exit_edge_threshold=-0.03 (Scalp bucket analysis shows 0 to -0.02 at 43% accuracy and below -0.10 at 39% — the -0.02 to -0.05 bucket at 60% is the crossover zone, placing optimal threshold near -0.03 to stop premature exits that destroy value.)
+  - student_t_df=4 (Untested direction and ATR surged 44% into a higher-volatility regime — lowering df from 5 to 4 gives fatter tails, finding more edge on extreme reversal trades that are now more frequent.)
+
+**Findings:**
+- Q4 top-edge trades realizing only 49 cents per dollar — model severely overconfident at extremes
+- Scalp exits wrong in 3 of 4 edge buckets (43%, 52%, 39%) — holding longer beats early exits
+- ATR surged 44% recently — now in high-vol regime where model wins 56% vs 52% in calm markets
+- probability_compression is the only empirically validated positive-delta direction (4 tests, +0.016 avg)
+- Down trades win 54.6% vs Up 53.1% — mild bearish edge persists across all recent cycles
+
+**Warnings:**
+- probability_compression + student_t_df both affect extreme probabilities — monitor for combined over-compression of tail trades
+- ATR and model_probability distribution shifts (both KS > 0.27) signal a regime change — backtest may underestimate live variance
+- SPRT negative with 0% edge entries last 50 trades — entry quality has deteriorated recently
+
+**Reasoning:** Probability_compression at 0.85 is the highest-conviction change — 4 consecutive positive BT delta tests with current value of 1.0 (zero compression) despite Q4 realization of 0.49 screaming overconfidence. Spot_flow_weight at 0.07 and student_t_df at 4 add complementary positive-delta signal from two untapped parameter families. Exit threshold at -0.03 aligns with the bucket crossover analysis showing the -0.02 to -0.05 range is the only zone where scalp accuracy is near neutral.

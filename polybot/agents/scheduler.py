@@ -1431,7 +1431,6 @@ class AgentScheduler:
                     logger.error(f"Daily pipeline error: {e}")
                     if self.alert_manager:
                         await self.alert_manager.send_error(f"Daily pipeline failed: {e}")
-                # If auto_shutdown is enabled, signal the bot to exit
                 if self._auto_shutdown:
                     logger.info("PIPELINE COMPLETE — auto-shutdown enabled, exiting for restart cycle")
                     self._shutdown_requested = True
