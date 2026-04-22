@@ -1,196 +1,159 @@
-# PolyBot Configuration
-mode: "paper"  # "paper" or "live"
-
+mode: paper
 math:
-  kelly_fraction: 0.15  # Fraction of Kelly to use (0.15 = conservative)
-
+  kelly_fraction: 0.15
 circuit_breaker:
-  floor_pct: 0.85          # Protect 85% of each locked tier (e.g. hit $200 → floor at $170)
-  min_multiplier: 0.40     # Kelly at the floor (still trading, not stopped)
-  losses_to_reduce: 3      # consecutive losses before Discord streak alert
-  wins_to_restore: 2       # consecutive wins before Discord streak alert
-
+  floor_pct: 0.85
+  min_multiplier: 0.4
+  losses_to_reduce: 3
+  wins_to_restore: 2
 execution:
   max_slippage: 0.02
-  max_bankroll_deployed: 0.80
-  max_single_position_pct: 0.12  # No single trade > 12% of bankroll (prevents concentration risk)
-  max_single_position_usd: 18.00  # Hard dollar ceiling — compound through volume, not bigger bets
-  max_concurrent_positions: 2  # Allow hedged Up+Down positions
-  max_book_fill_pct: 0.50     # Cap order to 50% of available ask depth (realistic fills)
-  slippage_impact_pct: 0.03   # 3% price impact at 100% depth consumption. Tune vs live fills.
-  backtest_realism_factor: 0.85  # Per-trade gain_pct multiplier inside _kelly_bankroll_returns — paper's instant-fill physics overstates live Sharpe by ~15%, so discount candidate backtest returns by this factor.
-  # --- Paper-mode realism: simulates live CLOB match latency + book walk + FOK rejects ---
-  paper_latency_mean_s: 0.08      # mean order-to-fill latency (~Canada VPN to Polymarket US: 50-120ms typical)
-  paper_latency_jitter_s: 0.04    # gaussian stddev
-  paper_network_fail_rate: 0.02   # fraction of orders that simulate transient network errors
+  max_bankroll_deployed: 0.8
+  max_single_position_pct: 0.12
+  max_single_position_usd: 18.0
+  max_concurrent_positions: 2
+  max_book_fill_pct: 0.5
+  slippage_impact_pct: 0.03
+  backtest_realism_factor: 0.85
+  paper_latency_mean_s: 0.08
+  paper_latency_jitter_s: 0.04
+  paper_network_fail_rate: 0.02
   initial_bankroll: 100.0
-  use_maker_orders: false       # FOK only — 60s maker timeout wastes 30% of window. Fee savings ($0.045) < timing cost.
-  maker_timeout_s: 60.0         # unused when use_maker_orders=false
-
+  use_maker_orders: false
+  maker_timeout_s: 60.0
 agents:
   outcome_reviewer_interval_seconds: 3600
-  daily_pipeline_hour: 0    # 12:10 AM ET (auto-adjusts for EST/EDT)
+  daily_pipeline_hour: 0
   daily_pipeline_minute: 10
-
 discord:
-  trade_channel_name: "polybot-trades"
-  control_channel_name: "polybot-control"
-  daily_channel_name: "polybot-daily"
-
+  trade_channel_name: polybot-trades
+  control_channel_name: polybot-control
+  daily_channel_name: polybot-daily
 database:
-  path: "polybot/db/polybot.db"
-
-# TA Strategy Configuration
+  path: polybot/db/polybot.db
 binance:
-  symbol: "btcusdt"
-  ws_url: "wss://stream.binance.us:9443/ws"
-  rest_url: "https://api.binance.us/api/v3"
+  symbol: btcusdt
+  ws_url: wss://stream.binance.us:9443/ws
+  rest_url: https://api.binance.us/api/v3
   candle_buffer_size: 200
-
 indicators:
   rsi:
-    period: 5          # was 14 — 5 minutes = current window
+    period: 5
     overbought: 70
     oversold: 30
   macd:
-    fast_period: 5     # was 12 — scaled for 1-min candles
-    slow_period: 13    # was 26 — ~40% of standard
-    signal_period: 4   # was 9
+    fast_period: 5
+    slow_period: 13
+    signal_period: 4
   stochastic:
-    k_period: 5        # was 14 — 5-minute lookback
-    d_smoothing: 2     # was 3 — faster smoothing
+    k_period: 5
+    d_smoothing: 2
     overbought: 80
     oversold: 20
   ema:
-    fast_period: 3     # was 9 — react within window
-    slow_period: 8     # was 21
+    fast_period: 3
+    slow_period: 8
     chop_threshold: 0.0001
   obv:
-    slope_period: 3    # was 5 — 3-minute trend
+    slope_period: 3
   vwap:
     session_minutes: 5
   atr:
-    period: 7          # was 14 — 7-minute vol window
+    period: 7
     low_percentile: 5
     high_percentile: 95
     history_periods: 100
-
 signal:
-  entry_threshold: 0.04  # Minimum edge (range: 0.01-0.10)
-  max_edge: 0.20          # Safety net — Platt calibration is the real fix (range: 0.10-0.30)
-  adverse_selection_threshold: 0.75  # Skip entries if rolling 30s post-fill reversal rate exceeds this (informed-flow detection)
-  late_window_min_prob: 0.40         # In last 120s, chosen-side probability must be >= this. Prevents late-window underdog bets that almost always lose.
-  exit_edge_threshold: -0.05  # Exit when holding edge drops (range: -0.25 to 0.0)
-  min_model_probability: 0.58  # Lowered from 0.65 — near-ATM trades have highest crowd bias edge. SPRT still gates weak signals.
-  momentum_weight: -0.02      # Layer 4 — NEGATIVE: fade indicators (5-min BTC mean reverts). r=-0.04 is the signal with sign inverted. Pipeline can tune [-0.10, +0.10].
-  regime_weight: 0.03         # Layer 2 — regime adjustment
-  regime_lookback: 50         # 1-min returns for autocorrelation
-  min_kelly: 0.015            # minimum Kelly fraction — noise floor
-  atr_sigma_ratio: 1.4        # ATR/sigma scaling (range: 1.2-2.5)
-  min_atr: 8.0                # Static lower bound on the dynamic ATR floor (runtime uses max(min_atr, 0.3 * rolling_mean_atr_20))
-  flow_weight: 0.04           # Layer 3 — CLOB order flow (r=+0.105, only predictive signal layer)
-  spot_flow_weight: 0.04      # Layer 3b — CVD + taker ratio
-  wall_weight: 0.00           # Layer 3c — DISABLED (1000-level book gamed by HFT, flow cap limits impact)
-  prev_margin_weight: 0.02    # Layer 5 — previous window carry
-  liquidation_weight: 0.03    # Layer 3e — OI-based liquidation pressure
-  student_t_df: 5             # degrees of freedom for fat-tailed CDF
-  logit_scale: 4.0            # converts probability weights to logit space (dp/dlogit=0.25 at p=0.5)
-  probability_compression: 1.0  # shrink toward 0.5 after CDF: 1.0=identity, 0.5=halve distance. Pipeline-tunable.
-  consensus_dead_zone: 0.05   # ignore signals within this of zero for consensus calc
+  entry_threshold: 0.04
+  max_edge: 0.2
+  adverse_selection_threshold: 0.75
+  late_window_min_prob: 0.4
+  exit_edge_threshold: -0.05
+  min_model_probability: 0.58
+  momentum_weight: -0.02
+  regime_weight: 0.03
+  regime_lookback: 50
+  min_kelly: 0.015
+  atr_sigma_ratio: 1.3
+  min_atr: 8.0
+  flow_weight: 0.04
+  spot_flow_weight: 0.1
+  wall_weight: 0.0
+  prev_margin_weight: 0.02
+  liquidation_weight: 0.03
+  student_t_df: 5
+  logit_scale: 4.0
+  probability_compression: 1.0
+  consensus_dead_zone: 0.05
   weights:
-    rsi: 0.20
+    rsi: 0.2
     macd: 0.25
-    stochastic: 0.20
+    stochastic: 0.2
     obv: 0.15
-    vwap: 0.20
-  active_weights_version: "weights_v001"
-
-  # Signal consensus — agreement multiplier on Kelly
+    vwap: 0.2
+  active_weights_version: weights_v001
   consensus:
-    very_high_pct: 0.80   # agreement >= this
+    very_high_pct: 0.8
     very_high_mult: 1.3
-    high_pct: 0.60
+    high_pct: 0.6
     high_mult: 1.0
-    medium_pct: 0.40
+    medium_pct: 0.4
     medium_mult: 0.8
-    low_mult: 0.6         # agreement < medium_pct
-
-  # Exit / hold parameters — all pipeline-tunable
+    low_mult: 0.6
   exit:
-    patience_seconds: 120      # hold threshold tightens when > this many seconds remain
-    patience_max_penalty: 0.05 # max extra edge required to exit early
-    urgency_seconds: 120       # exit threshold loosens when < this many seconds remain
-    urgency_max_bonus: 0.05    # max edge reduction near expiry
-    hold_min_prob: 0.50        # don't exit if model still favors our side above this
-    panic_edge: -0.20          # exit regardless if edge below this (market knows something)
-    low_price_hold: 0.15       # don't sell if market price below this (option value)
-
+    patience_seconds: 120
+    patience_max_penalty: 0.05
+    urgency_seconds: 120
+    urgency_max_bonus: 0.05
+    hold_min_prob: 0.5
+    panic_edge: -0.2
+    low_price_hold: 0.15
 market:
-  contract_type: "btc_5min"
+  contract_type: btc_5min
   entry_window_seconds: 300
-  min_time_remaining_seconds: 0  # No hard block — final 30s hard gate (>90% prob) handles this
+  min_time_remaining_seconds: 0
   scan_cache_seconds: 5
-  clob_url: "https://clob.polymarket.com"  # Real order book (public, no auth)
-  clob_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"  # Real-time WebSocket feed
-  min_book_depth_usd: 50  # Skip if ask depth < $50 (no real liquidity)
-  max_spread: 0.10  # Skip entry if bid-ask spread > 10% (illiquid)
-
+  clob_url: https://clob.polymarket.com
+  clob_ws_url: wss://ws-subscriptions-clob.polymarket.com/ws/market
+  min_book_depth_usd: 50
+  max_spread: 0.1
 schedule:
-  trading_start_hour_et: 0    # 12:15 AM ET (auto-adjusts for EST/EDT)
+  trading_start_hour_et: 0
   trading_start_minute: 15
-  trading_end_hour_et: 23     # 11:59 PM ET (effectively midnight)
+  trading_end_hour_et: 23
   trading_end_minute: 59
-
-# Active position management: hold to $1 when model is confident,
-# exit early when holding_edge drops below exit_edge_threshold.
-# Same probability model for entry AND exit decisions.
-
-# --- New data feeds ---
 binance_depth:
-  ws_url: "wss://stream.binance.us:9443/ws/btcusdt@depth20@100ms"
-  rest_url: "https://api.binance.us/api/v3"
+  ws_url: wss://stream.binance.us:9443/ws/btcusdt@depth20@100ms
+  rest_url: https://api.binance.us/api/v3
   poll_interval_s: 5.0
-
 binance_trades:
-  ws_url: "wss://stream.binance.us:9443/ws/btcusdt@aggTrade"
-
+  ws_url: wss://stream.binance.us:9443/ws/btcusdt@aggTrade
 coinbase:
-  ws_url: "wss://ws-feed.exchange.coinbase.com"
-  product_id: "BTC-USD"
-
+  ws_url: wss://ws-feed.exchange.coinbase.com
+  product_id: BTC-USD
 kraken:
-  ws_url: "wss://ws.kraken.com"
-
+  ws_url: wss://ws.kraken.com
 bybit:
-  ws_url: "wss://stream.bybit.com/v5/public/linear"
-  rest_url: "https://api.bybit.com"   # base only — endpoint path is appended in bybit_feed
+  ws_url: wss://stream.bybit.com/v5/public/linear
+  rest_url: https://api.bybit.com
   funding_poll_s: 300.0
-
 deribit:
-  rest_url: "https://www.deribit.com/api/v2/public"
+  rest_url: https://www.deribit.com/api/v2/public
   poll_interval_s: 60.0
-  iv_ratio_min: 0.5    # floor for IV/ATR ratio (pipeline-tunable)
-  iv_ratio_max: 2.0    # cap on Deribit IV / ATR-derived vol ratio. 3.0 inflated late-window underdog probs unrealistically.
-
-# --- Dynamic entry timing (continuous, not step phases) ---
+  iv_ratio_min: 0.5
+  iv_ratio_max: 2.0
 entry_timing:
-  normal_fraction: 0.60        # fraction of 300s window where full Kelly applies (0.60 = first 180s)
-  late_max_penalty: 0.60       # max Kelly reduction at expiry for ATM trades (high-conviction barely penalized)
-  final_min_probability: 0.90  # hard gate in last 30s
-  flip_enabled: true           # allow re-entry to same window after scalp (opposite side only)
-  flip_edge_premium: 0.015    # flat +1.5% extra edge required for flip (covers fee drag)
-
-# --- Bankroll acceleration ---
+  normal_fraction: 0.6
+  late_max_penalty: 0.6
+  final_min_probability: 0.9
+  flip_enabled: true
+  flip_edge_premium: 0.015
 bankroll_acceleration:
   enabled: true
-
-# --- SPRT entry ---
 sprt:
-  alpha: 0.05           # False positive rate (enter when shouldn't)
-  beta: 0.10            # False negative rate (skip when should enter)
-  observation_interval_s: 10.0  # Min seconds between observations (downsamples autocorrelated ticks)
-
-# --- Regime detection ---
+  alpha: 0.05
+  beta: 0.1
+  observation_interval_s: 10.0
 regime:
   lookback: 50
   vol_high_percentile: 75

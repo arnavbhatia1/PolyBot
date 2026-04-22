@@ -588,7 +588,7 @@ class AgentScheduler:
         # Gate (a): improve ≥2/3
         if improved >= 2:
             detail = " | ".join(
-                f"{r}: {baseline_by_regime[r]:+.3f}→{candidate_by_regime[r]:+.3f}"
+                f"{r}: {baseline_by_regime[r]:+.3f}->{candidate_by_regime[r]:+.3f}"
                 for r in sorted(populated)
             )
             return True, f"regime check passed ({improved}/{len(populated)} improved) [{detail}]"
@@ -597,14 +597,14 @@ class AgentScheduler:
         dom_improved = candidate_by_regime[dominant] > baseline_by_regime[dominant]
         if dom_improved and not regressed_hard:
             detail = " | ".join(
-                f"{r}: {baseline_by_regime[r]:+.3f}→{candidate_by_regime[r]:+.3f}"
+                f"{r}: {baseline_by_regime[r]:+.3f}->{candidate_by_regime[r]:+.3f}"
                 for r in sorted(populated)
             )
             return True, f"regime check passed (dominant {dominant} improved, no hard regression) [{detail}]"
 
         # Failed
         detail = " | ".join(
-            f"{r}: {baseline_by_regime[r]:+.3f}→{candidate_by_regime[r]:+.3f}"
+            f"{r}: {baseline_by_regime[r]:+.3f}->{candidate_by_regime[r]:+.3f}"
             for r in sorted(populated)
         )
         if regressed_hard:

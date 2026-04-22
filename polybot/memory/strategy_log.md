@@ -399,3 +399,25 @@
 - SPRT negative last 50 trades — recent entry quality may be deteriorating independent of parameter choices
 
 **Reasoning:** Every individually tested parameter has failed to clear the 0.0200 adoption floor despite positive BT deltas — the strategy shifts to completely untested parameter families (liquidation_weight, prev_margin_weight) that could provide additive delta uncorrelated with previous attempts. spot_flow_weight at the untested value of 0.09 continues the best-performing direction (+0.015 avg across 3 tests) without repeating the exact failed value of 0.08. With ATR surging 44%, OI liquidation cascades (liquidation_weight) and consecutive-window carry (prev_margin_weight) should be more predictive in the current high-volatility regime.
+
+## 2026-04-22T05:12:48.408767+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - probability_compression=0.82 (6 tests all positive (+0.015 avg BT Δ) — combining with spot_flow_weight to reach additive delta above 0.020 floor; 0.82 is between the best-performing 0.85 and the untested lower range to find a stronger signal.)
+  - spot_flow_weight=0.1 (6 tests all positive (+0.016 avg BT Δ) — stepping to max of range (0.10) to maximize contribution; combined with probability_compression, two independent positive-delta signals should additively clear the adoption floor.)
+  - atr_sigma_ratio=1.3 (Only tested direction was up (1.6, Δ=-0.024) — trying the opposite direction (lower = more aggressive probabilities) which is untested and covers a third parameter family per diversification requirement.)
+
+**Findings:**
+- Zero adoptions after 11 param families — only multi-param combinations can clear the noise floor now
+- probability_compression and spot_flow_weight both show 6 tests of consistent positive BT delta
+- Q4 edge realization stuck at 0.49 — model still severely overconfident at high-edge entries
+- High ATR regime wins 56.2% vs 52.3% low ATR — rising volatility (ATR +44%) is helping
+- Down trades win 54.6% vs Up 53.1% — mild bearish edge persists across all cycles
+
+**Warnings:**
+- ATR and model_probability distribution shifts (KS>0.27) mean backtest may underestimate live variance
+- SPRT negative last 50 trades with 0% edge entries — recent entry quality is deteriorating
+- atr_sigma_ratio lower direction is untested — monitor carefully if adopted; combined with probability_compression may over-sharpen L1
+
+**Reasoning:** After 20+ cycles with zero adoptions, the only path forward is combining the two empirically strongest positive-delta directions (probability_compression and spot_flow_weight) into a single proposal where their additive contributions can clear the 0.020 floor together. atr_sigma_ratio is flipped to the untested lower direction since the only tested direction (up) showed -0.024 BT delta, and lowering it increases L1 aggressiveness which complements probability_compression's role in reducing overconfidence at extremes.
