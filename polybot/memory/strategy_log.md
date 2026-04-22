@@ -242,3 +242,27 @@
 - Many resolution losses at extreme low probabilities (2-9%) — tail trades destroying PnL
 
 **Reasoning:** Q4 edge realization at 0.59 is the dominant calibration problem across multiple cycles, so raising atr_sigma_ratio to 1.6 is the highest-leverage fix for L1 overconfidence. Raising logit_scale to 4.5 follows direction rules (test higher) and amplifies the flow/regime signals that show consistent directional accuracy rather than dampening them. Flow_weight raised from 0.04 to 0.06 since L3 order flow has the strongest documented correlation with outcomes and is currently underweighted relative to what previous cycles found effective.
+
+## 2026-04-22T04:10:38.512435+00:00
+
+**Source:** Claude (medium)
+**Proposed Changes (5):**
+  - atr_sigma_ratio=1.6 (Q4 edge realization at 0.49 (only 49 cents per dollar) is severe overconfidence — wider sigma makes L1 probabilities more conservative at high-edge trades where the model is most wrong.)
+  - exit_edge_threshold=-0.02 (Scalps in the 0 to -0.02 holding_edge bucket are only 43% accurate — tightening the threshold to -0.02 stops premature exits in the range where scalping is demonstrably wrong.)
+  - flow_weight=0.07 (L3 order flow has the strongest documented correlation with outcomes and is underweighted at 0.04 — raising to 0.07 increases signal impact where it matters most.)
+  - probability_compression=0.92 (Q4 realization at 0.49 confirms the model is overconfident at extremes — compressing probabilities toward 0.5 directly reduces overbetting on high-confidence trades.)
+  - logit_scale=4.5 (Direction rules call for testing higher logit_scale — raising from 4.0 to 4.5 amplifies flow and regime signals that show consistent directional accuracy without over-sharpening given the atr_sigma_ratio increase.)
+
+**Findings:**
+- Q4 top-edge trades realizing only 49 cents per dollar — worst overconfidence seen yet
+- Scalps in the 0 to -0.02 edge range are only 43% accurate — holding longer is clearly better
+- ATR surged 44% recently — market is now MORE volatile, not less than previous cycles
+- 60-180s entries win only 48.4% vs 55.7% for early entries — mid-window is a clear drag
+- High ATR regime wins 56.2% vs low ATR 52.3% — rising volatility should help edge
+
+**Warnings:**
+- Model probability shifted down (57.8% to 54.6%) — model generating weaker signals, more marginal trades slipping through
+- SPRT negative with 0% edge entries last 50 trades — recent conditions may be impaired
+- logit_scale and atr_sigma_ratio both raised — monitor for over-sharpening interaction; combined backtest will validate
+
+**Reasoning:** Q4 edge realization at 0.49 is the dominant problem — the model is severely overconfident at high-edge trades, and raising atr_sigma_ratio to 1.6 combined with probability_compression 0.92 directly addresses this. Scalp exit analysis shows the 0 to -0.02 holding_edge bucket is only 43% accurate, so tightening exit_edge_threshold to -0.02 stops bad premature scalps. Flow_weight raised to 0.07 and logit_scale to 4.5 follow direction rules to amplify the most predictive signal layer.

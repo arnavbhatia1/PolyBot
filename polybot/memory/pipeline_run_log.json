@@ -1,0 +1,49 @@
+[
+  {
+    "date": "2026-04-22T04:10:38.674336+00:00",
+    "source": "claude",
+    "baseline_sharpe": 0.2306,
+    "changes": [
+      {
+        "param": "atr_sigma_ratio",
+        "old_value": 1.4,
+        "new_value": 1.6,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0239
+      },
+      {
+        "param": "exit_edge_threshold",
+        "old_value": null,
+        "new_value": -0.02,
+        "direction": "unchanged",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0
+      },
+      {
+        "param": "flow_weight",
+        "old_value": 0.04,
+        "new_value": 0.07,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0023
+      },
+      {
+        "param": "probability_compression",
+        "old_value": 1.0,
+        "new_value": 0.92,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0165
+      },
+      {
+        "param": "logit_scale",
+        "old_value": 4.0,
+        "new_value": 4.5,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0012
+      }
+    ]
+  }
+]
