@@ -355,3 +355,47 @@
 - SPRT negative with 0% edge entries last 50 trades — entry quality has deteriorated recently
 
 **Reasoning:** Probability_compression at 0.85 is the highest-conviction change — 4 consecutive positive BT delta tests with current value of 1.0 (zero compression) despite Q4 realization of 0.49 screaming overconfidence. Spot_flow_weight at 0.07 and student_t_df at 4 add complementary positive-delta signal from two untapped parameter families. Exit threshold at -0.03 aligns with the bucket crossover analysis showing the -0.02 to -0.05 range is the only zone where scalp accuracy is near neutral.
+
+## 2026-04-22T04:59:44.516185+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - probability_compression=0.8 (5 tests averaging +0.017 BT delta — pushing from previously tested 0.85-0.92 range to 0.80 to decisively clear the 0.0200 adoption floor given Q4 realization at 0.49 confirms severe overconfidence.)
+  - spot_flow_weight=0.08 (4 tests averaging +0.012 BT delta at 0.06-0.07 — stepping to untested 0.08 to generate larger incremental contribution; CVD signal is predictive and currently underweighted at 0.04.)
+  - regime_weight=0.05 (Completely untested parameter family — neutral regime dominates at N=1300 (91% of trades) with Sharpe +0.121, and raising regime signal amplification is a fresh direction with no negative BT history.)
+
+**Findings:**
+- Q4 top-edge trades realizing only 49 cents per dollar — model severely overconfident
+- probability_compression at 0.88 got closest BT delta (+0.0215) but just missed floor
+- High ATR trades win 56.2% vs low ATR 52.3% — rising volatility is helping edge
+- Down trades win 54.6% vs Up 53.1% — mild bearish edge persists across all cycles
+- Every tested parameter has failed adoption — structural backtest issue possible (N=None baseline)
+
+**Warnings:**
+- Baseline N=None is anomalous — pipeline may have a structural comparison issue worth investigating
+- probability_compression + spot_flow_weight both reduce overconfidence — monitor for over-compression of tail trades
+- SPRT negative last 50 trades — recent win rate below expectation, entry quality may be degraded
+
+**Reasoning:** Every parameter tested has failed to clear the 0.0200 adoption floor despite multiple attempts with positive BT deltas — the closest was probability_compression at 0.88 (Δ=+0.0215). Pushing probability_compression to 0.80 (more aggressive compression) and spot_flow_weight to 0.08 (untested level) aims to generate larger individual deltas that decisively clear the floor rather than hover near it. Regime_weight at 0.05 is a completely fresh parameter family with no negative BT history, covering the required third family.
+
+## 2026-04-22T05:06:42.525744+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - liquidation_weight=0.05 (Completely untested parameter — with ATR surging 44% into high-vol regime, Bybit OI liquidation cascades are more frequent and this signal is currently underweighted at 0.03.)
+  - prev_margin_weight=0.04 (Completely untested parameter — neutral regime dominates 91% of trades with Sharpe +0.121, and raising carry weight from 0.02 to 0.04 tests whether consecutive-window momentum adds incremental edge in the dominant regime.)
+  - spot_flow_weight=0.09 (CVD direction rule says raise; tested 0.06/0.07/0.08 averaged +0.015 BT delta — stepping to untested 0.09 may push the delta above the adoption floor without entering the failed 0.08 territory exactly.)
+
+**Findings:**
+- 8 parameters tested, 0 adopted — individual changes can't clear the 0.0200 floor alone
+- spot_flow_weight=0.08 had best delta (+0.0272) but still failed — need additive fresh params
+- Q4 realization at 0.49 persists — model is overconfident at high-edge trades
+- High ATR wins 56.2% vs low ATR 52.3% — rising volatility (ATR +44%) favors the model
+- Down trades win 54.6% vs Up 53.1% — mild bearish edge persists
+
+**Warnings:**
+- Zero adoptions after 8 parameter families tested — backtest population may have structural noise making the floor hard to clear
+- ATR and model_probability both show significant distribution shifts (KS>0.27) — live conditions differ from backtest history
+- SPRT negative last 50 trades — recent entry quality may be deteriorating independent of parameter choices
+
+**Reasoning:** Every individually tested parameter has failed to clear the 0.0200 adoption floor despite positive BT deltas — the strategy shifts to completely untested parameter families (liquidation_weight, prev_margin_weight) that could provide additive delta uncorrelated with previous attempts. spot_flow_weight at the untested value of 0.09 continues the best-performing direction (+0.015 avg across 3 tests) without repeating the exact failed value of 0.08. With ATR surging 44%, OI liquidation cascades (liquidation_weight) and consecutive-window carry (prev_margin_weight) should be more predictive in the current high-volatility regime.

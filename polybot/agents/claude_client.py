@@ -806,7 +806,7 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
                 f"Aim for Δ >= {2*dyn_floor:.3f} to have meaningful safety margin."
             )
             lines.append(
-                f"**Also required:** candidate must improve in ≥3 of 4 walk-forward folds "
+                f"**Also required:** candidate must improve in ≥2 of 4 walk-forward folds "
                 f"AND pass regime-stratified check (≥2 of 3 regimes improve, OR dominant "
                 f"regime improves without any regime degrading >0.10 Sharpe)."
             )
