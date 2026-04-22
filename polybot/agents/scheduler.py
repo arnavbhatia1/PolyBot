@@ -689,11 +689,29 @@ class AgentScheduler:
         adopted_changes: list[dict[str, Any]] = []
         any_adopted = False
 
+        # Per-parameter cooldown: skip any param adopted in the last 2 days.
+        # Prevents the same knob from being driven in one direction across
+        # consecutive runs without live data validating the previous adoption.
+        cooldown_params: set[str] = set()
+        if self.pipeline_tracker:
+            try:
+                cooldown_params = self.pipeline_tracker.params_in_cooldown(cooldown_days=2.0)
+            except Exception as e:
+                logger.debug(f"Failed to compute per-param cooldown: {e}")
+
         for change in changes_list[:5]:
             param = change.get("param", "")
             value = change.get("value")
             reason_str = change.get("reason", "")
             change_info: dict[str, Any] = {"param": param, "value": value}
+
+            # Per-param cooldown check
+            if param in cooldown_params:
+                msg = f"param cooldown (adopted within last 2 days)"
+                change_info.update({"decision": "rejected", "reason": msg})
+                logger.info(f"SKIPPED {param}: {msg}")
+                info["per_change"].append(change_info)
+                continue
 
             # Capture old value for directional tracking (before any adoption mutates the engine)
             if self.signal_engine and param != "weights":
@@ -1377,19 +1395,10 @@ class AgentScheduler:
             else:
                 self.weight_optimizer.min_improvement = 0.020
 
-            # Cooldown: don't adopt on back-to-back days (need at least 1 day of data to validate)
-            COOLDOWN_DAYS = 2
-            cooldown_active = False
-            if self.pipeline_tracker:
-                days = self.pipeline_tracker.days_since_last_adoption()
-                if days is not None and days < COOLDOWN_DAYS:
-                    cooldown_active = True
-                    logger.info(f"Pipeline cooldown: {days:.1f} days since last adoption (need {COOLDOWN_DAYS}), analysis only")
-                    weight_info = {"decision": "cooldown", "reason": f"{days:.1f}d since last adoption (need {COOLDOWN_DAYS}d)"}
-
-            if not cooldown_active:
-                # Walk-forward optimizer gets ALL outcomes; it splits into 4 folds internally
-                weight_info = await self._run_weight_optimizer(recommendations, all_outcomes, pipeline_source=source)
+            # Per-parameter cooldown is enforced inside _run_weight_optimizer:
+            # any param adopted in the last 2 days is skipped individually; other
+            # params adopt normally. No global pipeline-wide cooldown.
+            weight_info = await self._run_weight_optimizer(recommendations, all_outcomes, pipeline_source=source)
         pipeline_info["weights"] = weight_info
 
         # All-time stats

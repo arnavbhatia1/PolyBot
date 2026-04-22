@@ -421,3 +421,25 @@
 - atr_sigma_ratio lower direction is untested — monitor carefully if adopted; combined with probability_compression may over-sharpen L1
 
 **Reasoning:** After 20+ cycles with zero adoptions, the only path forward is combining the two empirically strongest positive-delta directions (probability_compression and spot_flow_weight) into a single proposal where their additive contributions can clear the 0.020 floor together. atr_sigma_ratio is flipped to the untested lower direction since the only tested direction (up) showed -0.024 BT delta, and lowering it increases L1 aggressiveness which complements probability_compression's role in reducing overconfidence at extremes.
+
+## 2026-04-22T05:17:48.231478+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - atr_sigma_ratio=1.2 (Only ↓ direction has a positive adopted BT delta (+0.023); pushing to the constraint floor (1.2) from 1.3 to maximize L1 aggressiveness in the one validated direction.)
+  - momentum_weight=-0.039 (Completely untested parameter; all indicators score ~53-54% accuracy (well below 65% threshold), so increasing the fade signal should filter out weak indicator noise — covers a fresh parameter family.)
+  - logit_scale=3.5 (Lowering logit_scale is completely untested (only ↑ to 4.5 was tried at -0.001 delta); with noisy signals dominating, reducing amplification of L2-L5 may improve fold consistency where strong signals misfire.)
+
+**Findings:**
+- atr_sigma_ratio ↓ is the only empirically validated direction with an adoption (+0.023 BT Δ)
+- spot_flow_weight already at max (0.10) — no more room to raise this signal
+- All indicators score 53-54% accuracy — well below 65% actionability threshold
+- Q4 edge realization stuck at 0.49 — model still overconfident at high-edge entries
+- High ATR regime wins 56.2% vs 52.3% low ATR — rising volatility is helping edge
+
+**Warnings:**
+- probability_compression failed walk-forward in all 7 attempts despite positive delta — fold consistency is the real barrier
+- atr_sigma_ratio at 1.2 is the hard floor — no further room if this direction continues
+- SPRT negative last 50 trades with 0% edge entries — recent entry quality may be structurally impaired
+
+**Reasoning:** After exhausting nearly every parameter direction, the only validated path is atr_sigma_ratio ↓ — pushing it to the constraint floor (1.2) maximizes the one direction that has actually adopted. Momentum_weight and logit_scale ↓ are both completely untested families that cover fresh territory; given all indicators are scoring ~53-54% (far below the 65% action threshold), fading them harder and reducing signal amplification are internally consistent with the noise-dominated signal environment.
