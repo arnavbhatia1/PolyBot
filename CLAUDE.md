@@ -17,7 +17,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. Computes P(Up) via an 8
 - L5: Previous window momentum carry (prev_margin / ATR)
 - Platt scaling calibration applied after all layers
 
-**Entry gates (all must pass):** prob >= 58%, edge >= 4% (+ 1.5% for flips), Kelly >= 0.015, spread <= 10%, depth >= $50, price_sum in [0.98, 1.02], edge <= 20%, adverse_rate_30s <= 0.55 (post-fill reversal rate; informed-flow detector), last 30s: prob >= 90%
+**Entry gates (all must pass):** prob >= 58%, edge >= 4% (+ 1.5% for flips), Kelly >= 0.015, spread <= 10%, depth >= $50, price_sum in [0.98, 1.02], edge <= 20%, adverse_rate_30s <= `adverse_selection_threshold` (post-fill reversal rate over rolling 2h window; informed-flow detector — fills older than `lookback_s=7200s` are dropped from the sample to prevent stale-regime state from blocking trading for hours after a bad morning), last 30s: prob >= 90%
 
 **Sizing chain:** `min(bankroll × kelly, max_single_pct, max_single_usd) × breaker × uncertainty_discount(floor=0.40) × time_mult × concurrent_multiplier`. Absolute caps apply to the RAW Kelly size FIRST so the soft multiplicative discounts (uncertainty / breaker / phase / correlation) actually reduce below the cap instead of being no-ops when the cap binds. `concurrent_multiplier` is **correlation-aware + size-weighted**: same-side (ρ≈0.75) at full size gets 0.35×, opposite-side (ρ≈-0.25) gets 0.90×, with piecewise buckets in between. Correlation contribution is scaled by `existing_position_size / max_single_usd` so a tiny residual position no longer hits a new entry as hard as a full-size concurrent.
 
@@ -68,7 +68,7 @@ polybot/
     live_trader.py           # FOK market orders via py-clob-client
     circuit_breaker.py       # Tiered floor Kelly scaling
   agents/
-    scheduler.py             # Pipeline orchestrator (walk-forward, cooldown)
+    scheduler.py             # Pipeline orchestrator (walk-forward, per-param cooldown)
     outcome_reviewer.py      # Writes memory/outcomes/ JSON per trade
     counterfactual_tracker.py
     bias_detector.py         # Per-indicator/regime/time accuracy analysis
@@ -148,6 +148,78 @@ pointing at `exit_edge_threshold`): the validator in `claude_client.py` drops it
 it ever reaches the backtest. The pipeline will translate the finding into a proposable
 param (e.g., scalp-too-early → raise `logit_scale` or lower `atr_sigma_ratio`).
 
+## Parameter Ownership Quick Reference
+
+Who can change what, and why. **Pipeline = nightly Claude + walk-forward adoption. Operator = you, editing settings.yaml.**
+
+### 🟢 Pipeline-Tunable (Claude proposes, walk-forward adopts)
+
+These flow through `_kelly_bankroll_returns` so the backtest can simulate changes.
+
+| Param | Range | What it does |
+|---|---|---|
+| `atr_sigma_ratio` | 1.2–2.5 | L1 aggressiveness. Lower = tighter probabilities, more edge found. HIGHEST leverage. |
+| `logit_scale` | 2.0–6.0 | Amplifies L2–L5 signals. Higher = flow/regime/momentum matter more. |
+| `probability_compression` | 0.5–1.0 | Shrinks final prob toward 0.5. 1.0 = off; lower = fix overconfidence at extremes. |
+| `student_t_df` | 3–8 | Tail fatness. Lower = fatter tails, more reversal edge. |
+| `momentum_weight` | -0.10 to +0.10 | L4. NEGATIVE = fade indicators. |
+| `regime_weight` | 0.02–0.10 | L2 autocorrelation adjustment. |
+| `flow_weight` | 0.02–0.12 | L3 CLOB order flow (book imbalance + trade flow). |
+| `spot_flow_weight` | 0.01–0.10 | L3b Binance CVD + taker ratio. |
+| `liquidation_weight` | 0.01–0.06 | L3e Bybit OI liquidation pressure. |
+| `prev_margin_weight` | 0.01–0.05 | L5 previous-window momentum carry. |
+| `min_atr` | 5.0–15.0 | Floor on ATR (runtime: `max(min_atr, 0.3 × rolling_20)`). |
+| `kelly_fraction` | 0.05–0.25 | Sizing aggressiveness. Claude rarely moves this. |
+| `weights` | sum=1.0, each ≥ 0.05 | L4 indicator mix (rsi/macd/stochastic/obv/vwap). |
+
+Adoption gates: candidate Sharpe > 0, n ≥ 100, Δ ≥ max(0.020, 0.25 × JK_SE), ≥ 2/4 folds improve, dominant regime improves without any regime degrading > 0.10, param not in 2-day cooldown.
+
+### 🟡 Read-Only for Claude (entry gates — corrupt the backtest comparison)
+
+The backtest replays stored outcomes. Changing these alters which trades qualify in BOTH baseline and candidate → comparison no longer apples-to-apples. Claude sees them for context; validator silently drops any change attempt.
+
+| Param | Value | Why off-limits |
+|---|---|---|
+| `min_model_probability` | 0.58 | Filters historical trades out of backtest when raised |
+| `min_edge` (entry_threshold) | 0.04 | Same issue |
+| `min_kelly` | 0.015 | Same issue — primary entry gate |
+
+Could migrate to pipeline-tunable if the backtest was re-derived from raw signal/price data rather than stored outcomes.
+
+### 🔴 Manual-Only (operator — edit settings.yaml directly)
+
+Either unbacktestable (gain_pct is post-hoc, backtest can't simulate different exits) or user-owned risk policy.
+
+**Unbacktestable — exit / timing / filters:**
+
+| Param | Default | Why manual |
+|---|---|---|
+| `exit_edge_threshold` | -0.05 | Scalp-vs-hold decision; backtest replays fixed gain_pct |
+| `adverse_selection_threshold` | 0.55 | Informed-flow filter; entry-time only |
+| `normal_fraction` | 0.60 | Time-of-day Kelly envelope; backtest ignores time-of-day |
+| `late_max_penalty` | 0.60 | Late-window Kelly penalty; backtest ignores |
+| `final_min_probability` | 0.90 | Last-30s hard gate; entry-time only |
+| `max_edge` | 0.20 | Stale-price safety cap; entry-time only |
+| `trading_start_hour_et` / `trading_end_hour_et` / `trading_end_minute` | 0 / 23 / 59 | Schedule; backtest ignores |
+| `flip_enabled` / `flip_edge_premium` | true / 0.015 | Same-window re-entry; not in backtest |
+
+**Risk caps — operator's call, not the model's:**
+
+| Param | Default | Purpose |
+|---|---|---|
+| `max_single_position_usd` | 18.00 | Hard dollar ceiling per trade |
+| `max_single_position_pct` | 0.12 | Bankroll concentration cap |
+| `max_concurrent_positions` | 2 | Hedged Up+Down allowed |
+| `max_bankroll_deployed` | 0.80 | Total exposure cap |
+| `circuit_breaker.floor_pct` | 0.85 | Protect 85% of each locked tier |
+| `circuit_breaker.min_multiplier` | 0.40 | Kelly scaling at the floor |
+
+### Mental model
+
+- **Pipeline** optimizes the *probability model* (L1–L5 weights + calibration).
+- **Operator** owns *exit behavior, schedule, and risk policy*.
+- The read-only middle class is a backtest-design limitation, not a conceptual one.
+
 ## Running
 
 ```bash
@@ -207,16 +279,16 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 
 **Walk-forward split:** 60% train, 40% validation across 4 folds [60:70], [70:80], [80:90], [90:100].
 
-**Adoption gates:** candidate Sharpe > 0, n >= 100 candidate trades, `delta >= max(min_improvement, 0.25 × JK_SE)` (noise-scaled floor — absolute floor default 0.020, SPRT-modulated to 0.015/0.020/0.035, but the 0.25×SE term dominates at low N), improvement in ≥2/4 walk-forward folds (loosened from 3/4 — distribution shifts make older folds a different regime), regime-stratified Sharpe check (≥2/3 regimes improve OR dominant+no >0.10 degradation). 2-day cooldown after last adoption. The old fixed `z >= 1.0` Jobson-Korkie gate was removed because at realistic N=150-250 with Sharpe~0.2, JK_SE is ~0.08 so z≥1 required Δ≥0.08+ — effectively rejecting every candidate. Fold consistency is now the primary noise guard.
+**Adoption gates:** candidate Sharpe > 0, n >= 100 candidate trades, `delta >= max(min_improvement, 0.25 × JK_SE)` (noise-scaled floor — absolute floor fixed at 0.020; the 0.25×SE term dominates at realistic N), improvement in ≥2/4 walk-forward folds (loosened from 3/4 — distribution shifts make older folds a different regime), regime-stratified Sharpe check (dominant regime must improve AND no regime degrades >0.10 Sharpe). **Per-parameter 2-day cooldown** after adoption (a param can't re-adopt within 2 days; other params are free to adopt). The old fixed `z >= 1.0` Jobson-Korkie gate was removed because at realistic N=150-250 with Sharpe~0.2, JK_SE is ~0.08 so z≥1 required Δ≥0.08+ — effectively rejecting every candidate. Fold consistency is now the primary noise guard. SPRT remains a diagnostic only and no longer modulates the adoption floor.
 
 **Pipeline stages:**
 1. `PipelineTracker` — fills 1d/3d/7d/14d/30d actual Sharpe for past adoptions; computes decay status (PERSISTED/PARTIAL/DECAYED/REVERSED) and 14d retention ratio; prediction accuracy (directional hit rate, MAE vs Claude's predicted_delta_sharpe_7d); empirical directional table from pipeline_run_log.json; all fed back to Claude
 2. `BiasDetector` — trains on 60% set. Edge buckets: 4-8%, 8-12%, 12-20%, 20%+. Per-indicator accuracy, side/time/regime/volatility patterns, edge realization quartiles
-3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if **Kelly-sized-Sharpe** on validation improves AND z >= 1.0 (≥50 validation trades must pass production gates under both old and new calibrator, else rejected). Log-loss retained in telemetry, not adoption. Gated this way so a flatter/smoother calibrator that would silently shrink edges below the Kelly gate (and kill realized Sharpe) can't be adopted just because it improves log-loss.
+3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if **Kelly-sized-Sharpe** on validation improves AND z >= 1.0 (≥50 validation trades must pass production gates under both old and new calibrator, else rejected). Log-loss retained in telemetry, not adoption. Gated this way so a flatter/smoother calibrator that would silently shrink edges below the Kelly gate (and kill realized Sharpe) can't be adopted just because it improves log-loss. **Meta-check each cycle:** a third backtest runs with `calibrator=None` (raw model). If `raw_kelly_sharpe >= 0.95 × current_platt_kelly_sharpe`, a WARNING logs and `platt_meta_warning` is surfaced to Claude — calibration isn't earning its keep and may be simplified away.
 4. Distribution shift (KS-test recent 50 vs historical)
-5. SPRT aggregate (modulates adoption threshold: negative→0.02, positive→0.05)
+5. SPRT aggregate (diagnostic only — reports edge-state of recent 50 trades; no longer modulates the adoption floor)
 6. `TAEvolver` — sends analysis card + 100 stratified trades (50 recent + 50 spaced across the day) to Claude. Returns structured JSON with a `changes` list (0–5 entries, empty is valid). Each change requires `param`, `value`, `reason`, `predicted_delta_sharpe_7d`, `confidence_interval`. Local fallback when Claude unavailable (max 2 params, 15% change cap). Analysis card includes: calibration curve (reliability diagram), gate skip stats, realized edge vs predicted edge, ghost trade gate analysis (by_gate with sim_pnl), time-to-resolution distribution, cross-window correlation, execution quality with slippage breakdown by spread/time, counterfactual exit analysis with holding_edge accuracy buckets, statistical noise reference, prediction accuracy track record, empirical directional table, adoption decay analysis, **parameter change history** (last 5 adoptions with actual vs predicted Sharpe and decay status).
-7. `WeightOptimizer` — **per-parameter** walk-forward backtests (one backtest per proposed change). Each change tested in isolation against baseline on the same 4 folds, then through regime-stratified gate. Changes that pass all gates are adopted independently. If ≥2 changes are adopted, a **combined backtest** runs: if combined Δ < 0.7 × sum(individual Δ), the lowest-z-score change is backed out (interaction detected). `_kelly_bankroll_returns` replays the full logit composition (L1 CDF, L2 regime×direction, L3 flow with 0.35-logit cap, L3b spot-flow, L3c wall, L3e liq, L5 prev-margin, L4 indicator momentum, Platt). Backtest freezes on `self.signal_engine.calibrator`. Entry gates (`min_model_probability`, `min_edge`, `min_kelly`) are held constant in ALL backtests — never varied by candidate — so the trade population stays identical between baseline and candidate runs.
+7. `WeightOptimizer` — **per-parameter** walk-forward backtests (one backtest per proposed change). Each change tested in isolation against baseline on the same 4 folds, then through regime-stratified gate (dominant improves + no regime degrades >0.10). Params in per-param cooldown are skipped before backtest. Changes that pass all gates are adopted independently. If ≥2 changes are adopted, a **combined backtest** runs: if combined Δ < 0.7 × sum(individual Δ), the lowest-z-score change is backed out (interaction detected). `_kelly_bankroll_returns` replays the full logit composition (L1 CDF, L2 regime×direction, L3 flow with 0.35-logit cap, L3b spot-flow, L3c wall, L3e liq, L5 prev-margin, L4 indicator momentum, Platt). Backtest freezes on `self.signal_engine.calibrator`. Entry gates (`min_model_probability`, `min_edge`, `min_kelly`) are held constant in ALL backtests — never varied by candidate — so the trade population stays identical between baseline and candidate runs.
 
 **Key pipeline invariants:**
 - `momentum_weight` can be negative (-0.10 to +0.10). Negative = fade indicators (current: -0.02). Claude knows this.
@@ -230,8 +302,13 @@ Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts
 - Ghost trades: downstream-gate rejections tracked to resolution in `memory/ghost_outcomes/`. `analyze_ghosts` returns `{total_ghosts, pct_profitable, by_gate}` — each gate shows `count`, `pct_profitable`, `simulated_pnl` (dollar impact if removed), and `interpretation`. `adverse_rate_30s` is a PROTECTIVE gate — low win_rate means it's correctly filtering informed flow, not over-filtering. NOT used for Platt calibration.
 - **Pipeline run log** (`memory/pipeline_run_log.json`): every change tested (adopted + rejected) is logged with direction (`up`/`down`), backtest delta Sharpe, and Claude's `predicted_delta_sharpe_7d`. Powers the empirical directional table and prediction accuracy tracking.
 - **Adoption decay tracking**: 1d/3d/7d/14d/30d reviews computed per adoption. `decay_status`: PERSISTED (>80% retention), PARTIAL (50-80%), DECAYED (<50%), REVERSED (negative). If >50% of adoptions DECAYED, pipeline warns Claude to reduce proposal volume.
-- **Pairwise interaction check**: if ≥2 changes adopted in one cycle, a combined backtest runs. If combined Δ < 0.7 × sum(individual Δ), the lowest-z-score change is backed out. Known pairs: `{momentum_weight, regime_weight}`, `{flow_weight, spot_flow_weight}`, `{logit_scale, atr_sigma_ratio}`.
-- **Regime-stratified adoption gate**: after passing main gates, each change must improve Sharpe in ≥2/3 populated regimes (trending/reverting/neutral) OR improve the dominant regime without degrading any other by >0.10 Sharpe.
+- **Pairwise interaction check**: if ≥2 changes adopted in one cycle, a combined backtest runs. If combined Δ < 0.7 × sum(individual Δ), the lowest-z-score change is backed out. Coupled groups (config-driven via `pipeline_groups` in settings.yaml; defaults below) expand to within-group pairs:
+  - `volatility_core`: [atr_sigma_ratio, student_t_df, logit_scale]
+  - `flow_stack`: [flow_weight, spot_flow_weight, liquidation_weight]
+  - `momentum_regime`: [momentum_weight, regime_weight]
+  - `sizing`: [kelly_fraction, probability_compression]
+- **Regime-stratified adoption gate**: after passing main gates, the dominant regime must improve AND no regime may degrade >0.10 Sharpe. (The earlier "≥2/3 regimes improve" alternative path was dropped — it was weaker evidence and correlated with fold consistency, double-counting noise.)
+- **Per-parameter cooldown**: a param adopted within the last 2 days is skipped in subsequent pipeline runs (via `pipeline_tracker.params_in_cooldown()`). Replaces the global 2-day pipeline cooldown so independent params can adopt back-to-back without blocking each other.
 - **Statistical noise reference**: injected into Claude context based on N — win rate noise ±1/sqrt(N), Sharpe noise ±sqrt(1.125/N). Findings must exceed 2× noise.
 - Claude changes now require `predicted_delta_sharpe_7d` and `confidence_interval` per change. After 7 days, actual delta compared to predicted — hit rate and MAE fed back as "Your Prediction Track Record".
 - **Flexible change count**: 0-5 changes per cycle (was "exactly 5"). Empty list is valid and appropriate when current config is performing well.

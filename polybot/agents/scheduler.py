@@ -585,31 +585,19 @@ class AgentScheduler:
             if baseline_by_regime[r] - candidate_by_regime[r] > 0.10
         ]
 
-        # Gate (a): improve ≥2/3
-        if improved >= 2:
-            detail = " | ".join(
-                f"{r}: {baseline_by_regime[r]:+.3f}->{candidate_by_regime[r]:+.3f}"
-                for r in sorted(populated)
-            )
-            return True, f"regime check passed ({improved}/{len(populated)} improved) [{detail}]"
-
-        # Gate (b): dominant improves, no hard regression
+        # Single gate: dominant regime must improve AND no regime may degrade >0.10 Sharpe.
+        # (The former "≥2/3 regimes improve" alternative was weaker evidence and correlated
+        # with fold consistency — dropped to simplify false-negative stacking.)
         dom_improved = candidate_by_regime[dominant] > baseline_by_regime[dominant]
-        if dom_improved and not regressed_hard:
-            detail = " | ".join(
-                f"{r}: {baseline_by_regime[r]:+.3f}->{candidate_by_regime[r]:+.3f}"
-                for r in sorted(populated)
-            )
-            return True, f"regime check passed (dominant {dominant} improved, no hard regression) [{detail}]"
-
-        # Failed
         detail = " | ".join(
             f"{r}: {baseline_by_regime[r]:+.3f}->{candidate_by_regime[r]:+.3f}"
             for r in sorted(populated)
         )
+        if dom_improved and not regressed_hard:
+            return True, f"regime check passed (dominant {dominant} improved, no hard regression) [{detail}]"
         if regressed_hard:
-            return False, (f"regime check failed: {regressed_hard} regressed >0.10 Sharpe [{detail}]")
-        return False, (f"regime check failed: only {improved}/{len(populated)} regimes improved [{detail}]")
+            return False, f"regime check failed: {regressed_hard} regressed >0.10 Sharpe [{detail}]"
+        return False, f"regime check failed: dominant {dominant} did not improve [{detail}]"
 
     async def _run_weight_optimizer(self, recommendations: dict[str, Any],
                                     all_outcomes: list[dict[str, Any]] | None = None,
@@ -822,11 +810,27 @@ class AgentScheduler:
         # If ≥2 changes were adopted, run ONE combined backtest.
         # If combined Δ < sum(individual Δ) × 0.7, the changes interact and one is riding
         # on the other's signal. Back out the lowest-conviction change (smallest z-score).
-        KNOWN_INTERACTING_PAIRS = [
-            ("momentum_weight", "regime_weight"),
-            ("flow_weight", "spot_flow_weight"),
-            ("logit_scale", "atr_sigma_ratio"),
-        ]
+        #
+        # Coupled parameter groups — any two params in the SAME group interact through
+        # shared signal composition (L1 sharpness, L3 flow, L2/L4 momentum, L4 sizing).
+        # Config-driven: `pipeline_groups` in settings.yaml overrides these defaults.
+        DEFAULT_COUPLED_GROUPS: dict[str, list[str]] = {
+            "volatility_core": ["atr_sigma_ratio", "student_t_df", "logit_scale"],
+            "flow_stack": ["flow_weight", "spot_flow_weight", "liquidation_weight"],
+            "momentum_regime": ["momentum_weight", "regime_weight"],
+            "sizing": ["kelly_fraction", "probability_compression"],
+        }
+        coupled_groups: dict[str, list[str]] = DEFAULT_COUPLED_GROUPS
+        if self._config:
+            cfg_groups = self._config.get("pipeline_groups")
+            if isinstance(cfg_groups, dict):
+                coupled_groups = cfg_groups
+        # Expand groups to all within-group pairs for the "known interaction" logger.
+        KNOWN_INTERACTING_PAIRS: list[tuple[str, str]] = []
+        for members in coupled_groups.values():
+            for i, p1 in enumerate(members):
+                for p2 in members[i + 1:]:
+                    KNOWN_INTERACTING_PAIRS.append((p1, p2))
         if len(adopted_changes) >= 2:
             try:
                 combined_rec: dict[str, Any] = {}
@@ -1293,19 +1297,37 @@ class AgentScheduler:
                     )
                     old_returns = self._kelly_bankroll_returns(calibrator=self.signal_engine.calibrator, **helper_kwargs)
                     new_returns = self._kelly_bankroll_returns(calibrator=cal, **helper_kwargs)
+                    # Meta-validation: raw-model (no Platt) Sharpe. If raw ≈ current,
+                    # the calibrator isn't earning its keep — surface as a warning so
+                    # the operator knows whether to simplify away Platt entirely.
+                    raw_returns = self._kelly_bankroll_returns(calibrator=None, **helper_kwargs)
                     old_kelly_sharpe = _sharpe(old_returns)
                     new_kelly_sharpe = _sharpe(new_returns)
+                    raw_kelly_sharpe = _sharpe(raw_returns)
 
                     platt_info = {
                         "old_loss": round(old_loss, 4) if val_probs else None,
                         "new_loss": round(new_loss, 4) if val_probs else None,
                         "old_kelly_sharpe": round(old_kelly_sharpe, 4),
                         "new_kelly_sharpe": round(new_kelly_sharpe, 4),
+                        "raw_kelly_sharpe": round(raw_kelly_sharpe, 4),
                         "n_val_trades_old": len(old_returns),
                         "n_val_trades_new": len(new_returns),
+                        "n_val_trades_raw": len(raw_returns),
                         "a": round(cal.a, 4),
                         "b": round(cal.b, 4),
                     }
+
+                    # Meta-alert: raw within 5% of current means calibration isn't earning its keep
+                    if old_kelly_sharpe > 0 and raw_kelly_sharpe >= 0.95 * old_kelly_sharpe:
+                        platt_info["meta_warning"] = (
+                            f"raw_sharpe {raw_kelly_sharpe:.4f} >= 0.95 x current_platt "
+                            f"{old_kelly_sharpe:.4f} — calibrator may not be earning its keep"
+                        )
+                        logger.warning(
+                            f"Platt meta-check: raw model Sharpe {raw_kelly_sharpe:.4f} is within 5% "
+                            f"of current Platt {old_kelly_sharpe:.4f}. Consider dropping calibration."
+                        )
 
                     insufficient = (len(old_returns) < MIN_PLATT_VALIDATION_TRADES
                                     or len(new_returns) < MIN_PLATT_VALIDATION_TRADES)
@@ -1340,6 +1362,9 @@ class AgentScheduler:
                             f"{new_kelly_sharpe:.4f} (z={z_score:.2f}, log-loss {old_loss:.4f} -> {new_loss:.4f})"
                         )
         pipeline_info["platt"] = platt_info
+        # Expose Platt meta-check (raw-vs-calibrated) so Claude sees the diagnostic
+        if platt_info.get("meta_warning"):
+            analysis["platt_meta_warning"] = platt_info["meta_warning"]
 
         # Distribution shift detection (recent 50 vs historical)
         from polybot.agents.pipeline_analytics import detect_distribution_shift, aggregate_sprt_evidence
@@ -1383,17 +1408,10 @@ class AgentScheduler:
             source = "claude" if recommendations.get("confidence") else "local"
             pipeline_info["source"] = source
 
-            # SPRT urgency: if edge evidence is negative, lower adoption bar.
-            # Floors are the ABSOLUTE minimum — the runtime gate uses max(this, 0.25×JK_SE),
-            # so noise-scaled floor still dominates at low N.
-            if sprt_agg.get("state") == "negative":
-                self.weight_optimizer.min_improvement = 0.015
-                logger.info("SPRT negative — lowering absolute adoption floor to 0.015")
-            elif sprt_agg.get("state") == "positive":
-                self.weight_optimizer.min_improvement = 0.035
-                logger.info("SPRT positive — raising absolute adoption floor to 0.035")
-            else:
-                self.weight_optimizer.min_improvement = 0.020
+            # Fixed absolute adoption floor. The noise-scaled term (0.25×JK_SE) dominates
+            # at realistic N anyway; the prior SPRT modulation (0.015/0.020/0.035) was a
+            # no-op that added explanation overhead. SPRT remains a diagnostic only.
+            self.weight_optimizer.min_improvement = 0.020
 
             # Per-parameter cooldown is enforced inside _run_weight_optimizer:
             # any param adopted in the last 2 days is skipped individually; other

@@ -833,6 +833,15 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         lines.append("If z was low but delta was positive — consider proposing a LARGER change to that parameter.")
         sections.append("\n".join(lines))
 
+    # Platt meta-check: raw model vs current calibrator (surfaced only when close)
+    platt_meta = context.get("analysis", {}).get("platt_meta_warning", "")
+    if platt_meta:
+        sections.append(
+            f"## Platt Calibration Meta-Warning\n{platt_meta}\n"
+            f"If this persists across cycles, the operator may drop Platt entirely — "
+            f"do not propose calibrator-dependent changes assuming Platt is load-bearing."
+        )
+
     # Pipeline track record — did past adoptions actually help?
     track_record = context.get("analysis", {}).get("pipeline_track_record", "")
     if track_record:
