@@ -70,6 +70,38 @@ class AgentScheduler:
         self.bias_detector.save(analysis)
         return analysis
 
+    def _precompute_baseline(self, all_outcomes: list[dict[str, Any]]) -> None:
+        """Compute baseline Kelly-Sharpe + JK_SE + N and cache on self BEFORE Claude runs.
+
+        Without this, first-cycle-after-restart Claude context shows `baseline_n_trades=None`
+        because the values are only set inside `_run_weight_optimizer` which runs AFTER
+        the TA evolver (and thus after context is built). Called once per pipeline cycle.
+        """
+        from polybot.agents.weight_optimizer import _sharpe as _s, _lag1_autocorr as _ac
+        if not all_outcomes or len(all_outcomes) < 10:
+            return
+        n = len(all_outcomes)
+        fold_boundaries = [0.60, 0.70, 0.80, 0.90, 1.0]
+        all_returns: list[float] = []
+        for i in range(len(fold_boundaries) - 1):
+            start_idx = int(n * fold_boundaries[i])
+            end_idx = int(n * fold_boundaries[i + 1])
+            fold_test = all_outcomes[start_idx:end_idx]
+            if len(fold_test) < 3:
+                continue
+            all_returns.extend(self._backtest_recommendations({}, fold_test))
+        if not all_returns:
+            return
+        current_sharpe = _s(all_returns)
+        self._baseline_kelly_sharpe = round(current_sharpe, 4)
+        n_base = len(all_returns)
+        base_se = math.sqrt((1.0 + 0.5 * current_sharpe ** 2) / n_base)
+        if n_base >= 3:
+            rho = _ac(all_returns)
+            base_se *= math.sqrt(1.0 + 2.0 * max(0.0, rho))
+        self._baseline_jk_se = round(base_se, 4)
+        self._baseline_n_trades = n_base
+
     async def _run_ta_evolver(self, analysis: dict[str, Any], outcomes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         if outcomes is None:
             outcomes = self.outcome_reviewer.load_all_outcomes()
@@ -1319,6 +1351,10 @@ class AgentScheduler:
             recommendations = {}
             weight_info["reason"] = f"only {len(all_outcomes)} trades (need {MIN_TRADES_FOR_LEARNING})"
         else:
+            # Precompute baseline Sharpe/SE/N so Claude's context shows real numbers
+            # instead of None on the first cycle after restart.
+            self._precompute_baseline(all_outcomes)
+
             # Build Claude context including pipeline track record
             if self.pipeline_tracker:
                 track_record = self.pipeline_tracker.format_for_claude()
