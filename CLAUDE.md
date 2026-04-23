@@ -29,7 +29,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. Computes P(Up) via an 8
 
 **Execution:** FOK-only market orders. 3 retries with exponential backoff. Live mode: `signature_type=2` (GNOSIS_SAFE), `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER` (.env). Bybit REST (`api.bybit.com/v5/market/tickers`) is geo-blocked for US IPs — on first 401/403/451 the poll loop stops permanently; WS is the primary OI/funding source regardless.
 
-**Auto-restart:** `run_polybot.ps1` — starts 12:15 AM ET, pipeline at 12:05 AM, commits outcomes/DB/config to git, restarts.
+**Auto-restart:** `run_polybot.ps1` — starts 12:01 AM ET, pipeline at 10:45 PM, commits outcomes/DB/config to git, restarts.
 
 ## Project Structure
 
@@ -139,7 +139,7 @@ silently drops any attempt.
 - `entry_timing.final_min_probability` 0.90 — last-30s hard gate (entry-time only)
 - `entry_timing.adverse_selection_threshold` 0.55 — informed-flow filter (entry-time only)
 - `entry_timing.flip_enabled` true, `flip_edge_premium` 0.015
-- `schedule.trading_start_hour_et` 0, `trading_end_hour_et` 23, `trading_end_minute` 59
+- `schedule.trading_start_hour_et` 0, `trading_start_minute` 1, `trading_end_hour_et` 22, `trading_end_minute` 30
 - `execution.max_concurrent_positions` 2, `max_bankroll_deployed` 0.80
 - `execution.max_single_position_pct` 0.12, `max_single_position_usd` 18.00 (risk cap)
 - `circuit_breaker.floor_pct` 0.85, `min_multiplier` 0.40 (risk cap)
@@ -274,7 +274,7 @@ Resolution: always from Gamma API eventMetadata or closed+outcomePrices.
 
 ## Learning Pipeline
 
-Runs daily at 12:05 AM ET. `run_polybot.ps1` commits results to git and restarts.
+Runs daily at 10:45 PM ET. `run_polybot.ps1` commits results to git and restarts.
 
 **Walk-forward split:** 60% train, 40% validation across 4 folds [60:70], [70:80], [80:90], [90:100].
 

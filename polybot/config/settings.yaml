@@ -23,8 +23,8 @@ execution:
   maker_timeout_s: 60.0
 agents:
   outcome_reviewer_interval_seconds: 3600
-  daily_pipeline_hour: 0
-  daily_pipeline_minute: 10
+  daily_pipeline_hour: 22
+  daily_pipeline_minute: 45
 discord:
   trade_channel_name: polybot-trades
   control_channel_name: polybot-control
@@ -119,9 +119,9 @@ market:
   max_spread: 0.1
 schedule:
   trading_start_hour_et: 0
-  trading_start_minute: 15
-  trading_end_hour_et: 23
-  trading_end_minute: 59
+  trading_start_minute: 1
+  trading_end_hour_et: 22
+  trading_end_minute: 30
 binance_depth:
   ws_url: wss://stream.binance.us:9443/ws/btcusdt@depth20@100ms
   rest_url: https://api.binance.us/api/v3

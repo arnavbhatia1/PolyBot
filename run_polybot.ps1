@@ -1,7 +1,7 @@
 # PolyBot Auto-Restart Wrapper
-# Runs the bot with --auto-restart. After the daily pipeline (12:05 AM ET),
+# Runs the bot with --auto-restart. After the daily pipeline (10:45 PM ET),
 # the bot exits cleanly. This script commits updated config/weights to git,
-# pushes to remote, and restarts the bot at 12:15 AM ET.
+# pushes to remote, and restarts the bot at 12:01 AM ET.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File run_polybot.ps1
 # Or:    .\run_polybot.ps1
@@ -14,8 +14,8 @@ powercfg -change -standby-timeout-ac 0
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  PolyBot Auto-Restart Loop" -ForegroundColor Cyan
-Write-Host "  Trading: 12:15 AM - 11:59 PM ET" -ForegroundColor Cyan
-Write-Host "  Pipeline: 12:10 AM ET" -ForegroundColor Cyan
+Write-Host "  Trading: 12:01 AM - 10:30 PM ET" -ForegroundColor Cyan
+Write-Host "  Pipeline: 10:45 PM ET" -ForegroundColor Cyan
 Write-Host "  Bot exits after pipeline, commits, pushes, restarts" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
@@ -50,17 +50,17 @@ while ($true) {
         Write-Host "[$timestamp] No config changes to commit" -ForegroundColor DarkGray
     }
 
-    # Wait until 12:15 AM ET to restart
-    # Calculate seconds until next 12:15 AM ET
+    # Wait until 12:01 AM ET to restart
+    # Calculate seconds until next 12:01 AM ET
     $now = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), "Eastern Standard Time")
-    $next1215am = $now.Date.AddMinutes(15)
-    if ($now -ge $next1215am) {
-        $next1215am = $next1215am.AddDays(1)
+    $next1201am = $now.Date.AddMinutes(1)
+    if ($now -ge $next1201am) {
+        $next1201am = $next1201am.AddDays(1)
     }
-    $waitSeconds = ($next1215am - $now).TotalSeconds
+    $waitSeconds = ($next1201am - $now).TotalSeconds
 
     if ($waitSeconds -gt 10) {
-        Write-Host "[$timestamp] Waiting $([math]::Round($waitSeconds/60, 1)) minutes until 12:15 AM ET..." -ForegroundColor DarkGray
+        Write-Host "[$timestamp] Waiting $([math]::Round($waitSeconds/60, 1)) minutes until 12:01 AM ET..." -ForegroundColor DarkGray
         Start-Sleep -Seconds $waitSeconds
     } else {
         Start-Sleep -Seconds 10

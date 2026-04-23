@@ -101,8 +101,8 @@ class AgentScheduler:
             "indicator_snapshot": g.get("indicator_snapshot", {}),
             "entry_price": mp,
             "exit_price": 1.0 if correct else 0.0,
-            "exit_timestamp": g.get("resolved_at") or g.get("timestamp", ""),
-            "timestamp": g.get("timestamp", ""),
+            "exit_timestamp": str(g.get("resolved_at") or g.get("timestamp") or ""),
+            "timestamp": str(g.get("timestamp") or ""),
             "is_ghost": True,
         }
 
@@ -121,7 +121,7 @@ class AgentScheduler:
             except Exception as e:
                 logger.debug(f"Ghost load failed (non-critical): {e}")
         combined = real + ghost_outcomes
-        combined.sort(key=lambda x: x.get("exit_timestamp") or x.get("timestamp", ""))
+        combined.sort(key=lambda x: str(x.get("exit_timestamp") or x.get("timestamp") or ""))
         return combined
 
     def _precompute_baseline(self, all_outcomes: list[dict[str, Any]]) -> None:
