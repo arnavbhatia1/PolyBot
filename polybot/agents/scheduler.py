@@ -117,33 +117,20 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"  Platt: skipped ({reason})" if reason else "  Platt: skipped")
 
-    # Manual-lever suggestions — surfaced but never auto-applied. Evidence required.
+    # Manual-lever suggestions — surfaced but never auto-applied.
     manual_obs: list[dict[str, Any]] = pipeline_info.get("manual_observations", []) or []
     if manual_obs:
         lines.append("")
-        lines.append(f"  MANUAL SUGGESTIONS ({len(manual_obs)}) [operator-only, evidence-backed]:")
+        lines.append("  MANUAL SUGGESTIONS:")
         for ob in manual_obs:
             p = ob.get("param", "?")
             cur = ob.get("current", "?")
             sug = ob.get("suggested", "?")
             conf = ob.get("confidence", "low")
-            ev = ob.get("evidence") or {}
-            ev_metric = ev.get("metric", "?")
-            ev_val = ev.get("value")
-            ev_n = ev.get("n")
-            ev_src = ev.get("source", "?")
-            src_channel = ob.get("source_channel", "direct")
-            pair = f"{cur} -> {sug}"
-            if src_channel == "rerouted":
-                ev_str = "(rerouted from changes, no formal evidence)"
-            elif ev_val is not None and ev_n is not None:
-                ev_str = f"{ev_metric}={ev_val} at N={ev_n} [{ev_src}]"
-            else:
-                ev_str = f"[{ev_src}]"
-            lines.append(f"    ? {p:<28s} {pair:<22s} conf={conf:<6s} {ev_str}")
-            reason = ob.get("reason", "")
+            reason = (ob.get("reason", "") or "").strip()
+            lines.append(f"    {p}: {cur} -> {sug}  [{conf}]")
             if reason:
-                lines.append(f"      reason: {reason[:140]}")
+                lines.append(f"      {reason}")
 
     lines.append("=" * 60)
     return "\n".join(lines)
