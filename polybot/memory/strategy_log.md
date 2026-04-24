@@ -499,3 +499,25 @@
 
 **Proposed Changes (1):**
   - weights={'rsi': 0.1994, 'macd': 0.2496, 'stochastic': 0.2019, 'obv': 0.1501, 'vwap': 0.1989} (local fallback — indicator-effectiveness reweight)
+
+## 2026-04-24T03:18:39.669282+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - logit_scale=5.0 (Tested once at 4.5 (Δ=-0.001) but direction rules require testing higher — 5.0 is untested and amplifies the strongest signals (flow, regime) more, which the counterfactual scalp analysis says would reduce premature exits by making initial entry confidence stronger.)
+  - flow_weight=0.08 (Only tested at 0.07 (Δ=-0.002) — direction rules say test higher; 0.08 and 0.10 are untested, and L3 order flow is the strongest documented signal; combined with logit_scale=5.0, the interaction amplifies flow signal more decisively.)
+  - min_atr=12.0 (Completely untested parameter — low-ATR regime wins only 53.4% vs high-ATR 56.2%, and raising the floor from 8.0 to 12.0 filters out low-volatility windows where the model has least edge, directly improving entry quality.)
+
+**Findings:**
+- Edge calibration inverted: low-edge trades (4-8%) win 55.9%, high-edge (12-20%) only 52% — model overconfident at extremes
+- High-ATR trades win 56.2% vs low-ATR 53.4% — filtering low-vol windows improves base rate
+- Scalp exits wrong 54% of time — holding beats scalping, stronger initial signal would reduce premature exits
+- Q4 edge realization improved to 0.77 from prior 0.49 — overconfidence is partially self-correcting
+- 60-180s window wins only 47.5% — mid-window entries significantly underperform early entries
+
+**Warnings:**
+- logit_scale + flow_weight interact — raising both compounds signal amplification; monitor for over-fitting in neutral regime (91% of trades)
+- min_atr=12.0 may reduce trade count significantly — watch for volume drop if live trades fall below 15/day
+- SPRT negative with 0% edge-positive entries last 50 trades — live entry quality remains degraded independent of parameter choices
+
+**Reasoning:** The three changes target distinct parameter families with no prior failed attempts at these exact values: logit_scale at 5.0 (untested, amplifies strongest signals more per direction rules), flow_weight at 0.08 (untested level, L3 is best-documented signal), and min_atr at 12.0 (completely untested, directly filters the demonstrably weaker low-vol regime). The inverse edge-WR relationship (low edge outperforms high edge) confirms the model needs either less overconfidence at extremes or better signal quality on high-conviction entries — logit_scale and flow_weight address the latter. All three changes are additive and cover different parameter families as required.
