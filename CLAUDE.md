@@ -153,7 +153,7 @@ param (e.g., scalp-too-early → raise `logit_scale` or lower `atr_sigma_ratio`)
 
 Who can change what, and why. **Pipeline = nightly Claude + walk-forward adoption. Operator = you, editing settings.yaml.**
 
-### 🟢 Pipeline-Tunable (Claude proposes, walk-forward adopts)
+### 🟢 Weights - Pipeline-Tunable (Claude proposes, walk-forward adopts)
 
 These flow through `_kelly_bankroll_returns` so the backtest can simulate changes.
 
@@ -173,11 +173,11 @@ These flow through `_kelly_bankroll_returns` so the backtest can simulate change
 | `kelly_fraction` | 0.05–0.25 | Sizing aggressiveness. Claude rarely moves this. |
 | `weights` | sum=1.0, each ≥ 0.05 | L4 indicator mix (rsi/macd/stochastic/obv/vwap). |
 
-Adoption gates: candidate Sharpe > 0, n ≥ 100, Δ ≥ max(0.020, 0.25 × JK_SE), ≥ 2/4 folds improve, dominant regime improves without any regime degrading > 0.10, param not in 2-day cooldown.
+Adoption gates: candidate Sharpe > 0, n ≥ 100, Δ ≥ max(0.010, 0.25 × JK_SE), ≥ 1/4 folds improve (gate is near-off; SE-scaled delta is the real noise filter), dominant regime improves without any regime degrading > 0.10 (only regimes with ≥ 35 trades get veto power), param not in 2-day cooldown.
 
-### 🟡 Entry gates — NOW pipeline-tunable (ghosts in backtest sample)
+### 🟢 Entry gates — Pipeline-tunable (ghosts in backtest sample)
 
-Previously read-only. The backtest now loads real outcomes PLUS resolved ghosts via `_load_combined_outcomes()`, so raising a gate filters baseline + candidate identically, and lowering one includes ghosts that would have fired. Comparison stays apples-to-apples.
+The backtest loads real outcomes PLUS resolved ghosts via `_load_combined_outcomes()`, so raising a gate filters baseline + candidate identically, and lowering one includes ghosts that would have fired. Comparison stays apples-to-apples.
 
 | Param | Value | Range |
 |---|---|---|
@@ -278,12 +278,12 @@ Runs daily at 10:45 PM ET. `run_polybot.ps1` commits results to git and restarts
 
 **Walk-forward split:** 60% train, 40% validation across 4 folds [60:70], [70:80], [80:90], [90:100].
 
-**Adoption gates:** candidate Sharpe > 0, n >= 100 candidate trades, `delta >= max(min_improvement, 0.25 × JK_SE)` (noise-scaled floor — absolute floor fixed at 0.020; the 0.25×SE term dominates at realistic N), improvement in ≥2/4 walk-forward folds (loosened from 3/4 — distribution shifts make older folds a different regime), regime-stratified Sharpe check (dominant regime must improve AND no regime degrades >0.10 Sharpe). **Per-parameter 2-day cooldown** after adoption (a param can't re-adopt within 2 days; other params are free to adopt). The old fixed `z >= 1.0` Jobson-Korkie gate was removed because at realistic N=150-250 with Sharpe~0.2, JK_SE is ~0.08 so z≥1 required Δ≥0.08+ — effectively rejecting every candidate. Fold consistency is now the primary noise guard. SPRT remains a diagnostic only and no longer modulates the adoption floor.
+**Adoption gates:** candidate Sharpe > 0, n >= 100 candidate trades, `delta >= max(min_improvement, 0.25 × JK_SE)` (noise-scaled floor — absolute floor lowered from 0.020 → 0.010 after pipeline_run_log analysis showed the prior floor was killing a cluster of consistent positive results in [+0.007, +0.022]; at N≈200 the 0.25×SE term ≈ 0.013 still binds above the absolute floor, so SE remains the primary gate at current sample sizes), improvement in ≥1/4 walk-forward folds (gate lowered from 2/4 — the prior check was a stationarity gate applied to explicitly non-stationary data, systematically blocking correctly-adapted-to-recent-regime changes; SE-scaled delta is now the sole noise filter), regime-stratified Sharpe check (dominant regime must improve AND no regime degrades >0.10 Sharpe, but **only regimes with ≥ 35 trades qualify for veto power** — raised from 20 because a 0.10 degradation is < 0.5 SE at N=20, pure noise). **Per-parameter 2-day cooldown** after adoption (a param can't re-adopt within 2 days; other params are free to adopt). The old fixed `z >= 1.0` Jobson-Korkie gate was removed because at realistic N=150-250 with Sharpe~0.2, JK_SE is ~0.08 so z≥1 required Δ≥0.08+ — effectively rejecting every candidate. SPRT remains a diagnostic only and no longer modulates the adoption floor.
 
 **Pipeline stages:**
 1. `PipelineTracker` — fills 1d/3d/7d/14d/30d actual Sharpe for past adoptions; computes decay status (PERSISTED/PARTIAL/DECAYED/REVERSED) and 14d retention ratio; prediction accuracy (directional hit rate, MAE vs Claude's predicted_delta_sharpe_7d); empirical directional table from pipeline_run_log.json; all fed back to Claude
 2. `BiasDetector` — trains on 60% set. Edge buckets: 4-8%, 8-12%, 12-20%, 20%+. Per-indicator accuracy, side/time/regime/volatility patterns, edge realization quartiles
-3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if **Kelly-sized-Sharpe** on validation improves AND z >= 1.0 (≥50 validation trades must pass production gates under both old and new calibrator, else rejected). Log-loss retained in telemetry, not adoption. Gated this way so a flatter/smoother calibrator that would silently shrink edges below the Kelly gate (and kill realized Sharpe) can't be adopted just because it improves log-loss. **Meta-check each cycle:** a third backtest runs with `calibrator=None` (raw model). If `raw_kelly_sharpe >= 0.95 × current_platt_kelly_sharpe`, a WARNING logs and `platt_meta_warning` is surfaced to Claude — calibration isn't earning its keep and may be simplified away.
+3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if **Kelly-sized-Sharpe** on validation improves AND `Δ >= max(0.010, 0.25 × JK_SE)` (≥50 validation trades must pass production gates under both old and new calibrator, else rejected). Mirrors the weight-adoption floor. The prior `z >= 1.0` gate required Δ ≥ 0.15 Sharpe at N=50, which was effectively unreachable for an incremental refit — calibrator had stopped updating. Log-loss retained in telemetry, not adoption. Gated on Kelly-Sharpe so a flatter/smoother calibrator that would silently shrink edges below the Kelly gate (and kill realized Sharpe) can't be adopted just because it improves log-loss. **Meta-check each cycle:** a third backtest runs with `calibrator=None` (raw model). If `raw_kelly_sharpe >= 0.95 × current_platt_kelly_sharpe`, a WARNING logs and `platt_meta_warning` is surfaced to Claude — calibration isn't earning its keep and may be simplified away.
 4. Distribution shift (KS-test recent 50 vs historical)
 5. SPRT aggregate (diagnostic only — reports edge-state of recent 50 trades; no longer modulates the adoption floor)
 6. `TAEvolver` — sends analysis card + 100 stratified trades (50 recent + 50 spaced across the day) to Claude. Returns structured JSON with a `changes` list (0–5 entries, empty is valid). Each change requires `param`, `value`, `reason`, `predicted_delta_sharpe_7d`, `confidence_interval`. Local fallback when Claude unavailable (max 2 params, 15% change cap). Analysis card includes: calibration curve (reliability diagram), gate skip stats, realized edge vs predicted edge, ghost trade gate analysis (by_gate with sim_pnl), time-to-resolution distribution, cross-window correlation, execution quality with slippage breakdown by spread/time, counterfactual exit analysis with holding_edge accuracy buckets, statistical noise reference, prediction accuracy track record, empirical directional table, adoption decay analysis, **parameter change history** (last 5 adoptions with actual vs predicted Sharpe and decay status).
@@ -297,7 +297,7 @@ Runs daily at 10:45 PM ET. `run_polybot.ps1` commits results to git and restarts
 - Outcomes sorted by `exit_timestamp` (actual trade close time) for correct walk-forward ordering; old outcomes fall back to write-time `timestamp`
 - Daily rollup: at 12:05 AM pipeline, previous days' individual outcome files are consolidated into one file per day (`rollup_YYYY-MM-DD.json`) to keep git manageable. `load_all_outcomes()` handles both formats transparently.
 - `gain_pct = pnl / size` (arithmetic). Never use `log_return` for Sharpe (log(0) = -inf for losses)
-- Recency weighting: `0.995^days_ago` applied to each trade's return in backtest — recent trades count ~2x more than 3-week-old trades
+- Recency weighting: `0.97^days_ago` applied to each trade's return in backtest and to Platt calibration MLE — half-life ~23 days. Tuned for 5-min BTC flow where microstructure / funding / liquidation regimes shift weekly; the prior 0.995 (138-day half-life) was a long-term-equity weighting that suppressed the recent-regime signal the pipeline is trying to learn.
 - Ghost trades: downstream-gate rejections tracked to resolution in `memory/ghost_outcomes/`. `analyze_ghosts` returns `{total_ghosts, pct_profitable, by_gate}` — each gate shows `count`, `pct_profitable`, `simulated_pnl` (dollar impact if removed), and `interpretation`. `adverse_rate_30s` is a PROTECTIVE gate — low win_rate means it's correctly filtering informed flow, not over-filtering. NOT used for Platt calibration.
 - **Pipeline run log** (`memory/pipeline_run_log.json`): every change tested (adopted + rejected) is logged with direction (`up`/`down`), backtest delta Sharpe, and Claude's `predicted_delta_sharpe_7d`. Powers the empirical directional table and prediction accuracy tracking.
 - **Adoption decay tracking**: 1d/3d/7d/14d/30d reviews computed per adoption. `decay_status`: PERSISTED (>80% retention), PARTIAL (50-80%), DECAYED (<50%), REVERSED (negative). If >50% of adoptions DECAYED, pipeline warns Claude to reduce proposal volume.
@@ -322,7 +322,7 @@ Runs daily at 10:45 PM ET. `run_polybot.ps1` commits results to git and restarts
 - **Wrong strike:** Derived from Chainlink oracle or Binance candle boundary from slug, not `int(now // 300) * 300`
 - **Startup config error:** `validate_config()` raises ValueError listing all violations
 - **Orphaned position:** Waits indefinitely for Gamma resolution. Discord alert after 1hr. By design.
-- **Pipeline not adopting:** candidate must clear `delta >= max(abs_floor, 0.25 × JK_SE)` AND improve in 3/4 folds AND pass regime-stratified check. "No change" = current config is defensible or proposed changes were too small relative to backtest noise. Check `per_change` log in pipeline_info — if delta is positive but below floor, Claude needs to propose LARGER moves. If a change is on a manual-only param (e.g. `exit_edge_threshold`), the validator dropped it before backtest.
+- **Pipeline not adopting:** candidate must clear `delta >= max(abs_floor, 0.25 × JK_SE)` AND improve in ≥1/4 folds AND pass regime-stratified check (only regimes with ≥35 trades get veto power). "No change" = current config is defensible or proposed changes were too small relative to backtest noise. Check `per_change` log in pipeline_info — if delta is positive but below floor, Claude needs to propose LARGER moves. If a change is on a manual-only param (e.g. `exit_edge_threshold`), the validator dropped it before backtest.
 
 ## Frozen Baseline — DO NOT CHANGE
 

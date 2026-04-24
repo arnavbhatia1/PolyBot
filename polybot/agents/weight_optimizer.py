@@ -120,15 +120,18 @@ class WeightOptimizer:
                 f"(abs_floor={self.min_improvement:.3f}, SE={se:.3f})"
             )
 
-        # Walk-forward consistency: at least 2 of 4 folds must improve.
-        # Loosened from 3/4 because distribution shifts (e.g. ATR regime change)
-        # make older folds a materially different market — requiring uniform
-        # improvement across regimes rejects genuine current-regime edge. The
-        # noise-scaled delta floor above is the primary guard against pure noise.
+        # Walk-forward consistency: require only 1 of 4 folds to improve.
+        # The prior 2/4 gate was a stationarity check on explicitly non-stationary
+        # data — older folds reflect a different market regime, so forcing them
+        # to agree with recent folds blocks correctly-adapted-to-current-regime
+        # edge. The noise-scaled delta floor (0.25 × JK_SE) is the primary guard
+        # against pure noise. This gate now only blocks fully-degenerate changes
+        # where every fold is below baseline (impossible with a positive delta
+        # unless fold weighting differs from global baseline — rare).
         if fold_sharpes:
             neg_folds = sum(1 for s in fold_sharpes if s <= current_sharpe)
-            if neg_folds > 2:
-                return False, f"{neg_folds}/{len(fold_sharpes)} folds below baseline (need 2/4)"
+            if neg_folds > 3:
+                return False, f"{neg_folds}/{len(fold_sharpes)} folds below baseline (need 1/4)"
 
         z = delta / se if se > 0 else 0.0
         return True, f"delta={delta:+.4f} floor={dynamic_floor:.4f} z={z:.2f} n={n_trades}"

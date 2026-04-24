@@ -21,6 +21,98 @@ from polybot.config.loader import save_config
 logger = logging.getLogger(__name__)
 
 
+def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
+    """Single human-readable pipeline summary used by both the log output and Discord.
+
+    Reads from pipeline_info keys populated during `run_daily_pipeline`:
+    `weights` (baseline + per_change), `platt`, and `source`.
+    """
+    wi: dict[str, Any] = pipeline_info.get("weights", {}) or {}
+    platt: dict[str, Any] = pipeline_info.get("platt", {}) or {}
+    source = pipeline_info.get("source", "?")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    baseline = wi.get("old_sharpe", 0.0) or 0.0
+    n_baseline = wi.get("n_baseline_trades", 0) or 0
+    abs_floor = 0.010
+    per_change = wi.get("per_change", []) or []
+    # Compute SE from the first per-change entry if available (all use same baseline N)
+    se_val: float | None = None
+    try:
+        import math as _m
+        if n_baseline >= 2:
+            se_val = _m.sqrt((1.0 + 0.5 * baseline * baseline) / n_baseline)
+    except Exception:
+        se_val = None
+    dyn_floor = max(abs_floor, 0.25 * se_val) if se_val is not None else abs_floor
+    se_str = f"±{se_val:.3f}" if se_val is not None else "±?"
+
+    lines: list[str] = []
+    lines.append("═" * 60)
+    lines.append(f"  PIPELINE RESULT — {ts}")
+    lines.append("═" * 60)
+    lines.append(f"  Baseline Sharpe: {baseline:+.3f}  (N={n_baseline}, SE={se_str})")
+    lines.append(f"  Adoption floor:  need Δ ≥ +{dyn_floor:.3f}  (abs={abs_floor:.3f}, src={source})")
+    lines.append("-" * 60)
+
+    if per_change:
+        adopted_count = sum(1 for c in per_change if c.get("decision") == "adopted")
+        lines.append(f"  PROPOSED ({len(per_change)}):")
+        for c in per_change:
+            param = c.get("param", "?")
+            new_val = c.get("value", "?")
+            old_val = c.get("old_value", "?")
+            cand_sharpe = c.get("candidate_sharpe")
+            delta = (cand_sharpe - baseline) if isinstance(cand_sharpe, (int, float)) else None
+            decision = c.get("decision", "?")
+            mark = "✓" if decision == "adopted" else "✗"
+            delta_str = f"Δ={delta:+.3f}" if delta is not None else "Δ=?"
+            # Short verdict
+            if decision == "adopted":
+                verdict = "ADOPTED"
+            elif delta is None:
+                verdict = c.get("reason", "rejected")[:30]
+            elif delta < 0:
+                verdict = "hurt"
+            elif delta < dyn_floor:
+                verdict = f"too small (need {dyn_floor:.3f})"
+            else:
+                verdict = c.get("reason", "rejected")[:30]
+            pair = f"{old_val}->{new_val}" if old_val != "?" else f"{new_val}"
+            lines.append(f"    {mark} {param:<22s} {pair:<14s} {delta_str:<12s} ({verdict})")
+        lines.append("")
+        lines.append(f"  ADOPTED: {adopted_count} / {len(per_change)}")
+    else:
+        reason = wi.get("reason", "no proposals")
+        lines.append(f"  PROPOSED: 0  ({reason})")
+
+    # Platt line — always show numbers, not just "rejected"
+    p_dec = platt.get("decision", "skipped")
+    if p_dec in ("adopted", "rejected"):
+        old_ks = platt.get("old_kelly_sharpe", 0.0)
+        new_ks = platt.get("new_kelly_sharpe", 0.0)
+        raw_ks = platt.get("raw_kelly_sharpe")
+        old_ll = platt.get("old_loss", 0.0)
+        new_ll = platt.get("new_loss", 0.0)
+        z = platt.get("z_score", 0.0)
+        verdict = "ADOPTED" if p_dec == "adopted" else "REJECTED"
+        lines.append("")
+        lines.append(f"  Platt: kelly_sharpe {old_ks:+.3f} -> {new_ks:+.3f}  "
+                     f"(z={z:+.2f}, log-loss {old_ll:.3f} -> {new_ll:.3f})  [{verdict}]")
+        if raw_ks is not None:
+            lines.append(f"         raw (no Platt) kelly_sharpe: {raw_ks:+.3f}")
+        meta = platt.get("meta_warning")
+        if meta:
+            lines.append(f"         ⚠ {meta}")
+    elif p_dec == "skipped":
+        reason = platt.get("reason", "")
+        lines.append("")
+        lines.append(f"  Platt: skipped ({reason})" if reason else "  Platt: skipped")
+
+    lines.append("═" * 60)
+    return "\n".join(lines)
+
+
 class AgentScheduler:
     def __init__(self, outcome_reviewer: Any, bias_detector: Any, ta_evolver: Any, weight_optimizer: Any,
                  indicator_engine: Any = None, signal_engine: Any = None, alert_manager: Any = None,
@@ -391,8 +483,11 @@ class AgentScheduler:
         if self._config:
             realism_factor = float(self._config.get("execution", {}).get("backtest_realism_factor", 1.0))
         # Recency weighting: more recent trades carry more weight in the Sharpe estimate.
-        # Decay 0.995/day ≈ 50% half-life at 140 days. Applied symmetrically to baseline
-        # and candidate so relative comparisons remain valid; both see the same weighting.
+        # Decay 0.97/day ≈ 50% half-life at ~23 days. Tuned for 5-min BTC flow where
+        # microstructure / funding / liquidation regimes shift weekly; the prior 0.995
+        # (138-day half-life) was a long-term equity weighting and suppressed the
+        # recent-regime signal the pipeline is trying to learn. Applied symmetrically
+        # to baseline and candidate so relative comparisons remain valid.
         now_ts = datetime.now(timezone.utc).timestamp()
         returns: list[float] = []
 
@@ -505,14 +600,14 @@ class AgentScheduler:
             if kelly_frac < min_kelly:
                 continue
 
-            # Recency weight: recent trades count more (0.995^days_ago decay)
+            # Recency weight: recent trades count more (0.97^days_ago decay, ~23d half-life)
             ts_str = o.get("exit_timestamp", o.get("timestamp", ""))
             try:
                 trade_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp() if ts_str else now_ts
                 days_ago = max(0.0, (now_ts - trade_ts) / 86400.0)
             except Exception:
                 days_ago = 0.0
-            recency_w = 0.995 ** days_ago
+            recency_w = 0.97 ** days_ago
             returns.append(kelly_frac * o.get("gain_pct", 0.0) * realism_factor * recency_w)
 
         return returns
@@ -688,7 +783,7 @@ class AgentScheduler:
             else:
                 regime_buckets["neutral"].append(o)
 
-        MIN_REGIME_N = 20
+        MIN_REGIME_N = 35
         populated = {k: v for k, v in regime_buckets.items() if len(v) >= MIN_REGIME_N}
         if len(populated) < 2:
             return True, "regime check skipped (insufficient per-regime sample)"
@@ -858,7 +953,7 @@ class AgentScheduler:
             if len(all_candidate_returns) < 10:
                 msg = f"only {len(all_candidate_returns)} hypothetical trades (need 10)"
                 change_info.update({"decision": "rejected", "reason": msg})
-                logger.info(f"REJECTED {param}: {msg}")
+                logger.debug(f"REJECTED {param}: {msg}")
                 info["per_change"].append(change_info)
                 continue
 
@@ -898,11 +993,12 @@ class AgentScheduler:
                     if old_val is not None:
                         old_val_str = f"{old_val}->"
                 n_trades = len(all_candidate_returns)
-                logger.info(f"ADOPTED {param}: {old_val_str}{value} ({adopt_reason}, n={n_trades} candidates, baseline={current_sharpe:.3f}, candidate={candidate_sharpe:.3f})")
+                # Detailed line demoted to DEBUG — user-facing summary renders once at pipeline end.
+                logger.debug(f"ADOPTED {param}: {old_val_str}{value} ({adopt_reason}, n={n_trades} candidates, baseline={current_sharpe:.3f}, candidate={candidate_sharpe:.3f})")
             else:
                 change_info.update({"decision": "rejected", "reason": adopt_reason})
                 n_trades = len(all_candidate_returns)
-                logger.info(f"REJECTED {param}: {value} — {adopt_reason} (n={n_trades} candidates, baseline={current_sharpe:.3f}, candidate={candidate_sharpe:.3f})")
+                logger.debug(f"REJECTED {param}: {value} — {adopt_reason} (n={n_trades} candidates, baseline={current_sharpe:.3f}, candidate={candidate_sharpe:.3f})")
 
             info["per_change"].append(change_info)
 
@@ -1356,7 +1452,12 @@ class AgentScheduler:
         # Raised from 20 — Sharpe on 20 samples has huge variance, which meant small-
         # sample noise was driving some Platt adoptions. 50 pushes the noise floor down.
         MIN_PLATT_VALIDATION_TRADES = 50
-        PLATT_Z_FLOOR = 1.0  # additional gate: require statistically non-trivial improvement
+        # SE-scaled floor mirrors weight adoption (scheduler.py:1639). The prior
+        # z >= 1.0 gate required Δ ≥ 0.15 Sharpe at N=50 (JK_SE ≈ sqrt(1.125/50) ≈ 0.15),
+        # which is nearly unreachable for an incremental Platt refit (cal.a/cal.b seeded
+        # from the current calibrator). Result: platt_params.json had not updated in 8+
+        # days despite shifting market conditions. Now adopts on delta ≥ max(0.010, 0.25×SE).
+        PLATT_ABS_FLOOR = 0.010
         if len(train_outcomes) >= 200 and self.signal_engine:
             cal_probs = []
             cal_outcomes = []
@@ -1382,7 +1483,7 @@ class AgentScheduler:
                     ts2 = o.get("exit_timestamp", o.get("timestamp", ""))
                     try:
                         t2 = datetime.fromisoformat(ts2.replace("Z", "+00:00")).timestamp() if ts2 else platt_now_ts
-                        w2 = 0.995 ** max(0.0, (platt_now_ts - t2) / 86400.0)
+                        w2 = 0.97 ** max(0.0, (platt_now_ts - t2) / 86400.0)
                     except Exception:
                         w2 = 1.0
                     cal_weights.append(w2)
@@ -1463,35 +1564,43 @@ class AgentScheduler:
 
                     insufficient = (len(old_returns) < MIN_PLATT_VALIDATION_TRADES
                                     or len(new_returns) < MIN_PLATT_VALIDATION_TRADES)
-                    # Z-test of Sharpe improvement — gated in addition to `new > old`
-                    # so small-sample noise doesn't drive adoption.
+                    # SE-scaled floor: same pattern as weight adoption. delta = Sharpe
+                    # improvement; dyn_floor = max(abs_floor, 0.25 × JK_SE). z_score kept
+                    # in telemetry for diagnostics, no longer a gate.
                     n_for_z = min(len(old_returns), len(new_returns))
                     z_score = _sharpe_z_test(old_kelly_sharpe, new_kelly_sharpe, n_for_z) if n_for_z else 0.0
+                    delta_sharpe = new_kelly_sharpe - old_kelly_sharpe
+                    se_sharpe = math.sqrt((1.0 + 0.5 * old_kelly_sharpe ** 2) / max(n_for_z, 1)) if n_for_z else 0.0
+                    dyn_floor = max(PLATT_ABS_FLOOR, 0.25 * se_sharpe)
                     platt_info["z_score"] = round(z_score, 3)
+                    platt_info["delta_sharpe"] = round(delta_sharpe, 4)
+                    platt_info["dyn_floor"] = round(dyn_floor, 4)
                     if insufficient:
                         platt_info["decision"] = "rejected"
                         platt_info["reason"] = (f"validation trades below {MIN_PLATT_VALIDATION_TRADES} "
                                                 f"(old={len(old_returns)}, new={len(new_returns)})")
-                        logger.info(
+                        logger.debug(
                             f"Platt calibration rejected: insufficient validation trades "
                             f"(old={len(old_returns)}, new={len(new_returns)})"
                         )
-                    elif new_kelly_sharpe > old_kelly_sharpe and z_score >= PLATT_Z_FLOOR:
+                    elif new_kelly_sharpe > old_kelly_sharpe and delta_sharpe >= dyn_floor:
                         platt_info["decision"] = "adopted"
                         cal.save()
                         self.signal_engine.calibrator = cal
-                        logger.info(
+                        logger.debug(
                             f"Platt calibration adopted: kelly_sharpe {old_kelly_sharpe:.4f} -> "
-                            f"{new_kelly_sharpe:.4f} (z={z_score:.2f}, log-loss {old_loss:.4f} -> {new_loss:.4f})"
+                            f"{new_kelly_sharpe:.4f} (Δ={delta_sharpe:+.4f}, floor={dyn_floor:.4f}, "
+                            f"z={z_score:.2f}, log-loss {old_loss:.4f} -> {new_loss:.4f})"
                         )
                     else:
                         platt_info["decision"] = "rejected"
-                        reason = ("below z-floor" if new_kelly_sharpe > old_kelly_sharpe
+                        reason = ("below dyn_floor" if new_kelly_sharpe > old_kelly_sharpe
                                   else "no Sharpe improvement")
-                        platt_info["reason"] = f"{reason} (z={z_score:.2f}, need >= {PLATT_Z_FLOOR})"
-                        logger.info(
+                        platt_info["reason"] = f"{reason} (Δ={delta_sharpe:+.4f}, need >= {dyn_floor:.4f})"
+                        logger.debug(
                             f"Platt calibration rejected: kelly_sharpe {old_kelly_sharpe:.4f} -> "
-                            f"{new_kelly_sharpe:.4f} (z={z_score:.2f}, log-loss {old_loss:.4f} -> {new_loss:.4f})"
+                            f"{new_kelly_sharpe:.4f} (Δ={delta_sharpe:+.4f}, floor={dyn_floor:.4f}, "
+                            f"z={z_score:.2f}, log-loss {old_loss:.4f} -> {new_loss:.4f})"
                         )
         pipeline_info["platt"] = platt_info
         # Expose Platt meta-check (raw-vs-calibrated) so Claude sees the diagnostic
@@ -1540,10 +1649,14 @@ class AgentScheduler:
             source = "claude" if recommendations.get("confidence") else "local"
             pipeline_info["source"] = source
 
-            # Fixed absolute adoption floor. The noise-scaled term (0.25×JK_SE) dominates
-            # at realistic N anyway; the prior SPRT modulation (0.015/0.020/0.035) was a
-            # no-op that added explanation overhead. SPRT remains a diagnostic only.
-            self.weight_optimizer.min_improvement = 0.020
+            # Absolute adoption floor. At N≈200 the SE-scaled term (0.25×JK_SE ≈ 0.013)
+            # binds slightly higher than this, so SE remains the primary gate at current
+            # sample sizes. The floor was lowered from 0.020 → 0.010 after pipeline_run_log
+            # analysis showed the prior floor was rejecting a cluster of consistent
+            # positive results (probability_compression, 7 rejections in [+0.007, +0.022])
+            # as "within noise" when the SE gate would have passed many of them. SPRT
+            # remains a diagnostic only.
+            self.weight_optimizer.min_improvement = 0.010
 
             # Per-parameter cooldown is enforced inside _run_weight_optimizer:
             # any param adopted in the last 2 days is skipped individually; other
@@ -1604,6 +1717,11 @@ class AgentScheduler:
                 new_v = new_vals.get(k)
                 if old_v != new_v:
                     config_changes[k] = {"old": old_v, "new": new_v}
+
+        # Human-readable summary — logged AND used by Discord report.
+        pipeline_info["summary_block"] = _format_pipeline_summary(pipeline_info)
+        for line in pipeline_info["summary_block"].splitlines():
+            logger.info(line)
 
         # Send daily report
         if self.alert_manager:
