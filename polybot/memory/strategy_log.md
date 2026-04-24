@@ -543,3 +543,25 @@
 - SPRT negative last 50 trades — live entry quality remains below expectation independent of parameter tuning
 
 **Reasoning:** With atr_sigma_ratio in cooldown (the only validated direction), the strategy focuses on three untested or under-explored directions: probability_compression pushed more aggressively to 0.75 (all seven prior tests positive but below fold floor — a bolder move may clear it), logit_scale lowered to 3.5 (both ↑ tests negative, ↓ is untested and consistent with the noisy signal environment), and momentum_weight faded harder to -0.05 (absent from failed attempts table, consistent with 53-55% indicator accuracy). These cover three distinct parameter families and target the persistent overconfidence at high-edge entries.
+
+## 2026-04-24T04:04:48.066458+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - student_t_df=7 (Only tested ↓ direction (df=4, Δ=-0.026 failed); trying ↑ to df=7 reduces tail fatness, which addresses Q4 edge realization gap (0.77) where model over-prices extreme positions using fat-tail CDF.)
+  - liquidation_weight=0.06 (Only test at 0.05 showed positive BT delta (+0.004) but too small to adopt alone; pushing to the constraint max (0.06, untested) maximizes OI liquidation cascade signal in the current high-ATR regime where cascades are more frequent.)
+  - regime_weight=0.02 (Only tested ↑ direction (0.05, Δ=-0.003 failed); dropping to minimum (0.02, untested ↓) reduces autocorrelation noise in the dominant neutral regime (91% of trades) where regime signal has near-zero predictive value.)
+
+**Findings:**
+- Low-edge trades (4-8%) win 55.9% — high-edge (12-20%) only 52%, model overconfident at extremes
+- 60-180s window wins only 47.5% — 6.6× above noise floor, consistent underperformance
+- Scalp exits wrong 54% of time — holding beats scalping across all time buckets
+- High-ATR regime wins 56.2% vs low-ATR 53.4% — volatility is the clearest edge driver
+- Q4 edge realization at 0.77 — improved from 0.49 but still leaving gains on table
+
+**Warnings:**
+- Nearly every tested parameter direction has failed fold consistency — may be near a local optimum
+- SPRT negative last 50 trades — recent live entry quality remains below expectation
+- student_t_df ↑ and liquidation_weight interact if high-ATR regime drives both liquidations and fat-tail entries — monitor neutral regime Sharpe carefully
+
+**Reasoning:** After exhausting most parameter directions, this cycle targets three completely untested values: student_t_df raised to 7 (thinner tails, only ↓ direction tested and failed), liquidation_weight at max 0.06 (only positive-delta direction, needs bigger move), and regime_weight dropped to 0.02 minimum (only ↑ tested and failed; neutral regime dominates 91% of trades where regime autocorrelation adds noise). The inverted edge-WR relationship (low edge outperforms high edge) and Q4 realization gap both point toward the model being too aggressive on extreme positions — higher student_t_df directly reduces that aggressiveness. All three changes cover distinct parameter families with no prior attempts at these exact values.

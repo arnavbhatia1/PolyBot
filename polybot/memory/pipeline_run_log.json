@@ -353,5 +353,36 @@
         "backtest_delta_sharpe": -0.0046
       }
     ]
+  },
+  {
+    "date": "2026-04-24T04:04:48.224735+00:00",
+    "source": "claude",
+    "baseline_sharpe": 0.2133,
+    "changes": [
+      {
+        "param": "student_t_df",
+        "old_value": 5,
+        "new_value": 7,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0109
+      },
+      {
+        "param": "liquidation_weight",
+        "old_value": 0.03,
+        "new_value": 0.06,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0027
+      },
+      {
+        "param": "regime_weight",
+        "old_value": 0.03,
+        "new_value": 0.02,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.001
+      }
+    ]
   }
 ]
