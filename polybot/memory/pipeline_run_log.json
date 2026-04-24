@@ -270,5 +270,26 @@
         "backtest_delta_sharpe": 0.0233
       }
     ]
+  },
+  {
+    "date": "2026-04-24T02:45:51.160093+00:00",
+    "source": "local",
+    "baseline_sharpe": 0.2163,
+    "changes": [
+      {
+        "param": "weights",
+        "old_value": null,
+        "new_value": {
+          "rsi": 0.1994,
+          "macd": 0.2496,
+          "stochastic": 0.2019,
+          "obv": 0.1501,
+          "vwap": 0.1989
+        },
+        "direction": "unchanged",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0
+      }
+    ]
   }
 ]
