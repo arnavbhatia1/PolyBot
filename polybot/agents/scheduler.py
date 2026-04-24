@@ -117,6 +117,34 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"  Platt: skipped ({reason})" if reason else "  Platt: skipped")
 
+    # Manual-lever suggestions — surfaced but never auto-applied. Evidence required.
+    manual_obs: list[dict[str, Any]] = pipeline_info.get("manual_observations", []) or []
+    if manual_obs:
+        lines.append("")
+        lines.append(f"  MANUAL SUGGESTIONS ({len(manual_obs)}) [operator-only, evidence-backed]:")
+        for ob in manual_obs:
+            p = ob.get("param", "?")
+            cur = ob.get("current", "?")
+            sug = ob.get("suggested", "?")
+            conf = ob.get("confidence", "low")
+            ev = ob.get("evidence") or {}
+            ev_metric = ev.get("metric", "?")
+            ev_val = ev.get("value")
+            ev_n = ev.get("n")
+            ev_src = ev.get("source", "?")
+            src_channel = ob.get("source_channel", "direct")
+            pair = f"{cur} -> {sug}"
+            if src_channel == "rerouted":
+                ev_str = "(rerouted from changes, no formal evidence)"
+            elif ev_val is not None and ev_n is not None:
+                ev_str = f"{ev_metric}={ev_val} at N={ev_n} [{ev_src}]"
+            else:
+                ev_str = f"[{ev_src}]"
+            lines.append(f"    ? {p:<28s} {pair:<22s} conf={conf:<6s} {ev_str}")
+            reason = ob.get("reason", "")
+            if reason:
+                lines.append(f"      reason: {reason[:140]}")
+
     lines.append("=" * 60)
     return "\n".join(lines)
 
@@ -1656,6 +1684,10 @@ class AgentScheduler:
             recommendations = await self._run_ta_evolver(analysis, train_outcomes)
             source = "claude" if recommendations.get("confidence") else "local"
             pipeline_info["source"] = source
+            # Manual-lever observations — evidence-backed suggestions for operator-only
+            # params. These are never auto-applied; just surfaced in the summary table,
+            # Discord alert, and strategy_log.md for the operator to review.
+            pipeline_info["manual_observations"] = recommendations.get("manual_observations", []) or []
 
             # Absolute adoption floor. At N≈200 the SE-scaled term (0.25×JK_SE ≈ 0.013)
             # binds slightly higher than this, so SE remains the primary gate at current

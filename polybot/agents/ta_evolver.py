@@ -215,10 +215,31 @@ class TAEvolver:
         else:
             changes_str = "  - none"
 
+        # Manual-lever observations (operator-only, never auto-applied)
+        manual_obs = recommendations.get("manual_observations", []) or []
+        if manual_obs:
+            obs_lines = []
+            for ob in manual_obs:
+                ev = ob.get("evidence") or {}
+                ev_bits = []
+                for key in ("metric", "value", "n", "source"):
+                    if ev.get(key) is not None:
+                        ev_bits.append(f"{key}={ev[key]}")
+                ev_str = ", ".join(ev_bits) if ev_bits else "no evidence block"
+                obs_lines.append(
+                    f"  - {ob.get('param', '?')}: {ob.get('current', '?')} -> "
+                    f"{ob.get('suggested', '?')} [conf={ob.get('confidence', '?')}] "
+                    f"({ob.get('reason', '')}) | evidence: {ev_str}"
+                )
+            obs_str = "\n".join(obs_lines)
+        else:
+            obs_str = "  - none"
+
         entry = (
             f"\n## {now}\n\n"
             f"**Source:** Claude ({confidence})\n"
             f"**Proposed Changes ({len(changes_list)}):**\n{changes_str}\n\n"
+            f"**Manual Suggestions ({len(manual_obs)}) [operator-only]:**\n{obs_str}\n\n"
             f"**Findings:**\n{findings_str}\n\n"
             f"**Warnings:**\n{warnings_str}\n\n"
             f"**Reasoning:** {reasoning}\n"

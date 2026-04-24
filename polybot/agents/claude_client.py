@@ -174,6 +174,26 @@ Combined adoption backtests run automatically — if they show <70% of sum-indiv
    - spot_flow_weight: test HIGHER (0.06, 0.08) — CVD is predictive, currently underweighted.
    - student_t_df: test LOWER (3, 4) — fatter tails find more edge on extreme positions.
 
+## Manual-Lever Observations (separate output channel — operator-only)
+
+Manual-only params (exit_edge_threshold, max_edge, adverse_selection_threshold, normal_fraction, late_max_penalty, trading_start/end, final_min_probability, flip_enabled, flip_edge_premium, max_single_position_usd) are NEVER adopted automatically. But if the data reveals the operator should consider changing one, emit an entry in `manual_observations`. These are SURFACED TO THE OPERATOR (log + Discord + strategy_log) — they are NOT applied.
+
+HARD RULES FOR MANUAL OBSERVATIONS (silently dropped if violated):
+- Each observation MUST cite a specific measurable metric from the provided analysis/counterfactual/ghost/execution/SPRT context — not a guess, not a hunch.
+- The metric's sample size MUST be >= 50. If you only have 20 scalps, you do NOT have evidence — skip the observation.
+- The effect MUST exceed 2× the noise floor for that sample size (see Statistical Noise Reference).
+- Direction must be unambiguous. If the data could support either direction, skip it.
+- Emit ZERO observations if the data does not meet the bar. Quality > quantity. A single wrong suggestion erodes trust and makes the operator ignore future ones.
+- Max 3 observations per cycle.
+
+For each observation, cite:
+- `param`: exact manual-only name
+- `current`: current value
+- `suggested`: proposed value (or direction if you're not sure of magnitude)
+- `evidence`: {`metric`: short name, `value`: measured, `n`: sample size, `threshold`: noise-adjusted bar, `source`: which data section (e.g. "counterfactual_scalp_analysis", "ghost_analysis.by_gate.adverse_rate_30s", "edge_calibration")}
+- `reason`: one sentence explaining why the evidence supports the suggested direction
+- `confidence`: high | medium | low  (low means "watch it"; high means "the operator should almost certainly act")
+
 ## Response Format
 Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
 {
@@ -181,6 +201,16 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
     {"param": "atr_sigma_ratio", "value": 1.5, "reason": "one sentence why"},
     {"param": "logit_scale", "value": 4.5, "reason": "one sentence why"},
     {"param": "weights", "value": {"rsi": 0.20, "macd": 0.20, "stochastic": 0.20, "obv": 0.20, "vwap": 0.20}, "reason": "one sentence why"}
+  ],
+  "manual_observations": [
+    {
+      "param": "exit_edge_threshold",
+      "current": -0.05,
+      "suggested": -0.12,
+      "evidence": {"metric": "scalp_accuracy", "value": 0.46, "n": 900, "threshold": 0.50, "source": "counterfactual_scalp_analysis"},
+      "reason": "Scalp exits correct only 46% of the time over 900 scalps — holding to resolution beats scalping, lower (more negative) threshold keeps positions held longer",
+      "confidence": "high"
+    }
   ],
   "key_findings": ["finding 1", "finding 2", ...],
   "risk_warnings": ["warning 1", ...],
@@ -191,8 +221,9 @@ Return ONLY valid JSON (no markdown fences, no commentary outside the JSON):
 IMPORTANT:
 - `changes` is a ranked list (most impactful first), 0 to 5 entries. Empty list is valid.
 - Valid param names (BACKTESTABLE): atr_sigma_ratio, logit_scale, probability_compression, liquidation_weight, prev_margin_weight, spot_flow_weight, flow_weight, regime_weight, momentum_weight, student_t_df, kelly_fraction, min_atr, min_edge, min_kelly, min_model_probability, weights (indicator weights dict).
-- DO NOT include any param listed under "Parameters NOT In Your Toolkit" — they will be silently dropped (exit_edge_threshold, normal_fraction, late_max_penalty, max_edge, adverse_selection_threshold, trading_start/end).
+- DO NOT include any manual-only param in `changes` — they will be silently dropped. If the data supports changing one, put it in `manual_observations` instead.
 - If you have no high-confidence improvements, return an empty changes list: "changes": []
+- `manual_observations` is optional; empty or absent is fine. Prefer zero observations over a weak one.
 - Each change must have: "param" (exact name from valid list), "value" (the new value), "reason" (one sentence).
 - key_findings and risk_warnings are shown in Discord.
 - Each finding must be ONE short sentence (under 100 characters).
@@ -340,10 +371,22 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
             logger.debug(f"Dropping read-only param change: {param}")
             continue
 
-        # Drop manual-only params — they aren't backtestable (scheduler would reject
-        # with zero delta anyway). Log at info so Claude's drift back toward them is visible.
+        # Drop manual-only params from changes — they aren't backtestable. But if Claude
+        # provided enough metadata, reroute into manual_observations so the operator sees
+        # the suggestion rather than silently losing it.
         if param in MANUAL_ONLY_PARAMS:
-            logger.info(f"Dropping manual-only (non-backtestable) param change: {param}={value}")
+            logger.info(f"Rerouting manual-only param from changes -> manual_observations: {param}={value}")
+            cur_val = cfg.get(param)
+            rerouted = {
+                "param": param,
+                "current": cur_val,
+                "suggested": value,
+                "reason": reason or "Claude proposed in `changes` (rerouted — manual-only param)",
+                "confidence": "low",  # rerouted suggestions default to low — they bypassed the evidence schema
+                "evidence": change.get("evidence") or {"source": "rerouted_from_changes", "note": "no explicit evidence block provided"},
+                "source_channel": "rerouted",
+            }
+            data.setdefault("manual_observations", []).append(rerouted)
             continue
 
         # Handle indicator weights dict
@@ -413,6 +456,58 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
             logger.warning(f"Unknown param in changes list: {param!r}")
 
     data["changes"] = validated_changes
+
+    # Validate manual_observations: strict evidence bar. Silently drop any that fail.
+    # Each must have a manual-only param, an evidence dict with n >= 50, and a direction.
+    # Rerouted entries (flagged above) are allowed through with confidence="low" so the
+    # operator sees them, but they skip the n>=50 bar since they came without evidence.
+    raw_obs = data.get("manual_observations")
+    validated_obs: list[dict[str, Any]] = []
+    if isinstance(raw_obs, list):
+        for obs in raw_obs[:3]:  # max 3
+            if not isinstance(obs, dict):
+                continue
+            p = obs.get("param", "")
+            if p not in MANUAL_ONLY_PARAMS and p not in {"final_min_probability", "flip_enabled",
+                                                         "flip_edge_premium", "max_single_position_usd",
+                                                         "max_single_position_pct",
+                                                         "max_concurrent_positions"}:
+                logger.debug(f"Dropping manual_observation for non-manual param: {p}")
+                continue
+            reason = obs.get("reason", "")
+            suggested = obs.get("suggested")
+            if not reason or suggested is None:
+                logger.debug(f"Dropping manual_observation missing reason/suggested: {p}")
+                continue
+            is_rerouted = obs.get("source_channel") == "rerouted"
+            ev = obs.get("evidence") or {}
+            if not is_rerouted:
+                # Require a grounded evidence block: numeric n >= 50.
+                n_ev = ev.get("n") if isinstance(ev, dict) else None
+                try:
+                    n_int = int(n_ev) if n_ev is not None else 0
+                except (TypeError, ValueError):
+                    n_int = 0
+                if n_int < 50:
+                    logger.info(f"Dropping under-evidenced manual_observation: {p} (n={n_int}, need >=50)")
+                    continue
+                if not ev.get("source"):
+                    logger.info(f"Dropping manual_observation without evidence.source: {p}")
+                    continue
+            conf = obs.get("confidence", "low")
+            if conf not in ("high", "medium", "low"):
+                conf = "low"
+            cur = obs.get("current", cfg.get(p))
+            validated_obs.append({
+                "param": p,
+                "current": cur,
+                "suggested": suggested,
+                "reason": reason,
+                "evidence": ev,
+                "confidence": conf,
+                "source_channel": obs.get("source_channel", "direct"),
+            })
+    data["manual_observations"] = validated_obs
     return data
 
 
