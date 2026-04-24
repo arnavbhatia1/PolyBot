@@ -45,14 +45,14 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     except Exception:
         se_val = None
     dyn_floor = max(abs_floor, 0.25 * se_val) if se_val is not None else abs_floor
-    se_str = f"±{se_val:.3f}" if se_val is not None else "±?"
+    se_str = f"+/-{se_val:.3f}" if se_val is not None else "+/-?"
 
     lines: list[str] = []
-    lines.append("═" * 60)
-    lines.append(f"  PIPELINE RESULT — {ts}")
-    lines.append("═" * 60)
+    lines.append("=" * 60)
+    lines.append(f"  PIPELINE RESULT - {ts}")
+    lines.append("=" * 60)
     lines.append(f"  Baseline Sharpe: {baseline:+.3f}  (N={n_baseline}, SE={se_str})")
-    lines.append(f"  Adoption floor:  need Δ ≥ +{dyn_floor:.3f}  (abs={abs_floor:.3f}, src={source})")
+    lines.append(f"  Adoption floor:  need delta >= +{dyn_floor:.3f}  (abs={abs_floor:.3f}, src={source})")
     lines.append("-" * 60)
 
     if per_change:
@@ -65,8 +65,8 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
             cand_sharpe = c.get("candidate_sharpe")
             delta = (cand_sharpe - baseline) if isinstance(cand_sharpe, (int, float)) else None
             decision = c.get("decision", "?")
-            mark = "✓" if decision == "adopted" else "✗"
-            delta_str = f"Δ={delta:+.3f}" if delta is not None else "Δ=?"
+            mark = "[+]" if decision == "adopted" else "[-]"
+            delta_str = f"d={delta:+.3f}" if delta is not None else "d=?"
             # Short verdict
             if decision == "adopted":
                 verdict = "ADOPTED"
@@ -95,21 +95,29 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
         old_ll = platt.get("old_loss", 0.0)
         new_ll = platt.get("new_loss", 0.0)
         z = platt.get("z_score", 0.0)
+        p_delta = platt.get("delta_sharpe")
+        p_floor = platt.get("dyn_floor")
         verdict = "ADOPTED" if p_dec == "adopted" else "REJECTED"
         lines.append("")
+        # delta and dyn_floor are the actual gate now (mirrors weight adoption).
+        # z is kept for diagnostics but no longer gates.
+        if p_delta is not None and p_floor is not None:
+            gate_str = f"d={p_delta:+.3f}, floor={p_floor:.3f}, z={z:+.2f}"
+        else:
+            gate_str = f"z={z:+.2f}"
         lines.append(f"  Platt: kelly_sharpe {old_ks:+.3f} -> {new_ks:+.3f}  "
-                     f"(z={z:+.2f}, log-loss {old_ll:.3f} -> {new_ll:.3f})  [{verdict}]")
+                     f"({gate_str}, log-loss {old_ll:.3f} -> {new_ll:.3f})  [{verdict}]")
         if raw_ks is not None:
             lines.append(f"         raw (no Platt) kelly_sharpe: {raw_ks:+.3f}")
         meta = platt.get("meta_warning")
         if meta:
-            lines.append(f"         ⚠ {meta}")
+            lines.append(f"         ! {meta}")
     elif p_dec == "skipped":
         reason = platt.get("reason", "")
         lines.append("")
         lines.append(f"  Platt: skipped ({reason})" if reason else "  Platt: skipped")
 
-    lines.append("═" * 60)
+    lines.append("=" * 60)
     return "\n".join(lines)
 
 
@@ -1121,15 +1129,15 @@ class AgentScheduler:
                             if c.get("param") == weakest_param and c.get("decision") == "adopted":
                                 c["decision"] = "backed_out"
                                 c["reason"] = (
-                                    f"interaction detected: combined Δ={combined_delta:+.3f} < "
-                                    f"sum_individual Δ={sum_individual_delta:+.3f} × 0.7 — "
+                                    f"interaction detected: combined d={combined_delta:+.3f} < "
+                                    f"sum_individual d={sum_individual_delta:+.3f} * 0.7 - "
                                     f"weakest change (z={z_scores[weakest_param]:.2f}) removed"
                                 )
                         info["interaction_detected"] = True
                         info["backed_out_param"] = weakest_param
                         logger.info(
-                            f"Interaction detected: combined Δ={combined_delta:+.3f} vs "
-                            f"sum_individual Δ={sum_individual_delta:+.3f}. "
+                            f"Interaction detected: combined d={combined_delta:+.3f} vs "
+                            f"sum_individual d={sum_individual_delta:+.3f}. "
                             f"Backing out {weakest_param} (z={z_scores.get(weakest_param, 0):.2f})"
                         )
 
@@ -1589,17 +1597,17 @@ class AgentScheduler:
                         self.signal_engine.calibrator = cal
                         logger.debug(
                             f"Platt calibration adopted: kelly_sharpe {old_kelly_sharpe:.4f} -> "
-                            f"{new_kelly_sharpe:.4f} (Δ={delta_sharpe:+.4f}, floor={dyn_floor:.4f}, "
+                            f"{new_kelly_sharpe:.4f} (d={delta_sharpe:+.4f}, floor={dyn_floor:.4f}, "
                             f"z={z_score:.2f}, log-loss {old_loss:.4f} -> {new_loss:.4f})"
                         )
                     else:
                         platt_info["decision"] = "rejected"
                         reason = ("below dyn_floor" if new_kelly_sharpe > old_kelly_sharpe
                                   else "no Sharpe improvement")
-                        platt_info["reason"] = f"{reason} (Δ={delta_sharpe:+.4f}, need >= {dyn_floor:.4f})"
+                        platt_info["reason"] = f"{reason} (d={delta_sharpe:+.4f}, need >= {dyn_floor:.4f})"
                         logger.debug(
                             f"Platt calibration rejected: kelly_sharpe {old_kelly_sharpe:.4f} -> "
-                            f"{new_kelly_sharpe:.4f} (Δ={delta_sharpe:+.4f}, floor={dyn_floor:.4f}, "
+                            f"{new_kelly_sharpe:.4f} (d={delta_sharpe:+.4f}, floor={dyn_floor:.4f}, "
                             f"z={z_score:.2f}, log-loss {old_loss:.4f} -> {new_loss:.4f})"
                         )
         pipeline_info["platt"] = platt_info

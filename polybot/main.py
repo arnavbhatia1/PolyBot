@@ -6,9 +6,19 @@ import asyncio
 import json
 import logging
 import logging.handlers
+import sys
 import time
 from pathlib import Path
 from typing import Any
+
+# Force UTF-8 on stdout/stderr so Windows cp1252 consoles don't choke on box-drawing
+# chars (═ ─ Δ ± ✓ ✗ ⚠ →) used in pipeline summary output. errors='replace' keeps the
+# process alive if a terminal still can't render a given codepoint.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except (AttributeError, ValueError):
+        pass
 
 from polybot.config.loader import load_config, get_secret
 from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE
@@ -77,7 +87,7 @@ class _StripAnsiFormatter(logging.Formatter):
 
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
-_file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="a")
+_file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="a", encoding="utf-8")
 _file_handler.setFormatter(_StripAnsiFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
 logging.basicConfig(
     level=logging.ERROR,

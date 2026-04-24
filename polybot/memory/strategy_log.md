@@ -521,3 +521,25 @@
 - SPRT negative with 0% edge-positive entries last 50 trades — live entry quality remains degraded independent of parameter choices
 
 **Reasoning:** The three changes target distinct parameter families with no prior failed attempts at these exact values: logit_scale at 5.0 (untested, amplifies strongest signals more per direction rules), flow_weight at 0.08 (untested level, L3 is best-documented signal), and min_atr at 12.0 (completely untested, directly filters the demonstrably weaker low-vol regime). The inverse edge-WR relationship (low edge outperforms high edge) confirms the model needs either less overconfidence at extremes or better signal quality on high-conviction entries — logit_scale and flow_weight address the latter. All three changes are additive and cover different parameter families as required.
+
+## 2026-04-24T03:59:28.795309+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - probability_compression=0.75 (Seven prior tests at 0.80-0.92 all showed positive BT delta (avg +0.014) — pushing decisively to 0.75 (untested, most aggressive level) targets the Q4 realization gap (0.77 vs ideal 1.0) and aims to generate a delta large enough to clear fold consistency where prior attempts clustered near but below the floor.)
+  - logit_scale=3.5 (Both ↑ tests (4.5, 5.0) showed negative delta (-0.001, -0.002) confirming higher amplification hurts — the untested ↓ direction (3.5) reduces noise amplification from weak L2-L5 signals (all indicators at 53-55%, well below 65% threshold) and is internally consistent with fading noisy signals.)
+  - momentum_weight=-0.039 (Not in cumulative failed list — an untested parameter direction; with all indicators scoring 53-55% (far below 65% actionability), increasing the fade signal from -0.02 to -0.05 more aggressively counters weak indicator noise in the dominant neutral regime.)
+
+**Findings:**
+- Q4 edge realization at 0.77 — still underperforming, model moderately overconfident at high-edge entries
+- All indicators score 53-55% — below the 65% threshold, fading them harder makes sense
+- 60-180s entries win only 47.5% — mid-window timing is a consistent weak spot
+- High ATR trades win 56.2% vs low ATR 53.4% — volatility regime is the clearest edge driver
+- Scalp exits wrong 54% of time — model is exiting good positions too early
+
+**Warnings:**
+- logit_scale ↓ and probability_compression ↓ both reduce signal confidence — monitor for under-trading if combined effect is too conservative
+- Nearly every parameter direction has been tested; if this cycle fails, the config may be near a local optimum and a rest period is warranted
+- SPRT negative last 50 trades — live entry quality remains below expectation independent of parameter tuning
+
+**Reasoning:** With atr_sigma_ratio in cooldown (the only validated direction), the strategy focuses on three untested or under-explored directions: probability_compression pushed more aggressively to 0.75 (all seven prior tests positive but below fold floor — a bolder move may clear it), logit_scale lowered to 3.5 (both ↑ tests negative, ↓ is untested and consistent with the noisy signal environment), and momentum_weight faded harder to -0.05 (absent from failed attempts table, consistent with 53-55% indicator accuracy). These cover three distinct parameter families and target the persistent overconfidence at high-edge entries.
