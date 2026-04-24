@@ -6,6 +6,7 @@ ranges, and returns a recommendations dict for the WeightOptimizer.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -210,23 +211,43 @@ class ClaudeClient:
     async def analyze_strategy(self, context: dict[str, Any]) -> dict[str, Any]:
         """Send performance data to Claude for quant strategy analysis.
 
-        Args:
-            context: Dict with keys: current_config, analysis, trades, previous_recommendations
-
-        Returns:
-            Dict with recommended_weights, recommended_momentum_weight,
-            recommended_min_edge, recommended_kelly_fraction, key_findings,
-            risk_warnings, reasoning, confidence.
+        Retries on transient server errors (529 Overloaded, 503 Service Unavailable,
+        502 Bad Gateway) with exponential backoff: 30s → 60s → 120s. Non-transient
+        errors (4xx auth/request) raise immediately.
         """
         user_message = _format_strategy_context(context)
 
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=8192,
-            system=STRATEGY_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-            timeout=180.0,
-        )
+        # Transient-error retry: one attempt after 30s for 529/503/502. Beyond that we
+        # fall back to the local rule-based evolver rather than block the pipeline.
+        RETRY_DELAYS_S = [30]
+        TRANSIENT_STATUSES = {529, 503, 502}
+        response = None
+        last_err: Exception | None = None
+        for attempt in range(len(RETRY_DELAYS_S) + 1):
+            try:
+                response = await self.client.messages.create(
+                    model=self.model,
+                    max_tokens=8192,
+                    system=STRATEGY_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": user_message}],
+                    timeout=180.0,
+                )
+                break
+            except anthropic.APIStatusError as e:
+                status = getattr(e, "status_code", None)
+                if status not in TRANSIENT_STATUSES or attempt == len(RETRY_DELAYS_S):
+                    raise
+                delay = RETRY_DELAYS_S[attempt]
+                last_err = e
+                logger.warning(
+                    f"Claude API {status} (transient) on attempt {attempt + 1}; "
+                    f"retrying in {delay}s..."
+                )
+                await asyncio.sleep(delay)
+        if response is None:
+            # All retries exhausted — re-raise the last transient error so caller falls back.
+            raise last_err if last_err else RuntimeError("Claude API: no response and no error captured")
+
         text = response.content[0].text.strip()
         logger.debug(f"Claude raw response (first 500 chars): {text[:500]}")
 
