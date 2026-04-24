@@ -565,3 +565,28 @@
 - student_t_df ↑ and liquidation_weight interact if high-ATR regime drives both liquidations and fat-tail entries — monitor neutral regime Sharpe carefully
 
 **Reasoning:** After exhausting most parameter directions, this cycle targets three completely untested values: student_t_df raised to 7 (thinner tails, only ↓ direction tested and failed), liquidation_weight at max 0.06 (only positive-delta direction, needs bigger move), and regime_weight dropped to 0.02 minimum (only ↑ tested and failed; neutral regime dominates 91% of trades where regime autocorrelation adds noise). The inverted edge-WR relationship (low edge outperforms high edge) and Q4 realization gap both point toward the model being too aggressive on extreme positions — higher student_t_df directly reduces that aggressiveness. All three changes cover distinct parameter families with no prior attempts at these exact values.
+
+## 2026-04-24T04:22:39.662212+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - probability_compression=0.88 (0.88 produced the highest BT delta of all 8 tested values (+0.0215) — retesting it as a standalone change (previously combined with other params) to isolate its fold contribution and confirm it can clear the 0.0138 floor on its own.)
+  - min_model_probability=0.61 (Completely untested pipeline-tunable gate — edge calibration shows high-edge entries (12-20%) win only 52% vs 55.9% for low-edge, indicating overconfident high-probability entries are dragging results; raising the floor from 0.58 to 0.61 filters marginal entries without touching the 60-180s losing window directly.)
+  - min_edge=0.05 (Completely untested pipeline-tunable gate — the inverted edge-WR relationship (low edge wins MORE) suggests min_edge slightly above current 0.04 removes the weakest signals while preserving the 4-8% sweet spot; covers a fresh parameter family not yet in the failed attempts list.)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.12 -> -0.07 [conf=high] (Scalps at holding_edge < -0.10 are correct only 36% of the time (n=480, far below 50% threshold) — the current -0.12 threshold is too permissive and triggers early exits that are wrong 64% of the time, leaving significant P&L on the table.) | evidence: metric=scalp_accuracy_deep_negative, value=0.36, n=480, source=counterfactual_scalp_analysis
+
+**Findings:**
+- Low-edge trades (4-8%) win 55.9% vs high-edge (12-20%) at 52% — model overconfident at extremes
+- Scalp exits wrong 54% of time — holding beats scalping, $607 left on table
+- 60-180s entries win only 47.5% — below-breakeven mid-window timing drags overall WR
+- probability_compression 0.88 had the best BT delta (+0.0215) of all 8 tested values
+- High-ATR regime wins 56.2% vs low-ATR 53.4% — volatility regime is the clearest edge driver
+
+**Warnings:**
+- Nearly all tested parameter directions exhausted — if gate params (min_edge, min_model_probability) also fail, config may be at local optimum
+- SPRT negative last 50 trades with 0% edge-positive entries — live entry quality remains structurally degraded
+- Raising min_model_probability may reduce trade count materially — monitor daily trade volume after adoption
+
+**Reasoning:** With nearly every backtestable direction exhausted, this cycle pivots to the two completely untested pipeline-tunable gate parameters (min_model_probability and min_edge) which have never appeared in the failed attempts list, combined with probability_compression at its empirically strongest tested value (0.88, BT Δ=+0.0215). The inverted edge-WR calibration (low edge outperforms high edge by 3.9 percentage points, above the 2.4% noise floor) provides the specific evidence base for gate tightening. These three changes cover distinct parameter families and the gate params interact minimally with each other or with probability_compression.

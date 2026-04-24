@@ -384,5 +384,36 @@
         "backtest_delta_sharpe": 0.001
       }
     ]
+  },
+  {
+    "date": "2026-04-24T04:22:39.976996+00:00",
+    "source": "claude",
+    "baseline_sharpe": 0.2133,
+    "changes": [
+      {
+        "param": "probability_compression",
+        "old_value": 1.0,
+        "new_value": 0.88,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0265
+      },
+      {
+        "param": "min_model_probability",
+        "old_value": 0.58,
+        "new_value": 0.61,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0384
+      },
+      {
+        "param": "min_edge",
+        "old_value": 0.04,
+        "new_value": 0.05,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0039
+      }
+    ]
   }
 ]
