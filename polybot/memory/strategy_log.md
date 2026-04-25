@@ -590,3 +590,29 @@
 - Raising min_model_probability may reduce trade count materially — monitor daily trade volume after adoption
 
 **Reasoning:** With nearly every backtestable direction exhausted, this cycle pivots to the two completely untested pipeline-tunable gate parameters (min_model_probability and min_edge) which have never appeared in the failed attempts list, combined with probability_compression at its empirically strongest tested value (0.88, BT Δ=+0.0215). The inverted edge-WR calibration (low edge outperforms high edge by 3.9 percentage points, above the 2.4% noise floor) provides the specific evidence base for gate tightening. These three changes cover distinct parameter families and the gate params interact minimally with each other or with probability_compression.
+
+## 2026-04-25T02:46:34.180075+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - spot_flow_weight=0.05 (Untested ↓ direction — all 7 ↑ tests failed (avg Δ=+0.018 but zero adoptions); CVD signal at 0.10 may be over-weighted relative to raw flow_weight=0.04, and the new low-ATR regime (mean 30→16) may reduce CVD predictive power; ↓ to 0.05 tests the opposite direction with meaningful magnitude.)
+  - min_atr=5.0 (ATR distribution shifted dramatically (mean 30→16, KS=0.435 p=0.000) — the current min_atr=8.0 floor may be filtering too aggressively in the new low-vol regime; ↓ to the floor (5.0) is a completely untested direction that targets the structural regime shift directly.)
+  - momentum_weight=-0.01 (Only ↓ direction tested (-0.039, Δ=-0.005 failed); ↑ direction toward zero is completely untested — stochastic at 55.0% (2×noise above floor) is the only indicator above the 55% signal threshold, suggesting marginally less aggressive indicator-fading may be warranted.)
+
+**Manual Suggestions (2) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.04 [conf=high] (Scalps triggered at holding_edge < -0.10 are correct only 35% of the time (n=538, 15pp below 50% break-even, far exceeding 2×noise floor) — the current -0.07 threshold allows these deeply-negative-edge exits that destroy value; raising toward -0.04 would keep more of these positions held to resolution where they win 56.8% overall.) | evidence: metric=scalp_accuracy_deep_negative_holding_edge, value=0.35, n=538, source=counterfactual_scalp_analysis
+  - exit_edge_threshold: -0.07 -> -0.04 [conf=high] (Scalps in the 30-90s remaining window are correct only 39.6% of the time (n=318, 10.4pp below 50%, exceeds 2×noise floor of 5.6pp) — exiting at this time window is systematically wrong and the threshold should be tightened to reduce premature exits.) | evidence: metric=scalp_accuracy_by_time_remaining, value=0.396, n=318, source=counterfactual_scalp_analysis
+
+**Findings:**
+- ATR halved (mean 30→16) — structural regime shift may be invalidating historical backtest patterns
+- Scalps at holding_edge < -0.10 wrong 65% of time (n=538) — exit threshold too permissive
+- Q4 edge realization 0.71 — model still overconfident at high-conviction entries
+- 60-180s entries win only 48.4% vs 55.7% early — mid-window timing is a persistent drag
+- 9 probability_compression attempts all positive delta but zero adoptions — fold consistency is the barrier, not signal quality
+
+**Warnings:**
+- Nearly all parameter directions exhausted — config may be near a local optimum for current backtest structure
+- ATR regime shift (KS=0.435) means historical backtest may not reflect current market conditions
+- SPRT negative last 50 trades (3% edge-positive entries) — live entry quality remains structurally degraded
+
+**Reasoning:** With nearly every parameter direction exhausted, this cycle targets three completely untested directions: spot_flow_weight ↓ (all 7 ↑ tests failed, ↓ never tried), min_atr ↓ to the floor (the dramatic ATR halving makes the old 8.0 floor potentially misaligned with the new regime), and momentum_weight ↑ toward zero (only ↓ tested, stochastic's 55% accuracy suggests marginal indicator signal exists). The structural fold-consistency problem on probability_compression (9 attempts, all positive Δ, all failing folds) suggests the walk-forward structure rather than signal quality is the binding constraint — no further probability_compression attempts are warranted. The manual observation on exit_edge_threshold is supported by n=538 scalps at 35% accuracy, a 15pp signal that vastly exceeds the noise floor.

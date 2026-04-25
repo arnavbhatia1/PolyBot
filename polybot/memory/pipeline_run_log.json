@@ -415,5 +415,36 @@
         "backtest_delta_sharpe": 0.0039
       }
     ]
+  },
+  {
+    "date": "2026-04-25T02:46:34.330634+00:00",
+    "source": "claude",
+    "baseline_sharpe": 0.1958,
+    "changes": [
+      {
+        "param": "spot_flow_weight",
+        "old_value": 0.1,
+        "new_value": 0.05,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0098
+      },
+      {
+        "param": "min_atr",
+        "old_value": 8.0,
+        "new_value": 5.0,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0038
+      },
+      {
+        "param": "momentum_weight",
+        "old_value": -0.02,
+        "new_value": -0.01,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.003
+      }
+    ]
   }
 ]
