@@ -507,7 +507,17 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
                 "confidence": conf,
                 "source_channel": obs.get("source_channel", "direct"),
             })
-    data["manual_observations"] = validated_obs
+    # Dedupe by param — keep the highest-confidence observation per param.
+    # Claude sometimes emits multiple observations for the same param citing different
+    # evidence sources; the operator only needs one concrete suggestion per lever.
+    conf_rank = {"high": 3, "medium": 2, "low": 1}
+    by_param: dict[str, dict[str, Any]] = {}
+    for obs in validated_obs:
+        p = obs["param"]
+        prev = by_param.get(p)
+        if prev is None or conf_rank.get(obs["confidence"], 0) > conf_rank.get(prev["confidence"], 0):
+            by_param[p] = obs
+    data["manual_observations"] = list(by_param.values())
     return data
 
 

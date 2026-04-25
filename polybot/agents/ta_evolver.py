@@ -216,21 +216,18 @@ class TAEvolver:
             changes_str = "  - none"
 
         # Manual-lever observations (operator-only, never auto-applied)
+        # Format matches the pipeline summary table: one param per block, two lines each.
         manual_obs = recommendations.get("manual_observations", []) or []
         if manual_obs:
             obs_lines = []
             for ob in manual_obs:
-                ev = ob.get("evidence") or {}
-                ev_bits = []
-                for key in ("metric", "value", "n", "source"):
-                    if ev.get(key) is not None:
-                        ev_bits.append(f"{key}={ev[key]}")
-                ev_str = ", ".join(ev_bits) if ev_bits else "no evidence block"
                 obs_lines.append(
                     f"  - {ob.get('param', '?')}: {ob.get('current', '?')} -> "
-                    f"{ob.get('suggested', '?')} [conf={ob.get('confidence', '?')}] "
-                    f"({ob.get('reason', '')}) | evidence: {ev_str}"
+                    f"{ob.get('suggested', '?')} [{ob.get('confidence', '?')}]"
                 )
+                reason = (ob.get("reason") or "").strip()
+                if reason:
+                    obs_lines.append(f"    {reason}")
             obs_str = "\n".join(obs_lines)
         else:
             obs_str = "  - none"
