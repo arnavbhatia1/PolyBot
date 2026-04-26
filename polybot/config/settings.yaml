@@ -75,7 +75,7 @@ signal:
   regime_lookback: 50
   min_kelly: 0.015
   atr_sigma_ratio: 1.3
-  min_atr: 8.5
+  min_atr: 8.0
   flow_weight: 0.04
   spot_flow_weight: 0.08
   wall_weight: 0.0
