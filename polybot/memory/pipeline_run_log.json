@@ -446,5 +446,36 @@
         "backtest_delta_sharpe": 0.003
       }
     ]
+  },
+  {
+    "date": "2026-04-26T02:46:08.096016+00:00",
+    "source": "claude",
+    "baseline_sharpe": 0.1482,
+    "changes": [
+      {
+        "param": "atr_sigma_ratio",
+        "old_value": 1.3,
+        "new_value": 1.2,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0044
+      },
+      {
+        "param": "student_t_df",
+        "old_value": 5,
+        "new_value": 3,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0076
+      },
+      {
+        "param": "logit_scale",
+        "old_value": 4.0,
+        "new_value": 6.0,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0068
+      }
+    ]
   }
 ]

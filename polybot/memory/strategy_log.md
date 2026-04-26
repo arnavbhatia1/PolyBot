@@ -616,3 +616,29 @@
 - SPRT negative last 50 trades (3% edge-positive entries) — live entry quality remains structurally degraded
 
 **Reasoning:** With nearly every parameter direction exhausted, this cycle targets three completely untested directions: spot_flow_weight ↓ (all 7 ↑ tests failed, ↓ never tried), min_atr ↓ to the floor (the dramatic ATR halving makes the old 8.0 floor potentially misaligned with the new regime), and momentum_weight ↑ toward zero (only ↓ tested, stochastic's 55% accuracy suggests marginal indicator signal exists). The structural fold-consistency problem on probability_compression (9 attempts, all positive Δ, all failing folds) suggests the walk-forward structure rather than signal quality is the binding constraint — no further probability_compression attempts are warranted. The manual observation on exit_edge_threshold is supported by n=538 scalps at 35% accuracy, a 15pp signal that vastly exceeds the noise floor.
+
+## 2026-04-26T02:46:07.933290+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - atr_sigma_ratio=1.2 (Only direction with a positive adopted BT delta (+0.023 avg); current 1.3 with ATR mean halved (29→11, KS=0.549) means the model needs to be more aggressive to find edge in the new low-vol regime — 1.2 is the untested constraint minimum.)
+  - student_t_df=3 (df=4 failed (Δ=-0.026) but df=3 is untested — maximum tail fatness may find more reversal edge in BTC's current low-ATR regime where fat-tail priors are most relevant for extreme-position pricing.)
+  - logit_scale=6.0 (All tested values (3.5, 4.5, 5.0) failed fold consistency; 6.0 at the constraint ceiling is the only untested direction and maximally amplifies L2-L5 signals — worth testing once before declaring logit_scale exhausted.)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.04 -> -0.02 [high]
+    Scalps triggered at holding_edge < -0.10 are correct only 34% of the time across 573 exits — far below 50% break-even and 16pp below threshold — indicating the current -0.04 threshold still permits deeply wrong early exits that destroy value.
+
+**Findings:**
+- ATR halved (mean 29→11) — biggest structural shift; backtest history less reliable now
+- Q4 edge realization 0.79 — model still overconfident on highest-conviction entries
+- Scalp exits wrong 55% of time — $1,595 left on table from premature exits
+- 60-180s entries win only 48% — mid-window timing is a persistent losing pattern
+- Nearly all parameter directions exhausted — config approaching local optimum
+
+**Warnings:**
+- ATR regime shift (KS=0.549) means walk-forward folds may not be representative of live conditions
+- SPRT negative last 50 trades — recent live entry quality below expectation, parameter changes may not resolve this
+- atr_sigma_ratio + student_t_df both affect L1 tail aggressiveness — raising both could compound overconfidence in opposite direction
+
+**Reasoning:** With nearly every parameter direction exhausted and fold consistency failing despite positive BT deltas, this cycle targets three genuinely untested values: atr_sigma_ratio at the minimum (1.2, only positive-delta direction), student_t_df at 3 (maximum tail fatness, df=4 failed but df=3 untested), and logit_scale at 6.0 (ceiling, all interior values failed). The dramatic ATR halving makes a more aggressive atr_sigma_ratio directionally sound in the new low-vol regime. If these three also fail fold consistency, the config is likely at a local optimum and a rest period is warranted.
