@@ -116,10 +116,10 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - atr_sigma_ratio: 1.2 to 2.5 range (ATR-to-σ conversion — lower = more aggressive probabilities)
 - logit_scale: 2.0 to 6.0. Amplifies how much L2-L5 signal weights shift the final probability. Higher = signals have more impact. Lower = more conservative. If signals are noisy, lower it. If they're predictive but weak, raise it.
 - probability_compression: 0.5 to 1.0. Shrinks final probability toward 0.5 after CDF. 1.0 = no compression. Use 0.7-0.85 if Q4 edge realization is poor (model overconfident at extremes).
-- liquidation_weight: 0.01 to 0.06. L3e — Bybit OI drop signals liquidation cascades. Raise if large OI drops precede your wins.
+- liquidation_weight: 0.01 to 0.10. L3e — Bybit OI drop signals liquidation cascades. Raise if large OI drops precede your wins.
 - prev_margin_weight: 0.01 to 0.05. L5 — previous window momentum carry. Raise if consecutive windows trend together.
 - min_atr: 5.0 to 15.0. Floor on ATR (runtime: max(min_atr, 0.3 × rolling_20)). Raise in calm markets to avoid overtrading low-volatility windows.
-- spot_flow_weight: 0.01 to 0.10. L3b — Binance CVD + taker ratio. Raise if CVD is predictive.
+- spot_flow_weight: 0.01 to 0.15. L3b — Binance CVD + taker ratio. Raise if CVD is predictive.
 
 ## Parameters NOT In Your Toolkit
 These cannot be proposed — the pipeline will silently drop them. Read sections that
@@ -160,8 +160,9 @@ Combined adoption backtests run automatically — if they show <70% of sum-indiv
 - **logit_scale + atr_sigma_ratio**: both control L1 aggressiveness — raising both can over-sharpen probabilities
 
 ## Critical Behavioral Rules
-1. SPRT negative means recent win rate is below expectation. It is an observation, NOT a sizing instruction. Do NOT reduce kelly_fraction in response to SPRT negative — this guarantees rejection. Instead improve entry quality via atr_sigma_ratio or probability_compression.
+1. SPRT state measures the SIGNAL AGGRESSIVENESS of recent trades — specifically `enter_pct` (fraction of last 50 trades where the per-trade SPRT accumulator said ENTER) and `avg_confidence`. State = `passive` means few recent trades met the SPRT ENTER bar; state = `aggressive` means many did. **It does NOT measure win rate, edge realization, or live entry quality** — entries that pass the entry gates are by definition edge-positive (signal_prob > market_price) regardless of what SPRT state says. Do NOT write findings like "0% edge-positive entries" or "live entry quality structurally degraded" based on SPRT state — those claims are not supported by what the metric measures. Treat SPRT state as a diagnostic of how aggressively the model has been firing recently, nothing more.
 2. "Trending regime wins only 49%" is NOT a problem to fix. The bot already handles trending regimes at runtime by flipping momentum_weight sign and amplifying 1.5×. Do not recommend regime_weight changes based on trending win rate alone.
+2b. CHECK THE "Recent Trends" SECTION before proposing any change. If a metric is labeled IMPROVING across the last 5 buckets, it is **self-resolving** — DO NOT propose a parameter change targeting that metric. Adopting a fix on top of an organic improvement risks reversing it (the fix gets credited for the improvement that was already happening, then decays when conditions shift). Example: if Q4 edge realization is shown as `0.49 -> 0.69 -> 0.77 -> 0.79 -> 0.79 [IMPROVING]`, do NOT propose probability_compression to "fix overconfidence" — the calibration is already improving on its own. Propose a fix only if the trend is STABLE-but-bad or DEGRADING.
 3. If the Last Pipeline Rejection section appears, your previous proposal was rejected for that reason. Address it directly.
 4. Do NOT shuffle indicator weights unless you have a specific indicator showing >65% accuracy. Changing RSI from 0.18 to 0.15 has near-zero effect on performance. Focus on parameters 1-3 of the hierarchy.
 5. Do NOT propose any parameter listed in the "Parameters NOT In Your Toolkit" section. The pipeline will silently drop them and the slot is wasted.
@@ -171,20 +172,51 @@ Combined adoption backtests run automatically — if they show <70% of sum-indiv
    - atr_sigma_ratio: if raising it showed negative delta, DO NOT raise it further. Try lowering it instead, or skip it entirely.
    - logit_scale: test HIGHER values (4.5, 5.0, 5.5) — higher logit_scale amplifies good signals more. Lowering it weakens signals and typically hurts.
    - flow_weight: test HIGHER (0.06, 0.08, 0.10) — L3 order flow has the strongest documented correlation with outcomes.
-   - spot_flow_weight: test HIGHER (0.06, 0.08) — CVD is predictive, currently underweighted.
+   - spot_flow_weight: test HIGHER (0.10, 0.12, 0.15) — CVD is predictive and 6 prior tests at 0.10 max all showed positive backtest delta; the cap was raised to 0.15 specifically to give you room here.
    - student_t_df: test LOWER (3, 4) — fatter tails find more edge on extreme positions.
 
 ## Manual-Lever Observations (separate output channel — operator-only)
 
-Manual-only params (exit_edge_threshold, max_edge, adverse_selection_threshold, normal_fraction, late_max_penalty, trading_start/end, final_min_probability, flip_enabled, flip_edge_premium, max_single_position_usd) are NEVER adopted automatically. But if the data reveals the operator should consider changing one, emit an entry in `manual_observations`. These are SURFACED TO THE OPERATOR (log + Discord + strategy_log) — they are NOT applied.
+Manual-only params are NEVER adopted automatically. If the data warrants a change, emit it in `manual_observations`. These are surfaced to the operator (log + Discord + strategy_log.md) but never applied. ALL manual params are eligible — exit, entry filters, timing, schedule, flip behavior, risk caps, circuit breaker.
 
 HARD RULES FOR MANUAL OBSERVATIONS (silently dropped if violated):
-- Each observation MUST cite a specific measurable metric from the provided analysis/counterfactual/ghost/execution/SPRT context — not a guess, not a hunch.
-- The metric's sample size MUST be >= 50. If you only have 20 scalps, you do NOT have evidence — skip the observation.
-- The effect MUST exceed 2× the noise floor for that sample size (see Statistical Noise Reference).
-- Direction must be unambiguous. If the data could support either direction, skip it.
-- Emit ZERO observations if the data does not meet the bar. Quality > quantity. A single wrong suggestion erodes trust and makes the operator ignore future ones.
-- Max 3 observations per cycle.
+- Each observation MUST cite a specific measurable metric from the analysis/counterfactual/ghost/edge_calibration/time_patterns/execution context — not a hunch.
+- The metric's sample size MUST be >= 50.
+- The effect MUST exceed 2× the noise floor (see Statistical Noise Reference).
+- Direction must be unambiguous.
+- Emit ZERO observations if data doesn't meet the bar. Quality > quantity. A wrong suggestion makes the operator ignore future ones.
+- Max 3 observations per cycle, deduped by param (one observation per lever).
+
+## TRIGGER MAPPINGS (data pattern → which manual lever to suggest)
+
+Use these as your decision tree. Only emit an observation when the listed evidence is present at N>=50 and the effect exceeds 2× noise.
+
+**Exit behavior:**
+- `counterfactual_scalp_analysis.holding_edge_accuracy` shows scalp_accuracy < 50% in deep-negative buckets at high N → propose **exit_edge_threshold** MORE NEGATIVE (harder to scalp). If holds outperform scalps overall (`net_exit_direction == "scalp_early"`) → same direction.
+- If holds underperform scalps (`net_exit_direction == "hold_long"`) → propose **exit_edge_threshold** LESS NEGATIVE (easier to scalp).
+
+**Entry filters:**
+- `edge_calibration` shows highest-edge bucket WR < lowest-edge bucket WR by 2× noise (inverted edge-WR) → propose **max_edge** LOWER (e.g. 0.20 → 0.15). Stale-price / overconfident entries.
+- `ghost_analysis.by_gate.adverse_rate_30s.simulated_pnl` strongly POSITIVE if gate were removed → propose **adverse_selection_threshold** HIGHER (more lenient, gate is over-filtering profitable trades). If simulated_pnl strongly NEGATIVE → KEEP TIGHT, gate is correctly filtering informed flow (do NOT propose loosening based on SPRT state alone).
+- `time_patterns` shows last-30s window WR < 55% at N>=50 → propose **final_min_probability** HIGHER (e.g. 0.90 → 0.93).
+
+**Entry-timing Kelly envelope:**
+- `time_patterns` shows late window (60-180s remaining) WR < first window WR by 2× noise → propose **late_max_penalty** LOWER (e.g. 0.60 → 0.40, bigger Kelly cut for late entries).
+- `time_patterns` shows first window (>240s remaining) significantly outperforms middle window → propose **normal_fraction** HIGHER (give early-window entries more Kelly).
+
+**Schedule:**
+- If you see hour-of-day or day-of-week patterns where specific hours systematically underperform at N>=50 → propose **trading_start_hour_et / trading_end_hour_et** to restrict the window. Skip if no hour-level bucketing is provided.
+
+**Flip behavior:**
+- If flip-trade outcomes are visible and show negative net PnL or WR < base WR at N>=50 → propose **flip_enabled = false** or **flip_edge_premium** HIGHER. Skip if no flip-specific bucket is provided.
+
+**Risk caps & circuit breaker:**
+- These are operator-owned policy. Only suggest if you see direct evidence (e.g., drawdown velocity correlated with concurrent-position count, or large positions concentrated in losses). Default to NOT proposing unless evidence is unambiguous; confidence should be `low` unless drawdown patterns are stark.
+
+**Do NOT propose based on:**
+- SPRT state alone (it measures aggressiveness, not entry quality)
+- Single noisy metric without N>=50
+- Fix-the-symptom reasoning (e.g., "raise min prob because WR is low" — find the actual cause via the mappings above)
 
 For each observation, cite:
 - `param`: exact manual-only name
@@ -318,19 +350,37 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     # ghosts, so raising or lowering a gate filters baseline and candidate identically.
     READ_ONLY_PARAMS: set[str] = set()
 
-    # Non-backtestable exit/timing/schedule params — the Kelly replay can't simulate
-    # different exits on stored outcomes (gain_pct is fixed), and time-of-day filtering
-    # isn't applied to the replayed trade universe. Proposing these guarantees a
-    # zero-delta backtest and wastes a proposal slot. Change manually in settings.yaml.
+    # All manual-only params — Claude cannot adopt these via `changes` (they get
+    # rerouted to manual_observations for the operator to review). Includes:
+    # - Exit/timing/schedule (backtest can't simulate)
+    # - Risk caps (operator-owned policy)
+    # - Circuit breaker (bankroll protection)
     MANUAL_ONLY_PARAMS = {
+        # Exit / scalp behavior
         "exit_edge_threshold",
+        # Entry-time filters (informed flow, stale price, late window)
         "adverse_selection_threshold",
+        "max_edge",
+        "final_min_probability",
+        # Entry-timing Kelly envelope
         "normal_fraction",
         "late_max_penalty",
-        "max_edge",
+        # Schedule
         "trading_start_hour_et",
+        "trading_start_minute",
         "trading_end_hour_et",
         "trading_end_minute",
+        # Flip-trade behavior
+        "flip_enabled",
+        "flip_edge_premium",
+        # Risk caps (operator-owned)
+        "max_single_position_usd",
+        "max_single_position_pct",
+        "max_concurrent_positions",
+        "max_bankroll_deployed",
+        # Circuit breaker
+        "circuit_breaker.floor_pct",
+        "circuit_breaker.min_multiplier",
     }
 
     # Per-param clamp ranges — only backtestable params appear here.
@@ -338,9 +388,9 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         "atr_sigma_ratio":              (1.2,   2.5,   float),
         "logit_scale":                  (2.0,   6.0,   float),
         "probability_compression":      (0.5,   1.0,   float),
-        "liquidation_weight":           (0.01,  0.06,  float),
+        "liquidation_weight":           (0.01,  0.10,  float),
         "prev_margin_weight":           (0.01,  0.05,  float),
-        "spot_flow_weight":             (0.01,  0.10,  float),
+        "spot_flow_weight":             (0.01,  0.15,  float),
         "flow_weight":                  (0.02,  0.12,  float),
         "regime_weight":                (0.02,  0.10,  float),
         "momentum_weight":             (-0.10,  0.10,  float),
@@ -464,14 +514,14 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     raw_obs = data.get("manual_observations")
     validated_obs: list[dict[str, Any]] = []
     if isinstance(raw_obs, list):
-        for obs in raw_obs[:3]:  # max 3
+        # Validate ALL observations first, then dedupe by param, then truncate.
+        # Truncating before validation would drop legitimate suggestions for the
+        # less-frequently-observed manual levers (risk caps, circuit breaker, etc.).
+        for obs in raw_obs:
             if not isinstance(obs, dict):
                 continue
             p = obs.get("param", "")
-            if p not in MANUAL_ONLY_PARAMS and p not in {"final_min_probability", "flip_enabled",
-                                                         "flip_edge_premium", "max_single_position_usd",
-                                                         "max_single_position_pct",
-                                                         "max_concurrent_positions"}:
+            if p not in MANUAL_ONLY_PARAMS:
                 logger.debug(f"Dropping manual_observation for non-manual param: {p}")
                 continue
             reason = obs.get("reason", "")
@@ -508,8 +558,7 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
                 "source_channel": obs.get("source_channel", "direct"),
             })
     # Dedupe by param — keep the highest-confidence observation per param.
-    # Claude sometimes emits multiple observations for the same param citing different
-    # evidence sources; the operator only needs one concrete suggestion per lever.
+    # Then truncate to top 3 (by confidence) so the operator isn't flooded.
     conf_rank = {"high": 3, "medium": 2, "low": 1}
     by_param: dict[str, dict[str, Any]] = {}
     for obs in validated_obs:
@@ -517,7 +566,9 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         prev = by_param.get(p)
         if prev is None or conf_rank.get(obs["confidence"], 0) > conf_rank.get(prev["confidence"], 0):
             by_param[p] = obs
-    data["manual_observations"] = list(by_param.values())
+    # Sort by confidence descending, take top 3
+    sorted_obs = sorted(by_param.values(), key=lambda o: -conf_rank.get(o["confidence"], 0))
+    data["manual_observations"] = sorted_obs[:3]
     return data
 
 
@@ -546,15 +597,27 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         f"min_model_probability: {cfg.get('min_model_probability', 0.58)}  (pipeline-tunable since ghosts joined backtest)\n"
         f"min_edge (entry_threshold): {cfg.get('min_edge', 0.04)}  (pipeline-tunable since ghosts joined backtest)\n"
         f"min_kelly (entry gate): {cfg.get('min_kelly', 0.015)}  (pipeline-tunable since ghosts joined backtest)\n"
-        "\n### MANUAL-ONLY (not backtestable — do NOT propose):\n"
-        f"exit_edge_threshold: {cfg.get('exit_edge_threshold', -0.10)}\n"
-        f"adverse_selection_threshold: {cfg.get('adverse_selection_threshold', 0.65)}\n"
-        f"normal_fraction (entry timing): {cfg.get('normal_fraction', 0.60)}\n"
-        f"late_max_penalty (entry timing): {cfg.get('late_max_penalty', 0.60)}\n"
+        "\n### MANUAL-ONLY (not in `changes` — propose via `manual_observations` if data warrants):\n"
+        f"# Exit / scalp\n"
+        f"exit_edge_threshold: {cfg.get('exit_edge_threshold', -0.05)}\n"
+        f"# Entry filters (informed flow / stale price / late window)\n"
+        f"adverse_selection_threshold: {cfg.get('adverse_selection_threshold', 0.55)}\n"
         f"max_edge: {cfg.get('max_edge', 0.20)}\n"
-        f"trading_start_hour (ET): {cfg.get('trading_start_hour_et', 0)}\n"
-        f"trading_end_hour (ET): {cfg.get('trading_end_hour_et', 23)}\n"
-        f"trading_end_minute: {cfg.get('trading_end_minute', 59)}"
+        f"final_min_probability: {cfg.get('final_min_probability', 0.90)}\n"
+        f"# Entry-timing Kelly envelope\n"
+        f"normal_fraction: {cfg.get('normal_fraction', 0.60)}\n"
+        f"late_max_penalty: {cfg.get('late_max_penalty', 0.60)}\n"
+        f"# Schedule\n"
+        f"trading_start_hour_et: {cfg.get('trading_start_hour_et', 0)}, trading_start_minute: {cfg.get('trading_start_minute', 1)}\n"
+        f"trading_end_hour_et: {cfg.get('trading_end_hour_et', 22)}, trading_end_minute: {cfg.get('trading_end_minute', 30)}\n"
+        f"# Flip behavior\n"
+        f"flip_enabled: {cfg.get('flip_enabled', True)}, flip_edge_premium: {cfg.get('flip_edge_premium', 0.015)}\n"
+        f"# Risk caps (operator-owned policy)\n"
+        f"max_single_position_usd: {cfg.get('max_single_position_usd', 18.0)}, max_single_position_pct: {cfg.get('max_single_position_pct', 0.12)}\n"
+        f"max_concurrent_positions: {cfg.get('max_concurrent_positions', 2)}, max_bankroll_deployed: {cfg.get('max_bankroll_deployed', 0.80)}\n"
+        f"# Circuit breaker\n"
+        f"circuit_breaker.floor_pct: {cfg.get('circuit_breaker', {}).get('floor_pct', 0.85)}, "
+        f"circuit_breaker.min_multiplier: {cfg.get('circuit_breaker', {}).get('min_multiplier', 0.40)}"
     )
 
     # Performance analysis from BiasDetector
@@ -849,14 +912,23 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         )
         sections.append("\n".join(lines))
 
-    # SPRT aggregate evidence
+    # Recent trends — bucketed trajectory of WR / Sharpe / Q4 realization across
+    # the last ~5 chronological slices of the trade history. Lets Claude see whether
+    # a metric is self-resolving so it doesn't propose fixes for IMPROVING trends.
+    trends_str = analysis.get("trends", "")
+    if trends_str:
+        sections.append(trends_str)
+
+    # SPRT aggregate evidence — diagnostic of recent SIGNAL AGGRESSIVENESS only.
+    # Does NOT measure win rate or entry quality. See behavioral rule #1.
     sprt_agg = analysis.get("sprt_aggregate", {})
     if sprt_agg:
         sections.append(
-            f"## SPRT Edge Evidence (last 50 trades)\n"
-            f"State: {sprt_agg.get('state', '?')}  |  "
-            f"ENTER pct: {sprt_agg.get('enter_pct', 0):.0%}  |  "
-            f"Avg confidence: {sprt_agg.get('avg_confidence', 0):.2f}"
+            f"## SPRT Signal Aggressiveness (last 50 trades — diagnostic only)\n"
+            f"State: {sprt_agg.get('state', '?')} (passive = few ENTERs recently, aggressive = many) | "
+            f"ENTER fraction: {sprt_agg.get('enter_pct', 0):.0%} (how often per-trade SPRT said ENTER) | "
+            f"Avg confidence: {sprt_agg.get('avg_confidence', 0):.2f}\n"
+            f"NOTE: This is NOT win rate or edge realization. Trades that passed entry gates were edge-positive by definition."
         )
 
     # Recent trades — stratified sample across the full history so Claude sees

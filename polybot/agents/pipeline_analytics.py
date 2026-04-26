@@ -133,10 +133,16 @@ def _ks_statistic(sample1: list[float], sample2: list[float]) -> float:
 
 
 def aggregate_sprt_evidence(outcomes: list[dict[str, Any]], recent_n: int = 50) -> dict[str, Any]:
-    """Aggregate SPRT state from recent trade_context.
+    """Aggregate SPRT signal-aggressiveness from recent trade_context.
+
+    Measures how often the per-trade SPRT accumulator said ENTER — i.e., how
+    aggressively the model has been firing. Does NOT measure win rate or
+    edge realization. Renamed labels (was 'positive'/'negative'/'inconclusive')
+    to stop downstream consumers reading 'negative' as 'performance is bad'
+    when it actually means 'few ENTER signals recently'.
 
     Returns dict with:
-      state: 'positive' | 'negative' | 'inconclusive'
+      state: 'aggressive' | 'passive' | 'inconclusive'
       avg_confidence: float (0-1)
       enter_pct: fraction of trades where SPRT said ENTER
     """
@@ -163,10 +169,117 @@ def aggregate_sprt_evidence(outcomes: list[dict[str, Any]], recent_n: int = 50) 
     avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
 
     if enter_pct >= 0.6 and avg_conf >= 0.5:
-        state = "positive"
+        state = "aggressive"
     elif enter_pct <= 0.3 or avg_conf < 0.2:
-        state = "negative"
+        state = "passive"
     else:
         state = "inconclusive"
 
     return {"state": state, "avg_confidence": round(avg_conf, 3), "enter_pct": round(enter_pct, 3)}
+
+
+def format_trends(outcomes: list[dict[str, Any]], n_buckets: int = 5,
+                  min_per_bucket: int = 50) -> str:
+    """Compute trend trajectory of key metrics over the last N buckets of trades.
+
+    Splits the most recent outcomes into n_buckets chronological slices of equal
+    size, computes per-bucket WR / Sharpe / Q4 edge realization, and returns a
+    markdown summary with trend labels (IMPROVING / STABLE / DEGRADING) so Claude
+    can see whether a metric is already self-resolving and avoid proposing fixes
+    for it. Returns empty string if insufficient data.
+    """
+    if not outcomes:
+        return ""
+
+    # Sort by exit timestamp so buckets are chronologically clean
+    sorted_o = sorted(outcomes, key=lambda o: o.get("exit_timestamp", o.get("timestamp", "")))
+    bucket_size = max(min_per_bucket, len(sorted_o) // n_buckets)
+    if bucket_size * n_buckets > len(sorted_o):
+        # Not enough data for the requested bucketization
+        n_buckets = max(2, len(sorted_o) // bucket_size)
+        if n_buckets < 2:
+            return ""
+
+    # Use the LAST n_buckets * bucket_size trades, split into n_buckets equal slices
+    needed = bucket_size * n_buckets
+    recent = sorted_o[-needed:]
+
+    buckets: list[dict[str, Any]] = []
+    for i in range(n_buckets):
+        start = i * bucket_size
+        end = (i + 1) * bucket_size
+        bucket = recent[start:end]
+        if not bucket:
+            continue
+
+        wins = sum(1 for o in bucket if o.get("correct"))
+        wr = wins / len(bucket)
+        gains = [float(o.get("gain_pct", 0) or 0) for o in bucket]
+        mean_g = sum(gains) / len(gains)
+        var_g = sum((g - mean_g) ** 2 for g in gains) / len(gains) if len(gains) > 1 else 0
+        std_g = math.sqrt(var_g) if var_g > 0 else 1.0
+        sharpe = mean_g / std_g if std_g > 0 else 0.0
+
+        # Q4 edge realization — top quartile of trades by signal_prob - market_price
+        edge_gain_pairs: list[tuple[float, float]] = []
+        for o in bucket:
+            ctx = o.get("indicator_snapshot", {}).get("trade_context", {}) or {}
+            p = ctx.get("model_probability_raw", ctx.get("model_probability", 0)) or 0
+            side = (o.get("side") or "").lower()
+            mp = ctx.get(f"market_price_{side}", 0) or 0
+            if p > 0 and mp > 0:
+                edge_gain_pairs.append((float(p) - float(mp), float(o.get("gain_pct", 0) or 0)))
+        q4_realization: float | None = None
+        if len(edge_gain_pairs) >= 8:
+            edge_gain_pairs.sort(key=lambda x: x[0])
+            q4 = edge_gain_pairs[-max(1, len(edge_gain_pairs) // 4):]
+            q4_pred = sum(e for e, _ in q4) / len(q4)
+            q4_actual = sum(g for _, g in q4) / len(q4)
+            if q4_pred > 0:
+                q4_realization = q4_actual / q4_pred
+
+        buckets.append({
+            "n": len(bucket),
+            "wr": wr,
+            "mean_gain": mean_g,
+            "sharpe": sharpe,
+            "q4_realization": q4_realization,
+        })
+
+    if len(buckets) < 2:
+        return ""
+
+    def _trend(values: list[float], noise: float) -> str:
+        """Compare last-half average to first-half average; label as IMPROVING/STABLE/DEGRADING."""
+        if len(values) < 2:
+            return "—"
+        half = len(values) // 2
+        first = sum(values[:half]) / half if half else 0
+        last = sum(values[-half:]) / half if half else 0
+        delta = last - first
+        if abs(delta) < noise:
+            return "STABLE"
+        return "IMPROVING" if delta > 0 else "DEGRADING"
+
+    def _row(label: str, values: list[float], fmt: str, noise: float) -> str:
+        progression = " -> ".join(fmt.format(v) for v in values)
+        delta = values[-1] - values[0] if len(values) >= 2 else 0
+        return f"- **{label}**: {progression}  [d={delta:+.4f}, {_trend(values, noise)}]"
+
+    lines = [
+        f"## Recent Trends (last {sum(b['n'] for b in buckets)} trades in "
+        f"{len(buckets)} chronological buckets of {bucket_size})",
+        "If a metric is IMPROVING over these buckets, it is self-resolving — "
+        "do NOT propose parameter changes that target it. Doing so risks adopting "
+        "noise that reverses the natural improvement.",
+        "",
+    ]
+    lines.append(_row("Win rate", [b["wr"] for b in buckets], "{:.1%}", noise=0.02))
+    lines.append(_row("Mean gain_pct", [b["mean_gain"] for b in buckets], "{:+.4f}", noise=0.005))
+    lines.append(_row("Sharpe", [b["sharpe"] for b in buckets], "{:+.3f}", noise=0.05))
+
+    q4_vals = [b["q4_realization"] for b in buckets if b["q4_realization"] is not None]
+    if len(q4_vals) >= 2:
+        lines.append(_row("Q4 edge realization", q4_vals, "{:.2f}", noise=0.05))
+
+    return "\n".join(lines)

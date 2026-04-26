@@ -108,8 +108,8 @@ in backtest and adopt when the candidate Sharpe clears the dynamic floor.
 - `signal.momentum_weight` **-0.02** (NEGATIVE = fade indicators. Range -0.10 to +0.10)
 - `signal.regime_weight` 0.03 (range 0.02-0.10)
 - `signal.flow_weight` 0.04 (range 0.02-0.12)
-- `signal.spot_flow_weight` 0.04 (range 0.01-0.10)
-- `signal.liquidation_weight` 0.03 (range 0.01-0.06)
+- `signal.spot_flow_weight` 0.04 (range 0.01-0.15) — expanded from 0.10 after 6 consecutive positive tests at the prior 0.10 max suggested edge above the cap
+- `signal.liquidation_weight` 0.03 (range 0.01-0.10) — expanded from 0.06 to give the high-ATR regime room to weight liquidation cascades more aggressively
 - `signal.prev_margin_weight` 0.02 (range 0.01-0.05)
 - `signal.wall_weight` 0.00 (disabled — gamed by HFT)
 - `signal.atr_sigma_ratio` 1.4 (range 1.2-2.5)
@@ -166,8 +166,8 @@ These flow through `_kelly_bankroll_returns` so the backtest can simulate change
 | `momentum_weight` | -0.10 to +0.10 | L4. NEGATIVE = fade indicators. |
 | `regime_weight` | 0.02–0.10 | L2 autocorrelation adjustment. |
 | `flow_weight` | 0.02–0.12 | L3 CLOB order flow (book imbalance + trade flow). |
-| `spot_flow_weight` | 0.01–0.10 | L3b Binance CVD + taker ratio. |
-| `liquidation_weight` | 0.01–0.06 | L3e Bybit OI liquidation pressure. |
+| `spot_flow_weight` | 0.01–0.15 | L3b Binance CVD + taker ratio. |
+| `liquidation_weight` | 0.01–0.10 | L3e Bybit OI liquidation pressure. |
 | `prev_margin_weight` | 0.01–0.05 | L5 previous-window momentum carry. |
 | `min_atr` | 5.0–15.0 | Floor on ATR (runtime: `max(min_atr, 0.3 × rolling_20)`). |
 | `kelly_fraction` | 0.05–0.25 | Sizing aggressiveness. Claude rarely moves this. |

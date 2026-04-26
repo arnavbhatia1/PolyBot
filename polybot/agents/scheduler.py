@@ -1631,7 +1631,7 @@ class AgentScheduler:
             analysis["platt_meta_warning"] = platt_info["meta_warning"]
 
         # Distribution shift detection (recent 50 vs historical)
-        from polybot.agents.pipeline_analytics import detect_distribution_shift, aggregate_sprt_evidence
+        from polybot.agents.pipeline_analytics import detect_distribution_shift, aggregate_sprt_evidence, format_trends
         if len(all_outcomes) > 100:
             recent_50 = all_outcomes[-50:]
             historical = all_outcomes[:-50]
@@ -1645,6 +1645,12 @@ class AgentScheduler:
         sprt_agg = aggregate_sprt_evidence(all_outcomes, recent_n=50)
         analysis["sprt_aggregate"] = sprt_agg
         pipeline_info["sprt"] = sprt_agg
+
+        # Trends across the last ~5 buckets of recent trades — let Claude see whether
+        # a metric is self-resolving (so it doesn't propose fixes for IMPROVING trends)
+        trends_str = format_trends(all_outcomes, n_buckets=5, min_per_bucket=50)
+        if trends_str:
+            analysis["trends"] = trends_str
 
         # (per-regime Platt stub removed — it only counted samples without fitting or
         # adopting anything. If we re-introduce regime-conditional calibration it should
