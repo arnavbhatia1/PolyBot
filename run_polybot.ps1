@@ -1,5 +1,5 @@
 # PolyBot Auto-Restart Wrapper
-# Runs the bot with --auto-restart. After the daily pipeline (10:45 PM ET),
+# Runs the bot with --auto-restart. After the daily pipeline (11:15 PM ET),
 # the bot exits cleanly. This script commits updated config/weights to git,
 # pushes to remote, and restarts the bot at 12:01 AM ET.
 #
@@ -14,8 +14,8 @@ powercfg -change -standby-timeout-ac 0
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  PolyBot Auto-Restart Loop" -ForegroundColor Cyan
-Write-Host "  Trading: 12:01 AM - 10:30 PM ET" -ForegroundColor Cyan
-Write-Host "  Pipeline: 10:45 PM ET" -ForegroundColor Cyan
+Write-Host "  Trading: 12:01 AM - 11:00 PM ET" -ForegroundColor Cyan
+Write-Host "  Pipeline: 11:15 PM ET" -ForegroundColor Cyan
 Write-Host "  Bot exits after pipeline, commits, pushes, restarts" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
