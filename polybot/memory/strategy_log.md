@@ -670,3 +670,33 @@
 - ATR regime shift means walk-forward folds trained on different volatility environment — all BT deltas suspect
 
 **Reasoning:** With nearly every parameter direction exhausted and consistent fold-consistency failures despite positive BT deltas, this cycle proposes only genuinely untested directions: min_kelly ↑ (never tried, targets the persistent inverted edge-WR), flow_weight ↓ (only ↑ tested and failed), and min_edge ↓ (only ↑ tested). The structural Sharpe degradation and ATR regime shift suggest the backtest environment is increasingly misaligned with live conditions — a rest period may be warranted if these also fail fold consistency. The exit threshold manual observation remains the highest-confidence actionable finding, supported by n=577 scalps at 34% accuracy.
+
+## 2026-04-27T02:50:52.490239+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - spot_flow_weight=0.12 (7 prior ↑ tests all showed positive BT delta (avg +0.018); 0.12 is untested and the largest move yet in the consistently positive direction — needed to clear the 0.0131 adoption floor with safety margin.)
+  - probability_compression=0.7 (All 9 prior tests (0.75–0.88) showed positive BT delta (avg +0.014) but failed fold consistency — a more aggressive compression at 0.70 (untested) is needed to produce a large enough Δ to clear folds, directly addressing the inverted edge-WR where high-conviction entries underperform.)
+  - liquidation_weight=0.08 (Both prior ↑ tests (0.05, 0.06) showed positive delta; ATR mean jumped from 27 to 40 in the distribution shift, meaning liquidation cascades are more frequent now — 0.08 (untested) pushes further in the confirmed positive direction.)
+
+**Manual Suggestions (3) [operator-only]:**
+  - exit_edge_threshold: -0.02 -> -0.07 [high]
+    Scalps triggered at holding_edge < -0.10 are correct only 34% of the time across 653 exits — 16pp below break-even and far exceeding 2× noise — meaning the current -0.02 threshold allows deeply wrong early exits that consistently destroy value; a more negative threshold keeps positions held to resolution.
+  - late_max_penalty: 0.4 -> 0.25 [medium]
+    The 60-180s window wins only 48.4% vs 55.4% in the early window — a 7pp gap at 3.5× the noise floor — indicating late entries are systematically unprofitable; reducing late_max_penalty further cuts Kelly for these entries.
+  - adverse_selection_threshold: 0.8 -> 0.85 [low]
+    The pre_submit_edge_drift gate blocked 154 trades of which 64% were profitable with +$203 simulated PnL — exceeding the 60% profitable bar — suggesting the gate is over-filtering winning entries and a slightly higher threshold would let more edge-positive trades through.
+
+**Findings:**
+- Sharpe degrading hard across all 5 recent buckets (0.191→0.046) — structural deterioration
+- Scalp exits wrong 55% of time — $1,762 left on table from premature exits
+- 60-180s entries win only 48.4% (n=517) — below breakeven mid-window is a persistent drag
+- ATR mean jumped 27→40 (distribution shift) — high-vol regime favors liquidation cascade signals
+- Nearly all parameter directions exhausted — only untested magnitudes remain as levers
+
+**Warnings:**
+- 20+ parameter combinations tested with zero live-validated adoptions — backtest may be misaligned with live conditions
+- probability_compression at 0.70 is a large move — if it passes folds, monitor neutral regime Sharpe closely for degradation
+- spot_flow_weight + liquidation_weight both draw from OI/flow signal family — raising both may compound if L3 signal is noisy
+
+**Reasoning:** With nearly every parameter direction exhausted at tested magnitudes, this cycle pushes further in the three directions that have shown consistently positive (though sub-threshold) BT deltas: spot_flow_weight ↑ to 0.12 (7 prior positive tests, largest untested move), probability_compression ↓ to 0.70 (9 prior positive tests, all failing folds at 0.75-0.88 — needs bigger magnitude), and liquidation_weight ↑ to 0.08 (both prior tests positive, ATR jump to 40 makes cascades more frequent). The ATR distribution shift (27→40) and degrading Sharpe trend (-0.145 across 5 buckets) are the dominant structural signals; the configuration needs a meaningful calibration shift, not incremental tweaks.
