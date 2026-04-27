@@ -642,3 +642,31 @@
 - atr_sigma_ratio + student_t_df both affect L1 tail aggressiveness — raising both could compound overconfidence in opposite direction
 
 **Reasoning:** With nearly every parameter direction exhausted and fold consistency failing despite positive BT deltas, this cycle targets three genuinely untested values: atr_sigma_ratio at the minimum (1.2, only positive-delta direction), student_t_df at 3 (maximum tail fatness, df=4 failed but df=3 untested), and logit_scale at 6.0 (ceiling, all interior values failed). The dramatic ATR halving makes a more aggressive atr_sigma_ratio directionally sound in the new low-vol regime. If these three also fail fold consistency, the config is likely at a local optimum and a rest period is warranted.
+
+## 2026-04-26T07:00:55.908038+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - min_kelly=0.025 (Completely untested pipeline-tunable gate — the inverted edge-WR (low edge 56.1% vs high edge 51.8%) suggests marginal entries are dragging results; raising Kelly gate from 0.015 to 0.025 filters the weakest-sized trades without touching probability or edge floors already tested.)
+  - flow_weight=0.03 (↓ direction never tested (only ↑ at 0.07 and 0.08 both failed with negative delta); in the new low-ATR regime (mean halved to 14.7) order-flow signal may be noisier, and reducing from 0.04 to 0.03 is a modest untested directional probe.)
+  - min_edge=0.03 (↓ direction never tested (only ↑ to 0.05 tried, Δ=+0.004); the inverted edge-WR calibration shows low-edge entries outperform, so lowering the floor slightly may capture profitable near-threshold entries currently gated out.)
+
+**Manual Suggestions (2) [operator-only]:**
+  - exit_edge_threshold: -0.02 -> -0.06 [high]
+    Scalps at holding_edge < -0.10 are correct only 34% of the time across 577 exits — 16pp below break-even, far exceeding the 2×noise floor — meaning the current threshold permits deeply wrong early exits that consistently destroy value; a more negative threshold keeps these positions held to resolution where hold accuracy is 56.9%.
+  - adverse_selection_threshold: 0.75 -> 0.8 [low]
+    The pre_submit_edge_drift gate blocked 139 trades of which 64% were profitable with +$198.87 simulated PnL — exceeding the 60% profitable threshold for loosening — suggesting the gate is over-filtering winning entries; raising the threshold slightly allows more of these edge-positive trades through.
+
+**Findings:**
+- Every tested parameter direction has failed fold consistency — config may be at a local optimum
+- Scalps wrong 55% of time — $1,568 left on table from premature exits
+- Low-edge trades (4-8%) win 56% vs high-edge (12-20%) at 52% — inverted edge-WR persists
+- 60-180s entries win only 48% at n=477 — mid-window timing is a consistent losing window
+- ATR halved (mean 29→15, KS=0.462) — live regime diverging from backtest history
+
+**Warnings:**
+- Sharpe degrading across all 5 recent buckets (-0.147 trend) — structural deterioration, not noise
+- 20+ parameter combinations tested with zero live-validated adoptions — backtest may not reflect current market
+- ATR regime shift means walk-forward folds trained on different volatility environment — all BT deltas suspect
+
+**Reasoning:** With nearly every parameter direction exhausted and consistent fold-consistency failures despite positive BT deltas, this cycle proposes only genuinely untested directions: min_kelly ↑ (never tried, targets the persistent inverted edge-WR), flow_weight ↓ (only ↑ tested and failed), and min_edge ↓ (only ↑ tested). The structural Sharpe degradation and ATR regime shift suggest the backtest environment is increasingly misaligned with live conditions — a rest period may be warranted if these also fail fold consistency. The exit threshold manual observation remains the highest-confidence actionable finding, supported by n=577 scalps at 34% accuracy.
