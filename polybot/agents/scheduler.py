@@ -1341,6 +1341,115 @@ class AgentScheduler:
 
         return info
 
+    def _apply_revert_adoptions(self) -> None:
+        """Auto-revert adoptions flagged as rollback_recommended by pipeline_tracker.
+
+        Works newest-first. For each flagged-but-not-yet-reverted record, reverts
+        params to their pre-adoption values unless a newer adoption already changed
+        the same param (in which case the newer adoption takes precedence).
+        Updates both signal_engine and settings.yaml so the revert is live immediately.
+        """
+        if not self.pipeline_tracker:
+            return
+        records = self.pipeline_tracker._load()
+        if not records:
+            return
+
+        def _clamp(v, lo, hi):
+            return max(lo, min(hi, v))
+
+        already_handled: set[str] = set()  # params touched by records processed so far
+        reverted_any = False
+
+        for rec in reversed(records):  # newest first
+            changes_raw = rec.get("changes", {})  # {param: [old_val, new_val]}
+
+            if not rec.get("rollback_recommended") or rec.get("reverted"):
+                # Not flagged or already reverted — mark its params as handled
+                already_handled.update(changes_raw.keys())
+                continue
+
+            # Build revert list using old (pre-adoption) values
+            revert_changes: list[dict[str, Any]] = []
+            for param, vals in changes_raw.items():
+                if param in already_handled or param == "weights":
+                    continue
+                old_val = vals[0] if isinstance(vals, list) and len(vals) >= 2 else None
+                if old_val is None:
+                    continue
+                revert_changes.append({"param": param, "value": old_val})
+
+            if not revert_changes:
+                rec["reverted"] = True
+                reverted_any = True
+                already_handled.update(changes_raw.keys())
+                continue
+
+            # Apply to signal_engine (takes effect in the 45-min window before restart)
+            if self.signal_engine:
+                for rc in revert_changes:
+                    p, v = rc["param"], rc["value"]
+                    if p == "momentum_weight":
+                        self.signal_engine.momentum_weight = _clamp(float(v), -0.10, 0.10)
+                    elif p == "regime_weight":
+                        self.signal_engine.regime_weight = _clamp(float(v), 0.02, 0.10)
+                    elif p == "flow_weight":
+                        self.signal_engine.flow_weight = _clamp(float(v), 0.02, 0.12)
+                    elif p == "spot_flow_weight":
+                        self.signal_engine.spot_flow_weight = _clamp(float(v), 0.0, 0.15)
+                    elif p == "atr_sigma_ratio":
+                        self.signal_engine.atr_sigma_ratio = _clamp(float(v), 1.2, 2.5)
+                    elif p == "logit_scale":
+                        self.signal_engine.logit_scale = _clamp(float(v), 2.0, 6.0)
+                    elif p == "student_t_df":
+                        self.signal_engine.student_t_df = _clamp(int(v), 3, 8)
+                    elif p == "probability_compression":
+                        self.signal_engine.probability_compression = _clamp(float(v), 0.5, 1.0)
+                    elif p == "liquidation_weight":
+                        self.signal_engine.liquidation_weight = _clamp(float(v), 0.01, 0.10)
+                    elif p == "prev_margin_weight":
+                        self.signal_engine.prev_margin_weight = _clamp(float(v), 0.01, 0.05)
+                    elif p == "min_atr":
+                        self.signal_engine.min_atr = _clamp(float(v), 5.0, 15.0)
+                    elif p == "kelly_fraction":
+                        self.signal_engine.kelly_fraction = _clamp(float(v), 0.05, 0.25)
+
+            # Apply to config dict and persist to settings.yaml
+            if self._config:
+                sig = self._config.setdefault("signal", {})
+                math_sec = self._config.setdefault("math", {})
+                for rc in revert_changes:
+                    p, v = rc["param"], rc["value"]
+                    if p in ("atr_sigma_ratio", "spot_flow_weight", "momentum_weight",
+                             "regime_weight", "flow_weight", "logit_scale",
+                             "probability_compression", "liquidation_weight",
+                             "prev_margin_weight", "min_atr", "student_t_df",
+                             "wall_weight", "max_edge", "exit_edge_threshold"):
+                        sig[p] = v
+                    elif p == "kelly_fraction":
+                        math_sec[p] = v
+                try:
+                    from polybot.config.loader import save_config
+                    save_config(dict(self._config))
+                except Exception as e:
+                    logger.error(f"Auto-revert: failed to persist settings.yaml: {e}")
+                    continue
+
+            rec["reverted"] = True
+            rec["reverted_at"] = datetime.now(timezone.utc).isoformat()
+            reverted_any = True
+            already_handled.update(changes_raw.keys())
+
+            summary = ", ".join(f"{rc['param']}→{rc['value']}" for rc in revert_changes)
+            logger.warning(
+                "[AUTO-REVERT] %s rolled back: %s | reason: %s",
+                rec.get("version", "?"), summary,
+                rec.get("rollback_reason", "performance regression"),
+            )
+
+        if reverted_any:
+            self.pipeline_tracker._save(records)
+
     async def run_daily_pipeline(self) -> None:
         logger.info("Starting daily learning pipeline")
 
@@ -1390,11 +1499,15 @@ class AgentScheduler:
         pipeline_info["train_count"] = len(train_outcomes)
         pipeline_info["validation_count"] = len(all_outcomes) - len(train_outcomes)
 
-        # Review past pipeline adoptions (fill in actual 7d/30d Sharpe)
+        # Review past pipeline adoptions (fill in actual 7d/30d Sharpe),
+        # then auto-revert any that tanked within 1d or 7d.
         if self.pipeline_tracker:
             self.pipeline_tracker.review_past_adoptions(all_outcomes)
+            self._apply_revert_adoptions()
 
-        analysis = await self._run_bias_detector(train_outcomes)
+        # Bias detector uses all_outcomes so it sees current regime (including recent
+        # test-split data), not just the older 60% training window.
+        analysis = await self._run_bias_detector(all_outcomes)
 
         # Gate skip stats: how often did each entry gate fire?
         # Tells Claude which gates are over-filtering and whether adverse selection /
@@ -1652,6 +1765,22 @@ class AgentScheduler:
         if trends_str:
             analysis["trends"] = trends_str
 
+        # Current-regime snapshot: most recent 100 trades regardless of train/test split.
+        # Claude only receives train_outcomes as its trade sample (first 60%), so without
+        # this it can't see a regime shift that happened in the last few days.
+        recent_window = all_outcomes[-100:] if len(all_outcomes) >= 100 else all_outcomes
+        if recent_window:
+            rw_gains = [o.get("gain_pct", 0) for o in recent_window]
+            rw_wr = sum(1 for o in recent_window if o.get("correct", False)) / len(recent_window)
+            rw_pnl = sum(o.get("pnl", 0) for o in recent_window)
+            analysis["current_regime"] = {
+                "n_trades": len(recent_window),
+                "win_rate": round(rw_wr, 4),
+                "total_pnl": round(rw_pnl, 4),
+                "mean_gain_pct": round(sum(rw_gains) / len(rw_gains), 6) if rw_gains else 0,
+                "note": "Most recent 100 trades (all_outcomes tail) — use to detect active regime shifts",
+            }
+
         # (per-regime Platt stub removed — it only counted samples without fitting or
         # adopting anything. If we re-introduce regime-conditional calibration it should
         # use the same Kelly-sized-Sharpe adoption gate as the main Platt block above.)
@@ -1674,7 +1803,10 @@ class AgentScheduler:
                 if track_record:
                     analysis["pipeline_track_record"] = track_record
 
-            recommendations = await self._run_ta_evolver(analysis, train_outcomes)
+            # Pass all_outcomes so Claude sees the current regime (last 40% includes recent
+            # trades the train split excluded). The backtest is purely mathematical so
+            # Claude seeing recent trades doesn't create lookahead in the adoption gate.
+            recommendations = await self._run_ta_evolver(analysis, all_outcomes)
             source = "claude" if recommendations.get("confidence") else "local"
             pipeline_info["source"] = source
             # Manual-lever observations — evidence-backed suggestions for operator-only
@@ -1689,7 +1821,25 @@ class AgentScheduler:
             # positive results (probability_compression, 7 rejections in [+0.007, +0.022])
             # as "within noise" when the SE gate would have passed many of them. SPRT
             # remains a diagnostic only.
-            self.weight_optimizer.min_improvement = 0.010
+            # Crisis mode: pipeline shouldn't go silent when performance is worst.
+            # Recent WR < 48% AND Sharpe < 0.10 → lower adoption floor so the pipeline
+            # can adapt faster rather than rejecting every change as "within noise".
+            _recent_50 = all_outcomes[-50:] if len(all_outcomes) >= 50 else all_outcomes
+            _recent_wr = sum(1 for o in _recent_50 if o.get("correct", False)) / max(len(_recent_50), 1)
+            _in_crisis = _recent_wr < 0.48 and self._baseline_kelly_sharpe < 0.10
+            if _in_crisis:
+                self.weight_optimizer.min_improvement = 0.005
+                self.weight_optimizer.se_floor_coefficient = 0.15
+                pipeline_info["crisis_mode"] = True
+                logger.info(
+                    f"Pipeline CRISIS MODE: recent WR={_recent_wr:.1%}, "
+                    f"Sharpe={self._baseline_kelly_sharpe:.3f} — adoption floor lowered "
+                    f"(abs=0.005, SE coeff=0.15)"
+                )
+            else:
+                self.weight_optimizer.min_improvement = 0.010
+                self.weight_optimizer.se_floor_coefficient = 0.25
+                pipeline_info["crisis_mode"] = False
 
             # Per-parameter cooldown is enforced inside _run_weight_optimizer:
             # any param adopted in the last 2 days is skipped individually; other

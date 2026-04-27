@@ -133,6 +133,21 @@ class PipelineTracker:
                     "win_rate": round(sum(1 for r in rets if r > 0) / len(rets), 4),
                 }
 
+                # Early rollback trigger: if 1d Sharpe is severely negative, flag
+                # immediately without waiting for the 7d window.
+                if key == "review_1d" and len(rets) >= 20 and actual_sharpe < baseline - 0.10:
+                    if not rec.get("rollback_recommended"):
+                        rec["rollback_recommended"] = True
+                        rec["rollback_reason"] = (
+                            f"1d Sharpe {actual_sharpe:.3f} trails baseline "
+                            f"{baseline:.3f} by >{0.10:.2f} (n={len(rets)})"
+                        )
+                        logger.warning(
+                            f"[ROLLBACK RECOMMENDED — 1d] {version}: Sharpe "
+                            f"{actual_sharpe:.3f} vs baseline {baseline:.3f} "
+                            f"(n={len(rets)})"
+                        )
+
                 if check_prediction:
                     run_pred = rec.get("run_predicted_delta")
                     if run_pred is not None:
@@ -141,11 +156,16 @@ class PipelineTracker:
                         review["prediction_error"] = round(abs(actual_delta - float(run_pred)), 4)
                         review["predicted_delta"] = round(float(run_pred), 4)
                     if len(rets) >= 100 and actual_sharpe < baseline - 0.05:
-                        rec["rollback_recommended"] = True
+                        if not rec.get("rollback_recommended"):
+                            rec["rollback_recommended"] = True
+                            rec["rollback_reason"] = (
+                                f"7d Sharpe {actual_sharpe:.3f} trails baseline "
+                                f"{baseline:.3f} (n={len(rets)})"
+                            )
                         logger.warning(
-                            f"[ROLLBACK RECOMMENDED] {version}: 7d Sharpe "
+                            f"[ROLLBACK RECOMMENDED — 7d] {version}: Sharpe "
                             f"{actual_sharpe:.3f} trails baseline {baseline:.3f} "
-                            f"(n={len(rets)}). Consider reverting to prior version."
+                            f"(n={len(rets)})"
                         )
 
                 rec[key] = review

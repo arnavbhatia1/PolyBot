@@ -123,7 +123,8 @@
       "Bash(sqlite3:*)",
       "Bash(find .:*)",
       "Bash(echo \"---exit code: $?\")",
-      "WebFetch(domain:docs.cdp.coinbase.com)"
+      "WebFetch(domain:docs.cdp.coinbase.com)",
+      "Bash(awk '{print $5, $9}')"
     ]
   }
 }

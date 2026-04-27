@@ -54,6 +54,7 @@ class WeightOptimizer:
         self.weights_dir: Path = Path(weights_dir)
         self.scores_path: Path = Path(scores_path)
         self.min_improvement: float = min_improvement  # absolute floor (legacy compat)
+        self.se_floor_coefficient: float = 0.25  # scaled by scheduler to 0.15 in crisis mode
 
     def get_scores(self) -> dict[str, Any]:
         if not self.scores_path.exists():
@@ -112,7 +113,7 @@ class WeightOptimizer:
 
         # Noise-scaled floor: 0.25 × SE is ~z=0.25 / p≈0.40 (more-likely-than-not better).
         # We get the actual statistical rigor from the 3/4 fold-consistency check below.
-        dynamic_floor = max(self.min_improvement, 0.25 * se)
+        dynamic_floor = max(self.min_improvement, self.se_floor_coefficient * se)
 
         if delta < dynamic_floor:
             return False, (

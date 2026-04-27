@@ -31,10 +31,19 @@ class TAEvolver:
         if not outcomes:
             return {}
 
-        # Read recent strategy log entries for context
+        # Read recent strategy log entries for context.
+        # Rotate if the file exceeds 40 KB — keep the last 30 KB so Claude
+        # always receives recent entries rather than a random mid-entry slice.
         prev = ""
         if self.strategy_log_path.exists():
             text = self.strategy_log_path.read_text(encoding="utf-8")
+            if len(text) > 40_000:
+                trimmed = text[-30_000:]
+                # Align to a line boundary so we don't start mid-entry
+                newline_pos = trimmed.find("\n")
+                trimmed = trimmed[newline_pos + 1:] if newline_pos != -1 else trimmed
+                self.strategy_log_path.write_text(trimmed, encoding="utf-8")
+                text = trimmed
             prev = text[-15000:] if len(text) > 15000 else text
 
         context = {
