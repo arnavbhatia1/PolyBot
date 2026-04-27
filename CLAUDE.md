@@ -104,19 +104,19 @@ simulate its change and whether the value is user-owned risk policy.
 ### Pipeline-Tunable (Claude + backtest adoption)
 These flow through `_kelly_bankroll_returns`, so the nightly pipeline can test them
 in backtest and adopt when the candidate Sharpe clears the dynamic floor.
-- `math.kelly_fraction` 0.15 (range 0.05-0.25)
-- `signal.momentum_weight` **-0.02** (NEGATIVE = fade indicators. Range -0.10 to +0.10)
-- `signal.regime_weight` 0.03 (range 0.02-0.10)
-- `signal.flow_weight` 0.04 (range 0.02-0.12)
-- `signal.spot_flow_weight` 0.04 (range 0.01-0.15) — expanded from 0.10 after 6 consecutive positive tests at the prior 0.10 max suggested edge above the cap
-- `signal.liquidation_weight` 0.03 (range 0.01-0.10) — expanded from 0.06 to give the high-ATR regime room to weight liquidation cascades more aggressively
-- `signal.prev_margin_weight` 0.02 (range 0.01-0.05)
-- `signal.wall_weight` 0.00 (disabled — gamed by HFT)
-- `signal.atr_sigma_ratio` 1.4 (range 1.2-2.5)
-- `signal.student_t_df` 5 (range 3-8, int)
-- `signal.logit_scale` 4.0 (range 2.0-6.0)
-- `signal.probability_compression` 1.0 (range 0.5-1.0)
-- `signal.min_atr` 8.0 (range 5.0-15.0; runtime floor = `max(min_atr, 0.3 × rolling_mean_atr_20)`)
+- `math.kelly_fraction` (range 0.05–0.25)
+- `signal.momentum_weight` (range -0.10 to +0.10) — NEGATIVE = fade indicators
+- `signal.regime_weight` (range 0.02–0.10)
+- `signal.flow_weight` (range 0.02–0.12)
+- `signal.spot_flow_weight` (range 0.01–0.15)
+- `signal.liquidation_weight` (range 0.01–0.10)
+- `signal.prev_margin_weight` (range 0.01–0.05)
+- `signal.wall_weight` — always 0.00 (disabled — gamed by HFT)
+- `signal.atr_sigma_ratio` (range 1.2–2.5)
+- `signal.student_t_df` (range 3–8, int)
+- `signal.logit_scale` (range 2.0–6.0)
+- `signal.probability_compression` (range 0.5–1.0)
+- `signal.min_atr` (range 5.0–15.0; runtime floor = `max(min_atr, 0.3 × rolling_mean_atr_20)`)
 - `signal.weights` rsi/macd/stochastic/obv/vwap (sum to 1.0, each >= 0.05)
 
 ### Entry gates — pipeline-tunable (since ghosts joined the backtest sample)
@@ -124,9 +124,9 @@ Previously read-only because the backtest replayed only trades that fired. Now
 `_load_combined_outcomes()` merges real outcomes with **resolved ghosts** (trades
 rejected at live entry gates, tracked to resolution). Raising a gate filters both
 baseline and candidate identically; lowering includes ghosts that would have fired.
-- `signal.min_model_probability` 0.58 (range 0.52–0.70)
-- `signal.entry_threshold` (min_edge) 0.04 (range 0.02–0.10)
-- `signal.min_kelly` 0.015 (range 0.005–0.04) — primary gate
+- `signal.min_model_probability` (range 0.52–0.70)
+- `signal.entry_threshold` (min_edge) (range 0.02–0.10)
+- `signal.min_kelly` (range 0.005–0.04) — primary gate
 
 ### Manual-Only (unbacktestable or user-owned risk policy)
 Either the backtest cannot simulate the change (exit/timing/schedule) or these are
@@ -179,11 +179,11 @@ Adoption gates: candidate Sharpe > 0, n ≥ 100, Δ ≥ max(0.010, 0.25 × JK_SE
 
 The backtest loads real outcomes PLUS resolved ghosts via `_load_combined_outcomes()`, so raising a gate filters baseline + candidate identically, and lowering one includes ghosts that would have fired. Comparison stays apples-to-apples.
 
-| Param | Value | Range |
-|---|---|---|
-| `min_model_probability` | 0.58 | 0.52–0.70 |
-| `min_edge` (entry_threshold) | 0.04 | 0.02–0.10 |
-| `min_kelly` | 0.015 | 0.005–0.04 (primary gate) |
+| Param | Range |
+|---|---|
+| `min_model_probability` | 0.52–0.70 |
+| `min_edge` (entry_threshold) | 0.02–0.10 |
+| `min_kelly` | 0.005–0.04 (primary gate) |
 
 ### 🔴 Manual-Only (operator — edit settings.yaml directly)
 
