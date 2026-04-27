@@ -1062,10 +1062,11 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
         price_down = contract["price_down"]
         price_source = "gamma"
 
-    # Price sanity gate — tightened from 2% to 1% tolerance: liquid Polymarket
-    # binary markets arb to within 1c of $1.00; anything wider is stale-book.
+    # Price sanity gate: fetch_market_price returns BUY (ask) prices, so the sum
+    # of both asks naturally exceeds 1.00 by the full spread. ±2% accommodates
+    # normal 1-4 cent spreads; tighter thresholds reject valid markets every tick.
     price_sum = price_up + price_down
-    if price_source == "clob" and (price_sum < 0.99 or price_sum > 1.01):
+    if price_source == "clob" and (price_sum < 0.98 or price_sum > 1.02):
         _record_skip("stale_prices")
         eval_window = int(now_ts // 300) * 300
         if eval_window != last_eval_log_window:
