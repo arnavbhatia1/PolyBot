@@ -66,9 +66,9 @@ indicators:
 signal:
   entry_threshold: 0.04
   max_edge: 0.16
-  adverse_selection_threshold: 0.8
+  adverse_selection_threshold: 0.85
   late_window_min_prob: 0.4
-  exit_edge_threshold: -0.02
+  exit_edge_threshold: -0.05
   min_model_probability: 0.58
   momentum_weight: -0.02
   regime_weight: 0.03
@@ -144,7 +144,7 @@ deribit:
   iv_ratio_max: 2.0
 entry_timing:
   normal_fraction: 0.6
-  late_max_penalty: 0.4
+  late_max_penalty: 0.25
   final_min_probability: 0.9
   flip_enabled: true
   flip_edge_premium: 0.015
