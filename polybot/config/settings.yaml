@@ -119,7 +119,7 @@ market:
   max_spread: 0.1
 schedule:
   trading_start_hour_et: 0
-  trading_start_minute: 1
+  trading_start_minute: 15
   trading_end_hour_et: 23
   trading_end_minute: 0
 binance_depth:
@@ -144,7 +144,7 @@ deribit:
   iv_ratio_max: 2.0
 entry_timing:
   normal_fraction: 0.6
-  late_max_penalty: 0.5
+  late_max_penalty: 0.6
   final_min_probability: 0.9
   flip_enabled: true
   flip_edge_premium: 0.015
