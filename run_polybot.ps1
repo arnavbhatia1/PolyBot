@@ -24,10 +24,20 @@ while ($true) {
     Write-Host "`n[$timestamp] Pulling latest from remote..." -ForegroundColor Cyan
     git pull origin main 2>$null
 
-    Write-Host "[$timestamp] Starting PolyBot..." -ForegroundColor Green
+    # Read mode from settings.yaml so this is the only place you need to change it
+    $settingsPath = Join-Path $PSScriptRoot "polybot\config\settings.yaml"
+    $mode = "paper"
+    if (Test-Path $settingsPath) {
+        $modeLine = Select-String -Path $settingsPath -Pattern "^mode:" | Select-Object -First 1
+        if ($modeLine -and $modeLine.Line -match "^mode:\s*(\w+)") {
+            $mode = $Matches[1]
+        }
+    }
+
+    Write-Host "[$timestamp] Starting PolyBot ($mode mode)..." -ForegroundColor Green
 
     # Run the bot — blocks until pipeline completes and bot exits
-    python -m polybot.main --mode paper --auto-restart
+    python -m polybot.main --mode $mode --auto-restart
 
     $exitCode = $LASTEXITCODE
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
