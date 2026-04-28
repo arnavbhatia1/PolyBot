@@ -316,3 +316,29 @@
 - If all three proposed values also fail fold consistency, recommend a rest cycle with no changes
 
 **Reasoning:** With nearly every parameter direction exhausted, this cycle proposes three genuinely untested intermediate values from the families with the best historical BT deltas: probability_compression at 0.85 (between the two best-performing tested values), spot_flow_weight at 0.06 (between the failed 0.05 and near-threshold 0.07), and atr_sigma_ratio at 1.25 (between the two tested ↓ values, targeting the ATR regime shift). The dominant structural signal is the hard Sharpe degradation (0.183→0.003) combined with ATR mean compression — if these intermediate values also fail fold consistency, a rest cycle with empty changes is the appropriate next step.
+
+## 2026-04-28T13:19:33.174457+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (2) [operator-only]:**
+  - exit_edge_threshold: -0.05 -> -0.1 [high]
+    Scalps triggered at holding_edge < -0.10 are correct only 36% of the time across 735 exits — 14pp below break-even and far exceeding 2× noise floor — indicating the current -0.05 threshold still permits deeply destructive early exits; holding to resolution outperforms by $1,605 overall.
+  - adverse_selection_threshold: 0.75 -> 0.8 [medium]
+    The pre_submit_edge_drift gate blocked 176 trades of which 63% were profitable with +$229.61 simulated PnL — exceeding the 60% profitable threshold for loosening — suggesting the gate is over-filtering winning entries in the new low-ATR regime.
+
+**Findings:**
+- 30+ parameter combinations exhausted — backtest fold consistency failing across the board
+- ATR halved again to mean 11.6 (KS=0.543) — backtest trained on a different market
+- Sharpe collapsed from +0.180 to -0.004 across last 5 buckets — structural deterioration
+- Scalp exits wrong 54% of time — $1,605 left on table from premature exits
+- Q4 edge realization at 0.01 in most recent bucket — model confidence now near-worthless
+
+**Warnings:**
+- With SPRT at 0% enter rate and mean gain near zero, live edge may have disappeared entirely
+- ATR regime shift this severe (KS=0.543) means all historical backtest deltas are suspect
+- Continued parameter churn on a structurally broken backtest risks making live performance worse
+
+**Reasoning:** Every backtestable parameter direction has been attempted and has failed fold consistency — there is no remaining untested combination with meaningful expected delta above the 0.026 safety margin threshold. The ATR regime shift (mean 30→11.6, KS=0.543) is now so severe that the walk-forward backtest is trained on a fundamentally different market, making any BT delta unreliable as a signal. The correct action is an empty changes list while the operator reviews whether the model architecture needs structural changes to adapt to the new low-volatility regime.
