@@ -1450,7 +1450,8 @@ async def _evaluate_and_exit_position(
 async def _resolve_expired_position(
         pos: dict[str, Any], live: dict[str, Any], trader: Any, alert_manager: Any,
         db: Any, outcome_reviewer: Any, breaker: Any, counterfactual_tracker: Any,
-        day_wins: int, day_losses: int, day_fees: float) -> tuple[bool, int, int, float, str | None]:
+        day_wins: int, day_losses: int, day_fees: float,
+        signal_engine: Any = None) -> tuple[bool, int, int, float, str | None]:
     """Resolve a position whose contract has expired (seconds_remaining <= 0)."""
     global _prev_resolution_margin
     if live.get("closed") and (live["price_up"] >= 0.99 or live["price_up"] <= 0.01):
@@ -1532,7 +1533,8 @@ async def _resolve_expired_position(
 async def _manage_orphaned_position(
         pos: dict[str, Any], market_scanner: Any, http_client: Any, trader: Any,
         alert_manager: Any, db: Any, outcome_reviewer: Any, breaker: Any,
-        day_wins: int, day_losses: int, day_fees: float) -> tuple[bool, int, int, float, str | None]:
+        day_wins: int, day_losses: int, day_fees: float,
+        signal_engine: Any = None) -> tuple[bool, int, int, float, str | None]:
     """Resolve positions where the contract can no longer be found via Gamma API."""
     from datetime import datetime, timezone
 
@@ -1825,7 +1827,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                         await _manage_orphaned_position(
                             pos, market_scanner, http_client, trader,
                             alert_manager, db, outcome_reviewer, breaker,
-                            day_wins, day_losses, day_fees)
+                            day_wins, day_losses, day_fees,
+                            signal_engine=signal_engine)
                     if traded_mid:
                         traded_contracts[traded_mid] = int(time.time())
                     continue
@@ -1839,7 +1842,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                         await _resolve_expired_position(
                             pos, live, trader, alert_manager, db,
                             outcome_reviewer, breaker, counterfactual_tracker,
-                            day_wins, day_losses, day_fees)
+                            day_wins, day_losses, day_fees,
+                            signal_engine=signal_engine)
                     if not resolved:
                         continue  # Gamma hasn't resolved yet — wait for next tick
                     if traded_mid:
