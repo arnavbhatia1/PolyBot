@@ -342,3 +342,31 @@
 - Continued parameter churn on a structurally broken backtest risks making live performance worse
 
 **Reasoning:** Every backtestable parameter direction has been attempted and has failed fold consistency — there is no remaining untested combination with meaningful expected delta above the 0.026 safety margin threshold. The ATR regime shift (mean 30→11.6, KS=0.543) is now so severe that the walk-forward backtest is trained on a fundamentally different market, making any BT delta unreliable as a signal. The correct action is an empty changes list while the operator reviews whether the model architecture needs structural changes to adapt to the new low-volatility regime.
+
+## 2026-04-29T03:15:44.347631+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (3) [operator-only]:**
+  - exit_edge_threshold: -0.05 -> -0.12 [high]
+    Scalps triggered at holding_edge < -0.10 are correct only 37% of the time (n=745, 13pp below break-even) — holding to resolution outperforms scalping by $1,482 overall, and these deep-negative exits are the primary driver of destroyed value.
+  - adverse_selection_threshold: 0.8 -> 0.85 [medium]
+    The pre_submit_edge_drift gate blocked 187 trades of which 64% were profitable with +$235.73 simulated PnL — both bars for loosening are met, and in the current low-ATR regime these edge-positive trades are being incorrectly filtered.
+  - late_max_penalty: 0.6 -> 0.35 [medium]
+    The 60-180s entry window wins only 50.5% (n=992) vs 53.2% in the 180-300s window — a 2.7pp gap exceeding 2× noise floor — indicating mid-to-late entries are structurally unprofitable and deserve a harder Kelly cut.
+
+**Findings:**
+- Every backtestable parameter direction exhausted — empty changes is correct
+- Sharpe collapsed from +0.178 to -0.029 across last 5 buckets — structural degradation
+- Q4 edge realization -0.60 in most recent bucket — model confidence now inverted
+- Scalp exits wrong 53.8% of time — $1,482 left on table from premature exits
+- ATR halved (mean 27→13) — backtest trained on a fundamentally different market
+
+**Warnings:**
+- With Sharpe now negative in the most recent bucket, live edge may have disappeared entirely
+- Model_probability mean shifted 0.581→0.640 but Q4 realization is -0.60 — overconfidence is worsening
+- 30+ parameter combinations exhausted with zero live-validated adoptions — architecture review warranted
+
+**Reasoning:** Every backtestable parameter has been attempted across multiple values and directions, with none clearing the fold-consistency requirement. The correct action is an empty changes list while the operator considers whether a structural model review (not parameter tuning) is needed to adapt to the new low-ATR regime. The three manual observations (exit threshold, adverse selection gate, and late-window Kelly cut) remain the highest-confidence actionable levers — these are operator-controlled and do not depend on backtest fold consistency.
