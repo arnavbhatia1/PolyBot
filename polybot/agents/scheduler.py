@@ -1827,19 +1827,81 @@ class AgentScheduler:
             _recent_50 = all_outcomes[-50:] if len(all_outcomes) >= 50 else all_outcomes
             _recent_wr = sum(1 for o in _recent_50 if o.get("correct", False)) / max(len(_recent_50), 1)
             _in_crisis = _recent_wr < 0.48 and self._baseline_kelly_sharpe < 0.10
+
+            # Track crisis streak across pipeline runs — sustained crisis triggers
+            # automatic Kelly reduction so we stop sizing aggressively into a misfiring model.
+            from pathlib import Path as _Path
+            import json as _json
+            _crisis_state_path = _Path("polybot/memory/crisis_state.json")
+            _crisis_state = {"streak": 0, "kelly_reduced": False, "original_kelly": None}
+            try:
+                if _crisis_state_path.exists():
+                    _crisis_state.update(_json.loads(_crisis_state_path.read_text()))
+            except Exception:
+                pass
+
             if _in_crisis:
+                _crisis_state["streak"] = int(_crisis_state.get("streak", 0)) + 1
                 self.weight_optimizer.min_improvement = 0.005
                 self.weight_optimizer.se_floor_coefficient = 0.15
                 pipeline_info["crisis_mode"] = True
+                pipeline_info["crisis_streak"] = _crisis_state["streak"]
                 logger.info(
-                    f"Pipeline CRISIS MODE: recent WR={_recent_wr:.1%}, "
-                    f"Sharpe={self._baseline_kelly_sharpe:.3f} — adoption floor lowered "
-                    f"(abs=0.005, SE coeff=0.15)"
+                    f"Pipeline CRISIS MODE (streak={_crisis_state['streak']}): "
+                    f"recent WR={_recent_wr:.1%}, Sharpe={self._baseline_kelly_sharpe:.3f} — "
+                    f"adoption floor lowered (abs=0.005, SE coeff=0.15)"
                 )
+
+                # Sustained crisis (3+ consecutive runs) → auto-reduce kelly_fraction.
+                # Floor at 0.04 so we never disable sizing entirely.
+                if _crisis_state["streak"] >= 3 and not _crisis_state.get("kelly_reduced") \
+                        and self.signal_engine and self._config:
+                    _orig = float(self.signal_engine.kelly_fraction)
+                    _reduced = max(0.04, _orig * 0.5)
+                    _crisis_state["original_kelly"] = _orig
+                    _crisis_state["kelly_reduced"] = True
+                    self.signal_engine.kelly_fraction = _reduced
+                    self._config.setdefault("math", {})["kelly_fraction"] = _reduced
+                    try:
+                        from polybot.config.loader import save_config
+                        save_config(dict(self._config))
+                    except Exception as e:
+                        logger.error(f"Auto Kelly reduction: failed to persist: {e}")
+                    logger.warning(
+                        f"[AUTO KELLY REDUCTION] kelly_fraction {_orig:.3f} → {_reduced:.3f} "
+                        f"after {_crisis_state['streak']} consecutive crisis cycles. "
+                        f"Will restore on first non-crisis cycle."
+                    )
+                    pipeline_info["kelly_auto_reduced"] = True
             else:
                 self.weight_optimizer.min_improvement = 0.010
                 self.weight_optimizer.se_floor_coefficient = 0.25
                 pipeline_info["crisis_mode"] = False
+
+                # Recovery: if we previously auto-reduced kelly, restore it
+                if _crisis_state.get("kelly_reduced") and _crisis_state.get("original_kelly") is not None \
+                        and self.signal_engine and self._config:
+                    _orig = float(_crisis_state["original_kelly"])
+                    self.signal_engine.kelly_fraction = _orig
+                    self._config.setdefault("math", {})["kelly_fraction"] = _orig
+                    try:
+                        from polybot.config.loader import save_config
+                        save_config(dict(self._config))
+                    except Exception as e:
+                        logger.error(f"Auto Kelly restore: failed to persist: {e}")
+                    logger.info(
+                        f"[AUTO KELLY RESTORE] kelly_fraction restored to {_orig:.3f} "
+                        f"after crisis ended (was reduced for {_crisis_state.get('streak', 0)} cycles)."
+                    )
+                    pipeline_info["kelly_auto_restored"] = True
+
+                _crisis_state = {"streak": 0, "kelly_reduced": False, "original_kelly": None}
+
+            try:
+                _crisis_state_path.parent.mkdir(parents=True, exist_ok=True)
+                _crisis_state_path.write_text(_json.dumps(_crisis_state, indent=2))
+            except Exception as e:
+                logger.debug(f"Failed to persist crisis_state: {e}")
 
             # Per-parameter cooldown is enforced inside _run_weight_optimizer:
             # any param adopted in the last 2 days is skipped individually; other

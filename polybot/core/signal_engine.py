@@ -22,6 +22,22 @@ _ATR_HISTORY_SIZE = 20
 _ATR_FLOOR_FRACTION = 0.30
 _ATR_HISTORY_MIN_SAMPLES = 5
 
+# ATR regime auto-scaling: long-term reference window for detecting regime shift.
+# When recent_20 < REGIME_SHIFT_THRESHOLD × long_term_mean, the effective ATR floor
+# is widened to compensate (vol estimate stays close to historical baseline so
+# the L1 Student-t doesn't produce overconfident extreme probabilities).
+_ATR_LONG_TERM_SIZE = 200  # ~16 hours of 5-min candles
+_ATR_LONG_TERM_MIN_SAMPLES = 50
+_ATR_REGIME_SHIFT_THRESHOLD = 0.60  # rolling_20 / long_term ratio below this → regime shift
+
+# Adaptive probability compression: shrinks toward 0.5 when recent calibration drifts.
+# Maintains a rolling buffer of (predicted_prob, won) pairs; compares model's
+# expected win-rate at high-confidence buckets to actual realized win-rate.
+# Excess overconfidence triggers extra compression on top of the static value.
+_CALIBRATION_BUFFER_SIZE = 100
+_CALIBRATION_MIN_SAMPLES = 30
+_CALIBRATION_DRIFT_FILE = "polybot/memory/adaptive_calibration.json"
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -175,24 +191,115 @@ class SignalEngine:
         }
         self._exit_boundary = ExitBoundary(df=self.student_t_df)
         self._atr_history: deque[float] = deque(maxlen=_ATR_HISTORY_SIZE)
+        self._atr_long_term: deque[float] = deque(maxlen=_ATR_LONG_TERM_SIZE)
         self.last_regime_autocorr: float = 0.0  # actual 1-lag autocorr used in last compute_probability call
+        # Adaptive calibration: rolling buffer of (predicted_prob, won_bool) pairs.
+        # Loaded from disk at startup so adaptive state survives restarts.
+        self._calibration_buffer: deque[tuple[float, bool]] = deque(maxlen=_CALIBRATION_BUFFER_SIZE)
+        self._adaptive_compression_mult: float = 1.0  # cached multiplier
+        self._load_calibration_buffer()
 
     def _record_atr(self, atr: float) -> None:
-        """Append non-zero ATR to the rolling window used for the dynamic floor."""
+        """Append non-zero ATR to both rolling windows (short and long-term)."""
         if atr > 0:
             self._atr_history.append(float(atr))
+            self._atr_long_term.append(float(atr))
 
     def _effective_atr_floor(self) -> float:
         """Dynamic floor: max(static min_atr, 0.3 × rolling_mean_atr).
 
-        Adapts to macro vol regime so a $8 static floor doesn't underclip during vol
-        spikes (rolling_mean $200 → floor lifts to $60) while still applying the static
-        floor during dead markets.
+        Plus regime-shift auto-scaling: if recent_20 ATR has collapsed to <60% of
+        the long-term (200-sample) mean, raise the floor proportionally so vol
+        estimate stays close to historical baseline. This targets the failure mode
+        where Student-t becomes overconfident in low-vol regimes (z=distance/vol
+        blows up when vol shrinks).
         """
         if len(self._atr_history) < _ATR_HISTORY_MIN_SAMPLES:
             return self.min_atr
         rolling_mean = sum(self._atr_history) / len(self._atr_history)
-        return max(self.min_atr, _ATR_FLOOR_FRACTION * rolling_mean)
+        base_floor = max(self.min_atr, _ATR_FLOOR_FRACTION * rolling_mean)
+
+        if len(self._atr_long_term) >= _ATR_LONG_TERM_MIN_SAMPLES:
+            long_term_mean = sum(self._atr_long_term) / len(self._atr_long_term)
+            if long_term_mean > 0 and rolling_mean / long_term_mean < _ATR_REGIME_SHIFT_THRESHOLD:
+                # Auto-widen vol: target floor matches what we'd get if ATR were at
+                # the regime-shift threshold (60% of long-term baseline).
+                regime_floor = long_term_mean * _ATR_REGIME_SHIFT_THRESHOLD * _ATR_FLOOR_FRACTION
+                return max(base_floor, regime_floor)
+        return base_floor
+
+    # ---- Adaptive probability compression ---------------------------------
+
+    def _load_calibration_buffer(self) -> None:
+        """Restore (predicted_prob, won) buffer from disk so adaptive state survives restarts."""
+        try:
+            from pathlib import Path
+            import json as _json
+            p = Path(_CALIBRATION_DRIFT_FILE)
+            if not p.exists():
+                return
+            data = _json.loads(p.read_text())
+            for entry in data.get("buffer", []):
+                if isinstance(entry, list) and len(entry) >= 2:
+                    self._calibration_buffer.append((float(entry[0]), bool(entry[1])))
+            self._adaptive_compression_mult = float(data.get("multiplier", 1.0))
+        except Exception:
+            pass  # First run or corrupted file — start fresh
+
+    def _save_calibration_buffer(self) -> None:
+        """Persist buffer + cached multiplier so it survives restart."""
+        try:
+            from pathlib import Path
+            import json as _json
+            p = Path(_CALIBRATION_DRIFT_FILE)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "buffer": [[round(prob, 4), bool(won)] for prob, won in self._calibration_buffer],
+                "multiplier": round(self._adaptive_compression_mult, 4),
+            }
+            p.write_text(_json.dumps(data, indent=2))
+        except Exception:
+            pass
+
+    def record_resolution(self, predicted_prob: float, won: bool) -> None:
+        """Append a resolved trade outcome and refresh the adaptive compression multiplier.
+
+        Called by main.py after each trade resolution. Maintains a rolling 100-trade
+        buffer of (model_prob_at_entry_for_chosen_side, won) and recomputes the
+        adaptive compression multiplier whenever the buffer has enough samples.
+        """
+        if not (0.0 < predicted_prob < 1.0):
+            return
+        self._calibration_buffer.append((float(predicted_prob), bool(won)))
+        self._adaptive_compression_mult = self._compute_adaptive_compression()
+        self._save_calibration_buffer()
+
+    def _compute_adaptive_compression(self) -> float:
+        """Return a multiplier in [0.5, 1.0] applied on top of static probability_compression.
+
+        Detects calibration drift by comparing model's predicted prob to actual win rate
+        on recent confident trades (predicted_prob >= 0.60 OR <= 0.40). When the model
+        is systematically miscalibrated (predicting 70% but winning 50%), the multiplier
+        shrinks toward 0.5 to compress final probabilities back toward the prior.
+        """
+        n = len(self._calibration_buffer)
+        if n < _CALIBRATION_MIN_SAMPLES:
+            return 1.0
+
+        confident = [(p, won) for p, won in self._calibration_buffer if p >= 0.60 or p <= 0.40]
+        if len(confident) < _CALIBRATION_MIN_SAMPLES // 2:
+            return 1.0
+
+        mean_predicted = sum(p for p, _ in confident) / len(confident)
+        mean_actual = sum(1 for _, won in confident if won) / len(confident)
+        abs_drift = abs(mean_predicted - mean_actual)
+
+        # Mapping: drift <= 3pp → 1.0 (no compression). drift >= 25pp → 0.50 (max).
+        # Linear interpolation in between.
+        if abs_drift <= 0.03:
+            return 1.0
+        mult = 1.0 - (abs_drift - 0.03) * (0.50 / (0.25 - 0.03))
+        return max(0.5, min(1.0, mult))
 
     def effective_momentum_weight(self, regime_autocorr: float) -> float:
         """Regime-conditional momentum weight.
@@ -290,8 +397,11 @@ class SignalEngine:
         # Probability compression: shrink CDF toward 0.5 before logit layers.
         # Addresses systematic overconfidence (96% model -> 74% actual).
         # 1.0 = identity, 0.5 = halve distance from 0.5. Pipeline-tunable.
-        if self.probability_compression < 1.0:
-            prob_up = 0.5 + (prob_up - 0.5) * self.probability_compression
+        # Adaptive multiplier compounds on top: shrinks further when the live calibration
+        # buffer detects drift (e.g., recent 100 trades show model_prob=0.70 but WR=0.50).
+        effective_compression = self.probability_compression * self._adaptive_compression_mult
+        if effective_compression < 1.0:
+            prob_up = 0.5 + (prob_up - 0.5) * effective_compression
 
         # Convert to logit space — layers L2-L5 apply additive adjustments in log-odds,
         # preserving (0,1) bounds naturally and enabling Bayesian-correct evidence combination.

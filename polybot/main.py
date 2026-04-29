@@ -395,8 +395,9 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
                           log_return: float, gain_pct: float,
                           exit_reason: str = "resolution", pnl: float = 0.0,
                           fees: float = 0.0,
-                          seconds_remaining_at_exit: float = 0.0) -> None:
-    """Record a trade outcome for the learning pipeline."""
+                          seconds_remaining_at_exit: float = 0.0,
+                          signal_engine: Any = None) -> None:
+    """Record a trade outcome for the learning pipeline + feed adaptive calibration buffer."""
     try:
         outcome_reviewer.record_outcome(
             position_id=pos["id"],
@@ -420,6 +421,19 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
         )
     except Exception as e:
         logger.error(f"Failed to record outcome: {e}")
+
+    # Feed the adaptive calibration buffer in signal_engine so it can detect drift
+    # in real-time and auto-compress probabilities when the model becomes overconfident.
+    # Only record at terminal resolution (not scalp exits — those don't reflect the
+    # model's true prediction since the position closed before window resolved).
+    if signal_engine is not None and exit_reason == "resolution":
+        try:
+            signal_engine.record_resolution(
+                predicted_prob=float(pos["signal_score"]),
+                won=gain_pct > 0,
+            )
+        except Exception as e:
+            logger.debug(f"Failed to record adaptive calibration: {e}")
 
 
 def _get_edge_realization_ratio() -> float:
@@ -1407,7 +1421,8 @@ async def _evaluate_and_exit_position(
                     bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
             await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
                                   exit_reason="scalp", pnl=pnl, fees=total_fees,
-                                  seconds_remaining_at_exit=float(live.get("seconds_remaining", 0)))
+                                  seconds_remaining_at_exit=float(live.get("seconds_remaining", 0)),
+                                  signal_engine=signal_engine)
             _realized_edge_history.append((pos.get("ev_at_entry", 0), gain_pct))
             if len(_realized_edge_history) > 500:
                 _realized_edge_history[:] = _realized_edge_history[-500:]
@@ -1489,7 +1504,8 @@ async def _resolve_expired_position(
                 gain_pct=gain_pct, reason=won.lower(), fees=total_fees,
                 bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
-                              exit_reason="resolution", pnl=pnl, fees=total_fees)
+                              exit_reason="resolution", pnl=pnl, fees=total_fees,
+                              signal_engine=signal_engine)
         _realized_edge_history.append((pos.get("ev_at_entry", 0), gain_pct))
         if len(_realized_edge_history) > 500:
             _realized_edge_history[:] = _realized_edge_history[-500:]
@@ -1580,7 +1596,8 @@ async def _manage_orphaned_position(
                 gain_pct=gain_pct, reason=won.lower(), fees=total_fees,
                 bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
-                              exit_reason="resolution", pnl=pnl, fees=total_fees)
+                              exit_reason="resolution", pnl=pnl, fees=total_fees,
+                              signal_engine=signal_engine)
         _realized_edge_history.append((pos.get("ev_at_entry", 0), gain_pct))
         if len(_realized_edge_history) > 500:
             _realized_edge_history[:] = _realized_edge_history[-500:]

@@ -7,7 +7,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. Computes P(Up) via an 8
 ## Key Architecture
 
 **Signal layers (all logit-space except L1):**
-- L1: Student-t CDF (df=5). `z = (btc - strike) / ((ATR/atr_sigma_ratio) * sqrt(minutes) * iv_ratio)`
+- L1: Student-t CDF (df=5). `z = (btc - strike) / ((ATR/atr_sigma_ratio) * sqrt(minutes) * iv_ratio)`. **Regime-shift auto-scaling**: when rolling-20 ATR drops below 60% of long-term (200-sample) mean, the effective ATR floor widens proportionally so vol estimate stays close to the historical baseline (prevents Student-t from becoming overconfident in low-vol regimes).
 - L2: Regime detection (1-lag autocorrelation of 1-min returns)
 - L3: CLOB order flow (60% book imbalance + 40% trade flow)
 - L3b: Spot CVD from Binance aggTrades (taker-gated, min 5 trades)
@@ -16,6 +16,7 @@ PolyBot is a 5-minute BTC Up/Down trader for Polymarket. Computes P(Up) via an 8
 - L4: Indicator momentum (RSI/MACD/Stochastic/OBV/VWAP). Base `momentum_weight=-0.02` (fade). **Regime-conditional at runtime**: trending (L2 autocorr > +0.15) flips sign and amplifies 1.5× to ride momentum; mean-reverting (autocorr < -0.15) amplifies fade 1.5×; inside the ±0.15 band dampens 0.5×. Effective weight clamped to [-0.10, +0.10].
 - L5: Previous window momentum carry (prev_margin / ATR)
 - Platt scaling calibration applied after all layers
+- **Adaptive probability compression**: 100-trade rolling buffer of (predicted_prob, won) pairs in signal_engine; when calibration drift exceeds 3pp on confident trades (prob ≥ 0.60 or ≤ 0.40), shrinks final probability toward 0.5 with multiplier in [0.5, 1.0]. Linear scale: 3pp drift → 1.0, 25pp drift → 0.5. Compounds with static `probability_compression`. Persisted to `memory/adaptive_calibration.json` so state survives restart. Fed by `record_resolution()` after each terminal resolution (not scalps).
 
 **Entry gates (all must pass):** prob >= 58%, edge >= 4% (+ 1.5% for flips), Kelly >= 0.015, spread <= 10%, depth >= $50, price_sum in [0.98, 1.02], edge <= 20%, adverse_rate_30s <= `adverse_selection_threshold` (post-fill reversal rate over rolling 2h window; informed-flow detector — fills older than `lookback_s=7200s` are dropped from the sample to prevent stale-regime state from blocking trading for hours after a bad morning), last 30s: prob >= 90%
 
@@ -279,6 +280,8 @@ Runs daily at 11:15 PM ET. `run_polybot.ps1` commits results to git and restarts
 **Walk-forward split:** 60% train, 40% validation across 4 folds [60:70], [70:80], [80:90], [90:100].
 
 **Adoption gates:** candidate Sharpe > 0, n >= 100 candidate trades, `delta >= max(min_improvement, se_floor_coefficient × JK_SE)` (noise-scaled floor — absolute floor 0.010, SE coefficient 0.25 normally; **crisis mode** lowers to abs=0.005, coeff=0.15 when recent 50-trade WR < 48% AND Sharpe < 0.10, so the pipeline adapts faster instead of going silent during downturns), improvement in ≥1/4 walk-forward folds, regime-stratified Sharpe check (dominant regime must improve AND no regime degrades >0.10 Sharpe, only regimes with ≥ 35 trades get veto power). **Per-parameter 2-day cooldown** after adoption. SPRT remains a diagnostic only.
+
+**Sustained-crisis auto Kelly reduction:** when crisis mode persists for ≥3 consecutive pipeline runs, `kelly_fraction` is automatically halved (floor at 0.04) and the original value cached in `memory/crisis_state.json`. Restored on the first non-crisis cycle. Prevents aggressive sizing into a misfiring model during regime shifts without operator intervention.
 
 **Pipeline stages:**
 1. `PipelineTracker` — fills 1d/3d/7d/14d/30d actual Sharpe for past adoptions; computes decay status (PERSISTED/PARTIAL/DECAYED/REVERSED) and 14d retention ratio; prediction accuracy (directional hit rate, MAE vs Claude's predicted_delta_sharpe_7d); empirical directional table from pipeline_run_log.json; all fed back to Claude. **Auto-revert**: if 1d Sharpe trails baseline by >0.10 (n≥20 trades) OR 7d Sharpe trails by >0.05 (n≥100), sets `rollback_recommended=True`; scheduler then calls `_apply_revert_adoptions()` which rolls back the param to its pre-adoption value in signal_engine + settings.yaml immediately (skips params superseded by a newer adoption).
