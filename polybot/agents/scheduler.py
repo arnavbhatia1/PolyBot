@@ -1590,10 +1590,11 @@ class AgentScheduler:
         MIN_PLATT_VALIDATION_TRADES = 50
         # SE-scaled floor mirrors weight adoption (scheduler.py:1639). The prior
         # z >= 1.0 gate required Δ ≥ 0.15 Sharpe at N=50 (JK_SE ≈ sqrt(1.125/50) ≈ 0.15),
-        # which is nearly unreachable for an incremental Platt refit (cal.a/cal.b seeded
-        # from the current calibrator). Result: platt_params.json had not updated in 8+
-        # days despite shifting market conditions. Now adopts on delta ≥ max(0.010, 0.25×SE).
-        PLATT_ABS_FLOOR = 0.010
+        # Platt floor: holdout performance check IS the noise guard — stacking a
+        # SE-based floor double-gates and makes calibration updates unreachable at
+        # realistic N (~200 trades, SE≈0.07, 0.25×SE≈0.018 >> any calibration delta).
+        # Use a small absolute floor only; the holdout comparison handles overfitting.
+        PLATT_ABS_FLOOR = 0.001
         if len(train_outcomes) >= 200 and self.signal_engine:
             cal_probs = []
             cal_outcomes = []
@@ -1707,7 +1708,7 @@ class AgentScheduler:
                     z_score = _sharpe_z_test(old_kelly_sharpe, new_kelly_sharpe, n_for_z) if n_for_z else 0.0
                     delta_sharpe = new_kelly_sharpe - old_kelly_sharpe
                     se_sharpe = math.sqrt((1.0 + 0.5 * old_kelly_sharpe ** 2) / max(n_for_z, 1)) if n_for_z else 0.0
-                    dyn_floor = max(PLATT_ABS_FLOOR, 0.25 * se_sharpe)
+                    dyn_floor = PLATT_ABS_FLOOR  # SE-based floor removed — holdout check is the noise guard
                     platt_info["z_score"] = round(z_score, 3)
                     platt_info["delta_sharpe"] = round(delta_sharpe, 4)
                     platt_info["dyn_floor"] = round(dyn_floor, 4)
