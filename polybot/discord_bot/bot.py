@@ -49,12 +49,6 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
     async def on_ready():
         logger.debug(f"Discord bot connected as {bot.user}")
         bot.ready_event.set()
-        if hasattr(bot, 'alert_manager') and bot.alert_manager:
-            bankroll = await bot.db.get_bankroll()
-            await bot.alert_manager.send_session_banner(
-                mode=bot.config.get("mode", "paper"),
-                bankroll=bankroll,
-            )
 
     @bot.event
     async def on_command_error(ctx, error):
