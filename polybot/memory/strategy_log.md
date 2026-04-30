@@ -370,3 +370,57 @@
 - 30+ parameter combinations exhausted with zero live-validated adoptions — architecture review warranted
 
 **Reasoning:** Every backtestable parameter has been attempted across multiple values and directions, with none clearing the fold-consistency requirement. The correct action is an empty changes list while the operator considers whether a structural model review (not parameter tuning) is needed to adapt to the new low-ATR regime. The three manual observations (exit threshold, adverse selection gate, and late-window Kelly cut) remain the highest-confidence actionable levers — these are operator-controlled and do not depend on backtest fold consistency.
+
+## 2026-04-29T13:01:52.045132+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (2) [operator-only]:**
+  - exit_edge_threshold: -0.05 -> -0.12 [high]
+    Scalps at holding_edge < -0.10 are correct only 38% of the time (n=775, 12pp below break-even, 8× noise floor) — holding to resolution outperforms by $1,057 overall, and these deep-negative exits are the primary driver of destroyed value
+  - adverse_selection_threshold: 0.8 -> 0.85 [medium]
+    The pre_submit_edge_drift gate blocked 203 trades of which 63% were profitable with +$190.87 simulated PnL — both the 60% profitable and positive sim_pnl bars are met, indicating the gate is over-filtering edge-positive entries
+
+**Findings:**
+- Every backtestable parameter family exhausted — empty changes is correct
+- Sharpe degraded 0.164→-0.017 across 5 buckets — structural deterioration
+- Q4 edge realization at -0.38 — model overconfidence now inverted in recent window
+- Scalp exits wrong 53% of time — $1,057 left on table from premature exits
+- ATR dropped 27→18 (KS=0.283, p=0.001) — live regime still diverging from backtest
+
+**Warnings:**
+- With Sharpe negative in the most recent bucket, live edge may have disappeared entirely
+- 30+ parameter combinations tested with zero live-validated performance — architecture review warranted
+- ATR regime shift ongoing — all backtest deltas remain suspect until ATR stabilizes
+
+**Reasoning:** Every backtestable parameter has been attempted across multiple values and directions with none clearing fold consistency — there is no untested combination with credible expected delta above the 0.0114 threshold. The degrading Sharpe trend and inverted Q4 edge realization point to a structural model-market misalignment, not a tunable parameter issue. The two manual observations (exit threshold and adverse selection gate) remain the highest-confidence actionable levers available to the operator.
+
+## 2026-04-30T03:16:16.282609+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (3):**
+  - probability_compression=0.78 (Untested value between the two best-performing prior tests (0.75 Δ=+0.0008, 0.82 Δ=+0.0095); ↓ direction averages +0.007 across 11 tests and the inverted edge-WR (Q4 realization -0.23) confirms ongoing model overconfidence that compression directly targets.)
+  - spot_flow_weight=0.07 (Untested gap between failed 0.06 (Δ=+0.0035) and failed 0.08 (Δ=+0.0272); ↑ direction has the strongest avg BT delta (+0.014) of any tested direction with one adoption, and ATR mean rising to 32.6 increases order-flow signal informativeness in higher-vol windows.)
+  - liquidation_weight=0.07 (Untested gap between failed 0.06 (Δ=+0.0027) and failed 0.08 (Δ=+0.0001); all three ↑ tests were positive, and ATR mean jumping from 26.7 to 32.6 signals a higher-volatility regime where liquidation cascades are more frequent and more detectable.)
+
+**Manual Suggestions (2) [operator-only]:**
+  - exit_edge_threshold: -0.12 -> -0.07 [high]
+    Scalps triggered at holding_edge < -0.10 are correct only 39% of the time (n=822, 11pp below break-even, far exceeding 2× noise floor) — the current -0.12 threshold is too permissive for deep-negative exits, but raising to -0.07 rather than tightening further balances the 0-to-(-0.02) bucket (40% accuracy, 215 exits) which shows the threshold may also be too loose at near-zero holding edge.
+  - adverse_selection_threshold: 0.85 -> 0.88 [medium]
+    The pre_submit_edge_drift gate blocked 212 trades of which 63% were profitable with +$185.97 simulated PnL — both bars for loosening are met (>60% profitable, positive sim_pnl), indicating the gate is systematically over-filtering edge-positive entries.
+
+**Findings:**
+- Sharpe collapsed from 0.165 to 0.001 across 5 buckets — structural deterioration ongoing
+- Q4 edge realization at -0.23 — model most confident entries now losing money
+- ATR mean rose 26.7→32.6 (KS=0.315) — regime shift back toward volatility may help backtest alignment
+- Scalp exits wrong 52.2% — $688 left on table, but every param direction has been exhausted
+- Win rate fell to 45.9% in most recent bucket — below break-even
+
+**Warnings:**
+- Every backtestable parameter family has failed fold consistency — changes may not clear the adoption bar
+- With 30+ failed parameter combinations, a structural model review may be warranted over further tuning
+- probability_compression + spot_flow_weight interact via logit-space signal amplification — monitor combined delta carefully
+
+**Reasoning:** With virtually every parameter direction exhausted, this cycle targets three genuinely untested gap-fill values in the families with the best historical average BT delta: probability_compression at 0.78 (between the two best prior tests in the ↓ direction), spot_flow_weight at 0.07 (between two failed adjacent tests in the consistently positive ↑ direction), and liquidation_weight at 0.07 (all prior ↑ tests positive, ATR regime rising). The ATR mean rising back to 32.6 after months of compression is the key structural signal — if the backtest now trains on data more aligned with live conditions, fold consistency may finally be achievable. If these also fail, an architecture review rather than continued parameter search is warranted.
