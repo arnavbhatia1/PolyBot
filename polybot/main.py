@@ -2134,12 +2134,26 @@ async def main() -> None:
     config["mode"] = mode
     base_dir = Path(__file__).parent
 
-    # Database — separate files for paper and live (no cross-contamination)
-    db_path = config["database"]["path"]
-    if mode == "live":
-        db_path = db_path.replace(".db", "_live.db")
+    # Database — always per-mode (polybot_paper.db / polybot_live.db).
+    # Positions, bankroll, peak, and trade_history are isolated by mode so flipping
+    # paper -> live can never inherit stale paper state. Pipeline learnings live in
+    # polybot/memory/ and are shared (calibration + weights transfer across modes).
+    db_path = config["database"]["path"].replace(".db", f"_{mode}.db")
+
+    # One-time migration: legacy installs had paper writing to the unsuffixed file.
+    # If the suffixed file doesn't exist yet but the legacy one does, rename it.
+    legacy_path = config["database"]["path"]
+    if mode == "paper" and not Path(db_path).exists() and Path(legacy_path).exists():
+        try:
+            Path(legacy_path).rename(db_path)
+            logger.info(f"DB migration: {legacy_path} -> {db_path}")
+        except OSError as e:
+            logger.warning(f"DB migration failed (non-fatal, will use legacy path): {e}")
+            db_path = legacy_path
+
     db = Database(db_path)
     await db.initialize()
+    logger.info(f"Database: {db_path} (mode: {mode})")
     if await db.get_bankroll() == 0:
         await db.set_bankroll(config["execution"]["initial_bankroll"])
 
