@@ -1,362 +1,250 @@
 # CLAUDE.md
 
-## Project Overview
+## Overview
 
-PolyBot is a 5-minute BTC Up/Down trader for Polymarket. Computes P(Up) via an 8-layer probability model, compares to market price, trades when edge > noise floor and Kelly justifies size. Holds to $1 resolution when confident, scalps early when holding_edge drops below fee-aware threshold.
+PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes P(Up) via a 7-layer probability model, compares to market price, trades when edge clears the noise floor and Kelly justifies size, holds to $1 resolution when confident, scalps early when the holding edge drops below the fee-aware threshold.
 
-## Key Architecture
+## Probability Model
 
-**Signal layers (all logit-space except L1):**
-- L1: Student-t CDF (df=5). `z = (btc - strike) / ((ATR/atr_sigma_ratio) * sqrt(minutes) * iv_ratio)`. **Regime-shift auto-scaling**: when rolling-20 ATR drops below 60% of long-term (200-sample) mean, the effective ATR floor widens proportionally so vol estimate stays close to the historical baseline (prevents Student-t from becoming overconfident in low-vol regimes).
-- L2: Regime detection (1-lag autocorrelation of 1-min returns)
-- L3: CLOB order flow (60% book imbalance + 40% trade flow)
-- L3b: Spot CVD from Binance aggTrades (taker-gated, min 5 trades)
-- L3c: Wall pressure — DISABLED (wall_weight=0.00, gamed by HFT)
-- L3e: Liquidation pressure (Bybit OI drop + price direction)
-- L4: Indicator momentum (RSI/MACD/Stochastic/OBV/VWAP). Base `momentum_weight=-0.02` (fade). **Regime-conditional at runtime**: trending (L2 autocorr > +0.15) flips sign and amplifies 1.5× to ride momentum; mean-reverting (autocorr < -0.15) amplifies fade 1.5×; inside the ±0.15 band dampens 0.5×. Effective weight clamped to [-0.10, +0.10].
-- L5: Previous window momentum carry (prev_margin / ATR)
-- Platt scaling calibration applied after all layers
-- **Adaptive probability compression**: 100-trade rolling buffer of (predicted_prob, won) pairs in signal_engine; when calibration drift exceeds 3pp on confident trades (prob ≥ 0.60 or ≤ 0.40), shrinks final probability toward 0.5 with multiplier in [0.5, 1.0]. Linear scale: 3pp drift → 1.0, 25pp drift → 0.5. Compounds with static `probability_compression`. Persisted to `memory/adaptive_calibration.json` so state survives restart. Fed by `record_resolution()` after each terminal resolution (not scalps).
+All layers compose in logit space except L1, then sigmoid + Platt at the end.
 
-**Entry gates (all must pass):** prob >= 58%, edge >= 4% (+ 1.5% for flips), Kelly >= 0.015, spread <= 10%, depth >= $50, price_sum in [0.98, 1.02], edge <= 20%, adverse_rate_30s <= `adverse_selection_threshold` (post-fill reversal rate over rolling 2h window; informed-flow detector — fills older than `lookback_s=7200s` are dropped from the sample to prevent stale-regime state from blocking trading for hours after a bad morning), last 30s: prob >= 90%
+- **L1 — Student-t CDF (df=5).** `vol = (max(atr, atr_floor) / atr_sigma_ratio) * sqrt(minutes) * iv_ratio`, `z = (btc - strike)/vol * sqrt(df/(df-2))`, `P(Up) = t.cdf(z, df)`. Fat tails capture BTC kurtosis. ATR floor adapts: when rolling-20 ATR collapses below 60% of the long-term 200-sample mean, the floor widens proportionally so vol estimate stays close to baseline.
+- **L2 — Regime.** 1-lag autocorrelation of recent 1-min returns × sign of last return. Both `regime_autocorr` and `regime_direction` are stored per trade so the backtest replays L2 exactly.
+- **L3 — CLOB flow.** Book imbalance × 0.6 + trade flow × 0.4 from CLOB WS.
+- **L3b — Spot CVD.** Binance aggTrades CVD + taker ratio (taker gated to trade_count ≥ 5; below that, CVD-only).
+- **L3e — Liquidation pressure.** Bybit OI drop × price direction.
+- **L4 — Indicator momentum.** Weighted RSI/MACD/Stoch/OBV/VWAP. Base `momentum_weight=-0.02` (fade). Regime-conditional at runtime: trending (autocorr > +0.15) flips sign and amplifies 1.5×; reverting (< −0.15) keeps fade and amplifies 1.5×; inside the band dampens 0.5×. Effective weight clamped to ±0.10.
+- **L5 — Prev-window margin.** `tanh(prev_resolution_margin / atr) * (prev_margin_weight × logit_scale)`.
+- **Sigmoid → Platt.** Final probability is `calibrator.calibrate(sigmoid(logit_p))`. Identity when no calibrator loaded.
 
-**Sizing chain:** `min(bankroll × kelly, max_single_pct, max_single_usd) × breaker × uncertainty_discount(floor=0.40) × time_mult × concurrent_multiplier`. Absolute caps apply to the RAW Kelly size FIRST so the soft multiplicative discounts (uncertainty / breaker / phase / correlation) actually reduce below the cap instead of being no-ops when the cap binds. `concurrent_multiplier` is **correlation-aware + size-weighted**: same-side (ρ≈0.75) at full size gets 0.35×, opposite-side (ρ≈-0.25) gets 0.90×, with piecewise buckets in between. Correlation contribution is scaled by `existing_position_size / max_single_usd` so a tiny residual position no longer hits a new entry as hard as a full-size concurrent.
+L3 + L3b combined contribution capped at ±0.35 logits to prevent triple-counting flow evidence.
 
-**Exit:** `evaluate_hold()` — same model for entry and exit. Scalp when `holding_edge <= fee_aware_threshold`. Trailing exit: entry < $0.50, peaked > $0.65, drops 15%+ from peak.
+### Adaptive compression (two orthogonal learning loops)
 
-**Flip trading:** After scalp, re-enter opposite side same window. Max 1 flip. Requires +1.5% extra edge.
+Rolling 100-trade buffer `(predicted_prob, market_price, won)` in `signal_engine`. After every resolution, two multipliers refit:
 
-**Circuit breaker:** Tiered floor — locks at `tier × 0.85` each time bankroll crosses $100/$150/$200/$300... Kelly scales 1.0→0.40 between tier and floor. Never resets down. `floor_pct` and `max_single_position_usd` are manual-only, not pipeline-tunable.
+- **Confidence buckets** by `max(p, 1-p)`: moderate [0.58, 0.70), high [0.70, 0.85), extreme [0.85, 1.0]. Drift = `|mean_predicted − realized_WR|` per bucket.
+- **Disagreement buckets** by `|model − market|`: agree [0, 0.10), medium [0.10, 0.25), strong [0.25+]. Same drift formula. Trains on cases where the market disagreed and was right.
 
-**Execution:** FOK-only market orders. 3 retries with exponential backoff. Live mode: `signature_type=2` (GNOSIS_SAFE), `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER` (.env). Bybit REST (`api.bybit.com/v5/market/tickers`) is geo-blocked for US IPs — on first 401/403/451 the poll loop stops permanently; WS is the primary OI/funding source regardless.
+Drift → multiplier mapping: 3pp → 1.0 (no compression), 25pp → 0.5 (max), linear in between, floored at 0.5. Min sample size per bucket: 15. Runtime applies `min(conf_mult, dis_mult)` so either signal can trigger compression independently. Static `probability_compression` multiplies on top. Persisted to `memory/adaptive_calibration.json` (backward-compatible with old single-multiplier format).
 
-**Auto-restart:** `run_polybot.ps1` — starts 12:15 AM ET, pipeline at 11:15 PM, commits outcomes/DB/config to git, restarts.
+## Entry Gates (all must pass)
+
+`prob ≥ min_model_probability (0.58)`, `edge ≥ min_edge (0.04)` (+0.015 for flips), `Kelly ≥ min_kelly (0.015)`, spread ≤ 10%, depth ≥ $50, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge (0.20)`, `adverse_rate_30s ≤ adverse_selection_threshold (0.85)`, last 30s: `prob ≥ final_min_probability (0.90)`. **Pre-submit edge re-check** uses the fresh ask: rejects if fresh edge falls below `min_edge` OR exceeds `max_edge` (book moved between signal and submit).
+
+## Sizing & Exit
+
+**Sizing chain:** `min(bankroll × kelly, max_single_pct, max_single_usd) × breaker_mult × uncertainty_discount × time_mult × concurrent_mult`. Caps apply to the raw Kelly first so soft discounts actually reduce below the cap.
+
+**Concurrent multiplier** is correlation-aware + size-weighted: same-side (ρ≈0.75) at full size → 0.35×; opposite-side (ρ≈-0.25) → 0.90×. Correlation contribution scales by `existing_size / max_single_usd`.
+
+**Exit (`evaluate_hold`):** same model as entry. Scalp when `holding_edge ≤ effective_threshold` (fee-aware + binary-option time-value boundary). Trailing exit: entry < $0.50, peaked > $0.65, drops 15%+ from peak. Override holds when model still favors side strongly (≥0.70) and edge isn't catastrophically negative (>−0.10).
+
+**Flip trading:** after a scalp, re-enter opposite side same window. Max 1 flip. Requires +1.5% extra edge.
+
+**Circuit breaker:** tier-locked floor at $100/$150/$200/$300/... — locks at `tier × floor_pct (0.85)` when bankroll crosses each tier. Never resets down. Kelly scales 1.0→0.40 between tier and floor (concave sqrt). `floor_pct` and `min_multiplier` are manual-only.
+
+## Live Execution & Safety
+
+- FOK-only market orders via py-clob-client. 3 retries with exponential backoff. HTTP/2 keepalive pings every 30s.
+- **Live preflight:** `verify_auth` checks `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER`, USDC balance, and USDC allowance to the CTF Exchange. Min allowance = `max_single_usd × max_concurrent × 10`.
+- **Atomic DB writes:** `open_position_and_debit_bankroll` runs INSERT + bankroll UPDATE in a single SQLite transaction with rollback on error. A crash mid-write can never leave a position record without the bankroll debit.
+- **AuthError fail-loud:** any 401/403/signature/nonce error in the FOK loop raises `AuthError`, the trading loop catches it, sends a Discord alert, and exits. `run_polybot.ps1` won't auto-restart on hard exit.
+- **Startup reconciliation (live mode):** for every DB-open position, fetches `get_balance_allowance` for the token_id and alerts if shares deviate >5% from `shares_held`.
+- **Feed staleness gate:** before each signal evaluation, skips if Coinbase or Kraken hasn't ticked in 30s, or Chainlink in 60s.
+- **Chainlink orphan fallback:** if Gamma is silent for 30+ minutes past expiry, resolve via `chainlink_feed.get_strike(window_ts)` vs `chainlink_feed.price`.
+- **Per-mode DB:** `polybot/db/polybot_paper.db` for paper, `polybot/db/polybot_live.db` for live — auto-suffixed by mode. Memory state (`memory/calibration/`, `memory/weights/`, etc.) is intentionally shared so paper learnings transfer to live.
+
+Bybit REST is geo-blocked for US IPs — on first 401/403/451 the poll loop stops permanently; WS is the OI/funding source regardless.
 
 ## Project Structure
 
 ```
 polybot/
-  main.py                    # Entry point, trading loop
-  config/settings.yaml       # ALL tunable parameters
+  main.py                    # Trading loop, entry/exit/sizing
+  config/settings.yaml       # All tunable parameters
   core/
-    signal_engine.py         # 8-layer probability model + evaluate_hold
-    calibrator.py            # Platt scaling (fitted daily)
+    signal_engine.py         # Probability model + compute_probability + evaluate_hold
+    calibrator.py            # Platt scaling
     order_flow.py            # CLOB book imbalance + trade flow
-    returns.py               # gain_pct (arithmetic, not log — log(0)=-inf)
+    returns.py               # gain_pct (arithmetic)
     bankroll_strategy.py     # Uncertainty-adjusted Kelly + drawdown velocity
     regime.py                # Multi-state regime classifier
     liquidation.py           # OI-based liquidation pressure (L3e)
-    exit_boundary.py         # Optimal binary exit curve (MDP-based)
-    sprt.py, alpha_decay.py, adverse_selection.py
-    garch_vol.py, crowd_bias.py, gamma_exposure.py
+    exit_boundary.py         # Binary-option exit threshold
+    sprt.py                  # Sequential probability ratio test
+    adverse_selection.py     # Rolling post-fill reversal monitor
   feeds/
-    binance_feed.py          # 1-min candles, ATR, indicators, strike
-    coinbase_feed.py         # Primary BTC price (fastest)
-    kraken_feed.py           # Secondary BTC price (Chainlink oracle source)
-    clob_ws.py               # Real-time CLOB WS (books, trades, resolution)
-    market_scanner.py        # Gamma API discovery + CLOB HTTP helpers
-    binance_depth.py         # Spot L2 book (imbalance, depth)
-    binance_trades.py        # aggTrades: CVD, taker ratio (L3b)
-    bybit_feed.py            # Perp price lead + OI (WS only, REST geo-blocked)
-    deribit_iv.py            # IV + GEX from options chain
-    chainlink_feed.py        # Chainlink BTC/USD oracle (resolution source)
-  indicators/
-    ema.py, rsi.py, macd.py, stochastic.py, obv.py, vwap.py, atr.py
-    engine.py                # Combines all, manages weight versions
+    coinbase_feed.py kraken_feed.py binance_feed.py        # BTC price (WS)
+    binance_depth.py binance_trades.py                      # Depth + aggTrades
+    bybit_feed.py deribit_iv.py chainlink_feed.py           # OI / IV / Chainlink
+    clob_ws.py market_scanner.py                            # Polymarket
+  indicators/                # rsi/macd/stoch/obv/vwap/ema/atr + engine
   execution/
-    base.py                  # BaseTrader ABC, fee math, shared gates
-    paper_trader.py          # Instant simulated fills
-    live_trader.py           # FOK market orders via py-clob-client
+    base.py                  # BaseTrader ABC, fee math, atomic open_trade
+    paper_trader.py live_trader.py                          # Mode-specific traders
     circuit_breaker.py       # Tiered floor Kelly scaling
+    correlation.py           # Concurrent-position correlation buckets
   agents/
-    scheduler.py             # Pipeline orchestrator (walk-forward, per-param cooldown)
-    outcome_reviewer.py      # Writes memory/outcomes/ JSON per trade
-    counterfactual_tracker.py
-    bias_detector.py         # Per-indicator/regime/time accuracy analysis
-    ta_evolver.py            # Claude recommendations + local fallback
-    weight_optimizer.py      # Walk-forward backtest, z-test adoption
-    pipeline_tracker.py      # Adoption track record + run log (directional table, prediction accuracy, decay)
+    scheduler.py             # Pipeline orchestrator (walk-forward, cooldown, auto-revert)
+    outcome_reviewer.py      # memory/outcomes/ JSON per trade
+    counterfactual_tracker.py ghost_tracker.py
+    bias_detector.py         # Per-indicator/regime/edge/time/phase/flip analysis
+    ta_evolver.py            # Calls Claude or LocalRecommender
+    weight_optimizer.py      # JK-SE-scaled adoption gate
+    pipeline_tracker.py      # Adoption history, decay, directional table
     pipeline_analytics.py    # Time-weighting, KS shift, SPRT aggregation
-    claude_client.py         # analyze_strategy() — distilled card to Claude
-  memory/
-    outcomes/                # One JSON per trade (timestamped UTC)
-    counterfactuals/         # One JSON per scalp or hold what-if
-    ghost_outcomes/          # Downstream-gate rejections tracked to resolution
-    calibration/platt_params.json
-    weights/                 # Versioned weight configs
-    biases.json              # BiasDetector output
-    pipeline_history.json    # Adoption track record (1d/3d/7d/14d/30d reviews, decay status)
-    pipeline_run_log.json    # Every change tested per cycle (direction, backtest Δ, Claude prediction)
-    gate_stats.json          # Entry gate skip counts (reset each restart)
-    fill_stats.json          # FOK fill rate (total/buy/sell attempts vs fills)
-    adverse_state.json       # Per-fill post-fill price evolution (30s/60s) for adverse selection
-  discord_bot/
-    bot.py                   # !status !history !pause !resume !clear !session
-    alerts.py                # Trade alerts, banners, daily report, purge
-  db/models.py               # SQLite: positions, trade_history, bankroll
+    claude_client.py         # Anthropic API + prompt builder + validator
+    local_recommender.py     # Rule-based fallback when Claude is down
+  memory/                    # Calibration, weights, outcomes, ghosts, pipeline state
+  discord_bot/               # !status !history !pause !resume !commands
+  db/models.py               # SQLite: positions, trade_history, bankroll, peak_bankroll
 ```
 
-## Config (`config/settings.yaml`)
+## Parameter Ownership
 
-Parameters fall into three ownership classes. Which class a param lives in is
-determined by whether the walk-forward backtest (`_kelly_bankroll_returns`) can
-simulate its change and whether the value is user-owned risk policy.
+### 🟢 Pipeline-tunable (Claude proposes, walk-forward adopts)
 
-### Pipeline-Tunable (Claude + backtest adoption)
-These flow through `_kelly_bankroll_returns`, so the nightly pipeline can test them
-in backtest and adopt when the candidate Sharpe clears the dynamic floor.
-- `math.kelly_fraction` (range 0.05–0.25)
-- `signal.momentum_weight` (range -0.10 to +0.10) — NEGATIVE = fade indicators
-- `signal.regime_weight` (range 0.02–0.10)
-- `signal.flow_weight` (range 0.02–0.12)
-- `signal.spot_flow_weight` (range 0.01–0.15)
-- `signal.liquidation_weight` (range 0.01–0.10)
-- `signal.prev_margin_weight` (range 0.01–0.05)
-- `signal.wall_weight` — always 0.00 (disabled — gamed by HFT)
-- `signal.atr_sigma_ratio` (range 1.2–2.5)
-- `signal.student_t_df` (range 3–8, int)
-- `signal.logit_scale` (range 2.0–6.0)
-- `signal.probability_compression` (range 0.5–1.0)
-- `signal.min_atr` (range 4.0–25.0; runtime floor = `max(min_atr, 0.3 × rolling_mean_atr_20)`)
-- `signal.weights` rsi/macd/stochastic/obv/vwap (sum to 1.0, each >= 0.05)
-
-### Entry gates — pipeline-tunable (since ghosts joined the backtest sample)
-Previously read-only because the backtest replayed only trades that fired. Now
-`_load_combined_outcomes()` merges real outcomes with **resolved ghosts** (trades
-rejected at live entry gates, tracked to resolution). Raising a gate filters both
-baseline and candidate identically; lowering includes ghosts that would have fired.
-- `signal.min_model_probability` (range 0.52–0.70)
-- `signal.entry_threshold` (min_edge) (range 0.02–0.10)
-- `signal.min_kelly` (range 0.005–0.04) — primary gate
-
-### Manual-Only (unbacktestable or user-owned risk policy)
-Either the backtest cannot simulate the change (exit/timing/schedule) or these are
-operator-owned risk caps. Claude is instructed not to propose them; the pipeline
-silently drops any attempt.
-- `signal.exit_edge_threshold` -0.05 — backtest can't re-simulate scalp vs hold on stored gain_pct
-- `signal.max_edge` 0.20 — stale-price filter (entry-time only)
-- `entry_timing.normal_fraction` 0.60 — time-of-day Kelly envelope (backtest ignores)
-- `entry_timing.late_max_penalty` 0.60 — late-window Kelly penalty (backtest ignores)
-- `entry_timing.final_min_probability` 0.90 — last-30s hard gate (entry-time only)
-- `entry_timing.adverse_selection_threshold` 0.55 — informed-flow filter (entry-time only)
-- `entry_timing.flip_enabled` true, `flip_edge_premium` 0.015
-- `schedule.trading_start_hour_et` 0, `trading_start_minute` 15, `trading_end_hour_et` 23, `trading_end_minute` 0
-- `execution.max_concurrent_positions` 2, `max_bankroll_deployed` 0.80
-- `execution.max_single_position_pct` 0.12, `max_single_position_usd` 18.00 (risk cap)
-- `circuit_breaker.floor_pct` 0.85, `min_multiplier` 0.40 (risk cap)
-
-**When Claude proposes a manual-only param** (e.g., from counterfactual scalp analysis
-pointing at `exit_edge_threshold`): the validator in `claude_client.py` drops it before
-it ever reaches the backtest. The pipeline will translate the finding into a proposable
-param (e.g., scalp-too-early → raise `logit_scale` or lower `atr_sigma_ratio`).
-
-## Parameter Ownership Quick Reference
-
-Who can change what, and why. **Pipeline = nightly Claude + walk-forward adoption. Operator = you, editing settings.yaml.**
-
-### 🟢 Weights - Pipeline-Tunable (Claude proposes, walk-forward adopts)
-
-These flow through `_kelly_bankroll_returns` so the backtest can simulate changes.
+These flow through `_kelly_bankroll_returns` so the backtest can replay them.
 
 | Param | Range | What it does |
 |---|---|---|
-| `atr_sigma_ratio` | 1.2–2.5 | L1 aggressiveness. Lower = tighter probabilities, more edge found. HIGHEST leverage. |
-| `logit_scale` | 2.0–6.0 | Amplifies L2–L5 signals. Higher = flow/regime/momentum matter more. |
-| `probability_compression` | 0.5–1.0 | Shrinks final prob toward 0.5. 1.0 = off; lower = fix overconfidence at extremes. |
-| `student_t_df` | 3–8 | Tail fatness. Lower = fatter tails, more reversal edge. |
-| `momentum_weight` | -0.10 to +0.10 | L4. NEGATIVE = fade indicators. |
-| `regime_weight` | 0.02–0.10 | L2 autocorrelation adjustment. |
-| `flow_weight` | 0.02–0.12 | L3 CLOB order flow (book imbalance + trade flow). |
-| `spot_flow_weight` | 0.01–0.15 | L3b Binance CVD + taker ratio. |
-| `liquidation_weight` | 0.01–0.10 | L3e Bybit OI liquidation pressure. |
-| `prev_margin_weight` | 0.01–0.05 | L5 previous-window momentum carry. |
-| `min_atr` | 4.0–25.0 | Floor on ATR (runtime: `max(min_atr, 0.3 × rolling_20)`). |
-| `kelly_fraction` | 0.05–0.25 | Sizing aggressiveness. Claude rarely moves this. |
-| `weights` | sum=1.0, each ≥ 0.05 | L4 indicator mix (rsi/macd/stochastic/obv/vwap). |
+| `atr_sigma_ratio` | 1.2–2.5 | L1 aggressiveness. Lower = sharper probabilities. Highest leverage. |
+| `logit_scale` | 2.0–6.0 | Master amplifier on L2–L5 weights. |
+| `probability_compression` | 0.5–1.0 | Static shrink toward 0.5 (compounds with adaptive multipliers). |
+| `student_t_df` | 3–8 | Tail fatness. |
+| `momentum_weight` | -0.10 to +0.10 | L4. Negative = fade. |
+| `regime_weight` | 0.02–0.10 | L2. |
+| `flow_weight` | 0.02–0.12 | L3. |
+| `spot_flow_weight` | 0.01–0.15 | L3b. |
+| `liquidation_weight` | 0.01–0.10 | L3e. |
+| `prev_margin_weight` | 0.01–0.05 | L5. |
+| `min_atr` | 4.0–25.0 | Static ATR floor (runtime: `max(min_atr, 0.3 × rolling_20)`). |
+| `kelly_fraction` | 0.05–0.25 | Sizing. Rarely moved. |
+| `weights` | sum=1.0, each ≥ 0.05 | L4 indicator mix. |
+| `min_model_probability` | 0.52–0.70 | Entry gate. Tunable via ghost backtest. |
+| `min_edge` | 0.02–0.10 | Entry gate. Tunable via ghost backtest. |
+| `min_kelly` | 0.005–0.04 | Entry gate (primary). Tunable via ghost backtest. |
 
-Adoption gates: candidate Sharpe > 0, n ≥ 100, Δ ≥ max(0.010, 0.25 × JK_SE), ≥ 1/4 folds improve (gate is near-off; SE-scaled delta is the real noise filter), dominant regime improves without any regime degrading > 0.10 (only regimes with ≥ 35 trades get veto power), param not in 2-day cooldown.
+### 🔴 Manual-only (operator edits settings.yaml)
 
-### 🟢 Entry gates — Pipeline-tunable (ghosts in backtest sample)
-
-The backtest loads real outcomes PLUS resolved ghosts via `_load_combined_outcomes()`, so raising a gate filters baseline + candidate identically, and lowering one includes ghosts that would have fired. Comparison stays apples-to-apples.
-
-| Param | Range |
-|---|---|
-| `min_model_probability` | 0.52–0.70 |
-| `min_edge` (entry_threshold) | 0.02–0.10 |
-| `min_kelly` | 0.005–0.04 (primary gate) |
-
-### 🔴 Manual-Only (operator — edit settings.yaml directly)
-
-Either unbacktestable (gain_pct is post-hoc, backtest can't simulate different exits) or user-owned risk policy.
-
-**Unbacktestable — exit / timing / filters:**
+Either the backtest can't simulate the change (exit/timing/schedule) or it's operator-owned risk policy. Validator in `claude_client.py` reroutes any attempt in `changes` to `manual_observations`.
 
 | Param | Default | Why manual |
 |---|---|---|
-| `exit_edge_threshold` | -0.05 | Scalp-vs-hold decision; backtest replays fixed gain_pct |
-| `adverse_selection_threshold` | 0.55 | Informed-flow filter; entry-time only |
-| `normal_fraction` | 0.60 | Time-of-day Kelly envelope; backtest ignores time-of-day |
-| `late_max_penalty` | 0.60 | Late-window Kelly penalty; backtest ignores |
-| `final_min_probability` | 0.90 | Last-30s hard gate; entry-time only |
-| `max_edge` | 0.20 | Stale-price safety cap; entry-time only |
-| `trading_start_hour_et` / `trading_end_hour_et` / `trading_end_minute` | 0 / 23 / 59 | Schedule; backtest ignores |
-| `flip_enabled` / `flip_edge_premium` | true / 0.015 | Same-window re-entry; not in backtest |
-
-**Risk caps — operator's call, not the model's:**
-
-| Param | Default | Purpose |
-|---|---|---|
-| `max_single_position_usd` | 18.00 | Hard dollar ceiling per trade |
-| `max_single_position_pct` | 0.12 | Bankroll concentration cap |
-| `max_concurrent_positions` | 2 | Hedged Up+Down allowed |
+| `exit_edge_threshold` | -0.05 | Backtest replays fixed gain_pct |
+| `adverse_selection_threshold` | 0.85 | Entry-time only |
+| `normal_fraction` | 0.60 | Time-of-day Kelly envelope |
+| `late_max_penalty` | 0.60 | Late-window Kelly cut |
+| `final_min_probability` | 0.90 | Last-30s hard gate |
+| `max_edge` | 0.20 | Stale-price cap |
+| `flip_enabled` / `flip_edge_premium` | true / 0.015 | Same-window re-entry |
+| `trading_start/end_*` | — | Schedule |
+| `max_single_position_usd/pct` | 18.0 / 0.12 | Risk caps |
+| `max_concurrent_positions` | 2 | Risk cap |
 | `max_bankroll_deployed` | 0.80 | Total exposure cap |
-| `circuit_breaker.floor_pct` | 0.85 | Protect 85% of each locked tier |
-| `circuit_breaker.min_multiplier` | 0.40 | Kelly scaling at the floor |
+| `circuit_breaker.floor_pct/min_multiplier` | 0.85 / 0.40 | Risk caps |
 
-### Mental model
-
-- **Pipeline** optimizes the *probability model* (L1–L5 weights + calibration).
-- **Operator** owns *exit behavior, schedule, and risk policy*.
-- The read-only middle class is a backtest-design limitation, not a conceptual one.
+**Rerouting feedback:** the next cycle's prompt explicitly lists rerouted params under "Last Cycle Rerouting Notice" so Claude stops wasting `changes` slots on manual-only proposals.
 
 ## Running
 
 ```bash
-python -m polybot.main --mode paper    # Paper (persistent bankroll)
-python -m polybot.main --mode live     # Live (real USDC)
-python -m polybot.main --run-pipeline  # Run pipeline once, no trading
-python -m pytest polybot/tests/        # Test suite
+python -m polybot.main --mode paper      # Paper trading
+python -m polybot.main --mode live       # Real USDC
+python -m polybot.main --run-pipeline    # Pipeline once, no trading
+python -m pytest polybot/tests/          # Test suite
 ```
 
-**Live preflight:** `verify_auth(min_allowance_usd)` checks `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER`, **USDC balance, and USDC allowance** to the CTF Exchange. Main.py passes `max_single_position_usd × max_concurrent_positions × 10` as the allowance floor — a revoked or exhausted allowance is caught here before the bot starts "placing" orders that would silently fail at the exchange level. Syncs DB bankroll from real Polymarket balance on startup. Circuit breaker first tier is $100 — start with $100+.
+`run_polybot.ps1` starts trading at 12:15 AM ET, runs pipeline at 11:15 PM ET, commits outcomes/DB/config to git, restarts.
 
-## Probability Model (condensed)
-
-```
-L1: vol = (ATR_eff / atr_sigma_ratio) * sqrt(minutes) * iv_ratio
-    z_scaled = (btc - strike) / vol * sqrt(df / (df-2))
-    P(Up) = t.cdf(z_scaled, df=5)
-
-L2-L5: logit_p += signal * (weight * logit_scale)   [all in log-odds space]
-
-Calibration: calibrated = 1 / (1 + exp(A * logit(raw) + B))
-  A,B in memory/calibration/platt_params.json, re-fitted daily
-
-Resolution: always from Gamma API eventMetadata or closed+outcomePrices.
-  Never guess from Binance — Chainlink and Binance can disagree by $20-200.
-```
-
-## External Data Sources
+## External Data
 
 | Source | Purpose |
-|--------|---------|
-| Coinbase `wss://ws-feed.exchange.coinbase.com` | Primary BTC price (fastest, leads 0.5-2s) |
-| Kraken `wss://ws.kraken.com` | Secondary BTC price (Chainlink oracle source) |
-| Binance.US `wss://stream.binance.us:9443` | 1-min candles, ATR, CVD. NOT .com (451) |
-| Polymarket CLOB `GET /price?side=BUY\|SELL` | **Execution price** (negRisk cross-matched) |
-| Polymarket Gamma `GET /events?slug=...` | Contract discovery, resolution |
-| Bybit `wss://stream.bybit.com/v5/public/linear` | OI + perp price (WS only; REST 403 for US) |
-| Deribit `GET /get_book_summary_by_currency` | IV (iv_ratio), GEX |
-| Chainlink feed | Strike computation + resolution verification |
+|---|---|
+| Coinbase WS | Primary BTC price (fastest, leads 0.5–2s) |
+| Kraken WS | Secondary BTC price (Chainlink oracle source) |
+| Binance.US WS | 1-min candles, ATR, CVD, depth (NOT .com — 451) |
+| Polymarket CLOB `/price?side=BUY|SELL` | Execution price (negRisk cross-matched) |
+| Polymarket Gamma `/events?slug=...` | Contract discovery, resolution |
+| Bybit WS | OI + perp price (REST 403 for US — WS only) |
+| Deribit | IV (`iv_ratio`) |
+| Chainlink RTDS | Strike + resolution + orphan fallback |
 
 **Never use:** raw CLOB book for pricing (use `/price`), Gamma `outcomePrices` for edge (stale), Binance for resolution.
 
 ## Discord Commands
 
-`!status` — bankroll, today P&L, all-time Sharpe/WR, open positions, current window  
-`!history [n]` — last n closed trades (default 10)  
-`!pause` / `!resume` — pause/resume entries (position management continues)  
-`!clear [trades|control|all]` — purge channel messages  
-`!session` — re-send session banner  
-`!commands` — list commands  
+`!status` `!history [n]` `!pause` `!resume` `!clear [trades|control|all]` `!session` `!commands`
 
-24h P&L uses `get_day_stats(today_et)` — ET-timezone correct, no row limit.
+Daily P&L from `get_day_stats(today_et)` — ET-correct, no row limit. Daily banner at 12:01 AM ET (open) + 11:00 PM ET (close).
 
 ## Learning Pipeline
 
-Runs daily at 11:15 PM ET. `run_polybot.ps1` commits results to git and restarts.
+Runs daily at 23:15 ET. Walk-forward: 60% train, 40% across 4 folds [60:70], [70:80], [80:90], [90:100].
 
-**Walk-forward split:** 60% train, 40% validation across 4 folds [60:70], [70:80], [80:90], [90:100].
+**Adoption gates:** candidate Sharpe > 0, n ≥ 100, `Δ ≥ max(min_improvement, 0.25 × JK_SE)`, regime-stratified Sharpe (dominant regime improves AND no regime degrades >0.10, only regimes with ≥35 trades get veto power), per-parameter 2-day cooldown.
 
-**Adoption gates:** candidate Sharpe > 0, n >= 100 candidate trades, `delta >= max(min_improvement, se_floor_coefficient × JK_SE)` (noise-scaled floor — absolute floor 0.010, SE coefficient 0.25 normally; **crisis mode** lowers to abs=0.005, coeff=0.15 when recent 50-trade WR < 48% AND Sharpe < 0.10, so the pipeline adapts faster instead of going silent during downturns), regime-stratified Sharpe check (dominant regime must improve AND no regime degrades >0.10 Sharpe, only regimes with ≥ 35 trades get veto power). The walk-forward fold-consistency gate was removed — it had been relaxed to "≥1 of 4 folds improve", which is implied by any positive aggregate delta and so contributed no independent statistical confirmation; fold Sharpes are still computed and logged in `per_change.fold_sharpes` as diagnostics. **Per-parameter 2-day cooldown** after adoption. SPRT remains a diagnostic only. `should_adopt` now returns `(adopt, reason, z_score)` — z is a structured field, not parsed from the reason string.
-
-**Sustained-crisis auto Kelly reduction:** when crisis mode persists for ≥3 consecutive pipeline runs, `kelly_fraction` is automatically halved (floor at 0.04) and the original value cached in `memory/crisis_state.json`. Restored on the first non-crisis cycle. Prevents aggressive sizing into a misfiring model during regime shifts without operator intervention.
+**Crisis mode:** when recent 50-trade WR < 48% AND baseline Sharpe < 0.10, lowers floor (abs=0.005, SE coeff=0.15) so the pipeline keeps adapting. **Sustained crisis (≥3 cycles)** halves `kelly_fraction` (floor 0.04), restored on first non-crisis cycle.
 
 **Pipeline stages:**
-1. `PipelineTracker` — fills 1d/3d/7d/14d/30d actual Sharpe for past adoptions; computes decay status (PERSISTED/PARTIAL/DECAYED/REVERSED) and 14d retention ratio; prediction accuracy (directional hit rate, MAE vs Claude's predicted_delta_sharpe_7d); empirical directional table from pipeline_run_log.json; all fed back to Claude. **Auto-revert**: if 1d Sharpe trails baseline by >0.10 (n≥20 trades) OR 7d Sharpe trails by >0.05 (n≥100), sets `rollback_recommended=True`; scheduler then calls `_apply_revert_adoptions()` which rolls back the param to its pre-adoption value in signal_engine + settings.yaml immediately (skips params superseded by a newer adoption).
-2. `BiasDetector` — runs on **all_outcomes** (real + ghosts, full dataset). Edge buckets: 4-8%, 8-12%, 12-20%, 20%+. Per-indicator accuracy, side/time/regime/volatility patterns, edge realization quartiles
-3. `PlattCalibrator` — fits A,B on train, validates on holdout, adopts if **Kelly-sized-Sharpe** on validation improves AND `Δ >= max(0.010, 0.25 × JK_SE)` (≥50 validation trades must pass production gates under both old and new calibrator, else rejected). Mirrors the weight-adoption floor. The prior `z >= 1.0` gate required Δ ≥ 0.15 Sharpe at N=50, which was effectively unreachable for an incremental refit — calibrator had stopped updating. Log-loss retained in telemetry, not adoption. Gated on Kelly-Sharpe so a flatter/smoother calibrator that would silently shrink edges below the Kelly gate (and kill realized Sharpe) can't be adopted just because it improves log-loss. **Meta-check each cycle:** a third backtest runs with `calibrator=None` (raw model). If `raw_kelly_sharpe >= 0.95 × current_platt_kelly_sharpe`, a WARNING logs and `platt_meta_warning` is surfaced to Claude — calibration isn't earning its keep and may be simplified away.
-4. Distribution shift (KS-test recent 50 vs historical)
-5. SPRT aggregate (diagnostic only — reports edge-state of recent 50 trades; no longer modulates the adoption floor)
-6. `TAEvolver` — sends analysis card + 100 stratified trades (50 recent + 50 spaced) to Claude using **all_outcomes** (full dataset, not just 60% train split — Claude sees current regime). Analysis card includes a `current_regime` snapshot (most recent 100 trades: WR, PnL, mean_gain regardless of train/test split) so Claude can detect active regime shifts. Returns structured JSON with a `changes` list (0–5 entries, empty is valid). Each change requires `param`, `value`, `reason`, `predicted_delta_sharpe_7d`, `confidence_interval`. **Local fallback** uses `LocalRecommender` (`polybot/agents/local_recommender.py`), which mirrors Claude's reasoning over the same `analysis` dict — same JSON shape, same guardrails (2× noise floor, IMPROVING-trend skip, decisive moves sized to clear `adoption_dynamic_floor`, family diversity, cumulative-failures avoidance, direction sourced from the empirical directional table). The pipeline keeps learning when the API is down. Strategy log auto-rotates at 40 KB (keeps last 30 KB).
-7. `WeightOptimizer` — **per-parameter** walk-forward backtests (one backtest per proposed change). Each change tested in isolation against baseline on the same 4 folds, then through regime-stratified gate (dominant improves + no regime degrades >0.10). Params in per-param cooldown are skipped before backtest. Changes that pass all gates are adopted independently. If ≥2 changes are adopted, a **combined backtest** runs: if combined Δ < 0.7 × sum(individual Δ), the lowest-z-score change is backed out (interaction detected, z read from the structured `change_info["z_score"]` field). Baseline Kelly-Sharpe / JK_SE / N are computed once per cycle in `_precompute_baseline` and cached on the scheduler so `_run_weight_optimizer` reuses them instead of recomputing. `_kelly_bankroll_returns` replays the full logit composition (L1 CDF, L2 regime×direction with stored `regime_direction` / `regime_autocorr` per outcome — exact match for new trades, signed-prev-margin proxy only for legacy outcomes that pre-date the field; L3 flow with 0.35-logit cap, L3b spot-flow, L3c wall, L3e liq, L5 prev-margin, L4 indicator momentum, Platt). The calibrator used in the backtest is `self.signal_engine.calibrator` — which is the *just-adopted* Platt for this cycle, since Platt fitting + adoption runs earlier in the pipeline. Within a single weight backtest the calibrator is held fixed (one variable at a time); across cycles both layers are continually improving in lockstep. The sample is built by `_load_combined_outcomes()` which merges real outcomes with resolved ghosts (trades rejected at live entry gates, tracked to resolution). This makes entry gates (`min_model_probability`, `min_edge`, `min_kelly`) candidate-overridable: raising a gate filters baseline + candidate identically, and lowering one includes the relevant ghosts — both stay apples-to-apples.
 
-**Key pipeline invariants:**
-- `momentum_weight` can be negative (-0.10 to +0.10). Negative = fade indicators (current: -0.02). Claude knows this.
-- Claude response format: `{"changes": [{"param": ..., "value": ..., "reason": ..., "predicted_delta_sharpe_7d": ..., "confidence_interval": [lo, hi]}, ...], "key_findings": [...], ...}`. 0–5 changes (empty is valid). `min_model_probability`, `min_edge`, `min_kelly` are pipeline-tunable (ghosts in backtest sample).
-- **Direction sourcing:** Claude's prompt no longer carries hardcoded "test HIGHER spot_flow_weight" rules. Direction is read exclusively from the empirical directional table (`pipeline_run_log.json` aggregated). Directions with ≥3 tests and consistent positive backtest delta are explored; "DECAYS" or consistently-negative directions are blocked at the prompt level. Empty-table cycles are flagged "low" confidence.
-- **Noise reference accuracy:** the "Statistical Noise Reference" section in Claude's prompt computes Sharpe noise from the actual `baseline_kelly_sharpe` and `baseline_n_trades` (matches the JK SE the gate computes), not a placeholder S=0.5.
-- **Rerouting feedback:** when Claude puts a manual-only param in `changes`, the validator reroutes it to `manual_observations`. The next cycle's prompt explicitly lists the rerouted params under "Last Cycle Rerouting Notice" so Claude stops repeating the misclassification and stops wasting `changes` slots.
-- `_validate_strategy_response` uses current_config as defaults — params Claude omits are NOT silently overwritten with hardcoded stale values
-- Strategy log auto-rotates at 40 KB → trimmed to last 30 KB (line-aligned). Claude reads the last 15,000 chars of the rotated file, always receiving recent entries.
-- Outcomes sorted by `exit_timestamp` (actual trade close time) for correct walk-forward ordering; old outcomes fall back to write-time `timestamp`
-- Daily rollup: at 12:05 AM pipeline, previous days' individual outcome files are consolidated into one file per day (`rollup_YYYY-MM-DD.json`) to keep git manageable. `load_all_outcomes()` handles both formats transparently.
-- `gain_pct = pnl / size` (arithmetic). Never use `log_return` for Sharpe (log(0) = -inf for losses)
-- Recency weighting: `0.97^days_ago` applied to each trade's return in backtest and to Platt calibration MLE — half-life ~23 days. Tuned for 5-min BTC flow where microstructure / funding / liquidation regimes shift weekly; the prior 0.995 (138-day half-life) was a long-term-equity weighting that suppressed the recent-regime signal the pipeline is trying to learn.
-- Ghost trades: downstream-gate rejections tracked to resolution in `memory/ghost_outcomes/`. `analyze_ghosts` returns `{total_ghosts, pct_profitable, by_gate}` — each gate shows `count`, `pct_profitable`, `simulated_pnl` (dollar impact if removed), and `interpretation`. `adverse_rate_30s` is a PROTECTIVE gate — low win_rate means it's correctly filtering informed flow, not over-filtering. NOT used for Platt calibration.
-- **Pipeline run log** (`memory/pipeline_run_log.json`): every change tested (adopted + rejected) is logged with direction (`up`/`down`), backtest delta Sharpe, and Claude's `predicted_delta_sharpe_7d`. Powers the empirical directional table and prediction accuracy tracking.
-- **Adoption decay tracking + auto-revert**: 1d/3d/7d/14d/30d reviews computed per adoption. `decay_status`: PERSISTED (>80% retention), PARTIAL (50-80%), DECAYED (<50%), REVERSED (negative). **Auto-revert triggers**: 1d review with Sharpe trailing baseline >0.10 (n≥20), or 7d review trailing >0.05 (n≥100) → `rollback_recommended=True` → next pipeline run reverts param to pre-adoption value. If >50% of adoptions DECAYED, pipeline warns Claude to reduce proposal volume.
-- **Pairwise interaction check**: if ≥2 changes adopted in one cycle, a combined backtest runs. If combined Δ < 0.7 × sum(individual Δ), the lowest-z-score change is backed out. Coupled groups (config-driven via `pipeline_groups` in settings.yaml; defaults below) expand to within-group pairs:
-  - `volatility_core`: [atr_sigma_ratio, student_t_df, logit_scale]
-  - `flow_stack`: [flow_weight, spot_flow_weight, liquidation_weight]
-  - `momentum_regime`: [momentum_weight, regime_weight]
-  - `sizing`: [kelly_fraction, probability_compression]
-- **Regime-stratified adoption gate**: after passing main gates, the dominant regime must improve AND no regime may degrade >0.10 Sharpe. (The earlier "≥2/3 regimes improve" alternative path was dropped — it was weaker evidence and correlated with fold consistency, double-counting noise.)
-- **Per-parameter cooldown**: a param adopted within the last 2 days is skipped in subsequent pipeline runs (via `pipeline_tracker.params_in_cooldown()`). Replaces the global 2-day pipeline cooldown so independent params can adopt back-to-back without blocking each other.
-- **Statistical noise reference**: injected into Claude context based on N — win rate noise ±1/sqrt(N), Sharpe noise ±sqrt(1.125/N). Findings must exceed 2× noise.
-- Claude changes now require `predicted_delta_sharpe_7d` and `confidence_interval` per change. After 7 days, actual delta compared to predicted — hit rate and MAE fed back as "Your Prediction Track Record".
-- **Flexible change count**: 0-5 changes per cycle (was "exactly 5"). Empty list is valid and appropriate when current config is performing well.
-- Realized edge (`signal_prob - fill_price`) and fill slippage stored per outcome — pipeline reports slippage breakdown (by spread bucket and time-in-window) to Claude; actionable for `max_edge`, `logit_scale`, `kelly_fraction` — NOT `min_edge` (read-only)
-- All timestamps stored UTC, converted to ET only for date-bucketing (daily report, get_day_stats)
+1. `PipelineTracker.review_past_adoptions` — fills 1d/3d/7d/14d/30d Sharpe; computes decay status (PERSISTED/PARTIAL/DECAYED/REVERSED). **Auto-revert:** 1d trailing baseline > 0.10 (n≥20) OR 7d trailing > 0.05 (n≥100) → param reverted to pre-adoption value.
+2. `BiasDetector.detect` — per-indicator, side, edge, time, volatility, regime, **entry_phase**, **flip_analysis**, edge realization quartiles, time-weighted, overall.
+3. `PlattCalibrator` — recency-weighted MLE on train, Kelly-Sharpe holdout gate (`Δ ≥ 0.001` + improvement). Meta-check: a `calibrator=None` baseline runs each cycle; if `raw_kelly_sharpe ≥ 0.95 × platt_kelly_sharpe`, surfaces `platt_meta_warning` to Claude.
+4. KS distribution shift (recent 50 vs historical) — diagnostic.
+5. SPRT aggregate — diagnostic only.
+6. `TAEvolver.evolve` — sends analysis card + 100 stratified trades (50 recent + 50 spaced) to Claude on full dataset. Returns `{changes: [...], manual_observations: [...]}`. Local fallback: `LocalRecommender` walks the same analysis dict with rule-based heuristics (2× noise floor, IMPROVING-trend skip, decisive moves sized to clear `adoption_dynamic_floor`, family diversity, cumulative-failures avoidance, direction sourced from the empirical directional table).
+7. `WeightOptimizer` — per-parameter walk-forward backtests in isolation. If ≥2 changes adopt, a combined backtest runs; if `combined Δ < 0.7 × sum(individual Δ)`, the lowest-z change is backed out (z is structured `change_info["z_score"]`). `_kelly_bankroll_returns` replays the full logit composition using stored `regime_autocorr` + `regime_direction`. Calibrator is the just-adopted Platt for the cycle. Sample = real outcomes + resolved ghosts (entry gates apples-to-apples).
+
+**Key invariants:**
+
+- **Direction sourcing:** read exclusively from the empirical directional table (`pipeline_run_log.json`). No hardcoded "test HIGHER X" priors. Directions marked `DECAYS` or with consistently negative BT delta are blocked.
+- **Noise reference accuracy:** Sharpe noise computed from actual `baseline_kelly_sharpe` and `baseline_n_trades`, matching the JK SE the gate uses.
+- **Adaptive calibration buckets** (confidence + disagreement) surfaced in the prompt so Claude / LocalRecommender can see drift per region without proposing static `probability_compression` changes that would damp calibrated buckets.
+- **Counterfactual scalp data** flows into both `manual_observations` (`exit_edge_threshold` suggestion) AND backtestable proposals (`atr_sigma_ratio` / `probability_compression` via `_rule_scalp_overconfidence` mapping).
+- **Entry-phase + flip analysis** are diagnostic-only; they map to manual-only timing/flip levers, not `changes`.
+- **Recency weighting:** `0.97^days_ago` on each trade's return in backtest and Platt MLE — half-life ~23 days.
+- **Pipeline run log** records every change tested (adopted + rejected) with direction, backtest Δ, and Claude's `predicted_delta_sharpe_7d`. Powers the directional table and prediction-accuracy track record.
+- `gain_pct = pnl / size` (arithmetic). Never use `log_return` for Sharpe.
+- All timestamps stored UTC, converted to ET only for date-bucketing.
+- Daily rollup at 12:05 AM consolidates per-trade JSON files into `rollup_YYYY-MM-DD.json`.
 
 ## Common Issues
 
-- **No trades:** BTC near strike = no edge. Correct behavior.
-- **Binance 451:** Using .com — must use .us
-- **Bybit REST 403:** Geo-blocked for US IPs. WS still works. REST poll loop exits permanently on first 401/403/451.
-- **Wrong strike:** Derived from Chainlink oracle or Binance candle boundary from slug, not `int(now // 300) * 300`
-- **Startup config error:** `validate_config()` raises ValueError listing all violations
-- **Orphaned position:** Waits indefinitely for Gamma resolution. Discord alert after 1hr. By design.
-- **Pipeline not adopting:** candidate must clear `delta >= max(abs_floor, 0.25 × JK_SE)` AND improve in ≥1/4 folds AND pass regime-stratified check (only regimes with ≥35 trades get veto power). "No change" = current config is defensible or proposed changes were too small relative to backtest noise. Check `per_change` log in pipeline_info — if delta is positive but below floor, Claude needs to propose LARGER moves. If a change is on a manual-only param (e.g. `exit_edge_threshold`), the validator dropped it before backtest.
+- **No trades:** BTC near strike = no edge. Correct.
+- **Binance 451:** Using `.com` — must be `.us`.
+- **Bybit REST 403:** US IP geo-block; WS still works.
+- **Wrong strike:** Derive from Chainlink oracle / Binance candle boundary at slug `window_ts`, not `int(now // 300) * 300`.
+- **Orphaned position:** Waits for Gamma resolution; Discord alert at 1hr; Chainlink fallback at 30min.
+- **Pipeline not adopting:** candidate must clear `Δ ≥ max(0.010, 0.25 × JK_SE)` AND regime gate. "No change" usually means proposed moves were too small relative to backtest noise — Claude needs decisive moves.
+- **Live auth failure:** AuthError raises and the bot exits cleanly; check `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, and USDC allowance to the CTF Exchange.
 
 ## Frozen Baseline — DO NOT CHANGE
 
-The bot execution logic and architecture are complete. Do not modify:
+The execution and architecture are complete. Don't modify:
 
-- `signal_engine.py` — 8-layer model + evaluate_hold
-- `order_flow.py` — book imbalance + trade flow
+- `signal_engine.py` (probability model + evaluate_hold)
 - Entry/exit/pricing/sizing logic in `main.py`
-- `base.py` — BaseTrader ABC, fee math, shared gates
+- `execution/base.py` (BaseTrader ABC, fee math, atomic open_trade)
 - `paper_trader.py` / `live_trader.py`
 - `circuit_breaker.py`, `correlation.py`, `bankroll_strategy.py`
 
-**Pipeline optimizations only going forward.** The learning pipeline (`scheduler.py`, `bias_detector.py`, `outcome_reviewer.py`, `ghost_tracker.py`) may be improved. New features go in new files. Only the 12:05 AM pipeline tunes params.
+**Pipeline optimizations only.** New features go in new files. Only the nightly pipeline tunes params.
 
 ## What NOT to Change
 
-- Don't use normal CDF — Student-t required (BTC kurtosis 6-8)
-- Don't make `momentum_weight` magnitude > 0.10 — indicators are weak signal
-- Don't increase `flow_weight` > 0.12 — CDF drives decisions, flow nudges
-- Don't use `log_return` for Sharpe — use `gain_pct`
-- Don't use raw CLOB book for pricing — use `GET /price?side=BUY|SELL`
-- Don't hardcode fee rate — fetch from `GET /fee-rate`
-- Don't resolve from Binance price — always wait for Gamma/Chainlink
-- Don't bypass circuit breaker — `floor_pct` and `max_single_position_usd` are manual-only
-- Don't delete `polybot/db/polybot.db` — bankroll persists across sessions
-- Don't derive regime direction from `sign(prob - 0.5)` — use `sign(most_recent_return)`
-- Don't apply layer adjustments in probability space — use logit space
-- Don't use Binance.com or polymarket.us for crypto
+- Don't use normal CDF — Student-t required (BTC kurtosis 6–8).
+- Don't make `momentum_weight` magnitude > 0.10 — indicators are weak signal.
+- Don't use `log_return` for Sharpe — `log(0) = -inf` for losses.
+- Don't use raw CLOB book for pricing — use `GET /price?side=BUY|SELL`.
+- Don't hardcode the fee rate — fetch from `GET /fee-rate`.
+- Don't resolve from Binance price — always wait for Gamma/Chainlink.
+- Don't bypass the circuit breaker — `floor_pct` and risk caps are manual-only.
+- Don't delete `polybot/db/polybot_*.db` — bankroll persists across sessions.
+- Don't derive regime direction from `sign(prob - 0.5)` — use sign of last 1-min return (stored as `regime_direction`).
+- Don't apply layer adjustments in probability space — use logit space.
+- Don't use `.com` Binance or `polymarket.us`.
 
 ## Always Update
 

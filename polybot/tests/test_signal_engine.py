@@ -21,7 +21,7 @@ def engine():
     # whatever's currently persisted in polybot/memory/adaptive_calibration.json.
     eng = SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08)
     eng._calibration_buffer.clear()
-    eng._adaptive_compression_mult = 1.0
+    eng._bucket_mults = {name: 1.0 for name, _, _ in __import__("polybot.core.signal_engine", fromlist=["_CALIBRATION_BUCKETS"])._CALIBRATION_BUCKETS}
     return eng
 
 def test_buys_up_when_btc_above_strike(engine):

@@ -26,11 +26,33 @@ _ATR_LONG_TERM_SIZE = 200
 _ATR_LONG_TERM_MIN_SAMPLES = 50
 _ATR_REGIME_SHIFT_THRESHOLD = 0.60
 
-# Rolling (predicted_prob, won) buffer; if model is systematically miscalibrated
-# at the extremes, shrink final probabilities further toward 0.5.
+# Rolling (predicted_prob, won) buffer; bucketed by confidence so the model can
+# learn that *only its extreme predictions* are miscalibrated, without dampening
+# the moderate predictions that are working fine.
 _CALIBRATION_BUFFER_SIZE = 100
 _CALIBRATION_MIN_SAMPLES = 30
 _CALIBRATION_DRIFT_FILE = "polybot/memory/adaptive_calibration.json"
+_CALIBRATION_BUCKET_MIN_SAMPLES = 15
+
+# Buckets keyed by side-confidence = max(p, 1-p). Boundaries chosen so the
+# entry threshold (0.58) starts the moderate bucket and the extreme bucket
+# captures the cases where the model and market most often disagree.
+_CALIBRATION_BUCKETS: tuple[tuple[str, float, float], ...] = (
+    ("moderate", 0.58, 0.70),
+    ("high",     0.70, 0.85),
+    ("extreme",  0.85, 1.01),  # 1.01 so 1.0 is inclusive at the right
+)
+
+# Disagreement buckets keyed by |model_prob - market_price|. When the market
+# disagrees strongly with the model and the model historically loses those, the
+# bot learns to compress probabilities in the high-disagreement range — directly
+# addressing the failure mode where the model held a "+54% edge" position into a
+# loss because the market knew something it didn't.
+_DISAGREEMENT_BUCKETS: tuple[tuple[str, float, float], ...] = (
+    ("agree",     0.0,  0.10),
+    ("medium",    0.10, 0.25),
+    ("strong",    0.25, 1.01),
+)
 
 logger = logging.getLogger(__name__)
 
@@ -139,9 +161,15 @@ class SignalEngine:
         self._atr_long_term: deque[float] = deque(maxlen=_ATR_LONG_TERM_SIZE)
         self.last_regime_autocorr: float = 0.0
         self.last_regime_direction: float = 0.0
-        # Adaptive calibration buffer (predicted_prob, won) — persisted across restarts.
-        self._calibration_buffer: deque[tuple[float, bool]] = deque(maxlen=_CALIBRATION_BUFFER_SIZE)
-        self._adaptive_compression_mult: float = 1.0
+        # Adaptive calibration buffer (predicted_prob, market_price, won) — persisted
+        # across restarts. Two orthogonal learning loops:
+        #   confidence buckets: drift in the model's prediction range (moderate/high/extreme)
+        #   disagreement buckets: drift conditional on |model - market| (agree/medium/strong)
+        # When evaluating a new prediction the smaller of the two multipliers wins,
+        # so either signal can trigger compression independently.
+        self._calibration_buffer: deque[tuple[float, float | None, bool]] = deque(maxlen=_CALIBRATION_BUFFER_SIZE)
+        self._bucket_mults: dict[str, float] = {name: 1.0 for name, _, _ in _CALIBRATION_BUCKETS}
+        self._disagreement_mults: dict[str, float] = {name: 1.0 for name, _, _ in _DISAGREEMENT_BUCKETS}
         self._load_calibration_buffer()
 
     def _record_atr(self, atr: float) -> None:
@@ -169,10 +197,28 @@ class SignalEngine:
             if not p.exists():
                 return
             data = _json.loads(p.read_text())
+            # Buffer entries: support both old [prob, won] and new [prob, market_price, won].
             for entry in data.get("buffer", []):
-                if isinstance(entry, list) and len(entry) >= 2:
-                    self._calibration_buffer.append((float(entry[0]), bool(entry[1])))
-            self._adaptive_compression_mult = float(data.get("multiplier", 1.0))
+                if not isinstance(entry, list):
+                    continue
+                if len(entry) >= 3:
+                    mp = float(entry[1]) if entry[1] is not None else None
+                    self._calibration_buffer.append((float(entry[0]), mp, bool(entry[2])))
+                elif len(entry) >= 2:
+                    self._calibration_buffer.append((float(entry[0]), None, bool(entry[1])))
+            mults = data.get("multipliers")
+            if isinstance(mults, dict):
+                for name in self._bucket_mults:
+                    if name in mults:
+                        self._bucket_mults[name] = float(mults[name])
+            elif "multiplier" in data:  # legacy single-value
+                legacy = float(data["multiplier"])
+                self._bucket_mults = {name: legacy for name in self._bucket_mults}
+            dis = data.get("disagreement_multipliers")
+            if isinstance(dis, dict):
+                for name in self._disagreement_mults:
+                    if name in dis:
+                        self._disagreement_mults[name] = float(dis[name])
         except Exception:
             pass  # First run or corrupted file — start fresh
 
@@ -183,37 +229,148 @@ class SignalEngine:
             p = Path(_CALIBRATION_DRIFT_FILE)
             p.parent.mkdir(parents=True, exist_ok=True)
             data = {
-                "buffer": [[round(prob, 4), bool(won)] for prob, won in self._calibration_buffer],
-                "multiplier": round(self._adaptive_compression_mult, 4),
+                "buffer": [
+                    [round(prob, 4), (round(mp, 4) if mp is not None else None), bool(won)]
+                    for prob, mp, won in self._calibration_buffer
+                ],
+                "multipliers": {name: round(m, 4) for name, m in self._bucket_mults.items()},
+                "disagreement_multipliers": {name: round(m, 4) for name, m in self._disagreement_mults.items()},
             }
             p.write_text(_json.dumps(data, indent=2))
         except Exception:
             pass
 
-    def record_resolution(self, predicted_prob: float, won: bool) -> None:
-        """Append a resolved trade and refresh the adaptive compression multiplier."""
+    def record_resolution(self, predicted_prob: float, won: bool,
+                          market_price: float | None = None) -> None:
+        """Append a resolved trade and refresh per-bucket compression multipliers.
+
+        ``market_price`` is the chosen side's market price at entry. When supplied
+        the trade also feeds the disagreement-bucket learning loop; otherwise it
+        only updates confidence buckets (legacy / paper-mode trades without
+        market_price recorded).
+        """
         if not (0.0 < predicted_prob < 1.0):
             return
-        self._calibration_buffer.append((float(predicted_prob), bool(won)))
-        self._adaptive_compression_mult = self._compute_adaptive_compression()
+        mp = float(market_price) if market_price is not None and 0.0 < market_price < 1.0 else None
+        self._calibration_buffer.append((float(predicted_prob), mp, bool(won)))
+        self._bucket_mults = self._compute_bucket_multipliers()
+        self._disagreement_mults = self._compute_disagreement_multipliers()
         self._save_calibration_buffer()
 
-    def _compute_adaptive_compression(self) -> float:
-        """Multiplier in [0.5, 1.0]. Looks at confident trades (prob ≥0.60 or ≤0.40);
-        if predicted vs realized WR drift > 3pp, shrink final probabilities toward 0.5."""
-        if len(self._calibration_buffer) < _CALIBRATION_MIN_SAMPLES:
+    @staticmethod
+    def _bucket_lookup(value: float, table: tuple[tuple[str, float, float], ...]) -> str | None:
+        for name, lo, hi in table:
+            if lo <= value < hi:
+                return name
+        return None
+
+    @staticmethod
+    def _drift_to_multiplier(drift: float) -> float:
+        """3pp drift -> 1.0, 25pp drift -> 0.50, linear in between, floored at 0.5."""
+        if drift <= 0.03:
             return 1.0
-        confident = [(p, won) for p, won in self._calibration_buffer if p >= 0.60 or p <= 0.40]
-        if len(confident) < _CALIBRATION_MIN_SAMPLES // 2:
-            return 1.0
-        mean_pred = sum(p for p, _ in confident) / len(confident)
-        mean_actual = sum(1 for _, won in confident if won) / len(confident)
-        abs_drift = abs(mean_pred - mean_actual)
-        # 3pp drift → 1.0, 25pp drift → 0.50, linear in between.
-        if abs_drift <= 0.03:
-            return 1.0
-        mult = 1.0 - (abs_drift - 0.03) * (0.50 / (0.25 - 0.03))
+        mult = 1.0 - (drift - 0.03) * (0.50 / (0.25 - 0.03))
         return max(0.5, min(1.0, mult))
+
+    def _compute_bucket_multipliers(self) -> dict[str, float]:
+        """Per-confidence-bucket multipliers from rolling buffer."""
+        result = {name: 1.0 for name, _, _ in _CALIBRATION_BUCKETS}
+        if len(self._calibration_buffer) < _CALIBRATION_MIN_SAMPLES:
+            return result
+        for name, lo, hi in _CALIBRATION_BUCKETS:
+            in_bucket = [
+                (p, won) for p, _mp, won in self._calibration_buffer
+                if lo <= max(p, 1.0 - p) < hi
+            ]
+            if len(in_bucket) < _CALIBRATION_BUCKET_MIN_SAMPLES:
+                continue
+            mean_pred = sum(max(p, 1.0 - p) for p, _ in in_bucket) / len(in_bucket)
+            mean_actual = sum(1 for _, won in in_bucket if won) / len(in_bucket)
+            result[name] = self._drift_to_multiplier(abs(mean_pred - mean_actual))
+        return result
+
+    def _compute_disagreement_multipliers(self) -> dict[str, float]:
+        """Per-disagreement-bucket multipliers. Uses only entries with market_price.
+
+        Disagreement = |model_prob_for_chosen_side - market_price|. When the
+        strong-disagreement bucket has high drift it means the bot loses badly
+        when the market disagrees with it — exactly the +54% edge failure mode.
+        """
+        result = {name: 1.0 for name, _, _ in _DISAGREEMENT_BUCKETS}
+        with_mp = [(p, mp, won) for p, mp, won in self._calibration_buffer if mp is not None]
+        if len(with_mp) < _CALIBRATION_MIN_SAMPLES:
+            return result
+        for name, lo, hi in _DISAGREEMENT_BUCKETS:
+            in_bucket = [
+                (p, won) for p, mp, won in with_mp
+                if lo <= abs(p - mp) < hi
+            ]
+            if len(in_bucket) < _CALIBRATION_BUCKET_MIN_SAMPLES:
+                continue
+            mean_pred = sum(p for p, _ in in_bucket) / len(in_bucket)
+            mean_actual = sum(1 for _, won in in_bucket if won) / len(in_bucket)
+            result[name] = self._drift_to_multiplier(abs(mean_pred - mean_actual))
+        return result
+
+    def _adaptive_compression_for(self, prob: float, market_price: float | None = None) -> float:
+        """Multiplier for the prediction. Returns the more-conservative (smaller) of
+        the confidence-bucket and disagreement-bucket multipliers — either signal
+        can trigger compression independently. ``market_price`` is the BUY-Up price
+        (disagreement is symmetric across sides for binaries)."""
+        conf_bucket = self._bucket_lookup(max(prob, 1.0 - prob), _CALIBRATION_BUCKETS)
+        conf_mult = self._bucket_mults.get(conf_bucket, 1.0) if conf_bucket else 1.0
+        if market_price is None or not (0.0 < market_price < 1.0):
+            return conf_mult
+        # Disagreement uses the side whose probability matches the market price
+        # interpretation (both refer to "Up wins"), so |prob_up - market_price_up|
+        # naturally captures how far model and market diverge.
+        dis_bucket = self._bucket_lookup(abs(prob - market_price), _DISAGREEMENT_BUCKETS)
+        dis_mult = self._disagreement_mults.get(dis_bucket, 1.0) if dis_bucket else 1.0
+        return min(conf_mult, dis_mult)
+
+    def get_adaptive_calibration_state(self) -> dict[str, dict]:
+        """Per-bucket {n, mean_pred, mean_actual, drift, multiplier} for pipeline
+        visibility — both confidence and disagreement loops.
+        """
+        out: dict[str, dict] = {"confidence": {}, "disagreement": {}}
+        for name, lo, hi in _CALIBRATION_BUCKETS:
+            in_bucket = [
+                (p, won) for p, _mp, won in self._calibration_buffer
+                if lo <= max(p, 1.0 - p) < hi
+            ]
+            n = len(in_bucket)
+            if n == 0:
+                out["confidence"][name] = {"n": 0, "multiplier": self._bucket_mults.get(name, 1.0)}
+                continue
+            mean_pred = sum(max(p, 1.0 - p) for p, _ in in_bucket) / n
+            mean_actual = sum(1 for _, won in in_bucket if won) / n
+            out["confidence"][name] = {
+                "n": n,
+                "mean_predicted": round(mean_pred, 4),
+                "mean_actual": round(mean_actual, 4),
+                "drift": round(abs(mean_pred - mean_actual), 4),
+                "multiplier": round(self._bucket_mults.get(name, 1.0), 4),
+            }
+        with_mp = [(p, mp, won) for p, mp, won in self._calibration_buffer if mp is not None]
+        for name, lo, hi in _DISAGREEMENT_BUCKETS:
+            in_bucket = [
+                (p, won) for p, mp, won in with_mp
+                if lo <= abs(p - mp) < hi
+            ]
+            n = len(in_bucket)
+            if n == 0:
+                out["disagreement"][name] = {"n": 0, "multiplier": self._disagreement_mults.get(name, 1.0)}
+                continue
+            mean_pred = sum(p for p, _ in in_bucket) / n
+            mean_actual = sum(1 for _, won in in_bucket if won) / n
+            out["disagreement"][name] = {
+                "n": n,
+                "mean_predicted": round(mean_pred, 4),
+                "mean_actual": round(mean_actual, 4),
+                "drift": round(abs(mean_pred - mean_actual), 4),
+                "multiplier": round(self._disagreement_mults.get(name, 1.0), 4),
+            }
+        return out
 
     def effective_momentum_weight(self, regime_autocorr: float) -> float:
         """Trending: flip sign and amplify. Reverting: keep fade and amplify. Else: dampen."""
@@ -256,7 +413,8 @@ class SignalEngine:
                             spot_flow_signal: float = 0.0,
                             prev_resolution_margin: float = 0.0,
                             iv_ratio: float = 1.0,
-                            liquidation_pressure: float = 0.0) -> float:
+                            liquidation_pressure: float = 0.0,
+                            market_price_up: float | None = None) -> float:
         """P(Up) at expiry — Student-t CDF + logit-space layer adjustments + Platt."""
         if atr <= 0 or seconds_remaining <= 0:
             return 0.5
@@ -275,8 +433,12 @@ class SignalEngine:
         t_scale = math.sqrt(self.student_t_df / (self.student_t_df - 2)) if self.student_t_df > 2 else 1.0
         prob_up = float(student_t.cdf(z * t_scale, df=self.student_t_df))
 
-        # Static + adaptive compression toward 0.5
-        effective_compression = self.probability_compression * self._adaptive_compression_mult
+        # Static + bucketed adaptive compression toward 0.5. Adaptive multiplier is
+        # bucket-specific (confidence) AND market-aware (disagreement) — either
+        # signal can trigger compression. moderate-confidence + market-agrees
+        # predictions stay untouched; extreme-confidence OR market-strongly-disagrees
+        # gets compressed.
+        effective_compression = self.probability_compression * self._adaptive_compression_for(prob_up, market_price_up)
         if effective_compression < 1.0:
             prob_up = 0.5 + (prob_up - 0.5) * effective_compression
 
@@ -367,7 +529,8 @@ class SignalEngine:
                                            spot_flow_signal=spot_flow_signal,
                                            prev_resolution_margin=prev_resolution_margin,
                                            iv_ratio=iv_ratio,
-                                           liquidation_pressure=liquidation_pressure)
+                                           liquidation_pressure=liquidation_pressure,
+                                           market_price_up=market_price_up if 0.0 < market_price_up < 1.0 else None)
         prob_down = 1.0 - prob_up
         best_prob = max(prob_up, prob_down)
         if best_prob < self.min_model_probability:
@@ -414,6 +577,9 @@ class SignalEngine:
         Returns (action, model_prob, holding_edge, reason).
         """
         atr = indicators.get("atr", {}).get("atr", 0)
+        # Derive market_price_up from market_price_for_side so the disagreement
+        # bucket sees the same divergence regardless of side.
+        market_price_up = market_price_for_side if side == "Up" else (1.0 - market_price_for_side)
         prob_up = self.compute_probability(btc_price, strike_price,
                                            seconds_remaining, atr, indicators,
                                            closes=closes,
@@ -421,7 +587,8 @@ class SignalEngine:
                                            spot_flow_signal=spot_flow_signal,
                                            prev_resolution_margin=prev_resolution_margin,
                                            iv_ratio=iv_ratio,
-                                           liquidation_pressure=liquidation_pressure)
+                                           liquidation_pressure=liquidation_pressure,
+                                           market_price_up=market_price_up if 0.0 < market_price_up < 1.0 else None)
         model_prob = prob_up if side == "Up" else 1.0 - prob_up
         holding_edge = model_prob - market_price_for_side
 

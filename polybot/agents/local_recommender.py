@@ -119,6 +119,7 @@ class LocalRecommender:
         # We stop accepting proposals when we have 5 OR have covered ≥3 families
         # and exhausted the high-conviction rules.
         self._rule_calibration_drift()       # calibration family
+        self._rule_scalp_overconfidence()    # calibration / volatility_core (counterfactuals)
         self._rule_edge_quartile_overconf()  # calibration / volatility_core
         self._rule_flow_stack()              # flow_stack
         self._rule_momentum_regime()         # momentum_regime
@@ -132,6 +133,8 @@ class LocalRecommender:
         self._manual_rule_max_edge()
         self._manual_rule_adverse_selection()
         self._manual_rule_late_window_prob()
+        self._manual_rule_entry_phase()
+        self._manual_rule_flip()
 
         # Final output: dedupe by param (highest predicted Δ wins per param),
         # cap at 5, attach key_findings.
@@ -333,31 +336,139 @@ class LocalRecommender:
     # -------- rules: one method per parameter family / signal -------- #
 
     def _rule_calibration_drift(self) -> None:
-        """probability_compression — fix overconfidence at extremes."""
+        """Tune probability_compression based on per-bucket adaptive drift first
+        (live signal from the rolling buffer), falling back to Q4 edge realization
+        from the bias detector when bucket data isn't populated yet.
+
+        Logic: only propose static-compression changes when the moderate bucket is
+        ALSO drifting. If only the extreme bucket is off, the runtime bucket
+        multiplier already handles it — touching static compression would
+        unnecessarily dampen moderate predictions that are calibrated.
+        """
+        cal_state = self.analysis.get("adaptive_calibration_buckets", {})
+        # New schema: {"confidence": {...}, "disagreement": {...}}.
+        # Backward compat: if it's a flat dict (old format), treat as confidence-only.
+        if "confidence" in cal_state or "disagreement" in cal_state:
+            buckets = cal_state.get("confidence", {})
+        else:
+            buckets = cal_state
+        moderate = buckets.get("moderate", {})
+        extreme = buckets.get("extreme", {})
+        cur = float(self.cfg.get("probability_compression", 1.0))
+
+        # Primary path: per-bucket drift on live data.
+        if moderate.get("n", 0) >= 30:
+            mod_drift = float(moderate.get("drift", 0))
+            ext_drift = float(extreme.get("drift", 0)) if extreme.get("n", 0) >= 15 else None
+            # Moderate is calibrated AND extreme has drift handled by runtime: leave alone.
+            if mod_drift <= 0.05:
+                if ext_drift is not None and ext_drift > 0.10:
+                    self.findings.append(
+                        f"Extreme bucket drift {ext_drift:.0%} — handled by runtime bucket multiplier; "
+                        f"moderate is calibrated ({mod_drift:.0%}), no static compression change"
+                    )
+                return
+            # Moderate IS drifting → static compression is the right tool.
+            ok, why = self._direction_ok("probability_compression", "down")
+            if not ok:
+                self.findings.append(f"probability_compression: skip ({why})")
+                return
+            new_val = max(0.55, cur - 0.10)
+            if self._propose(
+                "probability_compression", new_val,
+                f"moderate-bucket drift {mod_drift:.0%} (extreme {ext_drift if ext_drift is not None else 'n/a'}) "
+                f"— model overconfident across the prediction range, compress globally",
+                predicted_delta=0.022,
+                ci=(-0.005, 0.045),
+            ):
+                self.findings.append(f"moderate drift {mod_drift:.0%} → probability_compression {cur}→{new_val:.2f}")
+            return
+
+        # Fallback path: Q4 edge realization from the bias detector.
         er_q = self.analysis.get("edge_realization_quartiles", [])
         if not er_q or len(er_q) < 4:
             return
         q4 = er_q[3]
-        if q4 >= 0.85:  # well-calibrated; nothing to fix
+        if q4 >= 0.85:
             return
         if self._is_improving("Q4"):
             self.findings.append(f"Q4 edge realization {q4:.0%} but IMPROVING — leaving probability_compression alone")
             return
-        # Q4 < 0.85 means highest-edge entries underrealize. Compress probabilities.
-        cur = float(self.cfg.get("probability_compression", 1.0))
         ok, why = self._direction_ok("probability_compression", "down")
         if not ok:
             self.findings.append(f"probability_compression: skip ({why})")
             return
         new_val = max(0.55, cur - 0.10)
-        if not self._propose(
+        if self._propose(
             "probability_compression", new_val,
-            f"Q4 edge realization {q4:.0%} — model overconfident on highest-edge entries; compress toward 0.5",
+            f"Q4 edge realization {q4:.0%} — model overconfident on highest-edge entries",
             predicted_delta=0.020,
             ci=(-0.005, 0.045),
         ):
+            self.findings.append(f"Q4 realization {q4:.0%} → probability_compression {cur}→{new_val:.2f}")
+
+    def _rule_scalp_overconfidence(self) -> None:
+        """Map counterfactual scalp/hold outcomes to backtestable proposals.
+
+        Closes the loop: scalp_accuracy is collected by counterfactual_tracker
+        and surfaced in the bias detector, but `exit_edge_threshold` is manual-
+        only. Translate the finding into proxy params the pipeline CAN tune:
+
+          net_exit_direction == "scalp_early" (holds beat scalps): the model is
+            confident at entry but its conviction decays — make L1 sharper so
+            the initial signal is stronger and holds reach resolution. Lower
+            atr_sigma_ratio (sharper sigma) and/or raise logit_scale.
+          net_exit_direction == "hold_long" (scalps beat holds): the model is
+            overconfident at entry — positions look good then decay. Raise
+            probability_compression to dampen entry-side overconfidence.
+        """
+        cf = self.analysis.get("counterfactual_analysis", {})
+        n_scalps = int(cf.get("total_scalps_tracked", 0))
+        if n_scalps < 100:
             return
-        self.findings.append(f"Q4 realization {q4:.0%} — proposing probability_compression {cur}→{new_val:.2f}")
+        scalp_acc = float(cf.get("scalp_accuracy", 0))
+        net_dir = cf.get("net_exit_direction", "calibrated")
+
+        # Only act when scalp accuracy is meaningfully poor (below noise floor 2x).
+        # noise floor at n=100 is ~0.05 (1σ); 2σ = ~0.10 from 0.5.
+        if scalp_acc >= 0.50:
+            return
+
+        if net_dir == "scalp_early":
+            # Holds beat scalps → entry signal is right, it's the scalping that's wrong.
+            # The pipeline can sharpen L1 to make holds last longer.
+            cur = float(self.cfg.get("atr_sigma_ratio", 1.4))
+            ok, why = self._direction_ok("atr_sigma_ratio", "down")
+            if ok:
+                new_val = max(1.2, cur - 0.10)
+                if self._propose(
+                    "atr_sigma_ratio", new_val,
+                    f"scalp_accuracy {scalp_acc:.0%} with holds beating scalps over {n_scalps} trades — "
+                    f"sharpen L1 so the entry signal holds longer to resolution",
+                    predicted_delta=0.018,
+                    ci=(-0.008, 0.040),
+                ):
+                    self.findings.append(
+                        f"Holds beat scalps (acc {scalp_acc:.0%}, n={n_scalps}) → "
+                        f"atr_sigma_ratio {cur:.2f}→{new_val:.2f}"
+                    )
+        elif net_dir == "hold_long":
+            # Scalps beat holds → entry overconfidence; positions decay during hold.
+            cur = float(self.cfg.get("probability_compression", 1.0))
+            ok, why = self._direction_ok("probability_compression", "down")
+            if ok:
+                new_val = max(0.55, cur - 0.10)
+                if self._propose(
+                    "probability_compression", new_val,
+                    f"scalp_accuracy {scalp_acc:.0%} with scalps beating holds over {n_scalps} trades — "
+                    f"entry-side overconfidence; compress probabilities globally",
+                    predicted_delta=0.020,
+                    ci=(-0.005, 0.045),
+                ):
+                    self.findings.append(
+                        f"Scalps beat holds (acc {scalp_acc:.0%}, n={n_scalps}) → "
+                        f"probability_compression {cur:.2f}→{new_val:.2f}"
+                    )
 
     def _rule_edge_quartile_overconf(self) -> None:
         """atr_sigma_ratio — widen if Q4 underrealizes AND probability_compression is already maxed-out."""
@@ -681,3 +792,83 @@ class LocalRecommender:
                     confidence="medium",
                 )
                 break
+
+    def _manual_rule_entry_phase(self) -> None:
+        """Map by_entry_phase to manual-only timing levers.
+
+        normal_fraction (Kelly fraction in early/normal phase) and
+        late_max_penalty (Kelly cut for late-window entries) are manual-only —
+        the backtest can't replay phase-specific Kelly sizing on stored gain_pct.
+        """
+        phase = self.analysis.get("by_entry_phase", {})
+        if not phase:
+            return
+        late = phase.get("late", {})
+        normal = phase.get("normal", {})
+        if late.get("n", 0) >= 50 and normal.get("n", 0) >= 50:
+            late_sharpe = float(late.get("sharpe", 0))
+            norm_sharpe = float(normal.get("sharpe", 0))
+            sharpe_gap = norm_sharpe - late_sharpe
+            if sharpe_gap > 2 * self._noise["sharpe_2x"]:
+                cur = float(self.cfg.get("late_max_penalty", 0.60))
+                self._emit_manual(
+                    "late_max_penalty", cur, round(max(0.20, cur - 0.20), 3),
+                    f"Late-phase Sharpe {late_sharpe:+.3f} trails normal {norm_sharpe:+.3f} "
+                    f"by {sharpe_gap:.3f} (>2σ) — cut Kelly harder in late phase",
+                    {"metric": "by_entry_phase.late_vs_normal_sharpe", "value": sharpe_gap,
+                     "n": late.get("n", 0) + normal.get("n", 0),
+                     "source": "by_entry_phase"},
+                    confidence="medium",
+                )
+        early = phase.get("early", {})
+        if early.get("n", 0) >= 50 and normal.get("n", 0) >= 50:
+            early_sharpe = float(early.get("sharpe", 0))
+            norm_sharpe = float(normal.get("sharpe", 0))
+            if (early_sharpe - norm_sharpe) > 2 * self._noise["sharpe_2x"]:
+                cur = float(self.cfg.get("normal_fraction", 0.60))
+                self._emit_manual(
+                    "normal_fraction", cur, round(min(0.85, cur + 0.10), 3),
+                    f"Early-phase Sharpe {early_sharpe:+.3f} > normal {norm_sharpe:+.3f} — "
+                    f"give early entries more Kelly headroom",
+                    {"metric": "by_entry_phase.early_vs_normal_sharpe",
+                     "value": early_sharpe - norm_sharpe,
+                     "n": early.get("n", 0) + normal.get("n", 0),
+                     "source": "by_entry_phase"},
+                    confidence="medium",
+                )
+
+    def _manual_rule_flip(self) -> None:
+        """Flip-trade evaluation. flip_enabled (kill switch) and flip_edge_premium
+        (extra edge for re-entry) are manual-only. If flips Sharpe lags base by
+        a meaningful margin, recommend tightening or disabling."""
+        flip_data = self.analysis.get("flip_analysis", {})
+        if not flip_data:
+            return
+        base = flip_data.get("base", {})
+        flip = flip_data.get("flip", {})
+        if flip.get("n", 0) < 50 or base.get("n", 0) < 50:
+            return
+        flip_sharpe = float(flip.get("sharpe", 0))
+        base_sharpe = float(base.get("sharpe", 0))
+        gap = base_sharpe - flip_sharpe
+        if gap > 2 * self._noise["sharpe_2x"] and flip_sharpe < 0:
+            # Flip is materially worse AND outright losing — recommend disabling
+            self._emit_manual(
+                "flip_enabled", self.cfg.get("flip_enabled", True), False,
+                f"Flip-trade Sharpe {flip_sharpe:+.3f} (n={flip.get('n', 0)}) trails "
+                f"base {base_sharpe:+.3f} by {gap:.3f} and is negative — kill flips",
+                {"metric": "flip_analysis.sharpe_gap", "value": gap,
+                 "n": flip.get("n", 0), "source": "flip_analysis"},
+                confidence="high",
+            )
+        elif gap > 2 * self._noise["sharpe_2x"]:
+            # Flip lags but is still profitable — raise the premium
+            cur = float(self.cfg.get("flip_edge_premium", 0.015))
+            self._emit_manual(
+                "flip_edge_premium", cur, round(min(0.05, cur + 0.01), 4),
+                f"Flip-trade Sharpe {flip_sharpe:+.3f} trails base {base_sharpe:+.3f} "
+                f"by {gap:.3f} — raise the re-entry edge premium",
+                {"metric": "flip_analysis.sharpe_gap", "value": gap,
+                 "n": flip.get("n", 0), "source": "flip_analysis"},
+                confidence="medium",
+            )

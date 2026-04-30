@@ -315,6 +315,16 @@ class AgentScheduler:
             analysis["last_per_change_results"] = self._last_per_change_results
         if hasattr(self, '_last_rerouted_params') and self._last_rerouted_params:
             analysis["last_rerouted_params"] = list(self._last_rerouted_params)
+
+        # Live adaptive-calibration state per confidence bucket. Lets the pipeline
+        # see which buckets are drifting (e.g., extreme bucket at 18pp drift while
+        # moderate is calibrated) so static `probability_compression` proposals
+        # aren't tuned to averages that hide the real problem.
+        if self.signal_engine and hasattr(self.signal_engine, "get_adaptive_calibration_state"):
+            try:
+                analysis["adaptive_calibration_buckets"] = self.signal_engine.get_adaptive_calibration_state()
+            except Exception as e:
+                logger.debug(f"Failed to read adaptive calibration buckets: {e}")
         if hasattr(self, '_baseline_kelly_sharpe'):
             analysis["baseline_kelly_sharpe"] = self._baseline_kelly_sharpe
             # Compute the actual dynamic floor Claude's change must clear:

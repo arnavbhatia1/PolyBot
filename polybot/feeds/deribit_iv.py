@@ -69,7 +69,6 @@ class IVState:
     """
     btc_iv: float | None = None
     updated_at: float = 0.0
-    net_gex: float = 0.0
 
     # Max age before IV is treated as stale and the ratio defaults to 1.0 (no scaling).
     # Two poll intervals plus buffer — covers a single failed poll but flags a sustained
@@ -157,36 +156,6 @@ class DeribitIVFeed:
             logger.debug("DeribitIVFeed: ATM IV = %.4f", iv)
         else:
             logger.warning("DeribitIVFeed: no ATM option found")
-
-        # Compute net gamma exposure from the full options chain
-        from polybot.core.gamma_exposure import compute_net_gex
-        options = []
-        underlying_price = 0.0
-        for s in summaries:
-            name = s.get("instrument_name", "")
-            parts = name.split("-")
-            if len(parts) >= 4:
-                try:
-                    strike = float(parts[2])
-                    opt_type = "call" if parts[3] == "C" else "put"
-                    iv_val = s.get("mark_iv", 0)
-                    oi_val = s.get("open_interest", 0)
-                    underlying = s.get("underlying_price", 0)
-                    if underlying:
-                        underlying_price = float(underlying)
-                    if iv_val and oi_val and underlying:
-                        options.append({
-                            "strike": strike,
-                            "type": opt_type,
-                            "oi": float(oi_val),
-                            "iv": float(iv_val) / 100.0,
-                            "expiry_hours": 24,
-                        })
-                except (ValueError, IndexError):
-                    continue
-        if options and underlying_price > 0:
-            self.state.net_gex = compute_net_gex(options, spot_price=underlying_price)
-            logger.debug("Deribit GEX: %.4f", self.state.net_gex)
 
     @staticmethod
     def _extract_atm_iv(summaries: list[dict]) -> float | None:

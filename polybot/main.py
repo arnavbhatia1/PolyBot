@@ -53,15 +53,10 @@ from polybot.feeds.kraken_feed import KrakenFeed
 from polybot.core.bankroll_strategy import compute_uncertainty_discount, DrawdownVelocityTracker
 from polybot.core.sprt import SPRTAccumulator
 from polybot.core.regime import RegimeDetector
-from polybot.core.alpha_decay import AlphaDecayTracker
 from polybot.core.liquidation import compute_liquidation_pressure
-from polybot.core.gamma_exposure import classify_gex
 from polybot.core.signal_engine import compute_signal_consensus
 from polybot.core.adverse_selection import AdverseSelectionMonitor
-from polybot.core.crowd_bias import CrowdBiasTracker
-from polybot.core.garch_vol import GarchPredictor
 
-import numpy as np
 import re
 _ANSI_RE = re.compile(r'\033\[[0-9;]*m')
 
@@ -143,9 +138,7 @@ def _save_prev_resolution_margin(margin: float) -> None:
         pass
 
 _sprt: SPRTAccumulator | None = None
-_alpha_decay: AlphaDecayTracker | None = None
 _regime_detector: RegimeDetector | None = None
-_garch: GarchPredictor | None = None
 _cvd_normalizer: IndicatorNormalizer | None = None
 _current_window_id: str = ""
 _early_entry_fired: bool = False
@@ -184,8 +177,6 @@ def flush_gate_stats() -> None:
         }, indent=2))
     except Exception:
         pass
-_crowd_bias: CrowdBiasTracker | None = None
-
 _realized_edge_history: list[tuple[float, float]] = []  # (predicted_edge, realized_gain_pct)
 
 # Per-window flip state: tracks flip count and last side
@@ -423,13 +414,16 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
 
     # Feed the adaptive calibration buffer in signal_engine so it can detect drift
     # in real-time and auto-compress probabilities when the model becomes overconfident.
-    # Only record at terminal resolution (not scalp exits — those don't reflect the
-    # model's true prediction since the position closed before window resolved).
+    # Pass the chosen-side market price at entry so the disagreement bucket learns
+    # from cases where model and market diverged. Only record at terminal resolution
+    # (scalp exits don't reflect the model's true prediction — position closed early).
     if signal_engine is not None and exit_reason == "resolution":
         try:
+            entry_price = float(pos.get("entry_price") or 0.0)
             signal_engine.record_resolution(
                 predicted_prob=float(pos["signal_score"]),
                 won=gain_pct > 0,
+                market_price=entry_price if 0.0 < entry_price < 1.0 else None,
             )
         except Exception as e:
             logger.debug(f"Failed to record adaptive calibration: {e}")
@@ -503,13 +497,12 @@ async def _evaluate_signal_and_enter(
 
     in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
 
-    # SPRT + alpha decay: accumulate evidence on new windows (no hard observe block)
-    global _sprt, _alpha_decay, _current_window_id, _early_entry_fired
+    # SPRT: accumulate evidence on new windows (no hard observe block)
+    global _sprt, _current_window_id, _early_entry_fired
     window_id = contract.get("market_id", contract.get("slug", ""))
     if window_id != _current_window_id:
         _current_window_id = window_id
         if _sprt: _sprt.reset()
-        if _alpha_decay: _alpha_decay.reset()
         _early_entry_fired = False
         _last_skip_log.pop(cid, None)  # fresh window — allow skip reasons to log again
 
@@ -562,13 +555,6 @@ async def _evaluate_signal_and_enter(
             bybit_feed.state.open_interest, bybit_feed.state.open_interest_prev,
             bybit_feed.state.price_at_oi, bybit_feed.state.price_at_oi_prev)
 
-    # Gamma exposure regime
-    gex_val = 0.0
-    gex_info = {"regime": "neutral", "trade_bias": 1.0}
-    if deribit_feed and deribit_feed.state.net_gex != 0:
-        gex_val = deribit_feed.state.net_gex
-        gex_info = classify_gex(gex_val)
-
     # Get closes array for regime detection
     closes = binance_feed.buffer.get_closes()
 
@@ -584,12 +570,9 @@ async def _evaluate_signal_and_enter(
         liquidation_pressure=liquidation_val,
     )
 
-    # SPRT/alpha_decay: feed the signal into accumulators (telemetry, not gating)
+    # SPRT: feed the signal into the accumulator (used by SPRT side gate below)
     if _sprt:
         _sprt.update(signal.prob if signal.action != "SKIP" else 0.5)
-    if _alpha_decay:
-        best_prob = max(signal.prob, 1 - signal.prob) if signal.prob != 0.5 else 0.5
-        _alpha_decay.add_observation(time.time(), best_prob)
 
     # Continuous time multiplier: penalizes ATM trades late, barely penalizes high-conviction trades
     timing_cfg = config.get("entry_timing", {})
@@ -614,7 +597,7 @@ async def _evaluate_signal_and_enter(
             f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]  src={price_source}\n"
             f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
             f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  iv {iv_ratio_val:.2f}\n"
-            f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}  cvd_a {cvd_accel_val:+.4f}\n"
+            f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  cvd_a {cvd_accel_val:+.4f}\n"
             f"  {_C.DIM}{signal.reason}{_C.RESET}\n"
             f"{_C.CYAN}{'=' * 69}{_C.RESET}")
 
@@ -749,31 +732,10 @@ async def _evaluate_signal_and_enter(
         dead_zone=signal_engine.consensus_dead_zone,
         consensus_config=signal_engine.consensus_config)
 
-    # GEX: logged for pipeline ablation, NOT applied to sizing
-    gex_bias = gex_info.get("trade_bias", 1.0)
-
-    # Vol ratio: logged for pipeline, NOT applied to sizing (just added, no data)
-    garch_adj = 1.0
-    if _garch and deribit_feed and deribit_feed.state.btc_iv:
-        log_returns = np.diff(np.log(closes)) if closes is not None and len(closes) > 20 else np.array([])
-        garch_adj = _garch.compute_sizing_adjustment(log_returns, deribit_feed.state.btc_iv)
-
-    # Oracle divergence: logged for pipeline, NOT applied to sizing (just added, no data)
-    oracle_divergence = 0.0
-    oracle_discount = 1.0
-    if chainlink_feed:
-        cl_price = chainlink_feed.price if hasattr(chainlink_feed, 'price') else 0
-        if cl_price > 0 and btc_price > 0:
-            oracle_divergence = abs(btc_price - cl_price)
-            atr_val = indicators.get("atr", {}).get("atr", 0)
-            if atr_val > 0 and oracle_divergence > atr_val:
-                divergence_ratio = min(oracle_divergence / atr_val, 3.0)
-                oracle_discount = max(0.3, 1.0 - (divergence_ratio - 1.0) * 0.3)
-
     logger.debug(
         f"  REGIME {regime_state.name if regime_state else 'N/A'} ({regime_state.kelly_mult if regime_state else 1.0:.1f}x)  |  "
         f"SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%})  |  "
-        f"consensus {consensus_mult:.1f}x  |  gex {gex_bias:.1f}x  |  vol {garch_adj:.1f}x  |  oracle {oracle_discount:.1f}x")
+        f"consensus {consensus_mult:.1f}x")
 
     # Phase-based probability override (final phase needs >90%)
     if entry_phase["min_prob_override"] and signal.prob < entry_phase["min_prob_override"]:
@@ -856,62 +818,55 @@ async def _evaluate_signal_and_enter(
 
     snapshot = indicator_engine.get_snapshot(indicators)
     snapshot["trade_context"] = {
+        # Entry-time facts — needed by backtest replay
         "btc_price": btc_price,
         "strike_price": strike,
         "seconds_remaining": contract["seconds_remaining"],
         "market_price_up": price_up,
         "market_price_down": price_down,
-        "model_probability_raw": signal.prob,
         "model_probability": signal.prob,
+        "model_probability_raw": signal.prob,
         "edge": signal.edge,
-        "momentum_score": signal_engine.compute_momentum(indicators),
         "atr": indicators.get("atr", {}).get("atr", 0),
         "size": size,
-        "flow_score": flow_score,
-        "flow_book_imbalance": flow_data.get("book_imbalance", 0),
-        "flow_trade_count": flow_data.get("trade_count", 0),
-        "spot_flow_signal": spot_flow_signal,
         "iv_ratio": iv_ratio_val,
         "prev_resolution_margin": _prev_resolution_margin,
-        "bybit_perp_price": bybit_feed.state.perp_price if bybit_feed and bybit_feed.state else 0,
-        "funding_rate": bybit_feed.state.funding_rate if bybit_feed and bybit_feed.state else 0,
-        "depth_usd_top20": depth_feed.get_depth_usd() if depth_feed else 0,
+        # Composite signals used by the model — pipeline replays L1-L5 from these
+        "flow_score": flow_score,
+        "spot_flow_signal": spot_flow_signal,
+        "liquidation_pressure": liquidation_val,
+        # Regime + L2 inputs (autocorr + direction stored exactly for backtest fidelity)
+        "regime_state": regime_state.name if regime_state else "unknown",
+        "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
+        "regime_direction": round(signal_engine.last_regime_direction, 4),
+        # Time-of-window classification (used by bias_detector time_patterns + flip analysis)
         "entry_phase": entry_phase.get("phase", "unknown"),
         "flip_count": flip_count,
         "is_flip": flip_count > 0,
-        "cvd_120s": trades_feed.accumulator.get_cvd(120) if trades_feed and trades_feed.accumulator else 0,
-        "taker_ratio_60s": trades_feed.accumulator.get_taker_ratio(60) if trades_feed and trades_feed.accumulator else 0,
-        "volume_surge": trades_feed.accumulator.is_volume_surge() if trades_feed and trades_feed.accumulator else False,
-        "liquidation_pressure": liquidation_val,
-        "gex_signal": gex_val,
-        "gex_regime": gex_info.get("regime", "neutral"),
-        "cvd_acceleration": cvd_accel_val,
-        "clob_velocity_up": clob_ws.get_price_velocity(token_up) if clob_ws else 0,
-        "clob_velocity_down": clob_ws.get_price_velocity(token_down) if clob_ws else 0,
-        "coinbase_btc": coinbase_feed.state.price if coinbase_feed and coinbase_feed.state.price > 0 else 0,
-        "regime_state": regime_state.name if regime_state else "unknown",
-        "regime_kelly_mult": regime_state.kelly_mult if regime_state else 1.0,
-        "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
-        "regime_direction": round(signal_engine.last_regime_direction, 4),
+        # Order-book depth used for the entry gate; useful for retrospective analysis
+        "depth_usd_top20": depth_feed.get_depth_usd() if depth_feed else 0,
+        # SPRT diagnostic state (consumed by pipeline_analytics.aggregate_sprt_evidence)
         "sprt_confidence": _sprt.get_confidence() if _sprt else 0,
         "sprt_status": _sprt.get_status() if _sprt else "N/A",
-        "signal_consensus": consensus_mult,
+        # Adverse-selection rolling state (gate diagnostic)
         "adverse_selection_30s": _adverse_monitor.get_adverse_rate(30.0) if _adverse_monitor else 0.5,
-        "alpha_decay_rate": _alpha_decay.get_decay_rate() if _alpha_decay else 0,
-        "garch_vol_ratio": _garch.compute_vol_ratio(np.diff(np.log(closes)) if closes is not None and len(closes) > 20 else np.array([]), deribit_feed.state.btc_iv if deribit_feed and deribit_feed.state.btc_iv else 0) if _garch else 1.0,
-        "crowd_bias": _crowd_bias.compute_composite(price_up, price_down, strike) if _crowd_bias else {},
-        "oracle_divergence": oracle_divergence,
-        "edge_realization_ratio": _get_edge_realization_ratio(),
     }
     snapshot_str = json.dumps(snapshot)
 
-    # Pre-submit edge re-check: use fresh_ask already fetched above (zero extra round trip).
+    # Pre-submit edge re-check: use fresh_ask already fetched above (zero extra
+    # round trip). Symmetric upper bound mirrors the entry-time max_edge gate —
+    # if the book just moved enough to balloon edge past max_edge between signal
+    # and submit, the ask is stale and the order would fill at a worse price.
     if fresh_ask > 0 and fresh_ask != price:
         fresh_edge = signal.prob - fresh_ask
-        if fresh_edge < signal_engine.min_edge:
+        max_edge_live = config.get("signal", {}).get("max_edge", 0.20)
+        if fresh_edge < signal_engine.min_edge or fresh_edge > max_edge_live:
             _record_skip("pre_submit_edge_drift")
             _ghost("pre_submit_edge_drift", signal, snapshot)
-            _log_skip_once(cid, f"drift_{fresh_ask:.3f}", f"SKIP: pre-submit edge {fresh_edge:+.1%} < min {signal_engine.min_edge:.0%} (ask drifted {price:.3f} -> {fresh_ask:.3f})")
+            _log_skip_once(cid, f"drift_{fresh_ask:.3f}",
+                           f"SKIP: pre-submit edge {fresh_edge:+.1%} outside "
+                           f"[{signal_engine.min_edge:.0%}, {max_edge_live:.0%}] "
+                           f"(ask drifted {price:.3f} -> {fresh_ask:.3f})")
             return None, last_eval_log_window
 
     result = await trader.open_trade(
@@ -1527,10 +1482,6 @@ async def _resolve_expired_position(
             _prev_resolution_margin = meta["final_price"] - meta["price_to_beat"]
             _save_prev_resolution_margin(_prev_resolution_margin)
             flush_gate_stats()  # keep on-disk stats current for pipeline reads
-        # Record winning side for crowd bias recency tracking
-        if _crowd_bias:
-            winning_side = pos["side"] if gain_pct > 0 else ("Down" if pos["side"] == "Up" else "Up")
-            _crowd_bias.record_resolution(winning_side)
     return True, day_wins, day_losses, day_fees, traded_market_id
 
 
@@ -2429,8 +2380,8 @@ async def main() -> None:
     _gate_skip_counts = {}
     flush_gate_stats()  # write empty baseline so pipeline always has a fresh file to read
 
-    # SPRT, regime detector, alpha decay — module-level state for trading loop
-    global _sprt, _alpha_decay, _regime_detector
+    # SPRT + regime detector — module-level state for trading loop
+    global _sprt, _regime_detector
     _sprt = SPRTAccumulator(
         alpha=config.get("sprt", {}).get("alpha", 0.05),
         beta=config.get("sprt", {}).get("beta", 0.10),
@@ -2443,19 +2394,12 @@ async def main() -> None:
         vol_low_pct=regime_cfg.get("vol_low_percentile", 25),
         autocorr_threshold=regime_cfg.get("autocorr_threshold", 0.25),
     )
-    _alpha_decay = AlphaDecayTracker()
 
     global _adverse_monitor
     _adverse_monitor = AdverseSelectionMonitor()
 
     global _drawdown_tracker
     _drawdown_tracker = DrawdownVelocityTracker()
-
-    global _crowd_bias
-    _crowd_bias = CrowdBiasTracker()
-
-    global _garch
-    _garch = GarchPredictor()
 
     global _cvd_normalizer
     _cvd_normalizer = IndicatorNormalizer(alpha=0.02, warmup=50)

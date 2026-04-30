@@ -701,6 +701,47 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
             )
         sections.append("\n".join(lines))
 
+    # Entry-phase breakdown — DIAGNOSTIC for manual-only timing levers
+    # (normal_fraction, late_max_penalty, final_min_probability).
+    # No backtestable proxy: the backtest can't simulate different time-of-window
+    # behavior on stored gain_pct, so anything actionable here goes to
+    # manual_observations, never to `changes`.
+    phase_data = analysis.get("by_entry_phase", {})
+    if phase_data:
+        lines = ["## Performance by Entry Phase (DIAGNOSTIC — manual-only triggers)",
+                 "Maps to manual levers: normal_fraction (early/normal Kelly envelope), "
+                 "late_max_penalty (late-window Kelly cut), final_min_probability (last-30s gate). "
+                 "DO NOT propose these in `changes` — emit manual_observations only."]
+        for phase, stats in sorted(phase_data.items(), key=lambda x: -x[1].get("n", 0)):
+            n = stats.get("n", 0)
+            if n == 0:
+                continue
+            lines.append(
+                f"- **{phase}**: n={n} WR={stats.get('win_rate', 0):.0%} "
+                f"Sharpe={stats.get('sharpe', 0):+.3f} avg_gain={stats.get('avg_gain_pct', 0):.4f}"
+            )
+        sections.append("\n".join(lines))
+
+    # Flip-trade breakdown — DIAGNOSTIC for manual-only flip_enabled / flip_edge_premium.
+    flip_data = analysis.get("flip_analysis", {})
+    if flip_data:
+        base = flip_data.get("base", {})
+        flip = flip_data.get("flip", {})
+        if base.get("n", 0) > 0 or flip.get("n", 0) > 0:
+            lines = ["## Flip-Trade Analysis (DIAGNOSTIC — manual-only triggers)",
+                     "Maps to manual levers: flip_enabled (boolean kill switch), flip_edge_premium "
+                     "(extra edge required for re-entry). DO NOT propose in `changes`."]
+            for label, stats in [("base (no flip)", base), ("flip", flip)]:
+                n = stats.get("n", 0)
+                if n == 0:
+                    lines.append(f"- {label}: n=0")
+                    continue
+                lines.append(
+                    f"- {label}: n={n} WR={stats.get('win_rate', 0):.0%} "
+                    f"Sharpe={stats.get('sharpe', 0):+.3f} avg_gain={stats.get('avg_gain_pct', 0):.4f}"
+                )
+            sections.append("\n".join(lines))
+
     # Edge realization quartiles (does larger predicted edge actually realize?)
     er_q = analysis.get("edge_realization_quartiles", [])
     if er_q:
@@ -709,6 +750,50 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
                  "(ratio = realized_gain / predicted_edge — 1.0 = perfect calibration)"]
         for label, ratio in zip(labels, er_q):
             lines.append(f"- {label}: {ratio:.2f}")
+        sections.append("\n".join(lines))
+
+    # Adaptive calibration: live state from the rolling 100-trade buffer.
+    # TWO orthogonal learning loops, each producing its own multiplier:
+    #   confidence  — drift in the model's prediction range (moderate/high/extreme)
+    #   disagreement — drift conditional on |model - market| (agree/medium/strong)
+    # Runtime applies min(conf_mult, disagree_mult) to each new prediction.
+    # If only the strong-disagreement bucket has drift, runtime already handles
+    # the +50% edge problem — DON'T propose static probability_compression to
+    # "fix" something the runtime already compresses.
+    cal_state = analysis.get("adaptive_calibration_buckets", {})
+    if cal_state:
+        lines = ["## Adaptive Calibration State (live, last 100 trades)",
+                 "Drift > 5pp at n>=15 means that bucket is miscalibrated. "
+                 "Runtime applies the more conservative of confidence and disagreement multipliers."]
+
+        def _render_table(title: str, ranges: list[tuple[str, str]], data: dict) -> list[str]:
+            out = [f"\n### {title}"]
+            header = f"{'Bucket':<10} {'Range':<12} {'N':>4} {'Predicted':>10} {'Actual':>8} {'Drift':>7} {'Mult':>6}"
+            out.append(header)
+            out.append("-" * len(header))
+            for name, range_str in ranges:
+                b = data.get(name, {})
+                n = b.get("n", 0)
+                if n == 0:
+                    out.append(f"{name:<10} {range_str:<12} {0:>4} {'—':>10} {'—':>8} {'—':>7} {b.get('multiplier', 1.0):>6.2f}")
+                    continue
+                out.append(
+                    f"{name:<10} {range_str:<12} {n:>4} "
+                    f"{b.get('mean_predicted', 0):>10.3f} {b.get('mean_actual', 0):>8.3f} "
+                    f"{b.get('drift', 0):>7.3f} {b.get('multiplier', 1.0):>6.2f}"
+                )
+            return out
+
+        lines.extend(_render_table(
+            "Confidence buckets (max(p, 1-p))",
+            [("moderate", "0.58-0.70"), ("high", "0.70-0.85"), ("extreme", "0.85-1.00")],
+            cal_state.get("confidence", {}),
+        ))
+        lines.extend(_render_table(
+            "Disagreement buckets (|model - market|)",
+            [("agree", "0.00-0.10"), ("medium", "0.10-0.25"), ("strong", "0.25+")],
+            cal_state.get("disagreement", {}),
+        ))
         sections.append("\n".join(lines))
 
     # Time-weighted stats (recent trades matter more)
@@ -832,6 +917,21 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
     trends_str = analysis.get("trends", "")
     if trends_str:
         sections.append(trends_str)
+
+    # Current-regime snapshot (most recent 100 trades — detects regime shifts that
+    # the train-split sample wouldn't reflect). If recent WR / Sharpe / mean_gain
+    # diverges from the overall stats above, the market may have changed and
+    # historical edge has decayed.
+    cur_reg = analysis.get("current_regime", {})
+    if cur_reg and cur_reg.get("n_trades", 0) >= 30:
+        sections.append(
+            f"## Current Regime (last {cur_reg.get('n_trades')} trades — for regime-shift detection)\n"
+            f"WR: {cur_reg.get('win_rate', 0):.1%}  |  "
+            f"Total PnL: ${cur_reg.get('total_pnl', 0):+.2f}  |  "
+            f"Mean gain_pct: {cur_reg.get('mean_gain_pct', 0):+.4f}\n"
+            f"Compare to overall stats above — material divergence means "
+            f"the market changed, historical edge may have decayed."
+        )
 
     # SPRT aggregate evidence — diagnostic of recent SIGNAL AGGRESSIVENESS only.
     # Does NOT measure win rate or entry quality. See behavioral rule #1.
