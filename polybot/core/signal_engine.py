@@ -193,6 +193,7 @@ class SignalEngine:
         self._atr_history: deque[float] = deque(maxlen=_ATR_HISTORY_SIZE)
         self._atr_long_term: deque[float] = deque(maxlen=_ATR_LONG_TERM_SIZE)
         self.last_regime_autocorr: float = 0.0  # actual 1-lag autocorr used in last compute_probability call
+        self.last_regime_direction: float = 0.0  # sign of last 1-min return used by L2 (+1 / -1 / 0)
         # Adaptive calibration: rolling buffer of (predicted_prob, won_bool) pairs.
         # Loaded from disk at startup so adaptive state survives restarts.
         self._calibration_buffer: deque[tuple[float, bool]] = deque(maxlen=_CALIBRATION_BUFFER_SIZE)
@@ -425,6 +426,7 @@ class SignalEngine:
             direction = 1.0 if last_return > 0 else (-1.0 if last_return < 0 else 0.0)
         else:
             direction = 0.0
+        self.last_regime_direction = direction  # expose for snapshot storage
         logit_p += regime * direction * logit_regime_w
 
         # Layer 3 — Order flow (Polymarket CLOB)

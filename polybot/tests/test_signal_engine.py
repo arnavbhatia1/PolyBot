@@ -17,7 +17,12 @@ def _make_indicators(atr_value=30.0, rsi_score=0.0, macd_score=0.0,
 
 @pytest.fixture
 def engine():
-    return SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08)
+    # Reset adaptive calibration state so tests are deterministic regardless of
+    # whatever's currently persisted in polybot/memory/adaptive_calibration.json.
+    eng = SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08)
+    eng._calibration_buffer.clear()
+    eng._adaptive_compression_mult = 1.0
+    return eng
 
 def test_buys_up_when_btc_above_strike(engine):
     """BTC $100 above strike with 3 min left, market at 55% — model finds edge."""

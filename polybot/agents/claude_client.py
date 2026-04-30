@@ -118,7 +118,7 @@ You are the Chief Quantitative Strategist for PolyBot, an automated BTC binary o
 - probability_compression: 0.5 to 1.0. Shrinks final probability toward 0.5 after CDF. 1.0 = no compression. Use 0.7-0.85 if Q4 edge realization is poor (model overconfident at extremes).
 - liquidation_weight: 0.01 to 0.10. L3e — Bybit OI drop signals liquidation cascades. Raise if large OI drops precede your wins.
 - prev_margin_weight: 0.01 to 0.05. L5 — previous window momentum carry. Raise if consecutive windows trend together.
-- min_atr: 5.0 to 15.0. Floor on ATR (runtime: max(min_atr, 0.3 × rolling_20)). Raise in calm markets to avoid overtrading low-volatility windows.
+- min_atr: 4.0 to 25.0. Floor on ATR (runtime: max(min_atr, 0.3 × rolling_20)). Raise in calm markets to avoid overtrading low-volatility windows. Lower if you want to trade thinner regimes where realized vol is genuinely low.
 - spot_flow_weight: 0.01 to 0.15. L3b — Binance CVD + taker ratio. Raise if CVD is predictive.
 
 ## Parameters NOT In Your Toolkit
@@ -168,12 +168,7 @@ Combined adoption backtests run automatically — if they show <70% of sum-indiv
 5. Do NOT propose any parameter listed in the "Parameters NOT In Your Toolkit" section. The pipeline will silently drop them and the slot is wasted.
 6. DIVERSIFY your proposals — cover at least 3 different parameter families per cycle. If a parameter showed NEGATIVE delta last cycle, do NOT propose it in the same direction again — try the opposite direction or a different parameter entirely.
 7. HIT THE ADOPTION FLOOR. Your change must clear the `adoption_dynamic_floor` shown in the Adoption Target section, not just be positive. That floor scales with backtest noise — at low N it's ~0.02-0.04 in Sharpe units. A 0.92→0.90 tweak on probability_compression is too small; try 0.92→0.85 or combine with a second param that moves the same direction. Small changes die to noise; decisive moves adopt.
-8. DIRECTION RULES based on what works in this market:
-   - atr_sigma_ratio: if raising it showed negative delta, DO NOT raise it further. Try lowering it instead, or skip it entirely.
-   - logit_scale: test HIGHER values (4.5, 5.0, 5.5) — higher logit_scale amplifies good signals more. Lowering it weakens signals and typically hurts.
-   - flow_weight: test HIGHER (0.06, 0.08, 0.10) — L3 order flow has the strongest documented correlation with outcomes.
-   - spot_flow_weight: test HIGHER (0.10, 0.12, 0.15) — CVD is predictive and 6 prior tests at 0.10 max all showed positive backtest delta; the cap was raised to 0.15 specifically to give you room here.
-   - student_t_df: test LOWER (3, 4) — fatter tails find more edge on extreme positions.
+8. DIRECTION: read directions exclusively from the "Empirical Parameter Direction Table" section in your context. That table is built from the live `pipeline_run_log.json` — it shows, for every (param, direction), how many tests have run, the average backtest delta, and the realized 7d live delta after adoption. There are no hardcoded direction priors anywhere else; if the table marks a direction "DECAYS" or shows consistently negative backtest delta, do not test it. Directions with fewer than 3 tests have no evidence — treat them as priors, not facts, and either explore them or skip the param. If the table is empty (early cycles) you may pick a direction from first principles, but flag confidence "low" and propose modest magnitudes.
 
 ## Manual-Lever Observations (separate output channel — operator-only)
 
@@ -396,7 +391,7 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         "momentum_weight":             (-0.10,  0.10,  float),
         "student_t_df":                 (3,     8,     int),
         "kelly_fraction":               (0.05,  0.25,  float),
-        "min_atr":                      (5.0,   15.0,  float),
+        "min_atr":                      (4.0,   25.0,  float),
         # Entry gates — pipeline-tunable now that ghosts are in the backtest sample.
         # Ranges are conservative; Claude should move them in small steps.
         "min_edge":                     (0.02,  0.10,  float),
@@ -634,12 +629,27 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
                 f"Sharpe ratio: {overall.get('sharpe', 0):.3f}"
             )
 
-        # Statistical noise floors — findings must exceed 2× noise to be actionable
+        # Statistical noise floors — findings must exceed 2× noise to be actionable.
+        # Sharpe noise uses the ACTUAL baseline Sharpe (when available) rather than
+        # an S=0.5 placeholder, so the figure shown to Claude matches the JK_SE the
+        # adoption gate actually computes.
         n = overall.get("total_trades", 0)
         if n >= 10:
             import math as _math
+            ana = context.get("analysis", {})
+            actual_baseline = ana.get("baseline_kelly_sharpe")
+            n_for_sharpe = ana.get("baseline_n_trades") or n
             wr_noise = round(_math.sqrt(0.25 / max(n, 1)), 3)   # ±1σ at 50% WR
-            sharpe_noise = round(_math.sqrt((1.0 + 0.5 * 0.25) / max(n, 1)), 3)  # JK SE at S=0.5
+            if actual_baseline is not None and n_for_sharpe:
+                # Same JK SE formula the gate uses (autocorr inflation is added at runtime)
+                sharpe_noise = round(
+                    _math.sqrt((1.0 + 0.5 * float(actual_baseline) ** 2) / max(int(n_for_sharpe), 1)),
+                    3,
+                )
+                sharpe_basis = f"JK SE at baseline Sharpe={actual_baseline:.3f}, N={n_for_sharpe}"
+            else:
+                sharpe_noise = round(_math.sqrt((1.0 + 0.5 * 0.25) / max(n, 1)), 3)
+                sharpe_basis = "JK SE at placeholder S=0.5 (baseline not yet computed)"
             per_ind_n = max(n // 5, 1)  # ~N/5 per indicator on average
             sig_noise = round(_math.sqrt(0.25 / per_ind_n), 3)
             q_noise = round(_math.sqrt(0.25 / max(n // 4, 1)), 3)
@@ -647,7 +657,7 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
                 f"## Statistical Noise Reference (at N={n} trades)\n"
                 f"A finding must exceed 2× noise to be actionable — below that it's sampling variation.\n"
                 f"- Win rate noise: ±{wr_noise:.1%} (1σ) → actionable only if difference > ±{2*wr_noise:.1%}\n"
-                f"- Sharpe noise: ±{sharpe_noise:.3f} → actionable only if Sharpe delta > {2*sharpe_noise:.3f}\n"
+                f"- Sharpe noise: ±{sharpe_noise:.3f} ({sharpe_basis}) → actionable only if Sharpe delta > {2*sharpe_noise:.3f}\n"
                 f"- Per-signal accuracy noise (~{per_ind_n} samples/indicator): ±{sig_noise:.1%} → actionable if accuracy > {0.50 + 2*sig_noise:.1%}\n"
                 f"- Edge realization quartile noise (~{n//4} samples/quartile): ±{q_noise:.1%}\n"
                 f"Example: 'flow_weight accuracy 68% at N={per_ind_n}' = "
@@ -1070,6 +1080,19 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
     dir_table = context.get("analysis", {}).get("directional_table", "")
     if dir_table:
         sections.append(dir_table)
+
+    rerouted = context.get("analysis", {}).get("last_rerouted_params", []) or []
+    if rerouted:
+        unique = list(dict.fromkeys(rerouted))  # preserve order, dedupe
+        sections.append(
+            "## Last Cycle Rerouting Notice (READ THIS)\n"
+            f"Last cycle you put these MANUAL-ONLY params into `changes`: {', '.join(unique)}.\n"
+            "They were rerouted to `manual_observations` with confidence=low and the slot in "
+            "`changes` was wasted. These params are not backtestable — they will never adopt via "
+            "`changes`. If the data still warrants a change to one of them, emit it directly in "
+            "`manual_observations` with proper evidence (n>=50, source). Do NOT put them in "
+            "`changes` again."
+        )
 
     sections.append(
         "## Your Task\n"

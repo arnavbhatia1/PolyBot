@@ -36,27 +36,24 @@ def test_record_score(optimizer, scores_path):
 
 def test_should_adopt(optimizer):
     # Significant improvement with enough trades: adopt
-    adopt, reason = optimizer.should_adopt(0.20, 0.50, n_trades=200)
+    adopt, reason, z = optimizer.should_adopt(0.20, 0.50, n_trades=200)
     assert adopt is True
     assert "z=" in reason
+    assert z > 0  # structured z-score is positive for an improving candidate
 
     # Tiny improvement: reject (below floor)
-    adopt, reason = optimizer.should_adopt(0.20, 0.22, n_trades=200)
+    adopt, reason, z = optimizer.should_adopt(0.20, 0.22, n_trades=200)
     assert adopt is False
 
     # Not enough trades: reject
-    adopt, reason = optimizer.should_adopt(0.20, 0.50, n_trades=50)
+    adopt, reason, z = optimizer.should_adopt(0.20, 0.50, n_trades=50)
     assert adopt is False
     assert "need 100" in reason
 
     # Negative candidate: reject
-    adopt, reason = optimizer.should_adopt(0.20, -0.10, n_trades=200)
+    adopt, reason, z = optimizer.should_adopt(0.20, -0.10, n_trades=200)
     assert adopt is False
-
-    # Walk-forward fold fails: reject (need > 2 folds below baseline to trip the rule now)
-    adopt, reason = optimizer.should_adopt(0.20, 0.50, n_trades=200, fold_sharpes=[0.40, 0.10, 0.15, 0.12])
-    assert adopt is False
-    assert "folds below baseline" in reason
+    assert z == 0.0  # short-circuit before z is computed
 
 def test_get_next_version(optimizer):
     assert optimizer.get_next_version() == "weights_v002"

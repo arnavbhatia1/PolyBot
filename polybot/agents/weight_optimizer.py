@@ -78,64 +78,51 @@ class WeightOptimizer:
         (self.weights_dir / f"{version}.json").write_text(json.dumps(weights, indent=2))
 
     def should_adopt(self, current_sharpe: float, candidate_sharpe: float,
-                     n_trades: int = 0, fold_sharpes: list[float] | None = None,
-                     candidate_returns: list[float] | None = None) -> tuple[bool, str]:
+                     n_trades: int = 0,
+                     candidate_returns: list[float] | None = None) -> tuple[bool, str, float]:
         """Noise-scaled adoption check for Sharpe improvement.
 
-        Replaces the prior fixed-floor-plus-z-test gate. At realistic N=150-250 with
-        Sharpe~0.2 the Jobson-Korkie SE is ~0.07-0.09, so z>=1.0 required Δ >= 0.07+
-        — an unachievable bar that rejected all positive-delta candidates. The new
-        gate scales the delta floor by actual noise and relies on fold consistency
-        as the independent confirmation.
+        Returns (adopt, reason, z_score). z is delta / JK_SE — exposed as a
+        structured field so callers don't have to parse it out of `reason`.
 
         Gates (all must pass):
           1. candidate_sharpe > 0
           2. n_trades >= 100
-          3. delta >= max(min_improvement, 0.25 × JK_SE) — scales floor with noise
-          4. At most 1/4 walk-forward folds below baseline (fold-consistency check)
+          3. delta >= max(min_improvement, se_floor_coefficient × JK_SE)
+
+        The walk-forward fold-consistency gate was removed — it had been
+        relaxed to "≥1 of 4 folds improve", which is implied by any positive
+        aggregate delta and so contributed no independent statistical
+        confirmation. Fold Sharpes are still computed and logged as
+        diagnostics in `change_info["fold_sharpes"]`.
         """
         delta = candidate_sharpe - current_sharpe
 
         if candidate_sharpe <= 0:
-            return False, f"candidate Sharpe {candidate_sharpe:.3f} <= 0"
+            return False, f"candidate Sharpe {candidate_sharpe:.3f} <= 0", 0.0
 
         if n_trades < 100:
             return False, (
                 f"only {n_trades} candidate trades (need 100) — your min_model_probability "
                 f"or min_edge may be filtering too aggressively in the backtest"
-            )
+            ), 0.0
 
-        # Jobson-Korkie SE, autocorr-adjusted. Used to scale the floor, not as a hard z-gate.
+        # Jobson-Korkie SE, autocorr-adjusted.
         se = math.sqrt((1.0 + 0.5 * current_sharpe ** 2) / max(n_trades, 1))
         if candidate_returns and len(candidate_returns) >= 3:
             rho = _lag1_autocorr(candidate_returns)
             se *= math.sqrt(1.0 + 2.0 * max(0.0, rho))
 
-        # Noise-scaled floor: 0.25 × SE is ~z=0.25 / p≈0.40 (more-likely-than-not better).
-        # We get the actual statistical rigor from the 3/4 fold-consistency check below.
+        z = delta / se if se > 0 else 0.0
         dynamic_floor = max(self.min_improvement, self.se_floor_coefficient * se)
 
         if delta < dynamic_floor:
             return False, (
                 f"delta {delta:+.4f} below floor {dynamic_floor:.4f} "
                 f"(abs_floor={self.min_improvement:.3f}, SE={se:.3f})"
-            )
+            ), z
 
-        # Walk-forward consistency: require only 1 of 4 folds to improve.
-        # The prior 2/4 gate was a stationarity check on explicitly non-stationary
-        # data — older folds reflect a different market regime, so forcing them
-        # to agree with recent folds blocks correctly-adapted-to-current-regime
-        # edge. The noise-scaled delta floor (0.25 × JK_SE) is the primary guard
-        # against pure noise. This gate now only blocks fully-degenerate changes
-        # where every fold is below baseline (impossible with a positive delta
-        # unless fold weighting differs from global baseline — rare).
-        if fold_sharpes:
-            neg_folds = sum(1 for s in fold_sharpes if s <= current_sharpe)
-            if neg_folds > 3:
-                return False, f"{neg_folds}/{len(fold_sharpes)} folds below baseline (need 1/4)"
-
-        z = delta / se if se > 0 else 0.0
-        return True, f"delta={delta:+.4f} floor={dynamic_floor:.4f} z={z:.2f} n={n_trades}"
+        return True, f"delta={delta:+.4f} floor={dynamic_floor:.4f} z={z:.2f} n={n_trades}", z
 
     def get_next_version(self) -> str:
         existing = list(self.weights_dir.glob("weights_v*.json"))

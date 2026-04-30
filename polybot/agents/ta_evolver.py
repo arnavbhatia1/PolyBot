@@ -2,7 +2,8 @@
 
 Builds a context including BiasDetector output, gate skip stats, realized edge, ghost
 trade analysis, and 100 stratified trades (50 recent + 50 spaced). Falls back to
-rule-based local recommendations when Claude is unavailable.
+the deep local recommender (`LocalRecommender`) when Claude is unavailable — same
+output shape, same guardrails, no LLM call.
 """
 from __future__ import annotations
 
@@ -10,6 +11,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from polybot.agents.local_recommender import LocalRecommender
 
 logger = logging.getLogger(__name__)
 
@@ -63,102 +66,14 @@ class TAEvolver:
             except Exception as e:
                 logger.warning(f"Claude strategy analysis failed, falling back to local: {e}")
 
-        # Fallback: principled rule-based recommendations from bias report
-        current_weights = current_config.get("weights", {})
-        local_weights = self.recommend_weight_adjustments(outcomes, current_weights)
-        recs = self._local_param_recommendations(analysis, current_config, local_weights)
+        # Fallback: deep local recommender — mirrors Claude's reasoning over the
+        # same analysis dict (directional table, cumulative failures, noise floor,
+        # adoption-floor sizing, family diversity). No LLM call.
+        recs = LocalRecommender(analysis, current_config).recommend()
         self._save_local_log(self.analyze(outcomes), recs)
         return recs
 
-    def _local_param_recommendations(self, analysis: dict[str, Any],
-                                      current_config: dict[str, Any],
-                                      local_weights: dict[str, float]) -> dict[str, Any]:
-        """Rule-based `changes` list when Claude is unavailable.
-
-        Guardrails:
-          - Max 2 scalar parameter changes per run (plus weights)
-          - No scalar change more than 15% of current value
-          - Only proposes BACKTESTABLE params (min_edge etc. are read-only)
-        """
-        findings: list[str] = []
-        warnings: list[str] = []
-        changes_list: list[dict[str, Any]] = []
-
-        overall = analysis.get("overall", {})
-        wr = overall.get("win_rate", 0)
-        sharpe = overall.get("sharpe", 0)
-        n = overall.get("total_trades", 0)
-        avg_gain = overall.get("avg_gain_pct", 0)
-
-        tw = analysis.get("time_weighted", {})
-        tw_wr = tw.get("win_rate", wr)
-        tw_sharpe = tw.get("sharpe", sharpe)
-
-        er_q = analysis.get("edge_realization_quartiles", [])
-        avg_realization = sum(er_q) / len(er_q) if er_q else None
-
-        # Always propose the local-weights adjustment as one change
-        if local_weights:
-            changes_list.append({
-                "param": "weights",
-                "value": local_weights,
-                "reason": "local fallback — indicator-effectiveness reweight",
-            })
-
-        # Rule 1: Win rate declining → reduce kelly_fraction (clamped to ±15%)
-        cur_kelly = current_config.get("kelly_fraction", 0.15)
-        if n >= 30 and tw_wr < 0.50:
-            new_kelly = max(0.05, round(max(cur_kelly - 0.01, cur_kelly * 0.85), 4))
-            if new_kelly != cur_kelly:
-                changes_list.append({
-                    "param": "kelly_fraction", "value": new_kelly,
-                    "reason": f"Time-weighted WR {tw_wr:.0%} < 50% — trim Kelly",
-                })
-                findings.append(f"Time-weighted WR {tw_wr:.0%} < 50% — reducing kelly_fraction {cur_kelly}->{new_kelly}")
-                warnings.append("Recent win rate declining")
-        elif n >= 30 and tw_wr > 0.58 and sharpe > 0.3:
-            new_kelly = min(0.25, round(min(cur_kelly + 0.01, cur_kelly * 1.15), 4))
-            if new_kelly != cur_kelly:
-                changes_list.append({
-                    "param": "kelly_fraction", "value": new_kelly,
-                    "reason": f"Strong WR {tw_wr:.0%} + Sharpe {sharpe:.2f} — raise Kelly",
-                })
-                findings.append(f"Strong WR {tw_wr:.0%} + Sharpe {sharpe:.2f} — raising kelly_fraction {cur_kelly}->{new_kelly}")
-
-        # Rule 2: Poor edge realization → raise atr_sigma_ratio (min_edge is read-only now)
-        cur_atr_sigma = current_config.get("atr_sigma_ratio", 1.4)
-        if avg_realization is not None and avg_realization < 0.65 and n >= 30 and len(changes_list) < 3:
-            new_sigma = min(2.5, round(cur_atr_sigma + 0.1, 3))
-            if new_sigma != cur_atr_sigma:
-                changes_list.append({
-                    "param": "atr_sigma_ratio", "value": new_sigma,
-                    "reason": f"Edge realization {avg_realization:.0%} < 65% — widen L1 sigma",
-                })
-                findings.append(f"Edge realization {avg_realization:.0%} < 65% — raising atr_sigma_ratio {cur_atr_sigma}->{new_sigma}")
-
-        # Regime-pattern finding only (no change proposed — dir/magnitude uncertain without backtest)
-        by_regime = analysis.get("by_regime", {})
-        trending = by_regime.get("trending", {})
-        reverting = by_regime.get("reverting", {})
-        if trending.get("n", 0) >= 20 and reverting.get("n", 0) >= 20:
-            t_wr = trending.get("win_rate", 0.5)
-            r_wr = reverting.get("win_rate", 0.5)
-            if abs(t_wr - r_wr) > 0.05:
-                findings.append(f"Trending WR {t_wr:.0%} vs reverting {r_wr:.0%} — review flow_weight")
-
-        if n >= 30:
-            findings.append(f"Overall: {n} trades, WR {wr:.0%}, Sharpe {sharpe:+.3f}, avg gain {avg_gain:+.4f}")
-            if tw_wr != wr:
-                findings.append(f"Recent (14d-weighted): WR {tw_wr:.0%}, Sharpe {tw_sharpe:+.3f}")
-
-        return {
-            "changes": changes_list[:5],
-            "key_findings": findings,
-            "risk_warnings": warnings,
-            "reasoning": "Local rule-based fallback (Claude unavailable)",
-        }
-
-    # --- Local fallback methods (sync, no API) ---
+    # --- Local helper methods (sync, no API) ---
 
     def analyze(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         if not outcomes:

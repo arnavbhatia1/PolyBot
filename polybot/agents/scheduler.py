@@ -169,6 +169,7 @@ class AgentScheduler:
         self._auto_shutdown: bool = False
         self._last_per_change_results: list[str] = []  # per-parameter backtest results for Claude
         self._baseline_kelly_sharpe: float = 0.0  # current baseline Kelly-Sharpe for Claude context
+        self._last_rerouted_params: list[str] = []  # manual-only params Claude tried to put in `changes` last cycle
         self._shutdown_requested: bool = False
 
         # Inject claude_client into ta_evolver if not already set
@@ -313,6 +314,8 @@ class AgentScheduler:
 
         if hasattr(self, '_last_per_change_results') and self._last_per_change_results:
             analysis["last_per_change_results"] = self._last_per_change_results
+        if hasattr(self, '_last_rerouted_params') and self._last_rerouted_params:
+            analysis["last_rerouted_params"] = list(self._last_rerouted_params)
         if hasattr(self, '_baseline_kelly_sharpe'):
             analysis["baseline_kelly_sharpe"] = self._baseline_kelly_sharpe
             # Compute the actual dynamic floor Claude's change must clear:
@@ -459,6 +462,14 @@ class AgentScheduler:
                 logger.debug(f"Failed to build active adoptions table: {e}")
 
         recommendations = await self.ta_evolver.evolve(outcomes, analysis, current_config)
+        # Capture which manual-only params Claude tried to propose in `changes` this cycle
+        # (the validator rerouted them to manual_observations). Surfaced next cycle so
+        # Claude sees the misclassification and stops repeating it.
+        rerouted = [
+            o.get("param", "") for o in (recommendations.get("manual_observations") or [])
+            if isinstance(o, dict) and o.get("source_channel") == "rerouted"
+        ]
+        self._last_rerouted_params = [p for p in rerouted if p]
         return recommendations
 
     def _kelly_bankroll_returns(
@@ -564,7 +575,15 @@ class AgentScheduler:
                 else:
                     regime_factor = 0.0
             prev_margin = ctx.get("prev_resolution_margin", 0.0)
-            direction = 1.0 if prev_margin > 0 else (-1.0 if prev_margin < 0 else 0.0)
+            # Direction: prefer the actual last-1min-return sign captured at signal time
+            # (stored from signal_engine.last_regime_direction). Fall back to
+            # sign(prev_resolution_margin) for outcomes recorded before that field
+            # was added — the proxy is noisy but the field is now exact for new trades.
+            stored_direction = ctx.get("regime_direction")
+            if stored_direction is not None:
+                direction = float(stored_direction)
+            else:
+                direction = 1.0 if prev_margin > 0 else (-1.0 if prev_margin < 0 else 0.0)
             logit_p += regime_factor * direction * (regime_weight * logit_scale)
 
             # L3 — CLOB flow (with the production multicollinearity cap on the total flow adj).
@@ -689,10 +708,14 @@ class AgentScheduler:
                                     outcomes: list[dict[str, Any]]) -> list[float]:
         """Kelly-sized portfolio returns under candidate recommendations.
 
-        Uses the currently adopted calibrator (``self.signal_engine.calibrator``) — Platt is
-        frozen for the duration of a weight backtest, preventing calibration/weight
-        co-optimization oscillation. Sharpe of the returned list is candidate_sharpe for
-        adoption testing.
+        Uses ``self.signal_engine.calibrator`` — which is the *just-adopted* Platt for
+        this cycle, since Platt fitting + adoption runs earlier in the pipeline (see
+        `run_daily_pipeline`). So calibration is part of the optimization loop: every
+        cycle, Platt is re-fit on the train split and adopted if it improves
+        Kelly-Sharpe on the holdout, then weight backtests run against that fresh
+        calibrator. Within a single weight backtest the calibrator is held fixed
+        (one variable at a time), but across cycles both layers are continually
+        improving in lockstep.
         """
         cfg = self._config_for_helper(recommendations)
         calibrator = self.signal_engine.calibrator if self.signal_engine else None
@@ -882,41 +905,51 @@ class AgentScheduler:
 
         def _clamp(val, lo, hi): return max(lo, min(hi, val))
 
-        # --- Compute baseline once across all folds ---
+        # --- Baseline: reuse the cached values from `_precompute_baseline` if available
+        # (computed once per cycle to feed Claude's prompt). Recomputing here would just
+        # repeat the same 4-fold backtest with the same data and same calibrator.
         n = len(all_outcomes)
         fold_boundaries = [0.60, 0.70, 0.80, 0.90, 1.0]
-        all_current_returns: list[float] = []
-        baseline_request: dict[str, Any] = {}  # empty -> helper uses current engine state
+        cached_n = getattr(self, '_baseline_n_trades', None)
+        cached_sharpe = getattr(self, '_baseline_kelly_sharpe', None)
+        if cached_n and cached_n > 0 and cached_sharpe is not None:
+            current_sharpe = float(cached_sharpe)
+            info["old_sharpe"] = round(current_sharpe, 4)
+            info["n_baseline_trades"] = cached_n
+            # Candidate-trade returns aren't cached, but win rate isn't needed for
+            # adoption — only for `record_score` telemetry. Skip it here; the directional
+            # win-rate per candidate is captured per-change below.
+        else:
+            all_current_returns: list[float] = []
+            baseline_request: dict[str, Any] = {}
+            for i in range(len(fold_boundaries) - 1):
+                start_idx = int(n * fold_boundaries[i])
+                end_idx = int(n * fold_boundaries[i + 1])
+                fold_test = all_outcomes[start_idx:end_idx]
+                if len(fold_test) < 3:
+                    continue
+                current_fold_returns = self._backtest_recommendations(baseline_request, fold_test)
+                all_current_returns.extend(current_fold_returns)
+            current_sharpe = _sharpe(all_current_returns) if all_current_returns else 0.0
+            current_win_rate = (sum(1 for r in all_current_returns if r > 0) / len(all_current_returns)
+                                if all_current_returns else 0.0)
+            if all_current_returns:
+                self.weight_optimizer.record_score(current_version, current_sharpe,
+                                                   len(all_current_returns), current_win_rate)
+            info["old_sharpe"] = round(current_sharpe, 4)
+            info["n_baseline_trades"] = len(all_current_returns)
 
-        for i in range(len(fold_boundaries) - 1):
-            start_idx = int(n * fold_boundaries[i])
-            end_idx = int(n * fold_boundaries[i + 1])
-            fold_test = all_outcomes[start_idx:end_idx]
-            if len(fold_test) < 3:
-                continue
-            current_fold_returns = self._backtest_recommendations(baseline_request, fold_test)
-            all_current_returns.extend(current_fold_returns)
-
-        current_sharpe = _sharpe(all_current_returns) if all_current_returns else 0.0
-        current_win_rate = (sum(1 for r in all_current_returns if r > 0) / len(all_current_returns)
-                            if all_current_returns else 0.0)
-        if all_current_returns:
-            self.weight_optimizer.record_score(current_version, current_sharpe,
-                                               len(all_current_returns), current_win_rate)
-        info["old_sharpe"] = round(current_sharpe, 4)
-        info["n_baseline_trades"] = len(all_current_returns)
-
-        # Compute baseline JK SE for Claude's adoption-target context.
-        # Stored so build_claude_context can inject it into next cycle's context.
-        from polybot.agents.weight_optimizer import _lag1_autocorr as _ac
-        n_base = len(all_current_returns)
-        if n_base >= 2:
-            base_se = math.sqrt((1.0 + 0.5 * current_sharpe ** 2) / n_base)
-            if n_base >= 3:
-                rho = _ac(all_current_returns)
-                base_se *= math.sqrt(1.0 + 2.0 * max(0.0, rho))
-            self._baseline_jk_se = round(base_se, 4)
-            self._baseline_n_trades = n_base
+            # Cache JK SE for Claude's adoption-target context (next cycle).
+            from polybot.agents.weight_optimizer import _lag1_autocorr as _ac
+            n_base = len(all_current_returns)
+            if n_base >= 2:
+                base_se = math.sqrt((1.0 + 0.5 * current_sharpe ** 2) / n_base)
+                if n_base >= 3:
+                    rho = _ac(all_current_returns)
+                    base_se *= math.sqrt(1.0 + 2.0 * max(0.0, rho))
+                self._baseline_jk_se = round(base_se, 4)
+                self._baseline_n_trades = n_base
+                self._baseline_kelly_sharpe = round(current_sharpe, 4)
 
         # --- Per-change walk-forward backtests ---
         adopted_changes: list[dict[str, Any]] = []
@@ -989,12 +1022,12 @@ class AgentScheduler:
                 "n_candidate_trades": len(all_candidate_returns),
             })
 
-            adopt, adopt_reason = self.weight_optimizer.should_adopt(
+            adopt, adopt_reason, z_score = self.weight_optimizer.should_adopt(
                 current_sharpe, candidate_sharpe,
                 n_trades=len(all_candidate_returns),
-                fold_sharpes=fold_sharpes,
                 candidate_returns=all_candidate_returns,
             )
+            change_info["z_score"] = round(z_score, 3)
 
             # Regime-stratified check: a change that passes aggregate stats
             # but hurts a specific regime is likely overfitting to the dominant sample.
@@ -1127,16 +1160,13 @@ class AgentScheduler:
                 info["sum_individual_delta"] = round(sum_individual_delta, 4)
 
                 if sum_individual_delta > 0 and combined_delta < sum_individual_delta * 0.7:
-                    # Interaction detected — back out the weakest change
-                    z_scores = {}
-                    for c in info["per_change"]:
-                        if c.get("decision") == "adopted":
-                            reason_str = c.get("reason", "")
-                            try:
-                                z_val = float(reason_str.split("z=")[1].split()[0]) if "z=" in reason_str else 0.0
-                            except (IndexError, ValueError):
-                                z_val = 0.0
-                            z_scores[c["param"]] = z_val
+                    # Interaction detected — back out the weakest change.
+                    # z_score is now a structured field set by should_adopt (no string parsing).
+                    z_scores = {
+                        c["param"]: float(c.get("z_score", 0.0))
+                        for c in info["per_change"]
+                        if c.get("decision") == "adopted"
+                    }
                     weakest_param = min(z_scores, key=z_scores.get) if z_scores else None
                     if weakest_param:
                         adopted_changes = [c for c in adopted_changes if c["param"] != weakest_param]
@@ -1221,7 +1251,7 @@ class AgentScheduler:
                 elif param == "liquidation_weight":
                     self.signal_engine.liquidation_weight = _clamp(float(value), 0.01, 0.06)
                 elif param == "min_atr":
-                    self.signal_engine.min_atr = _clamp(float(value), 5.0, 15.0)
+                    self.signal_engine.min_atr = _clamp(float(value), 4.0, 25.0)
                 elif param == "max_edge":
                     self.signal_engine.max_edge = _clamp(float(value), 0.10, 0.30)
                 elif param == "adverse_selection_threshold":
@@ -1276,7 +1306,7 @@ class AgentScheduler:
                 elif param == "late_max_penalty":
                     self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(value), 0.20, 0.80)
                 elif param == "min_atr":
-                    sig["min_atr"] = _clamp(float(value), 5.0, 15.0)
+                    sig["min_atr"] = _clamp(float(value), 4.0, 25.0)
                 elif param == "max_edge":
                     sig["max_edge"] = _clamp(float(value), 0.10, 0.30)
                 elif param == "momentum_weight":
@@ -1410,7 +1440,7 @@ class AgentScheduler:
                     elif p == "prev_margin_weight":
                         self.signal_engine.prev_margin_weight = _clamp(float(v), 0.01, 0.05)
                     elif p == "min_atr":
-                        self.signal_engine.min_atr = _clamp(float(v), 5.0, 15.0)
+                        self.signal_engine.min_atr = _clamp(float(v), 4.0, 25.0)
                     elif p == "kelly_fraction":
                         self.signal_engine.kelly_fraction = _clamp(float(v), 0.05, 0.25)
 

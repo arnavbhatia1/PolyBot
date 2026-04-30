@@ -54,18 +54,23 @@ async def test_evolve_with_claude_success(tmp_path):
 
 @pytest.mark.asyncio
 async def test_evolve_falls_back_on_claude_failure(tmp_path):
-    """When Claude raises an exception, evolve() falls back to local math."""
+    """When Claude raises an exception, evolve() falls back to LocalRecommender.
+
+    LocalRecommender returns the same JSON shape Claude would, with `changes`
+    possibly empty when sample size is below the 50-trade evidence floor.
+    """
     mock_claude = AsyncMock()
     mock_claude.analyze_strategy = AsyncMock(side_effect=Exception("API error"))
     evolver = TAEvolver(strategy_log_path=str(tmp_path / "strategy_log.md"),
                         claude_client=mock_claude)
     outcomes = _make_outcomes(10)
-    result = await evolver.evolve(outcomes, {},
+    result = await evolver.evolve(outcomes, {"overall": {"total_trades": 10}},
                                   {"weights": {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
                                                "obv": 0.15, "vwap": 0.20}})
     assert "changes" in result
-    # Local fallback always proposes a weights change
-    assert any(c["param"] == "weights" for c in result["changes"])
+    # Below 50 trades: insufficient-data warning, no changes proposed
+    assert result["changes"] == []
+    assert any("insufficient" in w.lower() or "10 trades" in w for w in result.get("risk_warnings", []))
 
 @pytest.mark.asyncio
 async def test_evolve_without_claude_client(tmp_path):

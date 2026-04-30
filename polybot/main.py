@@ -885,6 +885,7 @@ async def _evaluate_signal_and_enter(
         "regime_state": regime_state.name if regime_state else "unknown",
         "regime_kelly_mult": regime_state.kelly_mult if regime_state else 1.0,
         "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
+        "regime_direction": round(signal_engine.last_regime_direction, 4),
         "sprt_confidence": _sprt.get_confidence() if _sprt else 0,
         "sprt_status": _sprt.get_status() if _sprt else "N/A",
         "signal_consensus": consensus_mult,
