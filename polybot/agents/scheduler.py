@@ -298,7 +298,6 @@ class AgentScheduler:
             "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
             "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.7),
             "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', 0.04),
-            "wall_weight": getattr(self.signal_engine, 'wall_weight', 0.05),
             "prev_margin_weight": getattr(self.signal_engine, 'prev_margin_weight', 0.02),
             "logit_scale": getattr(self.signal_engine, 'logit_scale', 4.0),
             "probability_compression": getattr(self.signal_engine, 'probability_compression', 1.0),
@@ -487,41 +486,23 @@ class AgentScheduler:
         regime_weight: float = 0.03,
         flow_weight: float = 0.04,
         spot_flow_weight: float = 0.04,
-        wall_weight: float = 0.00,
         liquidation_weight: float = 0.03,
         prev_margin_weight: float = 0.02,
         logit_scale: float = 4.0,
         min_atr: float = 8.0,
         probability_compression: float = 1.0,
     ) -> list[float]:
-        """Simulate Kelly-sized portfolio returns for a given config + calibrator.
-
-        Replays the full 8-layer logit composition used in production (`signal_engine`):
-        L1 Student-t CDF, L2 regime×direction, L3 CLOB flow (with 0.35-logit cap),
-        L3b spot flow, L3c wall pressure (subtractive), L3e liquidation pressure,
-        L5 previous-window margin, L4 indicator momentum — then Platt calibration,
-        then side-specific edge, then production gates (edge/prob/Kelly), then
-        ``kelly_fraction * full_kelly * gain_pct`` as the trade's bankroll-weighted return.
-
-        L2's `direction` and autocorr aren't stored per trade; we approximate from
-        ``regime_state`` and ``prev_resolution_margin`` sign. This is a known fidelity
-        gap — the approximation applies symmetrically to baseline and candidate so
-        *relative* Sharpe comparisons remain valid.
+        """Replay the full logit composition used in production for a candidate
+        config and return the Kelly-sized per-trade returns. Sharpe of the result
+        is the candidate's adoption metric.
         """
         from scipy.stats import t as t_dist
-
-        # logit_scale, min_atr, probability_compression passed as params (not read from engine)
-        # so candidate values differ from baseline in the backtest
-        max_flow_logit = 0.35  # same multicollinearity cap signal_engine uses
+        max_flow_logit = 0.35
         realism_factor = 1.0
         if self._config:
             realism_factor = float(self._config.get("execution", {}).get("backtest_realism_factor", 1.0))
-        # Recency weighting: more recent trades carry more weight in the Sharpe estimate.
-        # Decay 0.97/day ≈ 50% half-life at ~23 days. Tuned for 5-min BTC flow where
-        # microstructure / funding / liquidation regimes shift weekly; the prior 0.995
-        # (138-day half-life) was a long-term equity weighting and suppressed the
-        # recent-regime signal the pipeline is trying to learn. Applied symmetrically
-        # to baseline and candidate so relative comparisons remain valid.
+        # Recency: 0.97/day decay (~23-day half-life). Applied symmetrically to
+        # baseline and candidate, so relative Sharpe comparisons remain valid.
         now_ts = datetime.now(timezone.utc).timestamp()
         returns: list[float] = []
 
@@ -586,16 +567,12 @@ class AgentScheduler:
                 direction = 1.0 if prev_margin > 0 else (-1.0 if prev_margin < 0 else 0.0)
             logit_p += regime_factor * direction * (regime_weight * logit_scale)
 
-            # L3 — CLOB flow (with the production multicollinearity cap on the total flow adj).
+            # L3 + L3b — CLOB flow + spot flow, capped to prevent triple-counting
             logit_before_flow = logit_p
             flow_signal = ctx.get("flow_score", 0.0)
             logit_p += flow_signal * (flow_weight * logit_scale)
-            # L3b — spot flow
             spot_flow = ctx.get("spot_flow_signal", 0.0)
             logit_p += spot_flow * (spot_flow_weight * logit_scale)
-            # L3c — wall pressure is SUBTRACTED (positive wall = bearish for Up)
-            wall = ctx.get("wall_pressure", 0.0)
-            logit_p -= wall * (wall_weight * logit_scale)
             flow_total = logit_p - logit_before_flow
             if abs(flow_total) > max_flow_logit:
                 logit_p = logit_before_flow + max_flow_logit * (1.0 if flow_total > 0 else -1.0)
@@ -690,8 +667,6 @@ class AgentScheduler:
                 getattr(self.signal_engine, 'flow_weight', 0.04)),
             "spot_flow_weight": rec.get("recommended_spot_flow_weight",
                 getattr(self.signal_engine, 'spot_flow_weight', 0.04)),
-            "wall_weight": rec.get("recommended_wall_weight",
-                getattr(self.signal_engine, 'wall_weight', 0.0)),
             "liquidation_weight": rec.get("recommended_liquidation_weight",
                 getattr(self.signal_engine, 'liquidation_weight', 0.03)),
             "prev_margin_weight": rec.get("recommended_prev_margin_weight",
@@ -734,7 +709,6 @@ class AgentScheduler:
             regime_weight=cfg["regime_weight"],
             flow_weight=cfg["flow_weight"],
             spot_flow_weight=cfg["spot_flow_weight"],
-            wall_weight=cfg["wall_weight"],
             liquidation_weight=cfg["liquidation_weight"],
             prev_margin_weight=cfg["prev_margin_weight"],
             logit_scale=cfg["logit_scale"],
@@ -762,7 +736,7 @@ class AgentScheduler:
             single_rec["recommended_weights"] = value
         elif param in (
             "momentum_weight", "atr_sigma_ratio", "student_t_df", "kelly_fraction",
-            "regime_weight", "flow_weight", "spot_flow_weight", "wall_weight",
+            "regime_weight", "flow_weight", "spot_flow_weight",
             "liquidation_weight", "prev_margin_weight", "logit_scale", "min_atr",
             "probability_compression",
             "min_edge", "min_kelly", "min_model_probability",
@@ -791,7 +765,6 @@ class AgentScheduler:
             regime_weight=cfg["regime_weight"],
             flow_weight=cfg["flow_weight"],
             spot_flow_weight=cfg["spot_flow_weight"],
-            wall_weight=cfg["wall_weight"],
             liquidation_weight=cfg["liquidation_weight"],
             prev_margin_weight=cfg["prev_margin_weight"],
             logit_scale=cfg["logit_scale"],
@@ -844,18 +817,11 @@ class AgentScheduler:
             baseline_by_regime[regime] = base_result["sharpe"]
             candidate_by_regime[regime] = cand_result["sharpe"]
 
-        improved = sum(
-            1 for r in populated
-            if candidate_by_regime[r] > baseline_by_regime[r]
-        )
         regressed_hard = [
             r for r in populated
             if baseline_by_regime[r] - candidate_by_regime[r] > 0.10
         ]
-
-        # Single gate: dominant regime must improve AND no regime may degrade >0.10 Sharpe.
-        # (The former "≥2/3 regimes improve" alternative was weaker evidence and correlated
-        # with fold consistency — dropped to simplify false-negative stacking.)
+        # Gate: dominant regime must improve AND no regime may degrade >0.10 Sharpe.
         dom_improved = candidate_by_regime[dominant] > baseline_by_regime[dominant]
         detail = " | ".join(
             f"{r}: {baseline_by_regime[r]:+.3f}->{candidate_by_regime[r]:+.3f}"
@@ -1121,7 +1087,7 @@ class AgentScheduler:
                         combined_rec["recommended_weights"] = value
                     elif param in (
                         "momentum_weight", "atr_sigma_ratio", "student_t_df", "kelly_fraction",
-                        "regime_weight", "flow_weight", "spot_flow_weight", "wall_weight",
+                        "regime_weight", "flow_weight", "spot_flow_weight",
                         "liquidation_weight", "prev_margin_weight", "logit_scale", "min_atr",
                         "probability_compression",
                     ):
@@ -1146,8 +1112,7 @@ class AgentScheduler:
                     regime_weight=cfg_combined["regime_weight"],
                     flow_weight=cfg_combined["flow_weight"],
                     spot_flow_weight=cfg_combined["spot_flow_weight"],
-                    wall_weight=cfg_combined["wall_weight"],
-                    liquidation_weight=cfg_combined["liquidation_weight"],
+                        liquidation_weight=cfg_combined["liquidation_weight"],
                     prev_margin_weight=cfg_combined["prev_margin_weight"],
                     logit_scale=cfg_combined["logit_scale"],
                     min_atr=cfg_combined["min_atr"],
@@ -1240,8 +1205,6 @@ class AgentScheduler:
                     self.signal_engine.atr_sigma_ratio = _clamp(float(value), 1.2, 2.5)
                 elif param == "spot_flow_weight":
                     self.signal_engine.spot_flow_weight = _clamp(float(value), 0.0, 0.10)
-                elif param == "wall_weight":
-                    self.signal_engine.wall_weight = _clamp(float(value), 0.0, 0.15)
                 elif param == "prev_margin_weight":
                     self.signal_engine.prev_margin_weight = _clamp(float(value), 0.01, 0.05)
                 elif param == "logit_scale":
@@ -1289,8 +1252,6 @@ class AgentScheduler:
                     sig["atr_sigma_ratio"] = _clamp(float(value), 1.2, 2.5)
                 elif param == "spot_flow_weight":
                     sig["spot_flow_weight"] = _clamp(float(value), 0.0, 0.10)
-                elif param == "wall_weight":
-                    sig["wall_weight"] = _clamp(float(value), 0.0, 0.15)
                 elif param == "prev_margin_weight":
                     sig["prev_margin_weight"] = _clamp(float(value), 0.01, 0.05)
                 elif param == "logit_scale":
@@ -1454,7 +1415,7 @@ class AgentScheduler:
                              "regime_weight", "flow_weight", "logit_scale",
                              "probability_compression", "liquidation_weight",
                              "prev_margin_weight", "min_atr", "student_t_df",
-                             "wall_weight", "max_edge", "exit_edge_threshold"):
+                             "max_edge", "exit_edge_threshold"):
                         sig[p] = v
                     elif p == "kelly_fraction":
                         math_sec[p] = v
@@ -1610,20 +1571,13 @@ class AgentScheduler:
                 analysis["ghost_analysis"] = self.bias_detector.analyze_ghosts(resolved_ghosts)
                 logger.info(f"Ghost analysis: {len(resolved_ghosts)} resolved ghost trades")
 
-        # Platt calibration fitting. Adoption is gated on Kelly-sized-Sharpe of validation
-        # trades (matches production PnL dynamics), not log-loss. Log-loss kept for telemetry.
+        # Platt re-fit. Adoption gated on Kelly-Sharpe of holdout (matches production
+        # PnL dynamics); log-loss is telemetry only. The holdout comparison is the
+        # noise guard, so a small absolute floor is enough.
         platt_info: dict[str, Any] = {"decision": "skipped"}
         from polybot.agents.weight_optimizer import _sharpe, _sharpe_z_test
         from polybot.core.calibrator import PlattCalibrator, compute_log_loss
-        # Raised from 20 — Sharpe on 20 samples has huge variance, which meant small-
-        # sample noise was driving some Platt adoptions. 50 pushes the noise floor down.
         MIN_PLATT_VALIDATION_TRADES = 50
-        # SE-scaled floor mirrors weight adoption (scheduler.py:1639). The prior
-        # z >= 1.0 gate required Δ ≥ 0.15 Sharpe at N=50 (JK_SE ≈ sqrt(1.125/50) ≈ 0.15),
-        # Platt floor: holdout performance check IS the noise guard — stacking a
-        # SE-based floor double-gates and makes calibration updates unreachable at
-        # realistic N (~200 trades, SE≈0.07, 0.25×SE≈0.018 >> any calibration delta).
-        # Use a small absolute floor only; the holdout comparison handles overfitting.
         PLATT_ABS_FLOOR = 0.001
         if len(train_outcomes) >= 200 and self.signal_engine:
             cal_probs = []
@@ -1688,8 +1642,7 @@ class AgentScheduler:
                         regime_weight=cfg["regime_weight"],
                         flow_weight=cfg["flow_weight"],
                         spot_flow_weight=cfg["spot_flow_weight"],
-                        wall_weight=cfg["wall_weight"],
-                        liquidation_weight=cfg["liquidation_weight"],
+                                liquidation_weight=cfg["liquidation_weight"],
                         prev_margin_weight=cfg["prev_margin_weight"],
                         logit_scale=cfg["logit_scale"],
                         min_atr=cfg["min_atr"],
@@ -1845,22 +1798,13 @@ class AgentScheduler:
             # Discord alert, and strategy_log.md for the operator to review.
             pipeline_info["manual_observations"] = recommendations.get("manual_observations", []) or []
 
-            # Absolute adoption floor. At N≈200 the SE-scaled term (0.25×JK_SE ≈ 0.013)
-            # binds slightly higher than this, so SE remains the primary gate at current
-            # sample sizes. The floor was lowered from 0.020 → 0.010 after pipeline_run_log
-            # analysis showed the prior floor was rejecting a cluster of consistent
-            # positive results (probability_compression, 7 rejections in [+0.007, +0.022])
-            # as "within noise" when the SE gate would have passed many of them. SPRT
-            # remains a diagnostic only.
-            # Crisis mode: pipeline shouldn't go silent when performance is worst.
-            # Recent WR < 48% AND Sharpe < 0.10 → lower adoption floor so the pipeline
-            # can adapt faster rather than rejecting every change as "within noise".
+            # Crisis mode: when recent WR < 48% AND baseline Sharpe < 0.10, lower the
+            # adoption floor so the pipeline keeps adapting instead of going silent.
             _recent_50 = all_outcomes[-50:] if len(all_outcomes) >= 50 else all_outcomes
             _recent_wr = sum(1 for o in _recent_50 if o.get("correct", False)) / max(len(_recent_50), 1)
             _in_crisis = _recent_wr < 0.48 and self._baseline_kelly_sharpe < 0.10
 
-            # Track crisis streak across pipeline runs — sustained crisis triggers
-            # automatic Kelly reduction so we stop sizing aggressively into a misfiring model.
+            # Sustained crisis (≥3 cycles) → halve kelly_fraction, restore on first non-crisis.
             from pathlib import Path as _Path
             import json as _json
             _crisis_state_path = _Path("polybot/memory/crisis_state.json")

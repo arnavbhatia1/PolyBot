@@ -208,7 +208,6 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
         min_kelly=signal_cfg.get("min_kelly", 0.015),
         atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", 1.4),
         spot_flow_weight=signal_cfg.get("spot_flow_weight", 0.04),
-        wall_weight=signal_cfg.get("wall_weight", 0.05),
         prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
         min_atr=signal_cfg.get("min_atr", 8.0),
         liquidation_weight=signal_cfg.get("liquidation_weight", 0.03),
@@ -510,7 +509,6 @@ async def _evaluate_signal_and_enter(
 
     # --- New signals from extended feeds ---
     spot_flow_signal = 0.0
-    wall_pressure_val = 0.0  # L3c disabled: 1000-level book is gamed by HFT, flow cap limits impact anyway
     iv_ratio_val = 1.0
 
     if trades_feed and trades_feed.accumulator:
@@ -525,9 +523,6 @@ async def _evaluate_signal_and_enter(
         cvd_component = math.tanh(cvd_z) * 0.8
         taker_component = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
         spot_flow_signal = max(-1.0, min(1.0, cvd_component + taker_component))
-
-    # L3c wall pressure: disabled (1000-level REST polling gamed by HFT refresh)
-    # depth_feed still provides top-20 WS for book depth sizing check
 
     # Deribit IV: logged for pipeline analysis but NOT applied to CDF vol scaling.
     # 30-day IV is a regime mismatch for 5-min windows — ATR is the correct vol measure.
@@ -569,9 +564,8 @@ async def _evaluate_signal_and_enter(
         market_price_up=price_up, market_price_down=price_down,
         closes=closes, flow_signal=flow_score,
         spot_flow_signal=spot_flow_signal,
-        wall_pressure=wall_pressure_val,
         prev_resolution_margin=_prev_resolution_margin,
-        iv_ratio=1.0,  # ATR is the correct 5-min vol; Deribit 30-day IV not applied
+        iv_ratio=1.0,
         liquidation_pressure=liquidation_val,
     )
 
@@ -604,7 +598,7 @@ async def _evaluate_signal_and_enter(
             f"  {action_color}EVAL  {signal.action:<8}{_C.RESET} | {contract.get('question', cid)}\n"
             f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]  src={price_source}\n"
             f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
-            f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  wall {wall_pressure_val:+.3f}  iv {iv_ratio_val:.2f}\n"
+            f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  iv {iv_ratio_val:.2f}\n"
             f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  gex {gex_val:+.2f}  cvd_a {cvd_accel_val:+.4f}\n"
             f"  {_C.DIM}{signal.reason}{_C.RESET}\n"
             f"{_C.CYAN}{'=' * 69}{_C.RESET}")
@@ -733,7 +727,6 @@ async def _evaluate_signal_and_enter(
     consensus_signals = {
         "flow": flow_score,
         "spot_flow": spot_flow_signal,
-        "wall": wall_pressure_val,
         "cvd_accel": cvd_accel_val,
     }
     consensus_mult = compute_signal_consensus(
@@ -863,7 +856,6 @@ async def _evaluate_signal_and_enter(
         "flow_book_imbalance": flow_data.get("book_imbalance", 0),
         "flow_trade_count": flow_data.get("trade_count", 0),
         "spot_flow_signal": spot_flow_signal,
-        "wall_pressure": wall_pressure_val,
         "iv_ratio": iv_ratio_val,
         "prev_resolution_margin": _prev_resolution_margin,
         "bybit_perp_price": bybit_feed.state.perp_price if bybit_feed and bybit_feed.state else 0,
@@ -1282,7 +1274,6 @@ async def _evaluate_and_exit_position(
 
     # New signals for hold evaluation
     hold_spot_flow = 0.0
-    hold_wall_pressure = 0.0  # L3c disabled
     hold_iv_ratio = 1.0
 
     if trades_feed and trades_feed.accumulator:
@@ -1294,8 +1285,6 @@ async def _evaluate_and_exit_position(
         cvd_comp = math.tanh(cvd_z) * 0.8
         taker_comp = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
         hold_spot_flow = max(-1.0, min(1.0, cvd_comp + taker_comp))
-
-    # L3c wall pressure: disabled for hold evaluation too
 
     if deribit_feed and deribit_feed.state.btc_iv > 0:
         atr_val = indicators.get("atr", {}).get("atr", 0)
@@ -1324,9 +1313,8 @@ async def _evaluate_and_exit_position(
         fee_rate=pos.get("fee_rate") or DEFAULT_FEE_RATE,
         closes=closes, flow_signal=hold_flow["flow_score"],
         spot_flow_signal=hold_spot_flow,
-        wall_pressure=hold_wall_pressure,
         prev_resolution_margin=_prev_resolution_margin,
-        iv_ratio=1.0,  # ATR is the correct 5-min vol; Deribit 30-day IV not applied
+        iv_ratio=1.0,
         liquidation_pressure=hold_liquidation)
 
     # --- TRAILING PROFIT EXIT: don't ride cheap winners to zero ---

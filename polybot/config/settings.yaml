@@ -78,7 +78,6 @@ signal:
   min_atr: 12.0
   flow_weight: 0.04
   spot_flow_weight: 0.1
-  wall_weight: 0.0
   prev_margin_weight: 0.02
   liquidation_weight: 0.03
   student_t_df: 5

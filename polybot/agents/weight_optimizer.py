@@ -33,13 +33,7 @@ def _lag1_autocorr(values: list[float]) -> float:
 
 def _sharpe_z_test(old_sharpe: float, new_sharpe: float, n_trades: int,
                    returns: list[float] | None = None) -> float:
-    """Z-score for Sharpe ratio improvement (Jobson-Korkie 1981 SE approximation).
-
-    When ``returns`` is supplied, inflates the standard error by
-    ``sqrt(1 + 2 × max(0, autocorr_1lag))`` — the iid assumption of the
-    vanilla Jobson-Korkie SE overstates confidence when outcomes are
-    positively autocorrelated (which they are for BTC 5-min regimes).
-    """
+    """Z-score for Sharpe improvement (Jobson-Korkie SE, autocorr-inflated)."""
     if n_trades < 2:
         return 0.0
     se = math.sqrt((1.0 + 0.5 * old_sharpe ** 2) / max(n_trades, 1))
@@ -53,8 +47,8 @@ class WeightOptimizer:
     def __init__(self, weights_dir: str, scores_path: str, min_improvement: float = 0.03) -> None:
         self.weights_dir: Path = Path(weights_dir)
         self.scores_path: Path = Path(scores_path)
-        self.min_improvement: float = min_improvement  # absolute floor (legacy compat)
-        self.se_floor_coefficient: float = 0.25  # scaled by scheduler to 0.15 in crisis mode
+        self.min_improvement: float = min_improvement  # absolute Sharpe floor
+        self.se_floor_coefficient: float = 0.25  # crisis mode lowers to 0.15
 
     def get_scores(self) -> dict[str, Any]:
         if not self.scores_path.exists():

@@ -110,9 +110,12 @@ class TestHoldoutSplit:
 
         await scheduler.run_daily_pipeline()
 
-        assert received["bias_count"] == 150   # 60% of 250
-        assert received["ta_count"] == 150
-        assert received["wo_count"] == 250     # walk-forward: optimizer gets ALL outcomes
+        # Bias / TA / WeightOptimizer all receive ALL outcomes — analysis must see
+        # the current regime, and the walk-forward backtest is purely mathematical
+        # so passing recent outcomes does not create lookahead at the adoption gate.
+        assert received["bias_count"] == 250
+        assert received["ta_count"] == 250
+        assert received["wo_count"] == 250
 
     @pytest.mark.asyncio
     async def test_split_is_chronological(self):
@@ -145,10 +148,11 @@ class TestHoldoutSplit:
 
         await scheduler.run_daily_pipeline()
 
-        # Train = first 150 (oldest), optimizer gets all 250 for walk-forward
-        assert len(received["bias_timestamps"]) == 150
-        assert len(received["ta_timestamps"]) == 150
+        assert len(received["bias_timestamps"]) == 250
+        assert len(received["ta_timestamps"]) == 250
         assert received["wo_count"] == 250
+        # Outcomes must reach the analysis layers in chronological order
+        assert received["bias_timestamps"] == sorted(received["bias_timestamps"])
 
     @pytest.mark.asyncio
     async def test_small_dataset_still_works(self):

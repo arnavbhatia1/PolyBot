@@ -118,7 +118,6 @@ def validate_config(config: dict[str, Any]) -> None:
     # Signal layer weights (optional — only validate if present)
     for key, lo, hi in [
         ("signal.spot_flow_weight", 0.0, 0.15),
-        ("signal.wall_weight", 0.0, 0.15),
         ("signal.prev_margin_weight", 0.0, 0.05),
         ("signal.liquidation_weight", 0.0, 0.10),
         ("signal.logit_scale", 1.0, 10.0),
