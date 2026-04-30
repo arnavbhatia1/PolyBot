@@ -1271,11 +1271,6 @@ async def _evaluate_and_exit_position(
             bybit_feed.state.open_interest, bybit_feed.state.open_interest_prev,
             bybit_feed.state.price_at_oi, bybit_feed.state.price_at_oi_prev)
 
-    # GEX signal for hold evaluation
-    hold_gex = 0.0
-    if deribit_feed and deribit_feed.state.net_gex != 0:
-        hold_gex = deribit_feed.state.net_gex
-
     action, model_prob, holding_edge, reason = signal_engine.evaluate_hold(
         indicators, btc_now, strike_now, live["seconds_remaining"],
         market_price, pos["side"], exit_threshold,
