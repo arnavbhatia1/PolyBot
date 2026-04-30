@@ -177,25 +177,37 @@ class BaseTrader(ABC):
         fee_in_shares = entry_fee_shares(shares_ordered, fill.fill_price, fee_rate)
         shares_received = shares_ordered - fee_in_shares
 
-        # --- Persist to DB ---
-        pos_id = await self.db.open_position(
-            market_id=market_id,
-            question=question,
-            side=side,
-            entry_price=fill.fill_price,
-            size=fill.fill_size,
-            signal_score=signal_score,
-            signal_strength=signal_strength,
-            ev_at_entry=ev_at_entry,
-            exit_target=exit_target,
-            stop_loss=stop_loss,
-            weight_version=weight_version,
-            indicator_snapshot=indicator_snapshot,
-            fee_rate=fee_rate,
-            shares_held=shares_received,
-        )
-        # Bankroll debit = USDC spent only (fee is in shares, not extra USDC)
-        await self.db.set_bankroll(bankroll - fill.fill_size)
+        # --- Persist atomically: position insert + bankroll debit in one transaction.
+        # Either both writes happen or neither, so a crash mid-write cannot leave
+        # the DB with a position record but no bankroll debit (or vice versa).
+        # Bankroll debit = USDC spent only (entry fee is paid in shares, not USDC).
+        try:
+            pos_id = await self.db.open_position_and_debit_bankroll(
+                new_bankroll=bankroll - fill.fill_size,
+                market_id=market_id,
+                question=question,
+                side=side,
+                entry_price=fill.fill_price,
+                size=fill.fill_size,
+                signal_score=signal_score,
+                signal_strength=signal_strength,
+                ev_at_entry=ev_at_entry,
+                exit_target=exit_target,
+                stop_loss=stop_loss,
+                weight_version=weight_version,
+                indicator_snapshot=indicator_snapshot,
+                fee_rate=fee_rate,
+                shares_held=shares_received,
+            )
+        except Exception as e:
+            # Buy already filled on Polymarket but we couldn't persist locally.
+            # Loud error so the operator can manually reconcile from chain state.
+            logger.error(
+                "CRITICAL: buy filled (size=$%.2f, fill=$%.4f) but DB write failed: %s. "
+                "Polymarket has the position; reconcile manually before next trade.",
+                fill.fill_size, fill.fill_price, e,
+            )
+            return TradeResult(success=False, reason=f"DB write failed after fill: {e}")
 
         return TradeResult(success=True, position_id=pos_id, fill_price=fill.fill_price)
 

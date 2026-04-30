@@ -31,7 +31,7 @@ from polybot.core.signal_engine import SignalEngine
 from polybot.core.order_flow import compute_flow_signal
 from polybot.agents.claude_client import ClaudeClient
 from polybot.execution.paper_trader import PaperTrader
-from polybot.execution.live_trader import LiveTrader, verify_auth
+from polybot.execution.live_trader import AuthError, LiveTrader, verify_auth
 from polybot.agents.outcome_reviewer import OutcomeReviewer
 from polybot.agents.bias_detector import BiasDetector
 from polybot.agents.ta_evolver import TAEvolver
@@ -485,6 +485,21 @@ async def _evaluate_signal_and_enter(
             seconds_remaining=float(contract.get("seconds_remaining", 0)),
             indicator_snapshot=snap,
         )
+
+    # Feed freshness gate: skip entries when any critical price/strike feed has
+    # gone silent. A connected-but-idle WebSocket can leave stale state in place
+    # while we evaluate; better to skip the window than to size on stale data.
+    stale_feeds: list[str] = []
+    if coinbase_feed and coinbase_feed.state.age_seconds > 30:
+        stale_feeds.append(f"coinbase={coinbase_feed.state.age_seconds:.0f}s")
+    if kraken_feed and kraken_feed.state.age_seconds > 30:
+        stale_feeds.append(f"kraken={kraken_feed.state.age_seconds:.0f}s")
+    if chainlink_feed and chainlink_feed.age_seconds > 60:
+        stale_feeds.append(f"chainlink={chainlink_feed.age_seconds:.0f}s")
+    if stale_feeds:
+        _record_skip("stale_feed")
+        _log_skip_once(cid, f"stale_{cid}", f"SKIP: stale feeds — {', '.join(stale_feeds)}")
+        return None, last_eval_log_window
 
     in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
 
@@ -1523,7 +1538,8 @@ async def _manage_orphaned_position(
         pos: dict[str, Any], market_scanner: Any, http_client: Any, trader: Any,
         alert_manager: Any, db: Any, outcome_reviewer: Any, breaker: Any,
         day_wins: int, day_losses: int, day_fees: float,
-        signal_engine: Any = None) -> tuple[bool, int, int, float, str | None]:
+        signal_engine: Any = None,
+        chainlink_feed: Any = None) -> tuple[bool, int, int, float, str | None]:
     """Resolve positions where the contract can no longer be found via Gamma API."""
     from datetime import datetime, timezone
 
@@ -1543,9 +1559,37 @@ async def _manage_orphaned_position(
         logger.info(f"RESOLVE orphan via eventMetadata: priceToBeat={meta['price_to_beat']:,.2f} final={meta['final_price']:,.2f} -> {'Up' if up_won else 'Down'}")
     elif direct and direct.get("closed") and (direct["price_up"] >= 0.99 or direct["price_up"] <= 0.01):
         exit_price = direct["price_up"] if pos["side"] == "Up" else direct["price_down"]
+    elif age > 1800 and chainlink_feed and chainlink_feed.price > 0:
+        # Gamma silent for 30+ min — Polymarket has already auto-credited the Safe
+        # via on-chain settlement, so the bankroll is correct. Use the Chainlink
+        # oracle directly to mark the DB record so the position stops blocking.
+        try:
+            window_ts = int(pos["market_id"].rsplit("-", 1)[-1])
+        except (ValueError, IndexError):
+            window_ts = 0
+        strike_at_boundary = chainlink_feed.get_strike(window_ts) if window_ts else None
+        if strike_at_boundary is None or strike_at_boundary <= 0:
+            # No captured strike (feed wasn't running at boundary) — keep waiting
+            logger.info(f"Orphan {pos['market_id']} age={age:.0f}s — Chainlink strike not captured, still waiting")
+            return True, day_wins, day_losses, day_fees, None
+        up_won = chainlink_feed.price >= strike_at_boundary
+        exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
+        logger.warning(
+            f"RESOLVE orphan via Chainlink fallback after {age:.0f}s wait: "
+            f"strike=${strike_at_boundary:,.2f} now=${chainlink_feed.price:,.2f} -> "
+            f"{'Up' if up_won else 'Down'} won (exit={exit_price})"
+        )
+        if alert_manager:
+            try:
+                await alert_manager.send_error(
+                    f"Resolved orphaned {pos['market_id']} via Chainlink fallback "
+                    f"(Gamma silent for {age:.0f}s). exit_price={exit_price}"
+                )
+            except Exception:
+                pass
     else:
-        # No official resolution data yet — keep waiting.
-        # Never guess from Binance: Chainlink oracle can differ by $20-200.
+        # No official resolution data yet — keep waiting (Polymarket auto-credits
+        # the Safe regardless, so bankroll is correct on next sync).
         if age > 3600:
             logger.error(f"ORPHANED >1hr: {pos['market_id']} — no Gamma resolution data. Waiting for Chainlink oracle.")
             if alert_manager:
@@ -1817,7 +1861,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                             pos, market_scanner, http_client, trader,
                             alert_manager, db, outcome_reviewer, breaker,
                             day_wins, day_losses, day_fees,
-                            signal_engine=signal_engine)
+                            signal_engine=signal_engine,
+                            chainlink_feed=chainlink_feed)
                     if traded_mid:
                         traded_contracts[traded_mid] = int(time.time())
                     continue
@@ -1930,6 +1975,20 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             if traded_cid:
                 traded_contracts[traded_cid] = now_ts
 
+        except AuthError as e:
+            # Auth/signing failure — every subsequent order will fail the same way.
+            # Bail loudly so the operator notices instead of letting entries silently
+            # skip for hours. run_polybot.ps1 won't auto-restart on hard exit.
+            logger.error("AUTH FAILURE — stopping trading loop: %s", e)
+            if alert_manager:
+                try:
+                    await alert_manager.send_error(
+                        f"AUTH BROKEN — bot stopped. Re-approve USDC to CTF Exchange "
+                        f"or check POLYMARKET_PRIVATE_KEY / POLYMARKET_FUNDER. ({e})"
+                    )
+                except Exception:
+                    pass
+            raise
         except Exception as e:
             logger.error(f"Trading loop error: {e}", exc_info=True)
             if alert_manager:
@@ -2250,6 +2309,55 @@ async def main() -> None:
     if mode == "live":
         # Sync DB bankroll with real Polymarket balance (fetched during preflight)
         await db.set_bankroll(live_balance)
+
+        # Reconcile DB-open positions against actual Polymarket share holdings.
+        # If a buy filled but the DB write was lost (rare crash window), or if a
+        # share was settled on-chain but the DB still shows it open, surface the
+        # mismatch loudly so the operator can intervene before more trades happen.
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+            db_open = await db.get_open_positions()
+            mismatches: list[str] = []
+            for pos in db_open:
+                snap = pos.get("indicator_snapshot") or "{}"
+                try:
+                    ctx = json.loads(snap).get("trade_context", {}) if isinstance(snap, str) else {}
+                except (ValueError, TypeError):
+                    ctx = {}
+                # token_id wasn't always stored historically — skip those, can't reconcile
+                token_id = ctx.get("token_id_up") if pos.get("side") == "Up" else ctx.get("token_id_down")
+                if not token_id:
+                    continue
+                expected_shares = float(pos.get("shares_held") or 0)
+                try:
+                    bal = trader.client.get_balance_allowance(
+                        BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
+                    )
+                    actual_shares = int(bal.get("balance", "0")) / 1e6
+                except Exception as e:
+                    logger.warning(
+                        f"Reconciliation: could not fetch shares for position {pos['id']} "
+                        f"({pos['market_id']}): {e}"
+                    )
+                    continue
+                # 5% tolerance — fees and rounding are normal
+                if expected_shares > 0 and abs(actual_shares - expected_shares) / expected_shares > 0.05:
+                    mismatches.append(
+                        f"position {pos['id']} ({pos['market_id']}, {pos['side']}): "
+                        f"DB expects {expected_shares:.4f} shares, Polymarket has {actual_shares:.4f}"
+                    )
+            if mismatches:
+                msg = "STARTUP RECONCILIATION MISMATCH:\n  " + "\n  ".join(mismatches)
+                logger.error(msg)
+                if alert_manager:
+                    try:
+                        await alert_manager.send_error(msg[:1900])
+                    except Exception:
+                        pass
+            else:
+                logger.info(f"Startup reconciliation OK: {len(db_open)} open position(s) match Polymarket")
+        except Exception as e:
+            logger.warning(f"Startup position reconciliation failed (non-blocking): {e}")
 
     # CLOB WebSocket — real-time order book feed
     clob_ws_url = market_cfg.get("clob_ws_url", "wss://ws-subscriptions-clob.polymarket.com/ws/market")

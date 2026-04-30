@@ -32,6 +32,28 @@ _NON_RETRYABLE_ERRORS = frozenset({
     "INVALID_ORDER_EXPIRATION",
 })
 
+# Substrings that indicate auth/signing failure (revoked Safe, bad nonce, expired
+# API creds). On any of these we stop retrying and raise — silent fail-loops
+# would let the bot run for hours posting orders that never reach the exchange.
+_AUTH_ERR_TOKENS = (
+    "401", "403", "unauthorized", "forbidden",
+    "signature", "signing", "nonce",
+    "private key", "api credentials", "invalid api",
+)
+
+
+class AuthError(RuntimeError):
+    """Raised when Polymarket rejects an order on auth/signing grounds.
+
+    The main loop catches this once and shuts down so the operator notices
+    immediately instead of watching every entry silently fail.
+    """
+
+
+def _looks_like_auth_error(err: object) -> bool:
+    s = str(err).lower()
+    return any(token in s for token in _AUTH_ERR_TOKENS)
+
 # ---------------------------------------------------------------------------
 # Fill rate tracking (live mode only)
 # ---------------------------------------------------------------------------
@@ -383,6 +405,9 @@ class LiveTrader(BaseTrader):
 
                 if not resp.get("success"):
                     error_msg = resp.get("errorMsg", "unknown error")
+                    if _looks_like_auth_error(error_msg):
+                        logger.error("AUTH FAILURE — Polymarket rejected order: %s", error_msg)
+                        raise AuthError(error_msg)
                     # Non-retryable errors bail immediately
                     if any(code in error_msg for code in _NON_RETRYABLE_ERRORS):
                         logger.error("Order rejected (non-retryable): %s", error_msg)
@@ -417,7 +442,12 @@ class LiveTrader(BaseTrader):
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
 
+            except AuthError:
+                raise
             except Exception as e:
+                if _looks_like_auth_error(e):
+                    logger.error("AUTH FAILURE during FOK submit: %s", e)
+                    raise AuthError(str(e)) from e
                 last_error = str(e)
                 logger.warning(
                     "FOK attempt %d/%d exception: %s", attempt, _MAX_RETRIES, e,

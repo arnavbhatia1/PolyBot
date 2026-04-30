@@ -132,6 +132,48 @@ class Database:
         await self.conn.commit()
         return cursor.lastrowid
 
+    async def open_position_and_debit_bankroll(
+        self,
+        new_bankroll: float,
+        **position_kwargs: Any,
+    ) -> int:
+        """Insert the position row AND update bankroll in a single SQLite transaction.
+
+        Either both writes happen or neither — a process crash between them can no
+        longer leave the DB with a position record but no bankroll debit (or vice
+        versa). Pass the same kwargs you'd pass to ``open_position``, plus the new
+        bankroll value to set after the debit.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            cursor = await self.conn.execute(
+                """INSERT INTO positions
+                (market_id, question, side, entry_price, size, signal_score,
+                 signal_strength, ev_at_entry, exit_target, stop_loss,
+                 entry_timestamp, status, weight_version, indicator_snapshot,
+                 fee_rate, shares_held)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
+                (position_kwargs["market_id"], position_kwargs["question"],
+                 position_kwargs["side"], position_kwargs["entry_price"],
+                 position_kwargs["size"], position_kwargs["signal_score"],
+                 position_kwargs["signal_strength"], position_kwargs["ev_at_entry"],
+                 position_kwargs["exit_target"], position_kwargs["stop_loss"],
+                 now, position_kwargs["weight_version"],
+                 position_kwargs.get("indicator_snapshot", ""),
+                 position_kwargs.get("fee_rate"), position_kwargs.get("shares_held")),
+            )
+            pos_id = cursor.lastrowid
+            await self.conn.execute(
+                "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
+                "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
+                (new_bankroll,),
+            )
+            await self.conn.commit()
+            return pos_id
+        except Exception:
+            await self.conn.rollback()
+            raise
+
     async def get_open_positions(self) -> list[dict[str, Any]]:
         """Returns positions that need management: both 'open' (active) and 'pending_resolution' (expired, awaiting Gamma)."""
         cursor = await self.conn.execute(
