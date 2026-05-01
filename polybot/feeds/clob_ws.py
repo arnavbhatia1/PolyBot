@@ -257,6 +257,7 @@ class ClobWebSocket:
                 "price": change.get("price", "0"),
                 "size": change.get("size", "0"),
                 "side": change.get("side", ""),
+                "ts": now,
             }
             # Record price sample for velocity tracking
             try:
@@ -280,6 +281,7 @@ class ClobWebSocket:
             "best_bid": msg.get("best_bid", "0"),
             "best_ask": msg.get("best_ask", "0"),
             "spread": msg.get("spread", "0"),
+            "ts": time.time(),
         }
         self.book_updated.set()
 

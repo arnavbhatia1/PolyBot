@@ -1251,10 +1251,15 @@ async def _evaluate_and_exit_position(
     hold_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
     bba = clob_ws.best_bid_ask.get(hold_token, {}) if clob_ws else {}
     ws_bid = float(bba.get("best_bid", 0) or 0)
-    if ws_bid > 0:
+    bid_age = time.time() - float(bba.get("ts", 0) or 0)
+    if ws_bid > 0 and bid_age <= 10:
         market_price = ws_bid
     else:
-        # No live bid yet — defer the decision rather than evaluating on stale data.
+        # No live bid or stale (>10s) — the token's book has gone quiet, likely a
+        # phantom resting order from when the price was much higher. Defer rather
+        # than scalping at a price that no longer exists in the market.
+        if ws_bid > 0:
+            logger.debug("Hold eval deferred: ws_bid=%.3f is %.1fs stale for %s", ws_bid, bid_age, hold_token)
         return day_wins, day_losses, day_fees, None
 
     exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
