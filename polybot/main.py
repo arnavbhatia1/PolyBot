@@ -896,9 +896,11 @@ async def _evaluate_signal_and_enter(
     )
 
     if not result.success:
-        logger.warning(
+        reason = result.reason or "unknown"
+        _log_skip_once(
+            cid, f"open_rejected_{reason}",
             f"OPEN {side} REJECTED  |  ${size:.2f} @ {price:.3f}  |  "
-            f"{contract.get('question', cid)}  |  reason: {result.reason or 'unknown'}  "
+            f"{contract.get('question', cid)}  |  reason: {reason}  "
             f"— continuing, will re-evaluate next tick"
         )
         return None, last_eval_log_window
@@ -1249,18 +1251,58 @@ async def _evaluate_and_exit_position(
     # We deliberately avoid the /price cross-matched API, which can spike to phantom
     # values near expiry from stale cross-match offers that wouldn't actually fill.
     hold_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
+    other_token = live.get("token_id_down", "") if pos["side"] == "Up" else live.get("token_id_up", "")
     bba = clob_ws.best_bid_ask.get(hold_token, {}) if clob_ws else {}
     ws_bid = float(bba.get("best_bid", 0) or 0)
     bid_age = time.time() - float(bba.get("ts", 0) or 0)
-    if ws_bid > 0 and bid_age <= 10:
-        market_price = ws_bid
-    else:
+    if not (ws_bid > 0 and bid_age <= 10):
         # No live bid or stale (>10s) — the token's book has gone quiet, likely a
         # phantom resting order from when the price was much higher. Defer rather
         # than scalping at a price that no longer exists in the market.
         if ws_bid > 0:
             logger.debug("Hold eval deferred: ws_bid=%.3f is %.1fs stale for %s", ws_bid, bid_age, hold_token)
         return day_wins, day_losses, day_fees, None
+
+    # PHANTOM-BID GUARD: complementary tokens' best bids must sum to ≤1.0 by
+    # no-arbitrage. End-of-window market makers leave stale resting bids that
+    # explode best_bid to phantom values (e.g. Up bid jumps 0.03 → 0.50 with BTC
+    # 100+ below strike). Cross-check the OPPOSITE side's bid; if the sum violates
+    # the no-arb invariant, defer — paper's negRisk fallback (`max(vwap, requested)`)
+    # would otherwise fake-fill the scalp at the phantom price and pollute training.
+    other_bba = clob_ws.best_bid_ask.get(other_token, {}) if clob_ws else {}
+    other_bid = float(other_bba.get("best_bid", 0) or 0)
+    other_age = time.time() - float(other_bba.get("ts", 0) or 0)
+    if other_bid > 0 and other_age <= 10:
+        bid_sum = ws_bid + other_bid
+        if bid_sum > 1.02:
+            logger.info(
+                f"  SCALP SKIP {pos['side']}  {live['seconds_remaining']:.0f}s  |  "
+                f"phantom bid: {pos['side']}={ws_bid:.2f} other={other_bid:.2f} "
+                f"sum={bid_sum:.2f} > 1.02 (book has stale liquidity)"
+            )
+            return day_wins, day_losses, day_fees, None
+
+    # DEPTH-AT-BID GUARD: the bid must have enough size at/near the best price to
+    # absorb the position. A $0.50 bid with $1 of size is not real exit liquidity
+    # for a $5 position — it's a phantom resting order. Require ≥50% of position
+    # absorbable within 2% of best_bid (level-tip depth, not full-book sum).
+    shares_held_check = pos.get("shares_held") or pos["size"] / pos["entry_price"]
+    needed_usd = shares_held_check * ws_bid * 0.5
+    book_for_depth = clob_ws.get_book(hold_token) if clob_ws else {}
+    depth_at_bid = sum(
+        float(b.get("size", 0)) * float(b.get("price", 0))
+        for b in (book_for_depth or {}).get("bids", [])
+        if float(b.get("price", 0)) >= ws_bid * 0.98
+    )
+    if depth_at_bid > 0 and depth_at_bid < needed_usd:
+        logger.info(
+            f"  SCALP SKIP {pos['side']}  {live['seconds_remaining']:.0f}s  |  "
+            f"thin bid: bid={ws_bid:.2f} depth_at_bid=${depth_at_bid:.2f} "
+            f"< need ${needed_usd:.2f} (50% of position)"
+        )
+        return day_wins, day_losses, day_fees, None
+
+    market_price = ws_bid
 
     exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
                       else default_exit_threshold)
@@ -1916,6 +1958,10 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     market_scanner, traded_contracts, ws_subscribed_tokens, clob_ws,
                     prev_contract_tokens, db=db, http_client=http_client)
             if not contract:
+                continue
+
+            # Never attempt entry when already holding a position in this window.
+            if any(p["market_id"] == cid and p["status"] == "open" for p in positions):
                 continue
 
             now_ts = int(time.time())
