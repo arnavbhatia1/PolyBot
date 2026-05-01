@@ -241,6 +241,7 @@ class ClobWebSocket:
             "hash": msg.get("hash", ""),
             "timestamp": msg.get("timestamp", ""),
             "market": msg.get("market", ""),
+            "ts": time.time(),
         }
         self.book_updated.set()
 

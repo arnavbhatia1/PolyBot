@@ -90,6 +90,14 @@ class PaperTrader(BaseTrader):
         if self._clob_ws is None:
             return FillResult(filled=True, fill_price=requested_price, fill_size=size_usd)
         book = self._clob_ws.get_book(token_id) if hasattr(self._clob_ws, "get_book") else {}
+        # Book snapshots are only delivered at subscription time — deltas only update
+        # best_bid_ask, not the full book. A book older than 30s has stale levels that
+        # no longer reflect current market state. Fall back to requested_price (derived
+        # from fresh best_bid_ask) so paper fills don't use phantom bids/asks.
+        import time as _time
+        book_age = _time.time() - float(book.get("ts", 0) or 0)
+        if book_age > 30:
+            return FillResult(filled=True, fill_price=requested_price, fill_size=size_usd)
         levels_raw = book.get("asks" if side == "buy" else "bids", [])
         if not levels_raw:
             return FillResult(filled=True, fill_price=requested_price, fill_size=size_usd)
