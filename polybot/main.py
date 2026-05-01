@@ -1359,9 +1359,10 @@ async def _evaluate_and_exit_position(
             total_fees = result.entry_fee_usd + result.exit_fee_usd
             exit_fill = result.fill_price  # use actual fill from book walk, not requested price
             won = "WIN" if pnl > 0 else "LOSS"
-            if pnl > 0: day_wins += 1
-            else: day_losses += 1
-            day_fees += total_fees
+            # Pull authoritative day stats from DB rather than in-memory counters so
+            # any quarantined/corrected trade_history rows are reflected immediately.
+            today_str = datetime.now(ET).strftime("%Y-%m-%d")
+            day_wins, day_losses, day_fees, _ = await db.get_day_stats(today_str)
             color = _C.GREEN if pnl >= 0 else _C.RED
             bankroll_after = await db.get_bankroll()
             logger.info(
@@ -1445,9 +1446,9 @@ async def _resolve_expired_position(
         gain_pct = result.gain_pct
         total_fees = result.entry_fee_usd + result.exit_fee_usd
         won = "WIN" if pnl > 0 else "LOSS"
-        if pnl > 0: day_wins += 1
-        else: day_losses += 1
-        day_fees += total_fees
+        # Pull authoritative day stats from DB rather than in-memory counters.
+        today_str = datetime.now(ET).strftime("%Y-%m-%d")
+        day_wins, day_losses, day_fees, _ = await db.get_day_stats(today_str)
         color = _C.GREEN if pnl >= 0 else _C.RED
         bankroll_after = await db.get_bankroll()
         logger.info(
@@ -1563,9 +1564,9 @@ async def _manage_orphaned_position(
         gain_pct = result.gain_pct
         total_fees = result.entry_fee_usd + result.exit_fee_usd
         won = "WIN" if pnl > 0 else "LOSS"
-        if pnl > 0: day_wins += 1
-        else: day_losses += 1
-        day_fees += total_fees
+        # Pull authoritative day stats from DB rather than in-memory counters.
+        today_str = datetime.now(ET).strftime("%Y-%m-%d")
+        day_wins, day_losses, day_fees, _ = await db.get_day_stats(today_str)
         color = _C.GREEN if pnl >= 0 else _C.RED
         bankroll_after = await db.get_bankroll()
         logger.info(
