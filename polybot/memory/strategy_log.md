@@ -306,3 +306,27 @@
 - The inverted edge-WR relationship (Q4 at 0.42) persists across regimes — if model probability is structurally miscalibrated, no single parameter fix will resolve it.
 
 **Reasoning:** Every backtestable parameter family has been tested exhaustively with none clearing the 0.027 Sharpe delta required for adoption — empty changes is the correct and only defensible call. The two manual observations (exit_edge_threshold tightening and adverse_selection loosening) remain the highest-confidence actionable levers, both backed by N>200 with unambiguous directional signals that exceed the noise floor by 6× and 3× respectively. The apparent recovery in the last 100 trades (WR=60%) warrants monitoring before any structural changes are introduced.
+
+## 2026-05-01T19:15:05.688404+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - adverse_selection_threshold: 0.85 -> 0.85 [high]
+    Gate sim_pnl flipped to -$6.06 (negative) this cycle — both the 60%-profitable bar and positive sim_pnl bar for loosening are no longer met simultaneously; keep threshold at 0.85 and do not loosen further.
+
+**Findings:**
+- Every backtestable parameter family exhausted — zero untested values remain above the 0.026 delta floor
+- Last 100 trades WR=62%, PnL=+$313 — possible regime recovery but 5-bucket trend still DEGRADING
+- Adverse selection gate sim_pnl flipped negative (-$6.06) — gate is now correctly filtering losers, do NOT loosen
+- Hold positions destroyed $7,870 vs scalp counterfactual — scalp behavior correct but hold decisions are the primary value leak
+- Adaptive calibration runtime already applies 0.50 multiplier to moderate-confidence bucket — model is self-correcting in live
+
+**Warnings:**
+- All 15+ parameter families have failed fold consistency — continued parameter search risks overfitting; architecture review may be warranted
+- Distribution shift in model_probability (0.585→0.500) combined with edge rising (0.099→0.130) suggests the model is systematically entering lower-confidence higher-edge trades — monitor if this regime persists
+- Previous cycles recommended loosening adverse_selection_threshold based on positive sim_pnl; that signal has now reversed — operator should revert any loosening if already applied
+
+**Reasoning:** Every backtestable parameter has been tested exhaustively with none clearing the 0.0263 delta adoption floor — empty changes is the only defensible call for the sixth consecutive cycle. The most important new signal this cycle is the adverse_selection_threshold ghost sim_pnl flipping from positive to negative (-$6.06), which reverses the multi-cycle recommendation to loosen that gate; the gate is now correctly filtering losers and should be held at 0.85. The last 100 trades show WR=62% suggesting a possible regime recovery, but the 5-bucket degradation trend and exhausted parameter space mean no parameter action is warranted until the recovery is sustained across at least two more 953-trade buckets.

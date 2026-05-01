@@ -3106,38 +3106,6 @@
     }
   },
   {
-    "position_id": 4143,
-    "market_id": "btc-updown-5m-1777462500",
-    "side": "Down",
-    "weight_version": "weights_v001",
-    "timestamp": "2026-04-29T11:40:31.811410+00:00",
-    "actual": {
-      "exit_reason": "scalp",
-      "exit_price": 0.01,
-      "pnl": -17.581296,
-      "gain_pct": -0.979459
-    },
-    "counterfactual": {
-      "resolution_price": 0.0,
-      "pnl": -17.95,
-      "gain_pct": -1.0
-    },
-    "delta_pnl": -0.368704,
-    "scalp_was_optimal": true,
-    "context_at_scalp": {
-      "holding_edge": -0.0539207718000978,
-      "model_prob": 0.3360792281999022,
-      "market_price": 0.39,
-      "seconds_remaining": 5.689007,
-      "exit_threshold_used": -0.05,
-      "strike_price": 77597.52,
-      "btc_at_scalp": 77608.19,
-      "btc_at_expiry": 77650.34,
-      "chainlink_price_to_beat": null,
-      "chainlink_final_price": null
-    }
-  },
-  {
     "position_id": 4142,
     "market_id": "btc-updown-5m-1777462200",
     "side": "Up",
@@ -3200,38 +3168,6 @@
     }
   },
   {
-    "position_id": 4145,
-    "market_id": "btc-updown-5m-1777463100",
-    "side": "Down",
-    "weight_version": "weights_v001",
-    "timestamp": "2026-04-29T11:50:42.658612+00:00",
-    "actual": {
-      "exit_reason": "scalp",
-      "exit_price": 0.07,
-      "pnl": -12.382368,
-      "gain_pct": -0.689825
-    },
-    "counterfactual": {
-      "resolution_price": 0.0,
-      "pnl": -17.95,
-      "gain_pct": -1.0
-    },
-    "delta_pnl": -5.567632,
-    "scalp_was_optimal": true,
-    "context_at_scalp": {
-      "holding_edge": -0.02330526630903737,
-      "model_prob": 0.12669473369096262,
-      "market_price": 0.15,
-      "seconds_remaining": 160.031678,
-      "exit_threshold_used": -0.05,
-      "strike_price": 77559.86904,
-      "btc_at_scalp": 77672.99,
-      "btc_at_expiry": 77646.61,
-      "chainlink_price_to_beat": null,
-      "chainlink_final_price": null
-    }
-  },
-  {
     "position_id": 4146,
     "market_id": "btc-updown-5m-1777463400",
     "side": "Down",
@@ -3258,38 +3194,6 @@
       "exit_threshold_used": -0.05,
       "strike_price": 77584.881,
       "btc_at_scalp": 77609.86,
-      "btc_at_expiry": 77622.58,
-      "chainlink_price_to_beat": null,
-      "chainlink_final_price": null
-    }
-  },
-  {
-    "position_id": 4147,
-    "market_id": "btc-updown-5m-1777463400",
-    "side": "Down",
-    "weight_version": "weights_v001",
-    "timestamp": "2026-04-29T11:55:31.743852+00:00",
-    "actual": {
-      "exit_reason": "scalp",
-      "exit_price": 0.022640201260302018,
-      "pnl": -11.704245,
-      "gain_pct": -0.921594
-    },
-    "counterfactual": {
-      "resolution_price": 0.0,
-      "pnl": -12.7,
-      "gain_pct": -1.0
-    },
-    "delta_pnl": -0.995755,
-    "scalp_was_optimal": true,
-    "context_at_scalp": {
-      "holding_edge": -0.4300627101926495,
-      "model_prob": 0.5699372898073505,
-      "market_price": 1.0,
-      "seconds_remaining": 2.208707,
-      "exit_threshold_used": -0.05,
-      "strike_price": 77584.881,
-      "btc_at_scalp": 77584.64,
       "btc_at_expiry": 77622.58,
       "chainlink_price_to_beat": null,
       "chainlink_final_price": null
@@ -6750,38 +6654,6 @@
     }
   },
   {
-    "position_id": 4260,
-    "market_id": "btc-updown-5m-1777502100",
-    "side": "Down",
-    "weight_version": "weights_v001",
-    "timestamp": "2026-04-29T22:40:31.537906+00:00",
-    "actual": {
-      "exit_reason": "scalp",
-      "exit_price": 0.044711951905659644,
-      "pnl": -15.782455,
-      "gain_pct": -0.927289
-    },
-    "counterfactual": {
-      "resolution_price": 0.0,
-      "pnl": -17.02,
-      "gain_pct": -1.0
-    },
-    "delta_pnl": -1.237545,
-    "scalp_was_optimal": true,
-    "context_at_scalp": {
-      "holding_edge": -0.61391632502099,
-      "model_prob": 0.13608367497900997,
-      "market_price": 0.75,
-      "seconds_remaining": 4.672384,
-      "exit_threshold_used": -0.12,
-      "strike_price": 75912.14,
-      "btc_at_scalp": 75942.03,
-      "btc_at_expiry": 75947.03,
-      "chainlink_price_to_beat": null,
-      "chainlink_final_price": null
-    }
-  },
-  {
     "position_id": 4261,
     "market_id": "btc-updown-5m-1777502400",
     "side": "Down",
@@ -7064,38 +6936,6 @@
       "strike_price": 75866.20116501172,
       "btc_at_worst": 75736.98,
       "worst_at": 1777505052.3827972
-    }
-  },
-  {
-    "position_id": 4270,
-    "market_id": "btc-updown-5m-1777505400",
-    "side": "Down",
-    "weight_version": "weights_v001",
-    "timestamp": "2026-04-29T23:35:31.734607+00:00",
-    "actual": {
-      "exit_reason": "scalp",
-      "exit_price": 0.09196401978021938,
-      "pnl": -9.815629,
-      "gain_pct": -0.575359
-    },
-    "counterfactual": {
-      "resolution_price": 0.0,
-      "pnl": -17.06,
-      "gain_pct": -1.0
-    },
-    "delta_pnl": -7.244371,
-    "scalp_was_optimal": true,
-    "context_at_scalp": {
-      "holding_edge": -0.13228180607341333,
-      "model_prob": 0.13771819392658669,
-      "market_price": 0.27,
-      "seconds_remaining": 5.363324,
-      "exit_threshold_used": -0.12,
-      "strike_price": 75743.1781464569,
-      "btc_at_scalp": 75792.02,
-      "btc_at_expiry": 75805.16,
-      "chainlink_price_to_beat": null,
-      "chainlink_final_price": null
     }
   },
   {
@@ -8519,38 +8359,6 @@
       "exit_threshold_used": -0.12,
       "strike_price": 76279.7559084768,
       "btc_at_scalp": 76301.62,
-      "btc_at_expiry": 76296.67,
-      "chainlink_price_to_beat": null,
-      "chainlink_final_price": null
-    }
-  },
-  {
-    "position_id": 4316,
-    "market_id": "btc-updown-5m-1777515000",
-    "side": "Down",
-    "weight_version": "weights_v001",
-    "timestamp": "2026-04-30T02:15:31.790472+00:00",
-    "actual": {
-      "exit_reason": "scalp",
-      "exit_price": 0.01,
-      "pnl": -16.11128,
-      "gain_pct": -0.953895
-    },
-    "counterfactual": {
-      "resolution_price": 0.0,
-      "pnl": -16.89,
-      "gain_pct": -1.0
-    },
-    "delta_pnl": -0.77872,
-    "scalp_was_optimal": true,
-    "context_at_scalp": {
-      "holding_edge": -0.1729580878280445,
-      "model_prob": 0.1470419121719555,
-      "market_price": 0.32,
-      "seconds_remaining": 2.274509,
-      "exit_threshold_used": -0.12,
-      "strike_price": 76279.7559084768,
-      "btc_at_scalp": 76285.99,
       "btc_at_expiry": 76296.67,
       "chainlink_price_to_beat": null,
       "chainlink_final_price": null
