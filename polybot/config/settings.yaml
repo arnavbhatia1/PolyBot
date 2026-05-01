@@ -1,4 +1,4 @@
-mode: live
+mode: paper
 math:
   kelly_fraction: 0.08
 circuit_breaker:
