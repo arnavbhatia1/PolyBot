@@ -1328,6 +1328,14 @@ async def _evaluate_and_exit_position(
 
     traded_market_id = None
     if action == "EXIT":
+        # Force-emit a final HOLD-style line right before the scalp so the price
+        # the scalp triggered on is always visible (otherwise the 30s log throttle
+        # can hide a fast end-of-window price move from the operator).
+        logger.info(
+            f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {live['seconds_remaining']:.0f}s  |  "
+            f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
+            f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}"
+        )
         sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
 
         # Apply slippage to sell price (worse fill for seller)
@@ -1763,7 +1771,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 book_task = asyncio.create_task(clob_ws.book_updated.wait())
                 resolve_task = asyncio.create_task(clob_ws.market_resolved.wait())
                 done, pending = await asyncio.wait(
-                    {book_task, resolve_task}, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
+                    {book_task, resolve_task}, timeout=0.25, return_when=asyncio.FIRST_COMPLETED)
                 for t in pending:
                     t.cancel()
                 if clob_ws.book_updated.is_set():
@@ -1780,7 +1788,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             except asyncio.TimeoutError:
                 pass  # housekeeping tick — contract discovery, day banners
         else:
-            await asyncio.sleep(0.25)  # fallback polling if no WebSocket
+            await asyncio.sleep(0.1)  # fallback polling if no WebSocket
         try:
             # --- DAY OPEN / CLOSE ---
             now_et = datetime.now(ET)
