@@ -1256,50 +1256,17 @@ async def _evaluate_and_exit_position(
     ws_bid = float(bba.get("best_bid", 0) or 0)
     bid_age = time.time() - float(bba.get("ts", 0) or 0)
     if not (ws_bid > 0 and bid_age <= 10):
-        # No live bid or stale (>10s) — the token's book has gone quiet, likely a
-        # phantom resting order from when the price was much higher. Defer rather
-        # than scalping at a price that no longer exists in the market.
-        if ws_bid > 0:
-            logger.debug("Hold eval deferred: ws_bid=%.3f is %.1fs stale for %s", ws_bid, bid_age, hold_token)
-        return day_wins, day_losses, day_fees, None
-
-    # PHANTOM-BID GUARD: complementary tokens' best bids must sum to ≤1.0 by
-    # no-arbitrage. End-of-window market makers leave stale resting bids that
-    # explode best_bid to phantom values (e.g. Up bid jumps 0.03 → 0.50 with BTC
-    # 100+ below strike). Cross-check the OPPOSITE side's bid; if the sum violates
-    # the no-arb invariant, defer — paper's negRisk fallback (`max(vwap, requested)`)
-    # would otherwise fake-fill the scalp at the phantom price and pollute training.
-    other_bba = clob_ws.best_bid_ask.get(other_token, {}) if clob_ws else {}
-    other_bid = float(other_bba.get("best_bid", 0) or 0)
-    other_age = time.time() - float(other_bba.get("ts", 0) or 0)
-    if other_bid > 0 and other_age <= 10:
-        bid_sum = ws_bid + other_bid
-        if bid_sum > 1.02:
+        # No fresh bid — can't make exit decisions, but still emit the HOLD heartbeat
+        # so the operator knows the position is being monitored.
+        now_ts = time.time()
+        mid = pos["market_id"]
+        if now_ts - _last_hold_log.get(mid, 0) >= 30:
+            _last_hold_log[mid] = now_ts
+            cl_str = f"  cl ${chainlink_feed.price:,.0f}" if chainlink_feed and chainlink_feed.price > 0 else ""
             logger.info(
-                f"  SCALP SKIP {pos['side']}  {live['seconds_remaining']:.0f}s  |  "
-                f"phantom bid: {pos['side']}={ws_bid:.2f} other={other_bid:.2f} "
-                f"sum={bid_sum:.2f} > 1.02 (book has stale liquidity)"
+                f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {live['seconds_remaining']:.0f}s  |  "
+                f"BTC ${btc_now:,.0f}{cl_str}  (no fresh bid)"
             )
-            return day_wins, day_losses, day_fees, None
-
-    # DEPTH-AT-BID GUARD: the bid must have enough size at/near the best price to
-    # absorb the position. A $0.50 bid with $1 of size is not real exit liquidity
-    # for a $5 position — it's a phantom resting order. Require ≥50% of position
-    # absorbable within 2% of best_bid (level-tip depth, not full-book sum).
-    shares_held_check = pos.get("shares_held") or pos["size"] / pos["entry_price"]
-    needed_usd = shares_held_check * ws_bid * 0.5
-    book_for_depth = clob_ws.get_book(hold_token) if clob_ws else {}
-    depth_at_bid = sum(
-        float(b.get("size", 0)) * float(b.get("price", 0))
-        for b in (book_for_depth or {}).get("bids", [])
-        if float(b.get("price", 0)) >= ws_bid * 0.98
-    )
-    if depth_at_bid > 0 and depth_at_bid < needed_usd:
-        logger.info(
-            f"  SCALP SKIP {pos['side']}  {live['seconds_remaining']:.0f}s  |  "
-            f"thin bid: bid={ws_bid:.2f} depth_at_bid=${depth_at_bid:.2f} "
-            f"< need ${needed_usd:.2f} (50% of position)"
-        )
         return day_wins, day_losses, day_fees, None
 
     market_price = ws_bid
