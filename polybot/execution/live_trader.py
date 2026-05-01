@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 0.5  # seconds, doubles each attempt
+_MIN_ORDER_USD = 1.0  # Polymarket CLOB rejects marketable orders below $1 notional
 _NON_RETRYABLE_ERRORS = frozenset({
     "INVALID_ORDER_NOT_ENOUGH_BALANCE",
     "MARKET_NOT_READY",
@@ -123,7 +124,14 @@ def _create_clob_client() -> ClobClient:
         signature_type=SignatureTypeV2.POLY_GNOSIS_SAFE,  # MetaMask EOA → Polymarket Safe
         funder=funder,
     )
-    creds = client.create_or_derive_api_key()
+    # Derive first (GET) — Cloudflare blocks POST /auth/api-key with 403 even
+    # though the library swallows it via fallback. Calling derive directly
+    # avoids the noisy 403 log on every startup. Fall back to create only
+    # for fresh accounts that haven't generated keys yet.
+    try:
+        creds = client.derive_api_key()
+    except Exception:
+        creds = client.create_api_key()
     client.set_api_creds(creds)
     return client
 
@@ -409,6 +417,20 @@ class LiveTrader(BaseTrader):
         Returns:
             FillResult with fill details or failure reason.
         """
+        # Polymarket rejects marketable orders below $1 notional. Short-circuit
+        # before hammering CLOB 3× for a guaranteed-fail order. BUY amount is
+        # USDC; SELL amount is shares (× expected_price for notional).
+        notional_usd = amount if side == BUY else amount * expected_price
+        if notional_usd < _MIN_ORDER_USD:
+            logger.info(
+                "FOK %s skipped: notional $%.2f below $%.2f minimum",
+                side, notional_usd, _MIN_ORDER_USD,
+            )
+            return FillResult(
+                filled=False,
+                reason=f"Order ${notional_usd:.2f} below ${_MIN_ORDER_USD:.2f} CLOB minimum",
+            )
+
         last_error = ""
         for attempt in range(1, _MAX_RETRIES + 1):
             try:

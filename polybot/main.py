@@ -892,6 +892,14 @@ async def _evaluate_signal_and_enter(
         fee_rate=fee_rate,
     )
 
+    if not result.success:
+        logger.warning(
+            f"OPEN {side} REJECTED  |  ${size:.2f} @ {price:.3f}  |  "
+            f"{contract.get('question', cid)}  |  reason: {result.reason or 'unknown'}  "
+            f"— continuing, will re-evaluate next tick"
+        )
+        return None, last_eval_log_window
+
     if result.success:
         # Use the actual fill price (may differ from signal-moment price due to
         # paper trader latency + book-walk, or live FOK slippage).

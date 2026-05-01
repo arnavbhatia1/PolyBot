@@ -18,11 +18,13 @@ async def db():
 def _mock_clob_client():
     """Return a mock ClobClient that passes init checks."""
     mock = MagicMock()
-    mock.create_or_derive_api_key.return_value = {
+    creds = {
         "apiKey": "test-key",
         "secret": "test-secret",
         "passphrase": "test-pass",
     }
+    mock.derive_api_key.return_value = creds
+    mock.create_api_key.return_value = creds
     mock.get_balance_allowance.return_value = {"balance": "10000000"}  # 10 USDC
     return mock
 
@@ -43,7 +45,7 @@ async def test_init_creates_client_and_derives_creds(db):
             from polybot.execution.live_trader import LiveTrader
             trader = LiveTrader(db=db)
             MockClient.assert_called_once()
-            trader.client.create_or_derive_api_key.assert_called_once()
+            trader.client.derive_api_key.assert_called_once()
             trader.client.set_api_creds.assert_called_once()
 
 
