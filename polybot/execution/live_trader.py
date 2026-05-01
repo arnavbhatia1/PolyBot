@@ -270,7 +270,18 @@ class LiveTrader(BaseTrader):
         return await self._submit_fok_order(token_id, SELL, shares, price)
 
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
-        """Sync bankroll with real Polymarket balance."""
+        """Sync bankroll with real Polymarket balance.
+
+        On winning resolutions, wait briefly for Polymarket's auto-redeem to fire
+        (~5 Polygon blocks) before fetching balance — otherwise we sync to the
+        pre-redeem USDC and undercount the bankroll until the next resolution.
+        Harmless if auto-redeem is off: balance just reflects the unredeemed state
+        either way, but the next get_balance() picks up the manual redeem when it
+        happens. Losses skip the wait — no redemption tx fires for $0 shares.
+        """
+        if exit_price >= 0.99:
+            logger.info("Winning resolution — waiting 10s for auto-redeem to confirm on-chain")
+            await asyncio.sleep(10)
         real_balance = await self.get_balance()
         logger.info("Resolution bankroll sync: real balance=%.2f", real_balance)
         return real_balance

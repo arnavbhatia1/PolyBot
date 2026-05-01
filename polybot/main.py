@@ -795,10 +795,13 @@ async def _evaluate_signal_and_enter(
         _log_skip_once(cid, "net_edge_slippage", f"SKIP: net edge {net_edge:+.1%} < min {signal_engine.min_edge:.0%} after {est_slip:.2%} slippage (gross {signal.edge:+.1%})")
         return None, last_eval_log_window
 
-    # Final minimum size check — after all caps have been applied
-    if size < 0.10:
+    # Final minimum size check — after all caps have been applied. Polymarket's
+    # CLOB rejects marketable orders below $1 notional, so gate here to avoid
+    # spamming attempts that can never fill. Paper mode mirrors the same floor
+    # so backtest sample matches live execution.
+    if size < 1.0:
         _record_skip("min_size")
-        _log_skip_once(cid, "min_size", f"SKIP: size ${size:.2f} < $0.10 after caps")
+        _log_skip_once(cid, "min_size", f"SKIP: size ${size:.2f} < $1.00 (Polymarket min order)")
         return None, last_eval_log_window
 
     # Fetch fee rate and tick size in parallel. Fresh ask comes from the direct
