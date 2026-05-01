@@ -1,16 +1,6 @@
 {
   "buffer": [
     [
-      0.6898,
-      null,
-      true
-    ],
-    [
-      0.6403,
-      null,
-      false
-    ],
-    [
       0.8556,
       null,
       true
@@ -499,6 +489,16 @@
       0.6887,
       0.49,
       false
+    ],
+    [
+      0.3022,
+      0.12,
+      false
+    ],
+    [
+      0.6675,
+      0.48,
+      true
     ]
   ],
   "multipliers": {
@@ -508,7 +508,7 @@
   },
   "disagreement_multipliers": {
     "agree": 1.0,
-    "medium": 1.0,
+    "medium": 0.5,
     "strong": 1.0
   }
 }
