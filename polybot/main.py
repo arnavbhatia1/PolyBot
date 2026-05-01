@@ -8,8 +8,12 @@ import logging
 import logging.handlers
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")
 
 # Force UTF-8 on stdout/stderr so Windows cp1252 consoles don't choke on box-drawing
 # chars (═ ─ Δ ± ✓ ✗ ⚠ →) used in pipeline summary output. errors='replace' keeps the
