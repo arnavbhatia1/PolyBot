@@ -237,32 +237,19 @@ class CounterfactualTracker:
                 to_remove.append(position_id)
                 continue
 
-            # Resolve: require Chainlink eventMetadata, retry up to 4 times (~2 min)
-            MAX_CHAINLINK_RETRIES = 4
+            # Resolve only via Chainlink eventMetadata — no Binance fallback.
+            # Binance candle close ≠ Polymarket resolution price; using it produces
+            # wrong training data. The 10-min expiry window above gives Chainlink
+            # enough time to post (typically 2-5 min after round close).
             meta = event_metadata.get(market_id)
-            chainlink_ptb = None
-            chainlink_fp = None
+            if not meta:
+                continue  # keep waiting — Chainlink not posted yet
 
-            if meta:
-                chainlink_ptb = meta["price_to_beat"]
-                chainlink_fp = meta["final_price"]
-                up_won = chainlink_fp >= chainlink_ptb
-                btc_at_expiry = chainlink_fp
-                logger.info(f"COUNTERFACTUAL: {market_id} using Chainlink: priceToBeat={chainlink_ptb:,.2f} final={chainlink_fp:,.2f}")
-            else:
-                ctx["chainlink_retry_count"] = ctx.get("chainlink_retry_count", 0) + 1
-                if ctx["chainlink_retry_count"] <= MAX_CHAINLINK_RETRIES:
-                    continue  # wait for Chainlink metadata to populate
-                # Give up after retries — fall back to Binance
-                btc_at_expiry = btc_at_expiry_fn(binance_feed, market_id)
-                if btc_at_expiry <= 0:
-                    continue
-                strike = ctx["strike_price"]
-                if strike <= 0:
-                    to_remove.append(position_id)
-                    continue
-                up_won = btc_at_expiry >= strike
-                logger.debug(f"COUNTERFACTUAL: {market_id} using Binance fallback after {MAX_CHAINLINK_RETRIES} retries: btc={btc_at_expiry:,.2f} strike={strike:,.2f}")
+            chainlink_ptb = meta["price_to_beat"]
+            chainlink_fp = meta["final_price"]
+            up_won = chainlink_fp >= chainlink_ptb
+            btc_at_expiry = chainlink_fp
+            logger.info(f"COUNTERFACTUAL: {market_id} using Chainlink: priceToBeat={chainlink_ptb:,.2f} final={chainlink_fp:,.2f}")
             side = ctx["side"]
             resolution_price = 1.0 if (side == "Up") == up_won else 0.0
 

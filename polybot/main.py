@@ -1403,6 +1403,30 @@ async def _evaluate_and_exit_position(
 
     traded_market_id = None
     if action == "EXIT":
+        sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
+
+        # PRICE VERIFICATION: the CLOB WS best_bid can carry a stale value because
+        # any price_change event refreshes `ts` without necessarily changing best_bid.
+        # Near expiry a Down-side trade fires a price_change for the Up token,
+        # resetting ts to now but carrying a 0.50 resting bid from an hour ago.
+        # Verify with /price?side=SELL (negRisk cross-match) — this is the actual
+        # executable price and what the Polymarket UI shows.
+        verified_price = 0.0
+        if market_scanner and http_client and sell_token:
+            verified_price = await market_scanner.fetch_market_price(sell_token, "SELL", http_client)
+        if verified_price > 0 and verified_price < ws_bid * 0.70:
+            # Dramatic mismatch — ws_bid is phantom. Re-evaluate with the real price.
+            real_edge = model_prob - verified_price
+            logger.info(
+                f"  SCALP VERIFY {pos['side']}  {live['seconds_remaining']:.0f}s  |  "
+                f"ws_bid={ws_bid:.3f} vs /price={verified_price:.3f} — using real price  "
+                f"real_edge={real_edge:+.0%} thresh={exit_threshold:+.0%}"
+            )
+            if real_edge > exit_threshold:
+                # Real market not bad enough to scalp — hold
+                return day_wins, day_losses, day_fees, None
+            market_price = verified_price
+
         # Force-emit a final HOLD-style line right before the scalp so the price
         # the scalp triggered on is always visible (otherwise the 30s log throttle
         # can hide a fast end-of-window price move from the operator).
@@ -1411,7 +1435,6 @@ async def _evaluate_and_exit_position(
             f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
             f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}"
         )
-        sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
 
         # Apply slippage to sell price (worse fill for seller)
         hold_book = clob_ws.get_book(hold_token) if clob_ws else {}
