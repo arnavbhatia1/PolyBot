@@ -1056,17 +1056,19 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
     ws_ask_up = float(bba_up.get("best_ask", 0) or 0)
     ws_ask_down = float(bba_down.get("best_ask", 0) or 0)
 
-    # Require BOTH sides live before treating as "clob" — otherwise the price_sum
-    # sanity gate downstream would compare a live ask against a stale Gamma price
-    # and spuriously reject valid markets.
+    # Raw book depth — computed here so we can use book best_ask as WS fallback.
+    ask_up, depth_up = market_scanner.clob_best_ask(book_up)
+    ask_down, depth_down = market_scanner.clob_best_ask(book_down)
+
+    # Price source priority: WS BBO → HTTP book best_ask → Gamma (last resort).
+    # HTTP book was just fetched above so it's always fresh. Gamma outcomePrices
+    # are the last-trade price and can be stale — only use when we have nothing else.
     if ws_ask_up > 0 and ws_ask_down > 0:
-        price_up = ws_ask_up
-        price_down = ws_ask_down
-        price_source = "clob"
+        price_up, price_down, price_source = ws_ask_up, ws_ask_down, "clob"
+    elif ask_up > 0 and ask_down > 0:
+        price_up, price_down, price_source = ask_up, ask_down, "clob"
     else:
-        price_up = contract["price_up"]
-        price_down = contract["price_down"]
-        price_source = "gamma"
+        price_up, price_down, price_source = contract["price_up"], contract["price_down"], "gamma"
 
     # Price sanity gate: best_ask + best_ask naturally exceeds 1.00 by the full
     # spread. ±2% accommodates normal 1-4 cent spreads; tighter thresholds reject
@@ -1079,10 +1081,6 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
             last_eval_log_window = eval_window
             logger.info(f"EVAL: stale prices | Up={price_up:.2f} + Dn={price_down:.2f} = {price_sum:.2f} — skipping")
         return None, last_eval_log_window
-
-    # Raw book depth
-    ask_up, depth_up = market_scanner.clob_best_ask(book_up)
-    ask_down, depth_down = market_scanner.clob_best_ask(book_down)
 
     eval_window = int(now_ts // 300) * 300
 
@@ -1403,12 +1401,17 @@ async def _evaluate_and_exit_position(
             f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}"
         )
 
-        # Apply slippage to sell price (worse fill for seller)
+        # Apply slippage to sell price (worse fill for seller).
+        # Prefer the WS BBO bid size over the book snapshot — the snapshot can be
+        # stale (>30s) while ws_bid is required to be fresh (≤10s, checked above).
+        # When both are available, take the larger (more conservative slippage).
         hold_book = clob_ws.get_book(hold_token) if clob_ws else {}
-        bid_depth_usd = sum(
+        book_bid_depth_usd = sum(
             float(b.get("size", 0)) * float(b.get("price", 0))
             for b in (hold_book or {}).get("bids", [])
         )
+        bba_size = float(bba.get("size", 0) or 0) * ws_bid  # WS BBO size in USD
+        bid_depth_usd = book_bid_depth_usd if book_bid_depth_usd > 0 else bba_size
         shares_held = pos.get("shares_held") or pos["size"] / pos["entry_price"]
         exit_size_usd = shares_held * market_price
         impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
