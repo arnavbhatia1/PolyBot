@@ -412,7 +412,10 @@ class LiveTrader(BaseTrader):
         last_error = ""
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                mo = MarketOrderArgs(token_id=token_id, amount=amount, side=side)
+                # Pass expected_price as the FOK limit. py-clob-client treats price=0
+                # as "fetch from /price cross-matched API" which would silently bypass
+                # the bot's best_ask/best_bid-based slippage protection from main.py.
+                mo = MarketOrderArgs(token_id=token_id, amount=amount, side=side, price=expected_price)
                 # Offload blocking SDK calls to thread pool — keeps event loop free
                 signed = await asyncio.to_thread(self.client.create_market_order, mo)
                 resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.FOK)

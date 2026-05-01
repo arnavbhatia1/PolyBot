@@ -801,12 +801,14 @@ async def _evaluate_signal_and_enter(
         _log_skip_once(cid, "min_size", f"SKIP: size ${size:.2f} < $0.10 after caps")
         return None, last_eval_log_window
 
-    # Fetch fee rate, tick size, and fresh execution price in parallel
-    fee_rate, tick_size, fresh_ask = await asyncio.gather(
+    # Fetch fee rate and tick size in parallel. Fresh ask comes from the direct
+    # CLOB WS best_ask (live, no HTTP call), NOT the /price cross-matched API.
+    fee_rate, tick_size = await asyncio.gather(
         market_scanner.fetch_fee_rate(token_id, http_client),
         market_scanner.fetch_tick_size(token_id, http_client),
-        market_scanner.fetch_market_price(token_id, "BUY", http_client),
     )
+    fresh_bba = clob_ws.best_bid_ask.get(token_id, {}) if clob_ws else {}
+    fresh_ask = float(fresh_bba.get("best_ask", 0) or 0)
     # Simulate maker/FOK blend: ~65% of orders fill as maker (0% fee),
     # ~35% fall back to FOK (full taker fee). Randomize per trade.
     if config.get("execution", {}).get("use_maker_orders", False):
@@ -1026,26 +1028,36 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
             return ws_book
         return await market_scanner.fetch_clob_book(token, http_client)
 
-    # Gather all 4 HTTP calls in parallel: both books + both execution prices
-    book_up, book_down, exec_up, exec_down = await asyncio.gather(
+    # Fetch both books in parallel. We derive entry prices from the direct CLOB
+    # best_ask (the actual price you'd PAY to buy this token via FOK), NOT the
+    # /price cross-matched API which can return phantom executable prices that
+    # don't reflect what live trading actually fills against.
+    book_up, book_down = await asyncio.gather(
         _get_book(ws_book_up, token_up),
         _get_book(ws_book_down, token_down),
-        market_scanner.fetch_market_price(token_up, "BUY", http_client),
-        market_scanner.fetch_market_price(token_down, "BUY", http_client),
     )
 
-    if exec_up > 0 or exec_down > 0:
-        price_up = exec_up if exec_up > 0 else contract["price_up"]
-        price_down = exec_down if exec_down > 0 else contract["price_down"]
+    # Direct best_ask from the CLOB book — what FOK buys would actually pay.
+    bba_up = clob_ws.best_bid_ask.get(token_up, {}) if clob_ws else {}
+    bba_down = clob_ws.best_bid_ask.get(token_down, {}) if clob_ws else {}
+    ws_ask_up = float(bba_up.get("best_ask", 0) or 0)
+    ws_ask_down = float(bba_down.get("best_ask", 0) or 0)
+
+    # Require BOTH sides live before treating as "clob" — otherwise the price_sum
+    # sanity gate downstream would compare a live ask against a stale Gamma price
+    # and spuriously reject valid markets.
+    if ws_ask_up > 0 and ws_ask_down > 0:
+        price_up = ws_ask_up
+        price_down = ws_ask_down
         price_source = "clob"
     else:
         price_up = contract["price_up"]
         price_down = contract["price_down"]
         price_source = "gamma"
 
-    # Price sanity gate: fetch_market_price returns BUY (ask) prices, so the sum
-    # of both asks naturally exceeds 1.00 by the full spread. ±2% accommodates
-    # normal 1-4 cent spreads; tighter thresholds reject valid markets every tick.
+    # Price sanity gate: best_ask + best_ask naturally exceeds 1.00 by the full
+    # spread. ±2% accommodates normal 1-4 cent spreads; tighter thresholds reject
+    # valid markets every tick.
     price_sum = price_up + price_down
     if price_source == "clob" and (price_sum < 0.98 or price_sum > 1.02):
         _record_skip("stale_prices")
@@ -1221,16 +1233,17 @@ async def _evaluate_and_exit_position(
 
     indicators = indicator_engine.compute_all(binance_feed.buffer)
 
-    # NegRisk execution sell price via /price endpoint. Direct CLOB WS bid and Gamma
-    # outcomePrices are NOT safe fallbacks here — in negRisk markets they reflect direct
-    # book only (or stale Gamma data) while /price reflects the cross-matched executable
-    # price. Using direct/stale prices would underestimate the true scalp exit value
-    # (e.g. losing-side direct bid $0.05 vs cross-matched $0.55) and trigger wrong exits.
+    # Hold/scalp decisions use the direct best_bid from the CLOB WebSocket BBO — the
+    # actual price you'd RECEIVE when selling, matching what live FOK fills against.
+    # We deliberately avoid the /price cross-matched API, which can spike to phantom
+    # values near expiry from stale cross-match offers that wouldn't actually fill.
     hold_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
-    market_price = await market_scanner.fetch_market_price(hold_token, "SELL", http_client)
-    if market_price <= 0:
-        # Cross-matched price unavailable — defer the hold/exit decision to the next tick
-        # rather than make an execution decision on direct-book-only or stale Gamma data.
+    bba = clob_ws.best_bid_ask.get(hold_token, {}) if clob_ws else {}
+    ws_bid = float(bba.get("best_bid", 0) or 0)
+    if ws_bid > 0:
+        market_price = ws_bid
+    else:
+        # No live bid yet — defer the decision rather than evaluating on stale data.
         return day_wins, day_losses, day_fees, None
 
     exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
