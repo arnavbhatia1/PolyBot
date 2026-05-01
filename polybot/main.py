@@ -1149,14 +1149,14 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
     now_ts = int(time.time())
     traded_contracts = {k: v for k, v in traded_contracts.items() if now_ts - v < 600}
 
-    # Block re-entry if position is still open; allow flip after scalp (flip_count > 0)
-    if cid in traded_contracts:
-        state = _window_flip_state.get(cid, {})
-        flip_count = state.get("flip_count", 0)
-        if flip_count > 1:
-            return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
-        if flip_count == 0 and await db.has_position_for_market(cid):
-            return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
+    # Block re-entry based on flip state and live DB position — always check
+    # regardless of traded_contracts (which only tracks same-session trades).
+    state = _window_flip_state.get(cid, {})
+    flip_count = state.get("flip_count", 0)
+    if flip_count > 1:
+        return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
+    if flip_count == 0 and db is not None and await db.has_position_for_market(cid):
+        return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
 
     # Subscribe WebSocket to this contract's tokens (idempotent)
     token_up = contract["token_id_up"]
