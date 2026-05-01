@@ -1,147 +1,3 @@
-- probability_compression and spot_flow_weight both show 6 tests of consistent positive BT delta
-- Q4 edge realization stuck at 0.49 — model still severely overconfident at high-edge entries
-- High ATR regime wins 56.2% vs 52.3% low ATR — rising volatility (ATR +44%) is helping
-- Down trades win 54.6% vs Up 53.1% — mild bearish edge persists across all cycles
-
-**Warnings:**
-- ATR and model_probability distribution shifts (KS>0.27) mean backtest may underestimate live variance
-- SPRT negative last 50 trades with 0% edge entries — recent entry quality is deteriorating
-- atr_sigma_ratio lower direction is untested — monitor carefully if adopted; combined with probability_compression may over-sharpen L1
-
-**Reasoning:** After 20+ cycles with zero adoptions, the only path forward is combining the two empirically strongest positive-delta directions (probability_compression and spot_flow_weight) into a single proposal where their additive contributions can clear the 0.020 floor together. atr_sigma_ratio is flipped to the untested lower direction since the only tested direction (up) showed -0.024 BT delta, and lowering it increases L1 aggressiveness which complements probability_compression's role in reducing overconfidence at extremes.
-
-## 2026-04-22T05:17:48.231478+00:00
-
-**Source:** Claude (low)
-**Proposed Changes (3):**
-  - atr_sigma_ratio=1.2 (Only ↓ direction has a positive adopted BT delta (+0.023); pushing to the constraint floor (1.2) from 1.3 to maximize L1 aggressiveness in the one validated direction.)
-  - momentum_weight=-0.039 (Completely untested parameter; all indicators score ~53-54% accuracy (well below 65% threshold), so increasing the fade signal should filter out weak indicator noise — covers a fresh parameter family.)
-  - logit_scale=3.5 (Lowering logit_scale is completely untested (only ↑ to 4.5 was tried at -0.001 delta); with noisy signals dominating, reducing amplification of L2-L5 may improve fold consistency where strong signals misfire.)
-
-**Findings:**
-- atr_sigma_ratio ↓ is the only empirically validated direction with an adoption (+0.023 BT Δ)
-- spot_flow_weight already at max (0.10) — no more room to raise this signal
-- All indicators score 53-54% accuracy — well below 65% actionability threshold
-- Q4 edge realization stuck at 0.49 — model still overconfident at high-edge entries
-- High ATR regime wins 56.2% vs 52.3% low ATR — rising volatility is helping edge
-
-**Warnings:**
-- probability_compression failed walk-forward in all 7 attempts despite positive delta — fold consistency is the real barrier
-- atr_sigma_ratio at 1.2 is the hard floor — no further room if this direction continues
-- SPRT negative last 50 trades with 0% edge entries — recent entry quality may be structurally impaired
-
-**Reasoning:** After exhausting nearly every parameter direction, the only validated path is atr_sigma_ratio ↓ — pushing it to the constraint floor (1.2) maximizes the one direction that has actually adopted. Momentum_weight and logit_scale ↓ are both completely untested families that cover fresh territory; given all indicators are scoring ~53-54% (far below the 65% action threshold), fading them harder and reducing signal amplification are internally consistent with the noise-dominated signal environment.
-
-## 2026-04-22T05:26:50.063161+00:00
-
-**Source:** Claude (high)
-**Proposed Changes (0):**
-  - none
-
-**Findings:**
-- 10 parameter directions tested — zero walk-forward adoptions, structural noise floor too high
-- Q4 edge realization at 0.49 persists — model overconfident but no parameter has fixed it yet
-- High ATR trades win 56.2% vs 52.3% low ATR — volatility surge is net positive for the model
-- Down trades win 54.6% vs Up 53.1% — mild persistent bearish edge across all cycles
-- SPRT negative last 50 trades — recent entry quality below expectation, monitor closely
-
-**Warnings:**
-- ATR surged 44% and model_probability dropped (57.8%→54.6%) — regime shift may be degrading signal quality
-- Zero adoptions after 20+ cycles suggests backtest noise (SE=±0.071) is too large for single-param changes to clear
-- SPRT negative with 0% edge-positive entries last 50 trades — live conditions may be structurally impaired
-
-**Reasoning:** After 20+ proposal cycles with zero walk-forward adoptions across 10 parameter families, the evidence is clear: individual parameter changes cannot clear the ±0.071 SE noise floor at N=204 baseline trades — even when BT delta is positive (+0.014 to +0.027), fold consistency fails. The only honest recommendation this cycle is no changes — proposing more small tweaks wastes pipeline cycles and risks adopting noise. The operator should investigate whether the baseline population (N=204) can be expanded or whether the walk-forward fold structure is suppressing adoption of genuinely positive signals.
-
-## 2026-04-23T03:51:11.126930+00:00
-
-**Source:** Claude (high)
-**Proposed Changes (0):**
-  - none
-
-**Findings:**
-- Q4 edge realization improved to 0.69 — overconfidence is self-correcting via regime shift
-- ATR surged 44% — high-vol regime where model wins 56.8% vs 52.2% mid-vol
-- Scalp exits leaving $256 on table — hold-to-resolution beats early exits across all time buckets
-- OBV accuracy 61.5% is noise (N=13) — ignore; all other indicators cluster at 53-55%
-- Zero walk-forward adoptions after 20+ individual-param cycles — noise floor exceeds single-param signal
-
-**Warnings:**
-- SPRT negative with only 3% edge-positive entries last 50 trades — live entry quality is degraded
-- Model probability distribution shifted down (0.573→0.513) — model is entering more uncertain trades recently
-- Every tested direction near the 0.020 floor but failing fold consistency — structural noise issue at N=268 baseline
-
-**Reasoning:** After exhaustively testing 10 parameter families across 20+ cycles with zero walk-forward adoptions, the evidence is unambiguous: the backtest noise (SE=±0.062) exceeds the signal of any individual parameter change at this baseline N. Q4 realization improved to 0.69 this cycle suggesting the prior overconfidence concern is partially self-resolving through the ATR regime shift. Proposing another marginal tweak would waste a pipeline slot and risk adopting noise — the correct action is to hold the current config and let the live data accumulate toward a lower-noise baseline.
-
-## 2026-04-24T02:45:50.968301+00:00
-
-**Source:** Local fallback (Claude unavailable)
-
-**Analysis:** {'win_rate': 0.5408106607440311, 'avg_gain_pct': 0.11703932759578012, 'total_trades': 1801}
-
-**Key Findings:**
-- Overall: 1801 trades, WR 54%, Sharpe +0.122, avg gain +0.1170
-- Recent (14d-weighted): WR 54%, Sharpe +0.121
-
-**Risk Warnings:**
-- None
-
-**Proposed Changes (1):**
-  - weights={'rsi': 0.1994, 'macd': 0.2496, 'stochastic': 0.2019, 'obv': 0.1501, 'vwap': 0.1989} (local fallback — indicator-effectiveness reweight)
-
-## 2026-04-24T03:18:39.669282+00:00
-
-**Source:** Claude (low)
-**Proposed Changes (3):**
-  - logit_scale=5.0 (Tested once at 4.5 (Δ=-0.001) but direction rules require testing higher — 5.0 is untested and amplifies the strongest signals (flow, regime) more, which the counterfactual scalp analysis says would reduce premature exits by making initial entry confidence stronger.)
-  - flow_weight=0.08 (Only tested at 0.07 (Δ=-0.002) — direction rules say test higher; 0.08 and 0.10 are untested, and L3 order flow is the strongest documented signal; combined with logit_scale=5.0, the interaction amplifies flow signal more decisively.)
-  - min_atr=12.0 (Completely untested parameter — low-ATR regime wins only 53.4% vs high-ATR 56.2%, and raising the floor from 8.0 to 12.0 filters out low-volatility windows where the model has least edge, directly improving entry quality.)
-
-**Findings:**
-- Edge calibration inverted: low-edge trades (4-8%) win 55.9%, high-edge (12-20%) only 52% — model overconfident at extremes
-- High-ATR trades win 56.2% vs low-ATR 53.4% — filtering low-vol windows improves base rate
-- Scalp exits wrong 54% of time — holding beats scalping, stronger initial signal would reduce premature exits
-- Q4 edge realization improved to 0.77 from prior 0.49 — overconfidence is partially self-correcting
-- 60-180s window wins only 47.5% — mid-window entries significantly underperform early entries
-
-**Warnings:**
-- logit_scale + flow_weight interact — raising both compounds signal amplification; monitor for over-fitting in neutral regime (91% of trades)
-- min_atr=12.0 may reduce trade count significantly — watch for volume drop if live trades fall below 15/day
-- SPRT negative with 0% edge-positive entries last 50 trades — live entry quality remains degraded independent of parameter choices
-
-**Reasoning:** The three changes target distinct parameter families with no prior failed attempts at these exact values: logit_scale at 5.0 (untested, amplifies strongest signals more per direction rules), flow_weight at 0.08 (untested level, L3 is best-documented signal), and min_atr at 12.0 (completely untested, directly filters the demonstrably weaker low-vol regime). The inverse edge-WR relationship (low edge outperforms high edge) confirms the model needs either less overconfidence at extremes or better signal quality on high-conviction entries — logit_scale and flow_weight address the latter. All three changes are additive and cover different parameter families as required.
-
-## 2026-04-24T03:59:28.795309+00:00
-
-**Source:** Claude (low)
-**Proposed Changes (3):**
-  - probability_compression=0.75 (Seven prior tests at 0.80-0.92 all showed positive BT delta (avg +0.014) — pushing decisively to 0.75 (untested, most aggressive level) targets the Q4 realization gap (0.77 vs ideal 1.0) and aims to generate a delta large enough to clear fold consistency where prior attempts clustered near but below the floor.)
-  - logit_scale=3.5 (Both ↑ tests (4.5, 5.0) showed negative delta (-0.001, -0.002) confirming higher amplification hurts — the untested ↓ direction (3.5) reduces noise amplification from weak L2-L5 signals (all indicators at 53-55%, well below 65% threshold) and is internally consistent with fading noisy signals.)
-  - momentum_weight=-0.039 (Not in cumulative failed list — an untested parameter direction; with all indicators scoring 53-55% (far below 65% actionability), increasing the fade signal from -0.02 to -0.05 more aggressively counters weak indicator noise in the dominant neutral regime.)
-
-**Findings:**
-- Q4 edge realization at 0.77 — still underperforming, model moderately overconfident at high-edge entries
-- All indicators score 53-55% — below the 65% threshold, fading them harder makes sense
-- 60-180s entries win only 47.5% — mid-window timing is a consistent weak spot
-- High ATR trades win 56.2% vs low ATR 53.4% — volatility regime is the clearest edge driver
-- Scalp exits wrong 54% of time — model is exiting good positions too early
-
-**Warnings:**
-- logit_scale ↓ and probability_compression ↓ both reduce signal confidence — monitor for under-trading if combined effect is too conservative
-- Nearly every parameter direction has been tested; if this cycle fails, the config may be near a local optimum and a rest period is warranted
-- SPRT negative last 50 trades — live entry quality remains below expectation independent of parameter tuning
-
-**Reasoning:** With atr_sigma_ratio in cooldown (the only validated direction), the strategy focuses on three untested or under-explored directions: probability_compression pushed more aggressively to 0.75 (all seven prior tests positive but below fold floor — a bolder move may clear it), logit_scale lowered to 3.5 (both ↑ tests negative, ↓ is untested and consistent with the noisy signal environment), and momentum_weight faded harder to -0.05 (absent from failed attempts table, consistent with 53-55% indicator accuracy). These cover three distinct parameter families and target the persistent overconfidence at high-edge entries.
-
-## 2026-04-24T04:04:48.066458+00:00
-
-**Source:** Claude (low)
-**Proposed Changes (3):**
-  - student_t_df=7 (Only tested ↓ direction (df=4, Δ=-0.026 failed); trying ↑ to df=7 reduces tail fatness, which addresses Q4 edge realization gap (0.77) where model over-prices extreme positions using fat-tail CDF.)
-  - liquidation_weight=0.06 (Only test at 0.05 showed positive BT delta (+0.004) but too small to adopt alone; pushing to the constraint max (0.06, untested) maximizes OI liquidation cascade signal in the current high-ATR regime where cascades are more frequent.)
-  - regime_weight=0.02 (Only tested ↑ direction (0.05, Δ=-0.003 failed); dropping to minimum (0.02, untested ↓) reduces autocorrelation noise in the dominant neutral regime (91% of trades) where regime signal has near-zero predictive value.)
-
-**Findings:**
-- Low-edge trades (4-8%) win 55.9% — high-edge (12-20%) only 52%, model overconfident at extremes
 - 60-180s window wins only 47.5% — 6.6× above noise floor, consistent underperformance
 - Scalp exits wrong 54% of time — holding beats scalping across all time buckets
 - High-ATR regime wins 56.2% vs low-ATR 53.4% — volatility is the clearest edge driver
@@ -424,3 +280,29 @@
 - probability_compression + spot_flow_weight interact via logit-space signal amplification — monitor combined delta carefully
 
 **Reasoning:** With virtually every parameter direction exhausted, this cycle targets three genuinely untested gap-fill values in the families with the best historical average BT delta: probability_compression at 0.78 (between the two best prior tests in the ↓ direction), spot_flow_weight at 0.07 (between two failed adjacent tests in the consistently positive ↑ direction), and liquidation_weight at 0.07 (all prior ↑ tests positive, ATR regime rising). The ATR mean rising back to 32.6 after months of compression is the key structural signal — if the backtest now trains on data more aligned with live conditions, fold consistency may finally be achievable. If these also fail, an architecture review rather than continued parameter search is warranted.
+
+## 2026-05-01T03:16:26.893837+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (2) [operator-only]:**
+  - exit_edge_threshold: -0.12 -> -0.05 [high]
+    Scalps triggered at holding_edge < -0.10 are correct only 40% of the time (n=896, 10pp below break-even, ~6× noise floor) — the current -0.12 threshold permits massive value destruction in this bucket; tightening to -0.05 would cut off the two worst buckets (0 to -0.02 at 40% accuracy n=233, and <-0.10 at 40% accuracy n=896) while preserving the neutral -0.02 to -0.05 bucket (59% accuracy).
+  - adverse_selection_threshold: 0.85 -> 0.88 [medium]
+    The pre_submit_edge_drift gate blocked 223 trades of which 61% were profitable with sim_pnl=+$28.31 — both the 60% profitable bar and positive sim_pnl bar for loosening are met, indicating the gate is systematically over-filtering edge-positive entries in the current low-ATR regime.
+
+**Findings:**
+- All 15+ backtestable param families exhausted — no combination clears the 0.027 delta bar.
+- Edge calibration inverted: Q4 (highest conviction) realizes only 0.42 vs Q1 at 1.36.
+- Scalp exits at holding_edge < -0.10 correct only 40% of time (n=896) — primary value leak.
+- Last 100 trades WR=60%, PnL=+$79.80 — possible regime recovery underway.
+- ATR dropped 26.6→16.4 (KS=0.327) — backtest-to-live gap persists, degrades BT reliability.
+
+**Warnings:**
+- SPRT at 0% enter rate combined with degrading 5-bucket trend suggests live edge may be structurally impaired, not just parameter-sensitive.
+- With 30+ failed parameter combinations and zero live-validated adoptions, continued parameter search risks overfitting noise — architecture review may be warranted.
+- The inverted edge-WR relationship (Q4 at 0.42) persists across regimes — if model probability is structurally miscalibrated, no single parameter fix will resolve it.
+
+**Reasoning:** Every backtestable parameter family has been tested exhaustively with none clearing the 0.027 Sharpe delta required for adoption — empty changes is the correct and only defensible call. The two manual observations (exit_edge_threshold tightening and adverse_selection loosening) remain the highest-confidence actionable levers, both backed by N>200 with unambiguous directional signals that exceed the noise floor by 6× and 3× respectively. The apparent recovery in the last 100 trades (WR=60%) warrants monitoring before any structural changes are introduced.
