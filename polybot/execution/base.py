@@ -250,11 +250,12 @@ class BaseTrader(ABC):
         pnl = revenue - position["size"]
         gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
 
-        # --- Persist to DB ---
+        # --- Persist to DB (atomic: close + bankroll credit in one transaction) ---
         total_fees = entry_fee_usd + fee_usdc
-        await self.db.close_position(position_id, exit_price=fill.fill_price, log_return=lr,
-                                     pnl=pnl, fees=total_fees)
-        await self.db.adjust_bankroll(revenue)
+        await self.db.close_position_and_credit_bankroll(
+            position_id, exit_price=fill.fill_price, log_return=lr,
+            bankroll_delta=revenue, pnl=pnl, fees=total_fees,
+        )
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
                            pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=fee_usdc,
@@ -288,15 +289,14 @@ class BaseTrader(ABC):
         pnl = revenue - position["size"]
         gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
 
-        # --- Compute log return and close in DB ---
+        # --- Compute log return, then close + set bankroll atomically ---
         lr = log_return(position["entry_price"], exit_price)
         total_fees = entry_fee_usd + exit_fee_usd_val
-        await self.db.close_position(position_id, exit_price=exit_price, log_return=lr,
-                                     pnl=pnl, fees=total_fees)
-
-        # --- Delegate bankroll computation to subclass ---
         new_bankroll = await self._resolve_bankroll(position, exit_price)
-        await self.db.set_bankroll(new_bankroll)
+        await self.db.close_position_and_set_bankroll(
+            position_id, exit_price=exit_price, log_return=lr,
+            new_bankroll=new_bankroll, pnl=pnl, fees=total_fees,
+        )
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
                            pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=exit_fee_usd_val,

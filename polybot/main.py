@@ -1217,17 +1217,17 @@ async def _evaluate_and_exit_position(
 
     indicators = indicator_engine.compute_all(binance_feed.buffer)
 
-    # NegRisk execution sell price via /price endpoint
+    # NegRisk execution sell price via /price endpoint. Direct CLOB WS bid and Gamma
+    # outcomePrices are NOT safe fallbacks here — in negRisk markets they reflect direct
+    # book only (or stale Gamma data) while /price reflects the cross-matched executable
+    # price. Using direct/stale prices would underestimate the true scalp exit value
+    # (e.g. losing-side direct bid $0.05 vs cross-matched $0.55) and trigger wrong exits.
     hold_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
-    exec_sell = await market_scanner.fetch_market_price(hold_token, "SELL", http_client)
-    if exec_sell > 0:
-        market_price = exec_sell
-    elif clob_ws:
-        bba = clob_ws.best_bid_ask.get(hold_token, {})
-        ws_bid = float(bba.get("best_bid", 0) or 0)
-        market_price = ws_bid if ws_bid > 0 else (live["price_up"] if pos["side"] == "Up" else live["price_down"])
-    else:
-        market_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
+    market_price = await market_scanner.fetch_market_price(hold_token, "SELL", http_client)
+    if market_price <= 0:
+        # Cross-matched price unavailable — defer the hold/exit decision to the next tick
+        # rather than make an execution decision on direct-book-only or stale Gamma data.
+        return day_wins, day_losses, day_fees, None
 
     exit_threshold = (scheduler._exit_edge_threshold if scheduler and scheduler._exit_edge_threshold is not None
                       else default_exit_threshold)
@@ -1351,7 +1351,9 @@ async def _evaluate_and_exit_position(
         exit_fill = round(market_price * (1 - slip), 4)
 
         result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token)
-        if result.success:
+        if not result.success:
+            logger.warning(f"  SCALP RETRY — close_trade failed (will retry next tick): {result.reason}")
+        elif result.success:
             pnl = result.pnl
             gain_pct = result.gain_pct
             total_fees = result.entry_fee_usd + result.exit_fee_usd
@@ -1369,18 +1371,18 @@ async def _evaluate_and_exit_position(
                 f"  {_C.YELLOW}Why: {reason}{_C.RESET}\n"
                 f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
                 f"{color}{'=' * 69}{_C.RESET}")
-            if breaker:
-                breaker.update_bankroll(bankroll_after)
-                await db.set_peak_bankroll(breaker.peak_bankroll)
-                cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
-                if cb_event and alert_manager:
-                    await alert_manager.send_circuit_breaker(cb_event, breaker)
             if alert_manager:
                 await alert_manager.send_trade_closed(
                     question=pos.get("question", ""), exit_price=exit_fill, log_return=0, hold_hours=0,
                     side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
                     gain_pct=gain_pct, reason=f"scalp {won.lower()}", fees=total_fees,
                     bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
+            if breaker:
+                breaker.update_bankroll(bankroll_after)
+                await db.set_peak_bankroll(breaker.peak_bankroll)
+                cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
+                if cb_event and alert_manager:
+                    await alert_manager.send_circuit_breaker(cb_event, breaker)
             await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
                                   exit_reason="scalp", pnl=pnl, fees=total_fees,
                                   seconds_remaining_at_exit=float(live.get("seconds_remaining", 0)),
@@ -1454,18 +1456,18 @@ async def _resolve_expired_position(
             f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
             f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
             f"{color}{'=' * 69}{_C.RESET}")
-        if breaker:
-            breaker.update_bankroll(bankroll_after)
-            await db.set_peak_bankroll(breaker.peak_bankroll)
-            cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
-            if cb_event and alert_manager:
-                await alert_manager.send_circuit_breaker(cb_event, breaker)
         if alert_manager:
             await alert_manager.send_trade_closed(
                 question=pos.get("question", ""), exit_price=exit_price, log_return=0, hold_hours=0,
                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
                 gain_pct=gain_pct, reason=won.lower(), fees=total_fees,
                 bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
+        if breaker:
+            breaker.update_bankroll(bankroll_after)
+            await db.set_peak_bankroll(breaker.peak_bankroll)
+            cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
+            if cb_event and alert_manager:
+                await alert_manager.send_circuit_breaker(cb_event, breaker)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
                               exit_reason="resolution", pnl=pnl, fees=total_fees,
                               signal_engine=signal_engine)
@@ -1572,18 +1574,18 @@ async def _manage_orphaned_position(
             f"  {pos.get('question', pos['market_id'])}\n"
             f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
             f"{color}{'=' * 69}{_C.RESET}")
-        if breaker:
-            breaker.update_bankroll(bankroll_after)
-            await db.set_peak_bankroll(breaker.peak_bankroll)
-            cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
-            if cb_event and alert_manager:
-                await alert_manager.send_circuit_breaker(cb_event, breaker)
         if alert_manager:
             await alert_manager.send_trade_closed(
                 question=pos.get("question", ""), exit_price=exit_price, log_return=0, hold_hours=0,
                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
                 gain_pct=gain_pct, reason=won.lower(), fees=total_fees,
                 bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
+        if breaker:
+            breaker.update_bankroll(bankroll_after)
+            await db.set_peak_bankroll(breaker.peak_bankroll)
+            cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
+            if cb_event and alert_manager:
+                await alert_manager.send_circuit_breaker(cb_event, breaker)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
                               exit_reason="resolution", pnl=pnl, fees=total_fees,
                               signal_engine=signal_engine)

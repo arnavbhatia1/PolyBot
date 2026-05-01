@@ -130,26 +130,23 @@ class PaperTrader(BaseTrader):
             return FillResult(filled=False, reason="book empty during fill")
         vwap = spent / consumed
 
-        # Slippage check — only enforced on buys. Sells always fill at VWAP regardless
-        # of how far below the requested price the bids are. In live trading, FOK market
-        # sells hit whatever bids exist; there's no pre-check. Enforcing slippage on
-        # sells caused fast-falling markets to reject repeated exit attempts (bids drop
-        # below the 2% tolerance) while the position bled — opposite of desired behavior.
-        if side == "buy":
-            max_allowed = requested_price * (1 + self.max_slippage)
-            if vwap > max_allowed:
-                return FillResult(
-                    filled=False,
-                    reason=f"slippage {abs(vwap - requested_price)/requested_price:.2%} exceeds max {self.max_slippage:.2%}",
-                )
-
-        # Detect insufficient depth (book couldn't absorb the full order).
+        # Detect insufficient depth (book couldn't absorb the full order from direct levels).
         if remaining > 1e-6:
             return FillResult(
                 filled=False,
                 reason=f"insufficient book depth (remaining={remaining:.2f})",
             )
 
-        # Paper's FillResult convention: fill_size in USD notional for buys, omitted for sells.
+        # negRisk cross-matching: the live CLOB will execute at the better of the direct
+        # book VWAP or the cross-matched /price API price (requested_price). For sells,
+        # better = higher; for buys, better = lower. Without this, paper sells of losing
+        # tokens fill at near-zero direct bids while live would fill at the cross-matched
+        # price (and paper buys could fill at expensive direct asks while live cross-match
+        # via complementary-token "merge" matching is cheaper).
+        if side == "sell":
+            fill_price = max(vwap, requested_price)
+        else:
+            fill_price = min(vwap, requested_price)
+
         fill_size = spent if side == "buy" else 0.0
-        return FillResult(filled=True, fill_price=vwap, fill_size=fill_size)
+        return FillResult(filled=True, fill_price=fill_price, fill_size=fill_size)

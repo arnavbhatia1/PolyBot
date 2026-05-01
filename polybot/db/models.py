@@ -214,6 +214,85 @@ class Database:
         )
         await self.conn.commit()
 
+    async def close_position_and_set_bankroll(
+        self, position_id: int, exit_price: float, log_return: float,
+        new_bankroll: float, pnl: float = 0.0, fees: float = 0.0,
+    ) -> None:
+        """Close position, write trade_history, and set bankroll absolute in one transaction.
+
+        Used by resolve_position where the subclass computes new_bankroll directly
+        (paper: bankroll + revenue; live: on-chain balance).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            await self.conn.execute(
+                "UPDATE positions SET status='closed', exit_price=?, exit_timestamp=?, log_return=? WHERE id=?",
+                (exit_price, now, log_return, position_id),
+            )
+            cursor = await self.conn.execute(
+                "SELECT * FROM positions WHERE id=?", (position_id,)
+            )
+            pos = dict(await cursor.fetchone())
+            await self.conn.execute(
+                """INSERT INTO trade_history
+                (position_id, market_id, question, side, entry_price, exit_price, size,
+                 signal_score, signal_strength, ev_at_entry, log_return,
+                 weight_version, entry_timestamp, exit_timestamp, pnl, fees)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (pos["id"], pos["market_id"], pos["question"], pos["side"],
+                 pos["entry_price"], exit_price, pos["size"],
+                 pos["signal_score"], pos["signal_strength"], pos["ev_at_entry"],
+                 log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees),
+            )
+            await self.conn.execute(
+                "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
+                "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
+                (new_bankroll,),
+            )
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
+
+    async def close_position_and_credit_bankroll(
+        self, position_id: int, exit_price: float, log_return: float,
+        bankroll_delta: float, pnl: float = 0.0, fees: float = 0.0,
+    ) -> None:
+        """Close position, write trade_history, and credit bankroll in a single transaction.
+
+        Mirror of open_position_and_debit_bankroll. A crash mid-write can never leave
+        a closed position with the bankroll uncredited (or vice versa).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            await self.conn.execute(
+                "UPDATE positions SET status='closed', exit_price=?, exit_timestamp=?, log_return=? WHERE id=?",
+                (exit_price, now, log_return, position_id),
+            )
+            cursor = await self.conn.execute(
+                "SELECT * FROM positions WHERE id=?", (position_id,)
+            )
+            pos = dict(await cursor.fetchone())
+            await self.conn.execute(
+                """INSERT INTO trade_history
+                (position_id, market_id, question, side, entry_price, exit_price, size,
+                 signal_score, signal_strength, ev_at_entry, log_return,
+                 weight_version, entry_timestamp, exit_timestamp, pnl, fees)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (pos["id"], pos["market_id"], pos["question"], pos["side"],
+                 pos["entry_price"], exit_price, pos["size"],
+                 pos["signal_score"], pos["signal_strength"], pos["ev_at_entry"],
+                 log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees),
+            )
+            await self.conn.execute(
+                "UPDATE bankroll SET amount = amount + ? WHERE id = 1",
+                (bankroll_delta,),
+            )
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
+
     async def has_position_for_market(self, market_id: str) -> bool:
         cursor = await self.conn.execute(
             "SELECT COUNT(*) FROM positions WHERE market_id=? AND status IN ('open', 'pending_resolution')",

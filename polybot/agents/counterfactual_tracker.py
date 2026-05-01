@@ -393,4 +393,4 @@ class CounterfactualTracker:
     @property
     def watched_markets(self) -> list[str]:
         """List of market_ids currently being watched."""
-        return list(self._watchlist.keys())
+        return list({ctx["market_id"] for ctx in self._watchlist.values()})
