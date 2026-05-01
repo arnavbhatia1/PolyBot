@@ -1,4 +1,12 @@
-"""Live trader — real Polymarket CLOB orders via py-clob-client SDK."""
+"""Live trader — real Polymarket CLOB orders via py-clob-client-v2 SDK.
+
+py-clob-client v0.34.6 was hardcoded to v1 order structs and signed against the
+v1 EIP-712 domain. After Polymarket migrated wallets to v2 contracts
+(0xE111180000d2663C0091e4f400237545B87B996B regular,
+0xe2222d279d744050d28e00520010520000310F59 NegRisk), every order POST returned
+{"error": "order_version_mismatch"}. py-clob-client-v2 ships v2 order structs
+(timestamp/metadata/builder; no expiration/nonce/feeRateBps) and the v2 domain.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -6,14 +14,17 @@ import logging
 import os
 from typing import Any
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.clob_types import (
     AssetType,
     BalanceAllowanceParams,
     MarketOrderArgs,
+    OrderArgs,
+    OrderPayload,
     OrderType,
 )
-from py_clob_client.order_builder.constants import BUY, SELL
+from py_clob_client_v2.order_builder.constants import BUY, SELL
+from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV2
 
 from polybot.db.models import Database
 from polybot.execution.base import BaseTrader, FillResult
@@ -109,10 +120,10 @@ def _create_clob_client() -> ClobClient:
         "https://clob.polymarket.com",
         key=private_key,
         chain_id=137,
-        signature_type=2,  # GNOSIS_SAFE — proxy wallet deployed via Polymarket
-        funder=funder,    # NOTE: if auth fails, try signature_type=1 (POLY_PROXY)
+        signature_type=SignatureTypeV2.POLY_GNOSIS_SAFE,  # MetaMask EOA → Polymarket Safe
+        funder=funder,
     )
-    creds = client.create_or_derive_api_creds()
+    creds = client.create_or_derive_api_key()
     client.set_api_creds(creds)
     return client
 
@@ -286,13 +297,14 @@ class LiveTrader(BaseTrader):
             # OrderArgs.size = shares, not USDC
             shares = size / price
 
-            order = await asyncio.to_thread(self.client.create_order,
-                order_args={
-                    "token_id": token_id,
-                    "price": price,
-                    "size": shares,
-                    "side": BUY,
-                },
+            order = await asyncio.to_thread(
+                self.client.create_order,
+                OrderArgs(
+                    token_id=token_id,
+                    price=price,
+                    size=shares,
+                    side=BUY,
+                ),
             )
             resp = await asyncio.to_thread(self.client.post_order, order)
 
@@ -361,7 +373,9 @@ class LiveTrader(BaseTrader):
 
             # Timeout — cancel the resting order and fall back to FOK
             try:
-                await asyncio.to_thread(self.client.cancel, order_id)
+                await asyncio.to_thread(
+                    self.client.cancel_order, OrderPayload(orderID=order_id)
+                )
                 logger.info(
                     "Maker order timed out after %.0fs, cancelled %s — falling back to FOK",
                     timeout_s, order_id,

@@ -45,7 +45,7 @@ while ($true) {
 
     # Commit any config/weight changes from the pipeline
     Write-Host "[$timestamp] Committing pipeline updates..." -ForegroundColor Cyan
-    git add polybot/config/settings.yaml polybot/memory/ polybot/db/polybot.db 2>$null
+    git add polybot/config/settings.yaml polybot/memory/ polybot/db/polybot_paper.db polybot/db/polybot_live.db 2>$null
     $hasChanges = git diff --cached --quiet 2>$null; $hasChanges = $LASTEXITCODE
     if ($hasChanges -ne 0) {
         $date = Get-Date -Format "yyyy-MM-dd"

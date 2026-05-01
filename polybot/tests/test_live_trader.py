@@ -18,7 +18,7 @@ async def db():
 def _mock_clob_client():
     """Return a mock ClobClient that passes init checks."""
     mock = MagicMock()
-    mock.create_or_derive_api_creds.return_value = {
+    mock.create_or_derive_api_key.return_value = {
         "apiKey": "test-key",
         "secret": "test-secret",
         "passphrase": "test-pass",
@@ -38,12 +38,12 @@ async def test_init_creates_client_and_derives_creds(db):
         "POLYMARKET_PRIVATE_KEY": "0x" + "ab" * 32,
         "POLYMARKET_FUNDER": "0x863DB57D4a54fA306091D53B4Fe19f1611221Be8",
     }):
-        with patch("py_clob_client.client.ClobClient", return_value=_mock_clob_client()) as MockClient:
+        with patch("py_clob_client_v2.client.ClobClient", return_value=_mock_clob_client()) as MockClient:
             sys.modules.pop("polybot.execution.live_trader", None)
             from polybot.execution.live_trader import LiveTrader
             trader = LiveTrader(db=db)
             MockClient.assert_called_once()
-            trader.client.create_or_derive_api_creds.assert_called_once()
+            trader.client.create_or_derive_api_key.assert_called_once()
             trader.client.set_api_creds.assert_called_once()
 
 
@@ -64,7 +64,7 @@ async def test_init_raises_without_private_key(db):
 async def trader(db):
     """Create a LiveTrader with a mocked SDK client."""
     sys.modules.pop("polybot.execution.live_trader", None)
-    with patch("py_clob_client.client.ClobClient", return_value=_mock_clob_client()):
+    with patch("py_clob_client_v2.client.ClobClient", return_value=_mock_clob_client()):
         with patch.dict("os.environ", {
             "POLYMARKET_PRIVATE_KEY": "0x" + "ab" * 32,
             "POLYMARKET_FUNDER": "0xdeadbeef",

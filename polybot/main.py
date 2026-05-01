@@ -2283,7 +2283,7 @@ async def main() -> None:
         # share was settled on-chain but the DB still shows it open, surface the
         # mismatch loudly so the operator can intervene before more trades happen.
         try:
-            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+            from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
             db_open = await db.get_open_positions()
             mismatches: list[str] = []
             for pos in db_open:
@@ -2474,6 +2474,8 @@ async def main() -> None:
         async def _stop(coro):
             try: await asyncio.wait_for(coro, timeout=2.0)
             except Exception: pass
+        if hasattr(trader, "stop_keepalive"):
+            await _stop(trader.stop_keepalive())
         await _stop(clob_ws.close())
         await _stop(scheduler.stop())
         await _stop(binance_feed.stop())
