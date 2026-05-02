@@ -330,3 +330,27 @@
 - Previous cycles recommended loosening adverse_selection_threshold based on positive sim_pnl; that signal has now reversed — operator should revert any loosening if already applied
 
 **Reasoning:** Every backtestable parameter has been tested exhaustively with none clearing the 0.0263 delta adoption floor — empty changes is the only defensible call for the sixth consecutive cycle. The most important new signal this cycle is the adverse_selection_threshold ghost sim_pnl flipping from positive to negative (-$6.06), which reverses the multi-cycle recommendation to loosen that gate; the gate is now correctly filtering losers and should be held at 0.85. The last 100 trades show WR=62% suggesting a possible regime recovery, but the 5-bucket degradation trend and exhausted parameter space mean no parameter action is warranted until the recovery is sustained across at least two more 953-trade buckets.
+
+## 2026-05-02T00:41:21.811955+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.12 -> -0.05 [high]
+    The two destructive buckets (0 to -0.02: 40% accuracy n=236, and <-0.10: 39% accuracy n=929) together represent 1165 exits averaging 40% accuracy — 10pp below break-even and 7× noise floor — while the -0.02 to -0.05 bucket shows 59% accuracy; setting threshold to -0.05 preserves the only profitable scalp zone and eliminates the two loss-generating zones.
+
+**Findings:**
+- All 15+ backtestable parameter families exhausted — no untested value clears the 0.0266 delta floor.
+- Last 100 trades: WR=68%, gain=+0.265 — strongest recent signal in many cycles, possible regime recovery.
+- Ghost gate sim_pnl=-$10.61 (negative) — adverse selection filter now correctly blocking losers, do NOT loosen.
+- Edge calibration still inverted: Q4 WR=50.9% vs Q1=53.9% — model overconfidence persists structurally.
+- ATR mean dropped to 16.3 from historical 26.5 — backtest-live gap continues to undermine all BT delta estimates.
+
+**Warnings:**
+- 30+ parameter combinations have failed fold consistency — continued parameter search risks overfitting; structural model review may be warranted before next tuning cycle.
+- SPRT at 0% enter rate despite WR=68% in last 100 trades suggests the entry gates are severely suppressing trade frequency — operator should verify whether gate thresholds are calibrated to the current low-ATR regime.
+- Adaptive calibration is applying a 0.50 multiplier to the moderate-confidence bucket (91 of 100 recent trades) — the runtime is already halving position sizes, which may explain the strong recent WR but masks whether raw model signal has recovered.
+
+**Reasoning:** Every backtestable parameter family has been tested exhaustively across multiple values and directions, with the best average BT delta (probability_compression ↓ at +0.007) still less than 30% of the required 0.0266 adoption floor — empty changes is the only defensible call. The strongest signal this cycle is the last-100-trade recovery (WR=68%, gain=+$254) alongside the ghost gate flipping to negative sim_pnl, which together suggest the model may be self-correcting through the adaptive calibration multiplier rather than requiring parameter intervention. The sole manual observation — tightening exit_edge_threshold to -0.05 — is backed by N=1165 across two destructive exit buckets both at ~40% accuracy, 7× above noise floor, and has been consistently the highest-confidence actionable lever across multiple cycles.
