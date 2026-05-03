@@ -1,0 +1,91 @@
+{
+  "market_id": "btc-updown-5m-1777811400",
+  "side": "Up",
+  "gate_name": "pre_submit_edge_drift",
+  "signal_prob": 0.6369,
+  "signal_edge": 0.1569,
+  "seconds_remaining": 298.5,
+  "indicator_snapshot": {
+    "rsi": {
+      "rsi": 100.0,
+      "score": -1.0,
+      "norm_score": -0.0031873483772461284
+    },
+    "macd": {
+      "macd": 1.2284,
+      "signal": 1.7604,
+      "histogram": -0.532,
+      "score": 0.0,
+      "norm_score": 0.18095007166377133
+    },
+    "stochastic": {
+      "k": 50.0,
+      "d": 50.0,
+      "score": -0.0,
+      "norm_score": -0.0031856273609370592
+    },
+    "ema": {
+      "trend": "chop",
+      "fast_ema": 78806.5113102312,
+      "slow_ema": 78806.72208705737
+    },
+    "obv": {
+      "obv_slope": 0.0,
+      "price_slope": 0.0,
+      "score": 0.0,
+      "norm_score": 3.8550612150221586e-06
+    },
+    "vwap": {
+      "vwap": 78682.31,
+      "deviation": 0.9405,
+      "score": -0.2822,
+      "norm_score": 0.45747031737933364
+    },
+    "atr": {
+      "atr": 3.53,
+      "passes": true,
+      "reason": "ok"
+    },
+    "weights": {
+      "rsi": 0.2,
+      "macd": 0.25,
+      "stochastic": 0.2,
+      "obv": 0.15,
+      "vwap": 0.2,
+      "entry_threshold": 0.6
+    },
+    "trade_context": {
+      "btc_price": 78788.01,
+      "strike_price": 78766.9678313389,
+      "seconds_remaining": 298.490264,
+      "market_price_up": 0.48,
+      "market_price_down": 0.53,
+      "model_probability": 0.6368919433245118,
+      "model_probability_raw": 0.6368919433245118,
+      "edge": 0.15689194332451184,
+      "atr": 3.53,
+      "size": 6.81,
+      "iv_ratio": 2.0,
+      "prev_resolution_margin": 12.51930588450341,
+      "flow_score": 0.4009,
+      "spot_flow_signal": -0.0026243829606777,
+      "liquidation_pressure": -0.0017467299018204636,
+      "regime_state": "neutral",
+      "regime_autocorr": -0.169,
+      "regime_direction": 0.0,
+      "entry_phase": "normal",
+      "flip_count": 0,
+      "is_flip": false,
+      "depth_usd_top20": 238547.91115449998,
+      "sprt_confidence": 0.08372345473760236,
+      "sprt_status": "ACCUMULATING",
+      "adverse_selection_30s": 0.3888888888888889
+    }
+  },
+  "recorded_at": 1777811403.5478103,
+  "resolved": true,
+  "ghost_correct": false,
+  "ghost_gain_pct": -1.0,
+  "resolved_at": 1777811730.091505,
+  "timestamp": "2026-05-03T12:35:30.091542+00:00"
+}
