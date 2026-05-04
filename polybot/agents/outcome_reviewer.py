@@ -141,6 +141,6 @@ class OutcomeReviewer:
             for fp, _ in pairs:
                 fp.unlink(missing_ok=True)
             rolled += len(pairs)
-            logger.info(f"Rolled up {len(pairs)} outcomes into {rollup_path.name}")
+            logger.debug(f"Rolled up {len(pairs)} outcomes into {rollup_path.name}")
 
         return rolled

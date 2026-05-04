@@ -22,117 +22,119 @@ logger = logging.getLogger(__name__)
 
 
 def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
-    """Single human-readable pipeline summary used by both the log output and Discord.
-
-    Reads from pipeline_info keys populated during `run_daily_pipeline`:
-    `weights` (baseline + per_change), `platt`, and `source`.
-    """
+    """Human-readable nightly pipeline result — logged and sent to Discord."""
     wi: dict[str, Any] = pipeline_info.get("weights", {}) or {}
     platt: dict[str, Any] = pipeline_info.get("platt", {}) or {}
     source = pipeline_info.get("source", "?")
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    ts = datetime.now(timezone.utc).strftime("%b %-d, %Y  %H:%M UTC")
 
     baseline = wi.get("old_sharpe", 0.0) or 0.0
     n_baseline = wi.get("n_baseline_trades", 0) or 0
     abs_floor = 0.010
     per_change = wi.get("per_change", []) or []
-    # Compute SE from the first per-change entry if available (all use same baseline N)
     se_val: float | None = None
     try:
         import math as _m
         if n_baseline >= 2:
             se_val = _m.sqrt((1.0 + 0.5 * baseline * baseline) / n_baseline)
     except Exception:
-        se_val = None
+        pass
     dyn_floor = max(abs_floor, 0.25 * se_val) if se_val is not None else abs_floor
-    se_str = f"+/-{se_val:.3f}" if se_val is not None else "+/-?"
 
+    SEP = "═" * 60
     lines: list[str] = []
-    lines.append("=" * 60)
-    lines.append(f"  PIPELINE RESULT - {ts}")
-    lines.append("=" * 60)
-    lines.append(f"  Baseline Sharpe: {baseline:+.3f}  (N={n_baseline}, SE={se_str})")
-    lines.append(f"  Adoption floor:  need delta >= +{dyn_floor:.3f}  (abs={abs_floor:.3f}, src={source})")
-    lines.append("-" * 60)
+    lines.append(SEP)
+    lines.append(f"  NIGHTLY RESULT — {ts}  [{source}]")
+    lines.append(SEP)
 
+    # Model health line
+    sharpe_str = f"Sharpe {baseline:+.3f}" if n_baseline > 0 else "Sharpe n/a"
+    n_str = f"{n_baseline:,} trades" if n_baseline > 0 else "no trades yet"
+    lines.append(f"  Model:  {sharpe_str} on {n_str}  |  need +{dyn_floor:.3f} delta to adopt any change")
+    lines.append("")
+
+    # Parameter changes
     if per_change:
-        adopted_count = sum(1 for c in per_change if c.get("decision") == "adopted")
-        lines.append(f"  PROPOSED ({len(per_change)}):")
-        for c in per_change:
-            param = c.get("param", "?")
-            new_val = c.get("value", "?")
-            old_val = c.get("old_value", "?")
-            cand_sharpe = c.get("candidate_sharpe")
-            delta = (cand_sharpe - baseline) if isinstance(cand_sharpe, (int, float)) else None
-            decision = c.get("decision", "?")
-            mark = "[+]" if decision == "adopted" else "[-]"
-            delta_str = f"d={delta:+.3f}" if delta is not None else "d=?"
-            # Short verdict
-            if decision == "adopted":
-                verdict = "ADOPTED"
-            elif delta is None:
-                verdict = c.get("reason", "rejected")[:30]
-            elif delta < 0:
-                verdict = "hurt"
-            elif delta < dyn_floor:
-                verdict = f"too small (need {dyn_floor:.3f})"
-            else:
-                verdict = c.get("reason", "rejected")[:30]
-            pair = f"{old_val}->{new_val}" if old_val != "?" else f"{new_val}"
-            lines.append(f"    {mark} {param:<22s} {pair:<14s} {delta_str:<12s} ({verdict})")
-        lines.append("")
-        lines.append(f"  ADOPTED: {adopted_count} / {len(per_change)}")
+        adopted = [c for c in per_change if c.get("decision") == "adopted"]
+        rejected = [c for c in per_change if c.get("decision") != "adopted"]
+        if adopted:
+            lines.append(f"  Parameters updated ({len(adopted)}):")
+            for c in adopted:
+                param = c.get("param", "?")
+                old_val = c.get("old_value", "?")
+                new_val = c.get("value", "?")
+                cand_sharpe = c.get("candidate_sharpe")
+                delta = (cand_sharpe - baseline) if isinstance(cand_sharpe, (int, float)) else None
+                delta_str = f"  delta +{delta:.3f}" if delta is not None else ""
+                lines.append(f"    [+] {param}  {old_val} → {new_val}{delta_str}")
+        if rejected:
+            lines.append(f"  Tested but not adopted ({len(rejected)}):")
+            for c in rejected:
+                param = c.get("param", "?")
+                old_val = c.get("old_value", "?")
+                new_val = c.get("value", "?")
+                cand_sharpe = c.get("candidate_sharpe")
+                delta = (cand_sharpe - baseline) if isinstance(cand_sharpe, (int, float)) else None
+                if delta is not None and delta < 0:
+                    why = "made things worse"
+                elif delta is not None and delta < dyn_floor:
+                    why = f"improvement too small ({delta:+.3f}, need {dyn_floor:.3f})"
+                else:
+                    why = c.get("reason", "didn't pass gates")[:50]
+                lines.append(f"    [-] {param}  {old_val} → {new_val}  — {why}")
     else:
-        reason = wi.get("reason", "no proposals")
-        lines.append(f"  PROPOSED: 0  ({reason})")
+        reason = wi.get("reason", "all parameter combinations tested, none cleared the bar")
+        lines.append(f"  No parameter changes — {reason}")
 
-    # Platt line — always show numbers, not just "rejected"
+    # Platt calibration
     p_dec = platt.get("decision", "skipped")
     if p_dec in ("adopted", "rejected"):
         old_ks = platt.get("old_kelly_sharpe", 0.0)
         new_ks = platt.get("new_kelly_sharpe", 0.0)
-        raw_ks = platt.get("raw_kelly_sharpe")
-        old_ll = platt.get("old_loss", 0.0)
-        new_ll = platt.get("new_loss", 0.0)
-        z = platt.get("z_score", 0.0)
         p_delta = platt.get("delta_sharpe")
         p_floor = platt.get("dyn_floor")
-        verdict = "ADOPTED" if p_dec == "adopted" else "REJECTED"
-        lines.append("")
-        # delta and dyn_floor are the actual gate now (mirrors weight adoption).
-        # z is kept for diagnostics but no longer gates.
-        if p_delta is not None and p_floor is not None:
-            gate_str = f"d={p_delta:+.3f}, floor={p_floor:.3f}, z={z:+.2f}"
-        else:
-            gate_str = f"z={z:+.2f}"
-        lines.append(f"  Platt: kelly_sharpe {old_ks:+.3f} -> {new_ks:+.3f}  "
-                     f"({gate_str}, log-loss {old_ll:.3f} -> {new_ll:.3f})  [{verdict}]")
-        if raw_ks is not None:
-            lines.append(f"         raw (no Platt) kelly_sharpe: {raw_ks:+.3f}")
+        old_ll = platt.get("old_loss", 0.0)
+        new_ll = platt.get("new_loss", 0.0)
+        verdict = "updated" if p_dec == "adopted" else "no improvement"
+        delta_str = f"delta {p_delta:+.3f}, need {p_floor:.3f}" if p_delta is not None and p_floor is not None else ""
+        lines.append(f"  Calibration (Platt):  {verdict}"
+                     + (f"  ({delta_str})" if delta_str else "")
+                     + f"  — log-loss {old_ll:.3f} → {new_ll:.3f}")
         meta = platt.get("meta_warning")
         if meta:
-            lines.append(f"         ! {meta}")
+            lines.append(f"    ! {meta}")
     elif p_dec == "skipped":
         reason = platt.get("reason", "")
-        lines.append("")
-        lines.append(f"  Platt: skipped ({reason})" if reason else "  Platt: skipped")
+        lines.append(f"  Calibration (Platt):  skipped" + (f" — {reason}" if reason else ""))
 
-    # Manual-lever suggestions — surfaced but never auto-applied.
+    # Manual actions needed
     manual_obs: list[dict[str, Any]] = pipeline_info.get("manual_observations", []) or []
     if manual_obs:
         lines.append("")
-        lines.append("  MANUAL SUGGESTIONS:")
+        lines.append(f"  {'─' * 56}")
+        lines.append(f"  ACTION NEEDED — edit settings.yaml manually:")
         for ob in manual_obs:
             p = ob.get("param", "?")
             cur = ob.get("current", "?")
             sug = ob.get("suggested", "?")
-            conf = ob.get("confidence", "low")
+            conf = ob.get("confidence", "low").upper()
             reason = (ob.get("reason", "") or "").strip()
-            lines.append(f"    {p}: {cur} -> {sug}  [{conf}]")
+            lines.append(f"    {p}  {cur} → {sug}  [{conf}]")
             if reason:
-                lines.append(f"      {reason}")
+                # Wrap reason at ~70 chars
+                words = reason.split()
+                line_buf, wrapped = [], []
+                for w in words:
+                    if sum(len(x) + 1 for x in line_buf) + len(w) > 70:
+                        wrapped.append("    " + " ".join(line_buf))
+                        line_buf = [w]
+                    else:
+                        line_buf.append(w)
+                if line_buf:
+                    wrapped.append("    " + " ".join(line_buf))
+                lines.extend(wrapped)
 
-    lines.append("=" * 60)
+    lines.append(SEP)
     return "\n".join(lines)
 
 
@@ -877,6 +879,11 @@ class AgentScheduler:
 
         if not changes_list:
             info["reason"] = "no changes proposed by evolver"
+            _cn = getattr(self, '_baseline_n_trades', None)
+            _cs = getattr(self, '_baseline_kelly_sharpe', None)
+            if _cn and _cs is not None:
+                info["old_sharpe"] = round(float(_cs), 4)
+                info["n_baseline_trades"] = _cn
             return info
 
         def _clamp(val, lo, hi): return max(lo, min(hi, val))
@@ -1452,7 +1459,8 @@ class AgentScheduler:
             self.pipeline_tracker._save(records)
 
     async def run_daily_pipeline(self) -> None:
-        logger.info("Starting daily learning pipeline")
+        now_et_str = datetime.now(timezone.utc).strftime("%b %-d, %Y  %I:%M %p UTC").replace("  ", "  ")
+        logger.info(f"\n{'═' * 60}\n  Nightly pipeline starting — {now_et_str}\n{'═' * 60}")
 
         pipeline_info: dict[str, Any] = {}
 
@@ -1475,27 +1483,21 @@ class AgentScheduler:
         # Walk-forward validation: train on first 60%, validate across 4 expanding
         # folds of the remaining 40% (each fold is genuinely out-of-sample).
         rolled = self.outcome_reviewer.rollup_old_outcomes()
-        if rolled:
-            logger.info(f"Daily rollup: consolidated {rolled} outcome files")
-        if self.ghost_tracker:
-            ghost_rolled = self.ghost_tracker.rollup_old_ghosts()
-            if ghost_rolled:
-                logger.info(f"Daily rollup: consolidated {ghost_rolled} ghost files")
-        if self.counterfactual_tracker:
-            cf_rolled = self.counterfactual_tracker.rollup_old_counterfactuals()
-            if cf_rolled:
-                logger.info(f"Daily rollup: consolidated {cf_rolled} counterfactual files")
-        # Merge real outcomes + resolved ghosts so the backtest sample contains both
-        # trades that fired AND trades rejected at entry gates. Required for
-        # min_edge / min_model_probability / min_kelly to be pipeline-tunable:
-        # without ghosts, raising/lowering a gate would asymmetrically filter trades.
+        ghost_rolled = self.ghost_tracker.rollup_old_ghosts() if self.ghost_tracker else 0
+        cf_rolled = self.counterfactual_tracker.rollup_old_counterfactuals() if self.counterfactual_tracker else 0
+
         all_outcomes = self._load_combined_outcomes()
         n_ghosts = sum(1 for o in all_outcomes if o.get("is_ghost"))
         split_idx = max(1, int(len(all_outcomes) * 0.6))
         train_outcomes = all_outcomes[:split_idx]
-        validation_outcomes = all_outcomes[split_idx:]  # used for Platt holdout validation
-        logger.info(f"Walk-forward split: {len(train_outcomes)} train / {len(validation_outcomes)} validation "
-                    f"(4 folds, {len(all_outcomes)} total incl. {n_ghosts} resolved ghosts)")
+        validation_outcomes = all_outcomes[split_idx:]
+
+        logger.info(
+            f"  [1/4] Data loaded  |  {len(all_outcomes):,} trades "
+            f"({len(train_outcomes):,} train / {len(validation_outcomes):,} val)"
+            + (f"  |  rolled up: {rolled} outcomes, {cf_rolled} scalps, {ghost_rolled} ghosts"
+               if rolled or cf_rolled or ghost_rolled else "")
+        )
         pipeline_info["total_outcomes"] = len(all_outcomes)
         pipeline_info["train_count"] = len(train_outcomes)
         pipeline_info["validation_count"] = len(all_outcomes) - len(train_outcomes)
@@ -1521,7 +1523,7 @@ class AgentScheduler:
                 gate_stats = _json.loads(_gate_stats_path.read_text())
                 analysis["gate_skip_stats"] = gate_stats
                 total = gate_stats.get("total_skips", 0)
-                logger.info(f"Gate stats loaded: {total} total skips since last reset")
+                pipeline_info["gate_total_skips"] = total
             except Exception:
                 pass
 
@@ -1568,8 +1570,7 @@ class AgentScheduler:
                     "total": cf_analysis.get("total_scalps_tracked", 0),
                     "accuracy": cf_analysis.get("scalp_accuracy", 0),
                 }
-                logger.info(f"Counterfactual analysis: {cf_info['total']} scalps tracked, "
-                           f"accuracy={cf_info['accuracy']:.0%}")
+                pass  # rolled into [2/4] summary below
         pipeline_info["counterfactual"] = cf_info
 
         # Ghost trade analysis: which downstream gates are blocking profitable trades?
@@ -1579,7 +1580,7 @@ class AgentScheduler:
             resolved_ghosts = [g for g in ghosts if g.get("resolved", False)]
             if resolved_ghosts:
                 analysis["ghost_analysis"] = self.bias_detector.analyze_ghosts(resolved_ghosts)
-                logger.info(f"Ghost analysis: {len(resolved_ghosts)} resolved ghost trades")
+                pass  # rolled into [2/4] summary below
 
         # Platt re-fit. Adoption gated on Kelly-Sharpe of holdout (matches production
         # PnL dynamics); log-loss is telemetry only. The holdout comparison is the
@@ -1746,7 +1747,6 @@ class AgentScheduler:
             if shifts:
                 analysis["distribution_shifts"] = shifts
                 pipeline_info["distribution_shifts"] = list(shifts.keys())
-                logger.info(f"Distribution shifts detected: {list(shifts.keys())}")
 
         # SPRT aggregate evidence — modulates adoption urgency
         sprt_agg = aggregate_sprt_evidence(all_outcomes, recent_n=50)
@@ -1778,6 +1778,24 @@ class AgentScheduler:
         # (per-regime Platt stub removed — it only counted samples without fitting or
         # adopting anything. If we re-introduce regime-conditional calibration it should
         # use the same Kelly-sized-Sharpe adoption gate as the main Platt block above.)
+
+        # Emit [2/4] analysis summary now that bias/calibration/shifts are all done
+        _cf_acc = cf_info.get("accuracy", 0) if cf_info else None
+        _cf_total = cf_info.get("total", 0) if cf_info else 0
+        _shifts = pipeline_info.get("distribution_shifts", [])
+        _gate_skips = pipeline_info.get("gate_total_skips", 0)
+        _real_trades = [o for o in all_outcomes if not o.get("is_ghost")]
+        _res_acc = (sum(1 for o in _real_trades if o.get("correct")) / len(_real_trades)) if _real_trades else None
+        _analysis_parts = []
+        if _res_acc is not None:
+            _analysis_parts.append(f"resolution accuracy {_res_acc:.0%}")
+        if _cf_total:
+            _analysis_parts.append(f"scalp accuracy {_cf_acc:.0%} on {_cf_total:,}" if _cf_acc is not None else f"{_cf_total:,} scalps tracked")
+        if _shifts:
+            _analysis_parts.append(f"market shifts: {', '.join(_shifts)}")
+        if _gate_skips:
+            _analysis_parts.append(f"{_gate_skips:,} gate skips")
+        logger.info(f"  [2/4] Analysis done" + (f"  |  {' | '.join(_analysis_parts)}" if _analysis_parts else ""))
 
         # Gate: need at least 200 trades before running TAEvolver and WeightOptimizer.
         MIN_TRADES_FOR_LEARNING = 200

@@ -1796,45 +1796,24 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     global _startup_banner_logged
     if not _startup_banner_logged and ws_subscribed_tokens:
         _startup_banner_logged = True
-        _mode_label = "LIVE MODE" if not isinstance(trader, PaperTrader) else "PAPER MODE"
+        _mode_label = "LIVE" if not isinstance(trader, PaperTrader) else "PAPER"
         _bankroll = await db.get_bankroll()
         _cal = signal_engine.calibrator
-        _cal_str = (f"Platt a={_cal.a:.4f} b={_cal.b:.4f}"
-                    if _cal is not None else "Platt uncalibrated")
-        _wins = day_wins
-        _losses = day_losses
-        _prev_margin_str = f"{_prev_resolution_margin:+.2f}"
-        _adverse_fills = len(_adverse_monitor._fills) if _adverse_monitor is not None else 0
+        _cal_str = f"Platt a={_cal.a:.3f} b={_cal.b:.3f}" if _cal is not None else "uncalibrated"
         _weight_ver = signal_config.get("active_weights_version", "weights_v001")
-        if isinstance(trader, PaperTrader):
-            _lat_str = f"latency={trader.latency_mean_s:.2f}±{trader.latency_jitter_s:.2f}s"
-            _fail_str = f"net_fail={trader.network_fail_rate:.0%}"
-            _header = f"  PolyBot {_weight_ver}  |  {_mode_label}  |  {_lat_str}  {_fail_str}"
-        else:
-            _header = f"  PolyBot {_weight_ver}  |  {_mode_label}"
-        _feed_status = (
-            f"  Feeds: "
-            f"Binance {'OK' if binance_feed is not None else '--'}  "
-            f"Coinbase {'OK' if coinbase_feed is not None else '--'}  "
-            f"Kraken {'OK' if kraken_feed is not None else '--'}  "
-            f"Bybit {'OK' if bybit_feed is not None else '--'}  "
-            f"Deribit {'OK' if deribit_feed is not None else '--'}  "
-            f"Chainlink {'OK' if chainlink_feed is not None else '--'}"
-        )
-        _discord_status = f"  Discord: {'connected' if alert_manager is not None else 'unavailable'}"
-        _clob_status = (
-            f"  CLOB WS: {'connected' if clob_ws is not None else 'disconnected'}  |  "
-            f"{len(ws_subscribed_tokens)} tokens subscribed"
-        )
-        _sep = "=" * 60
+        def _f(feed: Any) -> str: return "OK" if feed is not None else "--"
+        _sep = "═" * 60
         logger.info(
             f"\n{_sep}\n"
-            f"{_header}\n"
-            f"  Bankroll ${_bankroll:,.2f}  |  {_cal_str}\n"
-            f"  Restored: {_wins}W/{_losses}L  |  prev_margin={_prev_margin_str}  |  {_adverse_fills} adverse fills\n"
-            f"{_feed_status}\n"
-            f"{_clob_status}\n"
-            f"{_discord_status}\n"
+            f"  PolyBot  [{_mode_label}]  |  Bankroll ${_bankroll:,.2f}  |  {_weight_ver}\n"
+            f"  Today: {day_wins}W / {day_losses}L  |  Calibration: {_cal_str}\n"
+            f"  ─────────────────────────────────────────────────────\n"
+            f"  Price feeds:   Coinbase {_f(coinbase_feed)}  Kraken {_f(kraken_feed)}"
+            f"  Binance {_f(binance_feed)}  Chainlink {_f(chainlink_feed)}\n"
+            f"  Signal feeds:  Bybit {_f(bybit_feed)}  Deribit {_f(deribit_feed)}"
+            f"  CLOB WS {'connected' if clob_ws is not None else 'disconnected'}"
+            f"  ({len(ws_subscribed_tokens)} tokens)\n"
+            f"  Discord: {'connected' if alert_manager is not None else 'unavailable'}\n"
             f"{_sep}"
         )
 
@@ -2191,7 +2170,7 @@ async def main() -> None:
 
     db = Database(db_path)
     await db.initialize()
-    logger.info(f"Database: {db_path} (mode: {mode})")
+    logger.debug(f"Database: {db_path} (mode: {mode})")
     if await db.get_bankroll() == 0:
         await db.set_bankroll(config["execution"]["initial_bankroll"])
 

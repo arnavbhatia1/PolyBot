@@ -96,7 +96,7 @@ class AdverseSelectionMonitor:
             saved_at = float(data.get("saved_at", 0))
             age = time.time() - saved_at
             if age > 3600:
-                logger.info(f"AdverseSelectionMonitor: discarding stale snapshot (age {age:.0f}s)")
+                logger.debug(f"AdverseSelectionMonitor: discarding stale snapshot (age {age:.0f}s)")
                 return
             fills_data = data.get("fills", [])
             loaded = 0

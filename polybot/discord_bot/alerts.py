@@ -312,6 +312,13 @@ class AlertManager:
         # Single readable pipeline result block (same text the log prints).
         summary_block = pipeline_info.get("summary_block", "")
         if summary_block:
-            msg2 += f"```\n{summary_block}\n```"
-
-        await channel.send(msg2[:2000])
+            chunk = f"```\n{summary_block}\n```"
+            # Discord 2000-char limit: send summary as separate message if needed
+            if len(msg2) + len(chunk) <= 2000:
+                msg2 += chunk
+                await channel.send(msg2[:2000])
+            else:
+                await channel.send(msg2[:2000])
+                await channel.send(chunk[:2000])
+        else:
+            await channel.send(msg2[:2000])

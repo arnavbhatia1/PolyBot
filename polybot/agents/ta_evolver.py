@@ -46,7 +46,7 @@ class TAEvolver:
             try:
                 recommendations = await self.claude_client.analyze_strategy(context)
                 self._save_log(recommendations, source=f"Claude ({recommendations.get('confidence', '?')})")
-                logger.info(f"Claude strategy analysis complete (confidence: {recommendations.get('confidence', '?')})")
+                logger.info(f"  [3/4] Claude done  |  confidence: {recommendations.get('confidence', '?')}  |  {len(recommendations.get('changes', []))} changes proposed")
                 return recommendations
             except Exception as e:
                 logger.warning(f"Claude unavailable, using local recommender: {e}")

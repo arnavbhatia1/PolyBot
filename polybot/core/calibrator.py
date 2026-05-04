@@ -80,7 +80,7 @@ class PlattCalibrator:
         if result.success:
             self.a = float(result.x[0])
             self.b = float(result.x[1])
-            logger.info(f"Platt calibration fit: a={self.a:.4f}, b={self.b:.4f}")
+            logger.debug(f"Platt calibration fit: a={self.a:.4f}, b={self.b:.4f}")
             return True
         logger.warning(f"Platt calibration failed to converge: {result.message}")
         return False

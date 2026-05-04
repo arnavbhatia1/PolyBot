@@ -49,7 +49,7 @@ while ($true) {
     $hasChanges = git diff --cached --quiet 2>$null; $hasChanges = $LASTEXITCODE
     if ($hasChanges -ne 0) {
         $date = Get-Date -Format "yyyy-MM-dd"
-        git commit -m "auto: daily pipeline update $date"
+        git commit -m "auto: daily pipeline update $date" 2>&1 | Where-Object { $_ -notmatch "^\s*(delete|create|rename) mode" } | Write-Host
         git push origin main 2>$null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "[$timestamp] Pushed to remote" -ForegroundColor Green

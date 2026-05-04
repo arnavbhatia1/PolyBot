@@ -95,7 +95,7 @@ def detect_distribution_shift(recent: list[dict[str, Any]], historical: list[dic
                 "recent_mean": round(sum(recent_vals) / len(recent_vals), 4),
                 "hist_mean": round(sum(hist_vals) / len(hist_vals), 4),
             }
-            logger.warning(f"Distribution shift in {feat}: KS={ks_stat:.3f} p={p_value:.3f}")
+            logger.debug(f"Distribution shift in {feat}: KS={ks_stat:.3f} p={p_value:.3f}")
 
     return results
 
