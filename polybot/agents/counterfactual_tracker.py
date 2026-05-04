@@ -231,9 +231,9 @@ class CounterfactualTracker:
             if now < expiry_ts + 30:
                 continue
 
-            # Expire stale entries (watched for > 10 min — candle data may be gone)
-            if now > expiry_ts + 600:
-                logger.warning(f"COUNTERFACTUAL: {market_id} expired > 10 min ago, removing without record")
+            # Expire stale entries — give Chainlink/Gamma 20 min to post before giving up.
+            if now > expiry_ts + 1200:
+                logger.warning(f"COUNTERFACTUAL: {market_id} — Chainlink not available after 20 min, dropping")
                 to_remove.append(position_id)
                 continue
 

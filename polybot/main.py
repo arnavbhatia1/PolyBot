@@ -1193,14 +1193,28 @@ async def _check_counterfactuals(counterfactual_tracker: Any, ghost_tracker: Any
     cf_event_metadata = dict(event_metadata_cache or {})
     markets_to_fetch = [m for m in counterfactual_tracker.watched_markets if m not in cf_event_metadata]
     if markets_to_fetch:
+        # Look up each watched market by its exact slug — _get_contract_prices only checks
+        # the current ±1 window, so it returns None for markets from 10+ minutes ago.
+        async def _fetch_by_slug(slug: str) -> dict | None:
+            try:
+                resp = await http_client.get(
+                    f"{market_scanner.GAMMA_API}/events", params={"slug": slug})
+                resp.raise_for_status()
+                data = resp.json()
+                if data:
+                    return market_scanner.parse_contract(data[0] if isinstance(data, list) else data)
+            except Exception:
+                pass
+            return None
+
         results = await asyncio.gather(
-            *[_get_contract_prices(market_scanner, m, http_client) for m in markets_to_fetch],
+            *[_fetch_by_slug(m) for m in markets_to_fetch],
             return_exceptions=True,
         )
         for cf_mid, cf_live in zip(markets_to_fetch, results):
-            if isinstance(cf_live, Exception):
+            if isinstance(cf_live, Exception) or not cf_live:
                 continue
-            if cf_live and cf_live.get("event_metadata"):
+            if cf_live.get("event_metadata"):
                 cf_event_metadata[cf_mid] = cf_live["event_metadata"]
     counterfactual_tracker.check_resolutions(
         binance_feed, _btc_at_expiry, event_metadata=cf_event_metadata
