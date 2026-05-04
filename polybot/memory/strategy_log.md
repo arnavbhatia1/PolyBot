@@ -354,3 +354,27 @@
 - Adaptive calibration is applying a 0.50 multiplier to the moderate-confidence bucket (91 of 100 recent trades) — the runtime is already halving position sizes, which may explain the strong recent WR but masks whether raw model signal has recovered.
 
 **Reasoning:** Every backtestable parameter family has been tested exhaustively across multiple values and directions, with the best average BT delta (probability_compression ↓ at +0.007) still less than 30% of the required 0.0266 adoption floor — empty changes is the only defensible call. The strongest signal this cycle is the last-100-trade recovery (WR=68%, gain=+$254) alongside the ghost gate flipping to negative sim_pnl, which together suggest the model may be self-correcting through the adaptive calibration multiplier rather than requiring parameter intervention. The sole manual observation — tightening exit_edge_threshold to -0.05 — is backed by N=1165 across two destructive exit buckets both at ~40% accuracy, 7× above noise floor, and has been consistently the highest-confidence actionable lever across multiple cycles.
+
+## 2026-05-04T03:16:24.410042+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.12 -> -0.05 [high]
+    The two destructive exit buckets (0 to -0.02: 41% accuracy n=249; <-0.10: 39% accuracy n=968) together average 40% accuracy — 10pp below break-even and 8× noise floor — while the -0.02 to -0.05 bucket is the only profitable zone at 59%; setting threshold to -0.05 eliminates both loss-generating tails while preserving the one bucket where scalping adds value.
+
+**Findings:**
+- Live regime shifted sharply: ATR doubled (26→42), last 100 trades WR=70%, +$248 PnL.
+- All 15+ backtestable parameter families exhausted — no untested value clears the 0.017 delta bar.
+- Edge calibration Q4 realization improving (0.30→0.41→0.95) — self-resolving, do not target.
+- Scalp exits at holding_edge <-0.10 correct only 39% of time (n=968) — primary value leak.
+- Adaptive calibration runtime already applying 0.50 multiplier to 99/100 recent trades — model self-correcting.
+
+**Warnings:**
+- SPRT at 0% enter rate despite 70% WR in last 100 trades — entry gates may be severely over-filtering in the new high-ATR regime; monitor trade frequency.
+- Model_probability mean collapsed to 0.405 in recent distribution vs 0.582 historical — system is entering at extreme mispricings; verify position sizing is appropriate for this regime.
+- All 15+ parameter families have failed fold consistency across 30+ tests — further parameter search risks overfitting; structural model review may be warranted.
+
+**Reasoning:** Every backtestable parameter family has been tested exhaustively with the best historical delta (probability_compression 0.88 at +0.0265) still failing walk-forward fold consistency — empty changes is the only defensible call for the seventh consecutive cycle. The most important new signal is a dramatic live regime shift (ATR doubled, model_probability at 0.405, WR=70% in last 100 trades) that may be self-correcting through the adaptive calibration multiplier already halving position sizes on 99% of recent trades. The sole manual observation — tightening exit_edge_threshold to -0.05 — is backed by N=1217 across two destructive buckets at 40% accuracy, 8× above the noise floor, and has been the most consistently supported actionable lever across the past six cycles.
