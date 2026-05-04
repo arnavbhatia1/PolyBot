@@ -1175,6 +1175,13 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
         await clob_ws.subscribe(new_tokens)
         ws_subscribed_tokens.extend(new_tokens)
 
+    # Pre-warm tick_size cache for both tokens so the first entry has zero HTTP latency.
+    if http_client and market_scanner and current_tokens:
+        await asyncio.gather(
+            *[market_scanner.fetch_tick_size(t, http_client) for t in current_tokens],
+            return_exceptions=True,
+        )
+
     return contract, cid, traded_contracts, ws_subscribed_tokens, current_tokens
 
 
@@ -1370,14 +1377,16 @@ async def _evaluate_and_exit_position(
     if action == "EXIT":
         sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
 
-        # PRICE VERIFICATION: the CLOB WS best_bid can carry a stale value because
-        # any price_change event refreshes `ts` without necessarily changing best_bid.
-        # Near expiry a Down-side trade fires a price_change for the Up token,
-        # resetting ts to now but carrying a 0.50 resting bid from an hour ago.
-        # Verify with /price?side=SELL (negRisk cross-match) — this is the actual
-        # executable price and what the Polymarket UI shows.
+        # PRICE VERIFICATION: guard against the CLOB WS carrying a phantom best_bid
+        # (timestamp refreshed by an unrelated price_change event, stale price value).
+        # Fast-path: if the other side's bid is also fresh and both sum to ~1.0,
+        # no-arb is satisfied — ws_bid must be real, skip the HTTP round-trip.
+        other_bba = clob_ws.best_bid_ask.get(other_token, {}) if clob_ws else {}
+        other_bid = float(other_bba.get("best_bid", 0) or 0)
+        other_age = time.time() - float(other_bba.get("ts", 0) or 0)
+        noarb_ok = other_bid > 0 and other_age <= 5 and 0.95 <= ws_bid + other_bid <= 1.05
         verified_price = 0.0
-        if market_scanner and http_client and sell_token:
+        if not noarb_ok and market_scanner and http_client and sell_token:
             verified_price = await market_scanner.fetch_market_price(sell_token, "SELL", http_client)
         if verified_price > 0 and verified_price < ws_bid * 0.70:
             # Dramatic mismatch — ws_bid is phantom. Re-evaluate with the real price.

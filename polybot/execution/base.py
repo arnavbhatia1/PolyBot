@@ -42,7 +42,7 @@ class FillResult:
 # Fee math (canonical — imported by paper_trader, live_trader, main)
 # ---------------------------------------------------------------------------
 
-DEFAULT_FEE_RATE = 0.018  # Polymarket crypto taker fee: 1.8% peak (Dynamic Taker-Fee Model, March 2026)
+DEFAULT_FEE_RATE = 0.018  # Polymarket crypto taker fee: 1.8% peak (Dynamic Taker-Fee Model)
 
 
 def slippage_pct(order_size_usd: float, book_depth_usd: float,
