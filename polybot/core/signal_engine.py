@@ -120,8 +120,7 @@ class SignalEngine:
                  logit_scale: float = 4.0,
                  probability_compression: float = 1.0,
                  consensus_dead_zone: float = 0.05,
-                 consensus_config: dict | None = None,
-                 exit_config: dict | None = None) -> None:
+                 consensus_config: dict | None = None) -> None:
         self.min_edge: float = min_edge
         self.kelly_fraction: float = kelly_fraction
         self.momentum_weight: float = momentum_weight
@@ -147,14 +146,6 @@ class SignalEngine:
             "high_pct": 0.60, "high_mult": 1.0,
             "medium_pct": 0.40, "medium_mult": 0.8,
             "low_mult": 0.6,
-        }
-        # The hold_min_prob/panic_edge override only fires when the model strongly
-        # favors our side AND the edge isn't already meaningfully negative.
-        self.exit_config: dict = exit_config or {
-            "patience_seconds": 120, "patience_max_penalty": 0.05,
-            "urgency_seconds": 120, "urgency_max_bonus": 0.05,
-            "hold_min_prob": 0.70, "panic_edge": -0.10,
-            "low_price_hold": 0.15,
         }
         self._exit_boundary = ExitBoundary(df=self.student_t_df)
         self._atr_history: deque[float] = deque(maxlen=_ATR_HISTORY_SIZE)
@@ -599,21 +590,11 @@ class SignalEngine:
         else:
             effective_threshold = exit_threshold
 
-        ec = self.exit_config
         optimal_threshold = self._exit_boundary.compute_exit_threshold(
             seconds_remaining, entry_price, fee_rate, market_price_for_side)
         effective_threshold = max(effective_threshold, optimal_threshold)
 
         if holding_edge <= effective_threshold:
-            if model_prob >= ec["hold_min_prob"] and holding_edge > ec["panic_edge"]:
-                return ("HOLD", model_prob, holding_edge,
-                        f"Hold {side} (model still {model_prob:.0%}): "
-                        f"mkt={market_price_for_side:.0%} edge={holding_edge:+.0%}")
-            # Don't panic-sell at deep-OTM prices — option value exceeds recovery cost
-            if market_price_for_side < ec["low_price_hold"]:
-                return ("HOLD", model_prob, holding_edge,
-                        f"Hold {side} (mkt {market_price_for_side:.0%} too low to sell): "
-                        f"model={model_prob:.0%} edge={holding_edge:+.0%}")
             return ("EXIT", model_prob, holding_edge,
                     f"Exit {side}: model={model_prob:.0%} mkt={market_price_for_side:.0%} "
                     f"edge={holding_edge:+.0%} thresh={effective_threshold:+.0%} "

@@ -118,9 +118,6 @@ _CONTRACT_RESOLUTION_TTL = 2.0  # faster polling when contract might be resolvin
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 
-# Trailing profit exit: track peak market price per held position
-_peak_hold_price: dict[str, float] = {}  # market_id -> peak market_price_for_side during hold
-
 # Previous window resolution margin for adjacent window momentum (D2)
 _prev_resolution_margin: float = 0.0
 _PREV_MARGIN_PATH = Path("polybot/memory/prev_resolution_margin.json")
@@ -210,7 +207,6 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
         probability_compression=signal_cfg.get("probability_compression", 1.0),
         consensus_dead_zone=signal_cfg.get("consensus_dead_zone", 0.05),
         consensus_config=signal_cfg.get("consensus"),
-        exit_config=signal_cfg.get("exit"),
     )
 
 
@@ -1343,21 +1339,7 @@ async def _evaluate_and_exit_position(
         iv_ratio=1.0,
         liquidation_pressure=hold_liquidation)
 
-    # --- TRAILING PROFIT EXIT: don't ride cheap winners to zero ---
     mid = pos["market_id"]
-    prev_peak = _peak_hold_price.get(mid, 0.0)
-    if market_price > prev_peak:
-        _peak_hold_price[mid] = market_price
-    peak = _peak_hold_price.get(mid, 0.0)
-    if (action == "HOLD"
-            and pos["entry_price"] < 0.50
-            and peak >= 0.65
-            and market_price < peak * 0.85):
-        action = "EXIT"
-        reason = (
-            f"Trailing profit exit {pos['side']}: entry={pos['entry_price']:.2f} "
-            f"peak={peak:.2f} now={market_price:.2f} (dropped {(1 - market_price/peak):.0%} from peak)")
-        logger.info(f"TRAILING EXIT triggered: {reason}")
 
     if action == "HOLD":
         # Log hold status every 30s so the operator knows the bot is alive
@@ -1490,7 +1472,7 @@ async def _evaluate_and_exit_position(
                 "flip_count": 0, "last_side": None,
             })
             fs["flip_count"] += 1
-            _peak_hold_price.pop(traded_market_id, None)
+
             if counterfactual_tracker:
                 counterfactual_tracker.watch(pos, {
                     "exit_fill": exit_fill, "pnl": pnl, "gain_pct": gain_pct,
@@ -1572,7 +1554,6 @@ async def _resolve_expired_position(
             counterfactual_tracker.record_hold_resolution(
                 pos["market_id"], exit_price, pnl, gain_pct)
         traded_market_id = pos["market_id"]
-        _peak_hold_price.pop(traded_market_id, None)
         # Track resolution margin for adjacent window momentum (D2)
         meta = live.get("event_metadata")
         if meta and meta.get("final_price") and meta.get("price_to_beat"):
@@ -1687,7 +1668,6 @@ async def _manage_orphaned_position(
         if _drawdown_tracker:
             _drawdown_tracker.record_trade(gain_pct)
         traded_market_id = pos["market_id"]
-        _peak_hold_price.pop(traded_market_id, None)
     return True, day_wins, day_losses, day_fees, traded_market_id
 
 

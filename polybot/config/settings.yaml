@@ -68,7 +68,7 @@ signal:
   max_edge: 0.2
   adverse_selection_threshold: 0.85
   late_window_min_prob: 0.4
-  exit_edge_threshold: -0.12
+  exit_edge_threshold: -0.05
   min_model_probability: 0.58
   momentum_weight: -0.02
   regime_weight: 0.03
@@ -99,14 +99,6 @@ signal:
     medium_pct: 0.4
     medium_mult: 0.8
     low_mult: 0.6
-  exit:
-    patience_seconds: 120
-    patience_max_penalty: 0.05
-    urgency_seconds: 120
-    urgency_max_bonus: 0.05
-    hold_min_prob: 0.5
-    panic_edge: -0.2
-    low_price_hold: 0.15
 market:
   contract_type: btc_5min
   entry_window_seconds: 300
