@@ -26,7 +26,8 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     wi: dict[str, Any] = pipeline_info.get("weights", {}) or {}
     platt: dict[str, Any] = pipeline_info.get("platt", {}) or {}
     source = pipeline_info.get("source", "?")
-    ts = datetime.now(timezone.utc).strftime("%b %-d, %Y  %H:%M UTC")
+    _now = datetime.now(timezone.utc)
+    ts = f"{_now.strftime('%b')} {_now.day}, {_now.strftime('%Y  %H:%M UTC')}"
 
     baseline = wi.get("old_sharpe", 0.0) or 0.0
     n_baseline = wi.get("n_baseline_trades", 0) or 0
@@ -1459,7 +1460,8 @@ class AgentScheduler:
             self.pipeline_tracker._save(records)
 
     async def run_daily_pipeline(self) -> None:
-        now_et_str = datetime.now(timezone.utc).strftime("%b %-d, %Y  %I:%M %p UTC").replace("  ", "  ")
+        _now_utc = datetime.now(timezone.utc)
+        now_et_str = f"{_now_utc.strftime('%b')} {_now_utc.day}, {_now_utc.strftime('%Y  %I:%M %p UTC')}"
         logger.info(f"\n{'═' * 60}\n  Nightly pipeline starting — {now_et_str}\n{'═' * 60}")
 
         pipeline_info: dict[str, Any] = {}

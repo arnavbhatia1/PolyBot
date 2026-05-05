@@ -1806,30 +1806,26 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         if _db_wins + _db_losses > 0:
             logger.debug(f"Mid-day restart: restored {_db_wins}W/{_db_losses}L from DB")
 
-    # --- Startup banner (logged once after tokens are subscribed) ---
-    global _startup_banner_logged
-    if not _startup_banner_logged and ws_subscribed_tokens:
-        _startup_banner_logged = True
-        _mode_label = "LIVE" if not isinstance(trader, PaperTrader) else "PAPER"
-        _bankroll = await db.get_bankroll()
-        _cal = signal_engine.calibrator
-        _cal_str = f"Platt a={_cal.a:.3f} b={_cal.b:.3f}" if _cal is not None else "uncalibrated"
-        _weight_ver = signal_config.get("active_weights_version", "weights_v001")
-        def _f(feed: Any) -> str: return "OK" if feed is not None else "--"
-        _sep = "═" * 60
-        logger.info(
-            f"\n{_sep}\n"
-            f"  PolyBot  [{_mode_label}]  |  Bankroll ${_bankroll:,.2f}  |  {_weight_ver}\n"
-            f"  Today: {day_wins}W / {day_losses}L  |  Calibration: {_cal_str}\n"
-            f"  ─────────────────────────────────────────────────────\n"
-            f"  Price feeds:   Coinbase {_f(coinbase_feed)}  Kraken {_f(kraken_feed)}"
-            f"  Binance {_f(binance_feed)}  Chainlink {_f(chainlink_feed)}\n"
-            f"  Signal feeds:  Bybit {_f(bybit_feed)}  Deribit {_f(deribit_feed)}"
-            f"  CLOB WS {'connected' if clob_ws is not None else 'disconnected'}"
-            f"  ({len(ws_subscribed_tokens)} tokens)\n"
-            f"  Discord: {'connected' if alert_manager is not None else 'unavailable'}\n"
-            f"{_sep}"
-        )
+    # --- Startup banner ---
+    _mode_label = "LIVE" if not isinstance(trader, PaperTrader) else "PAPER"
+    _bankroll = await db.get_bankroll()
+    _cal = signal_engine.calibrator
+    _cal_str = f"Platt a={_cal.a:.3f} b={_cal.b:.3f}" if _cal is not None else "uncalibrated"
+    _weight_ver = signal_config.get("active_weights_version", "weights_v001")
+    def _f(feed: Any) -> str: return "OK" if feed is not None else "--"
+    _sep = "═" * 60
+    logger.info(
+        f"\n{_sep}\n"
+        f"  PolyBot  [{_mode_label}]  |  Bankroll ${_bankroll:,.2f}  |  {_weight_ver}\n"
+        f"  Today: {day_wins}W / {day_losses}L  |  Calibration: {_cal_str}\n"
+        f"  ─────────────────────────────────────────────────────\n"
+        f"  Price feeds:   Coinbase {_f(coinbase_feed)}  Kraken {_f(kraken_feed)}"
+        f"  Binance {_f(binance_feed)}  Chainlink {_f(chainlink_feed)}\n"
+        f"  Signal feeds:  Bybit {_f(bybit_feed)}  Deribit {_f(deribit_feed)}"
+        f"  CLOB WS {'ready' if clob_ws is not None else 'disconnected'}\n"
+        f"  Discord: {'connected' if alert_manager is not None else 'unavailable'}\n"
+        f"{_sep}"
+    )
 
     while True:
         # Check if scheduler requested shutdown (auto-restart cycle after pipeline)
