@@ -378,3 +378,27 @@
 - All 15+ parameter families have failed fold consistency across 30+ tests — further parameter search risks overfitting; structural model review may be warranted.
 
 **Reasoning:** Every backtestable parameter family has been tested exhaustively with the best historical delta (probability_compression 0.88 at +0.0265) still failing walk-forward fold consistency — empty changes is the only defensible call for the seventh consecutive cycle. The most important new signal is a dramatic live regime shift (ATR doubled, model_probability at 0.405, WR=70% in last 100 trades) that may be self-correcting through the adaptive calibration multiplier already halving position sizes on 99% of recent trades. The sole manual observation — tightening exit_edge_threshold to -0.05 — is backed by N=1217 across two destructive buckets at 40% accuracy, 8× above the noise floor, and has been the most consistently supported actionable lever across the past six cycles.
+
+## 2026-05-05T03:19:16.933363+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.12 -> -0.05 [high]
+    The 0-to-(-0.02) bucket (41% accuracy, n=257) and <(-0.10) bucket (38% accuracy, n=1001) together average 38.5% across 1258 exits — 11.5pp below break-even and ~8× noise floor — while the -0.02 to -0.05 bucket at 58% is the only zone where scalping adds value; setting threshold to -0.05 eliminates both loss-generating tails.
+
+**Findings:**
+- All 15+ backtestable parameter families exhausted — no untested value clears the 0.025 delta floor.
+- Ghost sim_pnl=-$20.48 (negative) — adverse selection gate is correctly filtering losers, do NOT loosen.
+- Adaptive calibration applying 0.50 multiplier to 100% of recent trades — runtime already halving position sizes.
+- ATR dropped 26.7→18.8 and model_probability mean fell 0.577→0.527 — backtest-live gap persists.
+- Exit buckets 0-to-(-0.02) and <(-0.10) at 38-41% accuracy across n=1258 remain the primary value leak.
+
+**Warnings:**
+- With 30+ parameter combinations failing fold consistency and zero live-validated positive deltas, further parameter search risks overfitting noise — a structural model review may be warranted.
+- SPRT at 0% enter rate across multiple cycles despite 53.4% overall WR suggests entry gates may be systematically over-filtering in the current low-ATR regime.
+- Adaptive calibration applying 0.50 multiplier to all recent moderate-confidence trades masks whether raw model signal has recovered — live Sharpe improvement could reverse rapidly if calibration multiplier resets.
+
+**Reasoning:** Every backtestable parameter family has been tested exhaustively across multiple values and directions, with the best average BT delta (probability_compression ↓ at +0.007, spot_flow_weight ↑ at +0.014) both well below the 0.025 adoption floor — empty changes is the only defensible call for the eighth consecutive cycle. The ghost gate sim_pnl flipping to -$20.48 confirms the adverse_selection_threshold should remain unchanged at 0.85. The sole actionable lever remains exit_edge_threshold tightening to -0.05, backed by N=1258 across two destructive exit buckets at ~39% accuracy, consistently 8× above the noise floor across the past seven cycles.
