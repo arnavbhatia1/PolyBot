@@ -110,7 +110,6 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
 - momentum_weight (-0.10 to +0.10; NEGATIVE = fade indicators)
 - kelly_fraction (0.05-0.25; leave unchanged unless strong risk evidence)
 - min_edge (0.02-0.10), min_kelly (0.005-0.04), min_model_probability (0.52-0.70)
-- max_market_disagreement (0.15-0.40)
 - weights (RSI/MACD/Stoch/OBV/VWAP dict, sum=1.0, each ≥0.05)
 
 ## Manual-Only Params (route to `manual_observations`, never `changes`)
@@ -530,7 +529,6 @@ def _section_config(cfg: dict[str, Any]) -> str:
         f"min_model_probability: {cfg.get('min_model_probability', 0.58)}  (pipeline-tunable since ghosts joined backtest)\n"
         f"min_edge (entry_threshold): {cfg.get('min_edge', 0.04)}  (pipeline-tunable since ghosts joined backtest)\n"
         f"min_kelly (entry gate): {cfg.get('min_kelly', 0.015)}  (pipeline-tunable since ghosts joined backtest)\n"
-        f"max_market_disagreement: {cfg.get('max_market_disagreement', 0.30)}  (blocks entries where model_prob_for_side - market_price > threshold; filters counter-trend OTM entries)\n"
         "\n### MANUAL-ONLY (not in `changes` — propose via `manual_observations` if data warrants):\n"
         f"# Exit / scalp\n"
         f"exit_edge_threshold: {cfg.get('exit_edge_threshold', -0.05)}\n"

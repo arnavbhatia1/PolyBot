@@ -62,7 +62,6 @@ indicators:
 signal:
   min_edge: 0.04
   max_edge: 0.2
-  max_market_disagreement: 0.30
   adverse_selection_threshold: 0.85
   late_window_min_prob: 0.4
   exit_edge_threshold: -0.05
