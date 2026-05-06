@@ -17,6 +17,19 @@ import anthropic
 logger = logging.getLogger(__name__)
 
 
+def _cfg_get(cfg: dict[str, Any], dotted: str) -> Any:
+    """Look up a config value by `section.subsection.key`. Returns None if any
+    segment is missing. Used by the manual-only rerouting path so dotted keys
+    like `indicators.rsi.period` resolve to their current value.
+    """
+    cur: Any = cfg
+    for seg in dotted.split("."):
+        if not isinstance(cur, dict) or seg not in cur:
+            return None
+        cur = cur[seg]
+    return cur
+
+
 def _extract_json(text: str) -> dict[str, Any]:
     """Extract JSON from Claude's response, handling fences, prose, and partial output."""
     # Strip markdown fences (```json ... ``` or ``` ... ```)
@@ -103,6 +116,18 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
 - flip_enabled, flip_edge_premium
 - max_single_position_*, max_concurrent_positions, max_bankroll_deployed
 - circuit_breaker.floor_pct, circuit_breaker.min_multiplier
+- Indicator periods (use full dotted path, e.g. `indicators.rsi.period`):
+  rsi.period/overbought/oversold; macd.fast_period/slow_period/signal_period;
+  stochastic.k_period/d_smoothing/overbought/oversold;
+  ema.fast_period/slow_period/chop_threshold; obv.slope_period;
+  vwap.session_minutes; atr.period/low_percentile/high_percentile/history_periods.
+  Backtest can't replay alternate periods (snapshot stores the live-period score
+  only). Propose only when an indicator's per_indicator accuracy is consistently
+  poor at N≥50, with the period change as the operator-reviewable hypothesis.
+- SPRT: `sprt.alpha`, `sprt.beta`, `sprt.observation_interval_s`. Backtest
+  replays stored gain_pct from a fixed entry instant — it can't simulate
+  alternate intra-window entry timings. Propose only when execution-quality
+  evidence (n≥50) suggests SPRT is firing too eagerly or too cautiously.
 
 ## Behavioral Rules
 1. SPRT state = signal aggressiveness of recent trades, NOT win rate or entry quality.
@@ -278,6 +303,34 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         # Circuit breaker
         "circuit_breaker.floor_pct",
         "circuit_breaker.min_multiplier",
+        # Indicator periods — manual-only because the backtest replays stored
+        # norm_scores (computed live with the active period) and can't recompute
+        # alternate periods without raw 1-min candle history per snapshot.
+        "indicators.rsi.period",
+        "indicators.rsi.overbought",
+        "indicators.rsi.oversold",
+        "indicators.macd.fast_period",
+        "indicators.macd.slow_period",
+        "indicators.macd.signal_period",
+        "indicators.stochastic.k_period",
+        "indicators.stochastic.d_smoothing",
+        "indicators.stochastic.overbought",
+        "indicators.stochastic.oversold",
+        "indicators.ema.fast_period",
+        "indicators.ema.slow_period",
+        "indicators.ema.chop_threshold",
+        "indicators.obv.slope_period",
+        "indicators.vwap.session_minutes",
+        "indicators.atr.period",
+        "indicators.atr.low_percentile",
+        "indicators.atr.high_percentile",
+        "indicators.atr.history_periods",
+        # SPRT — manual-only because SPRT decides intra-window entry timing,
+        # and the backtest replays stored gain_pct from a fixed entry instant
+        # (alternate timings would produce different fills, which aren't stored).
+        "sprt.alpha",
+        "sprt.beta",
+        "sprt.observation_interval_s",
     }
 
     # Per-param clamp ranges — only backtestable params appear here.
@@ -323,7 +376,7 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         # the suggestion rather than silently losing it.
         if param in MANUAL_ONLY_PARAMS:
             logger.info(f"Rerouting manual-only param from changes -> manual_observations: {param}={value}")
-            cur_val = cfg.get(param)
+            cur_val = _cfg_get(cfg, param)
             rerouted = {
                 "param": param,
                 "current": cur_val,
@@ -444,7 +497,7 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
             conf = obs.get("confidence", "low")
             if conf not in ("high", "medium", "low"):
                 conf = "low"
-            cur = obs.get("current", cfg.get(p))
+            cur = obs.get("current", _cfg_get(cfg, p))
             validated_obs.append({
                 "param": p,
                 "current": cur,
@@ -513,7 +566,26 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         f"max_concurrent_positions: {cfg.get('max_concurrent_positions', 2)}, max_bankroll_deployed: {cfg.get('max_bankroll_deployed', 0.80)}\n"
         f"# Circuit breaker\n"
         f"circuit_breaker.floor_pct: {cfg.get('circuit_breaker', {}).get('floor_pct', 0.85)}, "
-        f"circuit_breaker.min_multiplier: {cfg.get('circuit_breaker', {}).get('min_multiplier', 0.40)}"
+        f"circuit_breaker.min_multiplier: {cfg.get('circuit_breaker', {}).get('min_multiplier', 0.40)}\n"
+        f"# Indicator periods (manual-only — backtest can't recompute from raw candles)\n"
+        + "\n".join(
+            f"{dotted}: {_cfg_get(cfg, dotted)}"
+            for dotted in (
+                "indicators.rsi.period", "indicators.rsi.overbought", "indicators.rsi.oversold",
+                "indicators.macd.fast_period", "indicators.macd.slow_period", "indicators.macd.signal_period",
+                "indicators.stochastic.k_period", "indicators.stochastic.d_smoothing",
+                "indicators.stochastic.overbought", "indicators.stochastic.oversold",
+                "indicators.ema.fast_period", "indicators.ema.slow_period", "indicators.ema.chop_threshold",
+                "indicators.obv.slope_period", "indicators.vwap.session_minutes",
+                "indicators.atr.period", "indicators.atr.low_percentile",
+                "indicators.atr.high_percentile", "indicators.atr.history_periods",
+            )
+            if _cfg_get(cfg, dotted) is not None
+        )
+        + "\n# SPRT (manual-only — backtest can't simulate alternate entry timings)\n"
+        f"sprt.alpha: {_cfg_get(cfg, 'sprt.alpha')}, "
+        f"sprt.beta: {_cfg_get(cfg, 'sprt.beta')}, "
+        f"sprt.observation_interval_s: {_cfg_get(cfg, 'sprt.observation_interval_s')}"
     )
 
     # Performance analysis from BiasDetector

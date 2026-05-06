@@ -65,18 +65,19 @@ def validate_config(config: dict[str, Any]) -> None:
     # --- math ---
     _check_range("math.kelly_fraction", 0.05, 0.25)
 
-    # --- signal ---
-    _check_range("signal.entry_threshold", 0.01, 0.10)
+    # --- signal --- (ranges aligned with claude_client.CLAMP_RANGES so the
+    # validator and the pipeline-clamp agree on what's a legal value.)
+    _check_range("signal.entry_threshold", 0.02, 0.10)
     _check_range("signal.max_edge", 0.10, 0.30)
     _check_range("signal.exit_edge_threshold", -0.25, 0.0)
-    _check_range("signal.min_model_probability", 0.55, 0.85)
+    _check_range("signal.min_model_probability", 0.52, 0.70)
     _check_range("signal.momentum_weight", -0.10, 0.10)  # negative = fade (mean reversion)
     _check_range("signal.regime_weight", 0.02, 0.10)
     _check_range("signal.flow_weight", 0.02, 0.12)
     _check_range("signal.student_t_df", 3, 8, integer=True)
-    _check_range("signal.min_kelly", 0.005, 0.05)
+    _check_range("signal.min_kelly", 0.005, 0.04)
     _check_range("signal.atr_sigma_ratio", 1.2, 2.5)
-    _check_range("signal.min_atr", 1.0, 30.0)
+    _check_range("signal.min_atr", 4.0, 25.0)
 
     # --- signal.weights ---
     weights_val, weights_found = _get_nested(config, "signal.weights")
@@ -114,13 +115,14 @@ def validate_config(config: dict[str, Any]) -> None:
     for cb_key in ("circuit_breaker.losses_to_reduce", "circuit_breaker.wins_to_restore"):
         _check_positive(cb_key, integer=True)
 
-    # Signal layer weights (optional — only validate if present)
+    # Signal layer weights (optional — only validate if present).
+    # Ranges aligned with claude_client.CLAMP_RANGES.
     for key, lo, hi in [
-        ("signal.spot_flow_weight", 0.0, 0.15),
-        ("signal.prev_margin_weight", 0.0, 0.05),
-        ("signal.liquidation_weight", 0.0, 0.10),
-        ("signal.logit_scale", 1.0, 10.0),
-        ("signal.probability_compression", 0.1, 1.0),
+        ("signal.spot_flow_weight", 0.01, 0.15),
+        ("signal.prev_margin_weight", 0.01, 0.05),
+        ("signal.liquidation_weight", 0.01, 0.10),
+        ("signal.logit_scale", 2.0, 6.0),
+        ("signal.probability_compression", 0.5, 1.0),
         ("signal.consensus_dead_zone", 0.0, 0.20),
     ]:
         val, found = _get_nested(config, key)

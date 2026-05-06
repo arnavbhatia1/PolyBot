@@ -76,11 +76,11 @@ class TestValidateConfigPasses:
         """All parameters at their minimum allowed values."""
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.05)
-        _set_nested(cfg, "signal.entry_threshold", 0.01)
+        _set_nested(cfg, "signal.entry_threshold", 0.02)
         _set_nested(cfg, "signal.min_kelly", 0.005)
         _set_nested(cfg, "signal.atr_sigma_ratio", 1.2)
         _set_nested(cfg, "signal.exit_edge_threshold", -0.25)
-        _set_nested(cfg, "signal.min_model_probability", 0.55)
+        _set_nested(cfg, "signal.min_model_probability", 0.52)
         _set_nested(cfg, "signal.momentum_weight", 0.02)
         _set_nested(cfg, "signal.regime_weight", 0.02)
         _set_nested(cfg, "signal.flow_weight", 0.02)
@@ -102,10 +102,10 @@ class TestValidateConfigPasses:
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.25)
         _set_nested(cfg, "signal.entry_threshold", 0.10)
-        _set_nested(cfg, "signal.min_kelly", 0.05)
+        _set_nested(cfg, "signal.min_kelly", 0.04)
         _set_nested(cfg, "signal.atr_sigma_ratio", 2.5)
         _set_nested(cfg, "signal.exit_edge_threshold", 0.0)
-        _set_nested(cfg, "signal.min_model_probability", 0.85)
+        _set_nested(cfg, "signal.min_model_probability", 0.70)
         _set_nested(cfg, "signal.momentum_weight", 0.10)
         _set_nested(cfg, "signal.regime_weight", 0.10)
         _set_nested(cfg, "signal.flow_weight", 0.12)
@@ -163,12 +163,12 @@ class TestValidateConfigOutOfRange:
         ("math.kelly_fraction", 0.01, "not in [0.05, 0.25]"),
         ("math.kelly_fraction", 0.50, "not in [0.05, 0.25]"),
         # signal scalars
-        ("signal.entry_threshold", 0.001, "not in [0.01, 0.1]"),
-        ("signal.entry_threshold", 0.20, "not in [0.01, 0.1]"),
+        ("signal.entry_threshold", 0.001, "not in [0.02, 0.1]"),
+        ("signal.entry_threshold", 0.20, "not in [0.02, 0.1]"),
         ("signal.exit_edge_threshold", -0.30, "not in [-0.25, 0.0]"),
         ("signal.exit_edge_threshold", 0.01, "not in [-0.25, 0.0]"),
-        ("signal.min_model_probability", 0.50, "not in [0.55, 0.85]"),
-        ("signal.min_model_probability", 0.90, "not in [0.55, 0.85]"),
+        ("signal.min_model_probability", 0.50, "not in [0.52, 0.7]"),
+        ("signal.min_model_probability", 0.90, "not in [0.52, 0.7]"),
         ("signal.momentum_weight", -0.15, "not in [-0.1, 0.1]"),
         ("signal.momentum_weight", 0.15, "not in [-0.1, 0.1]"),
         ("signal.regime_weight", 0.01, "not in [0.02, 0.1]"),
@@ -177,8 +177,8 @@ class TestValidateConfigOutOfRange:
         ("signal.flow_weight", 0.15, "not in [0.02, 0.12]"),
         ("signal.student_t_df", 2, "not in [3, 8]"),
         ("signal.student_t_df", 9, "not in [3, 8]"),
-        ("signal.min_kelly", 0.001, "not in [0.005, 0.05]"),
-        ("signal.min_kelly", 0.10, "not in [0.005, 0.05]"),
+        ("signal.min_kelly", 0.001, "not in [0.005, 0.04]"),
+        ("signal.min_kelly", 0.10, "not in [0.005, 0.04]"),
         ("signal.atr_sigma_ratio", 1.0, "not in [1.2, 2.5]"),
         ("signal.atr_sigma_ratio", 3.0, "not in [1.2, 2.5]"),
         # execution
