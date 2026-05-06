@@ -101,7 +101,6 @@ def validate_config(config: dict[str, Any]) -> None:
     # --- execution ---
     _check_positive("execution.max_concurrent_positions", integer=True)
     _check_range("execution.max_bankroll_deployed", 0.0, 1.0)
-    _check_range("execution.max_single_position_pct", 0.05, 0.30)
     _check_range("execution.max_book_fill_pct", 0.0, 1.0)
     _check_positive("execution.initial_bankroll")
     _check_range("execution.slippage_impact_pct", 0.0, 0.20)

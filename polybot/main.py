@@ -697,16 +697,8 @@ async def _evaluate_signal_and_enter(
     avg_edge = await db.get_avg_edge()
     uncertainty_discount = compute_uncertainty_discount(trade_count, avg_edge)
 
-    # Sizing: apply absolute caps FIRST (ceiling on position size), THEN soft discounts
-    # (uncertainty / breaker / entry-phase / correlation). This way, when a cap would
-    # otherwise bind, the discounts still reduce below it — they're not no-ops.
-    # Old order was: raw_kelly × all_discounts → clip to cap, which made discounts
-    # invisible whenever clipping happened (common at any non-trivial bankroll).
     raw_kelly_size = bankroll * signal.kelly_size
-    max_single_pct_usd = bankroll * config.get("execution", {}).get("max_single_position_pct", 0.12)
-    max_single_abs_usd = config.get("execution", {}).get("max_single_position_usd", float("inf"))
-    capped_raw = min(raw_kelly_size, max_single_pct_usd, max_single_abs_usd)
-    size = round(capped_raw * kelly_mult * uncertainty_discount * entry_phase["kelly_multiplier"], 2)
+    size = round(raw_kelly_size * kelly_mult * uncertainty_discount * entry_phase["kelly_multiplier"], 2)
 
     # Regime-based Kelly adjustment
     regime_state = None
@@ -755,12 +747,10 @@ async def _evaluate_signal_and_enter(
             )
             return None, last_eval_log_window
 
-    # Concurrent windows: correlation-aware sizing, size-weighted so a tiny residual
-    # position doesn't hit the new entry as hard as a full-size concurrent.
     open_positions = await db.get_open_positions()
     active_positions = [p for p in open_positions if p.get("status") == "open"]
     if active_positions:
-        cc_mult = concurrent_multiplier(side, cid, active_positions, max_single_usd=max_single_abs_usd)
+        cc_mult = concurrent_multiplier(side, cid, active_positions)
         size = round(size * cc_mult, 2)
 
     # Total-deployment cap (across all open positions) stays at the single-trade level
@@ -2234,7 +2224,9 @@ async def main() -> None:
     if mode == "live":
         # Allowance floor: cover at least 10 rounds of max-sized concurrent positions so a
         # revoked or run-down allowance is caught before it silently kills order fills.
-        _max_single = exec_cfg.get("max_single_position_usd", 18.0)
+        _preflight_bankroll = await db.get_bankroll()
+        _kelly_fraction = config.get("signal", {}).get("kelly_fraction", 0.15)
+        _max_single = _preflight_bankroll * _kelly_fraction
         _max_concurrent = exec_cfg.get("max_concurrent_positions", 2)
         _min_allowance = _max_single * _max_concurrent * 10.0
         ok, msg, live_balance = verify_auth(min_allowance_usd=_min_allowance)

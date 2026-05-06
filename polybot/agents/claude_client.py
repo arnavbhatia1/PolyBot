@@ -273,8 +273,6 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         "flip_enabled",
         "flip_edge_premium",
         # Risk caps (operator-owned)
-        "max_single_position_usd",
-        "max_single_position_pct",
         "max_concurrent_positions",
         "max_bankroll_deployed",
         # Circuit breaker
@@ -512,7 +510,6 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         f"# Flip behavior\n"
         f"flip_enabled: {cfg.get('flip_enabled', True)}, flip_edge_premium: {cfg.get('flip_edge_premium', 0.015)}\n"
         f"# Risk caps (operator-owned policy)\n"
-        f"max_single_position_usd: {cfg.get('max_single_position_usd', 18.0)}, max_single_position_pct: {cfg.get('max_single_position_pct', 0.12)}\n"
         f"max_concurrent_positions: {cfg.get('max_concurrent_positions', 2)}, max_bankroll_deployed: {cfg.get('max_bankroll_deployed', 0.80)}\n"
         f"# Circuit breaker\n"
         f"circuit_breaker.floor_pct: {cfg.get('circuit_breaker', {}).get('floor_pct', 0.85)}, "

@@ -140,7 +140,6 @@ Either the backtest can't simulate the change (exit/timing/schedule) or it's ope
 | `max_edge` | 0.20 | Stale-price cap |
 | `flip_enabled` / `flip_edge_premium` | true / 0.015 | Same-window re-entry |
 | `trading_start/end_*` | — | Schedule |
-| `max_single_position_usd/pct` | 18.0 / 0.12 | Risk caps |
 | `max_concurrent_positions` | 2 | Risk cap |
 | `max_bankroll_deployed` | 0.80 | Total exposure cap |
 | `circuit_breaker.floor_pct/min_multiplier` | 0.85 / 0.40 | Risk caps |

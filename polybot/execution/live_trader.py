@@ -169,7 +169,7 @@ def verify_auth(min_allowance_usd: float | None = None) -> tuple[bool, str, floa
 
     If ``min_allowance_usd`` is provided, auth fails when the Safe's USDC allowance
     to the CTF Exchange is below it. Typical production threshold:
-    ``max_single_position_usd × max_concurrent_positions × safety_multiplier``.
+    ``(bankroll × kelly_fraction) × max_concurrent_positions × safety_multiplier``.
 
     Used by verify_keys.py (no threshold — informational) and main.py preflight
     (threshold passed from config — hard gate).
