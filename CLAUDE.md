@@ -143,6 +143,8 @@ Either the backtest can't simulate the change (exit/timing/schedule) or it's ope
 | `max_concurrent_positions` | 2 | Risk cap |
 | `max_bankroll_deployed` | 0.80 | Total exposure cap |
 | `circuit_breaker.floor_pct/min_multiplier` | 0.85 / 0.40 | Risk caps |
+| `indicators.{rsi,macd,stochastic,ema,obv,vwap,atr}.*` | settings.yaml | Backtest replays stored norm_score (live-period only); raw candles aren't snapshotted. Claude proposes via `manual_observations` when an indicator's per_indicator accuracy is consistently poor at N≥50. |
+| `sprt.{alpha,beta,observation_interval_s}` | 0.05 / 0.10 / 10.0 | SPRT decides intra-window entry timing; backtest replays gain_pct from a fixed entry. Manual-only via `manual_observations` when execution-quality evidence (n≥50) suggests SPRT is firing too eagerly / too cautiously. |
 
 **Rerouting feedback:** the next cycle's prompt explicitly lists rerouted params under "Last Cycle Rerouting Notice" so Claude stops wasting `changes` slots on manual-only proposals.
 
