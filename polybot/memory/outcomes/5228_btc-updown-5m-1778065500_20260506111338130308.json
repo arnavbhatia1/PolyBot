@@ -1,0 +1,100 @@
+{
+  "position_id": 5228,
+  "market_id": "btc-updown-5m-1778065500",
+  "question": "Bitcoin Up or Down - May 6, 7:05AM-7:10AM ET",
+  "side": "Down",
+  "signal_score": 0.40791619527790257,
+  "correct": false,
+  "entry_price": 0.3,
+  "exit_price": 0.0,
+  "log_return": -10.0,
+  "size": 23.19,
+  "pnl": -23.19,
+  "fees": 0.29219399999999923,
+  "gain_pct": -1.0,
+  "realized_edge": 0.1079,
+  "fill_slippage": -0.01,
+  "weight_version": "weights_v001",
+  "category": "crypto-5min",
+  "indicator_snapshot": {
+    "rsi": {
+      "rsi": 100.0,
+      "score": -1.0,
+      "norm_score": -0.8717682080721982
+    },
+    "macd": {
+      "macd": 59.603,
+      "signal": 50.8435,
+      "histogram": 8.7595,
+      "score": 0.2421,
+      "norm_score": -0.3773984204691621
+    },
+    "stochastic": {
+      "k": 100.0,
+      "d": 100.0,
+      "score": -1.0,
+      "norm_score": -0.5580351273112415
+    },
+    "ema": {
+      "trend": "bullish",
+      "fast_ema": 82432.10599242595,
+      "slow_ema": 82382.9264963925
+    },
+    "obv": {
+      "obv_slope": 0.02,
+      "price_slope": 12.8833,
+      "score": 0.0226,
+      "norm_score": 1.1705284447970037
+    },
+    "vwap": {
+      "vwap": 81879.12,
+      "deviation": 2.5629,
+      "score": -0.7689,
+      "norm_score": -1.019391692885411
+    },
+    "atr": {
+      "atr": 53.06,
+      "passes": true,
+      "reason": "ok"
+    },
+    "weights": {
+      "rsi": 0.2,
+      "macd": 0.25,
+      "stochastic": 0.2,
+      "obv": 0.15,
+      "vwap": 0.2,
+      "entry_threshold": 0.6
+    },
+    "trade_context": {
+      "btc_price": 82467.26,
+      "strike_price": 82397.3237945464,
+      "seconds_remaining": 238.086249,
+      "market_price_up": 0.7,
+      "market_price_down": 0.31,
+      "model_probability": 0.40791619527790257,
+      "model_probability_raw": 0.40791619527790257,
+      "edge": 0.09791619527790257,
+      "atr": 53.06,
+      "size": 23.19,
+      "iv_ratio": 0.7561223944747052,
+      "prev_resolution_margin": 151.65632496480248,
+      "flow_score": -0.0412,
+      "spot_flow_signal": 0.7277580607975895,
+      "liquidation_pressure": 0.0,
+      "regime_state": "neutral",
+      "regime_autocorr": -0.0502,
+      "regime_direction": 0.0,
+      "entry_phase": "normal",
+      "flip_count": 1,
+      "is_flip": true,
+      "depth_usd_top20": 322934.6239764,
+      "sprt_confidence": 0.0,
+      "sprt_status": "SKIP",
+      "adverse_selection_30s": 0.05263157894736842
+    }
+  },
+  "exit_reason": "resolution",
+  "seconds_remaining_at_exit": 0.0,
+  "exit_timestamp": "2026-05-06T11:13:38.130285+00:00",
+  "timestamp": "2026-05-06T11:13:38.130285+00:00"
+}
