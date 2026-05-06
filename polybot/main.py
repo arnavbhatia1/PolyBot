@@ -681,6 +681,18 @@ async def _evaluate_signal_and_enter(
         _log_skip_once(cid, f"layer_disagree_{side}", f"SKIP: layer disagreement — momentum={momentum_score:+.2f} opposes {side}, penalized edge {signal.edge * 0.5:+.1%} < min {signal_engine.min_edge:.0%}")
         return None, last_eval_log_window
 
+    # --- CVD DECELERATION GATE ---
+    # Skip when spot-flow is materially driving the entry but buying pressure is
+    # already fading. spot_flow_signal × cvd_accel_val < 0 means the CVD spike
+    # has peaked and is reverting — these entries resolve at $0 rather than
+    # recovering, because the momentum that created the signal is already gone.
+    if abs(spot_flow_signal) >= 0.20 and spot_flow_signal * cvd_accel_val < 0:
+        _record_skip("cvd_decel")
+        _ghost("cvd_decel", signal, {})
+        _log_skip_once(cid, f"cvd_decel_{side}",
+                       f"SKIP: spot_flow {spot_flow_signal:+.3f} fading (cvd_accel {cvd_accel_val:+.4f}) — spike already peaked")
+        return None, last_eval_log_window
+
     price = price_up if side == "Up" else price_down
     if not bankroll:
         bankroll = await db.get_bankroll()
