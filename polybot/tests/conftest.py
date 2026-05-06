@@ -18,7 +18,6 @@ SAMPLE_CONFIG = {
     "execution": {
         "max_slippage": 0.02,
         "max_bankroll_deployed": 0.80,
-        "max_single_position_pct": 0.12,
         "max_concurrent_positions": 1,
         "max_book_fill_pct": 0.50,
         "slippage_impact_pct": 0.03,
