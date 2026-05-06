@@ -5,12 +5,10 @@ circuit_breaker:
   floor_pct: 0.85
   min_multiplier: 0.4
   losses_to_reduce: 3
-  wins_to_restore: 2
+  wins_to_restore: 3
 execution:
   max_slippage: 0.02
   max_bankroll_deployed: 0.8
-  max_single_position_pct: 0.12
-  max_single_position_usd: 18.0
   max_concurrent_positions: 2
   max_book_fill_pct: 0.5
   slippage_impact_pct: 0.03
@@ -20,7 +18,7 @@ execution:
   paper_network_fail_rate: 0.02
   initial_bankroll: 100.0
   use_maker_orders: false
-  maker_timeout_s: 60.0
+  maker_timeout_s: 15.0
 agents:
   outcome_reviewer_interval_seconds: 3600
   daily_pipeline_hour: 23
