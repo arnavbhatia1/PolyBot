@@ -16,6 +16,8 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
+from polybot.config.param_registry import CLAMP_RANGES as _CLAMP_RANGES
+
 
 def _cfg_get(cfg: dict[str, Any], dotted: str) -> Any:
     """Look up a config value by `section.subsection.key`. Returns None if any
@@ -333,26 +335,8 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         "sprt.observation_interval_s",
     }
 
-    # Per-param clamp ranges — only backtestable params appear here.
-    CLAMP_RANGES: dict[str, tuple] = {
-        "atr_sigma_ratio":              (1.2,   2.5,   float),
-        "logit_scale":                  (2.0,   6.0,   float),
-        "probability_compression":      (0.5,   1.0,   float),
-        "liquidation_weight":           (0.01,  0.10,  float),
-        "prev_margin_weight":           (0.01,  0.05,  float),
-        "spot_flow_weight":             (0.01,  0.15,  float),
-        "flow_weight":                  (0.02,  0.12,  float),
-        "regime_weight":                (0.02,  0.10,  float),
-        "momentum_weight":             (-0.10,  0.10,  float),
-        "student_t_df":                 (3,     8,     int),
-        "kelly_fraction":               (0.05,  0.25,  float),
-        "min_atr":                      (4.0,   25.0,  float),
-        # Entry gates — pipeline-tunable now that ghosts are in the backtest sample.
-        # Ranges are conservative; Claude should move them in small steps.
-        "min_edge":                     (0.02,  0.10,  float),
-        "min_kelly":                    (0.005, 0.04,  float),
-        "min_model_probability":        (0.52,  0.70,  float),
-    }
+    # Per-param clamp ranges — imported from param_registry (single source of truth).
+    CLAMP_RANGES = _CLAMP_RANGES
 
     validated_changes: list[dict[str, Any]] = []
 

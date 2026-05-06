@@ -652,45 +652,20 @@ class AgentScheduler:
         raising or lowering any gate filters both baseline and candidate identically and
         the comparison stays clean.
         """
+        from polybot.config.param_registry import PIPELINE_PARAMS
         rec = recommendations or {}
         live_weights = self.indicator_engine.get_weights() if self.indicator_engine else {}
-        return {
+        cfg: dict[str, Any] = {
             "weights": rec.get("recommended_weights") or {
                 k: live_weights.get(k, 0.0) for k in ("rsi", "macd", "stochastic", "obv", "vwap")
             },
-            "momentum_weight": rec.get("recommended_momentum_weight",
-                getattr(self.signal_engine, 'momentum_weight', -0.02)),
-            "atr_sigma_ratio": rec.get("recommended_atr_sigma_ratio",
-                getattr(self.signal_engine, 'atr_sigma_ratio', 1.4)),
-            "student_t_df": int(rec.get("recommended_student_t_df",
-                getattr(self.signal_engine, 'student_t_df', 5))),
-            # Entry gates — candidate-overridable since the backtest includes ghosts
-            # (resolved rejections) alongside real fills.
-            "min_edge": rec.get("recommended_min_edge",
-                getattr(self.signal_engine, 'min_edge', 0.04)),
-            "min_kelly": rec.get("recommended_min_kelly",
-                getattr(self.signal_engine, 'min_kelly', 0.015)),
-            "min_model_probability": rec.get("recommended_min_model_probability",
-                getattr(self.signal_engine, 'min_model_probability', 0.58)),
-            "kelly_fraction": rec.get("recommended_kelly_fraction",
-                getattr(self.signal_engine, 'kelly_fraction', 0.15)),
-            "regime_weight": rec.get("recommended_regime_weight",
-                getattr(self.signal_engine, 'regime_weight', 0.03)),
-            "flow_weight": rec.get("recommended_flow_weight",
-                getattr(self.signal_engine, 'flow_weight', 0.04)),
-            "spot_flow_weight": rec.get("recommended_spot_flow_weight",
-                getattr(self.signal_engine, 'spot_flow_weight', 0.04)),
-            "liquidation_weight": rec.get("recommended_liquidation_weight",
-                getattr(self.signal_engine, 'liquidation_weight', 0.03)),
-            "prev_margin_weight": rec.get("recommended_prev_margin_weight",
-                getattr(self.signal_engine, 'prev_margin_weight', 0.02)),
-            "logit_scale": rec.get("recommended_logit_scale",
-                getattr(self.signal_engine, 'logit_scale', 4.0)),
-            "min_atr": rec.get("recommended_min_atr",
-                getattr(self.signal_engine, 'min_atr', 8.0)),
-            "probability_compression": rec.get("recommended_probability_compression",
-                getattr(self.signal_engine, 'probability_compression', 1.0)),
         }
+        for _spec in PIPELINE_PARAMS:
+            cfg[_spec.name] = _spec.cast(
+                rec.get(f"recommended_{_spec.name}",
+                        getattr(self.signal_engine, _spec.name, _spec.default))
+            )
+        return cfg
 
     def _backtest_recommendations(self, recommendations: dict[str, Any],
                                     outcomes: list[dict[str, Any]]) -> list[float]:
@@ -745,15 +720,10 @@ class AgentScheduler:
 
         # Build a thin recommendations dict for _config_for_helper
         single_rec: dict[str, Any] = {}
+        from polybot.config.param_registry import TUNABLE_NAMES
         if param == "weights":
             single_rec["recommended_weights"] = value
-        elif param in (
-            "momentum_weight", "atr_sigma_ratio", "student_t_df", "kelly_fraction",
-            "regime_weight", "flow_weight", "spot_flow_weight",
-            "liquidation_weight", "prev_margin_weight", "logit_scale", "min_atr",
-            "probability_compression",
-            "min_edge", "min_kelly", "min_model_probability",
-        ):
+        elif param in TUNABLE_NAMES:
             single_rec[f"recommended_{param}"] = value
         else:
             # Params not plumbed through _config_for_helper (timing/exit/etc.) —
@@ -1523,8 +1493,11 @@ class AgentScheduler:
         if _gate_stats_path.exists():
             try:
                 gate_stats = _json.loads(_gate_stats_path.read_text())
-                analysis["gate_skip_stats"] = gate_stats
-                total = gate_stats.get("total_skips", 0)
+                # Flatten nested {"counts": {...}, "total_skips": N} → {"gate": N, "total_skips": N}
+                # so claude_client can iterate flat k/v pairs without knowing the schema.
+                counts = gate_stats.get("counts", gate_stats)
+                total = gate_stats.get("total_skips", sum(v for v in counts.values() if isinstance(v, (int, float))))
+                analysis["gate_skip_stats"] = {**counts, "total_skips": total}
                 pipeline_info["gate_total_skips"] = total
             except Exception:
                 pass
@@ -1936,7 +1909,7 @@ class AgentScheduler:
         if self.signal_engine:
             pipeline_info["current_config"] = {
                 "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
-                "entry_threshold": getattr(self.signal_engine, 'min_edge', 0.04),
+                "min_edge": getattr(self.signal_engine, 'min_edge', 0.04),
                 "min_model_prob": getattr(self.signal_engine, 'min_model_probability', 0.58),
                 "momentum_weight": getattr(self.signal_engine, 'momentum_weight', -0.02),
                 "regime_weight": getattr(self.signal_engine, 'regime_weight', 0.03),

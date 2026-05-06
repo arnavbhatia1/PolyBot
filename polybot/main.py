@@ -187,7 +187,7 @@ _window_flip_state: dict[str, dict] = {}  # window_id -> {flip_count, last_side}
 def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
     """Construct SignalEngine from config — shared between pipeline and main."""
     return SignalEngine(
-        min_edge=signal_cfg.get("entry_threshold", 0.04),
+        min_edge=signal_cfg.get("min_edge", 0.04),
         kelly_fraction=config["math"].get("kelly_fraction", 0.15),
         momentum_weight=signal_cfg.get("momentum_weight", -0.02),
         weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,

@@ -33,7 +33,7 @@ SAMPLE_CONFIG = {
     },
     "database": {"path": ":memory:"},
     "signal": {
-        "entry_threshold": 0.03,
+        "min_edge": 0.03,
         "max_edge": 0.20,
         "exit_edge_threshold": -0.05,
         "min_model_probability": 0.65,
@@ -44,6 +44,11 @@ SAMPLE_CONFIG = {
         "min_kelly": 0.015,
         "atr_sigma_ratio": 1.7,
         "min_atr": 8.0,
+        "logit_scale": 4.0,
+        "spot_flow_weight": 0.04,
+        "liquidation_weight": 0.03,
+        "prev_margin_weight": 0.02,
+        "probability_compression": 1.0,
         "weights": {
             "rsi": 0.20,
             "macd": 0.25,

@@ -16,25 +16,8 @@ import re
 from collections import defaultdict
 from typing import Any
 
-# Ranges mirror claude_client.CLAMP_RANGES — kept here so this module is
-# self-contained when the API is unreachable.
-CLAMP_RANGES: dict[str, tuple[float, float, type]] = {
-    "atr_sigma_ratio":         (1.2,   2.5,   float),
-    "logit_scale":             (2.0,   6.0,   float),
-    "probability_compression": (0.5,   1.0,   float),
-    "liquidation_weight":      (0.01,  0.10,  float),
-    "prev_margin_weight":      (0.01,  0.05,  float),
-    "spot_flow_weight":        (0.01,  0.15,  float),
-    "flow_weight":             (0.02,  0.12,  float),
-    "regime_weight":           (0.02,  0.10,  float),
-    "momentum_weight":         (-0.10, 0.10,  float),
-    "student_t_df":            (3,     8,     int),
-    "kelly_fraction":          (0.05,  0.25,  float),
-    "min_atr":                 (4.0,   25.0,  float),
-    "min_edge":                (0.02,  0.10,  float),
-    "min_kelly":               (0.005, 0.04,  float),
-    "min_model_probability":   (0.52,  0.70,  float),
-}
+# Ranges sourced from param_registry — single source of truth.
+from polybot.config.param_registry import CLAMP_RANGES
 
 # Parameter families — each cycle's proposals should span ≥3 of these so the
 # pipeline doesn't pile changes onto a single mechanism.

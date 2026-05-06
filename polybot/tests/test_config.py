@@ -76,7 +76,7 @@ class TestValidateConfigPasses:
         """All parameters at their minimum allowed values."""
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.05)
-        _set_nested(cfg, "signal.entry_threshold", 0.02)
+        _set_nested(cfg, "signal.min_edge", 0.02)
         _set_nested(cfg, "signal.min_kelly", 0.005)
         _set_nested(cfg, "signal.atr_sigma_ratio", 1.2)
         _set_nested(cfg, "signal.exit_edge_threshold", -0.25)
@@ -101,7 +101,7 @@ class TestValidateConfigPasses:
         """All parameters at their maximum allowed values."""
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.25)
-        _set_nested(cfg, "signal.entry_threshold", 0.10)
+        _set_nested(cfg, "signal.min_edge", 0.10)
         _set_nested(cfg, "signal.min_kelly", 0.04)
         _set_nested(cfg, "signal.atr_sigma_ratio", 2.5)
         _set_nested(cfg, "signal.exit_edge_threshold", 0.0)
@@ -125,7 +125,7 @@ class TestValidateConfigPasses:
 class TestValidateConfigMissing:
     @pytest.mark.parametrize("key", [
         "math.kelly_fraction",
-        "signal.entry_threshold",
+        "signal.min_edge",
         "signal.exit_edge_threshold",
         "signal.min_model_probability",
         "signal.momentum_weight",
@@ -163,8 +163,8 @@ class TestValidateConfigOutOfRange:
         ("math.kelly_fraction", 0.01, "not in [0.05, 0.25]"),
         ("math.kelly_fraction", 0.50, "not in [0.05, 0.25]"),
         # signal scalars
-        ("signal.entry_threshold", 0.001, "not in [0.02, 0.1]"),
-        ("signal.entry_threshold", 0.20, "not in [0.02, 0.1]"),
+        ("signal.min_edge", 0.001, "not in [0.02, 0.1]"),
+        ("signal.min_edge", 0.20, "not in [0.02, 0.1]"),
         ("signal.exit_edge_threshold", -0.30, "not in [-0.25, 0.0]"),
         ("signal.exit_edge_threshold", 0.01, "not in [-0.25, 0.0]"),
         ("signal.min_model_probability", 0.50, "not in [0.52, 0.7]"),
@@ -280,12 +280,12 @@ class TestValidateConfigMultipleErrors:
     def test_multiple_violations_all_listed(self):
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.50)
-        _set_nested(cfg, "signal.entry_threshold", 0.001)
+        _set_nested(cfg, "signal.min_edge", 0.001)
         _set_nested(cfg, "execution.initial_bankroll", -1)
         with pytest.raises(ValueError) as exc_info:
             validate_config(cfg)
         msg = str(exc_info.value)
         assert "kelly_fraction" in msg
-        assert "entry_threshold" in msg
+        assert "min_edge" in msg
         assert "initial_bankroll" in msg
         assert "3 error(s)" in msg
