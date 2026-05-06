@@ -639,6 +639,24 @@ async def _evaluate_signal_and_enter(
     token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
     cid = contract.get("slug", contract.get("market_id", ""))
 
+    # --- MARKET DISAGREEMENT GATE ---
+    # Block entries where the market strongly disagrees with the model.
+    # High disagreement (e.g. model says 60% Down but market prices Down at 25¢) means
+    # we're entering counter-trend OTM contracts. These scalp fine on brief noise bounces
+    # but almost never win at resolution — the market's structural read dominates at expiry.
+    _mkt_price_for_side = price_up if side == "Up" else price_down
+    _model_prob_for_side = signal.prob if side == "Up" else 1.0 - signal.prob
+    _max_disagree = config.get("signal", {}).get("max_market_disagreement", 0.30)
+    if (_model_prob_for_side - _mkt_price_for_side) > _max_disagree:
+        _record_skip("market_disagreement")
+        _ghost("market_disagreement", signal, {})
+        _log_skip_once(
+            cid, f"mkt_disagree_{side}",
+            f"SKIP: market disagrees too strongly — model {_model_prob_for_side:.2f} vs mkt {_mkt_price_for_side:.2f} "
+            f"(gap {_model_prob_for_side - _mkt_price_for_side:.2f} > {_max_disagree:.2f})"
+        )
+        return None, last_eval_log_window
+
     flip_state = _window_flip_state.setdefault(cid, {
         "flip_count": 0, "last_side": None,
     })

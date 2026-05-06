@@ -30,7 +30,7 @@ Drift → multiplier mapping: 3pp → 1.0 (no compression), 25pp → 0.5 (max), 
 
 ## Entry Gates (all must pass)
 
-`prob ≥ min_model_probability (0.58)`, `edge ≥ min_edge (0.04)` (+0.015 for flips), `Kelly ≥ min_kelly (0.015)`, spread ≤ 10%, depth ≥ $50, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge (0.20)`, `adverse_rate_30s ≤ adverse_selection_threshold (0.85)`, last 30s: `prob ≥ final_min_probability (0.90)`. **Pre-submit edge re-check** uses the fresh ask: rejects if fresh edge falls below `min_edge` OR exceeds `max_edge` (book moved between signal and submit). **CVD deceleration gate:** if `|spot_flow_signal| ≥ 0.20` AND `spot_flow_signal × cvd_accel < 0` (spike already peaked and reversing), skip — these entries resolve at $0 because the flow momentum driving the signal has already mean-reverted.
+`prob ≥ min_model_probability (0.58)`, `edge ≥ min_edge (0.04)` (+0.015 for flips), `Kelly ≥ min_kelly (0.015)`, spread ≤ 10%, depth ≥ $50, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge (0.20)`, `adverse_rate_30s ≤ adverse_selection_threshold (0.85)`, last 30s: `prob ≥ final_min_probability (0.90)`, `model_prob_for_side - market_price ≤ max_market_disagreement (0.30)`. **Pre-submit edge re-check** uses the fresh ask: rejects if fresh edge falls below `min_edge` OR exceeds `max_edge` (book moved between signal and submit). **CVD deceleration gate:** if `|spot_flow_signal| ≥ 0.20` AND `spot_flow_signal × cvd_accel < 0` (spike already peaked and reversing), skip — these entries resolve at $0 because the flow momentum driving the signal has already mean-reverted. **Market disagreement gate:** blocks entries where the model disagrees with the market by more than `max_market_disagreement` — these are counter-trend OTM entries that scalp fine on noise but almost never win at resolution.
 
 ## Sizing & Exit
 
@@ -125,6 +125,7 @@ These flow through `_kelly_bankroll_returns` so the backtest can replay them.
 | `min_model_probability` | 0.52–0.70 | Entry gate. Tunable via ghost backtest. |
 | `min_edge` | 0.02–0.10 | Entry gate. Tunable via ghost backtest. |
 | `min_kelly` | 0.005–0.04 | Entry gate (primary). Tunable via ghost backtest. |
+| `max_market_disagreement` | 0.15–0.40 | Blocks entries where model_prob_for_side − market_price exceeds threshold. Filters counter-trend OTM entries that scalp fine but fail at resolution. |
 
 ### 🔴 Manual-only (operator edits settings.yaml)
 
