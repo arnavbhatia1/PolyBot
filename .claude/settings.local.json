@@ -125,7 +125,9 @@
       "Bash(echo \"---exit code: $?\")",
       "WebFetch(domain:docs.cdp.coinbase.com)",
       "Bash(awk '{print $5, $9}')",
-      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot\" -Recurse -Name)"
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot\" -Recurse -Name)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot\" -Recurse -Directory)",
+      "Bash(Select-Object -First 20)"
     ]
   }
 }

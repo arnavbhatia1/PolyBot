@@ -2,7 +2,7 @@
 
 ## Overview
 
-PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes P(Up) via a 7-layer probability model, compares to market price, trades when edge clears the noise floor and Kelly justifies size, holds to $1 resolution when confident, scalps early when the holding edge drops below the fee-aware threshold.
+PolyBot is a 5-minute BTC Up/Down trader for Polymarket. It computes P(Up) via a 7-layer probability model, compares to market price, trades when edge clears the noise floor and Kelly justifies size, then lets the edge math decide every tick whether to hold to $1 resolution or scalp early.
 
 ## Probability Model
 
@@ -38,7 +38,7 @@ Drift → multiplier mapping: 3pp → 1.0 (no compression), 25pp → 0.5 (max), 
 
 **Concurrent multiplier** is correlation-aware + size-weighted: same-side (ρ≈0.75) at full size → 0.35×; opposite-side (ρ≈-0.25) → 0.90×. Correlation contribution scales by `existing_size / max_single_usd`.
 
-**Exit (`evaluate_hold`):** same model as entry. Scalp when `holding_edge ≤ effective_threshold` (fee-aware + binary-option time-value boundary). Trailing exit: entry < $0.50, peaked > $0.65, drops 15%+ from peak. Override holds when model still favors side strongly (≥0.70) and edge isn't catastrophically negative (>−0.10).
+**Exit (`evaluate_hold`):** same model as entry. Every tick: `holding_edge = model_prob − market_price`. `effective_threshold = max(exit_edge_threshold − fee_cost, exit_boundary_threshold)`. Scalp when `holding_edge ≤ effective_threshold`. No pattern-based triggers, no confidence overrides — the math decides. `exit_boundary` is a time/price-aware curve: deep ITM (>70¢) gets a resolution premium near expiry; deep OTM (<30¢) patience decays faster; ATM follows sqrt(time) optionality.
 
 **Flip trading:** after a scalp, re-enter opposite side same window. Max 1 flip. Requires +1.5% extra edge.
 
