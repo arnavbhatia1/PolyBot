@@ -79,6 +79,9 @@ signal:
   student_t_df: 5
   logit_scale: 4.0
   probability_compression: 0.75
+  adaptive_compression_scale: 1.0
+  loss_cut_fraction: 0.65
+  loss_cut_time_s: 120.0
   consensus_dead_zone: 0.05
   weights:
     rsi: 0.2
@@ -124,11 +127,6 @@ bybit:
   ws_url: wss://stream.bybit.com/v5/public/linear
   rest_url: https://api.bybit.com
   funding_poll_s: 300.0
-deribit:
-  rest_url: https://www.deribit.com/api/v2/public
-  poll_interval_s: 60.0
-  iv_ratio_min: 0.5
-  iv_ratio_max: 2.0
 entry_timing:
   normal_fraction: 0.6
   late_max_penalty: 0.35
@@ -139,6 +137,7 @@ sprt:
   alpha: 0.05
   beta: 0.1
   observation_interval_s: 10.0
+  min_confidence: 0.20
 regime:
   lookback: 50
   vol_high_percentile: 75

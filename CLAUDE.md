@@ -19,18 +19,20 @@ All layers compose in logit space except L1, then sigmoid + Platt at the end.
 
 L3 + L3b combined contribution capped at ±0.35 logits to prevent triple-counting flow evidence.
 
-### Adaptive compression (two orthogonal learning loops)
+### Adaptive compression (combined learning loop)
 
-Rolling 100-trade buffer `(predicted_prob, market_price, won)` in `signal_engine`. After every resolution, two multipliers refit:
+Rolling 100-trade buffer `(predicted_prob, market_price, won)` in `signal_engine`. After every resolution, two internal multipliers refit:
 
-- **Confidence buckets** by `max(p, 1-p)`: moderate [0.58, 0.70), high [0.70, 0.85), extreme [0.85, 1.0]. Drift = `|mean_predicted − realized_WR|` per bucket.
-- **Disagreement buckets** by `|model − market|`: agree [0, 0.10), medium [0.10, 0.25), strong [0.25+]. Same drift formula. Trains on cases where the market disagreed and was right.
+- **Confidence buckets** by `max(p, 1-p)`: moderate [0.58, 0.70), high [0.70, 0.85), extreme [0.85, 1.0].
+- **Disagreement buckets** by `|model − market|`: agree [0, 0.10), medium [0.10, 0.25), strong [0.25+].
 
-Drift → multiplier mapping: 3pp → 1.0 (no compression), 25pp → 0.5 (max), linear in between, floored at 0.5. Min sample size per bucket: 15. Runtime applies `min(conf_mult, dis_mult)` so either signal can trigger compression independently. Static `probability_compression` multiplies on top. Persisted to `memory/adaptive_calibration.json` (backward-compatible with old single-multiplier format).
+Drift → multiplier: 3pp → 1.0, 25pp → 0.5, linear, floored at 0.5. Min sample: 15. Runtime takes `min(conf_mult, dis_mult)` as `raw_mult`, then: `combined = 1.0 − (1.0 − raw_mult) × adaptive_compression_scale`. `probability_compression` multiplies on top. Persisted to `memory/adaptive_calibration.json`.
+
+**`adaptive_compression_scale`** (0.0–1.0, pipeline-tunable): single knob — 0 = no adaptive compression, 1 = full effect.
 
 ## Entry Gates (all must pass)
 
-`prob ≥ min_model_probability (0.58)`, `edge ≥ min_edge (0.04)` (+0.015 for flips), `Kelly ≥ min_kelly (0.015)`, spread ≤ 10%, depth ≥ $50, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge (0.20)`, `adverse_rate_30s ≤ adverse_selection_threshold (0.85)`, last 30s: `prob ≥ final_min_probability (0.90)`. **Pre-submit edge re-check** uses the fresh ask: rejects if fresh edge falls below `min_edge` OR exceeds `max_edge` (book moved between signal and submit). **CVD deceleration gate:** if `|spot_flow_signal| ≥ 0.20` AND `spot_flow_signal × cvd_accel < 0` (spike already peaked and reversing), skip — these entries resolve at $0 because the flow momentum driving the signal has already mean-reverted.
+`prob ≥ min_model_probability (0.58)`, `edge ≥ min_edge (0.04)` (+0.015 for flips), `Kelly ≥ min_kelly (0.015)`, spread ≤ 10%, depth ≥ $50, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge (0.20)`, `adverse_rate_30s ≤ adverse_selection_threshold (0.85)`, last 30s: `prob ≥ final_min_probability (0.90)`. **Pre-submit edge re-check** uses the fresh ask: rejects if fresh edge falls below `min_edge` OR exceeds `max_edge`. **CVD deceleration gate:** if `|spot_flow_signal| ≥ 0.20` AND `spot_flow_signal × cvd_accel < 0`, skip. **SPRT gate:** blocks entry if SPRT status is `SKIP` (signal definitively weak after 4+ obs) OR if SPRT confidence < `min_confidence (0.20)` after 2+ observations AND not yet `ENTER`. Also blocks if SPRT favors the opposite side with >30% confidence.
 
 ## Sizing & Exit
 
@@ -38,7 +40,7 @@ Drift → multiplier mapping: 3pp → 1.0 (no compression), 25pp → 0.5 (max), 
 
 **Concurrent multiplier** is correlation-aware + size-weighted: same-side (ρ≈0.75) at full size → 0.35×; opposite-side (ρ≈-0.25) → 0.90×. Correlation contribution scales by `existing_size / max_single_usd`.
 
-**Exit (`evaluate_hold`):** same model as entry. Every tick: `holding_edge = model_prob − market_price`. `effective_threshold = max(exit_edge_threshold − fee_cost, exit_boundary_threshold)`. Scalp when `holding_edge ≤ effective_threshold`. No pattern-based triggers, no confidence overrides — the math decides. `exit_boundary` is a time/price-aware curve: deep ITM (>70¢) gets a resolution premium near expiry; deep OTM (<30¢) patience decays faster; ATM follows sqrt(time) optionality.
+**Exit (`evaluate_hold`):** same model as entry. Every tick: `holding_edge = model_prob − market_price`. `effective_threshold = max(exit_edge_threshold − fee_cost, exit_boundary_threshold)`. Scalp when `holding_edge ≤ effective_threshold`. `exit_boundary` is a time/price-aware curve: deep ITM (>70¢) gets a resolution premium near expiry; deep OTM (<30¢) patience decays with an urgency premium that can go positive (forces exit even with positive holding_edge); ATM follows sqrt(time). **Loss-cut:** separately, if `market_price < entry_price × loss_cut_fraction (0.65)` AND `seconds_remaining < loss_cut_time_s (120)`, exit regardless of holding_edge — prevents holding deeply underwater positions to $0 when time is nearly up.
 
 **Flip trading:** after a scalp, re-enter opposite side same window. Max 1 flip. Requires +1.5% extra edge.
 
@@ -112,6 +114,7 @@ These flow through `_kelly_bankroll_returns` so the backtest can replay them.
 | `atr_sigma_ratio` | 1.2–2.5 | L1 aggressiveness. Lower = sharper probabilities. Highest leverage. |
 | `logit_scale` | 2.0–6.0 | Master amplifier on L2–L5 weights. |
 | `probability_compression` | 0.5–1.0 | Static shrink toward 0.5 (compounds with adaptive multipliers). |
+| `adaptive_compression_scale` | 0.0–1.0 | Scales adaptive calibration effect: 0=off, 1=full (both confidence + disagreement buckets). |
 | `student_t_df` | 3–8 | Tail fatness. |
 | `momentum_weight` | -0.10 to +0.10 | L4. Negative = fade. |
 | `regime_weight` | 0.02–0.10 | L2. |
@@ -133,6 +136,8 @@ Either the backtest can't simulate the change (exit/timing/schedule) or it's ope
 | Param | Default | Why manual |
 |---|---|---|
 | `exit_edge_threshold` | -0.05 | Backtest replays fixed gain_pct |
+| `loss_cut_fraction` | 0.65 | Risk policy — exit if market < entry × this with < loss_cut_time_s remaining |
+| `loss_cut_time_s` | 120 | Risk policy — loss-cut window (last N seconds) |
 | `adverse_selection_threshold` | 0.85 | Entry-time only |
 | `normal_fraction` | 0.60 | Time-of-day Kelly envelope |
 | `late_max_penalty` | 0.60 | Late-window Kelly cut |
@@ -144,7 +149,7 @@ Either the backtest can't simulate the change (exit/timing/schedule) or it's ope
 | `max_bankroll_deployed` | 0.80 | Total exposure cap |
 | `circuit_breaker.floor_pct/min_multiplier` | 0.85 / 0.40 | Risk caps |
 | `indicators.{rsi,macd,stochastic,ema,obv,vwap,atr}.*` | settings.yaml | Backtest replays stored norm_score (live-period only); raw candles aren't snapshotted. Claude proposes via `manual_observations` when an indicator's per_indicator accuracy is consistently poor at N≥50. |
-| `sprt.{alpha,beta,observation_interval_s}` | 0.05 / 0.10 / 10.0 | SPRT decides intra-window entry timing; backtest replays gain_pct from a fixed entry. Manual-only via `manual_observations` when execution-quality evidence (n≥50) suggests SPRT is firing too eagerly / too cautiously. |
+| `sprt.{alpha,beta,observation_interval_s,min_confidence}` | 0.05 / 0.10 / 10.0 / 0.20 | SPRT now gates entries. Backtest replays gain_pct from a fixed entry instant — alternate timings aren't stored. Manual-only via `manual_observations` when execution-quality evidence (n≥50) suggests SPRT is over/under-filtering. |
 
 **Rerouting feedback:** the next cycle's prompt explicitly lists rerouted params under "Last Cycle Rerouting Notice" so Claude stops wasting `changes` slots on manual-only proposals.
 
@@ -169,7 +174,6 @@ python -m pytest polybot/tests/          # Test suite
 | Polymarket CLOB `/price?side=BUY|SELL` | Execution price (negRisk cross-matched) |
 | Polymarket Gamma `/events?slug=...` | Contract discovery, resolution |
 | Bybit WS | OI + perp price (REST 403 for US — WS only) |
-| Deribit | IV (`iv_ratio`) |
 | Chainlink RTDS | Strike + resolution + orphan fallback |
 
 **Never use:** raw CLOB book for pricing (use `/price`), Gamma `outcomePrices` for edge (stale), Binance for resolution.
@@ -220,18 +224,6 @@ Runs daily at 23:15 ET. Walk-forward: 60% train, 40% across 4 folds [60:70], [70
 - **Orphaned position:** Waits for Gamma resolution; Discord alert at 1hr; Chainlink fallback at 30min.
 - **Pipeline not adopting:** candidate must clear `Δ ≥ max(0.010, 0.25 × JK_SE)` AND regime gate. "No change" usually means proposed moves were too small relative to backtest noise — Claude needs decisive moves.
 - **Live auth failure:** AuthError raises and the bot exits cleanly; check `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, and USDC allowance to the CTF Exchange.
-
-## Frozen Baseline — DO NOT CHANGE
-
-The execution and architecture are complete. Don't modify:
-
-- `signal_engine.py` (probability model + evaluate_hold)
-- Entry/exit/pricing/sizing logic in `main.py`
-- `execution/base.py` (BaseTrader ABC, fee math, atomic open_trade)
-- `paper_trader.py` / `live_trader.py`
-- `circuit_breaker.py`, `correlation.py`, `bankroll_strategy.py`
-
-**Pipeline optimizations only.** New features go in new files. Only the nightly pipeline tunes params.
 
 ## What NOT to Change
 

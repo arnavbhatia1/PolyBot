@@ -51,7 +51,6 @@ import math
 from polybot.feeds.binance_depth import BinanceDepthFeed
 from polybot.feeds.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
 from polybot.feeds.bybit_feed import BybitFeed
-from polybot.feeds.deribit_iv import DeribitIVFeed
 from polybot.feeds.coinbase_feed import CoinbaseFeed
 from polybot.feeds.kraken_feed import KrakenFeed
 from polybot.core.bankroll_strategy import compute_uncertainty_discount, DrawdownVelocityTracker
@@ -205,6 +204,9 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
         liquidation_weight=signal_cfg.get("liquidation_weight", 0.03),
         logit_scale=signal_cfg.get("logit_scale", 4.0),
         probability_compression=signal_cfg.get("probability_compression", 1.0),
+        adaptive_compression_scale=signal_cfg.get("adaptive_compression_scale", 1.0),
+        loss_cut_fraction=signal_cfg.get("loss_cut_fraction", 0.65),
+        loss_cut_time_s=signal_cfg.get("loss_cut_time_s", 120.0),
         consensus_dead_zone=signal_cfg.get("consensus_dead_zone", 0.05),
         consensus_config=signal_cfg.get("consensus"),
     )
@@ -456,7 +458,6 @@ async def _evaluate_signal_and_enter(
         depth_feed: Any = None,
         trades_feed: Any = None,
         bybit_feed: Any = None,
-        deribit_feed: Any = None,
         coinbase_feed: Any = None,
         chainlink_feed: Any = None,
         kraken_feed: Any = None,
@@ -532,16 +533,8 @@ async def _evaluate_signal_and_enter(
         taker_component = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
         spot_flow_signal = max(-1.0, min(1.0, cvd_component + taker_component))
 
-    # Deribit IV: logged for pipeline analysis but NOT applied to CDF vol scaling.
-    # 30-day IV is a regime mismatch for 5-min windows — ATR is the correct vol measure.
-    if deribit_feed and deribit_feed.state.btc_iv > 0:
-        atr_val = indicators.get("atr", {}).get("atr", 0)
-        deribit_cfg = config.get("deribit", {})
-        iv_ratio_val = deribit_feed.state.get_iv_ratio(
-            atr_val, btc_price,
-            iv_min=deribit_cfg.get("iv_ratio_min", 0.5),
-            iv_max=deribit_cfg.get("iv_ratio_max", 3.0))
-    # iv_ratio_val stays 1.0 for CDF — logged in trade_context for pipeline
+    # iv_ratio fixed at 1.0: 30-day IV (Deribit) is a regime mismatch for 5-min windows.
+    # ATR is the correct vol measure here.
 
     # CVD acceleration (first derivative of buying pressure)
     cvd_accel_val = 0.0
@@ -605,9 +598,6 @@ async def _evaluate_signal_and_enter(
         _record_skip(f"model:{signal.reason[:30]}")
         return None, last_eval_log_window
 
-    # SPRT: logged for telemetry, not gating entries.
-    # The observe phase (60s) + phase multipliers (late=0.7x, final=0.5x) handle cautiousness.
-
     # --- ADVERSE SELECTION GATE ---
     if _adverse_monitor is not None:
         adverse_threshold = config.get("signal", {}).get("adverse_selection_threshold", 0.55)
@@ -661,11 +651,33 @@ async def _evaluate_signal_and_enter(
             _record_skip("flip_insufficient_edge")
             return None, last_eval_log_window
 
-    # --- SPRT FAVORED SIDE GATE ---
-    if _sprt and _sprt.get_confidence() > 0.30 and _sprt.favored_side() != side:
-        _record_skip("sprt_side_mismatch")
-        _log_skip_once(cid, f"sprt_{side}", f"SKIP: SPRT favors {_sprt.favored_side()} ({_sprt.get_confidence():.0%} conf), opposes {side}")
-        return None, last_eval_log_window
+    # --- SPRT GATE ---
+    # Blocks entries when sequential evidence is definitively weak (SKIP status)
+    # or hasn't yet accumulated enough directional support (low confidence).
+    # Placed after side/cid assignment so _log_skip_once and _ghost have proper context.
+    if _sprt:
+        sprt_cfg = config.get("sprt", {})
+        min_sprt_conf = sprt_cfg.get("min_confidence", 0.20)
+        sprt_status = _sprt.get_status()
+        sprt_conf = _sprt.get_confidence()
+        sprt_obs = _sprt.observation_count()
+        if sprt_status == "SKIP":
+            _record_skip("sprt_skip")
+            _ghost("sprt_skip", signal, {})
+            _log_skip_once(cid, f"sprt_skip_{side}",
+                           f"SKIP: SPRT found signal too weak after {sprt_obs} obs")
+            return None, last_eval_log_window
+        if sprt_obs >= 2 and sprt_conf < min_sprt_conf and sprt_status != "ENTER":
+            _record_skip("sprt_low_confidence")
+            _ghost("sprt_low_confidence", signal, {})
+            _log_skip_once(cid, f"sprt_lowconf_{side}",
+                           f"SKIP: SPRT conf {sprt_conf:.0%} < {min_sprt_conf:.0%} after {sprt_obs} obs")
+            return None, last_eval_log_window
+        # Side mismatch: SPRT has evidence but favors the opposite direction
+        if _sprt.get_confidence() > 0.30 and _sprt.favored_side() != side:
+            _record_skip("sprt_side_mismatch")
+            _log_skip_once(cid, f"sprt_{side}", f"SKIP: SPRT favors {_sprt.favored_side()} ({_sprt.get_confidence():.0%} conf), opposes {side}")
+            return None, last_eval_log_window
 
     # --- LAYER DISAGREEMENT GATE ---
     momentum_score = signal_engine.compute_momentum(indicators)
@@ -1234,7 +1246,7 @@ async def _evaluate_and_exit_position(
         config: dict[str, Any], scheduler: Any, default_exit_threshold: float,
         day_wins: int, day_losses: int, day_fees: float,
         depth_feed: Any = None, trades_feed: Any = None,
-        bybit_feed: Any = None, deribit_feed: Any = None,
+        bybit_feed: Any = None,
         coinbase_feed: Any = None,
         chainlink_feed: Any = None,
         kraken_feed: Any = None) -> tuple[int, int, float, str | None]:
@@ -1303,7 +1315,6 @@ async def _evaluate_and_exit_position(
 
     # New signals for hold evaluation
     hold_spot_flow = 0.0
-    hold_iv_ratio = 1.0
 
     if trades_feed and trades_feed.accumulator:
         acc = trades_feed.accumulator
@@ -1314,14 +1325,6 @@ async def _evaluate_and_exit_position(
         cvd_comp = math.tanh(cvd_z) * 0.8
         taker_comp = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
         hold_spot_flow = max(-1.0, min(1.0, cvd_comp + taker_comp))
-
-    if deribit_feed and deribit_feed.state.btc_iv > 0:
-        atr_val = indicators.get("atr", {}).get("atr", 0)
-        deribit_cfg = config.get("deribit", {})
-        hold_iv_ratio = deribit_feed.state.get_iv_ratio(
-            atr_val, btc_now,
-            iv_min=deribit_cfg.get("iv_ratio_min", 0.5),
-            iv_max=deribit_cfg.get("iv_ratio_max", 3.0))
 
     # Liquidation pressure for hold evaluation
     hold_liquidation = 0.0
@@ -1729,7 +1732,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                        depth_feed: Any = None,
                        trades_feed: Any = None,
                        bybit_feed: Any = None,
-                       deribit_feed: Any = None,
                        chainlink_feed: Any = None,
                        coinbase_feed: Any = None,
                        kraken_feed: Any = None) -> None:
@@ -1803,7 +1805,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         f"  ─────────────────────────────────────────────────────\n"
         f"  Price feeds:   Coinbase {_f(coinbase_feed)}  Kraken {_f(kraken_feed)}"
         f"  Binance {_f(binance_feed)}  Chainlink {_f(chainlink_feed)}\n"
-        f"  Signal feeds:  Bybit {_f(bybit_feed)}  Deribit {_f(deribit_feed)}"
+        f"  Signal feeds:  Bybit {_f(bybit_feed)}"
         f"  CLOB WS {'ready' if clob_ws is not None else 'disconnected'}\n"
         f"  Discord: {'connected' if alert_manager is not None else 'unavailable'}\n"
         f"{_sep}"
@@ -1899,7 +1901,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                             config, scheduler, default_exit_threshold,
                             day_wins, day_losses, day_fees,
                             depth_feed=depth_feed, trades_feed=trades_feed,
-                            bybit_feed=bybit_feed, deribit_feed=deribit_feed,
+                            bybit_feed=bybit_feed,
                             coinbase_feed=coinbase_feed,
                             chainlink_feed=chainlink_feed, kraken_feed=kraken_feed)
                     if traded_mid:
@@ -1976,7 +1978,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 token_up, token_down, signal_config, max_bankroll_pct,
                 now_ts, bankroll=current_bankroll,
                 depth_feed=depth_feed, trades_feed=trades_feed,
-                bybit_feed=bybit_feed, deribit_feed=deribit_feed,
+                bybit_feed=bybit_feed,
                 coinbase_feed=coinbase_feed,
                 chainlink_feed=chainlink_feed,
                 kraken_feed=kraken_feed,
@@ -2413,11 +2415,6 @@ async def main() -> None:
         ws_url=bybit_cfg.get("ws_url", "wss://stream.bybit.com/v5/public/linear"),
         rest_url=bybit_cfg.get("rest_url", "https://api.bybit.com"),
     )
-    deribit_cfg = config.get("deribit", {})
-    deribit_feed = DeribitIVFeed(
-        poll_interval=deribit_cfg.get("poll_interval_s", 60.0),
-    )
-
     # Coinbase feed — faster BTC price (leads Binance.US by 0.5-2s)
     coinbase_cfg = config.get("coinbase", {})
     coinbase_feed = CoinbaseFeed(
@@ -2471,9 +2468,6 @@ async def main() -> None:
     await bybit_feed_inst.start()
     await coinbase_feed.start()
     await kraken_feed.start()
-    # DeribitIVFeed.start() is a blocking loop — run as background task
-    deribit_task = asyncio.create_task(deribit_feed.start())
-
     # Chainlink oracle feed — resolution price source (Polymarket uses this, not Binance)
     from polybot.feeds.chainlink_feed import ChainlinkFeed
     chainlink_feed = ChainlinkFeed()
@@ -2508,7 +2502,7 @@ async def main() -> None:
         ghost_tracker=ghost_tracker,
         http_client=http_client,
         depth_feed=depth_feed, trades_feed=trades_feed,
-        bybit_feed=bybit_feed_inst, deribit_feed=deribit_feed,
+        bybit_feed=bybit_feed_inst,
         chainlink_feed=chainlink_feed, coinbase_feed=coinbase_feed,
         kraken_feed=kraken_feed))
     background_tasks = [
@@ -2540,8 +2534,6 @@ async def main() -> None:
         await _stop(trades_feed.stop())
         await _stop(bybit_feed_inst.stop())
         await _stop(chainlink_feed.stop())
-        deribit_feed.stop()
-        deribit_task.cancel()
         bankroll = await db.get_bankroll()
         await db.close()
         logger.info(

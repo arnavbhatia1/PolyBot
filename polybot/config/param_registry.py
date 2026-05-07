@@ -41,7 +41,8 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec("prev_margin_weight",      "signal.prev_margin_weight",      0.01,  0.05,  float, 0.02,  "L5 prev-window resolution margin carry"),
     ParamSpec("momentum_weight",         "signal.momentum_weight",         -0.10, 0.10,  float, -0.02, "L4 indicator momentum — NEGATIVE = fade (mean-revert)"),
     # ── Calibration ─────────────────────────────────────────────────────────
-    ParamSpec("probability_compression", "signal.probability_compression",  0.5,   1.0,   float, 1.0,   "shrinks all probs toward 0.5 (stacks with adaptive bucket multipliers)"),
+    ParamSpec("probability_compression",    "signal.probability_compression",    0.5, 1.0, float, 1.0, "shrinks all probs toward 0.5 (stacks with adaptive bucket multipliers)"),
+    ParamSpec("adaptive_compression_scale", "signal.adaptive_compression_scale", 0.0, 1.0, float, 1.0, "scales adaptive calibration effect: 0=off, 1=full (confidence + disagreement buckets combined)"),
     # ── Sizing ──────────────────────────────────────────────────────────────
     ParamSpec("kelly_fraction",          "math.kelly_fraction",            0.05,  0.25,  float, 0.15,  "Kelly sizing fraction — leave unchanged unless strong drawdown evidence"),
     # ── Entry gates (pipeline-tunable since ghosts are in the backtest) ─────

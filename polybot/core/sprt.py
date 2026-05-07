@@ -98,6 +98,10 @@ class SPRTAccumulator:
             return 0.0
         return max(0.0, min(1.0, self.llr / self.upper_bound))
 
+    def observation_count(self) -> int:
+        """Number of observations fed so far this window."""
+        return self._observation_count
+
     def favored_side(self) -> str:
         """Return the side with more accumulated evidence."""
         if self._up_evidence >= self._down_evidence:

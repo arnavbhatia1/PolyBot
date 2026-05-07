@@ -103,6 +103,7 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
 - atr_sigma_ratio (1.2-2.5, HIGHEST leverage; lower = sharper probs)
 - logit_scale (2.0-6.0, master amplifier on L2-L5)
 - probability_compression (0.5-1.0, shrink toward 0.5)
+- adaptive_compression_scale (0.0-1.0, scales adaptive calibration: 0=off, 1=full confidence+disagreement effect)
 - student_t_df (3-8, lower = fatter tails)
 - min_atr (4.0-25.0, ATR floor)
 - flow_weight (0.02-0.12), spot_flow_weight (0.01-0.15), liquidation_weight (0.01-0.10)
@@ -115,26 +116,19 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
 ## Manual-Only Params (route to `manual_observations`, never `changes`)
 - exit_edge_threshold, max_edge, adverse_selection_threshold
 - final_min_probability, normal_fraction, late_max_penalty
-- trading_start_hour_et / trading_end_hour_et / trading_end_minute
-- flip_enabled, flip_edge_premium
-- max_single_position_*, max_concurrent_positions, max_bankroll_deployed
+- loss_cut_fraction, loss_cut_time_s (stop-loss level and time gate — risk policy)
+- trading_start/end_hour_et/minute, flip_enabled, flip_edge_premium
+- max_concurrent_positions, max_bankroll_deployed
 - circuit_breaker.floor_pct, circuit_breaker.min_multiplier
-- Indicator periods (use full dotted path, e.g. `indicators.rsi.period`):
-  rsi.period/overbought/oversold; macd.fast_period/slow_period/signal_period;
-  stochastic.k_period/d_smoothing/overbought/oversold;
-  ema.fast_period/slow_period/chop_threshold; obv.slope_period;
-  atr.period/low_percentile/high_percentile/history_periods.
-  Backtest can't replay alternate periods (snapshot stores the live-period score
-  only). Propose only when an indicator's per_indicator accuracy is consistently
-  poor at N≥50, with the period change as the operator-reviewable hypothesis.
-- SPRT: `sprt.alpha`, `sprt.beta`, `sprt.observation_interval_s`. Backtest
-  replays stored gain_pct from a fixed entry instant — it can't simulate
-  alternate intra-window entry timings. Propose only when execution-quality
-  evidence (n≥50) suggests SPRT is firing too eagerly or too cautiously.
+- Indicator periods: indicators.{rsi,macd,stochastic,ema,obv,atr}.{period,...}
+  Propose only when per_indicator accuracy is consistently poor at N≥50.
+- SPRT: sprt.{alpha,beta,observation_interval_s,min_confidence}
+  Propose only when execution-quality evidence (n≥50) suggests SPRT gates too eagerly or too loosely.
 
 ## Behavioral Rules
-1. SPRT state = signal aggressiveness of recent trades, NOT win rate or entry quality.
-   Do not write findings like "0% edge-positive entries" based on SPRT state.
+1. SPRT now gates entries (SKIP blocks; low confidence blocks after 2+ obs; favored-side mismatch blocks).
+   SPRT state reflects how often the gate allowed trades, not win rate. Do not treat low ENTER fraction
+   as a sign of model failure — it means SPRT filtered weak-directional setups.
 2. "Trending regime WR low" is not a fix target — runtime already flips and amplifies
    momentum_weight in trending regimes. Don't move regime_weight on that alone.
 3. Check the Recent Trends section. Metrics labeled IMPROVING are self-resolving — do
@@ -283,8 +277,10 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     # - Risk caps (operator-owned policy)
     # - Circuit breaker (bankroll protection)
     MANUAL_ONLY_PARAMS = {
-        # Exit / scalp behavior
+        # Exit / scalp / loss-cut behavior
         "exit_edge_threshold",
+        "loss_cut_fraction",
+        "loss_cut_time_s",
         # Entry-time filters (informed flow, stale price, late window)
         "adverse_selection_threshold",
         "max_edge",
@@ -333,6 +329,7 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         "sprt.alpha",
         "sprt.beta",
         "sprt.observation_interval_s",
+        "sprt.min_confidence",
     }
 
     # Per-param clamp ranges — imported from param_registry (single source of truth).
@@ -524,14 +521,17 @@ def _section_config(cfg: dict[str, Any]) -> str:
         f"student_t_df (Layer 1): {cfg.get('student_t_df', 4)}\n"
         f"logit_scale: {cfg.get('logit_scale', 4.0)}\n"
         f"probability_compression: {cfg.get('probability_compression', 1.0)}\n"
+        f"adaptive_compression_scale: {cfg.get('adaptive_compression_scale', 1.0)}\n"
         f"kelly_fraction: {cfg.get('kelly_fraction', 0.15)}\n"
         f"min_atr: {cfg.get('min_atr', 8.0)}\n"
         f"min_model_probability: {cfg.get('min_model_probability', 0.58)}  (pipeline-tunable since ghosts joined backtest)\n"
         f"min_edge (entry_threshold): {cfg.get('min_edge', 0.04)}  (pipeline-tunable since ghosts joined backtest)\n"
         f"min_kelly (entry gate): {cfg.get('min_kelly', 0.015)}  (pipeline-tunable since ghosts joined backtest)\n"
         "\n### MANUAL-ONLY (not in `changes` — propose via `manual_observations` if data warrants):\n"
-        f"# Exit / scalp\n"
+        f"# Exit / scalp / loss-cut\n"
         f"exit_edge_threshold: {cfg.get('exit_edge_threshold', -0.05)}\n"
+        f"loss_cut_fraction: {cfg.get('loss_cut_fraction', 0.65)}  "
+        f"loss_cut_time_s: {cfg.get('loss_cut_time_s', 120.0)}\n"
         f"# Entry filters (informed flow / stale price / late window)\n"
         f"adverse_selection_threshold: {cfg.get('adverse_selection_threshold', 0.55)}\n"
         f"max_edge: {cfg.get('max_edge', 0.20)}\n"
@@ -549,25 +549,11 @@ def _section_config(cfg: dict[str, Any]) -> str:
         f"# Circuit breaker\n"
         f"circuit_breaker.floor_pct: {cfg.get('circuit_breaker', {}).get('floor_pct', 0.85)}, "
         f"circuit_breaker.min_multiplier: {cfg.get('circuit_breaker', {}).get('min_multiplier', 0.40)}\n"
-        f"# Indicator periods (manual-only — backtest can't recompute from raw candles)\n"
-        + "\n".join(
-            f"{dotted}: {_cfg_get(cfg, dotted)}"
-            for dotted in (
-                "indicators.rsi.period", "indicators.rsi.overbought", "indicators.rsi.oversold",
-                "indicators.macd.fast_period", "indicators.macd.slow_period", "indicators.macd.signal_period",
-                "indicators.stochastic.k_period", "indicators.stochastic.d_smoothing",
-                "indicators.stochastic.overbought", "indicators.stochastic.oversold",
-                "indicators.ema.fast_period", "indicators.ema.slow_period", "indicators.ema.chop_threshold",
-                "indicators.obv.slope_period",
-                "indicators.atr.period", "indicators.atr.low_percentile",
-                "indicators.atr.high_percentile", "indicators.atr.history_periods",
-            )
-            if _cfg_get(cfg, dotted) is not None
-        )
-        + "\n# SPRT (manual-only — backtest can't simulate alternate entry timings)\n"
-        f"sprt.alpha: {_cfg_get(cfg, 'sprt.alpha')}, "
-        f"sprt.beta: {_cfg_get(cfg, 'sprt.beta')}, "
-        f"sprt.observation_interval_s: {_cfg_get(cfg, 'sprt.observation_interval_s')}"
+        f"# Indicator periods (manual-only — shown in /config, not relevant to `changes`)\n"
+        f"# SPRT (manual-only): alpha={_cfg_get(cfg, 'sprt.alpha')} "
+        f"beta={_cfg_get(cfg, 'sprt.beta')} "
+        f"interval={_cfg_get(cfg, 'sprt.observation_interval_s')}s "
+        f"min_confidence={_cfg_get(cfg, 'sprt.min_confidence')}"
     )
 
 
@@ -933,36 +919,18 @@ def _section_execution_quality(ana: dict[str, Any]) -> str:
     # Slippage by spread bucket
     slip_spread = eq.get("slippage_by_spread", {})
     if slip_spread:
-        lines.append("\nSlippage by market spread (wide spread = stale/illiquid market):")
+        lines.append("\nSlippage by market spread:")
         for bucket, stats in slip_spread.items():
             s = stats.get("avg_slippage")
             lines.append(f"  {bucket}: avg_slip={s:+.4f} n={stats.get('count', 0)}" if s is not None else f"  {bucket}: n={stats.get('count', 0)}")
-        lines.append(
-            "  → Wide-spread high-slippage pattern is diagnostic — max_edge is manual-only. "
-            "If slippage is eating edge, the fix is to improve signal quality (logit_scale, flow_weight) "
-            "so higher-probability entries wait for tighter spreads naturally."
-        )
 
-    # Slippage by time-in-window
     slip_time = eq.get("slippage_by_time", {})
     if slip_time:
         lines.append("\nSlippage by time remaining at entry:")
         for bucket, stats in slip_time.items():
             s = stats.get("avg_slippage")
             lines.append(f"  {bucket}: avg_slip={s:+.4f} n={stats.get('count', 0)}" if s is not None else f"  {bucket}: n={stats.get('count', 0)}")
-        lines.append(
-            "  → Late-window slippage is highest (thin book near expiry). "
-            "late_max_penalty / normal_fraction are manual-only — flag high late-window "
-            "slippage in key_findings for the operator, and tighten the entry model "
-            "(logit_scale, probability_compression) so marginal late entries self-filter."
-        )
 
-    lines.append(
-        "\nActionable (backtestable) params for slippage: "
-        "logit_scale (amplified signals fake-edge if slippage eats it), "
-        "kelly_fraction (slippage is hidden cost reducing true Kelly). "
-        "max_edge is manual-only."
-    )
     if avg_slip > 0.005:
         lines.append("WARNING: avg_fill_slippage > 0.005 — slippage is eating significant realized edge.")
     return "\n".join(lines)
@@ -980,12 +948,6 @@ def _section_gate_stats(ana: dict[str, Any]) -> str:
     lines.append("Which entry gates are blocking the most trades:")
     for gate, count in sorted(counts.items(), key=lambda x: -x[1])[:10]:
         lines.append(f"- **{gate}**: {count}")
-    lines.append(
-        "NOTE: adverse_selection_threshold is MANUAL-ONLY — if adverse_selection "
-        "dominates skips, flag in key_findings for the operator. High layer_disagreement "
-        "skips can be reduced via logit_scale (harmonize L2-L5 strength) or "
-        "probability_compression (pull extreme L1 toward center)."
-    )
     return "\n".join(lines)
 
 
@@ -1050,11 +1012,12 @@ def _section_sprt(ana: dict[str, Any]) -> str:
     if not sprt_agg:
         return ""
     return (
-        f"## SPRT Signal Aggressiveness (last 50 trades — diagnostic only)\n"
-        f"State: {sprt_agg.get('state', '?')} (passive = few ENTERs recently, aggressive = many) | "
-        f"ENTER fraction: {sprt_agg.get('enter_pct', 0):.0%} (how often per-trade SPRT said ENTER) | "
+        f"## SPRT Entry Gate (last 50 trades)\n"
+        f"State: {sprt_agg.get('state', '?')} | "
+        f"ENTER fraction: {sprt_agg.get('enter_pct', 0):.0%} | "
         f"Avg confidence: {sprt_agg.get('avg_confidence', 0):.2f}\n"
-        f"NOTE: This is NOT win rate or edge realization. Trades that passed entry gates were edge-positive by definition."
+        f"SPRT now gates entries: SKIP status blocks entry; confidence < min_confidence blocks entry after 2+ obs. "
+        f"If ENTER fraction is low, SPRT may be filtering too aggressively (raise min_confidence or relax alpha/beta)."
     )
 
 

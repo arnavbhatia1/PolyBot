@@ -119,6 +119,9 @@ class SignalEngine:
                  liquidation_weight: float = 0.03,
                  logit_scale: float = 4.0,
                  probability_compression: float = 1.0,
+                 adaptive_compression_scale: float = 1.0,
+                 loss_cut_fraction: float = 0.65,
+                 loss_cut_time_s: float = 120.0,
                  consensus_dead_zone: float = 0.05,
                  consensus_config: dict | None = None) -> None:
         self.min_edge: float = min_edge
@@ -140,6 +143,9 @@ class SignalEngine:
         self.liquidation_weight: float = liquidation_weight
         self.logit_scale: float = logit_scale
         self.probability_compression: float = probability_compression
+        self.adaptive_compression_scale: float = max(0.0, min(1.0, adaptive_compression_scale))
+        self.loss_cut_fraction: float = loss_cut_fraction
+        self.loss_cut_time_s: float = loss_cut_time_s
         self.consensus_dead_zone: float = consensus_dead_zone
         self.consensus_config: dict = consensus_config or {
             "very_high_pct": 0.80, "very_high_mult": 1.3,
@@ -304,20 +310,23 @@ class SignalEngine:
         return result
 
     def _adaptive_compression_for(self, prob: float, market_price: float | None = None) -> float:
-        """Multiplier for the prediction. Returns the more-conservative (smaller) of
-        the confidence-bucket and disagreement-bucket multipliers — either signal
-        can trigger compression independently. ``market_price`` is the BUY-Up price
-        (disagreement is symmetric across sides for binaries)."""
+        """Combined adaptive multiplier from confidence + disagreement buckets.
+
+        Internally computes both bucket multipliers and takes the conservative min
+        (either axis can trigger compression independently). The result is then
+        blended with 1.0 by ``adaptive_compression_scale`` — a single pipeline-tunable
+        knob: 0.0 = no adaptive compression, 1.0 = full effect.
+        """
         conf_bucket = self._bucket_lookup(max(prob, 1.0 - prob), _CALIBRATION_BUCKETS)
         conf_mult = self._bucket_mults.get(conf_bucket, 1.0) if conf_bucket else 1.0
-        if market_price is None or not (0.0 < market_price < 1.0):
-            return conf_mult
-        # Disagreement uses the side whose probability matches the market price
-        # interpretation (both refer to "Up wins"), so |prob_up - market_price_up|
-        # naturally captures how far model and market diverge.
-        dis_bucket = self._bucket_lookup(abs(prob - market_price), _DISAGREEMENT_BUCKETS)
-        dis_mult = self._disagreement_mults.get(dis_bucket, 1.0) if dis_bucket else 1.0
-        return min(conf_mult, dis_mult)
+        if market_price is not None and 0.0 < market_price < 1.0:
+            dis_bucket = self._bucket_lookup(abs(prob - market_price), _DISAGREEMENT_BUCKETS)
+            dis_mult = self._disagreement_mults.get(dis_bucket, 1.0) if dis_bucket else 1.0
+            raw_mult = min(conf_mult, dis_mult)
+        else:
+            raw_mult = conf_mult
+        # Scale: interpolate between 1.0 (no adaptive) and raw_mult (full adaptive).
+        return 1.0 - (1.0 - raw_mult) * self.adaptive_compression_scale
 
     def get_adaptive_calibration_state(self) -> dict[str, dict]:
         """Per-bucket {n, mean_pred, mean_actual, drift, multiplier} for pipeline
@@ -593,6 +602,19 @@ class SignalEngine:
         optimal_threshold = self._exit_boundary.compute_exit_threshold(
             seconds_remaining, entry_price, fee_rate, market_price_for_side)
         effective_threshold = max(effective_threshold, optimal_threshold)
+
+        # Loss-cut: exit when deeply underwater near expiry.
+        # Triggered independently of holding_edge — catches the case where both
+        # model and market have dropped (holding_edge stays positive) but the
+        # position has no realistic recovery. exit_boundary's urgency_premium
+        # also fires here when OTM + time-short, but this is the belt-and-suspenders.
+        if (entry_price > 0
+                and market_price_for_side < entry_price * self.loss_cut_fraction
+                and seconds_remaining < self.loss_cut_time_s):
+            return ("EXIT", model_prob, holding_edge,
+                    f"LossCut {side}: mkt={market_price_for_side:.2f} < "
+                    f"{self.loss_cut_fraction:.0%}×entry={entry_price:.2f} "
+                    f"at {seconds_remaining:.0f}s")
 
         if holding_edge <= effective_threshold:
             return ("EXIT", model_prob, holding_edge,

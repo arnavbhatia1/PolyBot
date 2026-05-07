@@ -345,21 +345,3 @@
 - None
 
 **Reasoning:** Local recommender (Claude unavailable). Proposing 2 change(s) across 2 families: calibration, volatility_core. All proposals sized to clear adoption floor ≈ 0.022 and verified against the empirical directional table where available.
-
-## 2026-05-07T02:37:46.644653+00:00
-
-**Source:** Local
-**Proposed Changes (0):**
-  - none
-
-**Manual Suggestions (1) [operator-only]:**
-  - exit_edge_threshold: -0.05 -> -0.02 [medium]
-    Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
-
-**Findings:**
-- None
-
-**Warnings:**
-- None
-
-**Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
