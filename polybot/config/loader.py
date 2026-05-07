@@ -115,14 +115,6 @@ def validate_config(config: dict[str, Any]) -> None:
         if found:
             _check_range(key, lo, hi)
 
-    # IV ratio bounds (optional)
-    for key, lo, hi in [
-        ("deribit.iv_ratio_min", 0.1, 1.0),
-        ("deribit.iv_ratio_max", 1.0, 10.0),
-    ]:
-        val, found = _get_nested(config, key)
-        if found:
-            _check_range(key, lo, hi)
 
     if errors:
         header = f"Config validation failed with {len(errors)} error(s):"

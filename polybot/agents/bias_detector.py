@@ -65,6 +65,8 @@ class BiasDetector:
             "flip_analysis": self._analyze_flips(outcomes),
             "edge_realization_quartiles": self._analyze_edge_realization(outcomes),
             "time_weighted": self._analyze_time_weighted(outcomes),
+            "by_sprt_confidence": self._analyze_by_sprt_confidence(outcomes),
+            "by_adverse_selection": self._analyze_by_adverse_selection(outcomes),
         }
 
     def _analyze_by_entry_phase(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -343,6 +345,78 @@ class BiasDetector:
             "win_rate": round(weighted_win_rate(outcomes, weights), 4),
             "sharpe": round(weighted_sharpe(outcomes, weights), 4),
         }
+
+    def _analyze_by_sprt_confidence(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Win rate / Sharpe segmented by SPRT confidence at entry.
+
+        Buckets: low (0-0.33), medium (0.33-0.66), high (0.66+).
+        Tells the pipeline whether high-confidence SPRT entries outperform —
+        if not, min_confidence threshold may need raising.
+        """
+        buckets: dict[str, list] = {"low": [], "medium": [], "high": []}
+        wins: dict[str, int] = {"low": 0, "medium": 0, "high": 0}
+        for o in outcomes:
+            ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
+            conf = float(ctx.get("sprt_confidence", 0) or 0)
+            if conf < 0.33:
+                k = "low"
+            elif conf < 0.66:
+                k = "medium"
+            else:
+                k = "high"
+            buckets[k].append(float(o.get("gain_pct", 0) or 0))
+            if o.get("correct"):
+                wins[k] += 1
+        result = {}
+        for k, gains in buckets.items():
+            if not gains:
+                continue
+            n = len(gains)
+            avg = sum(gains) / n
+            std = (sum((g - avg) ** 2 for g in gains) / n) ** 0.5 if n > 1 else 0
+            result[k] = {
+                "n": n,
+                "win_rate": round(wins[k] / n, 4),
+                "avg_gain_pct": round(avg, 6),
+                "sharpe": round(avg / std, 4) if std > 0 else 0.0,
+            }
+        return result
+
+    def _analyze_by_adverse_selection(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Win rate / Sharpe segmented by adverse_selection_30s rate at entry.
+
+        Buckets: low (<0.40), medium (0.40-0.60), high (>0.60).
+        Tells the pipeline if the adverse_selection_threshold is well-positioned —
+        trades entered at high adverse rates should underperform.
+        """
+        buckets: dict[str, list] = {"low": [], "medium": [], "high": []}
+        wins: dict[str, int] = {"low": 0, "medium": 0, "high": 0}
+        for o in outcomes:
+            ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
+            rate = float(ctx.get("adverse_selection_30s", 0.5) or 0.5)
+            if rate < 0.40:
+                k = "low"
+            elif rate <= 0.60:
+                k = "medium"
+            else:
+                k = "high"
+            buckets[k].append(float(o.get("gain_pct", 0) or 0))
+            if o.get("correct"):
+                wins[k] += 1
+        result = {}
+        for k, gains in buckets.items():
+            if not gains:
+                continue
+            n = len(gains)
+            avg = sum(gains) / n
+            std = (sum((g - avg) ** 2 for g in gains) / n) ** 0.5 if n > 1 else 0
+            result[k] = {
+                "n": n,
+                "win_rate": round(wins[k] / n, 4),
+                "avg_gain_pct": round(avg, 6),
+                "sharpe": round(avg / std, 4) if std > 0 else 0.0,
+            }
+        return result
 
     def analyze_counterfactuals(self, counterfactuals: list[dict[str, Any]]) -> dict[str, Any]:
         """Analyze counterfactual outcomes for both scalps and holds.

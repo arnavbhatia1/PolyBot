@@ -2,8 +2,7 @@
 
 Classifies BTC microstructure into one of six regimes:
 trending_up, trending_down, mean_reverting, volatile, quiet, neutral.
-
-Each regime returns a RegimeState with Kelly sizing and edge multipliers.
+quiet skips entry (no edge in flat-vol); all others allow entry.
 """
 
 from dataclasses import dataclass
@@ -14,31 +13,18 @@ import numpy as np
 class RegimeState:
     """Immutable regime classification result."""
     name: str
-    kelly_mult: float = 1.0
-    min_edge_mult: float = 1.0
-    momentum_boost: float = 1.0
     skip: bool = False
 
 
 # Pre-built regime states (immutable singletons)
 _REGIMES = {
-    "trending_up": RegimeState(
-        name="trending_up", kelly_mult=1.2, momentum_boost=1.5,
-    ),
-    "trending_down": RegimeState(
-        name="trending_down", kelly_mult=1.2, momentum_boost=1.5,
-    ),
-    "mean_reverting": RegimeState(
-        name="mean_reverting", kelly_mult=0.8, min_edge_mult=1.2,
-    ),
-    "volatile": RegimeState(
-        name="volatile", kelly_mult=0.7, min_edge_mult=1.5,
-    ),
-    "quiet": RegimeState(
-        name="quiet", kelly_mult=0.5, skip=True,
-    ),
-    "neutral": RegimeState(name="neutral"),
-    "unknown": RegimeState(name="unknown"),
+    "trending_up":    RegimeState(name="trending_up"),
+    "trending_down":  RegimeState(name="trending_down"),
+    "mean_reverting": RegimeState(name="mean_reverting"),
+    "volatile":       RegimeState(name="volatile"),
+    "quiet":          RegimeState(name="quiet", skip=True),
+    "neutral":        RegimeState(name="neutral"),
+    "unknown":        RegimeState(name="unknown"),
 }
 
 

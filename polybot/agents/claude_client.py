@@ -966,19 +966,43 @@ def _section_current_regime(ana: dict[str, Any]) -> str:
 
 
 def _section_sprt(ana: dict[str, Any]) -> str:
-    # SPRT aggregate evidence — diagnostic of recent SIGNAL AGGRESSIVENESS only.
-    # Does NOT measure win rate or entry quality. See behavioral rule #1.
     sprt_agg = ana.get("sprt_aggregate", {})
-    if not sprt_agg:
+    by_conf = ana.get("by_sprt_confidence", {})
+    if not sprt_agg and not by_conf:
         return ""
-    return (
-        f"## SPRT Entry Gate (last 50 trades)\n"
+    lines = [
+        f"## SPRT Entry Gate (last 50 trades)",
         f"State: {sprt_agg.get('state', '?')} | "
         f"ENTER fraction: {sprt_agg.get('enter_pct', 0):.0%} | "
-        f"Avg confidence: {sprt_agg.get('avg_confidence', 0):.2f}\n"
-        f"SPRT now gates entries: SKIP status blocks entry; confidence < min_confidence blocks entry after 2+ obs. "
-        f"If ENTER fraction is low, SPRT may be filtering too aggressively (raise min_confidence or relax alpha/beta)."
-    )
+        f"Avg confidence: {sprt_agg.get('avg_confidence', 0):.2f}",
+        "SPRT gates entries: SKIP blocks; confidence < min_confidence blocks after 2+ obs.",
+    ]
+    if by_conf:
+        lines.append("WR by SPRT confidence at entry (does high-confidence predict wins?):")
+        for bucket, stats in sorted(by_conf.items()):
+            lines.append(
+                f"  {bucket:>8}: n={stats['n']:>4} WR={stats['win_rate']:.0%} "
+                f"Sharpe={stats['sharpe']:+.3f}")
+    return "\n".join(lines)
+
+
+def _section_adverse_selection(ana: dict[str, Any]) -> str:
+    by_adv = ana.get("by_adverse_selection", {})
+    if not by_adv:
+        return ""
+    lines = [
+        "## Adverse Selection at Entry",
+        "WR by adverse_selection_30s rate (low <0.40 / medium 0.40-0.60 / high >0.60):",
+        "If high-rate entries underperform, adverse_selection_threshold should be tightened.",
+    ]
+    for bucket in ("low", "medium", "high"):
+        stats = by_adv.get(bucket, {})
+        if not stats:
+            continue
+        lines.append(
+            f"  {bucket:>8}: n={stats['n']:>4} WR={stats['win_rate']:.0%} "
+            f"Sharpe={stats['sharpe']:+.3f}")
+    return "\n".join(lines)
 
 
 def _section_trades(context: dict[str, Any]) -> str:
@@ -1192,6 +1216,7 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         _section_trends(ana),
         _section_current_regime(ana),
         _section_sprt(ana),
+        _section_adverse_selection(ana),
         _section_trades(context),
         _section_active_adoptions(ana),
         _section_param_history(ana),

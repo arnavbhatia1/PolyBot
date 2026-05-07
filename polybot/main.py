@@ -450,7 +450,6 @@ async def _evaluate_signal_and_enter(
 
     # --- New signals from extended feeds ---
     spot_flow_signal = 0.0
-    iv_ratio_val = 1.0
 
     if trades_feed and trades_feed.accumulator:
         acc = trades_feed.accumulator
@@ -464,9 +463,6 @@ async def _evaluate_signal_and_enter(
         cvd_component = math.tanh(cvd_z) * 0.8
         taker_component = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
         spot_flow_signal = max(-1.0, min(1.0, cvd_component + taker_component))
-
-    # iv_ratio fixed at 1.0: 30-day IV (Deribit) is a regime mismatch for 5-min windows.
-    # ATR is the correct vol measure here.
 
     # CVD acceleration (first derivative of buying pressure)
     cvd_accel_val = 0.0
@@ -520,7 +516,7 @@ async def _evaluate_signal_and_enter(
             f"  {action_color}EVAL  {signal.action:<8}{_C.RESET} | {contract.get('question', cid)}\n"
             f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]  src={price_source}\n"
             f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
-            f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}  iv {iv_ratio_val:.2f}\n"
+            f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}\n"
             f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  cvd_a {cvd_accel_val:+.4f}\n"
             f"  {_C.DIM}{signal.reason}{_C.RESET}\n"
             f"{_C.CYAN}{'=' * 69}{_C.RESET}")
@@ -655,7 +651,7 @@ async def _evaluate_signal_and_enter(
             return None, last_eval_log_window
         # Regime: logged for pipeline, NOT applied to sizing (operates near noise at SE=0.14)
 
-    # Signal consensus: logged for pipeline, NOT applied to sizing (weak signal correlations)
+    # Signal consensus: scales size by how many flow signals agree with the chosen side.
     consensus_signals = {
         "flow": flow_score,
         "spot_flow": spot_flow_signal,
@@ -665,9 +661,10 @@ async def _evaluate_signal_and_enter(
         consensus_signals, side,
         dead_zone=signal_engine.consensus_dead_zone,
         consensus_config=signal_engine.consensus_config)
+    size = round(size * consensus_mult, 2)
 
     logger.debug(
-        f"  REGIME {regime_state.name if regime_state else 'N/A'} ({regime_state.kelly_mult if regime_state else 1.0:.1f}x)  |  "
+        f"  REGIME {regime_state.name if regime_state else 'N/A'}  |  "
         f"SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%})  |  "
         f"consensus {consensus_mult:.1f}x")
 
@@ -763,7 +760,6 @@ async def _evaluate_signal_and_enter(
         "edge": signal.edge,
         "atr": indicators.get("atr", {}).get("atr", 0),
         "size": size,
-        "iv_ratio": iv_ratio_val,
         "prev_resolution_margin": _prev_resolution_margin,
         # Composite signals used by the model — pipeline replays L1-L5 from these
         "flow_score": flow_score,
