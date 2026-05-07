@@ -94,7 +94,8 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
     L3e liquidation pressure (Bybit OI drop × direction)
     L5  prev-window margin (tanh-normalized by ATR)
     L4  indicator momentum (RSI/MACD/Stoch/OBV/VWAP — weakest signal)
-  Then `probability_compression` shrinks toward 0.5; then Platt calibration.
+  Then Platt calibration (re-fit each cycle on the train split) is the sole
+  overconfidence correction.
 
   Edge = model_prob - market_price. Entry needs edge >= min_edge AND Kelly >= min_kelly.
   Kelly: f* = (p*b - q)/b * kelly_fraction, b = (1-price)/price.
@@ -102,8 +103,6 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
 ## Backtestable Params (you can propose these in `changes`)
 - atr_sigma_ratio (1.2-2.5, HIGHEST leverage; lower = sharper probs)
 - logit_scale (2.0-6.0, master amplifier on L2-L5)
-- probability_compression (0.5-1.0, shrink toward 0.5)
-- adaptive_compression_scale (0.0-1.0, scales adaptive calibration: 0=off, 1=full confidence+disagreement effect)
 - student_t_df (3-8, lower = fatter tails)
 - min_atr (4.0-25.0, ATR floor)
 - flow_weight (0.02-0.12), spot_flow_weight (0.01-0.15), liquidation_weight (0.01-0.10)
@@ -115,7 +114,7 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
 
 ## Manual-Only Params (route to `manual_observations`, never `changes`)
 - exit_edge_threshold, max_edge, adverse_selection_threshold
-- final_min_probability, normal_fraction, late_max_penalty
+- normal_fraction, late_max_penalty
 - loss_cut_fraction, loss_cut_time_s (stop-loss level and time gate — risk policy)
 - trading_start/end_hour_et/minute, flip_enabled, flip_edge_premium
 - max_concurrent_positions, max_bankroll_deployed
@@ -160,7 +159,6 @@ Trigger mappings:
 - edge_calibration: high-edge bucket WR < low-edge bucket WR by 2× noise → max_edge LOWER.
 - ghost_analysis.adverse_rate_30s with high pct_profitable + positive sim_pnl →
   adverse_selection_threshold HIGHER (gate over-filters). Negative sim_pnl → keep tight.
-- time_patterns: last-30s WR < 55% at N≥50 → final_min_probability HIGHER.
 - time_patterns: late-window WR much lower than early → late_max_penalty LOWER.
 
 ## Response (return ONLY valid JSON, no fences):
@@ -281,10 +279,9 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         "exit_edge_threshold",
         "loss_cut_fraction",
         "loss_cut_time_s",
-        # Entry-time filters (informed flow, stale price, late window)
+        # Entry-time filters (informed flow, stale price)
         "adverse_selection_threshold",
         "max_edge",
-        "final_min_probability",
         # Entry-timing Kelly envelope
         "normal_fraction",
         "late_max_penalty",
@@ -321,7 +318,6 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         "indicators.obv.slope_period",
         "indicators.atr.period",
         "indicators.atr.low_percentile",
-        "indicators.atr.high_percentile",
         "indicators.atr.history_periods",
         # SPRT — manual-only because SPRT decides intra-window entry timing,
         # and the backtest replays stored gain_pct from a fixed entry instant
@@ -520,8 +516,6 @@ def _section_config(cfg: dict[str, Any]) -> str:
         f"atr_sigma_ratio: {cfg.get('atr_sigma_ratio', 1.7)}\n"
         f"student_t_df (Layer 1): {cfg.get('student_t_df', 4)}\n"
         f"logit_scale: {cfg.get('logit_scale', 4.0)}\n"
-        f"probability_compression: {cfg.get('probability_compression', 1.0)}\n"
-        f"adaptive_compression_scale: {cfg.get('adaptive_compression_scale', 1.0)}\n"
         f"kelly_fraction: {cfg.get('kelly_fraction', 0.15)}\n"
         f"min_atr: {cfg.get('min_atr', 8.0)}\n"
         f"min_model_probability: {cfg.get('min_model_probability', 0.58)}  (pipeline-tunable since ghosts joined backtest)\n"
@@ -532,10 +526,9 @@ def _section_config(cfg: dict[str, Any]) -> str:
         f"exit_edge_threshold: {cfg.get('exit_edge_threshold', -0.05)}\n"
         f"loss_cut_fraction: {cfg.get('loss_cut_fraction', 0.65)}  "
         f"loss_cut_time_s: {cfg.get('loss_cut_time_s', 120.0)}\n"
-        f"# Entry filters (informed flow / stale price / late window)\n"
+        f"# Entry filters (informed flow / stale price)\n"
         f"adverse_selection_threshold: {cfg.get('adverse_selection_threshold', 0.55)}\n"
         f"max_edge: {cfg.get('max_edge', 0.20)}\n"
-        f"final_min_probability: {cfg.get('final_min_probability', 0.90)}\n"
         f"# Entry-timing Kelly envelope\n"
         f"normal_fraction: {cfg.get('normal_fraction', 0.60)}\n"
         f"late_max_penalty: {cfg.get('late_max_penalty', 0.60)}\n"
@@ -701,8 +694,8 @@ def _section_counterfactual(ana: dict[str, Any]) -> str:
             f"→ HOLDING TOO LONG: scalp would have added value. "
             f"exit_edge_threshold is manual-only — the actionable finding is that "
             f"the entry-side model is OVERCONFIDENT (positions look good at entry "
-            f"but decay). Raise probability_compression (pull toward 0.5) or "
-            f"atr_sigma_ratio (wider L1 sigma)."
+            f"but decay). Raise atr_sigma_ratio (wider L1 sigma) — Platt will then "
+            f"recalibrate next cycle."
         )
     else:
         lines.append("→ Exit threshold appears well-calibrated (informational only — manual param).")
@@ -711,7 +704,7 @@ def _section_counterfactual(ana: dict[str, Any]) -> str:
     hedge_acc = cf.get("holding_edge_accuracy", {})
     if hedge_acc:
         lines.append("\nScalp accuracy by holding_edge at exit (diagnostic — exit_edge_threshold is MANUAL-ONLY):")
-        lines.append("  If accuracy <50% across buckets, the entry model is overconfident — fix via probability_compression.")
+        lines.append("  If accuracy <50% across buckets, the entry model is overconfident — Platt re-fit will compensate next cycle.")
         for bucket, stats in hedge_acc.items():
             lines.append(
                 f"  {bucket:>16}: {stats.get('scalp_accuracy', 0):.0%} accuracy "
@@ -781,17 +774,16 @@ def _section_by_regime(ana: dict[str, Any]) -> str:
 
 def _section_entry_phase(ana: dict[str, Any]) -> str:
     # Entry-phase breakdown — DIAGNOSTIC for manual-only timing levers
-    # (normal_fraction, late_max_penalty, final_min_probability).
-    # No backtestable proxy: the backtest can't simulate different time-of-window
-    # behavior on stored gain_pct, so anything actionable here goes to
-    # manual_observations, never to `changes`.
+    # (normal_fraction, late_max_penalty). No backtestable proxy: the
+    # backtest can't simulate different time-of-window behavior on stored
+    # gain_pct, so actionable items go to manual_observations only.
     phase_data = ana.get("by_entry_phase", {})
     if not phase_data:
         return ""
     lines = ["## Performance by Entry Phase (DIAGNOSTIC — manual-only triggers)",
              "Maps to manual levers: normal_fraction (early/normal Kelly envelope), "
-             "late_max_penalty (late-window Kelly cut), final_min_probability (last-30s gate). "
-             "DO NOT propose these in `changes` — emit manual_observations only."]
+             "late_max_penalty (late-window Kelly cut). DO NOT propose these in "
+             "`changes` — emit manual_observations only."]
     for phase, stats in sorted(phase_data.items(), key=lambda x: -x[1].get("n", 0)):
         n = stats.get("n", 0)
         if n == 0:
@@ -837,54 +829,6 @@ def _section_edge_realization(ana: dict[str, Any]) -> str:
              "(ratio = realized_gain / predicted_edge — 1.0 = perfect calibration)"]
     for label, ratio in zip(labels, er_q):
         lines.append(f"- {label}: {ratio:.2f}")
-    return "\n".join(lines)
-
-
-def _render_cal_table(title: str, ranges: list[tuple[str, str]], data: dict) -> list[str]:
-    """Render a calibration bucket table into a list of lines."""
-    out = [f"\n### {title}"]
-    header = f"{'Bucket':<10} {'Range':<12} {'N':>4} {'Predicted':>10} {'Actual':>8} {'Drift':>7} {'Mult':>6}"
-    out.append(header)
-    out.append("-" * len(header))
-    for name, range_str in ranges:
-        b = data.get(name, {})
-        n = b.get("n", 0)
-        if n == 0:
-            out.append(f"{name:<10} {range_str:<12} {0:>4} {'—':>10} {'—':>8} {'—':>7} {b.get('multiplier', 1.0):>6.2f}")
-            continue
-        out.append(
-            f"{name:<10} {range_str:<12} {n:>4} "
-            f"{b.get('mean_predicted', 0):>10.3f} {b.get('mean_actual', 0):>8.3f} "
-            f"{b.get('drift', 0):>7.3f} {b.get('multiplier', 1.0):>6.2f}"
-        )
-    return out
-
-
-def _section_adaptive_calibration(ana: dict[str, Any]) -> str:
-    # Adaptive calibration: live state from the rolling 100-trade buffer.
-    # TWO orthogonal learning loops, each producing its own multiplier:
-    #   confidence  — drift in the model's prediction range (moderate/high/extreme)
-    #   disagreement — drift conditional on |model - market| (agree/medium/strong)
-    # Runtime applies min(conf_mult, disagree_mult) to each new prediction.
-    # If only the strong-disagreement bucket has drift, runtime already handles
-    # the +50% edge problem — DON'T propose static probability_compression to
-    # "fix" something the runtime already compresses.
-    cal_state = ana.get("adaptive_calibration_buckets", {})
-    if not cal_state:
-        return ""
-    lines = ["## Adaptive Calibration State (live, last 100 trades)",
-             "Drift > 5pp at n>=15 means that bucket is miscalibrated. "
-             "Runtime applies the more conservative of confidence and disagreement multipliers."]
-    lines.extend(_render_cal_table(
-        "Confidence buckets (max(p, 1-p))",
-        [("moderate", "0.58-0.70"), ("high", "0.70-0.85"), ("extreme", "0.85-1.00")],
-        cal_state.get("confidence", {}),
-    ))
-    lines.extend(_render_cal_table(
-        "Disagreement buckets (|model - market|)",
-        [("agree", "0.00-0.10"), ("medium", "0.10-0.25"), ("strong", "0.25+")],
-        cal_state.get("disagreement", {}),
-    ))
     return "\n".join(lines)
 
 
@@ -1112,7 +1056,7 @@ def _section_adoption_target(context: dict[str, Any]) -> str:
     if baseline_ks is None:
         return ""
     jk_se = ana.get("baseline_jk_se")
-    abs_floor = ana.get("adoption_abs_floor")
+    z_floor = ana.get("adoption_z_floor", 0.5)
     dyn_floor = ana.get("adoption_dynamic_floor")
     n_base = ana.get("baseline_n_trades")
     lines = [
@@ -1124,7 +1068,8 @@ def _section_adoption_target(context: dict[str, Any]) -> str:
             f"Backtest noise (Jobson-Korkie SE, autocorr-adjusted): **±{jk_se:.4f}**"
         )
         lines.append(
-            f"Required delta = max(abs_floor={abs_floor:.3f}, 0.25 × SE={0.25*jk_se:.4f}) = **{dyn_floor:.4f}**"
+            f"Required delta = z_floor × SE = {z_floor} × {jk_se:.4f} = **{dyn_floor:.4f}**  "
+            f"(z-only gate; no static abs floor)"
         )
         lines.append(
             f"Target Sharpe: **{adoption_target:.4f}** = baseline + {dyn_floor:.4f}"
@@ -1239,7 +1184,6 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         _section_entry_phase(ana),
         _section_flip(ana),
         _section_edge_realization(ana),
-        _section_adaptive_calibration(ana),
         _section_time_weighted(ana),
         _section_distribution_shifts(ana),
         _section_execution_quality(ana),

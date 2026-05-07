@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 _ET = ZoneInfo("America/New_York")
@@ -206,17 +205,12 @@ class CounterfactualTracker:
         )
         return record
 
-    def check_resolutions(self, binance_feed: Any, btc_at_expiry_fn: Callable[..., float],
+    def check_resolutions(self,
                           event_metadata: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         """Check if any watched contracts have expired and compute counterfactuals.
 
-        Args:
-            binance_feed: BinanceFeed instance with candle buffer.
-            btc_at_expiry_fn: Callable(binance_feed, market_id) -> float.
-                              Reuses _btc_at_expiry from main.py.
-
-        Returns:
-            List of resolved counterfactual records (for logging/alerts).
+        Resolves only via Chainlink-derived ``event_metadata`` (price_to_beat /
+        final_price per market). Returns the list of resolved records.
         """
         if event_metadata is None:
             event_metadata = {}

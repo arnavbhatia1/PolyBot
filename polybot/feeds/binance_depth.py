@@ -35,8 +35,7 @@ class BinanceDepthFeed:
     ) -> None:
         self.symbol = symbol
         self.ws_url = ws_url
-        # rest_url / rest_interval kept in signature for backwards-compat with main.py
-        # config wiring; depth REST is no longer polled.
+        # rest_url / rest_interval accepted for config-wiring symmetry; only the WS feed runs.
         self.top_bids: list[list[str]] = []
         self.top_asks: list[list[str]] = []
         self._running: bool = False

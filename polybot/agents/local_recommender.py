@@ -22,23 +22,12 @@ from polybot.config.param_registry import CLAMP_RANGES
 # Parameter families — each cycle's proposals should span ≥3 of these so the
 # pipeline doesn't pile changes onto a single mechanism.
 FAMILIES: dict[str, list[str]] = {
-    "volatility_core": ["atr_sigma_ratio", "student_t_df", "logit_scale"],
+    "volatility_core": ["atr_sigma_ratio", "student_t_df", "logit_scale", "min_atr"],
     "flow_stack":      ["flow_weight", "spot_flow_weight", "liquidation_weight"],
     "momentum_regime": ["momentum_weight", "regime_weight", "prev_margin_weight"],
-    "calibration":     ["probability_compression", "min_atr"],
     "sizing":          ["kelly_fraction"],
     "gates":           ["min_edge", "min_kelly", "min_model_probability"],
 }
-
-
-def _cfg_get(cfg: dict[str, Any], dotted: str) -> Any:
-    """Look up a config value by `section.subsection.key`. Returns None if missing."""
-    cur: Any = cfg
-    for seg in dotted.split("."):
-        if not isinstance(cur, dict) or seg not in cur:
-            return None
-        cur = cur[seg]
-    return cur
 
 
 def _clamp(value: float, param: str) -> Any:
@@ -85,9 +74,6 @@ class LocalRecommender:
             self.analysis.get("cumulative_failures", {})
         )
 
-        # Trends string — used to skip IMPROVING metrics.
-        self._trends_text = self.analysis.get("trends", "") or ""
-
         # 2x noise floor on Sharpe (mirrors the prompt's noise reference)
         self._noise = self._compute_noise()
 
@@ -119,8 +105,7 @@ class LocalRecommender:
             return self._envelope(confidence="low", reasoning="Insufficient data (N<50).")
 
         # Run rule modules in priority order.
-        self._rule_calibration_drift()       # calibration: per-bucket drift → compression
-        self._rule_scalp_overconfidence()    # calibration / L1: counterfactual → params
+        self._rule_scalp_overconfidence()    # L1: counterfactual → atr_sigma_ratio
         self._rule_flow_stack()              # flow_stack: empirical-table best signal
         self._rule_momentum_regime()         # momentum_regime: regime Sharpe gap
         self._rule_gates_from_ghosts()       # gates: profitable ghosts → loosen
@@ -129,7 +114,6 @@ class LocalRecommender:
         # Manual-only triggers
         self._manual_rule_exit_threshold()
         self._manual_rule_adverse_selection()
-        self._manual_rule_late_window_prob()
         self._manual_rule_flip()
 
         # Collect key findings from sections not covered by proposal rules
@@ -227,15 +211,6 @@ class LocalRecommender:
                     except ValueError:
                         pass
         return out
-
-    def _is_improving(self, metric_keyword: str) -> bool:
-        """True if the trends section flags `metric_keyword` as IMPROVING."""
-        if not self._trends_text:
-            return False
-        for line in self._trends_text.splitlines():
-            if metric_keyword.lower() in line.lower() and "IMPROVING" in line:
-                return True
-        return False
 
     def _direction_ok(self, param: str, direction: str) -> tuple[bool, str]:
         """Empirical-table check: should we test this (param, direction)?
@@ -338,140 +313,41 @@ class LocalRecommender:
 
     # -------- rules: one method per parameter family / signal -------- #
 
-    def _rule_calibration_drift(self) -> None:
-        """Tune probability_compression based on per-bucket adaptive drift first
-        (live signal from the rolling buffer), falling back to Q4 edge realization
-        from the bias detector when bucket data isn't populated yet.
-
-        Logic: only propose static-compression changes when the moderate bucket is
-        ALSO drifting. If only the extreme bucket is off, the runtime bucket
-        multiplier already handles it — touching static compression would
-        unnecessarily dampen moderate predictions that are calibrated.
-        """
-        cal_state = self.analysis.get("adaptive_calibration_buckets", {})
-        # New schema: {"confidence": {...}, "disagreement": {...}}.
-        # Backward compat: if it's a flat dict (old format), treat as confidence-only.
-        if "confidence" in cal_state or "disagreement" in cal_state:
-            buckets = cal_state.get("confidence", {})
-        else:
-            buckets = cal_state
-        moderate = buckets.get("moderate", {})
-        extreme = buckets.get("extreme", {})
-        cur = float(self.cfg.get("probability_compression", 1.0))
-
-        # Primary path: per-bucket drift on live data.
-        if moderate.get("n", 0) >= 30:
-            mod_drift = float(moderate.get("drift", 0))
-            ext_drift = float(extreme.get("drift", 0)) if extreme.get("n", 0) >= 15 else None
-            # Moderate is calibrated AND extreme has drift handled by runtime: leave alone.
-            if mod_drift <= 0.05:
-                if ext_drift is not None and ext_drift > 0.10:
-                    self.findings.append(
-                        f"Extreme bucket drift {ext_drift:.0%} — handled by runtime bucket multiplier; "
-                        f"moderate is calibrated ({mod_drift:.0%}), no static compression change"
-                    )
-                return
-            # Moderate IS drifting → static compression is the right tool.
-            ok, why = self._direction_ok("probability_compression", "down")
-            if not ok:
-                self.findings.append(f"probability_compression: skip ({why})")
-                return
-            new_val = max(0.55, cur - 0.10)
-            if self._propose(
-                "probability_compression", new_val,
-                f"moderate-bucket drift {mod_drift:.0%} (extreme {ext_drift if ext_drift is not None else 'n/a'}) "
-                f"— model overconfident across the prediction range, compress globally",
-                predicted_delta=0.022,
-                ci=(-0.005, 0.045),
-            ):
-                self.findings.append(f"moderate drift {mod_drift:.0%} → probability_compression {cur}→{new_val:.2f}")
-            return
-
-        # Fallback path: Q4 edge realization from the bias detector.
-        er_q = self.analysis.get("edge_realization_quartiles", [])
-        if not er_q or len(er_q) < 4:
-            return
-        q4 = er_q[3]
-        if q4 >= 0.85:
-            return
-        if self._is_improving("Q4"):
-            self.findings.append(f"Q4 edge realization {q4:.0%} but IMPROVING — leaving probability_compression alone")
-            return
-        ok, why = self._direction_ok("probability_compression", "down")
-        if not ok:
-            self.findings.append(f"probability_compression: skip ({why})")
-            return
-        new_val = max(0.55, cur - 0.10)
-        if self._propose(
-            "probability_compression", new_val,
-            f"Q4 edge realization {q4:.0%} — model overconfident on highest-edge entries",
-            predicted_delta=0.020,
-            ci=(-0.005, 0.045),
-        ):
-            self.findings.append(f"Q4 realization {q4:.0%} → probability_compression {cur}→{new_val:.2f}")
-
     def _rule_scalp_overconfidence(self) -> None:
-        """Map counterfactual scalp/hold outcomes to backtestable proposals.
+        """Map counterfactual scalp/hold outcomes to a backtestable proposal.
 
-        Closes the loop: scalp_accuracy is collected by counterfactual_tracker
-        and surfaced in the bias detector, but `exit_edge_threshold` is manual-
-        only. Translate the finding into proxy params the pipeline CAN tune:
-
-          net_exit_direction == "scalp_early" (holds beat scalps): the model is
-            confident at entry but its conviction decays — make L1 sharper so
-            the initial signal is stronger and holds reach resolution. Lower
-            atr_sigma_ratio (sharper sigma) and/or raise logit_scale.
-          net_exit_direction == "hold_long" (scalps beat holds): the model is
-            overconfident at entry — positions look good then decay. Raise
-            probability_compression to dampen entry-side overconfidence.
+        scalp_accuracy is collected by counterfactual_tracker and exposed in
+        the bias detector, but `exit_edge_threshold` is manual-only. The one
+        backtestable lever that maps cleanly: when holds beat scalps the
+        entry signal decays during the window, so sharpen L1 (lower
+        atr_sigma_ratio). When scalps beat holds the entry is overconfident,
+        which Platt corrects on the next cycle — no proposal needed here.
         """
         cf = self.analysis.get("counterfactual_analysis", {})
         n_scalps = int(cf.get("total_scalps_tracked", 0))
         if n_scalps < 100:
             return
         scalp_acc = float(cf.get("scalp_accuracy", 0))
-        net_dir = cf.get("net_exit_direction", "calibrated")
-
-        # Only act when scalp accuracy is meaningfully poor (below noise floor 2x).
-        # noise floor at n=100 is ~0.05 (1σ); 2σ = ~0.10 from 0.5.
         if scalp_acc >= 0.50:
             return
-
-        if net_dir == "scalp_early":
-            # Holds beat scalps → entry signal is right, it's the scalping that's wrong.
-            # The pipeline can sharpen L1 to make holds last longer.
-            cur = float(self.cfg.get("atr_sigma_ratio", 1.4))
-            ok, why = self._direction_ok("atr_sigma_ratio", "down")
-            if ok:
-                new_val = max(1.2, cur - 0.10)
-                if self._propose(
-                    "atr_sigma_ratio", new_val,
-                    f"scalp_accuracy {scalp_acc:.0%} with holds beating scalps over {n_scalps} trades — "
-                    f"sharpen L1 so the entry signal holds longer to resolution",
-                    predicted_delta=0.018,
-                    ci=(-0.008, 0.040),
-                ):
-                    self.findings.append(
-                        f"Holds beat scalps (acc {scalp_acc:.0%}, n={n_scalps}) → "
-                        f"atr_sigma_ratio {cur:.2f}→{new_val:.2f}"
-                    )
-        elif net_dir == "hold_long":
-            # Scalps beat holds → entry overconfidence; positions decay during hold.
-            cur = float(self.cfg.get("probability_compression", 1.0))
-            ok, why = self._direction_ok("probability_compression", "down")
-            if ok:
-                new_val = max(0.55, cur - 0.10)
-                if self._propose(
-                    "probability_compression", new_val,
-                    f"scalp_accuracy {scalp_acc:.0%} with scalps beating holds over {n_scalps} trades — "
-                    f"entry-side overconfidence; compress probabilities globally",
-                    predicted_delta=0.020,
-                    ci=(-0.005, 0.045),
-                ):
-                    self.findings.append(
-                        f"Scalps beat holds (acc {scalp_acc:.0%}, n={n_scalps}) → "
-                        f"probability_compression {cur:.2f}→{new_val:.2f}"
-                    )
+        if cf.get("net_exit_direction") != "scalp_early":
+            return  # hold_long / calibrated → Platt re-fit handles it
+        cur = float(self.cfg.get("atr_sigma_ratio", 1.4))
+        ok, _why = self._direction_ok("atr_sigma_ratio", "down")
+        if not ok:
+            return
+        new_val = max(1.2, cur - 0.10)
+        if self._propose(
+            "atr_sigma_ratio", new_val,
+            f"scalp_accuracy {scalp_acc:.0%} with holds beating scalps over {n_scalps} trades — "
+            f"sharpen L1 so the entry signal holds longer to resolution",
+            predicted_delta=0.018,
+            ci=(-0.008, 0.040),
+        ):
+            self.findings.append(
+                f"Holds beat scalps (acc {scalp_acc:.0%}, n={n_scalps}) → "
+                f"atr_sigma_ratio {cur:.2f}→{new_val:.2f}"
+            )
 
     def _rule_flow_stack(self) -> None:
         """flow_weight / spot_flow_weight / liquidation_weight — chase the strongest signal in flow_stack."""
@@ -671,27 +547,6 @@ class LocalRecommender:
                 confidence="medium",
             )
 
-    def _manual_rule_late_window_prob(self) -> None:
-        time_p = self.analysis.get("time_patterns", {})
-        # Find the bucket whose label suggests "late" — the 0-60s bucket (entries
-        # made in the last 60 seconds before expiry). Avoid substring traps: "0-30"
-        # appears in "180-300s" so we match the actual bucket key directly.
-        for label, stats in time_p.items():
-            if "0-60" not in str(label) and "last" not in str(label).lower():
-                continue
-            n = int(stats.get("count", 0))
-            wr = float(stats.get("win_rate", 0))
-            if n >= 50 and wr < 0.55:
-                cur = float(self.cfg.get("final_min_probability", 0.90))
-                self._emit_manual(
-                    "final_min_probability", cur, round(min(0.95, cur + 0.03), 3),
-                    f"Late-window WR {wr:.0%} below 55% over {n} entries — raise hard gate",
-                    {"metric": "time_patterns.late_window_wr", "value": wr, "n": n,
-                     "source": "time_patterns"},
-                    confidence="medium",
-                )
-                break
-
     # -------- blocked-params and decay-mode init helpers -------- #
 
     def _build_blocked_params(self) -> None:
@@ -819,8 +674,7 @@ class LocalRecommender:
             if counts:
                 total_skips = gate_stats.get("total_skips", sum(counts.values()))
                 top_gate, top_count = max(counts.items(), key=lambda x: x[1])
-                manual_only = {"adverse_selection", "adverse_rate_30s", "final_probability",
-                               "final_min_probability"}
+                manual_only = {"adverse_selection", "adverse_rate_30s"}
                 note = "manual-only lever" if top_gate in manual_only else "consider loosening"
                 self.findings.append(
                     f"Top gate: {top_gate} blocks {top_count}/{total_skips} skips "

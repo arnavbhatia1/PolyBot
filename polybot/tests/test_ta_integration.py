@@ -1,6 +1,5 @@
 import pytest
 import pytest_asyncio
-import json
 from polybot.feeds.binance_feed import Candle, CandleBuffer
 from polybot.indicators.engine import IndicatorEngine
 from polybot.core.signal_engine import SignalEngine
@@ -14,15 +13,6 @@ async def db():
     await database.set_bankroll(100.0)
     yield database
     await database.close()
-
-@pytest.fixture
-def weights_dir(tmp_path):
-    d = tmp_path / "weights"
-    d.mkdir()
-    (d / "weights_v001.json").write_text(json.dumps({
-        "rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20,
-        "entry_threshold": 0.60, "version": "weights_v001"}))
-    return str(d)
 
 def _make_buy_signal_buffer():
     """Creates a buffer pattern that generates a bullish buy signal:
@@ -40,11 +30,11 @@ def _make_buy_signal_buffer():
     return buf
 
 @pytest.mark.asyncio
-async def test_full_ta_flow(db, weights_dir):
+async def test_full_ta_flow(db):
     """Indicators → signal → paper trade."""
     buf = _make_buy_signal_buffer()
 
-    engine = IndicatorEngine(weights_dir=weights_dir, active_version="weights_v001")
+    engine = IndicatorEngine()
     indicators = engine.compute_all(buf)
     snapshot = engine.get_snapshot(indicators)
 

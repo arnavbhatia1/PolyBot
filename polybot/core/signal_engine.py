@@ -4,11 +4,15 @@ import math
 import logging
 from collections import deque
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy.stats import t as student_t
 
 from polybot.core.exit_boundary import ExitBoundary
+
+if TYPE_CHECKING:
+    from polybot.core.calibrator import PlattCalibrator
 
 # Regime-conditional L4: |autocorr| > threshold = real regime signal.
 _REGIME_MOMENTUM_THRESHOLD = 0.15
@@ -26,33 +30,10 @@ _ATR_LONG_TERM_SIZE = 200
 _ATR_LONG_TERM_MIN_SAMPLES = 50
 _ATR_REGIME_SHIFT_THRESHOLD = 0.60
 
-# Rolling (predicted_prob, won) buffer; bucketed by confidence so the model can
-# learn that *only its extreme predictions* are miscalibrated, without dampening
-# the moderate predictions that are working fine.
-_CALIBRATION_BUFFER_SIZE = 100
-_CALIBRATION_MIN_SAMPLES = 30
-_CALIBRATION_DRIFT_FILE = "polybot/memory/adaptive_calibration.json"
-_CALIBRATION_BUCKET_MIN_SAMPLES = 15
-
-# Buckets keyed by side-confidence = max(p, 1-p). Boundaries chosen so the
-# entry threshold (0.58) starts the moderate bucket and the extreme bucket
-# captures the cases where the model and market most often disagree.
-_CALIBRATION_BUCKETS: tuple[tuple[str, float, float], ...] = (
-    ("moderate", 0.58, 0.70),
-    ("high",     0.70, 0.85),
-    ("extreme",  0.85, 1.01),  # 1.01 so 1.0 is inclusive at the right
-)
-
-# Disagreement buckets keyed by |model_prob - market_price|. When the market
-# disagrees strongly with the model and the model historically loses those, the
-# bot learns to compress probabilities in the high-disagreement range — directly
-# addressing the failure mode where the model held a "+54% edge" position into a
-# loss because the market knew something it didn't.
-_DISAGREEMENT_BUCKETS: tuple[tuple[str, float, float], ...] = (
-    ("agree",     0.0,  0.10),
-    ("medium",    0.10, 0.25),
-    ("strong",    0.25, 1.01),
-)
+# When holding_edge < this and time remains, hold to resolution rather than
+# scalp; the binary residual is +EV vs locking in the loss. Loss-cut still
+# fires near expiry when market collapses below entry × loss_cut_fraction.
+_DEEP_LOSS_HOLD_THRESHOLD = -0.10
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +85,8 @@ class SignalEngine:
     L1 Student-t CDF, L2 regime autocorr, L3 CLOB flow, L3b spot CVD,
     L3e Bybit OI liquidation, L4 indicator momentum, L5 prev-window carry,
     plus Platt calibration. Trades when |model - market| >= min_edge.
+    Platt scaling (re-fit each pipeline cycle) is the sole overconfidence
+    correction.
     """
 
     def __init__(self, min_edge: float = 0.04, kelly_fraction: float = 0.15,
@@ -112,14 +95,12 @@ class SignalEngine:
                  student_t_df: int = 5, regime_weight: float = 0.03,
                  flow_weight: float = 0.04, regime_lookback: int = 50,
                  min_kelly: float = 0.015, atr_sigma_ratio: float = 1.4,
-                 calibrator: 'PlattCalibrator | None' = None,
+                 calibrator: PlattCalibrator | None = None,
                  spot_flow_weight: float = 0.04,
                  prev_margin_weight: float = 0.02,
                  min_atr: float = 8.0,
                  liquidation_weight: float = 0.03,
                  logit_scale: float = 4.0,
-                 probability_compression: float = 1.0,
-                 adaptive_compression_scale: float = 1.0,
                  loss_cut_fraction: float = 0.65,
                  loss_cut_time_s: float = 120.0,
                  consensus_dead_zone: float = 0.05,
@@ -142,8 +123,6 @@ class SignalEngine:
         self.min_atr: float = min_atr
         self.liquidation_weight: float = liquidation_weight
         self.logit_scale: float = logit_scale
-        self.probability_compression: float = probability_compression
-        self.adaptive_compression_scale: float = max(0.0, min(1.0, adaptive_compression_scale))
         self.loss_cut_fraction: float = loss_cut_fraction
         self.loss_cut_time_s: float = loss_cut_time_s
         self.consensus_dead_zone: float = consensus_dead_zone
@@ -158,16 +137,10 @@ class SignalEngine:
         self._atr_long_term: deque[float] = deque(maxlen=_ATR_LONG_TERM_SIZE)
         self.last_regime_autocorr: float = 0.0
         self.last_regime_direction: float = 0.0
-        # Adaptive calibration buffer (predicted_prob, market_price, won) — persisted
-        # across restarts. Two orthogonal learning loops:
-        #   confidence buckets: drift in the model's prediction range (moderate/high/extreme)
-        #   disagreement buckets: drift conditional on |model - market| (agree/medium/strong)
-        # When evaluating a new prediction the smaller of the two multipliers wins,
-        # so either signal can trigger compression independently.
-        self._calibration_buffer: deque[tuple[float, float | None, bool]] = deque(maxlen=_CALIBRATION_BUFFER_SIZE)
-        self._bucket_mults: dict[str, float] = {name: 1.0 for name, _, _ in _CALIBRATION_BUCKETS}
-        self._disagreement_mults: dict[str, float] = {name: 1.0 for name, _, _ in _DISAGREEMENT_BUCKETS}
-        self._load_calibration_buffer()
+        # P(Up) BEFORE Platt calibration on the most recent compute_probability call.
+        # Persisted per-trade as `model_probability_raw` so the next pipeline cycle's
+        # Platt re-fit sees genuinely raw probabilities (not Platt(Platt(raw))).
+        self.last_raw_prob_up: float = 0.5
 
     def _record_atr(self, atr: float) -> None:
         if atr > 0:
@@ -185,192 +158,6 @@ class SignalEngine:
                 regime_floor = long_term_mean * _ATR_REGIME_SHIFT_THRESHOLD * _ATR_FLOOR_FRACTION
                 return max(base_floor, regime_floor)
         return base_floor
-
-    def _load_calibration_buffer(self) -> None:
-        try:
-            from pathlib import Path
-            import json as _json
-            p = Path(_CALIBRATION_DRIFT_FILE)
-            if not p.exists():
-                return
-            data = _json.loads(p.read_text())
-            # Buffer entries: support both old [prob, won] and new [prob, market_price, won].
-            for entry in data.get("buffer", []):
-                if not isinstance(entry, list):
-                    continue
-                if len(entry) >= 3:
-                    mp = float(entry[1]) if entry[1] is not None else None
-                    self._calibration_buffer.append((float(entry[0]), mp, bool(entry[2])))
-                elif len(entry) >= 2:
-                    self._calibration_buffer.append((float(entry[0]), None, bool(entry[1])))
-            mults = data.get("multipliers")
-            if isinstance(mults, dict):
-                for name in self._bucket_mults:
-                    if name in mults:
-                        self._bucket_mults[name] = float(mults[name])
-            elif "multiplier" in data:  # legacy single-value
-                legacy = float(data["multiplier"])
-                self._bucket_mults = {name: legacy for name in self._bucket_mults}
-            dis = data.get("disagreement_multipliers")
-            if isinstance(dis, dict):
-                for name in self._disagreement_mults:
-                    if name in dis:
-                        self._disagreement_mults[name] = float(dis[name])
-        except Exception:
-            pass  # First run or corrupted file — start fresh
-
-    def _save_calibration_buffer(self) -> None:
-        try:
-            from pathlib import Path
-            import json as _json
-            p = Path(_CALIBRATION_DRIFT_FILE)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                "buffer": [
-                    [round(prob, 4), (round(mp, 4) if mp is not None else None), bool(won)]
-                    for prob, mp, won in self._calibration_buffer
-                ],
-                "multipliers": {name: round(m, 4) for name, m in self._bucket_mults.items()},
-                "disagreement_multipliers": {name: round(m, 4) for name, m in self._disagreement_mults.items()},
-            }
-            p.write_text(_json.dumps(data, indent=2))
-        except Exception:
-            pass
-
-    def record_resolution(self, predicted_prob: float, won: bool,
-                          market_price: float | None = None) -> None:
-        """Append a resolved trade and refresh per-bucket compression multipliers.
-
-        ``market_price`` is the chosen side's market price at entry. When supplied
-        the trade also feeds the disagreement-bucket learning loop; otherwise it
-        only updates confidence buckets (legacy / paper-mode trades without
-        market_price recorded).
-        """
-        if not (0.0 < predicted_prob < 1.0):
-            return
-        mp = float(market_price) if market_price is not None and 0.0 < market_price < 1.0 else None
-        self._calibration_buffer.append((float(predicted_prob), mp, bool(won)))
-        self._bucket_mults = self._compute_bucket_multipliers()
-        self._disagreement_mults = self._compute_disagreement_multipliers()
-        self._save_calibration_buffer()
-
-    @staticmethod
-    def _bucket_lookup(value: float, table: tuple[tuple[str, float, float], ...]) -> str | None:
-        for name, lo, hi in table:
-            if lo <= value < hi:
-                return name
-        return None
-
-    @staticmethod
-    def _drift_to_multiplier(drift: float) -> float:
-        """3pp drift -> 1.0, 25pp drift -> 0.50, linear in between, floored at 0.5."""
-        if drift <= 0.03:
-            return 1.0
-        mult = 1.0 - (drift - 0.03) * (0.50 / (0.25 - 0.03))
-        return max(0.5, min(1.0, mult))
-
-    def _compute_bucket_multipliers(self) -> dict[str, float]:
-        """Per-confidence-bucket multipliers from rolling buffer."""
-        result = {name: 1.0 for name, _, _ in _CALIBRATION_BUCKETS}
-        if len(self._calibration_buffer) < _CALIBRATION_MIN_SAMPLES:
-            return result
-        for name, lo, hi in _CALIBRATION_BUCKETS:
-            in_bucket = [
-                (p, won) for p, _mp, won in self._calibration_buffer
-                if lo <= max(p, 1.0 - p) < hi
-            ]
-            if len(in_bucket) < _CALIBRATION_BUCKET_MIN_SAMPLES:
-                continue
-            mean_pred = sum(max(p, 1.0 - p) for p, _ in in_bucket) / len(in_bucket)
-            mean_actual = sum(1 for _, won in in_bucket if won) / len(in_bucket)
-            result[name] = self._drift_to_multiplier(abs(mean_pred - mean_actual))
-        return result
-
-    def _compute_disagreement_multipliers(self) -> dict[str, float]:
-        """Per-disagreement-bucket multipliers. Uses only entries with market_price.
-
-        Disagreement = |model_prob_for_chosen_side - market_price|. When the
-        strong-disagreement bucket has high drift it means the bot loses badly
-        when the market disagrees with it — exactly the +54% edge failure mode.
-        """
-        result = {name: 1.0 for name, _, _ in _DISAGREEMENT_BUCKETS}
-        with_mp = [(p, mp, won) for p, mp, won in self._calibration_buffer if mp is not None]
-        if len(with_mp) < _CALIBRATION_MIN_SAMPLES:
-            return result
-        for name, lo, hi in _DISAGREEMENT_BUCKETS:
-            in_bucket = [
-                (p, won) for p, mp, won in with_mp
-                if lo <= abs(p - mp) < hi
-            ]
-            if len(in_bucket) < _CALIBRATION_BUCKET_MIN_SAMPLES:
-                continue
-            mean_pred = sum(p for p, _ in in_bucket) / len(in_bucket)
-            mean_actual = sum(1 for _, won in in_bucket if won) / len(in_bucket)
-            result[name] = self._drift_to_multiplier(abs(mean_pred - mean_actual))
-        return result
-
-    def _adaptive_compression_for(self, prob: float, market_price: float | None = None) -> float:
-        """Combined adaptive multiplier from confidence + disagreement buckets.
-
-        Internally computes both bucket multipliers and takes the conservative min
-        (either axis can trigger compression independently). The result is then
-        blended with 1.0 by ``adaptive_compression_scale`` — a single pipeline-tunable
-        knob: 0.0 = no adaptive compression, 1.0 = full effect.
-        """
-        conf_bucket = self._bucket_lookup(max(prob, 1.0 - prob), _CALIBRATION_BUCKETS)
-        conf_mult = self._bucket_mults.get(conf_bucket, 1.0) if conf_bucket else 1.0
-        if market_price is not None and 0.0 < market_price < 1.0:
-            dis_bucket = self._bucket_lookup(abs(prob - market_price), _DISAGREEMENT_BUCKETS)
-            dis_mult = self._disagreement_mults.get(dis_bucket, 1.0) if dis_bucket else 1.0
-            raw_mult = min(conf_mult, dis_mult)
-        else:
-            raw_mult = conf_mult
-        # Scale: interpolate between 1.0 (no adaptive) and raw_mult (full adaptive).
-        return 1.0 - (1.0 - raw_mult) * self.adaptive_compression_scale
-
-    def get_adaptive_calibration_state(self) -> dict[str, dict]:
-        """Per-bucket {n, mean_pred, mean_actual, drift, multiplier} for pipeline
-        visibility — both confidence and disagreement loops.
-        """
-        out: dict[str, dict] = {"confidence": {}, "disagreement": {}}
-        for name, lo, hi in _CALIBRATION_BUCKETS:
-            in_bucket = [
-                (p, won) for p, _mp, won in self._calibration_buffer
-                if lo <= max(p, 1.0 - p) < hi
-            ]
-            n = len(in_bucket)
-            if n == 0:
-                out["confidence"][name] = {"n": 0, "multiplier": self._bucket_mults.get(name, 1.0)}
-                continue
-            mean_pred = sum(max(p, 1.0 - p) for p, _ in in_bucket) / n
-            mean_actual = sum(1 for _, won in in_bucket if won) / n
-            out["confidence"][name] = {
-                "n": n,
-                "mean_predicted": round(mean_pred, 4),
-                "mean_actual": round(mean_actual, 4),
-                "drift": round(abs(mean_pred - mean_actual), 4),
-                "multiplier": round(self._bucket_mults.get(name, 1.0), 4),
-            }
-        with_mp = [(p, mp, won) for p, mp, won in self._calibration_buffer if mp is not None]
-        for name, lo, hi in _DISAGREEMENT_BUCKETS:
-            in_bucket = [
-                (p, won) for p, mp, won in with_mp
-                if lo <= abs(p - mp) < hi
-            ]
-            n = len(in_bucket)
-            if n == 0:
-                out["disagreement"][name] = {"n": 0, "multiplier": self._disagreement_mults.get(name, 1.0)}
-                continue
-            mean_pred = sum(p for p, _ in in_bucket) / n
-            mean_actual = sum(1 for _, won in in_bucket if won) / n
-            out["disagreement"][name] = {
-                "n": n,
-                "mean_predicted": round(mean_pred, 4),
-                "mean_actual": round(mean_actual, 4),
-                "drift": round(abs(mean_pred - mean_actual), 4),
-                "multiplier": round(self._disagreement_mults.get(name, 1.0), 4),
-            }
-        return out
 
     def effective_momentum_weight(self, regime_autocorr: float) -> float:
         """Trending: flip sign and amplify. Reverting: keep fade and amplify. Else: dampen."""
@@ -413,8 +200,7 @@ class SignalEngine:
                             spot_flow_signal: float = 0.0,
                             prev_resolution_margin: float = 0.0,
                             iv_ratio: float = 1.0,
-                            liquidation_pressure: float = 0.0,
-                            market_price_up: float | None = None) -> float:
+                            liquidation_pressure: float = 0.0) -> float:
         """P(Up) at expiry — Student-t CDF + logit-space layer adjustments + Platt."""
         if atr <= 0 or seconds_remaining <= 0:
             return 0.5
@@ -432,15 +218,6 @@ class SignalEngine:
         # Scale z by sqrt(df/(df-2)) so ATR (≈σ_true) matches t-distribution variance
         t_scale = math.sqrt(self.student_t_df / (self.student_t_df - 2)) if self.student_t_df > 2 else 1.0
         prob_up = float(student_t.cdf(z * t_scale, df=self.student_t_df))
-
-        # Static + bucketed adaptive compression toward 0.5. Adaptive multiplier is
-        # bucket-specific (confidence) AND market-aware (disagreement) — either
-        # signal can trigger compression. moderate-confidence + market-agrees
-        # predictions stay untouched; extreme-confidence OR market-strongly-disagrees
-        # gets compressed.
-        effective_compression = self.probability_compression * self._adaptive_compression_for(prob_up, market_price_up)
-        if effective_compression < 1.0:
-            prob_up = 0.5 + (prob_up - 0.5) * effective_compression
 
         prob_up = max(0.001, min(0.999, prob_up))
         logit_p = math.log(prob_up / (1.0 - prob_up))
@@ -483,6 +260,7 @@ class SignalEngine:
             logit_p += self.compute_momentum(indicators) * logit_momentum_w
 
         prob_up = 1.0 / (1.0 + math.exp(-logit_p))
+        self.last_raw_prob_up = prob_up
         if self.calibrator:
             prob_up = self.calibrator.calibrate(prob_up)
         return prob_up
@@ -529,8 +307,7 @@ class SignalEngine:
                                            spot_flow_signal=spot_flow_signal,
                                            prev_resolution_margin=prev_resolution_margin,
                                            iv_ratio=iv_ratio,
-                                           liquidation_pressure=liquidation_pressure,
-                                           market_price_up=market_price_up if 0.0 < market_price_up < 1.0 else None)
+                                           liquidation_pressure=liquidation_pressure)
         prob_down = 1.0 - prob_up
         best_prob = max(prob_up, prob_down)
         if best_prob < self.min_model_probability:
@@ -577,9 +354,6 @@ class SignalEngine:
         Returns (action, model_prob, holding_edge, reason).
         """
         atr = indicators.get("atr", {}).get("atr", 0)
-        # Derive market_price_up from market_price_for_side so the disagreement
-        # bucket sees the same divergence regardless of side.
-        market_price_up = market_price_for_side if side == "Up" else (1.0 - market_price_for_side)
         prob_up = self.compute_probability(btc_price, strike_price,
                                            seconds_remaining, atr, indicators,
                                            closes=closes,
@@ -587,8 +361,7 @@ class SignalEngine:
                                            spot_flow_signal=spot_flow_signal,
                                            prev_resolution_margin=prev_resolution_margin,
                                            iv_ratio=iv_ratio,
-                                           liquidation_pressure=liquidation_pressure,
-                                           market_price_up=market_price_up if 0.0 < market_price_up < 1.0 else None)
+                                           liquidation_pressure=liquidation_pressure)
         model_prob = prob_up if side == "Up" else 1.0 - prob_up
         holding_edge = model_prob - market_price_for_side
 
@@ -603,11 +376,8 @@ class SignalEngine:
             seconds_remaining, entry_price, fee_rate, market_price_for_side)
         effective_threshold = max(effective_threshold, optimal_threshold)
 
-        # Loss-cut: exit when deeply underwater near expiry.
-        # Triggered independently of holding_edge — catches the case where both
-        # model and market have dropped (holding_edge stays positive) but the
-        # position has no realistic recovery. exit_boundary's urgency_premium
-        # also fires here when OTM + time-short, but this is the belt-and-suspenders.
+        # Loss-cut fires independently of holding_edge: deep-underwater near
+        # expiry, where the position has no realistic recovery.
         if (entry_price > 0
                 and market_price_for_side < entry_price * self.loss_cut_fraction
                 and seconds_remaining < self.loss_cut_time_s):
@@ -615,6 +385,13 @@ class SignalEngine:
                     f"LossCut {side}: mkt={market_price_for_side:.2f} < "
                     f"{self.loss_cut_fraction:.0%}×entry={entry_price:.2f} "
                     f"at {seconds_remaining:.0f}s")
+
+        # Past _DEEP_LOSS_HOLD_THRESHOLD the binary residual is +EV vs locking
+        # in the loss; loss-cut above still catches the genuinely hopeless cases.
+        if holding_edge < _DEEP_LOSS_HOLD_THRESHOLD:
+            return ("HOLD", model_prob, holding_edge,
+                    f"Hold {side} (deep-loss zone): edge={holding_edge:+.0%} < "
+                    f"{_DEEP_LOSS_HOLD_THRESHOLD:+.0%} — let resolution play out")
 
         if holding_edge <= effective_threshold:
             return ("EXIT", model_prob, holding_edge,

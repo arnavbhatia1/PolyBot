@@ -6,7 +6,7 @@ trending_up, trending_down, mean_reverting, volatile, quiet, neutral.
 Each regime returns a RegimeState with Kelly sizing and edge multipliers.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import numpy as np
 
 

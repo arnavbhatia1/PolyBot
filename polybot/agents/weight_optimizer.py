@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-import json
-import logging
 import math
-import re
-from pathlib import Path
-from typing import Any
+import logging
 
 logger = logging.getLogger(__name__)
+
+
+# Adoption requires this many candidate trades AND z-score above this floor.
+# z = delta_sharpe / JK_SE (autocorr-adjusted). z=0.5 ≈ 69% one-sided confidence
+# the change is real — chosen to be permissive enough for the pipeline to keep
+# adapting through regime shifts, strict enough to filter noise.
+MIN_CANDIDATE_TRADES = 100
+ADOPTION_Z_FLOOR = 0.5
 
 
 def _sharpe(returns: list[float]) -> float:
@@ -31,100 +35,60 @@ def _lag1_autocorr(values: list[float]) -> float:
     return num / den if den > 0 else 0.0
 
 
-def _sharpe_z_test(old_sharpe: float, new_sharpe: float, n_trades: int,
-                   returns: list[float] | None = None) -> float:
-    """Z-score for Sharpe improvement (Jobson-Korkie SE, autocorr-inflated)."""
+def _jk_se(sharpe: float, n_trades: int, returns: list[float] | None = None) -> float:
+    """Jobson-Korkie standard error for a per-trade Sharpe, autocorr-adjusted."""
     if n_trades < 2:
         return 0.0
-    se = math.sqrt((1.0 + 0.5 * old_sharpe ** 2) / max(n_trades, 1))
+    se = math.sqrt((1.0 + 0.5 * sharpe ** 2) / max(n_trades, 1))
     if returns and len(returns) >= 3:
         rho = _lag1_autocorr(returns)
         se *= math.sqrt(1.0 + 2.0 * max(0.0, rho))
+    return se
+
+
+def _sharpe_z_test(old_sharpe: float, new_sharpe: float, n_trades: int,
+                   returns: list[float] | None = None) -> float:
+    """Z-score for Sharpe improvement (Jobson-Korkie SE, autocorr-inflated)."""
+    se = _jk_se(old_sharpe, n_trades, returns)
     return (new_sharpe - old_sharpe) / se if se > 0 else 0.0
 
 
 class WeightOptimizer:
-    def __init__(self, weights_dir: str, scores_path: str, min_improvement: float = 0.03) -> None:
-        self.weights_dir: Path = Path(weights_dir)
-        self.scores_path: Path = Path(scores_path)
-        self.min_improvement: float = min_improvement  # absolute Sharpe floor
-        self.se_floor_coefficient: float = 0.25  # crisis mode lowers to 0.15
+    """Adoption gate for pipeline-proposed parameter changes.
 
-    def get_scores(self) -> dict[str, Any]:
-        if not self.scores_path.exists():
-            return {}
-        return json.loads(self.scores_path.read_text())
+    Single statistical test — no static absolute floor, no crisis-mode toggle.
+    A candidate change adopts when its Sharpe improvement clears z=0.5 against
+    the autocorr-adjusted Jobson-Korkie SE (≈69% one-sided confidence). This
+    scales naturally with sample size: small N → wider SE → tighter floor;
+    large N → narrower SE → looser floor.
+    """
 
-    def get_best_version(self) -> str:
-        scores = self.get_scores()
-        if not scores:
-            return "weights_v001"
-        return max(scores, key=lambda v: scores[v].get("sharpe", 0))
-
-    def record_score(self, version: str, sharpe: float, total_trades: int, win_rate: float) -> None:
-        scores = self.get_scores()
-        scores[version] = {"sharpe": round(sharpe, 4), "total_trades": total_trades, "win_rate": round(win_rate, 4)}
-        self.scores_path.parent.mkdir(parents=True, exist_ok=True)
-        self.scores_path.write_text(json.dumps(scores, indent=2))
-
-    def save_weights(self, version: str, weights: dict[str, Any]) -> None:
-        self.weights_dir.mkdir(parents=True, exist_ok=True)
-        (self.weights_dir / f"{version}.json").write_text(json.dumps(weights, indent=2))
+    def __init__(self, *_args, **_kwargs) -> None:
+        # Args/kwargs accepted for backward compat with old call sites.
+        pass
 
     def should_adopt(self, current_sharpe: float, candidate_sharpe: float,
                      n_trades: int = 0,
                      candidate_returns: list[float] | None = None) -> tuple[bool, str, float]:
-        """Noise-scaled adoption check for Sharpe improvement.
-
-        Returns (adopt, reason, z_score). z is delta / JK_SE — exposed as a
-        structured field so callers don't have to parse it out of `reason`.
-
-        Gates (all must pass):
-          1. candidate_sharpe > 0
-          2. n_trades >= 100
-          3. delta >= max(min_improvement, se_floor_coefficient × JK_SE)
-
-        The walk-forward fold-consistency gate was removed — it had been
-        relaxed to "≥1 of 4 folds improve", which is implied by any positive
-        aggregate delta and so contributed no independent statistical
-        confirmation. Fold Sharpes are still computed and logged as
-        diagnostics in `change_info["fold_sharpes"]`.
-        """
+        """Returns (adopt, reason, z_score). z = delta / JK_SE."""
         delta = candidate_sharpe - current_sharpe
 
         if candidate_sharpe <= 0:
             return False, f"candidate Sharpe {candidate_sharpe:.3f} <= 0", 0.0
 
-        if n_trades < 100:
+        if n_trades < MIN_CANDIDATE_TRADES:
             return False, (
-                f"only {n_trades} candidate trades (need 100) — your min_model_probability "
-                f"or min_edge may be filtering too aggressively in the backtest"
+                f"only {n_trades} candidate trades (need {MIN_CANDIDATE_TRADES}) — "
+                f"your min_model_probability or min_edge may be filtering too aggressively"
             ), 0.0
 
-        # Jobson-Korkie SE, autocorr-adjusted.
-        se = math.sqrt((1.0 + 0.5 * current_sharpe ** 2) / max(n_trades, 1))
-        if candidate_returns and len(candidate_returns) >= 3:
-            rho = _lag1_autocorr(candidate_returns)
-            se *= math.sqrt(1.0 + 2.0 * max(0.0, rho))
-
+        se = _jk_se(current_sharpe, n_trades, candidate_returns)
         z = delta / se if se > 0 else 0.0
-        dynamic_floor = max(self.min_improvement, self.se_floor_coefficient * se)
 
-        if delta < dynamic_floor:
+        if z < ADOPTION_Z_FLOOR:
             return False, (
-                f"delta {delta:+.4f} below floor {dynamic_floor:.4f} "
-                f"(abs_floor={self.min_improvement:.3f}, SE={se:.3f})"
+                f"z={z:.2f} below floor {ADOPTION_Z_FLOOR} "
+                f"(delta={delta:+.4f}, SE={se:.4f}, n={n_trades})"
             ), z
 
-        return True, f"delta={delta:+.4f} floor={dynamic_floor:.4f} z={z:.2f} n={n_trades}", z
-
-    def get_next_version(self) -> str:
-        existing = list(self.weights_dir.glob("weights_v*.json"))
-        if not existing:
-            return "weights_v001"
-        numbers = []
-        for f in existing:
-            match = re.search(r"v(\d+)", f.stem)
-            if match:
-                numbers.append(int(match.group(1)))
-        return f"weights_v{max(numbers) + 1:03d}" if numbers else "weights_v001"
+        return True, f"delta={delta:+.4f} z={z:.2f} (SE={se:.4f}, n={n_trades})", z

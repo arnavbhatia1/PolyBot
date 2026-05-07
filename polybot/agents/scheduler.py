@@ -2,11 +2,10 @@
 
 Runs BiasDetector, Platt calibration (with recency-weighted MLE), distribution shift
 detection, SPRT aggregation, TA Evolver (Claude), and WeightOptimizer in sequence.
-Adopts parameter changes only when they pass: z >= 1.0 (Jobson-Korkie), delta >=
-min_improvement (0.02–0.05, SPRT-modulated), n >= 100 candidate trades, 3/4 walk-forward
-folds positive, regime-stratified Sharpe check. 2-day cooldown after last adoption.
-After ≥2 adoptions: combined backtest interaction check (backs out weakest if combined
-Δ < 0.7 × sum of individual Δ).
+Adopts parameter changes only when they pass: z = Δ_sharpe / JK_SE >= 0.5 (autocorr
+adjusted, no static abs floor), n >= 100 candidate trades, regime-stratified Sharpe
+check. 2-day cooldown after last adoption. After ≥2 adoptions: combined backtest
+interaction check (backs out weakest if combined Δ < 0.7 × sum of individual Δ).
 """
 from __future__ import annotations
 
@@ -303,15 +302,12 @@ class AgentScheduler:
             "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', 0.04),
             "prev_margin_weight": getattr(self.signal_engine, 'prev_margin_weight', 0.02),
             "logit_scale": getattr(self.signal_engine, 'logit_scale', 4.0),
-            "probability_compression": getattr(self.signal_engine, 'probability_compression', 1.0),
             "liquidation_weight": getattr(self.signal_engine, 'liquidation_weight', 0.03),
             "adverse_selection_threshold": (self._config or {}).get("signal", {}).get("adverse_selection_threshold", 0.65),
             "normal_fraction": (self._config or {}).get("entry_timing", {}).get("normal_fraction", 0.60),
             "late_max_penalty": (self._config or {}).get("entry_timing", {}).get("late_max_penalty", 0.60),
             "min_atr": getattr(self.signal_engine, 'min_atr', 8.0),
             "max_edge": getattr(self.signal_engine, 'max_edge', 0.20),
-            "active_weights_version": getattr(self.indicator_engine, 'active_version', 'weights_v001')
-                                      if self.indicator_engine else "weights_v001",
         }
 
         if hasattr(self, '_last_per_change_results') and self._last_per_change_results:
@@ -319,30 +315,19 @@ class AgentScheduler:
         if hasattr(self, '_last_rerouted_params') and self._last_rerouted_params:
             analysis["last_rerouted_params"] = list(self._last_rerouted_params)
 
-        # Live adaptive-calibration state per confidence bucket. Lets the pipeline
-        # see which buckets are drifting (e.g., extreme bucket at 18pp drift while
-        # moderate is calibrated) so static `probability_compression` proposals
-        # aren't tuned to averages that hide the real problem.
-        if self.signal_engine and hasattr(self.signal_engine, "get_adaptive_calibration_state"):
-            try:
-                analysis["adaptive_calibration_buckets"] = self.signal_engine.get_adaptive_calibration_state()
-            except Exception as e:
-                logger.debug(f"Failed to read adaptive calibration buckets: {e}")
+        # Adoption gate is a pure z-test (delta_sharpe / JK_SE >= ADOPTION_Z_FLOOR).
+        # Surface baseline Sharpe and SE so Claude can size proposals to clear it.
         if hasattr(self, '_baseline_kelly_sharpe'):
+            from polybot.agents.weight_optimizer import ADOPTION_Z_FLOOR
             analysis["baseline_kelly_sharpe"] = self._baseline_kelly_sharpe
-            # Compute the actual dynamic floor Claude's change must clear:
-            #   delta >= max(min_improvement, 0.25 × JK_SE)
-            abs_floor = self.weight_optimizer.min_improvement
             jk_se = getattr(self, '_baseline_jk_se', None)
             if jk_se is not None:
-                dyn_floor = max(abs_floor, 0.25 * jk_se)
+                dyn_floor = ADOPTION_Z_FLOOR * jk_se
                 analysis["baseline_jk_se"] = jk_se
                 analysis["baseline_n_trades"] = getattr(self, '_baseline_n_trades', None)
-                analysis["adoption_abs_floor"] = abs_floor
+                analysis["adoption_z_floor"] = ADOPTION_Z_FLOOR
                 analysis["adoption_dynamic_floor"] = round(dyn_floor, 4)
                 analysis["adoption_target"] = round(self._baseline_kelly_sharpe + dyn_floor, 4)
-            else:
-                analysis["adoption_target"] = round(self._baseline_kelly_sharpe + abs_floor, 4)
         # Cumulative failures derived from pipeline_run_log.json (restart-safe, no duplicate state)
         if self.pipeline_tracker:
             try:
@@ -503,7 +488,6 @@ class AgentScheduler:
         prev_margin_weight: float = 0.02,
         logit_scale: float = 4.0,
         min_atr: float = 8.0,
-        probability_compression: float = 1.0,
     ) -> list[float]:
         """Replay the full logit composition used in production for a candidate
         config and return the Kelly-sized per-trade returns. Sharpe of the result
@@ -609,9 +593,6 @@ class AgentScheduler:
             logit_p += momentum_score * momentum_weight * logit_scale
 
             prob_up_adj = 1.0 / (1.0 + math.exp(-logit_p))
-            # Apply probability compression (shrink toward 0.5)
-            if probability_compression < 1.0:
-                prob_up_adj = 0.5 + (prob_up_adj - 0.5) * probability_compression
             if calibrator is not None and hasattr(calibrator, "calibrate"):
                 calibrated_up = calibrator.calibrate(prob_up_adj)
             else:
@@ -701,7 +682,6 @@ class AgentScheduler:
             prev_margin_weight=cfg["prev_margin_weight"],
             logit_scale=cfg["logit_scale"],
             min_atr=cfg["min_atr"],
-            probability_compression=cfg["probability_compression"],
         )
 
     def _backtest_single_change(self, change: dict[str, Any],
@@ -752,7 +732,6 @@ class AgentScheduler:
             prev_margin_weight=cfg["prev_margin_weight"],
             logit_scale=cfg["logit_scale"],
             min_atr=cfg["min_atr"],
-            probability_compression=cfg["probability_compression"],
         )
         return {"returns": returns, "sharpe": _s(returns), "candidate_trades": len(returns)}
 
@@ -842,7 +821,10 @@ class AgentScheduler:
             info["reason"] = f"only {len(all_outcomes) if all_outcomes else 0} outcomes (need 10)"
             return info
 
-        current_version = self.weight_optimizer.get_best_version()
+        # Single hardcoded weight version — the version A/B abstraction was set up
+        # but never used (zero non-default versions ever recorded). Keeping the
+        # column for DB schema stability; treating it as a constant here.
+        current_version = "weights_v001"
         info["old_version"] = current_version
 
         # Get the changes list (new format) or fall back to checking for recommended_weights
@@ -885,11 +867,6 @@ class AgentScheduler:
                 current_fold_returns = self._backtest_recommendations(baseline_request, fold_test)
                 all_current_returns.extend(current_fold_returns)
             current_sharpe = _sharpe(all_current_returns) if all_current_returns else 0.0
-            current_win_rate = (sum(1 for r in all_current_returns if r > 0) / len(all_current_returns)
-                                if all_current_returns else 0.0)
-            if all_current_returns:
-                self.weight_optimizer.record_score(current_version, current_sharpe,
-                                                   len(all_current_returns), current_win_rate)
             info["old_sharpe"] = round(current_sharpe, 4)
             info["n_baseline_trades"] = len(all_current_returns)
 
@@ -1051,7 +1028,7 @@ class AgentScheduler:
             "volatility_core": ["atr_sigma_ratio", "student_t_df", "logit_scale"],
             "flow_stack": ["flow_weight", "spot_flow_weight", "liquidation_weight"],
             "momentum_regime": ["momentum_weight", "regime_weight"],
-            "sizing": ["kelly_fraction", "probability_compression"],
+            "sizing": ["kelly_fraction"],
         }
         coupled_groups: dict[str, list[str]] = DEFAULT_COUPLED_GROUPS
         if self._config:
@@ -1077,7 +1054,6 @@ class AgentScheduler:
                         "momentum_weight", "atr_sigma_ratio", "student_t_df", "kelly_fraction",
                         "regime_weight", "flow_weight", "spot_flow_weight",
                         "liquidation_weight", "prev_margin_weight", "logit_scale", "min_atr",
-                        "probability_compression",
                     ):
                         combined_rec[f"recommended_{param}"] = value
                     ci = next((x for x in info["per_change"]
@@ -1100,11 +1076,10 @@ class AgentScheduler:
                     regime_weight=cfg_combined["regime_weight"],
                     flow_weight=cfg_combined["flow_weight"],
                     spot_flow_weight=cfg_combined["spot_flow_weight"],
-                        liquidation_weight=cfg_combined["liquidation_weight"],
+                    liquidation_weight=cfg_combined["liquidation_weight"],
                     prev_margin_weight=cfg_combined["prev_margin_weight"],
                     logit_scale=cfg_combined["logit_scale"],
                     min_atr=cfg_combined["min_atr"],
-                    probability_compression=cfg_combined["probability_compression"],
                 )
                 combined_sharpe = _sharpe(combined_returns) if combined_returns else 0.0
                 combined_delta = combined_sharpe - current_sharpe
@@ -1156,19 +1131,16 @@ class AgentScheduler:
         info["decision"] = "adopted"
         info["adopted_params"] = [c["param"] for c in adopted_changes]
 
-        # Determine new weights version (needed if any weights change was adopted)
+        # Adopted weight changes mutate the live IndicatorEngine in-place; the
+        # weight version stays at the single constant (no per-cycle versioning).
         weights_change = next((c for c in adopted_changes if c["param"] == "weights"), None)
-        new_weights: dict[str, Any] = {}
+        new_weights: dict[str, Any] = dict(weights_change["value"]) if weights_change else {}
         new_version = current_version
-
-        if weights_change:
-            new_version = self.weight_optimizer.get_next_version()
-            new_weights = dict(weights_change["value"])
-            new_weights["version"] = new_version
-            self.weight_optimizer.save_weights(new_version, new_weights)
-            if self.indicator_engine:
-                self.indicator_engine.set_active_version(new_version)
-            info["new_version"] = new_version
+        if weights_change and self.indicator_engine:
+            self.indicator_engine.set_weights({
+                k: v for k, v in new_weights.items()
+                if k in ("rsi", "macd", "stochastic", "obv", "vwap")
+            })
 
         if self.signal_engine:
             for change in adopted_changes:
@@ -1197,8 +1169,6 @@ class AgentScheduler:
                     self.signal_engine.prev_margin_weight = _clamp(float(value), 0.01, 0.05)
                 elif param == "logit_scale":
                     self.signal_engine.logit_scale = _clamp(float(value), 2.0, 6.0)
-                elif param == "probability_compression":
-                    self.signal_engine.probability_compression = _clamp(float(value), 0.5, 1.0)
                 elif param == "liquidation_weight":
                     self.signal_engine.liquidation_weight = _clamp(float(value), 0.01, 0.06)
                 elif param == "min_atr":
@@ -1227,9 +1197,8 @@ class AgentScheduler:
             math_sec = self._config.setdefault("math", {})
 
             if weights_change:
-                sig["active_weights_version"] = new_version
                 sig["weights"] = {k: v for k, v in new_weights.items()
-                                   if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
+                                   if k in ("rsi", "macd", "stochastic", "obv", "vwap")}
 
             for change in adopted_changes:
                 param = change["param"]
@@ -1244,8 +1213,6 @@ class AgentScheduler:
                     sig["prev_margin_weight"] = _clamp(float(value), 0.01, 0.05)
                 elif param == "logit_scale":
                     sig["logit_scale"] = _clamp(float(value), 2.0, 6.0)
-                elif param == "probability_compression":
-                    sig["probability_compression"] = _clamp(float(value), 0.5, 1.0)
                 elif param == "liquidation_weight":
                     sig["liquidation_weight"] = _clamp(float(value), 0.01, 0.06)
                 elif param == "adverse_selection_threshold":
@@ -1382,8 +1349,6 @@ class AgentScheduler:
                         self.signal_engine.logit_scale = _clamp(float(v), 2.0, 6.0)
                     elif p == "student_t_df":
                         self.signal_engine.student_t_df = _clamp(int(v), 3, 8)
-                    elif p == "probability_compression":
-                        self.signal_engine.probability_compression = _clamp(float(v), 0.5, 1.0)
                     elif p == "liquidation_weight":
                         self.signal_engine.liquidation_weight = _clamp(float(v), 0.01, 0.10)
                     elif p == "prev_margin_weight":
@@ -1401,7 +1366,7 @@ class AgentScheduler:
                     p, v = rc["param"], rc["value"]
                     if p in ("atr_sigma_ratio", "spot_flow_weight", "momentum_weight",
                              "regime_weight", "flow_weight", "logit_scale",
-                             "probability_compression", "liquidation_weight",
+                             "liquidation_weight",
                              "prev_margin_weight", "min_atr", "student_t_df",
                              "max_edge", "exit_edge_threshold"):
                         sig[p] = v
@@ -1628,11 +1593,10 @@ class AgentScheduler:
                         regime_weight=cfg["regime_weight"],
                         flow_weight=cfg["flow_weight"],
                         spot_flow_weight=cfg["spot_flow_weight"],
-                                liquidation_weight=cfg["liquidation_weight"],
+                        liquidation_weight=cfg["liquidation_weight"],
                         prev_margin_weight=cfg["prev_margin_weight"],
                         logit_scale=cfg["logit_scale"],
                         min_atr=cfg["min_atr"],
-                        probability_compression=cfg["probability_compression"],
                     )
                     old_returns = self._kelly_bankroll_returns(calibrator=self.signal_engine.calibrator, **helper_kwargs)
                     new_returns = self._kelly_bankroll_returns(calibrator=cal, **helper_kwargs)
@@ -1670,14 +1634,12 @@ class AgentScheduler:
 
                     insufficient = (len(old_returns) < MIN_PLATT_VALIDATION_TRADES
                                     or len(new_returns) < MIN_PLATT_VALIDATION_TRADES)
-                    # SE-scaled floor: same pattern as weight adoption. delta = Sharpe
-                    # improvement; dyn_floor = max(abs_floor, 0.25 × JK_SE). z_score kept
-                    # in telemetry for diagnostics, no longer a gate.
+                    # Adoption: holdout Sharpe improvement >= PLATT_ABS_FLOOR.
+                    # z_score is telemetry only.
                     n_for_z = min(len(old_returns), len(new_returns))
                     z_score = _sharpe_z_test(old_kelly_sharpe, new_kelly_sharpe, n_for_z) if n_for_z else 0.0
                     delta_sharpe = new_kelly_sharpe - old_kelly_sharpe
-                    se_sharpe = math.sqrt((1.0 + 0.5 * old_kelly_sharpe ** 2) / max(n_for_z, 1)) if n_for_z else 0.0
-                    dyn_floor = PLATT_ABS_FLOOR  # SE-based floor removed — holdout check is the noise guard
+                    dyn_floor = PLATT_ABS_FLOOR
                     platt_info["z_score"] = round(z_score, 3)
                     platt_info["delta_sharpe"] = round(delta_sharpe, 4)
                     platt_info["dyn_floor"] = round(dyn_floor, 4)
@@ -1740,10 +1702,6 @@ class AgentScheduler:
                 "mean_gain_pct": round(sum(rw_gains) / len(rw_gains), 6) if rw_gains else 0,
                 "note": "Most recent 100 trades (all_outcomes tail) — use to detect active regime shifts",
             }
-
-        # (per-regime Platt stub removed — it only counted samples without fitting or
-        # adopting anything. If we re-introduce regime-conditional calibration it should
-        # use the same Kelly-sized-Sharpe adoption gate as the main Platt block above.)
 
         # Emit [2/4] analysis summary now that bias/calibration/shifts are all done
         _cf_acc = cf_info.get("accuracy", 0) if cf_info else None
@@ -1811,14 +1769,11 @@ class AgentScheduler:
 
             if _in_crisis:
                 _crisis_state["streak"] = int(_crisis_state.get("streak", 0)) + 1
-                self.weight_optimizer.min_improvement = 0.005
-                self.weight_optimizer.se_floor_coefficient = 0.15
                 pipeline_info["crisis_mode"] = True
                 pipeline_info["crisis_streak"] = _crisis_state["streak"]
                 logger.info(
                     f"Pipeline CRISIS MODE (streak={_crisis_state['streak']}): "
-                    f"recent WR={_recent_wr:.1%}, Sharpe={self._baseline_kelly_sharpe:.3f} — "
-                    f"adoption floor lowered (abs=0.005, SE coeff=0.15)"
+                    f"recent WR={_recent_wr:.1%}, Sharpe={self._baseline_kelly_sharpe:.3f}"
                 )
 
                 # Sustained crisis (3+ consecutive runs) → auto-reduce kelly_fraction.
@@ -1843,8 +1798,6 @@ class AgentScheduler:
                     )
                     pipeline_info["kelly_auto_reduced"] = True
             else:
-                self.weight_optimizer.min_improvement = 0.010
-                self.weight_optimizer.se_floor_coefficient = 0.25
                 pipeline_info["crisis_mode"] = False
 
                 # Recovery: if we previously auto-reduced kelly, restore it

@@ -6,7 +6,6 @@ log(0) = -inf for total losses, which breaks Sharpe and other statistics.
 from __future__ import annotations
 
 import math
-import numpy as np
 
 
 def log_return(entry_price: float, exit_price: float) -> float:
@@ -24,14 +23,3 @@ def gain_pct(entry_price: float, exit_price: float) -> float:
     if entry_price <= 0:
         return 0.0
     return (exit_price - entry_price) / entry_price
-
-
-def sharpe_ratio(returns: list[float], risk_free_rate: float = 0.0) -> float:
-    if len(returns) < 2:
-        return 0.0
-    arr = np.array(returns)
-    mean_return = arr.mean()
-    std_return = arr.std(ddof=1)
-    if std_return == 0:
-        return 0.0
-    return float((mean_return - risk_free_rate) / std_return)

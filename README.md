@@ -1,203 +1,156 @@
 # PolyBot
 
-Automated 5-minute BTC Up/Down trader for Polymarket. Computes the mathematical probability that BTC finishes above/below the opening strike price using an 8-layer signal model (Student-t CDF + 7 active adjustment layers in logit space), compares that to the market's price, and trades when mispricing exceeds the noise floor and Kelly fraction justifies a position. Holds to $1 resolution when confident, exits early (scalps) when holding_edge drops below the fee-aware exit threshold. Up to 2 concurrent positions from different windows with 0.50x discount sizing.
+Automated 5-minute BTC Up/Down trader for Polymarket. Computes P(BTC closes above/below the strike) via a 7-layer logit-space model, compares to market price, trades when mispricing clears the noise floor and Kelly justifies size. Holds to $1 resolution when confident; scalps early when `holding_edge` decays into the profitable zone. Up to `max_concurrent_positions` (2) live across windows, with correlation-aware sizing.
 
 ## Quick Start
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
 
-# Set up secrets in .env
 cp polybot/config/.env.example polybot/config/.env
-# Edit .env with your keys (minimum: ANTHROPIC_API_KEY, DISCORD_BOT_TOKEN)
-# For live trading: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER
+# Required: ANTHROPIC_API_KEY, DISCORD_BOT_TOKEN
+# Live mode also needs: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER
 
-# Defaults to mode in settings.yaml
-python -m polybot.main
-
-# Run learning pipeline manually (no trading, analyzes all outcomes and exits)
-python -m polybot.main --run-pipeline
-
-# Auto-restart mode (daily cycle: trade -> pipeline -> commit -> push -> restart)
-.\run_polybot.ps1
+python -m polybot.main                 # mode from settings.yaml
+python -m polybot.main --run-pipeline  # one pipeline run, no trading
+.\run_polybot.ps1                      # daily cycle: trade → pipeline → commit → restart
 ```
 
 ## How It Works
 
 ```
-9 WebSocket feeds + 2 REST polls (real-time data)
+9 WebSocket feeds + REST polls
         |
-  BTC price: Coinbase (primary) > Kraken (secondary, Chainlink source) > Binance (fallback)
-  + Binance candle buffer + Chainlink strike
+  BTC price: Coinbase (primary) > Kraken (secondary) > Binance.US (fallback)
+  Strike:    Chainlink BTC/USD (preferred) → Binance candle boundary
         |
-  8-LAYER PROBABILITY MODEL (logit-space combination):
-    L1  -- Student-t CDF (df=5, fat tails): z = distance / (vol * sqrt(time) * iv_ratio)
-    L2  -- Regime detection: autocorrelation of last N 1-min returns (+/-3%)
-    L3  -- CLOB order flow: book imbalance + trade flow (+/-4%)
-    L3b -- Spot market flow: CVD-dominant from Binance aggTrades, taker gated by min 5 trades (+/-4%)
-    L3c -- Wall pressure: DISABLED (wall_weight=0.00, gamed by HFT)
-    L3e -- Liquidation pressure: Bybit OI drop + price direction (+/-3%)
-    L4  -- Indicator momentum: RSI/MACD/Stochastic/OBV/VWAP (negative weight -0.02, fades indicators)
-    L5  -- Previous window momentum carry (+/-2%)
-    +   -- Platt scaling calibration (fitted daily)
+  PROBABILITY MODEL (logit space, then sigmoid + Platt):
+    L1  Student-t CDF (df=5, fat tails)
+    L2  Regime: 1-lag autocorr × sign(last 1-min return)
+    L3  CLOB flow: book imbalance + trade flow
+    L3b Spot CVD: Binance aggTrades CVD + taker ratio
+    L3e Liquidation: Bybit OI drop × price direction
+    L4  Indicator momentum: RSI/MACD/Stoch/OBV/VWAP (regime-conditional)
+    L5  Previous-window margin carry
+    +   Platt scaling (sole overconfidence correction; re-fit each pipeline cycle)
         |
-  Continuous time multiplier (no hard phases, confidence-conditional decay)
-  Flip trading: re-enter same window on opposite side with flat +1.5% edge premium (max 1 flip)
-  Uncertainty-adjusted Kelly (f* = f_kelly x (1 - sigma^2/edge^2), floor 0.50)
-  Drawdown velocity trigger (rolling 25-trade PnL < -15% -> force base Kelly)
-  Logged only: regime, consensus, GEX, vol ratio, oracle divergence, crowd bias, adverse selection, edge realization ratio
+  Edge = calibrated_model_prob - market_price (CLOB /price endpoint)
         |
-  Edge = calibrated_model_prob - market_price (from CLOB /price endpoint)
+  Entry gates: prob ≥ 0.58, edge ≥ 0.04, Kelly ≥ 0.015, spread ≤ 10%, depth ≥ $50,
+    price_sum ∈ [0.98, 1.02], edge ≤ 0.20, adverse_rate_30s ≤ 0.85, ATR ≥ 5th-pctile,
+    SPRT not SKIP (and not opposing), pre-submit edge re-check, CVD-deceleration skip
         |
-  10 entry gates: confidence >= 58%, edge >= 4% (+ 1.5% flat premium for flip), Kelly >= 1.5%,
-    spread <= 10%, depth >= $50, price sanity, edge cap, layer agreement,
-    last 30s: prob >= 90%, flip: opposite side only (max 1 flip per window)
+  Sizing: bankroll × Kelly × breaker × time_mult × correlation-aware concurrent_mult,
+    capped to bankroll × max_bankroll_deployed and book_depth × max_book_fill_pct
         |
-  Kelly sizing x breaker x uncertainty_discount(floor=0.50) x time_mult
-  Concurrent: x0.50 if holding. Regime/consensus/GEX/vol/oracle logged only.
-  Capped to 50% of book depth
-  Convex slippage model, net-edge gate
+  While holding: re-evaluate every tick with the same model
+    Scalp when -0.10 < holding_edge ≤ effective_threshold (profitable zone)
+    Hold when holding_edge < -0.10 (deep-loss zone, binary residual is +EV)
+    Loss-cut: market < entry × 0.65 AND seconds_remaining < 120 → exit
+    Flip: after a scalp, re-enter same window (one position at a time, +1.5% premium per re-entry)
         |
-  While holding: continuously re-evaluate with same model
-    Binary option exit curve: ITM holds to $1 resolution, OTM cuts losses
-    Trailing profit exit for cheap entries that peak then drop
+  Resolution: Gamma/Chainlink ($1 win / $0 loss)
         |
-  Resolution: Gamma/Chainlink oracle ($1 win / $0 loss)
-  --> Log outcome --> Daily learning pipeline
+  Outcome → daily learning pipeline
 ```
 
 ## Architecture
 
 | Module | Purpose |
-|--------|---------|
-| `core/signal_engine.py` | 8-layer probability model: Student-t CDF + 7 active logit-space layers |
-| `core/coinbase_feed.py` | Coinbase Exchange BTC-USD ticker (primary price, 0.5-2s faster) |
-| `core/kraken_feed.py` | Kraken XBT/USD WebSocket ticker (secondary price, Chainlink oracle source) |
-| `core/binance_feed.py` | Binance.US WebSocket candle buffer (ATR, indicators, fallback price) |
-| `core/clob_ws.py` | Real-time Polymarket CLOB WebSocket (order books, trades, resolution, price velocity) |
-| `core/chainlink_feed.py` | Chainlink BTC/USD oracle (resolution price source, preferred for strike) |
-| `core/market_scanner.py` | Gamma API contract discovery + CLOB HTTP helpers |
-| `core/order_flow.py` | Book imbalance + trade flow signal from CLOB data |
-| `core/binance_depth.py` | L2 order book: wall detection, spot imbalance, book depth |
-| `core/binance_trades.py` | Aggregate trade stream: CVD, taker ratio, large trades, volume surge |
-| `core/bybit_feed.py` | BTC perpetual price lead + funding rate signal |
-| `core/deribit_iv.py` | BTC options implied volatility (forward-looking vol) |
-| `core/sprt.py` | Sequential Probability Ratio Test — telemetry only (does not gate entries) |
-| `core/regime.py` | Multi-state regime detector (trending/reverting/volatile/quiet) |
-| `core/liquidation.py` | OI-based liquidation pressure from Bybit |
-| `core/gamma_exposure.py` | Net gamma exposure from Deribit options chain |
-| `core/alpha_decay.py` | Edge decay rate tracker — logged in trade_context |
-| `core/bankroll_strategy.py` | Uncertainty-adjusted Kelly + drawdown velocity trigger |
-| `core/calibrator.py` | Platt scaling calibration for probability model |
-| `core/exit_boundary.py` | Binary option exit curve (ITM holds to $1, OTM cuts losses) |
-| `core/adverse_selection.py` | Post-fill price tracking — detects if being picked off |
-| `core/edge_halflife.py` | Strategy-level edge decay detection (7d vs 30d rolling) |
-| `core/garch_vol.py` | Realized vol ratio — logged in trade_context only (not applied to sizing) |
-| `core/crowd_bias.py` | Favorite-longshot bias, recency fade, round number anchoring |
-| `indicators/` | 7 indicators (RSI, MACD, Stochastic, EMA, OBV, VWAP, ATR) |
-| `indicators/engine.py` | Combines all 7, manages weight versions |
-| `execution/base.py` | BaseTrader ABC, TradeResult, FillResult, shared fee math + gates |
-| `execution/paper_trader.py` | Realistic simulated trading -- real CLOB prices, dynamic fees, FOK fills |
-| `execution/live_trader.py` | Real Polymarket CLOB trading with FOK-only market orders |
-| `execution/circuit_breaker.py` | Tiered floor Kelly scaling (locks in floor at each milestone tier, 1.0x at tier → 0.40x at floor) |
-| `agents/` | Autonomous learning pipeline (walk-forward validation, statistical adoption, pipeline self-tracking) |
-| `discord_bot/` | Commands, trade alerts, session management |
-| `db/models.py` | SQLite for positions, trade history, bankroll |
+|---|---|
+| `core/signal_engine.py` | Probability model + `evaluate_hold` |
+| `core/calibrator.py` | Platt scaling (`a`, `b`) |
+| `core/order_flow.py` | Book imbalance + trade flow signal |
+| `core/regime.py` | Multi-state regime classifier |
+| `core/liquidation.py` | OI-based liquidation pressure |
+| `core/exit_boundary.py` | Time/price-aware exit threshold curve |
+| `core/sprt.py` | Sequential probability ratio test (entry gate) |
+| `core/adverse_selection.py` | Post-fill reversal monitor |
+| `core/returns.py` | `gain_pct` / `log_return` |
+| `feeds/coinbase_feed.py` | Primary BTC price (WS) |
+| `feeds/kraken_feed.py` | Secondary BTC price (WS, Chainlink-aligned) |
+| `feeds/binance_feed.py` | 1-min candles, ATR, fallback BTC price |
+| `feeds/binance_depth.py` | L2 book depth |
+| `feeds/binance_trades.py` | aggTrades → CVD, taker ratio |
+| `feeds/bybit_feed.py` | OI + funding (WS only — REST is US geo-blocked) |
+| `feeds/deribit_iv.py` | ATM implied vol |
+| `feeds/chainlink_feed.py` | BTC/USD oracle (strike + resolution) |
+| `feeds/clob_ws.py` | Polymarket CLOB stream |
+| `feeds/market_scanner.py` | Gamma contract discovery + CLOB helpers |
+| `indicators/{rsi,macd,stochastic,ema,obv,vwap,atr}.py` + `engine.py` | L4 indicators |
+| `execution/base.py` | `BaseTrader` ABC, fee math, atomic open_trade |
+| `execution/{paper_trader,live_trader}.py` | Mode-specific traders |
+| `execution/circuit_breaker.py` | Tiered floor Kelly scaling |
+| `execution/correlation.py` | Concurrent-position correlation buckets |
+| `agents/` | Pipeline: scheduler, outcome_reviewer, counterfactual_tracker, ghost_tracker, bias_detector, ta_evolver, weight_optimizer, pipeline_tracker, pipeline_analytics, claude_client, local_recommender |
+| `discord_bot/` | Commands, alerts, daily banners |
+| `db/models.py` | SQLite (positions, trade_history, bankroll, peak_bankroll) |
 
 ## Data Sources
 
 | Source | Feed | What |
-|--------|------|------|
-| **Coinbase** | `ticker` WS (BTC-USD) | **Primary BTC price** (0.5-2s faster than Binance.US) |
-| **Kraken** | `ticker` WS (XBT/USD) | **Secondary BTC price** (Chainlink oracle data source, fallback when Coinbase stale) |
-| **Binance.US** | `btcusdt@kline_1m` WS | 1-min candles -- ATR, indicators, fallback BTC price |
-| **Binance.US** | `btcusdt@depth20@100ms` WS | Top 20 book levels -- spot imbalance |
-| **Binance.US** | `btcusdt@aggTrade` WS | Every trade with taker side -- CVD, taker ratio |
-| **Binance.US** | `GET /depth?limit=1000` REST | Full order book -- DISABLED (wall_weight=0.00, gamed by HFT) |
-| **Polymarket CLOB** | WS market stream | Order books, BBA, last trades, resolution events |
-| **Polymarket CLOB** | `GET /price`, `/book`, `/spread` | Execution prices, order books, liquidity |
-| **Polymarket Gamma** | `GET /events?slug=...` | Contract discovery, resolution, token IDs |
-| **Bybit** | `tickers.BTCUSDT` WS | BTC perpetual price lead + funding rate |
-| **Deribit** | `GET /get_book_summary_by_currency` | ATM implied volatility + net gamma exposure (polled every 60s) |
-| **Chainlink** | Ethereum RPC `latestRoundData()` | BTC/USD oracle — resolution price source |
-| **Anthropic Claude** | `claude-sonnet-4-6` via SDK | Daily learning pipeline recommendations |
+|---|---|---|
+| Coinbase | `ticker` WS (BTC-USD) | Primary BTC price |
+| Kraken | `ticker` WS (XBT/USD) | Secondary / Chainlink-aligned |
+| Binance.US | `kline_1m` / `depth20@100ms` / `aggTrade` WS | Candles, ATR, depth, CVD |
+| Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/fee-rate` | Books, fills, fees |
+| Polymarket Gamma | `GET /events?slug=...` | Discovery + resolution |
+| Bybit | `tickers.BTCUSDT` WS | OI + funding |
+| Deribit | `GET /get_book_summary_by_currency` | ATM IV |
+| Chainlink | `latestRoundData()` via Eth RPC | Strike + resolution oracle |
+| Anthropic | `claude-sonnet-4-6` SDK | Daily learning pipeline |
 
-## Paper Trading Realism
+## Paper Realism
 
-Paper mode simulates live execution as closely as possible:
-
-- **Real CLOB prices** -- order books from WebSocket (not stale Gamma prices)
-- **Order size cap** -- capped to 50% of available ask depth (no fantasy fills)
-- **Convex slippage** -- fills penalized by `(size/depth) * 3% * (1 + size/depth)` -- larger orders get worse prices
-- **Dynamic fee rates** -- fetched live from `GET /fee-rate` per token (crypto = 1.8%)
-- **Correct fee collection** -- entry fees in shares (fewer shares received), exit fees in USDC
-- **FOK fill semantics** -- order must fill 100% or reject (scaled to available depth)
-- **Tick size enforcement** -- prices snapped to market tick via `GET /tick-size`
-- **Min order size** -- from CLOB book response (typically 5 shares)
-- **Spread filter** -- skip entry if bid-ask spread > 10%
-- **Event-driven loop** -- reacts instantly to WebSocket book changes (~1-2ms per cycle)
+- Real CLOB prices from WebSocket (not stale Gamma).
+- Order size capped to 50% of available depth.
+- Convex slippage: `(size/depth) × 3% × (1 + size/depth)`.
+- Live `GET /fee-rate` per token (entry fee in shares, exit in USDC).
+- FOK semantics (100% fill or reject).
+- Tick-size enforcement, min order size from book, 10% spread cap.
+- Latency mean / jitter / network-fail rate configurable.
 
 ## Configuration
 
-All parameters in `polybot/config/settings.yaml` (validated by `validate_config()` on startup).
+All parameters in `polybot/config/settings.yaml`. Key knobs:
 
-Key parameters (all tunable by learning pipeline):
-- **Kelly fraction** -- 0.15 (conservative for binary outcomes)
-- **Entry threshold** -- 4% minimum edge (noise floor)
-- **Min model probability** -- 58% confidence gate
-- **Layer weights** -- L2 regime 3%, L3 flow 4%, L3b spot flow 4%, L3c wall 0% (disabled), L3e liquidation 3%, L4 momentum -2% (negative = fade), L5 carry 2%
-- **Max concurrent positions** -- 2 (0.50x discount when concurrent)
-- **Circuit breaker** -- Tiered floor protection: bankroll milestones ($100/$150/$200/$300/...) lock in a floor at 85% of that tier. Kelly scales 1.0→0.40 between tier and floor. Floor never resets down. Hard per-trade cap: `max_single_position_usd` $18 (not pipeline-tunable)
-- **SPRT** -- alpha 0.05, beta 0.10, observation_interval 10s -- telemetry only (logged in trade_context, does not gate entries)
-- **Entry timing** -- continuous time multiplier: `normal_fraction` 0.60, `late_max_penalty` 0.60, `final_min_probability` 0.90 (last 30s gate). Flip trading: `flip_enabled` true, `flip_edge_premium` 0.015 (flat +1.5% extra edge for flip, max 1 flip per window)
-- **Execution** -- FOK only (`use_maker_orders` false). Maker orders disabled (60s timeout wastes window time)
-- **Logged only (not applied to sizing)** -- regime, consensus, GEX, vol ratio, oracle divergence, crowd bias, adverse selection, edge realization ratio
+- `kelly_fraction` 0.15, `min_edge` 0.04, `min_model_probability` 0.58, `min_kelly` 0.015
+- L2 0.03 / L3 0.04 / L3b 0.10 / L3e 0.03 / L4 -0.02 (fade) / L5 0.02
+- `max_concurrent_positions` 2 (correlation-aware sizing on top)
+- Circuit breaker: tiered floor at $100/$150/$200/... locks at 85% of crossed tier; Kelly 1.0→0.40 between tier and floor
+- SPRT: alpha 0.05, beta 0.10, observation_interval 10s, min_confidence 0.20 (gates entries)
+- Entry timing: `normal_fraction` 0.60, `late_max_penalty` 0.35
+- Flip trading: `flip_enabled` true, `flip_edge_premium` 0.015 (no cap on flips per window; one position at a time)
 
 ## Learning Pipeline
 
-Fully autonomous — no human in the loop. Runs daily at 12:05 AM ET. Walk-forward validation with statistical adoption (z >= 1.65). 3-day cooldown between parameter changes. Pipeline tracks its own adoption outcomes (7d/30d actual vs predicted Sharpe).
+Daily 23:15 ET. Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][90:100].
 
-1. **PipelineTracker** -- Reviews past adoptions, fills in actual 7d/30d Sharpe, feeds track record to Claude
-2. **BiasDetector** -- Per-indicator/regime/time-weighted accuracy, edge realization quartiles, counterfactual analysis, distribution shift detection (KS-test)
-3. **PlattCalibrator** -- Fits Platt scaling (A, B) on training set. Validates on holdout -- adopts only if log-loss improves
-4. **TAEvolver** -- Sends distilled analysis card to Claude (regime stats, edge quartiles, SPRT evidence, pipeline track record). Robust JSON extractor. Principled local fallback: rule-based, max 2 params, max 15% change
-5. **WeightOptimizer** -- Walk-forward backtest across 4 expanding-window folds. Adoption requires Jobson-Korkie z >= 1.65, all folds positive, n >= 100. SPRT evidence modulates threshold. Hot-swaps all params and persists to settings.yaml
+1. **PipelineTracker** — fills 1d/3d/7d/14d/30d Sharpe; auto-revert if 1d trailing < -0.10 (n≥20) or 7d < -0.05 (n≥100).
+2. **BiasDetector** — per-indicator/side/edge/time/regime/phase/flip stats + edge-realization quartiles + KS shift.
+3. **PlattCalibrator** — recency-weighted MLE on train; adopts only if Kelly-Sharpe on holdout improves. Meta-warning when raw-model Sharpe ≥ 0.95 × Platt Sharpe.
+4. **TAEvolver** — Claude (or `LocalRecommender` fallback) reads the analysis card, returns `{changes, manual_observations}`.
+5. **WeightOptimizer** — per-param walk-forward backtest. Adoption gate: `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.5`. Regime-stratified veto. 2-day per-param cooldown. Combined backtest after ≥2 adoptions backs out lowest-z change if combined Δ < 0.7 × sum.
 
-Tunes 30+ parameters: indicator weights, all layer weights, student_t_df, min_edge, kelly_fraction, min_kelly, atr_sigma_ratio, min_model_probability, exit_edge_threshold, normal_fraction, late_max_penalty, flip_edge_premium, trading hours, logit_scale, probability_compression, liquidation_weight, consensus thresholds/multipliers, exit patience/urgency params, iv_ratio bounds.
+Crisis mode (recent-50 WR < 48% AND baseline Sharpe < 0.10): after 3 consecutive cycles, halve `kelly_fraction` (floor 0.04). Restored on first non-crisis cycle.
 
-## Discord Commands
+Tunes ~15 backtestable params plus the L4 weight vector. Manual-only params (exit/timing/risk/schedule) get `manual_observations` for operator review.
 
-| Command | Description |
-|---------|-------------|
-| `!commands` | Show all commands |
-| `!status` | Mode, bankroll, positions, P&L |
-| `!positions` | Open positions with targets |
-| `!history [n]` | Last n closed trades |
-| `!performance` | Sharpe ratio, win rate, total P&L |
-| `!pause` / `!resume` | Pause/resume trading (position management continues while paused) |
-| `!agents` | Learning agent schedule |
-| `!lessons` | Top learnings from memory |
-| `!clear [trades|control|all]` | Purge messages from channels |
-| `!session` | Re-send session banner |
+## Discord
 
-## Secrets Required
+`!status` `!history [n]` `!positions` `!performance` `!pause` `!resume` `!session` `!agents` `!lessons` `!clear [trades|control|all]` `!commands`
 
-| Key | When needed |
-|-----|-------------|
-| `ANTHROPIC_API_KEY` | Always (daily learning analysis) |
-| `DISCORD_BOT_TOKEN` | Always (monitoring and alerts) |
-| `POLYMARKET_PRIVATE_KEY` | Live mode (EIP-712 order signing) |
+## Secrets
+
+| Key | When |
+|---|---|
+| `ANTHROPIC_API_KEY` | Always (daily learning) |
+| `DISCORD_BOT_TOKEN` | Always (monitoring) |
+| `POLYMARKET_PRIVATE_KEY` | Live mode (EIP-712 signing) |
 | `POLYMARKET_FUNDER` | Live mode (USDC funding address) |
 
-Binance.US, Polymarket CLOB/Gamma, Bybit, Deribit, Coinbase, and Kraken APIs are all free and need no key.
+Binance.US, Polymarket, Bybit, Deribit, Coinbase: free.
 
-## Git-Backed Persistence
+## Persistence
 
-All memory syncs via git -- outcomes, counterfactuals, DB, and config are tracked (not gitignored). The `run_polybot.ps1` wrapper commits and pushes at 12:05 AM after the daily pipeline, preserving state across restarts.
-
-## Tests
-
-```bash
-python -m pytest polybot/tests/ -q   # 623 tests
-```
+`memory/` (outcomes, counterfactuals, ghosts, pipeline_*, calibration), the per-mode SQLite DB, and `settings.yaml` are all git-tracked. `run_polybot.ps1` commits + pushes at 12:05 AM after the pipeline.

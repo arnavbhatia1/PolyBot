@@ -19,8 +19,16 @@ def compute_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period:
     return atr
 
 def compute_atr_gate(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
-                     period: int = 14, low_pct: int = 25, high_pct: int = 90,
+                     period: int = 14, low_pct: int = 5,
                      history: int = 100) -> dict[str, float | bool | str]:
+    """Block flat-vol windows (no edge); accept everything above the floor.
+
+    The earlier symmetric upper bound (95th pct) was firing ~4× more often than
+    the lower bound across recent regimes (ATR distribution is right-skewed)
+    and was discarding genuine high-vol opportunity. min_atr plus the dynamic
+    long-term-mean floor in signal_engine handle L1 sigma scaling end-to-end;
+    an extra hard cap on top wasn't earning its keep.
+    """
     if len(closes) < period + 2:
         return {"atr": 0.0, "passes": False, "reason": "insufficient_data"}
     atr_current = compute_atr(highs, lows, closes, period)
@@ -34,11 +42,6 @@ def compute_atr_gate(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
     if not atr_history:
         return {"atr": atr_current, "passes": False, "reason": "no_history"}
     low_thresh = float(np.percentile(atr_history, low_pct))
-    high_thresh = float(np.percentile(atr_history, high_pct))
-    if atr_current == 0.0:
+    if atr_current == 0.0 or atr_current < low_thresh:
         return {"atr": round(atr_current, 2), "passes": False, "reason": "too_quiet"}
-    if atr_current < low_thresh:
-        return {"atr": round(atr_current, 2), "passes": False, "reason": "too_quiet"}
-    if atr_current > high_thresh:
-        return {"atr": round(atr_current, 2), "passes": False, "reason": "too_volatile"}
     return {"atr": round(atr_current, 2), "passes": True, "reason": "ok"}

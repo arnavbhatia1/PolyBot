@@ -24,15 +24,10 @@ class TestTimeMultiplier:
         result = compute_time_multiplier(prob=0.60, seconds_remaining=45.0)
         assert result["kelly_multiplier"] < 0.75  # penalized from 1.0
 
-    def test_final_requires_high_prob(self):
-        """Last 30s requires >90% confidence."""
+    def test_final_phase_label(self):
+        """Last 30s should still be tagged as the 'final' phase for telemetry."""
         result = compute_time_multiplier(prob=0.85, seconds_remaining=15.0)
-        assert result["min_prob_override"] == 0.90
         assert result["phase"] == "final"
-
-    def test_final_no_override_outside_30s(self):
-        result = compute_time_multiplier(prob=0.70, seconds_remaining=45.0)
-        assert result["min_prob_override"] is None
 
     def test_multiplier_never_below_floor(self):
         """Worst case: ATM (50%) at expiry, still >= 0.40."""

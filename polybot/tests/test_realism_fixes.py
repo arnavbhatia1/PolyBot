@@ -1,17 +1,15 @@
-"""Tests for the 5 realism fixes: convex slippage, price-sum gate, net-edge gate,
-min-trade-count, and hold-out split."""
+"""Realism tests: convex slippage and the 60/40 hold-out split."""
 
 import pytest
 import pytest_asyncio
 from unittest.mock import MagicMock
 
-# Import the slippage function from execution base
 from polybot.execution.base import slippage_pct as _slippage_pct
 from polybot.agents.scheduler import AgentScheduler
 
 
 # ---------------------------------------------------------------------------
-# Fix 5: Convex market impact model
+# Convex market impact model
 # ---------------------------------------------------------------------------
 
 class TestConvexSlippage:
@@ -61,7 +59,7 @@ class TestConvexSlippage:
 
 
 # ---------------------------------------------------------------------------
-# Fix 4: Hold-out split (60/40 chronological)
+# Hold-out split (60/40 chronological)
 # ---------------------------------------------------------------------------
 
 class TestHoldoutSplit:

@@ -1,19 +1,10 @@
-"""Paper trader — simulated fills that approximate live execution mechanics.
+"""Paper trader — simulated fills that approximate live CLOB mechanics:
+gaussian-jittered submission latency, post-latency book re-check, VWAP across
+consumed levels, FOK rejection on `max_slippage` violation, and a configurable
+network-failure rate to exercise the retry path.
 
-Not a zero-latency fantasy. Tries to match real Polymarket CLOB fills by:
-  * Sleeping for a realistic order-submission-to-match latency (0.5-3 s typical).
-  * Re-checking the CLOB book after the latency, so the fill price reflects any
-    ask-lift / bid-drop that happened while the order was in flight.
-  * Walking the book to compute VWAP across the levels an order of this size
-    would actually consume (instead of filling at the tip).
-  * Rejecting when the post-latency VWAP exceeds `max_slippage` vs the requested
-    price — mirrors live FOK rejection semantics.
-  * Randomly simulating transient exchange errors (~network/rate-limit) so the
-    bot's retry path gets exercised in paper mode too.
-
-When no CLOB WebSocket is attached (degenerate startup state), the trader falls
-back to the legacy "instant fill at requested price" behavior so unit tests and
-first-tick fills don't spuriously reject.
+When no CLOB WebSocket is attached (e.g. unit tests, first-tick) the trader
+fills at the requested price.
 """
 from __future__ import annotations
 
@@ -82,18 +73,15 @@ class PaperTrader(BaseTrader):
                    size_usd: float) -> FillResult:
         """Walk book levels to compute fill-size-weighted average price (VWAP).
 
-        Buy side walks asks ascending (cheapest → most expensive).
-        Sell side walks bids descending (richest → cheapest).
-        Rejects if post-latency VWAP violates max_slippage vs the requested price.
-        Falls back to legacy instant-fill at requested_price when no book is available.
+        Buy walks asks ascending; sell walks bids descending. Rejects when
+        post-latency VWAP violates `max_slippage` vs `requested_price`. Falls
+        back to instant fill at `requested_price` when no book is available
+        or when the snapshot is older than 30s (CLOB book deltas only update
+        BBA, not the full ladder).
         """
         if self._clob_ws is None:
             return FillResult(filled=True, fill_price=requested_price, fill_size=size_usd)
         book = self._clob_ws.get_book(token_id) if hasattr(self._clob_ws, "get_book") else {}
-        # Book snapshots are only delivered at subscription time — deltas only update
-        # best_bid_ask, not the full book. A book older than 30s has stale levels that
-        # no longer reflect current market state. Fall back to requested_price (derived
-        # from fresh best_bid_ask) so paper fills don't use phantom bids/asks.
         import time as _time
         book_age = _time.time() - float(book.get("ts", 0) or 0)
         if book_age > 30:

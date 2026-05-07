@@ -517,7 +517,7 @@ class BiasDetector:
         Each row with N≥5 maps directly to a manual-only lever:
         - scalp_accuracy < 0.45 → exit_edge_threshold too aggressive in this segment
         - scalp_accuracy > 0.80 → scalping correct; loss_cut could be more aggressive
-        - Regime + time patterns → timing adjustments (final_min_probability, loss_cut_time_s)
+        - Regime + time patterns → timing adjustments (loss_cut_time_s)
         """
         scalps = [c for c in counterfactuals if "scalp_was_optimal" in c]
         if len(scalps) < 10:

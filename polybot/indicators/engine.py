@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import logging
 import math
-from pathlib import Path
 from typing import Any
 
 from polybot.feeds.binance_feed import CandleBuffer
@@ -23,8 +21,11 @@ DEFAULT_PARAMS = {
     "stochastic": {"k_period": 5, "d_smoothing": 2, "overbought": 80, "oversold": 20},
     "ema": {"fast_period": 3, "slow_period": 8, "chop_threshold": 0.001},
     "obv": {"slope_period": 3},
-    "atr": {"period": 7, "low_pct": 5, "high_pct": 95, "history": 100},
+    "atr": {"period": 7, "low_pct": 5, "history": 100},
 }
+
+DEFAULT_WEIGHTS = {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20}
+
 
 class IndicatorNormalizer:
     """Exponentially-weighted running mean/variance per indicator.
@@ -60,26 +61,25 @@ class IndicatorNormalizer:
 
 
 class IndicatorEngine:
-    def __init__(self, weights_dir: str, active_version: str = "weights_v001",
-                 params: dict[str, dict[str, Any]] | None = None) -> None:
-        self.weights_dir: Path = Path(weights_dir)
-        self.active_version: str = active_version
-        self.params: dict[str, dict[str, Any]] = params or DEFAULT_PARAMS
-        self._weights: dict[str, float] = self._load_weights()
-        self.normalizer: IndicatorNormalizer = IndicatorNormalizer()
+    """Computes RSI/MACD/Stoch/EMA/OBV/VWAP/ATR each tick from the candle buffer.
 
-    def _load_weights(self) -> dict[str, float]:
-        path = self.weights_dir / f"{self.active_version}.json"
-        if path.exists():
-            return json.loads(path.read_text())
-        return {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20, "entry_threshold": 0.60}
+    The L4 indicator weights are mutated in-place by the pipeline when a
+    `weights` change is adopted; settings.yaml is the persistence source of
+    truth (saved by the scheduler in the same step). No version A/B framework.
+    """
+
+    def __init__(self, weights: dict[str, float] | None = None,
+                 params: dict[str, dict[str, Any]] | None = None) -> None:
+        self.params: dict[str, dict[str, Any]] = params or DEFAULT_PARAMS
+        self._weights: dict[str, float] = dict(weights) if weights else dict(DEFAULT_WEIGHTS)
+        self.normalizer: IndicatorNormalizer = IndicatorNormalizer()
 
     def get_weights(self) -> dict[str, float]:
         return self._weights.copy()
 
-    def set_active_version(self, version: str) -> None:
-        self.active_version = version
-        self._weights = self._load_weights()
+    def set_weights(self, weights: dict[str, float]) -> None:
+        """In-place update of L4 indicator weights."""
+        self._weights = {**self._weights, **weights}
 
     def compute_all(self, buffer: CandleBuffer) -> dict[str, dict[str, Any]]:
         closes = buffer.get_closes()
@@ -101,15 +101,6 @@ class IndicatorEngine:
                 result[ind_name]["norm_score"] = self.normalizer.normalize(
                     ind_name, result[ind_name]["score"])
         return result
-
-    def compute_score(self, indicators: dict[str, dict[str, Any]]) -> float:
-        w = self._weights
-        score = (indicators["rsi"]["score"] * w.get("rsi", 0.20) +
-                 indicators["macd"]["score"] * w.get("macd", 0.25) +
-                 indicators["stochastic"]["score"] * w.get("stochastic", 0.20) +
-                 indicators["obv"]["score"] * w.get("obv", 0.15) +
-                 indicators["vwap"]["score"] * w.get("vwap", 0.20))
-        return max(-1.0, min(1.0, score))
 
     def get_snapshot(self, indicators: dict[str, dict[str, Any]]) -> dict[str, Any]:
         return {"rsi": indicators["rsi"], "macd": indicators["macd"],

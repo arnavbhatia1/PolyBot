@@ -17,12 +17,7 @@ def _make_indicators(atr_value=30.0, rsi_score=0.0, macd_score=0.0,
 
 @pytest.fixture
 def engine():
-    # Reset adaptive calibration state so tests are deterministic regardless of
-    # whatever's currently persisted in polybot/memory/adaptive_calibration.json.
-    eng = SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08)
-    eng._calibration_buffer.clear()
-    eng._bucket_mults = {name: 1.0 for name, _, _ in __import__("polybot.core.signal_engine", fromlist=["_CALIBRATION_BUCKETS"])._CALIBRATION_BUCKETS}
-    return eng
+    return SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08)
 
 def test_buys_up_when_btc_above_strike(engine):
     """BTC $100 above strike with 3 min left, market at 55% — model finds edge."""
@@ -117,33 +112,39 @@ def test_hold_when_model_confident(engine):
     assert action == "HOLD"
     assert edge > 0
 
-def test_exit_when_conditions_flip(engine):
-    """Bought Up but BTC fell below strike → model says Down likely → EXIT."""
-    action, prob, edge, _ = engine.evaluate_hold(
+def test_exit_in_profitable_scalp_window(engine):
+    """Edge in (-0.05, -0.10) is the empirically profitable scalp zone → EXIT.
+
+    Model ~60% (BTC barely above strike) but market priced at 67% → edge ~-0.07,
+    which sits inside the scalp-correct zone (-0.10 < edge <= effective threshold).
+    """
+    action, _prob, edge, _ = engine.evaluate_hold(
+        _make_indicators(atr_value=80), btc_price=66420, strike_price=66400,
+        seconds_remaining=180, market_price_for_side=0.67, side="Up", exit_threshold=-0.05)
+    assert action == "EXIT"
+    assert -0.10 < edge < 0.0
+
+
+def test_deep_loss_holds_to_resolution(engine):
+    """Edge < -0.10 → empirically scalping is 38% accurate → HOLD to resolution."""
+    action, _prob, edge, reason = engine.evaluate_hold(
         _make_indicators(atr_value=30), btc_price=66200, strike_price=66400,
         seconds_remaining=120, market_price_for_side=0.60, side="Up", exit_threshold=-0.05)
-    assert action == "EXIT"
-    assert edge < -0.05
-
-def test_hold_when_model_still_favors(engine):
-    """Model still favors our side AND edge isn't catastrophically bad → HOLD.
-
-    Tightened override now requires model_prob >= 0.70 AND holding_edge > -0.10.
-    Both must hold; this case satisfies both (prob ~82%, edge ~-6%).
-    """
-    action, prob, edge, _ = engine.evaluate_hold(
-        _make_indicators(atr_value=50), btc_price=66450, strike_price=66400,
-        seconds_remaining=180, market_price_for_side=0.88, side="Up", exit_threshold=-0.05)
     assert action == "HOLD"
-    assert prob > 0.70
+    assert edge < -0.10
+    assert "deep-loss" in reason
 
-def test_exit_when_edge_deeply_negative(engine):
-    """Model says ~55% but market at 95% → edge deeply negative → EXIT."""
-    # BTC barely above strike with high ATR → model ~55%, market 95% → edge ~ -40%
-    action, prob, edge, _ = engine.evaluate_hold(
+def test_deep_underwater_holds_unless_loss_cut(engine):
+    """Deep-negative edge with time remaining → HOLD (loss-cut fires only near expiry).
+
+    Empirically, scalping at edge < -0.10 is correct only ~38% of the time (n>1000),
+    so once the trade has moved this far against us we're better holding for the
+    binary residual than locking in the loss.
+    """
+    action, _prob, edge, _ = engine.evaluate_hold(
         _make_indicators(atr_value=80), btc_price=66410, strike_price=66400,
         seconds_remaining=180, market_price_for_side=0.95, side="Up", exit_threshold=-0.05)
-    assert action == "EXIT"
+    assert action == "HOLD"
     assert edge < -0.20
 
 def test_hold_at_boundary(engine):
@@ -256,10 +257,10 @@ def test_evaluate_hold_fee_aware_threshold():
     assert action2 in ("HOLD", "EXIT")
 
 
-# --- New tests for math fixes ---
+# --- Logit-composition + math invariants ---
 
 def test_regime_direction_from_returns_not_prob():
-    """Fix 1: trending DOWN + above strike → prob should DECREASE."""
+    """Trending DOWN + above strike → prob should DECREASE."""
     se = SignalEngine(regime_weight=0.05)
     # BTC above strike but trending down (closes decreasing, need lookback+2 closes)
     closes = np.array([67000 - i * 2.0 for i in range(55)])  # trending down, stays positive
@@ -270,7 +271,7 @@ def test_regime_direction_from_returns_not_prob():
 
 
 def test_logit_dampening_near_extremes():
-    """Fix 2: same flow_signal produces smaller prob shift at p~0.95 vs p~0.50."""
+    """Same flow_signal produces smaller prob shift at p~0.95 vs p~0.50."""
     se = SignalEngine(flow_weight=0.06)
     # Near p=0.5 (BTC at strike)
     p_base_mid = se.compute_probability(66400, 66400, 180, 30.0, flow_signal=0.0)
@@ -287,7 +288,7 @@ def test_logit_dampening_near_extremes():
 
 
 def test_kelly_gate_rejects_thin_edge_at_high_price():
-    """Fix 3: at strike with no indicators, prob~0.50, edge~0 → SKIP."""
+    """At strike with no indicators, prob~0.50, edge~0 → SKIP."""
     se = SignalEngine(min_edge=0.03, min_kelly=0.015)
     signal = se.evaluate(_make_indicators(atr_value=50), has_position=False, in_entry_window=True,
                          btc_price=66400, strike_price=66400,
@@ -296,7 +297,7 @@ def test_kelly_gate_rejects_thin_edge_at_high_price():
 
 
 def test_kelly_gate_accepts_underdog_with_edge():
-    """Fix 3: decent edge on underdog → Kelly sufficient → ENTER."""
+    """Decent edge on underdog → Kelly sufficient → ENTER."""
     se = SignalEngine(min_edge=0.03, min_kelly=0.015)
     signal = se.evaluate(_make_indicators(atr_value=30), has_position=False, in_entry_window=True,
                          btc_price=66200, strike_price=66400,
@@ -306,7 +307,7 @@ def test_kelly_gate_accepts_underdog_with_edge():
 
 
 def test_atr_scaling_increases_z():
-    """Fix 4: with atr_sigma_ratio=1.7, probability is further from 0.5."""
+    """With atr_sigma_ratio=1.7, probability is further from 0.5."""
     se_old = SignalEngine(atr_sigma_ratio=1.0)
     se_new = SignalEngine(atr_sigma_ratio=1.7)
     prob_old = se_old.compute_probability(66500, 66400, 180, 50.0)
@@ -315,7 +316,7 @@ def test_atr_scaling_increases_z():
 
 
 def test_student_t_scale_normalization():
-    """Fix 5: t.cdf(z*scale, df=4) vs t.cdf(z, df=4) for known z."""
+    """t.cdf(z*scale, df=4) vs t.cdf(z, df=4) for known z."""
     import math
     from scipy.stats import t as student_t_dist
     z = 1.5

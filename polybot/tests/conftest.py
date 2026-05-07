@@ -48,7 +48,6 @@ SAMPLE_CONFIG = {
         "spot_flow_weight": 0.04,
         "liquidation_weight": 0.03,
         "prev_margin_weight": 0.02,
-        "probability_compression": 1.0,
         "weights": {
             "rsi": 0.20,
             "macd": 0.25,
@@ -56,7 +55,6 @@ SAMPLE_CONFIG = {
             "obv": 0.15,
             "vwap": 0.20,
         },
-        "active_weights_version": "weights_v001",
     },
     "market": {
         "contract_type": "btc_5min",

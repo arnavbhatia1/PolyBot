@@ -174,8 +174,6 @@ def flush_gate_stats() -> None:
         }, indent=2))
     except Exception:
         pass
-_realized_edge_history: list[tuple[float, float]] = []  # (predicted_edge, realized_gain_pct)
-
 # Per-window flip state: tracks flip count and last side
 _window_flip_state: dict[str, dict] = {}  # window_id -> {flip_count, last_side}
 
@@ -200,8 +198,6 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
         min_atr=signal_cfg.get("min_atr", 8.0),
         liquidation_weight=signal_cfg.get("liquidation_weight", 0.03),
         logit_scale=signal_cfg.get("logit_scale", 4.0),
-        probability_compression=signal_cfg.get("probability_compression", 1.0),
-        adaptive_compression_scale=signal_cfg.get("adaptive_compression_scale", 1.0),
         loss_cut_fraction=signal_cfg.get("loss_cut_fraction", 0.65),
         loss_cut_time_s=signal_cfg.get("loss_cut_time_s", 120.0),
         consensus_dead_zone=signal_cfg.get("consensus_dead_zone", 0.05),
@@ -212,8 +208,7 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
 def compute_time_multiplier(prob: float, seconds_remaining: float,
                             window_seconds: float = 300.0,
                             normal_fraction: float = 0.60,
-                            late_max_penalty: float = 0.60,
-                            final_min_probability: float = 0.90) -> dict:
+                            late_max_penalty: float = 0.60) -> dict:
     """Continuous confidence-conditional time decay for Kelly sizing.
 
     Instead of hard phase steps (1.0 → 0.7 → 0.5), uses a smooth function
@@ -222,20 +217,6 @@ def compute_time_multiplier(prob: float, seconds_remaining: float,
 
     Key insight: time penalty should be inversely proportional to conviction.
     A 92% prob at T-45s is a better trade than 72% at T-120s.
-
-    Args:
-        prob: Model probability for the chosen side (0-1).
-        seconds_remaining: Seconds until contract expiry.
-        normal_fraction: Fraction of window where full Kelly applies (default 0.60 = 180s).
-        late_max_penalty: Maximum Kelly reduction at expiry for ATM trades (default 0.60).
-        final_min_probability: Hard gate for last 60s (default 0.90).
-
-    Returns:
-        dict with:
-            allowed: bool (False only if < min_time_remaining)
-            kelly_multiplier: float (0.40-1.0, continuous)
-            min_prob_override: float|None (0.90 in final 60s, else None)
-            phase: str (for logging: "normal", "late", "final")
     """
     T = window_seconds
     t = seconds_remaining
@@ -244,33 +225,19 @@ def compute_time_multiplier(prob: float, seconds_remaining: float,
     # Conviction: 0 at 50% prob, 1 at 100% prob
     conviction = 2.0 * abs(prob - 0.5)
 
-    # Phase label for logging
     if time_fraction >= normal_fraction:
         phase = "normal"
-    elif t >= 30:
-        phase = "late"
-    else:
-        phase = "final"
-
-    # In the normal window, no penalty
-    if time_fraction >= normal_fraction:
         multiplier = 1.0
     else:
-        # How deep into "late" territory
+        phase = "late" if t >= 30 else "final"
         late_depth = (normal_fraction - time_fraction) / normal_fraction  # 0→1
-        # ATM exposure: high at 50% prob, low at extremes
         atm_exposure = 1.0 - conviction
-        # Penalty scales with lateness AND ATM-ness
         penalty = late_depth * atm_exposure * late_max_penalty
         multiplier = max(0.40, 1.0 - penalty)
-
-    # Final 30s hard gate: require high confidence
-    min_prob_override = final_min_probability if t < 30 else None
 
     return {
         "allowed": True,  # SPRT owns observation, no hard block
         "kelly_multiplier": multiplier,
-        "min_prob_override": min_prob_override,
         "phase": phase,
     }
 
@@ -384,9 +351,8 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
                           log_return: float, gain_pct: float,
                           exit_reason: str = "resolution", pnl: float = 0.0,
                           fees: float = 0.0,
-                          seconds_remaining_at_exit: float = 0.0,
-                          signal_engine: Any = None) -> None:
-    """Record a trade outcome for the learning pipeline + feed adaptive calibration buffer."""
+                          seconds_remaining_at_exit: float = 0.0) -> None:
+    """Persist a resolved/scalped trade outcome for the learning pipeline."""
     try:
         outcome_reviewer.record_outcome(
             position_id=pos["id"],
@@ -410,34 +376,6 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
         )
     except Exception as e:
         logger.error(f"Failed to record outcome: {e}")
-
-    # Feed the adaptive calibration buffer in signal_engine so it can detect drift
-    # in real-time and auto-compress probabilities when the model becomes overconfident.
-    # Pass the chosen-side market price at entry so the disagreement bucket learns
-    # from cases where model and market diverged. Only record at terminal resolution
-    # (scalp exits don't reflect the model's true prediction — position closed early).
-    if signal_engine is not None and exit_reason == "resolution":
-        try:
-            entry_price = float(pos.get("entry_price") or 0.0)
-            signal_engine.record_resolution(
-                predicted_prob=float(pos["signal_score"]),
-                won=gain_pct > 0,
-                market_price=entry_price if 0.0 < entry_price < 1.0 else None,
-            )
-        except Exception as e:
-            logger.debug(f"Failed to record adaptive calibration: {e}")
-
-
-def _get_edge_realization_ratio() -> float:
-    """Rolling ratio of realized gains to predicted edge. < 0.6 = model overconfident."""
-    if len(_realized_edge_history) < 50:
-        return 1.0  # insufficient data
-    recent = _realized_edge_history[-50:]
-    predicted = [abs(p) for p, _ in recent if p > 0]
-    realized = [max(0, g) for _, g in recent]
-    if not predicted or sum(predicted) == 0:
-        return 1.0
-    return sum(realized) / sum(predicted)
 
 
 async def _evaluate_signal_and_enter(
@@ -568,7 +506,6 @@ async def _evaluate_signal_and_enter(
         seconds_remaining=contract["seconds_remaining"],
         normal_fraction=timing_cfg.get("normal_fraction", 0.60),
         late_max_penalty=timing_cfg.get("late_max_penalty", 0.60),
-        final_min_probability=timing_cfg.get("final_min_probability", 0.90),
     )
 
     # Log signal evaluation once per window so we can see what the model sees
@@ -627,10 +564,7 @@ async def _evaluate_signal_and_enter(
         "flip_count": 0, "last_side": None,
     })
     flip_count = flip_state["flip_count"]
-    if flip_count > 1:
-        _record_skip("flip_max_exceeded")
-        return None, last_eval_log_window
-    if flip_count == 1:
+    if flip_count >= 1:
         flip_premium = config.get("entry_timing", {}).get("flip_edge_premium", 0.015)
         spread_est = -1.0
         if clob_ws:
@@ -737,12 +671,6 @@ async def _evaluate_signal_and_enter(
         f"SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%})  |  "
         f"consensus {consensus_mult:.1f}x")
 
-    # Phase-based probability override (final phase needs >90%)
-    if entry_phase["min_prob_override"] and signal.prob < entry_phase["min_prob_override"]:
-        _record_skip("final_phase_prob")
-        logger.debug(f"SKIP: final phase prob {signal.prob:.0%} < {entry_phase['min_prob_override']:.0%}")
-        return None, last_eval_log_window
-
     # Late-window underdog gate
     if contract.get("seconds_remaining", 300) < 120:
         late_underdog_floor = config.get("signal", {}).get("late_window_min_prob", 0.40)
@@ -806,15 +734,13 @@ async def _evaluate_signal_and_enter(
     )
     fresh_bba = clob_ws.best_bid_ask.get(token_id, {}) if clob_ws else {}
     fresh_ask = float(fresh_bba.get("best_ask", 0) or 0)
-    # Simulate maker/FOK blend: ~65% of orders fill as maker (0% fee),
-    # ~35% fall back to FOK (full taker fee). Randomize per trade.
+    # Maker/FOK blend simulation in paper mode: ~65% maker (0% fee), ~35% taker FOK.
     if config.get("execution", {}).get("use_maker_orders", False):
         import random
         if random.random() < 0.65:
             fee_rate = 0.0  # maker fill
 
-    # Apply slippage to the execution price already fetched in _fetch_market_prices
-    # (price already comes from GET /price?side=BUY — no need to refetch)
+    # Apply slippage to the price returned by _fetch_market_prices (already from GET /price?side=BUY).
     impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
     slip = slippage_pct(size, side_depth, impact)
     price = market_scanner.snap_to_tick(price * (1 + slip), tick_size)
@@ -828,7 +754,12 @@ async def _evaluate_signal_and_enter(
         "market_price_up": price_up,
         "market_price_down": price_down,
         "model_probability": signal.prob,
-        "model_probability_raw": signal.prob,
+        # Pre-calibrator P(side). Stored separately from `model_probability` so the
+        # next pipeline cycle's Platt re-fit sees raw probabilities, not Platt(Platt(...)).
+        "model_probability_raw": (
+            signal_engine.last_raw_prob_up if side == "Up"
+            else 1.0 - signal_engine.last_raw_prob_up
+        ),
         "edge": signal.edge,
         "atr": indicators.get("atr", {}).get("atr", 0),
         "size": size,
@@ -883,7 +814,7 @@ async def _evaluate_signal_and_enter(
         ev_at_entry=signal.edge,
         exit_target=1.0,
         stop_loss=0.0,
-        weight_version=signal_config.get("active_weights_version", "weights_v001"),
+        weight_version="weights_v001",
         indicator_snapshot=snapshot_str,
         token_id=token_id,
         fee_rate=fee_rate,
@@ -1139,12 +1070,10 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
     now_ts = int(time.time())
     traded_contracts = {k: v for k, v in traded_contracts.items() if now_ts - v < 600}
 
-    # Block re-entry based on flip state and live DB position — always check
-    # regardless of traded_contracts (which only tracks same-session trades).
+    # On first entry into a window, defer to DB to avoid duplicate-position
+    # races; on subsequent flips we know the previous position scalped clean.
     state = _window_flip_state.get(cid, {})
     flip_count = state.get("flip_count", 0)
-    if flip_count > 1:
-        return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
     if flip_count == 0 and db is not None and await db.has_position_for_market(cid):
         return None, None, traded_contracts, ws_subscribed_tokens, prev_contract_tokens
 
@@ -1206,9 +1135,7 @@ async def _check_counterfactuals(counterfactual_tracker: Any, ghost_tracker: Any
                 continue
             if cf_live.get("event_metadata"):
                 cf_event_metadata[cf_mid] = cf_live["event_metadata"]
-    counterfactual_tracker.check_resolutions(
-        binance_feed, _btc_at_expiry, event_metadata=cf_event_metadata
-    )
+    counterfactual_tracker.check_resolutions(event_metadata=cf_event_metadata)
 
     if ghost_tracker is not None:
         ghost_tracker.check_resolutions(
@@ -1445,11 +1372,7 @@ async def _evaluate_and_exit_position(
                     await alert_manager.send_circuit_breaker(cb_event, breaker)
             await _record_outcome(outcome_reviewer, pos, exit_fill, result.log_return or 0, gain_pct,
                                   exit_reason="scalp", pnl=pnl, fees=total_fees,
-                                  seconds_remaining_at_exit=float(live.get("seconds_remaining", 0)),
-                                  signal_engine=signal_engine)
-            _realized_edge_history.append((pos.get("ev_at_entry", 0), gain_pct))
-            if len(_realized_edge_history) > 500:
-                _realized_edge_history[:] = _realized_edge_history[-500:]
+                                  seconds_remaining_at_exit=float(live.get("seconds_remaining", 0)))
             # Update flip state: increment flip count
             traded_market_id = pos["market_id"]
             fs = _window_flip_state.setdefault(traded_market_id, {
@@ -1532,13 +1455,7 @@ async def _resolve_expired_position(
             if cb_event and alert_manager:
                 await alert_manager.send_circuit_breaker(cb_event, breaker)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
-                              exit_reason="resolution", pnl=pnl, fees=total_fees,
-                              signal_engine=signal_engine)
-        _realized_edge_history.append((pos.get("ev_at_entry", 0), gain_pct))
-        if len(_realized_edge_history) > 500:
-            _realized_edge_history[:] = _realized_edge_history[-500:]
-        if _drawdown_tracker:
-            _drawdown_tracker.record_trade(gain_pct)
+                              exit_reason="resolution", pnl=pnl, fees=total_fees)
         if counterfactual_tracker:
             counterfactual_tracker.record_hold_resolution(
                 pos["market_id"], exit_price, pnl, gain_pct)
@@ -1649,13 +1566,7 @@ async def _manage_orphaned_position(
             if cb_event and alert_manager:
                 await alert_manager.send_circuit_breaker(cb_event, breaker)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
-                              exit_reason="resolution", pnl=pnl, fees=total_fees,
-                              signal_engine=signal_engine)
-        _realized_edge_history.append((pos.get("ev_at_entry", 0), gain_pct))
-        if len(_realized_edge_history) > 500:
-            _realized_edge_history[:] = _realized_edge_history[-500:]
-        if _drawdown_tracker:
-            _drawdown_tracker.record_trade(gain_pct)
+                              exit_reason="resolution", pnl=pnl, fees=total_fees)
         traded_market_id = pos["market_id"]
     return True, day_wins, day_losses, day_fees, traded_market_id
 
@@ -1778,7 +1689,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     _bankroll = await db.get_bankroll()
     _cal = signal_engine.calibrator
     _cal_str = f"Platt a={_cal.a:.3f} b={_cal.b:.3f}" if _cal is not None else "uncalibrated"
-    _weight_ver = signal_config.get("active_weights_version", "weights_v001")
+    _weight_ver = "weights_v001"
     def _f(feed: Any) -> str: return "OK" if feed is not None else "--"
     _sep = "═" * 60
     logger.info(
@@ -2008,7 +1919,6 @@ async def run_pipeline() -> None:
     signal_cfg = config.get("signal", {})
     market_cfg = config.get("market", {})
     sched_cfg = config.get("schedule", {})
-    weights_dir = str(base_dir / "memory" / "weights")
     ind_cfg = config.get("indicators", {})
 
     indicator_params = {
@@ -2028,12 +1938,10 @@ async def run_pipeline() -> None:
         "obv": {"slope_period": ind_cfg.get("obv", {}).get("slope_period", 5)},
         "atr": {"period": ind_cfg.get("atr", {}).get("period", 14),
                 "low_pct": ind_cfg.get("atr", {}).get("low_percentile", 5),
-                "high_pct": ind_cfg.get("atr", {}).get("high_percentile", 95),
                 "history": ind_cfg.get("atr", {}).get("history_periods", 100)},
     }
-    indicator_engine = IndicatorEngine(weights_dir=weights_dir,
-        active_version=signal_cfg.get("active_weights_version", "weights_v001"),
-        params=indicator_params)
+    indicator_engine = IndicatorEngine(weights=signal_cfg.get("weights"),
+                                       params=indicator_params)
 
     signal_engine = _build_signal_engine(signal_cfg, config)
 
@@ -2051,11 +1959,7 @@ async def run_pipeline() -> None:
     bias_detector = BiasDetector(biases_path=str(base_dir / "memory" / "biases.json"))
     ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"),
                           claude_client=claude)
-    weight_optimizer = WeightOptimizer(
-        weights_dir=weights_dir,
-        scores_path=str(base_dir / "memory" / "weight_scores.json"),
-        min_improvement=0.01,
-    )
+    weight_optimizer = WeightOptimizer()
     from polybot.agents.pipeline_tracker import PipelineTracker
     pipeline_tracker = PipelineTracker(path=base_dir / "memory" / "pipeline_history.json")
 
@@ -2171,7 +2075,6 @@ async def main() -> None:
 
     # Indicator engine
     signal_cfg = config.get("signal", {})
-    weights_dir = str(base_dir / "memory" / "weights")
     ind_cfg = config.get("indicators", {})
     indicator_params = {
         "rsi": {"period": ind_cfg.get("rsi", {}).get("period", 14),
@@ -2190,12 +2093,10 @@ async def main() -> None:
         "obv": {"slope_period": ind_cfg.get("obv", {}).get("slope_period", 5)},
         "atr": {"period": ind_cfg.get("atr", {}).get("period", 14),
                 "low_pct": ind_cfg.get("atr", {}).get("low_percentile", 5),
-                "high_pct": ind_cfg.get("atr", {}).get("high_percentile", 95),
                 "history": ind_cfg.get("atr", {}).get("history_periods", 100)},
     }
     indicator_engine = IndicatorEngine(
-        weights_dir=weights_dir,
-        active_version=signal_cfg.get("active_weights_version", "weights_v001"),
+        weights=signal_cfg.get("weights"),
         params=indicator_params,
     )
 
@@ -2274,11 +2175,7 @@ async def main() -> None:
     bias_detector = BiasDetector(biases_path=str(base_dir / "memory" / "biases.json"))
     ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"),
                           claude_client=claude)
-    weight_optimizer = WeightOptimizer(
-        weights_dir=weights_dir,
-        scores_path=str(base_dir / "memory" / "weight_scores.json"),
-        min_improvement=0.01,
-    )
+    weight_optimizer = WeightOptimizer()
 
     # Discord (created before scheduler so alert_manager can be passed in)
     discord_bot = create_bot(db, trader, market_scanner, None, config)
@@ -2382,7 +2279,7 @@ async def main() -> None:
     depth_feed = BinanceDepthFeed(
         ws_url=depth_cfg.get("ws_url", "wss://stream.binance.us:9443/ws"),
         rest_url=depth_cfg.get("rest_url", "https://api.binance.us/api/v3"),
-        rest_interval=86400,  # 1000-level REST disabled (gamed by HFT). Top-20 WS still runs for depth sizing.
+        rest_interval=86400,  # REST snapshot effectively disabled; top-20 WS provides depth sizing.
     )
     trades_cfg = config.get("binance_trades", {})
     trades_accumulator = BinanceTradeAccumulator(max_age_s=trades_cfg.get("max_age_s", 300))
@@ -2393,7 +2290,6 @@ async def main() -> None:
     bybit_cfg = config.get("bybit", {})
     bybit_feed_inst = BybitFeed(
         ws_url=bybit_cfg.get("ws_url", "wss://stream.bybit.com/v5/public/linear"),
-        rest_url=bybit_cfg.get("rest_url", "https://api.bybit.com"),
     )
     # Coinbase feed — faster BTC price (leads Binance.US by 0.5-2s)
     coinbase_cfg = config.get("coinbase", {})

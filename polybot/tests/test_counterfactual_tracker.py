@@ -1,7 +1,6 @@
 import json
 import time
 import pytest
-from unittest.mock import MagicMock
 from polybot.agents.counterfactual_tracker import CounterfactualTracker
 
 
@@ -67,7 +66,7 @@ def test_watch_captures_context(tracker):
 def test_unexpired_contracts_are_kept(tracker):
     future_ts = int(time.time()) + 600
     tracker.watch(_make_pos(market_id=f"btc-updown-5m-{future_ts}"), _make_scalp_ctx())
-    assert tracker.check_resolutions(MagicMock(), lambda f, m: 42500.0) == []
+    assert tracker.check_resolutions() == []
     assert tracker.watching_count == 1
 
 
@@ -76,25 +75,19 @@ def test_resolves_with_chainlink_metadata(tracker):
     tracker.watch(_make_pos(market_id=market_id, side="Up"),
                   _make_scalp_ctx(strike_price=42500.0))
     metadata = {market_id: {"price_to_beat": 42500.0, "final_price": 42400.0}}
-    resolved = tracker.check_resolutions(
-        MagicMock(), lambda f, m: 99999.0, event_metadata=metadata
-    )
-    # Chainlink says Up lost (42400 < 42500). Binance fallback would have lied.
+    resolved = tracker.check_resolutions(event_metadata=metadata)
+    # Chainlink says Up lost (42400 < 42500).
     assert len(resolved) == 1
     assert resolved[0]["counterfactual"]["resolution_price"] == 0.0
 
 
-def test_falls_back_to_binance_after_retries(tracker):
+def test_no_metadata_keeps_waiting(tracker):
+    """No Chainlink metadata yet → tracker holds the position until it arrives or expires."""
     market_id = _expired_market_id()
     tracker.watch(_make_pos(market_id=market_id, side="Up"),
                   _make_scalp_ctx(strike_price=42500.0))
-    btc_fn = lambda f, m: 42600.0  # Up wins under Binance fallback
-    # First 4 calls: no metadata, retry counter increments. 5th call: Binance fallback fires.
-    for _ in range(4):
-        assert tracker.check_resolutions(MagicMock(), btc_fn, event_metadata={}) == []
-    resolved = tracker.check_resolutions(MagicMock(), btc_fn, event_metadata={})
-    assert len(resolved) == 1
-    assert resolved[0]["counterfactual"]["resolution_price"] == 1.0
+    assert tracker.check_resolutions(event_metadata={}) == []
+    assert tracker.watching_count == 1
 
 
 def test_resolves_down_side(tracker):
@@ -102,7 +95,7 @@ def test_resolves_down_side(tracker):
     tracker.watch(_make_pos(market_id=market_id, side="Down", entry_price=0.40, size=100.0),
                   _make_scalp_ctx(strike_price=42500.0))
     metadata = {market_id: {"price_to_beat": 42500.0, "final_price": 42400.0}}
-    resolved = tracker.check_resolutions(MagicMock(), lambda f, m: 0.0, event_metadata=metadata)
+    resolved = tracker.check_resolutions(event_metadata=metadata)
     assert len(resolved) == 1
     assert resolved[0]["counterfactual"]["resolution_price"] == 1.0
     assert resolved[0]["side"] == "Down"
@@ -112,7 +105,7 @@ def test_writes_record_to_disk(tracker, memory_dir):
     market_id = _expired_market_id()
     tracker.watch(_make_pos(market_id=market_id), _make_scalp_ctx(strike_price=42500.0))
     metadata = {market_id: {"price_to_beat": 42500.0, "final_price": 42600.0}}
-    tracker.check_resolutions(MagicMock(), lambda f, m: 0.0, event_metadata=metadata)
+    tracker.check_resolutions(event_metadata=metadata)
     files = list((memory_dir / "counterfactuals").glob("*.json"))
     assert len(files) == 1
     data = json.loads(files[0].read_text())
@@ -123,7 +116,7 @@ def test_stale_entries_dropped(tracker):
     very_old = int(time.time()) - 2000
     tracker.watch(_make_pos(market_id=f"btc-updown-5m-{very_old}"),
                   _make_scalp_ctx(strike_price=42500.0))
-    assert tracker.check_resolutions(MagicMock(), lambda f, m: 42600.0) == []
+    assert tracker.check_resolutions() == []
     assert tracker.watching_count == 0
 
 

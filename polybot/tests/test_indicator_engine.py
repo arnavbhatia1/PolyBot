@@ -50,39 +50,26 @@ def _make_trending_buffer(direction="up", size=60):
     return buf
 
 @pytest.fixture
-def weights_path(tmp_path):
-    path = tmp_path / "weights_v001.json"
-    path.write_text(json.dumps({"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20,
-                                "entry_threshold": 0.60, "version": "weights_v001"}))
-    return str(tmp_path)
-
-@pytest.fixture
-def engine(weights_path):
-    return IndicatorEngine(weights_dir=weights_path, active_version="weights_v001")
+def engine():
+    return IndicatorEngine()
 
 def test_compute_all_returns_7_indicators(engine):
     result = engine.compute_all(_make_trending_buffer("up", 50))
     for key in ["rsi", "macd", "stochastic", "ema", "obv", "vwap", "atr"]:
         assert key in result
 
-def test_compute_score_returns_float(engine):
-    indicators = engine.compute_all(_make_trending_buffer("up", 50))
-    score = engine.compute_score(indicators)
-    assert isinstance(score, float) and -1.0 <= score <= 1.0
-
-def test_uptrend_produces_positive_score(engine):
-    assert engine.compute_score(engine.compute_all(_make_trending_buffer("up", 50))) > 0
-
-def test_downtrend_produces_negative_score(engine):
-    assert engine.compute_score(engine.compute_all(_make_trending_buffer("down", 50))) < 0
-
 def test_get_snapshot_serializable(engine):
     indicators = engine.compute_all(_make_trending_buffer("up", 50))
     json.dumps(engine.get_snapshot(indicators))
 
-def test_load_weights(engine):
+def test_default_weights(engine):
     w = engine.get_weights()
     assert w["rsi"] == 0.20 and w["macd"] == 0.25
+
+def test_set_weights_updates_in_place(engine):
+    engine.set_weights({"rsi": 0.30, "macd": 0.30, "stochastic": 0.15, "obv": 0.10, "vwap": 0.15})
+    w = engine.get_weights()
+    assert w["rsi"] == 0.30 and w["macd"] == 0.30
 
 
 # --- Normalizer tests ---
