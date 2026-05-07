@@ -703,7 +703,7 @@ class LocalRecommender:
             )
         elif net_dir == "hold_long":
             self._emit_manual(
-                "exit_edge_threshold", cur, min(0.0, float(cur) + 0.03),
+                "exit_edge_threshold", cur, round(min(0.0, float(cur) + 0.03), 4),
                 "Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)",
                 {"metric": "net_exit_direction", "value": net_dir, "n": n_scalps,
                  "source": "counterfactual_analysis"},
@@ -759,9 +759,11 @@ class LocalRecommender:
 
     def _manual_rule_late_window_prob(self) -> None:
         time_p = self.analysis.get("time_patterns", {})
-        # Find the bucket whose label suggests "late" (e.g. "0-30s remaining")
+        # Find the bucket whose label suggests "late" — the 0-60s bucket (entries
+        # made in the last 60 seconds before expiry). Avoid substring traps: "0-30"
+        # appears in "180-300s" so we match the actual bucket key directly.
         for label, stats in time_p.items():
-            if "0-30" not in str(label) and "last" not in str(label).lower():
+            if "0-60" not in str(label) and "last" not in str(label).lower():
                 continue
             n = int(stats.get("count", 0))
             wr = float(stats.get("win_rate", 0))

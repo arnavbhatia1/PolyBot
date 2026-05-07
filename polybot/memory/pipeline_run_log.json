@@ -601,5 +601,38 @@
         "backtest_delta_sharpe": -0.0
       }
     ]
+  },
+  {
+    "date": "2026-05-07T02:28:48.496397+00:00",
+    "source": "claude",
+    "baseline_sharpe": 0.2529,
+    "changes": [
+      {
+        "param": "probability_compression",
+        "old_value": 0.75,
+        "new_value": 0.65,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0281,
+        "predicted_delta_sharpe_7d": 0.022,
+        "confidence_interval": [
+          -0.005,
+          0.045
+        ]
+      },
+      {
+        "param": "logit_scale",
+        "old_value": 4.0,
+        "new_value": 4.6,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0123,
+        "predicted_delta_sharpe_7d": 0.015,
+        "confidence_interval": [
+          -0.012,
+          0.038
+        ]
+      }
+    ]
   }
 ]

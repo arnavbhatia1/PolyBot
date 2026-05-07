@@ -324,3 +324,42 @@
 - With 30+ parameter combinations failing walk-forward fold consistency and zero live-validated positive deltas, continued parameter search risks overfitting noise; a structural model or feature review may be warranted before the next tuning cycle.
 
 **Reasoning:** Every backtestable parameter family has now been tested exhaustively across multiple values and directions, with the best average BT delta (spot_flow_weight ↑ at +0.014) still below the 0.0162 adoption floor required for statistical significance — empty changes is the only defensible call for the ninth consecutive cycle. The most important signal this cycle is the sharp live deterioration in the last 100 trades (mean gain=-0.12, PnL=-$205) coinciding with a major distribution shift (ATR+29%, model_probability-20%), which is being partially offset by the adaptive calibration runtime already applying a 0.50 multiplier to virtually all recent trades. The sole manual observation confirms the exit_edge_threshold finding that has been consistently the highest-confidence actionable lever across eight prior cycles, backed by N=1286 exits averaging 38.5% accuracy in the two destructive buckets.
+
+## 2026-05-07T02:28:48.309762+00:00
+
+**Source:** Local
+**Proposed Changes (2):**
+  - probability_compression=0.65 (moderate-bucket drift 60% (extreme n/a) — model overconfident across the prediction range, compress globally)
+  - logit_scale=4.6 (flow signals show positive BT Δ and edge realization >70% — amplify L2-L5)
+
+**Manual Suggestions (2) [operator-only]:**
+  - exit_edge_threshold: -0.05 -> -0.020000000000000004 [medium]
+    Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
+  - final_min_probability: 0.9 -> 0.93 [medium]
+    Late-window WR 54% below 55% over 3929 entries — raise hard gate
+
+**Findings:**
+- moderate drift 60% → probability_compression 0.75→0.65
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender (Claude unavailable). Proposing 2 change(s) across 2 families: calibration, volatility_core. All proposals sized to clear adoption floor ≈ 0.022 and verified against the empirical directional table where available.
+
+## 2026-05-07T02:37:46.644653+00:00
+
+**Source:** Local
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.05 -> -0.02 [medium]
+    Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
