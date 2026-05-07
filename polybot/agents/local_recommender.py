@@ -31,6 +31,16 @@ FAMILIES: dict[str, list[str]] = {
 }
 
 
+def _cfg_get(cfg: dict[str, Any], dotted: str) -> Any:
+    """Look up a config value by `section.subsection.key`. Returns None if missing."""
+    cur: Any = cfg
+    for seg in dotted.split("."):
+        if not isinstance(cur, dict) or seg not in cur:
+            return None
+        cur = cur[seg]
+    return cur
+
+
 def _clamp(value: float, param: str) -> Any:
     if param not in CLAMP_RANGES:
         return value
@@ -88,6 +98,16 @@ class LocalRecommender:
             or 0.010
         )
 
+        # Params blocked this cycle: had negative backtest delta last cycle, or
+        # are currently in the 2-day post-adoption cooldown.
+        self._blocked_params: set[str] = set()
+        self._build_blocked_params()
+
+        # Conservative mode: flip True when >50% of recent adoptions are decaying.
+        # Caps proposals to 1 (mirrors Claude's decay-analysis instruction).
+        self._decay_conservative: bool = False
+        self._check_decay_mode()
+
     # -------- public entry point -------- #
 
     def recommend(self) -> dict[str, Any]:
@@ -107,6 +127,9 @@ class LocalRecommender:
         self._rule_flow_stack()              # flow_stack
         self._rule_momentum_regime()         # momentum_regime
         self._rule_volatility_core()         # volatility_core
+        self._rule_student_t_df()            # volatility_core: tail fatness from ATR regime
+        self._rule_min_atr()                 # calibration: ATR floor from low-vol regime
+        self._rule_prev_margin_weight()      # momentum_regime: L5 from empirical table
         self._rule_sizing_from_drawdown()    # sizing
         self._rule_gates_from_ghosts()       # gates
         self._rule_indicator_weights()       # L4 sub-mix (only if L4 is active)
@@ -118,13 +141,18 @@ class LocalRecommender:
         self._manual_rule_late_window_prob()
         self._manual_rule_entry_phase()
         self._manual_rule_flip()
+        self._manual_rule_indicator_periods()  # poor indicator accuracy → period review
+
+        # Collect key findings from sections not covered by proposal rules
+        self._collect_key_findings()
 
         # Final output: dedupe by param (highest predicted Δ wins per param),
-        # cap at 5, attach key_findings.
+        # cap at 5 (or 1 in decay-conservative mode), attach key_findings.
         deduped = self._dedupe_by_param(self.proposals)
         deduped.sort(key=lambda c: -abs(float(c.get("predicted_delta_sharpe_7d", 0.0))))
+        cap = 1 if self._decay_conservative else 5
         return self._envelope(
-            changes=deduped[:5],
+            changes=deduped[:cap],
             confidence=self._confidence_label(deduped),
             reasoning=self._compose_reasoning(deduped),
         )
@@ -245,6 +273,9 @@ class LocalRecommender:
     def _propose(self, param: str, value: Any, reason: str,
                  predicted_delta: float, ci: tuple[float, float] = (-0.01, 0.05)) -> bool:
         """Add a proposal if it passes guardrails. Returns True if added."""
+        # Block params with negative delta last cycle or currently in cooldown.
+        if param in self._blocked_params:
+            return False
         # Family diversity: stop adding to a family that already has a proposal.
         family = _family_of(param)
         if family and family in self._families_used:
@@ -822,6 +853,267 @@ class LocalRecommender:
                     confidence="medium",
                 )
 
+    # -------- blocked-params and decay-mode init helpers -------- #
+
+    def _build_blocked_params(self) -> None:
+        """Block params that had negative backtest delta last cycle OR are in cooldown.
+
+        Mirrors Claude's rule #5: 'If last cycle a param showed negative delta in a
+        direction, don't repeat it.' Also mirrors the adoption-gate cooldown (2 days).
+        """
+        for result_str in self.analysis.get("last_per_change_results", []) or []:
+            s = str(result_str)
+            m_param = re.match(r"(\w+)=", s)
+            if not m_param:
+                continue
+            param = m_param.group(1)
+            bm = re.search(r"baseline=([\-\d.]+)", s)
+            cm = re.search(r"candidate=([\-\d.]+)", s)
+            if bm and cm:
+                try:
+                    if float(cm.group(1)) < float(bm.group(1)):
+                        self._blocked_params.add(param)
+                        continue
+                except ValueError:
+                    pass
+            if "worse" in s.lower():
+                self._blocked_params.add(param)
+
+        active = str(self.analysis.get("active_adoptions", "") or "")
+        for line in active.splitlines():
+            stripped = line.strip()
+            if "IN_COOLDOWN" in stripped:
+                m = re.match(r"(\w+)\s*:", stripped)
+                if m:
+                    self._blocked_params.add(m.group(1))
+            elif stripped.startswith("ALSO IN COOLDOWN:"):
+                rest = stripped[len("ALSO IN COOLDOWN:"):].strip()
+                for p in rest.split(","):
+                    p = p.strip()
+                    if p:
+                        self._blocked_params.add(p)
+
+    def _check_decay_mode(self) -> None:
+        """Set conservative mode if >50% of recent adoptions are DECAYED or REVERSED.
+
+        Mirrors Claude's instruction: 'If the decay analysis shows >50% of adoptions
+        are decaying, prioritize an empty or very small changes list.'
+        """
+        decay_text = str(self.analysis.get("decay_analysis", "") or "")
+        if not decay_text:
+            return
+        decayed = decay_text.count("DECAYED")
+        reversed_ = decay_text.count("REVERSED")
+        persisted = decay_text.count("PERSISTED")
+        partial = decay_text.count("PARTIAL")
+        total = decayed + reversed_ + persisted + partial
+        if total >= 3 and (decayed + reversed_) > total * 0.5:
+            self._decay_conservative = True
+            self.warnings.append(
+                f"Decay mode: {decayed + reversed_}/{total} recent adoptions DECAYED/REVERSED "
+                f"— capping proposals to 1"
+            )
+
+    # -------- new param-family rules -------- #
+
+    def _rule_student_t_df(self) -> None:
+        """Adjust tail fatness (student_t_df) based on ATR-regime performance.
+
+        L1 uses Student-t to capture BTC kurtosis. If high-ATR regime underperforms,
+        the distribution needs fatter tails (lower df) for spike kurtosis. If low-ATR
+        underperforms, thinner tails (higher df) give sharper probabilities in calm periods.
+        """
+        vol_p = self.analysis.get("volatility_patterns", {})
+        if not vol_p:
+            return
+        low = vol_p.get("low_atr", {})
+        high = vol_p.get("high_atr", {})
+        if int(low.get("count", 0)) < 50 or int(high.get("count", 0)) < 50:
+            return
+        low_wr = float(low.get("win_rate", 0))
+        high_wr = float(high.get("win_rate", 0))
+        gap = abs(low_wr - high_wr)
+        if gap <= 2 * self._noise["wr_2x"]:
+            return
+        cur = float(self.cfg.get("student_t_df", 5))
+        if low_wr - high_wr > 2 * self._noise["wr_2x"]:
+            direction, new_val = "down", max(3, int(cur) - 1)
+            reason = (f"high-ATR WR {high_wr:.0%} trails low-ATR {low_wr:.0%} by >2σ "
+                      f"— fatter tails (lower df) for spike regimes")
+        else:
+            direction, new_val = "up", min(8, int(cur) + 1)
+            reason = (f"low-ATR WR {low_wr:.0%} trails high-ATR {high_wr:.0%} by >2σ "
+                      f"— thinner tails for calm regimes")
+        ok, why = self._direction_ok("student_t_df", direction)
+        if not ok:
+            self.findings.append(f"student_t_df: skip ({why})")
+            return
+        if self._propose("student_t_df", new_val, reason, predicted_delta=0.015,
+                         ci=(-0.010, 0.038)):
+            self.findings.append(f"ATR-regime WR gap {gap:.0%}: student_t_df {int(cur)}→{new_val}")
+
+    def _rule_min_atr(self) -> None:
+        """Raise min_atr when low-ATR regime significantly underperforms overall.
+
+        Low-ATR entries happen in thin/quiet markets where BTC hugs the strike —
+        often near-coin-flip outcomes. Raising the floor filters them preemptively.
+        """
+        vol_p = self.analysis.get("volatility_patterns", {})
+        if not vol_p:
+            return
+        low = vol_p.get("low_atr", {})
+        n_low = int(low.get("count", 0))
+        if n_low < 50:
+            return
+        low_wr = float(low.get("win_rate", 0))
+        overall_wr = float(self.analysis.get("overall", {}).get("win_rate", 0))
+        if not (overall_wr - low_wr > 2 * self._noise["wr_2x"]):
+            return
+        cur = float(self.cfg.get("min_atr", 8.0))
+        ok, why = self._direction_ok("min_atr", "up")
+        if not ok:
+            self.findings.append(f"min_atr (up): skip ({why})")
+            return
+        new_val = self._decisive_value("min_atr", cur, "up", min_step=2.0)
+        if self._propose(
+            "min_atr", new_val,
+            f"low-ATR WR {low_wr:.0%} vs overall {overall_wr:.0%} (>2σ, n={n_low}) "
+            f"— raise ATR floor to filter thin-market entries",
+            predicted_delta=0.016, ci=(-0.008, 0.036),
+        ):
+            self.findings.append(f"Low-ATR underperforms (n={n_low}): min_atr {cur}→{new_val:.1f}")
+
+    def _rule_prev_margin_weight(self) -> None:
+        """prev_margin_weight (L5) from the empirical directional table.
+
+        L5 is rarely targeted by the higher-priority rules. If the table shows
+        consistent positive BT delta for a direction and the momentum_regime family
+        slot is still free, propose it.
+        """
+        if "momentum_regime" in self._families_used:
+            return
+        cur = float(self.cfg.get("prev_margin_weight", 0.02))
+        for direction in ("up", "down"):
+            entry = self._dir_table.get(("prev_margin_weight", direction))
+            if not entry:
+                continue
+            if entry.get("decays"):
+                continue
+            bt = entry.get("bt_delta")
+            n = int(entry.get("n", 0))
+            if bt is None or n < 2 or bt <= 0.005:
+                continue
+            ok, why = self._direction_ok("prev_margin_weight", direction)
+            if not ok:
+                continue
+            new_val = self._decisive_value("prev_margin_weight", cur, direction, min_step=0.01)
+            if self._propose(
+                "prev_margin_weight", new_val,
+                f"empirical table: prev_margin_weight {direction} avg BT Δ {bt:+.3f} (n={n})",
+                predicted_delta=max(0.010, bt * 0.5),
+                ci=(-0.008, max(0.020, bt)),
+            ):
+                return
+
+    # -------- key findings from sections not covered by proposal rules -------- #
+
+    def _collect_key_findings(self) -> None:
+        """Surface diagnostics from analysis sections that don't produce backtestable
+        proposals but are important for the operator — mirrors what Claude puts in
+        key_findings and risk_warnings from distribution shifts, current-regime
+        divergence, side imbalance, gate stats, execution quality, and Platt meta.
+        """
+        # Distribution shifts
+        shifts = self.analysis.get("distribution_shifts", {})
+        if shifts:
+            for feat in list(shifts.keys())[:2]:
+                info = shifts[feat]
+                self.findings.append(
+                    f"KS shift in {feat}: stat={info.get('statistic', 0):.2f} "
+                    f"p={info.get('p_value', 1.0):.3f} — recent distribution changed"
+                )
+            significant = [f for f, d in shifts.items() if d.get("p_value", 1.0) < 0.05]
+            if significant:
+                self.warnings.append(
+                    f"Significant distribution shift in {', '.join(significant[:2])} "
+                    f"— historical edge may not hold in current conditions"
+                )
+
+        # Current-regime divergence (last ~100 trades vs overall history)
+        cur_reg = self.analysis.get("current_regime", {})
+        overall_wr = float(self.analysis.get("overall", {}).get("win_rate", 0))
+        if cur_reg and int(cur_reg.get("n_trades", 0)) >= 30 and overall_wr:
+            reg_wr = float(cur_reg.get("win_rate", 0))
+            if abs(reg_wr - overall_wr) > 2 * self._noise["wr_2x"]:
+                direction = "improving" if reg_wr > overall_wr else "deteriorating"
+                self.findings.append(
+                    f"Recent {cur_reg['n_trades']} trades {direction}: "
+                    f"WR {reg_wr:.0%} vs overall {overall_wr:.0%}"
+                )
+
+        # Side imbalance (UP vs DOWN)
+        side = self.analysis.get("side_analysis", {})
+        if len(side) >= 2:
+            items = list(side.items())
+            wr0 = float(items[0][1].get("win_rate", 0))
+            wr1 = float(items[1][1].get("win_rate", 0))
+            n0 = int(items[0][1].get("count", 0))
+            n1 = int(items[1][1].get("count", 0))
+            if min(n0, n1) >= 50 and abs(wr0 - wr1) > 2 * self._noise["wr_2x"]:
+                better = items[0][0] if wr0 > wr1 else items[1][0]
+                worse = items[1][0] if wr0 > wr1 else items[0][0]
+                self.findings.append(
+                    f"Side imbalance: {better} ({max(wr0, wr1):.0%} WR) >> "
+                    f"{worse} ({min(wr0, wr1):.0%} WR) — check directional model bias"
+                )
+
+        # Platt meta-warning
+        platt_meta = str(self.analysis.get("platt_meta_warning", "") or "")
+        if platt_meta:
+            self.findings.append(f"Platt meta: {platt_meta[:120]}")
+
+        # Execution quality
+        eq = self.analysis.get("execution_quality", {})
+        if eq:
+            avg_slip = float(eq.get("avg_fill_slippage", 0) or 0)
+            if avg_slip > 0.005:
+                self.warnings.append(
+                    f"avg_fill_slippage {avg_slip:+.4f} > 0.005 — slippage eating realized edge"
+                )
+                self.findings.append(
+                    f"High slippage {avg_slip:+.4f}: raise logit_scale to self-filter "
+                    f"marginal entries, or review kelly_fraction"
+                )
+            fok_rate = eq.get("fok_fill_rate")
+            if fok_rate is not None and float(fok_rate) < 0.80:
+                self.findings.append(
+                    f"FOK fill rate {float(fok_rate):.0%} "
+                    f"({eq.get('fok_total_attempts', 0)} attempts) — many orders rejected"
+                )
+
+        # Gate skip stats
+        gate_stats = self.analysis.get("gate_skip_stats", {})
+        if gate_stats:
+            counts = {k: v for k, v in gate_stats.items()
+                      if k != "total_skips" and isinstance(v, (int, float)) and v > 0}
+            if counts:
+                total_skips = gate_stats.get("total_skips", sum(counts.values()))
+                top_gate, top_count = max(counts.items(), key=lambda x: x[1])
+                manual_only = {"adverse_selection", "adverse_rate_30s", "final_probability",
+                               "final_min_probability"}
+                note = "manual-only lever" if top_gate in manual_only else "consider loosening"
+                self.findings.append(
+                    f"Top gate: {top_gate} blocks {top_count}/{total_skips} skips "
+                    f"({top_count / max(total_skips, 1):.0%}) — {note}"
+                )
+
+        # Blocked params notice (transparent to operator about what was skipped)
+        if self._blocked_params:
+            blocked_list = sorted(self._blocked_params)[:4]
+            self.findings.append(
+                f"Skipped (negative delta last cycle or cooldown): {', '.join(blocked_list)}"
+            )
+
     def _manual_rule_flip(self) -> None:
         """Flip-trade evaluation. flip_enabled (kill switch) and flip_edge_premium
         (extra edge for re-entry) are manual-only. If flips Sharpe lags base by
@@ -856,4 +1148,42 @@ class LocalRecommender:
                 {"metric": "flip_analysis.sharpe_gap", "value": gap,
                  "n": flip.get("n", 0), "source": "flip_analysis"},
                 confidence="medium",
+            )
+
+    def _manual_rule_indicator_periods(self) -> None:
+        """Surface poor-accuracy indicators as manual-obs period review suggestions.
+
+        Mirrors Claude's behavioral rule: 'Propose [indicator period changes] only when
+        an indicator's per_indicator accuracy is consistently poor at N≥50, with the
+        period change as the operator-reviewable hypothesis.'
+        """
+        per_ind = self.analysis.get("per_indicator", {})
+        if not per_ind:
+            return
+        for ind in ("rsi", "macd", "stochastic", "obv", "vwap"):
+            stats = per_ind.get(ind, {})
+            acc = float(stats.get("accuracy", 0))
+            n = int(stats.get("sample_size", 0))
+            if n < 50:
+                continue
+            # Use per-indicator noise (more accurate than overall/5 estimate)
+            ind_noise_2x = 2.0 * math.sqrt(0.25 / n)
+            below_chance = 0.50 - ind_noise_2x
+            if acc >= below_chance:
+                continue
+            period_key = f"indicators.{ind}.period"
+            cur_period = _cfg_get(self.cfg, period_key)
+            if cur_period and isinstance(cur_period, (int, float)) and int(cur_period) > 0:
+                suggested_period = round(int(cur_period) * 1.25)
+            else:
+                suggested_period = None
+            self._emit_manual(
+                period_key,
+                cur_period,
+                suggested_period,
+                f"{ind} accuracy {acc:.0%} at N={n} (below {below_chance:.0%} noise floor) "
+                f"— signal is anti-predictive; review period or consider disabling",
+                {"metric": f"per_indicator.{ind}.accuracy", "value": acc, "n": n,
+                 "source": "per_indicator"},
+                confidence="low",
             )
