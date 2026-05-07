@@ -114,7 +114,7 @@ class BybitFeed:
     from WS tick messages — no REST poll needed.
     """
 
-    def __init__(self, ws_url: str = WS_URL, rest_url: str = REST_URL) -> None:
+    def __init__(self, ws_url: str = WS_URL) -> None:
         self.ws_url: str = ws_url
         self.state: BybitState = BybitState()
         self._running: bool = False
