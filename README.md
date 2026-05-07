@@ -13,12 +13,6 @@ cp polybot/config/.env.example polybot/config/.env
 # Edit .env with your keys (minimum: ANTHROPIC_API_KEY, DISCORD_BOT_TOKEN)
 # For live trading: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER
 
-# Paper trading (simulated, persistent bankroll across sessions)
-python -m polybot.main --mode paper
-
-# Live trading (real USDC on Polymarket via EIP-712 signed CLOB orders)
-python -m polybot.main --mode live
-
 # Defaults to mode in settings.yaml
 python -m polybot.main
 
