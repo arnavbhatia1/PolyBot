@@ -118,30 +118,19 @@ class LocalRecommender:
             self.warnings.append(f"Only {n} trades — insufficient data, no changes applied")
             return self._envelope(confidence="low", reasoning="Insufficient data (N<50).")
 
-        # Run rule modules in priority order. Each may append to self.proposals.
-        # We stop accepting proposals when we have 5 OR have covered ≥3 families
-        # and exhausted the high-conviction rules.
-        self._rule_calibration_drift()       # calibration family
-        self._rule_scalp_overconfidence()    # calibration / volatility_core (counterfactuals)
-        self._rule_edge_quartile_overconf()  # calibration / volatility_core
-        self._rule_flow_stack()              # flow_stack
-        self._rule_momentum_regime()         # momentum_regime
-        self._rule_volatility_core()         # volatility_core
-        self._rule_student_t_df()            # volatility_core: tail fatness from ATR regime
-        self._rule_min_atr()                 # calibration: ATR floor from low-vol regime
-        self._rule_prev_margin_weight()      # momentum_regime: L5 from empirical table
-        self._rule_sizing_from_drawdown()    # sizing
-        self._rule_gates_from_ghosts()       # gates
-        self._rule_indicator_weights()       # L4 sub-mix (only if L4 is active)
+        # Run rule modules in priority order.
+        self._rule_calibration_drift()       # calibration: per-bucket drift → compression
+        self._rule_scalp_overconfidence()    # calibration / L1: counterfactual → params
+        self._rule_flow_stack()              # flow_stack: empirical-table best signal
+        self._rule_momentum_regime()         # momentum_regime: regime Sharpe gap
+        self._rule_gates_from_ghosts()       # gates: profitable ghosts → loosen
+        self._rule_indicator_weights()       # L4: reweight if clear winner
 
-        # Manual-only triggers (never auto-applied; surfaced for operator)
+        # Manual-only triggers
         self._manual_rule_exit_threshold()
-        self._manual_rule_max_edge()
         self._manual_rule_adverse_selection()
         self._manual_rule_late_window_prob()
-        self._manual_rule_entry_phase()
         self._manual_rule_flip()
-        self._manual_rule_indicator_periods()  # poor indicator accuracy → period review
 
         # Collect key findings from sections not covered by proposal rules
         self._collect_key_findings()
@@ -484,31 +473,6 @@ class LocalRecommender:
                         f"probability_compression {cur:.2f}→{new_val:.2f}"
                     )
 
-    def _rule_edge_quartile_overconf(self) -> None:
-        """atr_sigma_ratio — widen if Q4 underrealizes AND probability_compression is already maxed-out."""
-        er_q = self.analysis.get("edge_realization_quartiles", [])
-        if not er_q or len(er_q) < 4:
-            return
-        avg_realization = sum(er_q) / len(er_q)
-        if avg_realization >= 0.75:
-            return
-        if self._is_improving("edge realization"):
-            return
-        cur = float(self.cfg.get("atr_sigma_ratio", 1.4))
-        # Lower atr_sigma_ratio = sharper probabilities (more aggressive)
-        # Raise it = wider, less confident (mitigates overconfidence)
-        ok_up, why_up = self._direction_ok("atr_sigma_ratio", "up")
-        if not ok_up:
-            self.findings.append(f"atr_sigma_ratio (up): skip ({why_up})")
-            return
-        new_val = self._decisive_value("atr_sigma_ratio", cur, "up", min_step=0.20)
-        self._propose(
-            "atr_sigma_ratio", new_val,
-            f"avg edge realization {avg_realization:.0%} — widen L1 sigma to reduce overconfidence",
-            predicted_delta=0.018,
-            ci=(-0.010, 0.045),
-        )
-
     def _rule_flow_stack(self) -> None:
         """flow_weight / spot_flow_weight / liquidation_weight — chase the strongest signal in flow_stack."""
         # Prefer the signal with the strongest historical bt_delta in the directional table.
@@ -568,60 +532,6 @@ class LocalRecommender:
                     f"trending Sharpe {t_sharpe:+.3f} > reverting {r_sharpe:+.3f} by >2σ — strengthen L2",
                     predicted_delta=0.015,
                     ci=(-0.008, 0.035),
-                )
-
-    def _rule_volatility_core(self) -> None:
-        """logit_scale — amplify if signals are predictive but weak."""
-        # If the empirical table shows consistent positive flow_stack BT Δs
-        # AND avg edge realization is fine, the signals work; amplify them.
-        flow_positive = any(
-            (self._dir_table.get((p, "up"), {}).get("bt_delta") or 0) > 0.005
-            for p in ("flow_weight", "spot_flow_weight")
-        )
-        er_q = self.analysis.get("edge_realization_quartiles", [])
-        avg_er = (sum(er_q) / len(er_q)) if er_q else 0.7
-        if flow_positive and avg_er >= 0.70:
-            cur = float(self.cfg.get("logit_scale", 4.0))
-            ok, why = self._direction_ok("logit_scale", "up")
-            if not ok:
-                return
-            new_val = self._decisive_value("logit_scale", cur, "up", min_step=0.5)
-            self._propose(
-                "logit_scale", new_val,
-                "flow signals show positive BT Δ and edge realization >70% — amplify L2-L5",
-                predicted_delta=0.015,
-                ci=(-0.012, 0.038),
-            )
-
-    def _rule_sizing_from_drawdown(self) -> None:
-        """kelly_fraction — only touch on strong evidence (otherwise stays put)."""
-        overall = self.analysis.get("overall", {})
-        tw = self.analysis.get("time_weighted", overall)
-        wr_tw = float(tw.get("win_rate", 0))
-        sharpe_tw = float(tw.get("sharpe", 0))
-        n = int(overall.get("total_trades", 0))
-        if n < 100:
-            return
-        cur = float(self.cfg.get("kelly_fraction", 0.15))
-        # Reduce on weakness — but only when meaningfully below 50%.
-        if wr_tw < 0.48 and sharpe_tw < 0.05:
-            target = max(0.05, round(cur * 0.85, 4))
-            if target != cur:
-                self.warnings.append(f"Time-weighted WR {wr_tw:.0%} + Sharpe {sharpe_tw:+.2f} — recent weakness")
-                self._propose(
-                    "kelly_fraction", target,
-                    f"recent WR {wr_tw:.0%} and Sharpe {sharpe_tw:+.2f} — trim sizing 15%",
-                    predicted_delta=0.010,
-                    ci=(-0.005, 0.022),
-                )
-        elif wr_tw > 0.58 and sharpe_tw > 0.30 and cur < 0.20:
-            target = min(0.25, round(cur * 1.15, 4))
-            if target != cur:
-                self._propose(
-                    "kelly_fraction", target,
-                    f"strong recent WR {wr_tw:.0%} + Sharpe {sharpe_tw:+.2f} — raise sizing 15%",
-                    predicted_delta=0.012,
-                    ci=(-0.005, 0.025),
                 )
 
     def _rule_gates_from_ghosts(self) -> None:
@@ -741,33 +651,6 @@ class LocalRecommender:
                 confidence="medium",
             )
 
-    def _manual_rule_max_edge(self) -> None:
-        ec = self.analysis.get("edge_calibration", {})
-        if not ec:
-            return
-        # Inverted edge-WR pattern — high-edge buckets should win MORE, not less.
-        buckets = list(ec.items())
-        if len(buckets) < 2:
-            return
-        try:
-            high_wr = float(buckets[-1][1].get("win_rate", 0))
-            low_wr = float(buckets[0][1].get("win_rate", 0))
-            high_n = int(buckets[-1][1].get("count", 0))
-            low_n = int(buckets[0][1].get("count", 0))
-        except (KeyError, ValueError, TypeError):
-            return
-        if min(high_n, low_n) < 50:
-            return
-        if low_wr - high_wr > 2 * self._noise["wr_2x"]:
-            cur = float(self.cfg.get("max_edge", 0.20))
-            self._emit_manual(
-                "max_edge", cur, round(max(0.10, cur - 0.05), 3),
-                f"Edge inversion: highest-edge bucket WR {high_wr:.0%} < lowest-edge {low_wr:.0%} — likely stale-price entries",
-                {"metric": "edge_calibration_inversion", "value": low_wr - high_wr,
-                 "n": high_n + low_n, "source": "edge_calibration"},
-                confidence="medium",
-            )
-
     def _manual_rule_adverse_selection(self) -> None:
         ghost = self.analysis.get("ghost_analysis", {})
         gate = ghost.get("by_gate", {}).get("adverse_rate_30s")
@@ -808,50 +691,6 @@ class LocalRecommender:
                     confidence="medium",
                 )
                 break
-
-    def _manual_rule_entry_phase(self) -> None:
-        """Map by_entry_phase to manual-only timing levers.
-
-        normal_fraction (Kelly fraction in early/normal phase) and
-        late_max_penalty (Kelly cut for late-window entries) are manual-only —
-        the backtest can't replay phase-specific Kelly sizing on stored gain_pct.
-        """
-        phase = self.analysis.get("by_entry_phase", {})
-        if not phase:
-            return
-        late = phase.get("late", {})
-        normal = phase.get("normal", {})
-        if late.get("n", 0) >= 50 and normal.get("n", 0) >= 50:
-            late_sharpe = float(late.get("sharpe", 0))
-            norm_sharpe = float(normal.get("sharpe", 0))
-            sharpe_gap = norm_sharpe - late_sharpe
-            if sharpe_gap > 2 * self._noise["sharpe_2x"]:
-                cur = float(self.cfg.get("late_max_penalty", 0.60))
-                self._emit_manual(
-                    "late_max_penalty", cur, round(max(0.20, cur - 0.20), 3),
-                    f"Late-phase Sharpe {late_sharpe:+.3f} trails normal {norm_sharpe:+.3f} "
-                    f"by {sharpe_gap:.3f} (>2σ) — cut Kelly harder in late phase",
-                    {"metric": "by_entry_phase.late_vs_normal_sharpe", "value": sharpe_gap,
-                     "n": late.get("n", 0) + normal.get("n", 0),
-                     "source": "by_entry_phase"},
-                    confidence="medium",
-                )
-        early = phase.get("early", {})
-        if early.get("n", 0) >= 50 and normal.get("n", 0) >= 50:
-            early_sharpe = float(early.get("sharpe", 0))
-            norm_sharpe = float(normal.get("sharpe", 0))
-            if (early_sharpe - norm_sharpe) > 2 * self._noise["sharpe_2x"]:
-                cur = float(self.cfg.get("normal_fraction", 0.60))
-                self._emit_manual(
-                    "normal_fraction", cur, round(min(0.85, cur + 0.10), 3),
-                    f"Early-phase Sharpe {early_sharpe:+.3f} > normal {norm_sharpe:+.3f} — "
-                    f"give early entries more Kelly headroom",
-                    {"metric": "by_entry_phase.early_vs_normal_sharpe",
-                     "value": early_sharpe - norm_sharpe,
-                     "n": early.get("n", 0) + normal.get("n", 0),
-                     "source": "by_entry_phase"},
-                    confidence="medium",
-                )
 
     # -------- blocked-params and decay-mode init helpers -------- #
 
@@ -914,131 +753,12 @@ class LocalRecommender:
                 f"— capping proposals to 1"
             )
 
-    # -------- new param-family rules -------- #
-
-    def _rule_student_t_df(self) -> None:
-        """Adjust tail fatness (student_t_df) based on ATR-regime performance.
-
-        L1 uses Student-t to capture BTC kurtosis. If high-ATR regime underperforms,
-        the distribution needs fatter tails (lower df) for spike kurtosis. If low-ATR
-        underperforms, thinner tails (higher df) give sharper probabilities in calm periods.
-        """
-        vol_p = self.analysis.get("volatility_patterns", {})
-        if not vol_p:
-            return
-        low = vol_p.get("low_atr", {})
-        high = vol_p.get("high_atr", {})
-        if int(low.get("count", 0)) < 50 or int(high.get("count", 0)) < 50:
-            return
-        low_wr = float(low.get("win_rate", 0))
-        high_wr = float(high.get("win_rate", 0))
-        gap = abs(low_wr - high_wr)
-        if gap <= 2 * self._noise["wr_2x"]:
-            return
-        cur = float(self.cfg.get("student_t_df", 5))
-        if low_wr - high_wr > 2 * self._noise["wr_2x"]:
-            direction, new_val = "down", max(3, int(cur) - 1)
-            reason = (f"high-ATR WR {high_wr:.0%} trails low-ATR {low_wr:.0%} by >2σ "
-                      f"— fatter tails (lower df) for spike regimes")
-        else:
-            direction, new_val = "up", min(8, int(cur) + 1)
-            reason = (f"low-ATR WR {low_wr:.0%} trails high-ATR {high_wr:.0%} by >2σ "
-                      f"— thinner tails for calm regimes")
-        ok, why = self._direction_ok("student_t_df", direction)
-        if not ok:
-            self.findings.append(f"student_t_df: skip ({why})")
-            return
-        if self._propose("student_t_df", new_val, reason, predicted_delta=0.015,
-                         ci=(-0.010, 0.038)):
-            self.findings.append(f"ATR-regime WR gap {gap:.0%}: student_t_df {int(cur)}→{new_val}")
-
-    def _rule_min_atr(self) -> None:
-        """Raise min_atr when low-ATR regime significantly underperforms overall.
-
-        Low-ATR entries happen in thin/quiet markets where BTC hugs the strike —
-        often near-coin-flip outcomes. Raising the floor filters them preemptively.
-        """
-        vol_p = self.analysis.get("volatility_patterns", {})
-        if not vol_p:
-            return
-        low = vol_p.get("low_atr", {})
-        n_low = int(low.get("count", 0))
-        if n_low < 50:
-            return
-        low_wr = float(low.get("win_rate", 0))
-        overall_wr = float(self.analysis.get("overall", {}).get("win_rate", 0))
-        if not (overall_wr - low_wr > 2 * self._noise["wr_2x"]):
-            return
-        cur = float(self.cfg.get("min_atr", 8.0))
-        ok, why = self._direction_ok("min_atr", "up")
-        if not ok:
-            self.findings.append(f"min_atr (up): skip ({why})")
-            return
-        new_val = self._decisive_value("min_atr", cur, "up", min_step=2.0)
-        if self._propose(
-            "min_atr", new_val,
-            f"low-ATR WR {low_wr:.0%} vs overall {overall_wr:.0%} (>2σ, n={n_low}) "
-            f"— raise ATR floor to filter thin-market entries",
-            predicted_delta=0.016, ci=(-0.008, 0.036),
-        ):
-            self.findings.append(f"Low-ATR underperforms (n={n_low}): min_atr {cur}→{new_val:.1f}")
-
-    def _rule_prev_margin_weight(self) -> None:
-        """prev_margin_weight (L5) from the empirical directional table.
-
-        L5 is rarely targeted by the higher-priority rules. If the table shows
-        consistent positive BT delta for a direction and the momentum_regime family
-        slot is still free, propose it.
-        """
-        if "momentum_regime" in self._families_used:
-            return
-        cur = float(self.cfg.get("prev_margin_weight", 0.02))
-        for direction in ("up", "down"):
-            entry = self._dir_table.get(("prev_margin_weight", direction))
-            if not entry:
-                continue
-            if entry.get("decays"):
-                continue
-            bt = entry.get("bt_delta")
-            n = int(entry.get("n", 0))
-            if bt is None or n < 2 or bt <= 0.005:
-                continue
-            ok, why = self._direction_ok("prev_margin_weight", direction)
-            if not ok:
-                continue
-            new_val = self._decisive_value("prev_margin_weight", cur, direction, min_step=0.01)
-            if self._propose(
-                "prev_margin_weight", new_val,
-                f"empirical table: prev_margin_weight {direction} avg BT Δ {bt:+.3f} (n={n})",
-                predicted_delta=max(0.010, bt * 0.5),
-                ci=(-0.008, max(0.020, bt)),
-            ):
-                return
-
     # -------- key findings from sections not covered by proposal rules -------- #
 
     def _collect_key_findings(self) -> None:
-        """Surface diagnostics from analysis sections that don't produce backtestable
-        proposals but are important for the operator — mirrors what Claude puts in
-        key_findings and risk_warnings from distribution shifts, current-regime
-        divergence, side imbalance, gate stats, execution quality, and Platt meta.
+        """Surface diagnostics that don't produce backtestable proposals:
+        current-regime divergence, side imbalance, gate stats, execution quality, Platt meta.
         """
-        # Distribution shifts
-        shifts = self.analysis.get("distribution_shifts", {})
-        if shifts:
-            for feat in list(shifts.keys())[:2]:
-                info = shifts[feat]
-                self.findings.append(
-                    f"KS shift in {feat}: stat={info.get('statistic', 0):.2f} "
-                    f"p={info.get('p_value', 1.0):.3f} — recent distribution changed"
-                )
-            significant = [f for f, d in shifts.items() if d.get("p_value", 1.0) < 0.05]
-            if significant:
-                self.warnings.append(
-                    f"Significant distribution shift in {', '.join(significant[:2])} "
-                    f"— historical edge may not hold in current conditions"
-                )
-
         # Current-regime divergence (last ~100 trades vs overall history)
         cur_reg = self.analysis.get("current_regime", {})
         overall_wr = float(self.analysis.get("overall", {}).get("win_rate", 0))
@@ -1150,40 +870,3 @@ class LocalRecommender:
                 confidence="medium",
             )
 
-    def _manual_rule_indicator_periods(self) -> None:
-        """Surface poor-accuracy indicators as manual-obs period review suggestions.
-
-        Mirrors Claude's behavioral rule: 'Propose [indicator period changes] only when
-        an indicator's per_indicator accuracy is consistently poor at N≥50, with the
-        period change as the operator-reviewable hypothesis.'
-        """
-        per_ind = self.analysis.get("per_indicator", {})
-        if not per_ind:
-            return
-        for ind in ("rsi", "macd", "stochastic", "obv", "vwap"):
-            stats = per_ind.get(ind, {})
-            acc = float(stats.get("accuracy", 0))
-            n = int(stats.get("sample_size", 0))
-            if n < 50:
-                continue
-            # Use per-indicator noise (more accurate than overall/5 estimate)
-            ind_noise_2x = 2.0 * math.sqrt(0.25 / n)
-            below_chance = 0.50 - ind_noise_2x
-            if acc >= below_chance:
-                continue
-            period_key = f"indicators.{ind}.period"
-            cur_period = _cfg_get(self.cfg, period_key)
-            if cur_period and isinstance(cur_period, (int, float)) and int(cur_period) > 0:
-                suggested_period = round(int(cur_period) * 1.25)
-            else:
-                suggested_period = None
-            self._emit_manual(
-                period_key,
-                cur_period,
-                suggested_period,
-                f"{ind} accuracy {acc:.0%} at N={n} (below {below_chance:.0%} noise floor) "
-                f"— signal is anti-predictive; review period or consider disabling",
-                {"metric": f"per_indicator.{ind}.accuracy", "value": acc, "n": n,
-                 "source": "per_indicator"},
-                confidence="low",
-            )

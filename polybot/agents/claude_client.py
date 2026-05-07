@@ -724,6 +724,22 @@ def _section_counterfactual(ana: dict[str, Any]) -> str:
         for bucket, stats in time_acc.items():
             lines.append(f"  {bucket}: accuracy={stats.get('scalp_accuracy', 0):.1%} n={stats.get('count', 0)}")
 
+    # Segment table: actionable exit patterns by (time × edge × regime)
+    segments = cf.get("segments", [])
+    actionable = [s for s in segments if s.get("signal") != "neutral"]
+    if actionable:
+        lines.append("\nExit pattern segments (N≥5, non-neutral only — maps to exit_edge_threshold / loss_cut params):")
+        lines.append(f"  {'Time':<10} {'Edge':<18} {'Regime':<12} {'N':>4} {'Acc':>6} {'AvgΔ':>7}  Signal")
+        for s in sorted(actionable, key=lambda x: x.get("n", 0), reverse=True)[:12]:
+            lines.append(
+                f"  {s['time']:<10} {s['edge']:<18} {s['regime']:<12} {s['n']:>4} "
+                f"{s['scalp_accuracy']:>5.0%} {s['avg_pnl_delta']:>+7.4f}  {s['signal']}"
+            )
+        lines.append(
+            "  scalping_too_early → exit_edge_threshold more negative (manual) or model params to slow exit.\n"
+            "  scalping_correct   → well-calibrated; if loss_cut could be more aggressive, raise loss_cut_fraction."
+        )
+
     # Hold counterfactual summary
     h_total = cf.get("total_holds_tracked", 0)
     if h_total > 0:

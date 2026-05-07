@@ -1713,17 +1713,8 @@ class AgentScheduler:
         if platt_info.get("meta_warning"):
             analysis["platt_meta_warning"] = platt_info["meta_warning"]
 
-        # Distribution shift detection (recent 50 vs historical)
-        from polybot.agents.pipeline_analytics import detect_distribution_shift, aggregate_sprt_evidence, format_trends
-        if len(all_outcomes) > 100:
-            recent_50 = all_outcomes[-50:]
-            historical = all_outcomes[:-50]
-            shifts = detect_distribution_shift(recent_50, historical)
-            if shifts:
-                analysis["distribution_shifts"] = shifts
-                pipeline_info["distribution_shifts"] = list(shifts.keys())
-
-        # SPRT aggregate evidence — modulates adoption urgency
+        # SPRT aggregate evidence
+        from polybot.agents.pipeline_analytics import aggregate_sprt_evidence, format_trends
         sprt_agg = aggregate_sprt_evidence(all_outcomes, recent_n=50)
         analysis["sprt_aggregate"] = sprt_agg
         pipeline_info["sprt"] = sprt_agg

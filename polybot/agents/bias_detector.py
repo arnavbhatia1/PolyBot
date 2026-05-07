@@ -502,7 +502,73 @@ class BiasDetector:
                 "avg_worst_edge_suboptimal_holds": _avg_edge_hold(h_suboptimal_records),
             })
 
+        # Segment analysis: cross-table of (time × edge × regime) → scalp accuracy
+        segments = self._analyze_counterfactual_segments(counterfactuals)
+        if segments:
+            result["segments"] = segments
+
         return result
+
+    def _analyze_counterfactual_segments(self, counterfactuals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Segment scalp counterfactuals by (time × holding_edge × regime) to surface
+        actionable patterns: when is the bot scalping too early, and under what conditions
+        should it hold vs exit quickly?
+
+        Each row with N≥5 maps directly to a manual-only lever:
+        - scalp_accuracy < 0.45 → exit_edge_threshold too aggressive in this segment
+        - scalp_accuracy > 0.80 → scalping correct; loss_cut could be more aggressive
+        - Regime + time patterns → timing adjustments (final_min_probability, loss_cut_time_s)
+        """
+        scalps = [c for c in counterfactuals if "scalp_was_optimal" in c]
+        if len(scalps) < 10:
+            return []
+
+        time_buckets = [("0-30s", 0, 30), ("30-90s", 30, 90), ("90-180s", 90, 180), ("180s+", 180, 9999)]
+        edge_buckets = [("near_threshold", -0.08, 0.0), ("moderate", -0.15, -0.08), ("strong", -9.99, -0.15)]
+        regimes = ["trending", "trending_up", "trending_down", "reverting", "volatile", "quiet", "neutral", "unknown"]
+
+        def _regime_group(r: str) -> str:
+            if r in ("trending", "trending_up", "trending_down"):
+                return "trending"
+            if r in ("reverting",):
+                return "reverting"
+            if r in ("volatile",):
+                return "volatile"
+            return "other"
+
+        segments = []
+        for t_label, t_lo, t_hi in time_buckets:
+            for e_label, e_lo, e_hi in edge_buckets:
+                for rg in ("trending", "reverting", "volatile", "other"):
+                    bucket = []
+                    for c in scalps:
+                        ctx = c.get("context_at_scalp", {})
+                        secs = ctx.get("seconds_remaining", 0)
+                        edge = ctx.get("holding_edge", 0)
+                        regime = _regime_group(ctx.get("regime", "unknown"))
+                        if t_lo <= secs < t_hi and e_lo <= edge < e_hi and regime == rg:
+                            bucket.append(c)
+                    if len(bucket) < 5:
+                        continue
+                    opt = sum(1 for c in bucket if c.get("scalp_was_optimal", True))
+                    acc = opt / len(bucket)
+                    pnl_gap = sum(c.get("delta_pnl", 0) for c in bucket) / len(bucket)
+                    if acc < 0.45:
+                        signal = "scalping_too_early"
+                        suggestion = "exit_edge_threshold more negative OR hold longer in this regime/time window"
+                    elif acc > 0.80:
+                        signal = "scalping_correct"
+                        suggestion = "exit timing is well-calibrated here"
+                    else:
+                        signal = "neutral"
+                        suggestion = ""
+                    segments.append({
+                        "time": t_label, "edge": e_label, "regime": rg,
+                        "n": len(bucket), "scalp_accuracy": round(acc, 3),
+                        "avg_pnl_delta": round(pnl_gap, 4),
+                        "signal": signal, "suggestion": suggestion,
+                    })
+        return segments
 
     def _analyze_overall(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         """Aggregate statistics across all trades."""

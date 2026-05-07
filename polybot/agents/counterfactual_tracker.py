@@ -83,6 +83,10 @@ class CounterfactualTracker:
             "exit_threshold_used": scalp_context.get("exit_threshold", -0.10),
             "strike_price": scalp_context.get("strike_price", 0),
             "btc_at_scalp": scalp_context.get("btc_price", 0),
+            "flow_score": scalp_context.get("flow_score", 0.0),
+            "spot_flow_signal": scalp_context.get("spot_flow_signal", 0.0),
+            "regime": scalp_context.get("regime", "unknown"),
+            "btc_distance_atr": scalp_context.get("btc_distance_atr", 0.0),
             "watched_at": time.time(),
         }
         logger.info(f"SCALP watching {_slug_to_window(market_id)} | {pos.get('side', '?')} @ "
@@ -125,6 +129,10 @@ class CounterfactualTracker:
                 "worst_btc_price": hold_context.get("btc_price", 0),
                 "exit_threshold_used": hold_context.get("exit_threshold", -0.10),
                 "strike_price": hold_context.get("strike_price", 0),
+                "flow_score": hold_context.get("flow_score", 0.0),
+                "spot_flow_signal": hold_context.get("spot_flow_signal", 0.0),
+                "regime": hold_context.get("regime", "unknown"),
+                "btc_distance_atr": hold_context.get("btc_distance_atr", 0.0),
                 "worst_at": time.time(),
             }
 
@@ -181,6 +189,10 @@ class CounterfactualTracker:
                 "exit_threshold_used": ctx["exit_threshold_used"],
                 "strike_price": ctx["strike_price"],
                 "btc_at_worst": ctx["worst_btc_price"],
+                "flow_score": ctx.get("flow_score", 0.0),
+                "spot_flow_signal": ctx.get("spot_flow_signal", 0.0),
+                "regime": ctx.get("regime", "unknown"),
+                "btc_distance_atr": ctx.get("btc_distance_atr", 0.0),
                 "worst_at": ctx["worst_at"],
             },
         }
@@ -291,6 +303,10 @@ class CounterfactualTracker:
                     "btc_at_expiry": btc_at_expiry,
                     "chainlink_price_to_beat": chainlink_ptb,
                     "chainlink_final_price": chainlink_fp,
+                    "flow_score": ctx.get("flow_score", 0.0),
+                    "spot_flow_signal": ctx.get("spot_flow_signal", 0.0),
+                    "regime": ctx.get("regime", "unknown"),
+                    "btc_distance_atr": ctx.get("btc_distance_atr", 0.0),
                 },
             }
 

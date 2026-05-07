@@ -36,7 +36,7 @@ Drift → multiplier: 3pp → 1.0, 25pp → 0.5, linear, floored at 0.5. Min sam
 
 ## Sizing & Exit
 
-**Sizing chain:** `min(bankroll × kelly, max_single_pct, max_single_usd) × breaker_mult × uncertainty_discount × time_mult × concurrent_mult`. Caps apply to the raw Kelly first so soft discounts actually reduce below the cap.
+**Sizing chain:** `bankroll × kelly_size × breaker_mult × time_mult × concurrent_mult`, then clipped to `bankroll × max_bankroll_deployed` and `book_depth × max_book_fill_pct`.
 
 **Concurrent multiplier** is correlation-aware + size-weighted: same-side (ρ≈0.75) at full size → 0.35×; opposite-side (ρ≈-0.25) → 0.90×. Correlation contribution scales by `existing_size / max_single_usd`.
 
@@ -169,11 +169,10 @@ python -m pytest polybot/tests/          # Test suite
 | Source | Purpose |
 |---|---|
 | Coinbase WS | Primary BTC price (fastest, leads 0.5–2s) |
-| Kraken WS | Secondary BTC price (Chainlink oracle source) |
-| Binance.US WS | 1-min candles, ATR, CVD, depth (NOT .com — 451) |
+| Binance.US WS | 1-min candles, ATR, CVD, depth (NOT .com — 451); fallback BTC price |
 | Polymarket CLOB `/price?side=BUY|SELL` | Execution price (negRisk cross-matched) |
 | Polymarket Gamma `/events?slug=...` | Contract discovery, resolution |
-| Bybit WS | OI + perp price (REST 403 for US — WS only) |
+| Bybit WS | OI + perp price + funding (all via WS — REST is US geo-blocked, WS is not) |
 | Chainlink RTDS | Strike + resolution + orphan fallback |
 
 **Never use:** raw CLOB book for pricing (use `/price`), Gamma `outcomePrices` for edge (stale), Binance for resolution.

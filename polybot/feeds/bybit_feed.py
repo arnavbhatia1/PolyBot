@@ -1,12 +1,13 @@
 """Bybit BTC perpetual futures feed.
 
-Provides three signals from leveraged futures market data:
+Provides three signals from the leveraged futures market:
 1. Price lead — perp vs spot divergence (leveraged traders react first)
 2. Funding rate — contrarian crowding indicator
-3. Staleness detection — spot lagging perp indicates latency arbitrage window
+3. Open interest changes — liquidation pressure for L3e
 
-Pure functions for computation, BybitState dataclass for state,
-BybitFeed class for WebSocket consumption.
+All data arrives via the public WebSocket (no geo-block for US IPs).
+The REST endpoint is geo-blocked for US; all required fields are in the
+v5 tickers.BTCUSDT WS payload so no REST poll is needed.
 """
 from __future__ import annotations
 
@@ -15,20 +16,12 @@ import json
 import logging
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
-
-import httpx
 
 logger = logging.getLogger(__name__)
 
-# Bybit public linear perpetual WebSocket
 WS_URL = "wss://stream.bybit.com/v5/public/linear"
-REST_URL = "https://api.bybit.com"  # base; endpoints are appended by the caller
-FUNDING_POLL_INTERVAL = 300  # seconds — REST backup for funding rate
-# Bybit geo-blocks US IPs on REST (HTTP 403). After we see this once we stop polling
-# to avoid burning CPU and log-spamming — WS remains the primary source.
-_REST_STOP_STATUSES = frozenset({401, 403, 451})
 RECONNECT_BASE = 1
 RECONNECT_MAX = 30
 
@@ -116,24 +109,22 @@ class BybitState:
 class BybitFeed:
     """WebSocket consumer for Bybit BTC perpetual futures.
 
-    Subscribes to tickers.BTCUSDT on the linear perpetual stream.
-    Updates BybitState with lastPrice and fundingRate from tick messages.
-    REST polls funding rate every 300s as backup.
+    Subscribes to tickers.BTCUSDT on the v5 linear perpetual stream.
+    Updates BybitState with lastPrice, fundingRate, and openInterest
+    from WS tick messages — no REST poll needed.
     """
 
     def __init__(self, ws_url: str = WS_URL, rest_url: str = REST_URL) -> None:
         self.ws_url: str = ws_url
-        self.rest_url: str = rest_url
         self.state: BybitState = BybitState()
         self._running: bool = False
         self._ws: Any = None
         self._tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
-        """Launch WebSocket connection and REST polling as background tasks."""
+        """Launch WebSocket connection."""
         self._running = True
         self._tasks.append(asyncio.create_task(self._connect_ws()))
-        self._tasks.append(asyncio.create_task(self._poll_funding()))
 
     async def stop(self) -> None:
         """Cleanly shut down all tasks."""
@@ -179,28 +170,17 @@ class BybitFeed:
                 backoff = min(backoff * 2, RECONNECT_MAX)
 
     def _handle_message(self, data: dict[str, Any]) -> None:
-        """Process a Bybit tickers message.
+        """Process a Bybit v5 tickers.BTCUSDT message (snapshot or delta).
 
-        Expected format:
-        {
-            "topic": "tickers.BTCUSDT",
-            "type": "snapshot" | "delta",
-            "data": {
-                "lastPrice": "73050.00",
-                "fundingRate": "0.0001",
-                "nextFundingTime": "1712793600000",
-                ...
-            }
-        }
+        Delta messages only contain changed fields — each field is updated
+        only when present. openInterest is in the same WS payload, eliminating
+        the need for a geo-blocked REST poll.
         """
-        topic = data.get("topic", "")
-        if topic != "tickers.BTCUSDT":
+        if data.get("topic") != "tickers.BTCUSDT":
             return
-
         ticker = data.get("data", {})
         if not ticker:
             return
-
         now = time.time()
 
         last_price = ticker.get("lastPrice")
@@ -226,58 +206,16 @@ class BybitFeed:
             except (ValueError, TypeError):
                 pass
 
-    async def _poll_funding(self) -> None:
-        """REST backup: poll funding rate every FUNDING_POLL_INTERVAL seconds.
-
-        Stops permanently on the first geo-block / auth response (403/401/451) so we
-        don't burn CPU and flood logs retrying a blocked endpoint — WS carries the
-        primary stream regardless.
-        """
-        endpoint = f"{self.rest_url}/v5/market/tickers"
-        while self._running:
+        # OI arrives in the WS ticker — no REST needed, no geo-block.
+        oi = ticker.get("openInterest")
+        if oi is not None:
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.get(
-                        endpoint,
-                        params={"category": "linear", "symbol": "BTCUSDT"},
-                    )
-                    resp.raise_for_status()
-                    result = resp.json().get("result", {})
-                    items = result.get("list", [])
-                    if items:
-                        ticker = items[0]
-                        funding = ticker.get("fundingRate")
-                        if funding is not None:
-                            self.state.funding_rate = float(funding)
-                            self.state.funding_updated = time.time()
-                        next_ft = ticker.get("nextFundingTime")
-                        if next_ft is not None:
-                            self.state.next_funding_time = float(next_ft) / 1000.0
-                        oi = ticker.get("openInterest")
-                        if oi:
-                            self.state.open_interest_prev = self.state.open_interest
-                            self.state.price_at_oi_prev = self.state.price_at_oi
-                            self.state.open_interest = float(oi)
-                            self.state.price_at_oi = self.state.perp_price
-                            self.state.oi_updated = time.time()
-                        logger.debug(
-                            f"Bybit REST funding: rate={self.state.funding_rate}, "
-                            f"next={self.state.next_funding_time}"
-                        )
-            except asyncio.CancelledError:
-                break
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code in _REST_STOP_STATUSES:
-                    logger.warning(
-                        f"Bybit REST blocked (HTTP {e.response.status_code}) — "
-                        f"disabling REST poll, WS remains primary"
-                    )
-                    return
-                logger.warning(f"Bybit REST funding poll HTTP {e.response.status_code}: {e}")
-            except Exception as e:
-                logger.warning(f"Bybit REST funding poll failed: {e}")
-
-            try:
-                await asyncio.sleep(FUNDING_POLL_INTERVAL)
-            except asyncio.CancelledError:
-                break
+                new_oi = float(oi)
+                if new_oi > 0 and new_oi != self.state.open_interest:
+                    self.state.open_interest_prev = self.state.open_interest
+                    self.state.price_at_oi_prev = self.state.price_at_oi
+                    self.state.open_interest = new_oi
+                    self.state.price_at_oi = self.state.perp_price
+                    self.state.oi_updated = now
+            except (ValueError, TypeError):
+                pass
