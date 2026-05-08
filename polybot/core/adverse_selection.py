@@ -52,7 +52,7 @@ class AdverseSelectionMonitor:
         if rate > 0.55: # being picked off
     """
 
-    def __init__(self, max_fills: int = 200, check_windows: tuple[float, ...] = (10.0, 30.0, 60.0),
+    def __init__(self, max_fills: int = 20, check_windows: tuple[float, ...] = (10.0, 30.0, 60.0),
                  state_path: Path | None = None) -> None:
         self.max_fills = max_fills
         self.check_windows = check_windows
@@ -79,7 +79,7 @@ class AdverseSelectionMonitor:
                 "saved_at": time.time(),
                 "fills": [asdict(f) for f in self._fills],
             }
-            self._state_path.write_text(json.dumps(payload))
+            self._state_path.write_text(json.dumps(payload, indent=2))
         except Exception as e:
             logger.warning(f"AdverseSelectionMonitor save failed: {e}")
 
