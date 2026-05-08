@@ -73,6 +73,8 @@ class IndicatorEngine:
         self.params: dict[str, dict[str, Any]] = params or DEFAULT_PARAMS
         self._weights: dict[str, float] = dict(weights) if weights else dict(DEFAULT_WEIGHTS)
         self.normalizer: IndicatorNormalizer = IndicatorNormalizer()
+        self._cache_ts: int = -1
+        self._cached: dict[str, dict[str, Any]] = {}
 
     def get_weights(self) -> dict[str, float]:
         return self._weights.copy()
@@ -81,7 +83,11 @@ class IndicatorEngine:
         """In-place update of L4 indicator weights."""
         self._weights = {**self._weights, **weights}
 
-    def compute_all(self, buffer: CandleBuffer) -> dict[str, dict[str, Any]]:
+    def compute_all(self, buffer: CandleBuffer, *, force: bool = False) -> dict[str, dict[str, Any]]:
+        latest = buffer.latest()
+        ts = latest.timestamp if latest else -1
+        if not force and ts == self._cache_ts and self._cached:
+            return self._cached
         closes = buffer.get_closes()
         highs = buffer.get_highs()
         lows = buffer.get_lows()
@@ -100,6 +106,8 @@ class IndicatorEngine:
             if ind_name in result and "score" in result[ind_name]:
                 result[ind_name]["norm_score"] = self.normalizer.normalize(
                     ind_name, result[ind_name]["score"])
+        self._cache_ts = ts
+        self._cached = result
         return result
 
     def get_snapshot(self, indicators: dict[str, dict[str, Any]]) -> dict[str, Any]:

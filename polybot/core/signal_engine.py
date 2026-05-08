@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-from scipy.stats import t as student_t
+from scipy.special import stdtr as _stdtr  # direct C impl, ~10x faster than scipy.stats.t.cdf
 
 from polybot.core.exit_boundary import ExitBoundary
 
@@ -215,9 +215,8 @@ class SignalEngine:
             return 0.5
 
         z = distance / vol_scaled
-        # Scale z by sqrt(df/(df-2)) so ATR (≈σ_true) matches t-distribution variance
         t_scale = math.sqrt(self.student_t_df / (self.student_t_df - 2)) if self.student_t_df > 2 else 1.0
-        prob_up = float(student_t.cdf(z * t_scale, df=self.student_t_df))
+        prob_up = float(_stdtr(self.student_t_df, z * t_scale))
 
         prob_up = max(0.001, min(0.999, prob_up))
         logit_p = math.log(prob_up / (1.0 - prob_up))

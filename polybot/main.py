@@ -177,6 +177,23 @@ def flush_gate_stats() -> None:
 # Per-window flip state: tracks flip count and last side
 _window_flip_state: dict[str, dict] = {}  # window_id -> {flip_count, last_side}
 
+# 1-second open-positions cache: avoids repeated SQLite round-trips in the hot path.
+_open_positions_cache: list = []
+_open_positions_cache_ts: float = 0.0
+
+async def _get_open_positions_cached(db: Any) -> list:
+    global _open_positions_cache, _open_positions_cache_ts
+    now = time.time()
+    if now - _open_positions_cache_ts < 1.0:
+        return _open_positions_cache
+    _open_positions_cache = await db.get_open_positions()
+    _open_positions_cache_ts = now
+    return _open_positions_cache
+
+# Rate-limit counterfactual resolution checks (Gamma REST calls, no need every tick).
+_last_cf_check_ts: float = 0.0
+_CF_CHECK_INTERVAL = 30.0  # seconds
+
 
 def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
     """Construct SignalEngine from config — shared between pipeline and main."""
@@ -208,38 +225,16 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
 def compute_time_multiplier(prob: float, seconds_remaining: float,
                             window_seconds: float = 300.0,
                             normal_fraction: float = 0.60,
-                            late_max_penalty: float = 0.60) -> dict:
-    """Continuous confidence-conditional time decay for Kelly sizing.
-
-    Instead of hard phase steps (1.0 → 0.7 → 0.5), uses a smooth function
-    where high-conviction trades are barely penalized late in the window,
-    but ATM trades near expiry are heavily penalized.
-
-    Key insight: time penalty should be inversely proportional to conviction.
-    A 92% prob at T-45s is a better trade than 72% at T-120s.
-    """
-    T = window_seconds
-    t = seconds_remaining
-    time_fraction = t / T  # 1.0 at open, 0.0 at expiry
-
-    # Conviction: 0 at 50% prob, 1 at 100% prob
+                            late_max_penalty: float = 0.60) -> tuple[float, str]:
+    """Returns (kelly_multiplier, phase). High-conviction entries barely penalized late."""
+    time_fraction = seconds_remaining / window_seconds
     conviction = 2.0 * abs(prob - 0.5)
-
     if time_fraction >= normal_fraction:
-        phase = "normal"
-        multiplier = 1.0
-    else:
-        phase = "late" if t >= 30 else "final"
-        late_depth = (normal_fraction - time_fraction) / normal_fraction  # 0→1
-        atm_exposure = 1.0 - conviction
-        penalty = late_depth * atm_exposure * late_max_penalty
-        multiplier = max(0.40, 1.0 - penalty)
-
-    return {
-        "allowed": True,  # SPRT owns observation, no hard block
-        "kelly_multiplier": multiplier,
-        "phase": phase,
-    }
+        return 1.0, "normal"
+    phase = "late" if seconds_remaining >= 30 else "final"
+    late_depth = (normal_fraction - time_fraction) / normal_fraction
+    penalty = late_depth * (1.0 - conviction) * late_max_penalty
+    return max(0.40, 1.0 - penalty), phase
 
 
 async def _get_contract_prices(market_scanner: Any, market_id: str, http_client: Any = None) -> dict[str, Any] | None:
@@ -497,7 +492,7 @@ async def _evaluate_signal_and_enter(
 
     # Continuous time multiplier: penalizes ATM trades late, barely penalizes high-conviction trades
     timing_cfg = config.get("entry_timing", {})
-    entry_phase = compute_time_multiplier(
+    time_mult, phase = compute_time_multiplier(
         prob=signal.prob,
         seconds_remaining=contract["seconds_remaining"],
         normal_fraction=timing_cfg.get("normal_fraction", 0.60),
@@ -507,7 +502,7 @@ async def _evaluate_signal_and_enter(
     # Log signal evaluation once per window so we can see what the model sees
     if eval_window != last_eval_log_window:
         last_eval_log_window = eval_window
-        phase_tag = entry_phase["phase"].upper()
+        phase_tag = phase.upper()
         secs = contract["seconds_remaining"]
         dist = btc_price - strike
         action_color = _C.GREEN if signal.action in ("BUY_YES", "BUY_NO") else _C.DIM
@@ -636,7 +631,7 @@ async def _evaluate_signal_and_enter(
 
 
     raw_kelly_size = bankroll * signal.kelly_size
-    size = round(raw_kelly_size * kelly_mult * entry_phase["kelly_multiplier"], 2)
+    size = round(raw_kelly_size * kelly_mult * time_mult, 2)
 
     # Regime-based Kelly adjustment
     regime_state = None
@@ -644,7 +639,10 @@ async def _evaluate_signal_and_enter(
         atr_val = indicators.get("atr", {}).get("atr", 0)
         atr_history = [c.high - c.low for c in binance_feed.buffer.get_last_n(50)]
         cvd_now = trades_feed.accumulator.get_cvd(120) if trades_feed and trades_feed.accumulator else 0
-        regime_state = _regime_detector.classify(closes, atr_val, atr_history, cvd_now)
+        regime_state = _regime_detector.classify(
+            closes, atr_val, atr_history, cvd_now,
+            autocorr=signal_engine.last_regime_autocorr,  # already computed in compute_probability
+        )
         if regime_state.skip:
             _record_skip(f"regime:{regime_state.name}")
             _log_skip_once(cid, f"regime_{regime_state.name}", f"SKIP: regime={regime_state.name} — no edge in this market state")
@@ -680,7 +678,7 @@ async def _evaluate_signal_and_enter(
             )
             return None, last_eval_log_window
 
-    open_positions = await db.get_open_positions()
+    open_positions = await _get_open_positions_cached(db)
     active_positions = [p for p in open_positions if p.get("status") == "open"]
     if active_positions:
         cc_mult = concurrent_multiplier(side, cid, active_positions)
@@ -770,7 +768,7 @@ async def _evaluate_signal_and_enter(
         "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
         "regime_direction": round(signal_engine.last_regime_direction, 4),
         # Time-of-window classification (used by bias_detector time_patterns + flip analysis)
-        "entry_phase": entry_phase.get("phase", "unknown"),
+        "entry_phase": phase,
         "flip_count": flip_count,
         "is_flip": flip_count > 0,
         # Order-book depth used for the entry gate; useful for retrospective analysis
@@ -850,7 +848,7 @@ async def _evaluate_signal_and_enter(
         logger.info(
             f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
             f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}{slip_note}\n"
-            f"  {contract.get('question', cid)}  [{entry_phase['phase']}]\n"
+            f"  {contract.get('question', cid)}  [{phase}]\n"
             f"  {_C.YELLOW}Why: {_why}{_C.RESET}\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}\n"
             f"{_C.YELLOW}{'=' * 69}{_C.RESET}")
@@ -1796,10 +1794,14 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     if traded_mid:
                         traded_contracts[traded_mid] = int(time.time())
 
-            # --- COUNTERFACTUAL: check watched scalps for resolution ---
+            # --- COUNTERFACTUAL: check watched scalps for resolution (every 30s) ---
             if counterfactual_tracker:
-                await _check_counterfactuals(counterfactual_tracker, ghost_tracker,
-                                             market_scanner, http_client, binance_feed)
+                global _last_cf_check_ts
+                _now_cf = time.time()
+                if _now_cf - _last_cf_check_ts >= _CF_CHECK_INTERVAL:
+                    _last_cf_check_ts = _now_cf
+                    await _check_counterfactuals(counterfactual_tracker, ghost_tracker,
+                                                 market_scanner, http_client, binance_feed)
 
             # --- ENTRY: find contract and evaluate for edge ---
             # Skip new entries when paused (positions still managed above)

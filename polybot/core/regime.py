@@ -65,30 +65,19 @@ class RegimeDetector:
         atr: float,
         atr_history: list[float],
         cvd: float = 0.0,
+        autocorr: float | None = None,
     ) -> RegimeState:
         """Classify the current market regime.
 
-        Parameters
-        ----------
-        closes : np.ndarray
-            Recent close prices (need at least lookback + 2 values).
-        atr : float
-            Current ATR value.
-        atr_history : list[float]
-            Historical ATR values for percentile ranking.
-        cvd : float
-            Cumulative volume delta (positive = net buying).
-
-        Returns
-        -------
-        RegimeState
-            The detected regime with sizing/edge multipliers.
+        ``autocorr`` can be passed in from signal_engine.last_regime_autocorr to
+        avoid recomputing the 1-lag autocorrelation on the same closes array.
         """
         n = self.lookback
         if len(closes) < n + 2 or len(atr_history) < 1:
             return _REGIMES["unknown"]
 
-        autocorr = self._compute_autocorr(closes, n)
+        if autocorr is None:
+            autocorr = self._compute_autocorr(closes, n)
         vol_pct = self._compute_vol_percentile(atr, atr_history)
         dir_ratio = self._compute_directional_ratio(closes, n)
 
