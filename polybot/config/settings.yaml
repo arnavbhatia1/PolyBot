@@ -64,7 +64,7 @@ signal:
   adverse_selection_threshold: 0.85
   late_window_min_prob: 0.4
   exit_edge_threshold: -0.07
-  min_model_probability: 0.58
+  min_model_probability: 0.56
   momentum_weight: -0.02
   regime_weight: 0.03
   regime_lookback: 50
@@ -132,7 +132,7 @@ sprt:
   alpha: 0.05
   beta: 0.1
   observation_interval_s: 10.0
-  min_confidence: 0.20
+  min_confidence: 0.1
 regime:
   lookback: 50
   vol_high_percentile: 75
