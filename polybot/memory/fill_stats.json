@@ -1,10 +1,10 @@
 {
-  "total_attempts": 743,
-  "total_fills": 703,
-  "buy_attempts": 665,
-  "buy_fills": 625,
-  "sell_attempts": 78,
-  "sell_fills": 78,
-  "fill_rate": 0.9462,
-  "last_updated": "2026-05-07T18:59:19.737543+00:00"
+  "total_attempts": 806,
+  "total_fills": 766,
+  "buy_attempts": 721,
+  "buy_fills": 681,
+  "sell_attempts": 85,
+  "sell_fills": 85,
+  "fill_rate": 0.9504,
+  "last_updated": "2026-05-08T14:26:44.400612+00:00"
 }

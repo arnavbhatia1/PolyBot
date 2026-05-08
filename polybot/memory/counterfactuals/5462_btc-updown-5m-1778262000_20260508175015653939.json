@@ -1,0 +1,35 @@
+{
+  "position_id": 5462,
+  "market_id": "btc-updown-5m-1778262000",
+  "side": "Down",
+  "timestamp": "2026-05-08T17:50:15.653921+00:00",
+  "actual": {
+    "exit_reason": "scalp",
+    "exit_price": 0.6595,
+    "pnl": 10.242482,
+    "gain_pct": 0.182089
+  },
+  "counterfactual": {
+    "resolution_price": 1.0,
+    "pnl": 45.194318,
+    "gain_pct": 0.803455
+  },
+  "delta_pnl": 34.951836,
+  "scalp_was_optimal": false,
+  "context_at_scalp": {
+    "holding_edge": -0.09923230880288991,
+    "model_prob": 0.5607676911971101,
+    "market_price": 0.66,
+    "seconds_remaining": 18.62822,
+    "exit_threshold_used": -0.07,
+    "strike_price": 80120.60545187657,
+    "btc_at_scalp": 80119.11,
+    "btc_at_expiry": 80116.75959,
+    "chainlink_price_to_beat": 80120.04505277588,
+    "chainlink_final_price": 80116.75959,
+    "flow_score": 0.0104,
+    "spot_flow_signal": -2.954852604592579e-11,
+    "regime": "neutral",
+    "btc_distance_atr": -0.07
+  }
+}
