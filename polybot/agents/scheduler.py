@@ -527,12 +527,12 @@ class AgentScheduler:
             atr_raw = ctx.get("atr", 0)
             atr = max(atr_raw, min_atr)
             secs = ctx.get("seconds_remaining", 0)
-            iv_ratio = ctx.get("iv_ratio", 1.0)
+
 
             raw_prob_up = stored_raw
             if btc > 0 and strike > 0 and secs > 0 and student_t_df > 2:
                 minutes = secs / 60.0
-                vol = (atr / atr_sigma_ratio) * math.sqrt(minutes) * iv_ratio
+                vol = (atr / atr_sigma_ratio) * math.sqrt(minutes)
                 if vol > 0:
                     z = ((btc - strike) / vol) * math.sqrt(student_t_df / (student_t_df - 2))
                     raw_prob_up = float(t_dist.cdf(z, student_t_df))
@@ -820,12 +820,6 @@ class AgentScheduler:
         if not all_outcomes or len(all_outcomes) < 10:
             info["reason"] = f"only {len(all_outcomes) if all_outcomes else 0} outcomes (need 10)"
             return info
-
-        # Single hardcoded weight version — the version A/B abstraction was set up
-        # but never used (zero non-default versions ever recorded). Keeping the
-        # column for DB schema stability; treating it as a constant here.
-        current_version = "weights_v001"
-        info["old_version"] = current_version
 
         # Get the changes list (new format) or fall back to checking for recommended_weights
         changes_list: list[dict[str, Any]] = recommendations.get("changes", [])
@@ -1131,11 +1125,8 @@ class AgentScheduler:
         info["decision"] = "adopted"
         info["adopted_params"] = [c["param"] for c in adopted_changes]
 
-        # Adopted weight changes mutate the live IndicatorEngine in-place; the
-        # weight version stays at the single constant (no per-cycle versioning).
         weights_change = next((c for c in adopted_changes if c["param"] == "weights"), None)
         new_weights: dict[str, Any] = dict(weights_change["value"]) if weights_change else {}
-        new_version = current_version
         if weights_change and self.indicator_engine:
             self.indicator_engine.set_weights({
                 k: v for k, v in new_weights.items()
@@ -1277,7 +1268,7 @@ class AgentScheduler:
             run_predicted_delta = round(sum(adopted_preds), 4) if adopted_preds else None
             self.pipeline_tracker.record_adoption(
                 source=pipeline_source,
-                version=new_version if new_version != current_version else f"{current_version}+params",
+                version="params",
                 baseline_sharpe=current_sharpe,
                 predicted_sharpe=best_candidate_sharpe,
                 changes=tracker_changes,

@@ -28,7 +28,7 @@ async def test_open_position(db):
         ev_at_entry=0.17,
         exit_target=0.68,
         stop_loss=0.47,
-        weight_version="v001",
+        
     )
     assert pos_id == 1
 
@@ -45,7 +45,7 @@ async def test_get_open_positions(db):
         ev_at_entry=0.17,
         exit_target=0.68,
         stop_loss=0.47,
-        weight_version="v001",
+        
     )
     positions = await db.get_open_positions()
     assert len(positions) == 1
@@ -65,7 +65,7 @@ async def test_close_position(db):
         ev_at_entry=0.17,
         exit_target=0.68,
         stop_loss=0.47,
-        weight_version="v001",
+        
     )
     await db.close_position(pos_id, exit_price=0.68, log_return=0.212)
     positions = await db.get_open_positions()
@@ -88,7 +88,7 @@ async def test_has_position_for_market(db):
         ev_at_entry=0.17,
         exit_target=0.68,
         stop_loss=0.47,
-        weight_version="v001",
+        
     )
     assert await db.has_position_for_market("market_123") is True
 
@@ -106,7 +106,7 @@ async def test_get_open_position_count(db):
         ev_at_entry=0.17,
         exit_target=0.68,
         stop_loss=0.47,
-        weight_version="v001",
+        
     )
     assert await db.get_open_position_count() == 1
 

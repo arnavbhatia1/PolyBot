@@ -3,29 +3,6 @@ import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock
 from polybot.agents.scheduler import AgentScheduler
 
-@pytest.fixture
-def scheduler():
-    return AgentScheduler(outcome_reviewer=MagicMock(), bias_detector=MagicMock(),
-        ta_evolver=MagicMock(), weight_optimizer=MagicMock(),
-        outcome_interval_seconds=3600, daily_pipeline_hour=2,
-        math_config={"ev_threshold": 0.05, "exit_target": 0.90, "stop_loss_pct": 0.15, "time_stop_hours": 24})
-
-def test_scheduler_has_all_agents(scheduler):
-    assert scheduler.outcome_reviewer is not None
-    assert scheduler.bias_detector is not None
-    assert scheduler.ta_evolver is not None
-    assert scheduler.weight_optimizer is not None
-
-def test_scheduler_accepts_claude_client():
-    mock_claude = MagicMock()
-    mock_evolver = MagicMock()
-    mock_evolver.claude_client = None
-    s = AgentScheduler(outcome_reviewer=MagicMock(), bias_detector=MagicMock(),
-        ta_evolver=mock_evolver, weight_optimizer=MagicMock(),
-        claude_client=mock_claude)
-    assert s.claude_client is mock_claude
-    assert mock_evolver.claude_client is mock_claude
-
 def _make_outcomes(n):
     """Helper: generate n fake outcome dicts with sequential timestamps."""
     return [

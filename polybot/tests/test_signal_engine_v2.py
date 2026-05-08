@@ -20,17 +20,18 @@ def test_bullish_spot_flow_increases_prob():
     assert bullish > base
 
 
-def test_high_iv_widens_probability():
+def test_higher_atr_widens_probability():
+    """Higher ATR (more vol) produces probability closer to 0.5 (wider uncertainty)."""
     engine = SignalEngine()
-    normal = engine.compute_probability(
+    tight = engine.compute_probability(
         btc_price=73050, strike_price=73000, seconds_remaining=120,
-        atr=25, closes=_closes(), iv_ratio=1.0,
+        atr=10, closes=_closes(),
     )
-    high_iv = engine.compute_probability(
+    wide = engine.compute_probability(
         btc_price=73050, strike_price=73000, seconds_remaining=120,
-        atr=25, closes=_closes(), iv_ratio=1.5,
+        atr=100, closes=_closes(),
     )
-    assert abs(high_iv - 0.5) < abs(normal - 0.5)
+    assert abs(wide - 0.5) < abs(tight - 0.5)
 
 
 def test_prev_margin_carries_momentum():

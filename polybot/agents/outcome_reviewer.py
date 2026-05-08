@@ -34,8 +34,8 @@ class OutcomeReviewer:
     def record_outcome(self, position_id: int, market_id: str, question: str,
                        side: str, signal_score: float,
                        profitable: bool, entry_price: float, exit_price: float,
-                       log_return: float, weight_version: str,
-                       category: str = "", indicator_snapshot: dict[str, Any] | None = None,
+                       log_return: float,
+                       indicator_snapshot: dict[str, Any] | None = None,
                        exit_reason: str = "resolution", size: float = 0.0,
                        pnl: float = 0.0, fees: float = 0.0,
                        exit_timestamp: str = "",
@@ -60,7 +60,6 @@ class OutcomeReviewer:
                   "gain_pct": round(pnl / size, 6) if size > 0 else 0.0,
                   "realized_edge": realized_edge,
                   "fill_slippage": fill_slippage,
-                  "weight_version": weight_version, "category": category,
                   "indicator_snapshot": indicator_snapshot or {},
                   "exit_reason": exit_reason,
                   # 0.0 = held to resolution; > 0 = scalp with this many seconds left in window

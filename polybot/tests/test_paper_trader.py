@@ -35,7 +35,7 @@ async def test_open_trade_returns_success(trader):
     result = await trader.open_trade(
         market_id="market_123", question="Will X happen?", side="YES",
         price=0.55, size=10.0, signal_score=0.72, signal_strength="high",
-        ev_at_entry=0.17, exit_target=0.68, stop_loss=0.47, weight_version="v001",
+        ev_at_entry=0.17, exit_target=0.68, stop_loss=0.47,
     )
     assert result.success is True
     assert result.position_id is not None
@@ -46,7 +46,7 @@ async def test_open_trade_reduces_bankroll(trader, db):
     await trader.open_trade(
         market_id="market_123", question="Q?", side="YES", price=0.55,
         size=10.0, signal_score=0.72, signal_strength="high", ev_at_entry=0.17,
-        exit_target=0.68, stop_loss=0.47, weight_version="v001",
+        exit_target=0.68, stop_loss=0.47,
     )
     bankroll = await db.get_bankroll()
     # Entry fee collected in shares (not USDC) — bankroll only decreases by size
@@ -59,12 +59,12 @@ async def test_rejects_duplicate_market(trader):
     await trader.open_trade(
         market_id="market_123", question="Q?", side="YES", price=0.55,
         size=10.0, signal_score=0.72, signal_strength="high", ev_at_entry=0.17,
-        exit_target=0.68, stop_loss=0.47, weight_version="v001",
+        exit_target=0.68, stop_loss=0.47,
     )
     result = await trader.open_trade(
         market_id="market_123", question="Q?", side="YES", price=0.55,
         size=10.0, signal_score=0.72, signal_strength="high", ev_at_entry=0.17,
-        exit_target=0.68, stop_loss=0.47, weight_version="v001",
+        exit_target=0.68, stop_loss=0.47,
     )
     assert result.success is False
     assert "duplicate" in result.reason.lower()
@@ -76,12 +76,12 @@ async def test_rejects_when_max_positions_reached(trader, db):
         await trader.open_trade(
             market_id=f"market_{i}", question="Q?", side="YES", price=0.55,
             size=5.0, signal_score=0.72, signal_strength="high", ev_at_entry=0.17,
-            exit_target=0.68, stop_loss=0.47, weight_version="v001",
+            exit_target=0.68, stop_loss=0.47,
         )
     result = await trader.open_trade(
         market_id="market_6", question="Q?", side="YES", price=0.55,
         size=5.0, signal_score=0.72, signal_strength="high", ev_at_entry=0.17,
-        exit_target=0.68, stop_loss=0.47, weight_version="v001",
+        exit_target=0.68, stop_loss=0.47,
     )
     assert result.success is False
     assert "max positions" in result.reason.lower()
@@ -92,7 +92,7 @@ async def test_rejects_when_bankroll_exceeded(trader, db):
     result = await trader.open_trade(
         market_id="market_big", question="Q?", side="YES", price=0.55,
         size=85.0, signal_score=0.72, signal_strength="high", ev_at_entry=0.17,
-        exit_target=0.68, stop_loss=0.47, weight_version="v001",
+        exit_target=0.68, stop_loss=0.47,
     )
     assert result.success is False
     assert "bankroll" in result.reason.lower()
@@ -103,7 +103,7 @@ async def test_close_trade_updates_bankroll(trader, db):
     result = await trader.open_trade(
         market_id="market_123", question="Q?", side="YES", price=0.55,
         size=10.0, signal_score=0.72, signal_strength="high", ev_at_entry=0.17,
-        exit_target=0.68, stop_loss=0.47, weight_version="v001",
+        exit_target=0.68, stop_loss=0.47,
     )
     close_result = await trader.close_trade(position_id=result.position_id, exit_price=0.68)
     assert close_result.success is True
@@ -139,7 +139,7 @@ async def test_shares_held_stored_correctly(trader, db):
     result = await trader.open_trade(
         market_id="m_shares", question="Q?", side="YES", price=0.50,
         size=50.0, signal_score=0.72, signal_strength="high", ev_at_entry=0.17,
-        exit_target=0.68, stop_loss=0.47, weight_version="v001", fee_rate=0.072,
+        exit_target=0.68, stop_loss=0.47, fee_rate=0.072,
     )
     positions = await db.get_open_positions()
     pos = positions[0]
@@ -156,7 +156,7 @@ async def test_pnl_realistic_with_fee_in_shares(trader, db):
     result = await trader.open_trade(
         market_id="m_pnl", question="Q?", side="YES", price=0.50,
         size=50.0, signal_score=0.72, signal_strength="high", ev_at_entry=0.17,
-        exit_target=1.0, stop_loss=0.0, weight_version="v001", fee_rate=0.072,
+        exit_target=1.0, stop_loss=0.0, fee_rate=0.072,
     )
     # Bankroll after open = 100 - 50 = 50 (fee is in shares, not USDC)
     assert await db.get_bankroll() == pytest.approx(50.0, abs=0.01)
@@ -180,7 +180,7 @@ async def test_custom_fee_rate_passed_through(trader, db):
     result = await trader.open_trade(
         market_id="m_sports", question="Q?", side="YES", price=0.50,
         size=10.0, signal_score=0.72, signal_strength="high", ev_at_entry=0.17,
-        exit_target=0.68, stop_loss=0.47, weight_version="v001", fee_rate=0.03,
+        exit_target=0.68, stop_loss=0.47, fee_rate=0.03,
     )
     positions = await db.get_open_positions()
     pos = positions[0]

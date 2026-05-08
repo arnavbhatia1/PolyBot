@@ -203,11 +203,8 @@ class PipelineTracker:
     @staticmethod
     def _returns_in_window(outcomes: list[dict[str, Any]], version: str,
                            start: datetime, end: datetime) -> list[float]:
-        """Get gain_pcts for outcomes matching version within the time window."""
         rets = []
         for o in outcomes:
-            if o.get("weight_version") != version:
-                continue
             ts = o.get("timestamp", "")
             if not ts:
                 continue

@@ -73,7 +73,7 @@ def _trade_params(**overrides):
         ev_at_entry=0.17,
         exit_target=0.68,
         stop_loss=0.40,
-        weight_version="v001",
+        
     )
     defaults.update(overrides)
     return defaults

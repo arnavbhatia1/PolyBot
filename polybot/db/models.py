@@ -112,7 +112,6 @@ class Database:
         ev_at_entry: float,
         exit_target: float,
         stop_loss: float,
-        weight_version: str,
         indicator_snapshot: str = "",
         fee_rate: float | None = None,
         shares_held: float | None = None,
@@ -127,7 +126,7 @@ class Database:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
             (market_id, question, side, entry_price, size, signal_score,
              signal_strength, ev_at_entry, exit_target, stop_loss,
-             now, weight_version, indicator_snapshot, fee_rate, shares_held),
+             now, "", indicator_snapshot, fee_rate, shares_held),
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -158,7 +157,7 @@ class Database:
                  position_kwargs["size"], position_kwargs["signal_score"],
                  position_kwargs["signal_strength"], position_kwargs["ev_at_entry"],
                  position_kwargs["exit_target"], position_kwargs["stop_loss"],
-                 now, position_kwargs["weight_version"],
+                 now, "",
                  position_kwargs.get("indicator_snapshot", ""),
                  position_kwargs.get("fee_rate"), position_kwargs.get("shares_held")),
             )

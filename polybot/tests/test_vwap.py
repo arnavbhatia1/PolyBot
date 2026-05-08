@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 from polybot.indicators.vwap import compute_vwap, compute_vwap_signal
 

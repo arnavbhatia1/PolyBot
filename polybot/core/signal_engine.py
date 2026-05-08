@@ -199,7 +199,6 @@ class SignalEngine:
                             flow_signal: float = 0.0,
                             spot_flow_signal: float = 0.0,
                             prev_resolution_margin: float = 0.0,
-                            iv_ratio: float = 1.0,
                             liquidation_pressure: float = 0.0) -> float:
         """P(Up) at expiry — Student-t CDF + logit-space layer adjustments + Platt."""
         if atr <= 0 or seconds_remaining <= 0:
@@ -210,7 +209,7 @@ class SignalEngine:
 
         self._record_atr(atr)
         atr_effective = max(atr, self._effective_atr_floor())
-        vol_scaled = (atr_effective / self.atr_sigma_ratio) * math.sqrt(minutes_remaining) * iv_ratio
+        vol_scaled = (atr_effective / self.atr_sigma_ratio) * math.sqrt(minutes_remaining)
         if vol_scaled <= 0:
             return 0.5
 
@@ -285,7 +284,6 @@ class SignalEngine:
                  flow_signal: float = 0.0,
                  spot_flow_signal: float = 0.0,
                  prev_resolution_margin: float = 0.0,
-                 iv_ratio: float = 1.0,
                  liquidation_pressure: float = 0.0) -> TradeSignal:
         if not in_entry_window:
             return TradeSignal("SKIP", 0.5, 0, 0, "Outside entry window")
@@ -305,7 +303,6 @@ class SignalEngine:
                                            flow_signal=flow_signal,
                                            spot_flow_signal=spot_flow_signal,
                                            prev_resolution_margin=prev_resolution_margin,
-                                           iv_ratio=iv_ratio,
                                            liquidation_pressure=liquidation_pressure)
         prob_down = 1.0 - prob_up
         best_prob = max(prob_up, prob_down)
@@ -347,7 +344,6 @@ class SignalEngine:
                       flow_signal: float = 0.0,
                       spot_flow_signal: float = 0.0,
                       prev_resolution_margin: float = 0.0,
-                      iv_ratio: float = 1.0,
                       liquidation_pressure: float = 0.0) -> tuple[str, float, float, str]:
         """Decide HOLD vs EXIT each tick using the same model as entry.
         Returns (action, model_prob, holding_edge, reason).
@@ -359,7 +355,6 @@ class SignalEngine:
                                            flow_signal=flow_signal,
                                            spot_flow_signal=spot_flow_signal,
                                            prev_resolution_margin=prev_resolution_margin,
-                                           iv_ratio=iv_ratio,
                                            liquidation_pressure=liquidation_pressure)
         model_prob = prob_up if side == "Up" else 1.0 - prob_up
         holding_edge = model_prob - market_price_for_side

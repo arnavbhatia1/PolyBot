@@ -359,8 +359,6 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
             entry_price=pos["entry_price"],
             exit_price=exit_price,
             log_return=log_return,
-            weight_version=pos.get("weight_version", ""),
-            category="crypto-5min",
             indicator_snapshot=json.loads(pos.get("indicator_snapshot", "{}")),
             exit_reason=exit_reason,
             size=pos.get("size", 0.0),
@@ -482,7 +480,6 @@ async def _evaluate_signal_and_enter(
         closes=closes, flow_signal=flow_score,
         spot_flow_signal=spot_flow_signal,
         prev_resolution_margin=_prev_resolution_margin,
-        iv_ratio=1.0,
         liquidation_pressure=liquidation_val,
     )
 
@@ -808,7 +805,6 @@ async def _evaluate_signal_and_enter(
         ev_at_entry=signal.edge,
         exit_target=1.0,
         stop_loss=0.0,
-        weight_version="weights_v001",
         indicator_snapshot=snapshot_str,
         token_id=token_id,
         fee_rate=fee_rate,
@@ -1238,7 +1234,6 @@ async def _evaluate_and_exit_position(
         closes=closes, flow_signal=hold_flow["flow_score"],
         spot_flow_signal=hold_spot_flow,
         prev_resolution_margin=_prev_resolution_margin,
-        iv_ratio=1.0,
         liquidation_pressure=hold_liquidation)
 
     mid = pos["market_id"]
@@ -1683,12 +1678,11 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     _bankroll = await db.get_bankroll()
     _cal = signal_engine.calibrator
     _cal_str = f"Platt a={_cal.a:.3f} b={_cal.b:.3f}" if _cal is not None else "uncalibrated"
-    _weight_ver = "weights_v001"
     def _f(feed: Any) -> str: return "OK" if feed is not None else "--"
     _sep = "═" * 60
     logger.info(
         f"\n{_sep}\n"
-        f"  PolyBot  [{_mode_label}]  |  Bankroll ${_bankroll:,.2f}  |  {_weight_ver}\n"
+        f"  PolyBot  [{_mode_label}]  |  Bankroll ${_bankroll:,.2f}\n"
         f"  Today: {day_wins}W / {day_losses}L  |  Calibration: {_cal_str}\n"
         f"  ─────────────────────────────────────────────────────\n"
         f"  Price feeds:   Coinbase {_f(coinbase_feed)}  Binance {_f(binance_feed)}  Chainlink {_f(chainlink_feed)}\n"

@@ -105,7 +105,7 @@ _TRADE_KWARGS = dict(
     ev_at_entry=0.15,
     exit_target=1.0,
     stop_loss=0.0,
-    weight_version="v1",
+    
     indicator_snapshot="{}",
     token_id="tok-up-123",
     fee_rate=0.018,
