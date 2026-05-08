@@ -385,9 +385,12 @@ class SignalEngine:
                     f"{self.loss_cut_fraction:.0%}×entry={entry_price:.2f} "
                     f"at {seconds_remaining:.0f}s")
 
-        # Past _DEEP_LOSS_HOLD_THRESHOLD the binary residual is +EV vs locking
-        # in the loss; loss-cut above still catches the genuinely hopeless cases.
-        if holding_edge < _DEEP_LOSS_HOLD_THRESHOLD:
+        # Past _DEEP_LOSS_HOLD_THRESHOLD the binary residual is +EV vs locking in
+        # the loss. Only applies when the exit would actually be at a loss vs entry.
+        # If market_price > entry_price the position is profitable — always scalp it
+        # (e.g. a random order-book spike to 0.80 when we bought at 0.40).
+        if (holding_edge < _DEEP_LOSS_HOLD_THRESHOLD
+                and (entry_price <= 0 or market_price_for_side < entry_price)):
             return ("HOLD", model_prob, holding_edge,
                     f"Hold {side} (deep-loss zone): edge={holding_edge:+.0%} < "
                     f"{_DEEP_LOSS_HOLD_THRESHOLD:+.0%} — let resolution play out")

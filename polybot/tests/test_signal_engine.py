@@ -147,6 +147,19 @@ def test_deep_underwater_holds_unless_loss_cut(engine):
     assert action == "HOLD"
     assert edge < -0.20
 
+def test_orderbook_spike_exits_for_profit(engine):
+    """Bought Down at 0.40; BTC is now far above strike (Down clearly losing).
+    A random order-book spike prices Down at 0.70 — profitable vs our 0.40 entry.
+    Deep-loss-hold must NOT block this: market_price (0.70) > entry_price (0.40).
+    Bot should EXIT and take the profit, not ride to $0."""
+    # BTC 300 above strike with 5s left → model P(Down) ≈ 0 → holding_edge << -0.10
+    action, _prob, edge, _ = engine.evaluate_hold(
+        _make_indicators(atr_value=20), btc_price=66700, strike_price=66400,
+        seconds_remaining=5, market_price_for_side=0.70, side="Down",
+        exit_threshold=-0.05, entry_price=0.40)
+    assert edge < -0.10
+    assert action == "EXIT"
+
 def test_hold_at_boundary(engine):
     """Small positive edge → still HOLD."""
     # BTC above strike, model says ~60%, market at 55%
