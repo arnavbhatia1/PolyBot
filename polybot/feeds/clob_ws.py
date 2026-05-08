@@ -141,6 +141,13 @@ class ClobWebSocket:
 
     async def _run_forever(self) -> None:
         """Connect and reconnect loop with exponential backoff."""
+        # Wait for at least one subscription before opening the connection —
+        # Polymarket's server closes idle unsubscribed connections within ~10s.
+        while not self._closing and not self._subscribed_ids:
+            await asyncio.sleep(0.5)
+        if self._closing:
+            return
+
         backoff = RECONNECT_BASE
         while not self._closing:
             try:
