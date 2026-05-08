@@ -345,3 +345,22 @@
 - None
 
 **Reasoning:** Local recommender (Claude unavailable). Proposing 2 change(s) across 2 families: calibration, volatility_core. All proposals sized to clear adoption floor ≈ 0.022 and verified against the empirical directional table where available.
+
+## 2026-05-08T03:15:25.197233+00:00
+
+**Source:** Local
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.05 -> -0.02 [medium]
+    Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
+
+**Findings:**
+- Platt meta: raw_sharpe 0.1517 >= 0.95 x current_platt 0.1517 — calibrator may not be earning its keep
+- Top gate: sprt_skip blocks 3550/19226 skips (18%) — consider loosening
+
+**Warnings:**
+- None
+
+**Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
