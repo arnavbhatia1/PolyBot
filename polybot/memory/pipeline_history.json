@@ -16,10 +16,37 @@
       ]
     },
     "reason": "2 change(s) adopted",
-    "review_1d": null,
-    "review_3d": null,
-    "review_7d": null,
-    "review_14d": null,
-    "review_30d": null
+    "review_1d": {
+      "sharpe": 0.1121,
+      "delta_sharpe": -0.1185,
+      "trades": 320,
+      "win_rate": 0.5781
+    },
+    "review_3d": {
+      "sharpe": 0.1084,
+      "delta_sharpe": -0.1222,
+      "trades": 887,
+      "win_rate": 0.5524
+    },
+    "review_7d": {
+      "sharpe": 0.0638,
+      "delta_sharpe": -0.1668,
+      "trades": 1797,
+      "win_rate": 0.5281
+    },
+    "review_14d": {
+      "sharpe": 0.0895,
+      "delta_sharpe": -0.1411,
+      "trades": 3011,
+      "win_rate": 0.5417
+    },
+    "review_30d": null,
+    "rollback_recommended": true,
+    "rollback_reason": "1d Sharpe 0.112 trails baseline 0.231 by >0.10 (n=320)",
+    "decay_status": "REVERSED",
+    "decay_retention_14d": null,
+    "decay_computed": true,
+    "reverted": true,
+    "reverted_at": "2026-05-09T03:50:16.387441+00:00"
   }
 ]

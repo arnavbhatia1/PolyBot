@@ -364,3 +364,21 @@
 - None
 
 **Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
+
+## 2026-05-09T03:50:18.996540+00:00
+
+**Source:** Local
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.04 [medium]
+    Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
+
+**Findings:**
+- Platt meta: raw_sharpe 0.1468 >= 0.95 x current_platt 0.1468 — calibrator may not be earning its keep
+
+**Warnings:**
+- None
+
+**Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
