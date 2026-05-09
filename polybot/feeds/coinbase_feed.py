@@ -95,7 +95,11 @@ class CoinbaseFeed:
         backoff = RECONNECT_BASE
         while self._running:
             try:
-                async with websockets.connect(self.ws_url) as ws:
+                async with websockets.connect(
+                    self.ws_url,
+                    ping_interval=20,
+                    ping_timeout=60,
+                ) as ws:
                     self._ws = ws
                     backoff = RECONNECT_BASE
 

@@ -33,14 +33,17 @@ class AlertManager:
                         break
         return self._channel_cache.get(name)
 
+    async def _safe_send(self, channel: Any, msg: str) -> None:
+        try:
+            await channel.send(msg)
+        except Exception as e:
+            logger.warning("Discord send failed (#%s): %s", getattr(channel, 'name', '?'), e)
+
     async def _send_to_channels(self, msg: str, channels: list[str]) -> None:
         for name in channels:
             channel = self._get_channel(name)
             if channel:
-                try:
-                    await channel.send(msg)
-                except Exception as e:
-                    logger.warning(f"Failed to send to #{name}: {e}")
+                await self._safe_send(channel, msg)
 
     async def send_trade_opened(self, question: str, side: str, size: float, entry_price: float,
                                 ev: float, exit_target: float,
@@ -52,7 +55,7 @@ class AlertManager:
             return
         window = question.replace("Bitcoin Up or Down - ", "") if question else ""
         bankroll_str = f"  Bankroll  ${bankroll:,.2f}\n" if bankroll > 0 else ""
-        await channel.send(
+        await self._safe_send(channel,
             f"**OPEN {side}**  {window}\n"
             f"```\n"
             f"  Price     {entry_price:.3f}  |  ${size:.2f}\n"
@@ -90,7 +93,7 @@ class AlertManager:
         if bankroll > 0:
             body += f"  Day      {day_wins}W/{day_losses}L  |  ${bankroll:,.2f}\n"
 
-        await channel.send(
+        await self._safe_send(channel,
             f"**{header}**  |  {window}\n"
             f"```\n{body}```")
 
@@ -98,7 +101,7 @@ class AlertManager:
         channel = self._get_channel(self.daily_channel_name)
         if not channel:
             return
-        await channel.send(f"**Learning Pipeline Complete**\n{summary}")
+        await self._safe_send(channel, f"**Learning Pipeline Complete**\n{summary}")
 
     async def send_strategy_recommendation(self, recommendations: list[Any]) -> None:
         channel = self._get_channel(self.control_channel_name)
@@ -108,15 +111,18 @@ class AlertManager:
         for rec in recommendations:
             lines.append(f"`{rec.param}`: {rec.current_value} -> {rec.recommended_value}")
             lines.append(f"  Reason: {rec.reason}")
-        msg = await channel.send("\n".join(lines))
-        await msg.add_reaction("\u2705")
-        await msg.add_reaction("\u274c")
+        try:
+            msg = await channel.send("\n".join(lines))
+            await msg.add_reaction("\u2705")
+            await msg.add_reaction("\u274c")
+        except Exception as e:
+            logger.warning("Discord send failed (#%s): %s", getattr(channel, 'name', '?'), e)
 
     async def send_error(self, error_message: str) -> None:
         channel = self._get_channel(self.control_channel_name)
         if not channel:
             return
-        await channel.send(f"**Error**\n```{error_message}```")
+        await self._safe_send(channel, f"**Error**\n```{error_message}```")
 
     async def send_session_banner(self, mode: str, bankroll: float) -> None:
         """Send a session start banner to both channels to mark a new bot run."""
@@ -163,12 +169,12 @@ class AlertManager:
         if not channel:
             return
         if event == "streak_losses":
-            await channel.send(
+            await self._safe_send(channel,
                 f"**CIRCUIT BREAKER** — {breaker.consecutive_losses} consecutive losses. "
                 f"Drawdown `{breaker.drawdown_pct:.1%}` | "
                 f"Kelly at `{breaker.kelly_multiplier:.0%}`.")
         elif event == "streak_wins":
-            await channel.send(
+            await self._safe_send(channel,
                 f"**CIRCUIT BREAKER** — {breaker.consecutive_wins} consecutive wins. "
                 f"Drawdown `{breaker.drawdown_pct:.1%}` | "
                 f"Kelly at `{breaker.kelly_multiplier:.0%}`.")
@@ -221,7 +227,7 @@ class AlertManager:
         date_str = trading_et_date.strftime("%Y-%m-%d")
 
         if not todays:
-            await channel.send(f"**Daily Report — {date_str} ET**\nNo trades today.")
+            await self._safe_send(channel, f"**Daily Report — {date_str} ET**\nNo trades today.")
             return
 
         # Core stats
@@ -295,7 +301,7 @@ class AlertManager:
                 msg1 += f"  |  4-8%: {le_w}/{le_n} {le_w/le_n:.0%}"
             msg1 += "\n"
         msg1 += "```"
-        await channel.send(msg1[:2000])
+        await self._safe_send(channel, msg1[:2000])
 
         # --- Message 2: ALL-TIME + PIPELINE RESULT summary ---
         at = pipeline_info.get("all_time", {})
@@ -316,9 +322,9 @@ class AlertManager:
             # Discord 2000-char limit: send summary as separate message if needed
             if len(msg2) + len(chunk) <= 2000:
                 msg2 += chunk
-                await channel.send(msg2[:2000])
+                await self._safe_send(channel, msg2[:2000])
             else:
-                await channel.send(msg2[:2000])
-                await channel.send(chunk[:2000])
+                await self._safe_send(channel, msg2[:2000])
+                await self._safe_send(channel, chunk[:2000])
         else:
-            await channel.send(msg2[:2000])
+            await self._safe_send(channel, msg2[:2000])
