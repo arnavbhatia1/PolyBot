@@ -2343,10 +2343,17 @@ async def main() -> None:
     )
 
     async def run_discord():
-        try:
-            await discord_bot.start(get_secret("DISCORD_BOT_TOKEN"))
-        except Exception as e:
-            logger.error(f"Discord bot error: {e}")
+        backoff = 5
+        while True:
+            try:
+                await discord_bot.start(get_secret("DISCORD_BOT_TOKEN"))
+                return  # clean shutdown (scheduler exit)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.error("Discord bot error: %s — reconnecting in %ds", e, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 120)
 
     # Wait for Discord to connect before starting the trading loop
     discord_task = asyncio.create_task(run_discord())

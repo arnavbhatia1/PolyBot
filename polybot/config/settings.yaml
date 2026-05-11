@@ -35,7 +35,7 @@ signal:
   # --- Edge gates (most important) ---
   min_edge: 0.04              # Minimum model-vs-market gap to enter. 4% = model must be at least 4pp off market.
   max_edge: 0.2               # Reject if edge > 20% — likely a stale/phantom price, not real opportunity.
-  min_model_probability: 0.56 # Model must be at least 56% confident in chosen direction.
+  min_model_probability: 0.54 # Model must be at least 56% confident in chosen direction (reduced from 58%)
   min_kelly: 0.015            # Kelly fraction must be at least 1.5% — filters near-worthless bets.
 
   # --- Exit / loss-cut ---
@@ -104,7 +104,7 @@ sprt:
   alpha: 0.05                 # False positive rate. Lower = stricter (more SKIP blocks). 0.05 = 5%.
   beta: 0.1                   # False negative rate. Lower = stricter (harder to get ENTER).
   observation_interval_s: 10.0  # Check signal every 10 seconds.
-  min_confidence: 0.1         # Enter even at 10% SPRT confidence (was 20% — lowered to reduce blocks).
+  min_confidence: 0.05         # Enter even at 10% SPRT confidence (was 20% — lowered to reduce blocks).
 
 # =============================================================================
 #  SECTION 5: SCHEDULE
