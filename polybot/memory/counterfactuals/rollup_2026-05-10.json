@@ -1,0 +1,142 @@
+[
+  {
+    "position_id": 5529,
+    "market_id": "btc-updown-5m-1778460300",
+    "side": "Down",
+    "timestamp": "2026-05-11T00:58:43.912564+00:00",
+    "actual": {
+      "exit_reason": "scalp",
+      "exit_price": 0.71,
+      "pnl": 9.070675,
+      "gain_pct": 0.149731
+    },
+    "counterfactual": {
+      "resolution_price": 1.0,
+      "pnl": 38.034308,
+      "gain_pct": 0.627836
+    },
+    "delta_pnl": 28.963633,
+    "scalp_was_optimal": false,
+    "context_at_scalp": {
+      "holding_edge": -0.039283082665042324,
+      "model_prob": 0.6707169173349576,
+      "market_price": 0.71,
+      "seconds_remaining": 272.222596,
+      "exit_threshold_used": -0.07,
+      "strike_price": 81610.1,
+      "btc_at_scalp": 81543.91,
+      "btc_at_expiry": 81570.42338936585,
+      "chainlink_price_to_beat": 81584.71762376252,
+      "chainlink_final_price": 81570.42338936585,
+      "flow_score": -0.0009,
+      "spot_flow_signal": -0.19904761904761906,
+      "regime": "neutral",
+      "btc_distance_atr": -1.544
+    }
+  },
+  {
+    "position_id": 5530,
+    "market_id": "btc-updown-5m-1778460600",
+    "side": "Down",
+    "timestamp": "2026-05-11T01:04:14.615938+00:00",
+    "actual": {
+      "exit_reason": "scalp",
+      "exit_price": 0.6298,
+      "pnl": 0.522898,
+      "gain_pct": 0.01838
+    },
+    "counterfactual": {
+      "resolution_price": 1.0,
+      "pnl": 17.861936,
+      "gain_pct": 0.627836
+    },
+    "delta_pnl": 17.339038,
+    "scalp_was_optimal": false,
+    "context_at_scalp": {
+      "holding_edge": -0.04481484001446445,
+      "model_prob": 0.5851851599855356,
+      "market_price": 0.63,
+      "seconds_remaining": 171.722725,
+      "exit_threshold_used": -0.07,
+      "strike_price": 81583.64915396925,
+      "btc_at_scalp": 81558.95,
+      "btc_at_expiry": 81327.56578428268,
+      "chainlink_price_to_beat": 81570.42338936585,
+      "chainlink_final_price": 81327.56578428268,
+      "flow_score": -0.0316,
+      "spot_flow_signal": -0.13517298286214308,
+      "regime": "neutral",
+      "btc_distance_atr": -0.615
+    }
+  },
+  {
+    "position_id": 5534,
+    "market_id": "btc-updown-5m-1778464500",
+    "side": "Down",
+    "timestamp": "2026-05-11T02:10:04.744370+00:00",
+    "actual": {
+      "exit_reason": "scalp",
+      "exit_price": 0.2997,
+      "pnl": -10.552067,
+      "gain_pct": -0.413482
+    },
+    "counterfactual": {
+      "resolution_price": 0.0,
+      "pnl": -25.52,
+      "gain_pct": -1.0
+    },
+    "delta_pnl": -14.967933,
+    "scalp_was_optimal": true,
+    "context_at_scalp": {
+      "holding_edge": 0.5535443338809185,
+      "model_prob": 0.8535443338809184,
+      "market_price": 0.3,
+      "seconds_remaining": 28.348353,
+      "exit_threshold_used": -0.07,
+      "strike_price": 81507.24,
+      "btc_at_scalp": 81489.73,
+      "btc_at_expiry": 81485.52954315998,
+      "chainlink_price_to_beat": 81481.93490997743,
+      "chainlink_final_price": 81485.52954315998,
+      "flow_score": -0.0926,
+      "spot_flow_signal": -0.0017204551873782098,
+      "regime": "volatile",
+      "btc_distance_atr": -1.384
+    }
+  },
+  {
+    "position_id": 5537,
+    "market_id": "btc-updown-5m-1778467200",
+    "side": "Down",
+    "timestamp": "2026-05-11T02:51:26.383518+00:00",
+    "actual": {
+      "exit_reason": "scalp",
+      "exit_price": 0.6499,
+      "pnl": 7.37451,
+      "gain_pct": 0.305869
+    },
+    "counterfactual": {
+      "resolution_price": 0.0,
+      "pnl": -24.11,
+      "gain_pct": -1.0
+    },
+    "delta_pnl": -31.48451,
+    "scalp_was_optimal": true,
+    "context_at_scalp": {
+      "holding_edge": -0.032779447389269634,
+      "model_prob": 0.6172205526107304,
+      "market_price": 0.65,
+      "seconds_remaining": 170.742656,
+      "exit_threshold_used": -0.07,
+      "strike_price": 81201.7,
+      "btc_at_scalp": 81191.74,
+      "btc_at_expiry": 81190.77942838198,
+      "chainlink_price_to_beat": 81190.62548721307,
+      "chainlink_final_price": 81190.77942838198,
+      "flow_score": -0.2096,
+      "spot_flow_signal": -0.15568144473015488,
+      "regime": "volatile",
+      "btc_distance_atr": -0.932
+    }
+  }
+]
