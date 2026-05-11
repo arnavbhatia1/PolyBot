@@ -128,7 +128,9 @@
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot\" -Recurse -Name)",
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot\" -Recurse -Directory)",
       "Bash(Select-Object -First 20)",
-      "PowerShell(\\(Get-Item \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot.log\"\\).Length; \\(Get-Content \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot.log\" | Measure-Object -Line\\).Lines)"
+      "PowerShell(\\(Get-Item \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot.log\"\\).Length; \\(Get-Content \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot.log\" | Measure-Object -Line\\).Lines)",
+      "Bash(Get-ChildItem *)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot\\\\memory\\\\\" | ForEach-Object { $_.FullName })"
     ]
   }
 }

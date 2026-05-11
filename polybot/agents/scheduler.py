@@ -1612,17 +1612,6 @@ class AgentScheduler:
                         "b": round(cal.b, 4),
                     }
 
-                    # Meta-alert: raw within 5% of current means calibration isn't earning its keep
-                    if old_kelly_sharpe > 0 and raw_kelly_sharpe >= 0.95 * old_kelly_sharpe:
-                        platt_info["meta_warning"] = (
-                            f"raw_sharpe {raw_kelly_sharpe:.4f} >= 0.95 x current_platt "
-                            f"{old_kelly_sharpe:.4f} — calibrator may not be earning its keep"
-                        )
-                        logger.warning(
-                            f"Platt meta-check: raw model Sharpe {raw_kelly_sharpe:.4f} is within 5% "
-                            f"of current Platt {old_kelly_sharpe:.4f}. Consider dropping calibration."
-                        )
-
                     insufficient = (len(old_returns) < MIN_PLATT_VALIDATION_TRADES
                                     or len(new_returns) < MIN_PLATT_VALIDATION_TRADES)
                     # Adoption: holdout Sharpe improvement >= PLATT_ABS_FLOOR.
@@ -1634,7 +1623,26 @@ class AgentScheduler:
                     platt_info["z_score"] = round(z_score, 3)
                     platt_info["delta_sharpe"] = round(delta_sharpe, 4)
                     platt_info["dyn_floor"] = round(dyn_floor, 4)
-                    if insufficient:
+
+                    # Meta-alert: raw within 5% of current means calibration isn't earning its keep.
+                    # Auto-revert to identity to break the compounding-compression cycle: bad period
+                    # → calibrator fits aggressive compression → lower edge/size → worse PnL →
+                    # even more compression next cycle. Identity is strictly better in this regime.
+                    if old_kelly_sharpe > 0 and raw_kelly_sharpe >= 0.95 * old_kelly_sharpe:
+                        platt_info["meta_warning"] = (
+                            f"raw_sharpe {raw_kelly_sharpe:.4f} >= 0.95 x current_platt "
+                            f"{old_kelly_sharpe:.4f} — reverting to identity"
+                        )
+                        logger.warning(
+                            f"Platt meta-check: raw model Sharpe {raw_kelly_sharpe:.4f} within 5% of "
+                            f"current Platt {old_kelly_sharpe:.4f}. Reverting to identity."
+                        )
+                        identity = PlattCalibrator(a=-1.0, b=0.0)
+                        identity.save()
+                        self.signal_engine.calibrator = identity
+                        platt_info["decision"] = "rejected"
+                        platt_info["reason"] = "reverted to identity — calibration not earning its keep"
+                    elif insufficient:
                         platt_info["decision"] = "rejected"
                         platt_info["reason"] = (f"validation trades below {MIN_PLATT_VALIDATION_TRADES} "
                                                 f"(old={len(old_returns)}, new={len(new_returns)})")
