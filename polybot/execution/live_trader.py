@@ -432,7 +432,7 @@ class LiveTrader(BaseTrader):
         # before hammering CLOB 3× for a guaranteed-fail order. BUY amount is
         # USDC; SELL amount is shares (× expected_price for notional).
         notional_usd = amount if side == BUY else amount * expected_price
-        if round(notional_usd, 2) < _MIN_ORDER_USD:
+        if notional_usd < _MIN_ORDER_USD - 0.01:
             logger.info(
                 "FOK %s skipped: notional $%.2f below $%.2f minimum",
                 side, notional_usd, _MIN_ORDER_USD,

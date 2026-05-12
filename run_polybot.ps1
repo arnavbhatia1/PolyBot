@@ -50,22 +50,22 @@ while ($true) {
 
     # Commit any config/weight changes from the pipeline
     if ($exitCode -eq 0) {
-    Write-Host "[$timestamp] Committing pipeline updates..." -ForegroundColor Cyan
-    git add polybot/config/settings.yaml polybot/memory/ polybot/db/polybot_paper.db polybot/db/polybot_live.db 2>$null
-    $hasChanges = git diff --cached --quiet 2>$null; $hasChanges = $LASTEXITCODE
-    if ($hasChanges -ne 0) {
-        $date = Get-Date -Format "yyyy-MM-dd"
-        git commit -m "auto: daily pipeline update $date" 2>&1 | Where-Object { $_ -notmatch "^\s*(delete|create|rename) mode" } | Write-Host
-        git push origin main 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "[$timestamp] Pushed to remote" -ForegroundColor Green
+        Write-Host "[$timestamp] Committing pipeline updates..." -ForegroundColor Cyan
+        git add polybot/config/settings.yaml polybot/memory/ polybot/db/polybot_paper.db polybot/db/polybot_live.db 2>$null
+        $hasChanges = git diff --cached --quiet 2>$null; $hasChanges = $LASTEXITCODE
+        if ($hasChanges -ne 0) {
+            $date = Get-Date -Format "yyyy-MM-dd"
+            git commit -m "auto: daily pipeline update $date" 2>&1 | Where-Object { $_ -notmatch "^\s*(delete|create|rename) mode" } | Write-Host
+            git push origin main 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "[$timestamp] Pushed to remote" -ForegroundColor Green
+            } else {
+                Write-Host "[$timestamp] Push failed (will retry tomorrow)" -ForegroundColor Red
+            }
         } else {
-            Write-Host "[$timestamp] Push failed (will retry tomorrow)" -ForegroundColor Red
+            Write-Host "[$timestamp] No config changes to commit" -ForegroundColor DarkGray
         }
-    } else {
-        Write-Host "[$timestamp] No config changes to commit" -ForegroundColor DarkGray
     }
-    } # end exitCode -eq 0 block
 
     # Wait until 12:01 AM ET to restart
     # Calculate seconds until next 12:01 AM ET
