@@ -80,10 +80,10 @@ class SPRTAccumulator:
         # Check ENTER: strong directional evidence
         if self.llr >= self.upper_bound:
             self._status = "ENTER"
-        # Check SKIP: evidence is weak or conflicted after enough observations
-        elif self._observation_count >= 4 and self.llr < self.upper_bound * 0.3:
-            # After 4+ observations, if LLR hasn't reached 30% of ENTER threshold,
-            # the signal is too weak to trade
+        # Check SKIP: evidence is weak or conflicted after enough observations.
+        # 12 obs × 5s = 60s into window before declaring noise; 15% threshold
+        # avoids nuking choppy-but-tradeable windows.
+        elif self._observation_count >= 12 and self.llr < self.upper_bound * 0.15:
             self._status = "SKIP"
 
         return self._status

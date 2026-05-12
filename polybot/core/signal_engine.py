@@ -368,7 +368,14 @@ class SignalEngine:
 
         optimal_threshold = self._exit_boundary.compute_exit_threshold(
             seconds_remaining, entry_price, fee_rate, market_price_for_side)
-        effective_threshold = max(effective_threshold, optimal_threshold)
+        # Smooth blend: at ATM (0.5) trust boundary fully; deeper ITM → weight toward
+        # the more patient (more negative) threshold so winning positions aren't scalped early.
+        # OTM stays fully boundary-driven (urgency exits intact).
+        itm_weight = max(0.0, (market_price_for_side - 0.5) / 0.5)
+        effective_threshold = (
+            (1 - itm_weight) * max(effective_threshold, optimal_threshold)
+            + itm_weight * min(effective_threshold, optimal_threshold)
+        )
 
         # Loss-cut fires independently of holding_edge: deep-underwater near
         # expiry, where the position has no realistic recovery.

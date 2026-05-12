@@ -592,14 +592,8 @@ async def _evaluate_signal_and_enter(
             _log_skip_once(cid, f"sprt_skip_{side}",
                            f"SKIP: SPRT found signal too weak after {sprt_obs} obs")
             return None, last_eval_log_window
-        if sprt_obs >= 2 and sprt_conf < min_sprt_conf and sprt_status != "ENTER":
-            _record_skip("sprt_low_confidence")
-            _ghost("sprt_low_confidence", signal, {})
-            _log_skip_once(cid, f"sprt_lowconf_{side}",
-                           f"SKIP: SPRT conf {sprt_conf:.0%} < {min_sprt_conf:.0%} after {sprt_obs} obs")
-            return None, last_eval_log_window
-        # Side mismatch: SPRT has evidence but favors the opposite direction
-        if _sprt.get_confidence() > 0.30 and _sprt.favored_side() != side:
+        # Side mismatch: only veto when SPRT has built strong opposite evidence (60%+, 6+ obs)
+        if sprt_obs >= 6 and _sprt.get_confidence() > 0.60 and _sprt.favored_side() != side:
             _record_skip("sprt_side_mismatch")
             _log_skip_once(cid, f"sprt_{side}", f"SKIP: SPRT favors {_sprt.favored_side()} ({_sprt.get_confidence():.0%} conf), opposes {side}")
             return None, last_eval_log_window
