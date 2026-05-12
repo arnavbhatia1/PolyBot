@@ -115,6 +115,7 @@ _CONTRACT_RESOLUTION_TTL = 2.0  # faster polling when contract might be resolvin
 # Throttled logging for hold evaluations and resolution waiting
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
+_abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, hold to resolution
 
 # Previous window resolution margin for adjacent window momentum (D2)
 _prev_resolution_margin: float = 0.0
@@ -1166,6 +1167,8 @@ async def _evaluate_and_exit_position(
         coinbase_feed: Any = None,
         chainlink_feed: Any = None) -> tuple[int, int, float, str | None]:
     """Re-evaluate an active position and exit (scalp) if holding edge is gone."""
+    if pos["id"] in _abandoned_scalp_positions:
+        return day_wins, day_losses, day_fees, None
     # BTC price priority: Coinbase > Binance
     if coinbase_feed and coinbase_feed.state.price > 0 and coinbase_feed.state.age_seconds < 5:
         btc_now = coinbase_feed.state.price
@@ -1347,6 +1350,8 @@ async def _evaluate_and_exit_position(
         result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token)
         if not result.success:
             if "CLOB minimum" in (result.reason or ""):
+                global _abandoned_scalp_positions
+                _abandoned_scalp_positions.add(pos["id"])
                 logger.info(f"  SCALP ABANDONED — position too small to sell (${exit_size_usd:.2f}), holding to resolution")
                 return day_wins, day_losses, day_fees, traded_market_id
             logger.warning(f"  SCALP RETRY — close_trade failed (will retry next tick): {result.reason}")
@@ -1463,6 +1468,7 @@ async def _resolve_expired_position(
             cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
             if cb_event and alert_manager:
                 await alert_manager.send_circuit_breaker(cb_event, breaker)
+        _abandoned_scalp_positions.discard(pos["id"])
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
                               exit_reason="resolution", pnl=pnl, fees=total_fees)
         if counterfactual_tracker:
