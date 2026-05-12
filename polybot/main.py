@@ -89,6 +89,7 @@ logging.basicConfig(
     level=logging.ERROR,
     handlers=[_console_handler, _file_handler],
 )
+logging.getLogger("py_clob_client_v2").setLevel(logging.CRITICAL)
 
 # ANSI color codes for terminal readability
 class _C:

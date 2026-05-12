@@ -463,9 +463,7 @@ class LiveTrader(BaseTrader):
                         logger.error("Order rejected (non-retryable): %s", error_msg)
                         return FillResult(filled=False, reason=error_msg)
                     last_error = error_msg
-                    logger.warning(
-                        "FOK attempt %d/%d failed: %s", attempt, _MAX_RETRIES, error_msg,
-                    )
+                    logger.warning("FOK %d/%d: book too thin to fill", attempt, _MAX_RETRIES)
                     if attempt < _MAX_RETRIES:
                         await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
                     continue
@@ -486,9 +484,7 @@ class LiveTrader(BaseTrader):
 
                 # Unexpected status
                 last_error = f"Unexpected status: {resp.get('status')}"
-                logger.warning(
-                    "FOK attempt %d/%d: %s", attempt, _MAX_RETRIES, last_error,
-                )
+                logger.warning("FOK %d/%d: unexpected status %s", attempt, _MAX_RETRIES, resp.get('status'))
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
 
@@ -499,9 +495,7 @@ class LiveTrader(BaseTrader):
                     logger.error("AUTH FAILURE during FOK submit: %s", e)
                     raise AuthError(str(e)) from e
                 last_error = str(e)
-                logger.warning(
-                    "FOK attempt %d/%d exception: %s", attempt, _MAX_RETRIES, e,
-                )
+                logger.warning("FOK %d/%d: %s", attempt, _MAX_RETRIES, e)
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
 
