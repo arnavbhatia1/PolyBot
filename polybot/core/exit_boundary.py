@@ -30,7 +30,7 @@ class ExitBoundary:
     - ATM early: HOLD (positive time value from volatility)
     """
 
-    def __init__(self, df: int = 5, price_vol_per_min: float = 0.04) -> None:
+    def __init__(self, df: int = 5, price_vol_per_min: float = 0.07) -> None:
         self.df = df
         self.price_vol_per_min = price_vol_per_min
 

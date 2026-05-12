@@ -843,21 +843,27 @@ async def _evaluate_signal_and_enter(
             _why_parts.append(f"BTC ${abs(_dist):,.0f} {'above' if _dist > 0 else 'below'} strike — {'favors Up' if _dist > 0 else 'fighting strike'}")
         else:
             _why_parts.append(f"BTC ${abs(_dist):,.0f} {'below' if _dist < 0 else 'above'} strike — {'favors Down' if _dist < 0 else 'fighting strike'}")
-        # Order flow
+        # Order flow — always show so paper and live logs are identical
         if flow_score > 0.1:
-            _why_parts.append("strong buy pressure in book")
+            _why_parts.append(f"strong buy pressure in book (flow {flow_score:+.2f})")
         elif flow_score < -0.1:
-            _why_parts.append("strong sell pressure in book")
-        # CVD / spot flow
+            _why_parts.append(f"strong sell pressure in book (flow {flow_score:+.2f})")
+        else:
+            _why_parts.append(f"neutral book flow ({flow_score:+.2f})")
+        # CVD / spot flow — always show
         if spot_flow_signal > 0.05:
-            _why_parts.append("buyers dominating on Binance")
+            _why_parts.append(f"buyers dominating on Binance (cvd {spot_flow_signal:+.2f})")
         elif spot_flow_signal < -0.05:
-            _why_parts.append("sellers dominating on Binance")
-        # Regime
+            _why_parts.append(f"sellers dominating on Binance (cvd {spot_flow_signal:+.2f})")
+        else:
+            _why_parts.append(f"neutral CVD ({spot_flow_signal:+.2f})")
+        # Regime — always show
         if regime_state and regime_state.name == "trending":
             _why_parts.append(f"market trending {side.lower()}")
         elif regime_state and regime_state.name == "reverting":
             _why_parts.append("market mean-reverting")
+        else:
+            _why_parts.append("neutral regime")
         # Edge confidence
         _why_parts.append(f"model sees {signal.edge:.0%} edge")
         _why = ", ".join(_why_parts)
