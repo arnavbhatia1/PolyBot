@@ -104,7 +104,7 @@ sprt:
   alpha: 0.05                 # False positive rate. Lower = stricter (more SKIP blocks)
   beta: 0.1                   # False negative rate. Lower = stricter (harder to get ENTER).
   observation_interval_s: 5.0  # Check signal every x seconds.
-  min_confidence: 0.07         # Enter at SPRT confidence
+  min_confidence: 0.0          # Disabled — low-conf entries outperform (Sharpe +0.103, n=5537)
 
 # =============================================================================
 #  SECTION 5: SCHEDULE
