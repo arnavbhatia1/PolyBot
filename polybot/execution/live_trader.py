@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MAX_RETRIES = 3
-_RETRY_BASE_DELAY = 0.5  # seconds, doubles each attempt
+_RETRY_BASE_DELAY = 0.1  # seconds, doubles each attempt (0.1 + 0.2 = 0.3s total)
 _MIN_ORDER_USD = 1.0  # Polymarket CLOB rejects marketable orders below $1 notional
 _NON_RETRYABLE_ERRORS = frozenset({
     "INVALID_ORDER_NOT_ENOUGH_BALANCE",
@@ -463,9 +463,12 @@ class LiveTrader(BaseTrader):
                 # as "fetch from /price cross-matched API" which would silently bypass
                 # the bot's best_ask/best_bid-based slippage protection from main.py.
                 mo = MarketOrderArgs(token_id=token_id, amount=amount, side=side, price=expected_price)
-                # Offload blocking SDK calls to thread pool — keeps event loop free
-                signed = await asyncio.to_thread(self.client.create_market_order, mo)
-                resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.FOK)
+                # Sign and post in one thread dispatch — avoids two event-loop round trips
+                def _sign_and_post(order_args: MarketOrderArgs) -> dict:
+                    return self.client.post_order(
+                        self.client.create_market_order(order_args), OrderType.FOK
+                    )
+                resp = await asyncio.to_thread(_sign_and_post, mo)
 
                 if not resp.get("success"):
                     error_msg = resp.get("errorMsg", "unknown error")

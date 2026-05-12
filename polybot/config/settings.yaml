@@ -97,14 +97,14 @@ entry_timing:
 # =============================================================================
 #  SECTION 4: SPRT GATE — sequential evidence test before entering
 # =============================================================================
-#  SPRT watches the model signal across multiple ticks (every 10s) and blocks
+#  SPRT watches the model signal across multiple ticks and blocks
 #  entry unless it sees consistent directional evidence. Think of it as:
 #  "wait until the signal is stable, not just a one-tick spike."
 sprt:
   alpha: 0.05                 # False positive rate. Lower = stricter (more SKIP blocks)
   beta: 0.1                   # False negative rate. Lower = stricter (harder to get ENTER).
   observation_interval_s: 5.0  # Check signal every x seconds.
-  min_confidence: 0.0          # Disabled — low-conf entries outperform (Sharpe +0.103, n=5537)
+  min_confidence: 0.02        # Minimum confidence to allow entry.
 
 # =============================================================================
 #  SECTION 5: SCHEDULE
@@ -121,7 +121,7 @@ agents:
   daily_pipeline_minute: 50
 
 # =============================================================================
-#  SECTION 6: REGIME FILTER  — skip entries in bad market conditions
+#  SECTION 6: REGIME FILTER — skip entries in bad market conditions
 # =============================================================================
 regime:
   lookback: 50                # Candles to measure regime over
@@ -130,7 +130,7 @@ regime:
   autocorr_threshold: 0.25    # 1-lag autocorr threshold to call something "trending"
 
 # =============================================================================
-#  DO NOT TOUCH BELOW — infrastructure settings
+#  DO NOT TOUCH — infrastructure settings
 # =============================================================================
 market:
   contract_type: btc_5min
