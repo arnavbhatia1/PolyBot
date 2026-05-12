@@ -90,7 +90,7 @@ signal:
 # =============================================================================
 entry_timing:
   normal_fraction: 0.6        # First 60% of window (0-180s): full Kelly, no penalty.
-  late_max_penalty: 0.35      # Last 40%: ATM trades penalized up to 35%. High-conviction trades barely touched.
+  late_max_penalty: 0.30      # Last 40%: ATM trades penalized up to x%. High-conviction trades barely touched.
   flip_enabled: true          # Allow re-entry after a scalp (same window, opposite side or same).
   flip_edge_premium: 0.015    # Re-entry costs extra 1.5% edge on top of min_edge.
 
@@ -101,10 +101,10 @@ entry_timing:
 #  entry unless it sees consistent directional evidence. Think of it as:
 #  "wait until the signal is stable, not just a one-tick spike."
 sprt:
-  alpha: 0.05                 # False positive rate. Lower = stricter (more SKIP blocks). 0.05 = 5%.
+  alpha: 0.05                 # False positive rate. Lower = stricter (more SKIP blocks)
   beta: 0.1                   # False negative rate. Lower = stricter (harder to get ENTER).
-  observation_interval_s: 10.0  # Check signal every 10 seconds.
-  min_confidence: 0.15         # Enter at SPRT confidence
+  observation_interval_s: 5.0  # Check signal every x seconds.
+  min_confidence: 0.08         # Enter at SPRT confidence
 
 # =============================================================================
 #  SECTION 5: SCHEDULE
