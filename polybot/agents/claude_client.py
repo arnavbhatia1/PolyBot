@@ -1042,16 +1042,15 @@ def _section_trades(context: dict[str, Any]) -> str:
 
 
 def _section_active_adoptions(ana: dict[str, Any]) -> str:
-    # Active adoptions — which of your past proposals are currently LIVE, IN_COOLDOWN,
-    # or ROLLED_BACK. Do NOT propose params listed as IN_COOLDOWN; reconsider direction
-    # for params in ROLLED_BACK.
+    # Active adoptions — which of your past proposals are currently LIVE or ROLLED_BACK.
+    # Reconsider direction for params in ROLLED_BACK.
     active_adoptions = ana.get("active_adoptions", "")
     if not active_adoptions:
         return ""
     return (
         "## Current Parameter State (your past proposals right now)\n"
-        "Use this to avoid re-proposing cooldowned params or re-proposing the same direction "
-        "on a rolled-back change.\n\n" + active_adoptions
+        "Use this to avoid re-proposing the same direction on a rolled-back change.\n\n"
+        + active_adoptions
     )
 
 

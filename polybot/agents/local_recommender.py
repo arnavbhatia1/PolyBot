@@ -84,8 +84,7 @@ class LocalRecommender:
             or 0.010
         )
 
-        # Params blocked this cycle: had negative backtest delta last cycle, or
-        # are currently in the 2-day post-adoption cooldown.
+        # Params blocked this cycle: had negative backtest delta last cycle.
         self._blocked_params: set[str] = set()
         self._build_blocked_params()
 
@@ -237,7 +236,7 @@ class LocalRecommender:
     def _propose(self, param: str, value: Any, reason: str,
                  predicted_delta: float, ci: tuple[float, float] = (-0.01, 0.05)) -> bool:
         """Add a proposal if it passes guardrails. Returns True if added."""
-        # Block params with negative delta last cycle or currently in cooldown.
+        # Block params with negative delta last cycle.
         if param in self._blocked_params:
             return False
         # Family diversity: stop adding to a family that already has a proposal.
@@ -550,10 +549,10 @@ class LocalRecommender:
     # -------- blocked-params and decay-mode init helpers -------- #
 
     def _build_blocked_params(self) -> None:
-        """Block params that had negative backtest delta last cycle OR are in cooldown.
+        """Block params that had negative backtest delta last cycle.
 
         Mirrors Claude's rule #5: 'If last cycle a param showed negative delta in a
-        direction, don't repeat it.' Also mirrors the adoption-gate cooldown (2 days).
+        direction, don't repeat it.'
         """
         for result_str in self.analysis.get("last_per_change_results", []) or []:
             s = str(result_str)
@@ -573,19 +572,6 @@ class LocalRecommender:
             if "worse" in s.lower():
                 self._blocked_params.add(param)
 
-        active = str(self.analysis.get("active_adoptions", "") or "")
-        for line in active.splitlines():
-            stripped = line.strip()
-            if "IN_COOLDOWN" in stripped:
-                m = re.match(r"(\w+)\s*:", stripped)
-                if m:
-                    self._blocked_params.add(m.group(1))
-            elif stripped.startswith("ALSO IN COOLDOWN:"):
-                rest = stripped[len("ALSO IN COOLDOWN:"):].strip()
-                for p in rest.split(","):
-                    p = p.strip()
-                    if p:
-                        self._blocked_params.add(p)
 
     def _check_decay_mode(self) -> None:
         """Set conservative mode if >50% of recent adoptions are DECAYED or REVERSED.
@@ -685,7 +671,7 @@ class LocalRecommender:
         if self._blocked_params:
             blocked_list = sorted(self._blocked_params)[:4]
             self.findings.append(
-                f"Skipped (negative delta last cycle or cooldown): {', '.join(blocked_list)}"
+                f"Skipped (negative delta last cycle): {', '.join(blocked_list)}"
             )
 
     def _manual_rule_flip(self) -> None:

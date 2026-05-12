@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 # the change is real — chosen to be permissive enough for the pipeline to keep
 # adapting through regime shifts, strict enough to filter noise.
 MIN_CANDIDATE_TRADES = 100
-ADOPTION_Z_FLOOR = 0.5
+ADOPTION_Z_FLOOR = 0.3
 
 
 def _sharpe(returns: list[float]) -> float:

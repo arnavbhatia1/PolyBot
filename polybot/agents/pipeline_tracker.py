@@ -228,27 +228,6 @@ class PipelineTracker:
         except (ValueError, KeyError):
             return None
 
-    def params_in_cooldown(self, cooldown_days: float = 2.0) -> set[str]:
-        """Return the set of param names that were adopted within `cooldown_days`.
-
-        Used for per-parameter cooldown: the same param can't adopt twice within
-        this window (prevents single-direction runaway), but different params
-        adopt freely. Reads adoption records (memory/pipeline_history.json).
-        """
-        result: set[str] = set()
-        records = self._load()
-        now = datetime.now(timezone.utc)
-        for rec in records:
-            try:
-                rec_dt = datetime.fromisoformat(rec["date"])
-            except (ValueError, KeyError):
-                continue
-            if (now - rec_dt).total_seconds() / 86400 >= cooldown_days:
-                continue
-            for param in (rec.get("changes") or {}).keys():
-                result.add(param)
-        return result
-
     def get_track_record(self) -> list[dict[str, Any]]:
         """Return adoption history for Claude context."""
         return self._load()

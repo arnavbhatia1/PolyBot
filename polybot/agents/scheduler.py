@@ -2,10 +2,10 @@
 
 Runs BiasDetector, Platt calibration (with recency-weighted MLE), distribution shift
 detection, SPRT aggregation, TA Evolver (Claude), and WeightOptimizer in sequence.
-Adopts parameter changes only when they pass: z = Δ_sharpe / JK_SE >= 0.5 (autocorr
+Adopts parameter changes only when they pass: z = Δ_sharpe / JK_SE >= 0.3 (autocorr
 adjusted, no static abs floor), n >= 100 candidate trades, regime-stratified Sharpe
-check. 2-day cooldown after last adoption. After ≥2 adoptions: combined backtest
-interaction check (backs out weakest if combined Δ < 0.7 × sum of individual Δ).
+check. After ≥2 adoptions: combined backtest interaction check (backs out weakest
+if combined Δ < 0.7 × sum of individual Δ).
 """
 from __future__ import annotations
 
@@ -388,17 +388,14 @@ class AgentScheduler:
             except Exception as e:
                 logger.debug(f"Failed to build parameter history: {e}")
 
-        # Active adoptions table — which past proposals are currently LIVE, IN_COOLDOWN,
-        # or ROLLED_BACK. Prevents Claude wasting proposal slots on cooldowned or reversed
-        # params because it didn't know they were off-limits.
+        # Active adoptions table — which past proposals are currently LIVE or ROLLED_BACK.
+        # Prevents Claude wasting proposal slots on reversed params because it didn't know.
         if self.pipeline_tracker:
             try:
                 from datetime import datetime as _dt, timezone as _tz
                 now = _dt.now(_tz.utc)
-                cooldown_set = self.pipeline_tracker.params_in_cooldown(cooldown_days=2.0)
                 active_lines: list[str] = []
                 rolled_lines: list[str] = []
-                cooldown_lines: list[str] = []
                 records = self.pipeline_tracker.get_track_record()
                 for rec in records:
                     try:
@@ -429,30 +426,16 @@ class AgentScheduler:
                                 f"  {param}: was adopted {old_val}->{new_val} {age_days:.0f}d ago, "
                                 f"now at {cur} — {actual_str} vs pred={pred_delta:+.3f}"
                             )
-                        elif param in cooldown_set:
-                            cooldown_end_days = max(0.0, 2.0 - age_days)
-                            cooldown_lines.append(
-                                f"  {param}: {old_val}->{new_val} (adopted {age_days:.1f}d ago, "
-                                f"IN_COOLDOWN ~{cooldown_end_days:.1f}d more) — LIVE"
-                            )
                         else:
                             active_lines.append(
                                 f"  {param}: {old_val}->{new_val} (adopted {age_days:.0f}d ago) "
                                 f"{actual_str} vs pred={pred_delta:+.3f} — LIVE"
                             )
-                # Also list cooldown params with no adoption in last 30d (edge case: older adoption still blocking)
-                seen_in_sections = {ln.strip().split(":")[0] for ln in (active_lines + rolled_lines + cooldown_lines)}
-                extra_cooldown = [p for p in cooldown_set if p not in seen_in_sections]
-
                 sections_out: list[str] = []
                 if active_lines:
                     sections_out.append("ACTIVE ADOPTIONS (last 30 days, currently LIVE):\n" + "\n".join(active_lines))
-                if cooldown_lines:
-                    sections_out.append("IN COOLDOWN (cannot re-propose):\n" + "\n".join(cooldown_lines))
                 if rolled_lines:
                     sections_out.append("ROLLED BACK (adopted value no longer live):\n" + "\n".join(rolled_lines))
-                if extra_cooldown:
-                    sections_out.append("ALSO IN COOLDOWN: " + ", ".join(sorted(extra_cooldown)))
                 if sections_out:
                     analysis["active_adoptions"] = "\n\n".join(sections_out)
             except Exception as e:
@@ -880,29 +863,11 @@ class AgentScheduler:
         adopted_changes: list[dict[str, Any]] = []
         any_adopted = False
 
-        # Per-parameter cooldown: skip any param adopted in the last 2 days.
-        # Prevents the same knob from being driven in one direction across
-        # consecutive runs without live data validating the previous adoption.
-        cooldown_params: set[str] = set()
-        if self.pipeline_tracker:
-            try:
-                cooldown_params = self.pipeline_tracker.params_in_cooldown(cooldown_days=2.0)
-            except Exception as e:
-                logger.debug(f"Failed to compute per-param cooldown: {e}")
-
         for change in changes_list[:5]:
             param = change.get("param", "")
             value = change.get("value")
             reason_str = change.get("reason", "")
             change_info: dict[str, Any] = {"param": param, "value": value}
-
-            # Per-param cooldown check
-            if param in cooldown_params:
-                msg = f"param cooldown (adopted within last 2 days)"
-                change_info.update({"decision": "rejected", "reason": msg})
-                logger.info(f"SKIPPED {param}: {msg}")
-                info["per_change"].append(change_info)
-                continue
 
             # Capture old value for directional tracking (before any adoption mutates the engine)
             if self.signal_engine and param != "weights":
@@ -1828,9 +1793,6 @@ class AgentScheduler:
             except Exception as e:
                 logger.debug(f"Failed to persist crisis_state: {e}")
 
-            # Per-parameter cooldown is enforced inside _run_weight_optimizer:
-            # any param adopted in the last 2 days is skipped individually; other
-            # params adopt normally. No global pipeline-wide cooldown.
             weight_info = await self._run_weight_optimizer(recommendations, all_outcomes, pipeline_source=source)
         pipeline_info["weights"] = weight_info
 
