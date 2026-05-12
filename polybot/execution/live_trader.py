@@ -48,7 +48,7 @@ _NON_RETRYABLE_ERRORS = frozenset({
 # API creds). On any of these we stop retrying and raise — silent fail-loops
 # would let the bot run for hours posting orders that never reach the exchange.
 _AUTH_ERR_TOKENS = (
-    "401", "403", "unauthorized", "forbidden",
+    "status_code=401", "status_code=403", "unauthorized", "forbidden",
     "signature", "signing", "nonce",
     "private key", "api credentials", "invalid api",
 )
