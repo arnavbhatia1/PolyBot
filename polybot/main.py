@@ -82,7 +82,7 @@ class _StripAnsiFormatter(logging.Formatter):
         return _ANSI_RE.sub('', result)
 
 _console_handler = logging.StreamHandler()
-_console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M"))
+_console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
 _file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="a", encoding="utf-8")
 _file_handler.setFormatter(_StripAnsiFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
 logging.basicConfig(
@@ -143,6 +143,7 @@ _early_entry_fired: bool = False
 _adverse_monitor: AdverseSelectionMonitor | None = None
 _last_adverse_skip_log_window: int = 0  # throttle adverse-skip logs to once per 5-min window
 _last_logged_action: str = ""  # suppress repeated EVAL blocks when action hasn't changed
+_last_eval_buy_window: int = 0  # show full BUY block only once per window
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count since last reset
 _GATE_STATS_PATH = Path("polybot/memory/gate_stats.json")
 _last_skip_log: dict[str, str] = {}  # cid -> last logged skip reason (suppresses repeat skips per window)
@@ -497,27 +498,26 @@ async def _evaluate_signal_and_enter(
         late_max_penalty=timing_cfg.get("late_max_penalty", 0.60),
     )
 
-    # Log full block only for BUY signals; SKIP gets a one-liner
-    global _last_logged_action
-    if eval_window != last_eval_log_window or signal.action != _last_logged_action:
+    # BUY block: once per window. SKIP: one-liner only when action changes.
+    global _last_logged_action, _last_eval_buy_window
+    action_changed = signal.action != _last_logged_action or eval_window != last_eval_log_window
+    if action_changed:
         last_eval_log_window = eval_window
         _last_logged_action = signal.action
         if signal.action in ("BUY_YES", "BUY_NO"):
+            if eval_window != _last_eval_buy_window:
+                _last_eval_buy_window = eval_window
             dist = btc_price - strike
-            phase_tag = phase.upper()
-            secs = contract["seconds_remaining"]
+            sprt_status = _sprt.get_status() if _sprt else "N/A"
+            sprt_conf = _sprt.get_confidence() if _sprt else 0.0
+            direction = "Up" if signal.action == "BUY_YES" else "Down"
             logger.info(
-                f"{_C.CYAN}{'=' * 60}{_C.RESET}\n"
-                f"  {_C.CYAN}EVAL  {signal.action:<8}{_C.RESET} | {contract.get('question', cid)}\n"
-                f"  BTC   ${btc_price:,.0f}  strike ${strike:,.0f}  ({dist:+,.0f})  |  {secs:.0f}s left  [{phase_tag}]  src={price_source}\n"
-                f"  MODEL prob {_C.BOLD}{signal.prob:.0%}{_C.RESET}  edge {signal.edge:+.0%}  |  mkt Up {price_up:.2f}  Dn {price_down:.2f}\n"
-                f"  FLOW  clob {flow_score:+.3f}  spot {spot_flow_signal:+.3f}\n"
-                f"  SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%} conf)  |  liq {liquidation_val:+.2f}  cvd_a {cvd_accel_val:+.4f}\n"
-                f"  {_C.DIM}{signal.reason}{_C.RESET}\n"
-                f"{_C.CYAN}{'=' * 69}{_C.RESET}")
+                f"{_C.CYAN}EVAL {direction:<4}{_C.RESET}  {_slug_to_window(cid)}  |  "
+                f"prob {signal.prob:.0%}  edge {signal.edge:+.0%}  BTC {dist:+,.0f}  |  "
+                f"SPRT {sprt_status} {sprt_conf:.0%}  |  {_C.DIM}{signal.reason}{_C.RESET}")
         else:
             window_str = _slug_to_window(cid)
-            logger.info(f"{_C.DIM}SKIP {window_str} | prob {signal.prob:.0%} — {signal.reason}{_C.RESET}")
+            logger.info(f"{_C.DIM}SKIP {window_str:<14} | prob {signal.prob:.0%} — {signal.reason}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         _record_skip(f"model:{signal.reason[:30]}")
