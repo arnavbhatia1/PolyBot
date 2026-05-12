@@ -1,4 +1,4 @@
-mode: paper   # paper | live
+mode: live   # paper | live
 
 # =============================================================================
 #  SECTION 1: MONEY / RISK  — how much you bet and when to stop
@@ -33,15 +33,15 @@ execution:
 # =============================================================================
 signal:
   # --- Edge gates (most important) ---
-  min_edge: 0.04              # Minimum model-vs-market gap to enter. 4% = model must be at least 4pp off market.
+  min_edge: 0.04              # Minimum model-vs-market gap to enter
   max_edge: 0.2               # Reject if edge > 20% — likely a stale/phantom price, not real opportunity.
-  min_model_probability: 0.58 # Model must be this confident in chosen direction
-  min_kelly: 0.015            # Kelly fraction must be at least 1.5% — filters near-worthless bets.
+  min_model_probability: 0.56 # Model must be x% confident in chosen direction
+  min_kelly: 0.01            # Kelly fraction must be at least x% (filters near-worthless bets)
 
   # --- Exit / loss-cut ---
   exit_edge_threshold: -0.07  # Scalp when holding_edge drops below -7%. More negative = hold longer.
   loss_cut_fraction: 0.65     # Force exit if market < entry × 65% with < loss_cut_time_s remaining.
-  loss_cut_time_s: 120.0      # Last 120s: if position is deeply underwater, cut it.
+  loss_cut_time_s: 90.0      # Last X seconds: if position is deeply underwater, cut it.
 
   # --- Adverse selection (are fills moving against you?) ---
   adverse_selection_threshold: 0.85  # Skip entry if 85%+ of recent fills reversed within 30s.
@@ -50,10 +50,10 @@ signal:
   min_atr: 12.0               # Skip entries when the market is too quiet (ATR below 5th percentile of history).
 
   # --- Late window ---
-  late_window_min_prob: 0.4   # In last 2 mins: model must be at least 40% to enter (filters deep underdogs).
+  late_window_min_prob: 0.4   # In last 2 mins: model must be at least x% to enter (filters deep underdogs).
 
   # =============================================================================
-  #  MODEL WEIGHTS  — pipeline tunes these, but you can read them
+  #  PIPELINE TUNABLE MODEL WEIGHTS
   # =============================================================================
   atr_sigma_ratio: 1.3        # L1: lower = sharper/more confident probabilities from BTC distance
   student_t_df: 5             # L1: tail fatness (5 = BTC-appropriate fat tails, don't change)
@@ -66,7 +66,7 @@ signal:
   prev_margin_weight: 0.02    # L5: carry from last window's resolution (momentum).
   regime_lookback: 50         # How many 1-min candles to measure trend/mean-reversion over.
 
-  # L4 indicator mix (pipeline can tune these)
+  # L4 indicator mix
   weights:
     rsi: 0.2
     macd: 0.25
@@ -86,7 +86,7 @@ signal:
     low_mult: 0.6             # Less than 40% agree → 0.6×
 
 # =============================================================================
-#  SECTION 3: ENTRY TIMING  — when in the 5-min window to bet
+#  SECTION 3: ENTRY TIMING
 # =============================================================================
 entry_timing:
   normal_fraction: 0.6        # First 60% of window (0-180s): full Kelly, no penalty.
@@ -95,7 +95,7 @@ entry_timing:
   flip_edge_premium: 0.015    # Re-entry costs extra 1.5% edge on top of min_edge.
 
 # =============================================================================
-#  SECTION 4: SPRT GATE  — sequential evidence test before entering
+#  SECTION 4: SPRT GATE — sequential evidence test before entering
 # =============================================================================
 #  SPRT watches the model signal across multiple ticks (every 10s) and blocks
 #  entry unless it sees consistent directional evidence. Think of it as:
@@ -104,7 +104,7 @@ sprt:
   alpha: 0.05                 # False positive rate. Lower = stricter (more SKIP blocks)
   beta: 0.1                   # False negative rate. Lower = stricter (harder to get ENTER).
   observation_interval_s: 5.0  # Check signal every x seconds.
-  min_confidence: 0.08         # Enter at SPRT confidence
+  min_confidence: 0.07         # Enter at SPRT confidence
 
 # =============================================================================
 #  SECTION 5: SCHEDULE
