@@ -463,7 +463,7 @@ class LiveTrader(BaseTrader):
                         logger.error("Order rejected (non-retryable): %s", error_msg)
                         return FillResult(filled=False, reason=error_msg)
                     last_error = error_msg
-                    logger.debug("FOK %d/%d: book too thin to fill", attempt, _MAX_RETRIES)
+                    logger.debug("FOK %d/%d: price moved before fill", attempt, _MAX_RETRIES)
                     if attempt < _MAX_RETRIES:
                         await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
                     continue
@@ -495,14 +495,14 @@ class LiveTrader(BaseTrader):
                     logger.error("AUTH FAILURE during FOK submit: %s", e)
                     raise AuthError(str(e)) from e
                 last_error = str(e)
-                logger.debug("FOK %d/%d: book too thin to fill", attempt, _MAX_RETRIES)
+                logger.debug("FOK %d/%d: price moved before fill", attempt, _MAX_RETRIES)
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
 
         _update_fill_stats(filled=False, side=side)
         return FillResult(
             filled=False,
-            reason=f"book too thin after {_MAX_RETRIES} attempts",
+            reason=f"price moved before fill after {_MAX_RETRIES} attempts",
         )
 
     # -- Fill price lookup --------------------------------------------------
