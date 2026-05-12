@@ -514,11 +514,13 @@ async def _evaluate_signal_and_enter(
             sprt_conf = _sprt.get_confidence() if _sprt else 0.0
             logger.info(
                 f"{_C.CYAN}EVAL {_direction:<4}{_C.RESET}  {_slug_to_window(cid)}  |  "
-                f"prob {signal.prob:.0%}  edge {signal.edge:+.0%}  BTC {dist:+,.0f}  |  "
-                f"SPRT {sprt_status} {sprt_conf:.0%}  |  {_C.DIM}{signal.reason}{_C.RESET}")
+                f"prob {signal.prob:.0%}  edge {signal.edge:+.1%}  BTC {dist:+,.0f}  |  "
+                f"SPRT {sprt_status} {sprt_conf:.0%}")
         else:
+            # Gate-level _log_skip_once calls below will log the specific reason — skip redundant model-level line
+            # unless it's a purely model-level block (no downstream gate will fire)
             _log_skip_once(cid, f"modelskip_{signal.reason[:30]}",
-                           f"{_C.DIM}SKIP {_slug_to_window(cid):<14} | prob {signal.prob:.0%} — {signal.reason}{_C.RESET}")
+                           f"{_C.DIM}SKIP {_slug_to_window(cid):<14} | {signal.reason}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         _record_skip(f"model:{signal.reason[:30]}")
@@ -1013,7 +1015,7 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
         eval_window = int(now_ts // 300) * 300
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
-            logger.info(f"EVAL: stale prices | Up={price_up:.2f} + Dn={price_down:.2f} = {price_sum:.2f} — skipping")
+            logger.debug(f"EVAL: stale prices | Up={price_up:.2f} + Dn={price_down:.2f} = {price_sum:.2f} — skipping")
         return None, last_eval_log_window
 
     eval_window = int(now_ts // 300) * 300
