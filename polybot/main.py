@@ -142,6 +142,7 @@ _current_window_id: str = ""
 _early_entry_fired: bool = False
 _adverse_monitor: AdverseSelectionMonitor | None = None
 _last_adverse_skip_log_window: int = 0  # throttle adverse-skip logs to once per 5-min window
+_last_logged_action: str = ""  # suppress repeated EVAL blocks when action hasn't changed
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count since last reset
 _GATE_STATS_PATH = Path("polybot/memory/gate_stats.json")
 _last_skip_log: dict[str, str] = {}  # cid -> last logged skip reason (suppresses repeat skips per window)
@@ -496,13 +497,15 @@ async def _evaluate_signal_and_enter(
         late_max_penalty=timing_cfg.get("late_max_penalty", 0.60),
     )
 
-    # Log signal evaluation once per window so we can see what the model sees
-    if eval_window != last_eval_log_window:
+    # Log signal evaluation when action changes (new window OR different action than last tick)
+    global _last_logged_action
+    if eval_window != last_eval_log_window or signal.action != _last_logged_action:
         last_eval_log_window = eval_window
+        _last_logged_action = signal.action
         phase_tag = phase.upper()
         secs = contract["seconds_remaining"]
         dist = btc_price - strike
-        action_color = _C.GREEN if signal.action in ("BUY_YES", "BUY_NO") else _C.DIM
+        action_color = _C.CYAN if signal.action in ("BUY_YES", "BUY_NO") else _C.DIM
         logger.info(
             f"{_C.CYAN}{'=' * 60}{_C.RESET}\n"
             f"  {action_color}EVAL  {signal.action:<8}{_C.RESET} | {contract.get('question', cid)}\n"
@@ -833,7 +836,7 @@ async def _evaluate_signal_and_enter(
         fee_usd = fee_shares * fill_price
         bankroll_now = await db.get_bankroll()
         _dist = btc_price - strike
-        _why_parts = [f"BTC {_dist:+,.0f} vs strike"]
+        _why_parts = [f"edge {signal.edge:+.0%}", f"BTC {_dist:+,.0f} vs strike"]
         if abs(flow_score) >= 0.02:
             _why_parts.append(f"flow {flow_score:+.2f}")
         if regime_state and regime_state.name != "neutral":
@@ -845,7 +848,7 @@ async def _evaluate_signal_and_enter(
             f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
             f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}{slip_note}\n"
             f"  {contract.get('question', cid)}  [{phase}]\n"
-            f"  {_C.YELLOW}Why: {_why}{_C.RESET}\n"
+            f"  {_C.DIM}Why: {_why}{_C.RESET}\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}\n"
             f"{_C.YELLOW}{'=' * 69}{_C.RESET}")
         if _adverse_monitor:
@@ -1344,7 +1347,7 @@ async def _evaluate_and_exit_position(
                 f"{color}{'=' * 60}{_C.RESET}\n"
                 f"  {color}{_C.BOLD}SCALP {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_fill:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
                 f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
-                f"  {_C.YELLOW}Why: {reason}{_C.RESET}\n"
+                f"  {_C.DIM}Why: {reason}{_C.RESET}\n"
                 f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
                 f"{color}{'=' * 69}{_C.RESET}")
             if alert_manager:
