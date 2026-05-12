@@ -257,6 +257,10 @@ class SignalEngine:
         if indicators:
             logit_p += self.compute_momentum(indicators) * logit_momentum_w
 
+        # Hard-clamp total logit to prevent any single day's signal stack from
+        # producing absurd probabilities (e.g., 0.998 on a cascade of aligned signals).
+        logit_p = max(-3.0, min(3.0, logit_p))
+
         prob_up = 1.0 / (1.0 + math.exp(-logit_p))
         self.last_raw_prob_up = prob_up
         if self.calibrator:

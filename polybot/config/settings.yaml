@@ -44,7 +44,7 @@ signal:
   loss_cut_time_s: 90.0      # Last X seconds: if position is deeply underwater, cut it.
 
   # --- Adverse selection (are fills moving against you?) ---
-  adverse_selection_threshold: 0.85  # Skip entry if 85%+ of recent fills reversed within 30s.
+  adverse_selection_threshold: 0.65  # Skip entry if 65%+ of recent fills reversed within 30s.
 
   # --- Volatility filter ---
   min_atr: 12.0               # Skip entries when the market is too quiet (ATR below 5th percentile of history).
