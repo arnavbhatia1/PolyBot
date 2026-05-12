@@ -1350,7 +1350,6 @@ async def _evaluate_and_exit_position(
         result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token)
         if not result.success:
             if "CLOB minimum" in (result.reason or ""):
-                global _abandoned_scalp_positions
                 _abandoned_scalp_positions.add(pos["id"])
                 logger.info(f"  SCALP ABANDONED — position too small to sell (${exit_size_usd:.2f}), holding to resolution")
                 return day_wins, day_losses, day_fees, traded_market_id
