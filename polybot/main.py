@@ -836,14 +836,30 @@ async def _evaluate_signal_and_enter(
         fee_usd = fee_shares * fill_price
         bankroll_now = await db.get_bankroll()
         _dist = btc_price - strike
-        _why_parts = [f"edge {signal.edge:+.0%}", f"BTC {_dist:+,.0f} vs strike"]
-        if abs(flow_score) >= 0.02:
-            _why_parts.append(f"flow {flow_score:+.2f}")
-        if regime_state and regime_state.name != "neutral":
-            _why_parts.append(f"regime={regime_state.name}")
-        if abs(spot_flow_signal) >= 0.05:
-            _why_parts.append(f"CVD {spot_flow_signal:+.2f}")
-        _why = " | ".join(_why_parts)
+        _why_parts = []
+        # BTC position vs strike
+        if side == "Up":
+            _why_parts.append(f"BTC ${abs(_dist):,.0f} {'above' if _dist > 0 else 'below'} strike — {'favors Up' if _dist > 0 else 'fighting strike'}")
+        else:
+            _why_parts.append(f"BTC ${abs(_dist):,.0f} {'below' if _dist < 0 else 'above'} strike — {'favors Down' if _dist < 0 else 'fighting strike'}")
+        # Order flow
+        if flow_score > 0.1:
+            _why_parts.append("strong buy pressure in book")
+        elif flow_score < -0.1:
+            _why_parts.append("strong sell pressure in book")
+        # CVD / spot flow
+        if spot_flow_signal > 0.05:
+            _why_parts.append("buyers dominating on Binance")
+        elif spot_flow_signal < -0.05:
+            _why_parts.append("sellers dominating on Binance")
+        # Regime
+        if regime_state and regime_state.name == "trending":
+            _why_parts.append(f"market trending {side.lower()}")
+        elif regime_state and regime_state.name == "reverting":
+            _why_parts.append("market mean-reverting")
+        # Edge confidence
+        _why_parts.append(f"model sees {signal.edge:.0%} edge")
+        _why = ", ".join(_why_parts)
         logger.info(
             f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
             f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}{slip_note}\n"

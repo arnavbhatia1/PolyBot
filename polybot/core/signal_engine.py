@@ -376,9 +376,8 @@ class SignalEngine:
                 and market_price_for_side < entry_price * self.loss_cut_fraction
                 and seconds_remaining < self.loss_cut_time_s):
             return ("EXIT", model_prob, holding_edge,
-                    f"LossCut {side}: mkt={market_price_for_side:.2f} < "
-                    f"{self.loss_cut_fraction:.0%}×entry={entry_price:.2f} "
-                    f"at {seconds_remaining:.0f}s")
+                    f"cutting loss — market dropped to {market_price_for_side:.2f} "
+                    f"(entered at {entry_price:.2f}) with only {seconds_remaining:.0f}s left")
 
         # Past _DEEP_LOSS_HOLD_THRESHOLD the binary residual is +EV vs locking in
         # the loss. Only applies when the exit would actually be at a loss vs entry.
@@ -387,14 +386,12 @@ class SignalEngine:
         if (holding_edge < _DEEP_LOSS_HOLD_THRESHOLD
                 and (entry_price <= 0 or market_price_for_side < entry_price)):
             return ("HOLD", model_prob, holding_edge,
-                    f"Hold {side} (deep-loss zone): edge={holding_edge:+.0%} < "
-                    f"{_DEEP_LOSS_HOLD_THRESHOLD:+.0%} — let resolution play out")
+                    f"holding to resolution — deeply underwater but better odds holding than selling now")
 
         if holding_edge <= effective_threshold:
             return ("EXIT", model_prob, holding_edge,
-                    f"Exit {side}: model={model_prob:.0%} mkt={market_price_for_side:.0%} "
-                    f"edge={holding_edge:+.0%} thresh={effective_threshold:+.0%} "
-                    f"BTC={btc_price:,.0f} strike={strike_price:,.0f}")
+                    f"market price {market_price_for_side:.2f} has moved against us "
+                    f"(model still sees {model_prob:.0%}) — taking profit before it slips further")
         return ("HOLD", model_prob, holding_edge,
                 f"Hold {side}: model={model_prob:.0%} mkt={market_price_for_side:.0%} "
                 f"edge={holding_edge:+.0%}")
