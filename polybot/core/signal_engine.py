@@ -319,7 +319,7 @@ class SignalEngine:
 
         if best_edge < self.min_edge:
             return TradeSignal("SKIP", best_prob, best_edge, 0,
-                               f"No edge: best={best_edge:+.0%} < floor={self.min_edge:.0%}")
+                               f"No edge: best={best_edge:+.1%} < floor={self.min_edge:.1%}")
 
         kelly = self._kelly(best_prob, best_mkt)
         if kelly < self.min_kelly:
