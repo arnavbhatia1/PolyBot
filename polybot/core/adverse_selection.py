@@ -95,7 +95,7 @@ class AdverseSelectionMonitor:
             data = json.loads(self._state_path.read_text())
             saved_at = float(data.get("saved_at", 0))
             age = time.time() - saved_at
-            if age > 3600:
+            if age > 7200:
                 logger.debug(f"AdverseSelectionMonitor: discarding stale snapshot (age {age:.0f}s)")
                 return
             fills_data = data.get("fills", [])
@@ -168,7 +168,7 @@ class AdverseSelectionMonitor:
                 adverse += 1
             elif fill.side == "Down" and post > fill.midprice_at_fill:
                 adverse += 1
-        if total < 10:
+        if total < 5:
             return 0.5  # not enough recent data
         return adverse / total
 
