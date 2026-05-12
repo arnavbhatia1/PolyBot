@@ -66,7 +66,7 @@ class PaperTrader(BaseTrader):
 
     async def _simulate_latency(self) -> None:
         """Gaussian-jittered sleep approximating Polymarket match latency (~250-600ms typical)."""
-        latency = max(0.2, random.gauss(self.latency_mean_s, self.latency_jitter_s))
+        latency = max(0.25, random.gauss(self.latency_mean_s, self.latency_jitter_s))
         await asyncio.sleep(latency)
 
     def _walk_book(self, token_id: str, side: str, requested_price: float,
@@ -143,6 +143,10 @@ class PaperTrader(BaseTrader):
             fill_price = max(vwap, requested_price)
         else:
             fill_price = min(vwap, requested_price)
+            # Simulate FOK price-moved rejection: if the book has moved more than
+            # max_slippage above requested_price, live would reject the order outright.
+            if vwap > requested_price * (1 + self.max_slippage):
+                return FillResult(filled=False, reason="price moved before fill (simulated FOK rejection)")
 
         fill_size = spent if side == "buy" else 0.0
         return FillResult(filled=True, fill_price=fill_price, fill_size=fill_size)

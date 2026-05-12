@@ -22,8 +22,8 @@ execution:
   max_slippage: 0.02
   slippage_impact_pct: 0.03
   backtest_realism_factor: 0.85
-  paper_latency_mean_s: 0.08
-  paper_latency_jitter_s: 0.04
+  paper_latency_mean_s: 0.375
+  paper_latency_jitter_s: 0.075
   paper_network_fail_rate: 0.02
   use_maker_orders: false
   maker_timeout_s: 15.0
