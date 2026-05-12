@@ -1,5 +1,5 @@
 # PolyBot Auto-Restart Wrapper
-# Runs the bot with --auto-restart. After the daily pipeline (11:15 PM ET),
+# Runs the bot with --auto-restart. After the daily pipeline (11:50 PM ET),
 # the bot exits cleanly. This script commits updated config/weights to git,
 # pushes to remote, and restarts the bot at 12:01 AM ET.
 #
@@ -36,19 +36,18 @@ while ($true) {
 
     Write-Host "[$timestamp] Starting PolyBot ($mode mode)..." -ForegroundColor Green
 
-    # Run the bot — blocks until pipeline completes and bot exits
+    # Run the bot -- blocks until pipeline completes and bot exits
     python -m polybot.main --mode $mode --auto-restart
 
     $exitCode = $LASTEXITCODE
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Write-Host "[$timestamp] Bot exited (code: $exitCode)" -ForegroundColor Yellow
 
-    # Only commit after a clean pipeline exit (code 0) — not on crashes or auth errors
+    # Only commit after a clean pipeline exit (code 0) -- not on crashes or auth errors
     if ($exitCode -ne 0) {
-        Write-Host "[$timestamp] Bot exited with error (code: $exitCode) — skipping commit" -ForegroundColor Red
+        Write-Host "[$timestamp] Bot exited with error (code: $exitCode) -- skipping commit" -ForegroundColor Red
     }
 
-    # Commit any config/weight changes from the pipeline
     if ($exitCode -eq 0) {
         Write-Host "[$timestamp] Committing pipeline updates..." -ForegroundColor Cyan
         git add polybot/config/settings.yaml polybot/memory/ polybot/db/polybot_paper.db polybot/db/polybot_live.db 2>$null
@@ -68,7 +67,6 @@ while ($true) {
     }
 
     # Wait until 12:01 AM ET to restart
-    # Calculate seconds until next 12:01 AM ET
     $now = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), "Eastern Standard Time")
     $next1201am = $now.Date.AddMinutes(1)
     if ($now -ge $next1201am) {
