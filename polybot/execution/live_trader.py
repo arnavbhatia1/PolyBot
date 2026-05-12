@@ -432,7 +432,7 @@ class LiveTrader(BaseTrader):
         # before hammering CLOB 3× for a guaranteed-fail order. BUY amount is
         # USDC; SELL amount is shares (× expected_price for notional).
         notional_usd = amount if side == BUY else amount * expected_price
-        if notional_usd < _MIN_ORDER_USD:
+        if round(notional_usd, 2) < _MIN_ORDER_USD:
             logger.info(
                 "FOK %s skipped: notional $%.2f below $%.2f minimum",
                 side, notional_usd, _MIN_ORDER_USD,
@@ -512,6 +512,7 @@ class LiveTrader(BaseTrader):
         try:
             order = await asyncio.to_thread(self.client.get_order, order_id)
             trades = order.get("associate_trades", [])
+            trades = [t for t in trades if isinstance(t, dict)]
             if not trades:
                 return fallback_price
             total_shares = sum(float(t["size"]) for t in trades)
@@ -520,5 +521,5 @@ class LiveTrader(BaseTrader):
             total_cost = sum(float(t["size"]) * float(t["price"]) for t in trades)
             return total_cost / total_shares
         except Exception as e:
-            logger.warning("Failed to fetch fill price for %s: %s", order_id, e)
+            logger.debug("Failed to fetch fill price for %s: %s", order_id, e)
             return fallback_price
