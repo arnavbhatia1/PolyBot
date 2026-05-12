@@ -437,3 +437,21 @@
 - None
 
 **Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
+
+## 2026-05-12T04:25:54.099668+00:00
+
+**Source:** Local
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.04 [medium]
+    Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.

@@ -1624,11 +1624,15 @@ class AgentScheduler:
                     platt_info["delta_sharpe"] = round(delta_sharpe, 4)
                     platt_info["dyn_floor"] = round(dyn_floor, 4)
 
-                    # Meta-alert: raw within 5% of current means calibration isn't earning its keep.
-                    # Auto-revert to identity to break the compounding-compression cycle: bad period
-                    # → calibrator fits aggressive compression → lower edge/size → worse PnL →
-                    # even more compression next cycle. Identity is strictly better in this regime.
-                    if old_kelly_sharpe > 0 and raw_kelly_sharpe >= 0.95 * old_kelly_sharpe:
+                    # Meta-alert: only meaningful when current calibrator is non-identity.
+                    # When current IS identity, raw_sharpe ≡ old_sharpe by definition, so the
+                    # check would always fire and permanently block any new Platt from being adopted.
+                    current_is_identity = (
+                        self.signal_engine.calibrator is None
+                        or self.signal_engine.calibrator.is_identity
+                    )
+                    if (not current_is_identity and old_kelly_sharpe > 0
+                            and raw_kelly_sharpe >= 0.95 * old_kelly_sharpe):
                         platt_info["meta_warning"] = (
                             f"raw_sharpe {raw_kelly_sharpe:.4f} >= 0.95 x current_platt "
                             f"{old_kelly_sharpe:.4f} — reverting to identity"
