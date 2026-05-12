@@ -1348,7 +1348,7 @@ async def _evaluate_and_exit_position(
         if not result.success:
             if "CLOB minimum" in (result.reason or ""):
                 logger.info(f"  SCALP ABANDONED — position too small to sell (${exit_size_usd:.2f}), holding to resolution")
-                return traded_market_id
+                return day_wins, day_losses, day_fees, traded_market_id
             logger.warning(f"  SCALP RETRY — close_trade failed (will retry next tick): {result.reason}")
         elif result.success:
             pnl = result.pnl
