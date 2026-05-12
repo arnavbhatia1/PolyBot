@@ -501,24 +501,24 @@ async def _evaluate_signal_and_enter(
 
     # BUY block: once per window. SKIP: one-liner only when action changes.
     global _last_logged_action, _last_eval_buy_window
-    action_changed = signal.action != _last_logged_action or eval_window != last_eval_log_window
+    _direction = "Up" if signal.action == "BUY_YES" else ("Down" if signal.action == "BUY_NO" else "SKIP")
+    action_changed = _direction != _last_logged_action or eval_window != last_eval_log_window
     if action_changed:
         last_eval_log_window = eval_window
-        _last_logged_action = signal.action
+        _last_logged_action = _direction
         if signal.action in ("BUY_YES", "BUY_NO"):
             if eval_window != _last_eval_buy_window:
                 _last_eval_buy_window = eval_window
             dist = btc_price - strike
             sprt_status = _sprt.get_status() if _sprt else "N/A"
             sprt_conf = _sprt.get_confidence() if _sprt else 0.0
-            direction = "Up" if signal.action == "BUY_YES" else "Down"
             logger.info(
-                f"{_C.CYAN}EVAL {direction:<4}{_C.RESET}  {_slug_to_window(cid)}  |  "
+                f"{_C.CYAN}EVAL {_direction:<4}{_C.RESET}  {_slug_to_window(cid)}  |  "
                 f"prob {signal.prob:.0%}  edge {signal.edge:+.0%}  BTC {dist:+,.0f}  |  "
                 f"SPRT {sprt_status} {sprt_conf:.0%}  |  {_C.DIM}{signal.reason}{_C.RESET}")
         else:
-            window_str = _slug_to_window(cid)
-            logger.info(f"{_C.DIM}SKIP {window_str:<14} | prob {signal.prob:.0%} — {signal.reason}{_C.RESET}")
+            _log_skip_once(cid, f"modelskip_{signal.reason[:30]}",
+                           f"{_C.DIM}SKIP {_slug_to_window(cid):<14} | prob {signal.prob:.0%} — {signal.reason}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         _record_skip(f"model:{signal.reason[:30]}")
