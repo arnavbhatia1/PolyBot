@@ -43,7 +43,7 @@ signal:
   loss_cut_fraction: 0.65     # Force exit if market < entry × 65% with < loss_cut_time_s remaining.
   loss_cut_time_s: 90.0      # Last X seconds: if position is deeply underwater, cut it.
 
-  # --- Adverse selection (are fills moving against you?) ---
+  # --- Adverse selection ---
   adverse_selection_threshold: 0.65  # Skip entry if 65%+ of recent fills reversed within 30s.
 
   # --- Volatility filter ---
@@ -69,8 +69,8 @@ signal:
   # L4 indicator mix
   weights:
     rsi: 0.2
-    macd: 0.3       # 60d: bull 53.9% on n=1981 (z=3.5 vs 50%) — only indicator with significant directional signal
-    stochastic: 0.15  # 60d: bear 46.9% n=2435 — noisiest, reduce share
+    macd: 0.3
+    stochastic: 0.15
     obv: 0.15
     vwap: 0.2
 
@@ -90,8 +90,8 @@ signal:
 # =============================================================================
 entry_timing:
   normal_fraction: 0.6        # First 60% of window (0-180s): full Kelly, no penalty.
-  late_max_penalty: 0.30      # Last 40%: ATM trades penalized up to x%. High-conviction trades barely touched.
-  flip_enabled: true          # Allow re-entry after a scalp (same window, opposite side or same).
+  late_max_penalty: 0.30      # Last 40%: ATM trades penalized up to x%.
+  flip_enabled: true          # Allow re-entry after a scalp.
   flip_edge_premium: 0.015    # Re-entry costs extra 1.5% edge on top of min_edge.
 
 # =============================================================================
@@ -101,7 +101,7 @@ entry_timing:
 sprt:
   alpha: 0.05                 # False positive rate. Lower = stricter (more SKIP blocks)
   beta: 0.1                   # False negative rate. Lower = stricter (harder to get ENTER).
-  observation_interval_s: 5.0  # Check signal every x seconds.
+  observation_interval_s: 5.0 # Check signal every x seconds.
   min_confidence: 0.02        # Minimum confidence to allow entry.
 
 # =============================================================================

@@ -4,16 +4,10 @@ Every file that needs param ranges, defaults, or yaml paths reads from here.
 Adding a new tunable param = add one ParamSpec row. Nothing else needs updating
 (loader validation, CLAMP_RANGES, _config_for_helper, _backtest_single_change,
 and the Claude system-prompt param list all derive from this table).
-
-Manual-only params (exit_edge_threshold, circuit_breaker.*, etc.) are NOT here —
-they live in MANUAL_ONLY_PARAMS in claude_client.py because they're operator-owned
-and never backtested.
 """
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any
-
 
 @dataclass(frozen=True)
 class ParamSpec:
@@ -24,7 +18,6 @@ class ParamSpec:
     cast: type       # int or float — applied when clamping and in _config_for_helper
     default: Any     # fallback when signal_engine attribute is missing
     description: str # shown in Claude system prompt
-
 
 PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     # ── Layer 1 ─────────────────────────────────────────────────────────────
@@ -46,11 +39,18 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec("min_edge",                "signal.min_edge",                0.02,  0.10,  float, 0.04,  "minimum model–market edge to enter"),
     ParamSpec("min_kelly",               "signal.min_kelly",               0.005, 0.04,  float, 0.01,  "minimum Kelly fraction to enter"),
     ParamSpec("min_model_probability",   "signal.min_model_probability",   0.52,  0.70,  float, 0.58,  "minimum model probability to enter"),
+    # ── Entry timing envelope ───────────────────────────────────────────────
+    ParamSpec("normal_fraction",         "entry_timing.normal_fraction",   0.40,  0.80,  float, 0.60,  "fraction of window with full Kelly (no late-window penalty)"),
+    ParamSpec("late_max_penalty",        "entry_timing.late_max_penalty",  0.10,  0.60,  float, 0.30,  "max Kelly penalty at the very end of the window (ATM trades)"),
+    # ── Flip-trade behavior ─────────────────────────────────────────────────
+    ParamSpec("flip_edge_premium",       "entry_timing.flip_edge_premium", 0.005, 0.05,  float, 0.015, "extra edge required to re-enter same window after a scalp"),
+    # ── Exit / scalp threshold ──────────────────────────────────────────────
+    # TIGHT bound — directly changes realized P&L. Lower (more negative) = hold
+    # longer through noise; upper (less negative) = exit faster on any tick against.
+    ParamSpec("exit_edge_threshold",     "signal.exit_edge_threshold",     -0.10, -0.03, float, -0.05, "holding_edge floor before scalping; blended with exit_boundary curve"),
 )
 
-
 # ── Derived lookups (everything else imports these, not PIPELINE_PARAMS directly) ──
-
 BY_NAME: dict[str, ParamSpec] = {p.name: p for p in PIPELINE_PARAMS}
 
 # Format used by claude_client and local_recommender: name → (lo, hi, cast)
@@ -58,7 +58,6 @@ CLAMP_RANGES: dict[str, tuple] = {p.name: (p.lo, p.hi, p.cast) for p in PIPELINE
 
 # Set of tunable param names for O(1) membership tests
 TUNABLE_NAMES: frozenset[str] = frozenset(p.name for p in PIPELINE_PARAMS)
-
 
 # ── Manual-only param defaults ────────────────────────────────────────────────
 # These are NOT pipeline-tunable but they DO need a canonical default for the
@@ -68,17 +67,12 @@ TUNABLE_NAMES: frozenset[str] = frozenset(p.name for p in PIPELINE_PARAMS)
 # the same literal from appearing in 5 different files.
 _MANUAL_DEFAULTS: dict[str, Any] = {
     # Exit / hold policy
-    "exit_edge_threshold": -0.05,
     "max_edge": 0.20,
     "loss_cut_fraction": 0.65,
     "loss_cut_time_s": 120.0,
     "adverse_selection_threshold": 0.55,
-    # Entry timing
-    "normal_fraction": 0.60,
-    "late_max_penalty": 0.60,
     # Flip trading
     "flip_enabled": True,
-    "flip_edge_premium": 0.015,
     # Risk caps
     "max_concurrent_positions": 2,
     "max_bankroll_deployed": 0.80,
@@ -95,12 +89,9 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
 # Unified defaults map: pipeline params + manual params.
 DEFAULTS: dict[str, Any] = {p.name: p.default for p in PIPELINE_PARAMS} | _MANUAL_DEFAULTS
 
-
 def default_for(name: str) -> Any:
     """Canonical default for a parameter, by name. Single source of truth.
 
-    Used at every `cfg.get(name, FALLBACK)` callsite so the FALLBACK literal
-    lives in exactly one file. Raises KeyError on an unregistered name —
-    intentional, it flags drift the moment a new param sneaks in unregistered.
+    Used at every `cfg.get(name, FALLBACK)` callsite so the FALLBACK literal lives in exactly one file.
     """
     return DEFAULTS[name]

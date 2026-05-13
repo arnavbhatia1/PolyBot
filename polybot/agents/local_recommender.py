@@ -511,7 +511,7 @@ class LocalRecommender:
         cur = self.cfg.get("exit_edge_threshold", _d("exit_edge_threshold"))
         if net_dir == "scalp_early":
             self._emit_manual(
-                "exit_edge_threshold", cur, max(-0.25, float(cur) - 0.05),
+                "exit_edge_threshold", cur, max(-0.10, float(cur) - 0.02),
                 "Counterfactual: holds beat scalps — make scalp threshold more negative (harder to scalp)",
                 {"metric": "net_exit_direction", "value": net_dir, "n": n_scalps,
                  "source": "counterfactual_analysis"},
@@ -519,7 +519,7 @@ class LocalRecommender:
             )
         elif net_dir == "hold_long":
             self._emit_manual(
-                "exit_edge_threshold", cur, round(min(0.0, float(cur) + 0.03), 4),
+                "exit_edge_threshold", cur, round(min(-0.03, float(cur) + 0.02), 4),
                 "Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)",
                 {"metric": "net_exit_direction", "value": net_dir, "n": n_scalps,
                  "source": "counterfactual_analysis"},

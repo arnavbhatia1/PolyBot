@@ -1,19 +1,16 @@
 """ClaudeClient: nightly strategy analysis. Builds prompt, calls Claude, validates/clamps response."""
 from __future__ import annotations
+from typing import Any
+from polybot.config.param_registry import CLAMP_RANGES as _CLAMP_RANGES, default_for as _d
 
 import asyncio
 import json
 import logging
 import math
 import re
-from typing import Any
-
 import anthropic
 
 logger = logging.getLogger(__name__)
-
-from polybot.config.param_registry import CLAMP_RANGES as _CLAMP_RANGES, default_for as _d
-
 
 def _cfg_get(cfg: dict[str, Any], dotted: str) -> Any:
     """Look up a config value by `section.subsection.key`. Returns None if any
@@ -26,7 +23,6 @@ def _cfg_get(cfg: dict[str, Any], dotted: str) -> Any:
             return None
         cur = cur[seg]
     return cur
-
 
 def _extract_json(text: str) -> dict[str, Any]:
     """Extract JSON from Claude's response, handling fences, prose, and partial output."""
@@ -73,7 +69,6 @@ def _extract_json(text: str) -> dict[str, Any]:
     # Braces didn't balance — try parsing from start anyway (truncated response)
     raise json.JSONDecodeError("Unbalanced braces in JSON response", text, start)
 
-
 STRATEGY_SYSTEM_PROMPT = """\
 You are the strategist for PolyBot, an automated trader for 5-min BTC Up/Down
 binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink BTC.
@@ -106,12 +101,16 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
 - kelly_fraction (0.05-0.25; leave unchanged unless strong risk evidence)
 - min_edge (0.02-0.10), min_kelly (0.005-0.04), min_model_probability (0.52-0.70)
 - weights (RSI/MACD/Stoch/OBV/VWAP dict, sum=1.0, each ≥0.05)
+- exit_edge_threshold (-0.10 to -0.03; TIGHT range — directly changes realized P&L,
+  more negative = hold longer, less negative = exit faster)
+- normal_fraction (0.40-0.80, fraction of window with full Kelly)
+- late_max_penalty (0.10-0.60, max Kelly cut at end of window)
+- flip_edge_premium (0.005-0.05, extra edge required to re-enter after a scalp)
 
 ## Manual-Only Params (route to `manual_observations`, never `changes`)
-- exit_edge_threshold, max_edge, adverse_selection_threshold
-- normal_fraction, late_max_penalty
+- max_edge, adverse_selection_threshold
 - loss_cut_fraction, loss_cut_time_s (stop-loss level and time gate — risk policy)
-- trading_start/end_hour_et/minute, flip_enabled, flip_edge_premium
+- trading_start/end_hour_et/minute, flip_enabled
 - max_concurrent_positions, max_bankroll_deployed
 - circuit_breaker.floor_pct, circuit_breaker.min_multiplier
 - Indicator periods: indicators.{rsi,macd,stochastic,ema,obv,atr}.{period,...}
@@ -148,13 +147,14 @@ backtest. Each observation must cite: `evidence.n` ≥ 50, a specific `evidence.
 and direction must be unambiguous. Emit ZERO observations if the bar isn't met.
 Max 3 per cycle (deduped by param).
 
-Trigger mappings:
-- counterfactual_analysis.net_exit_direction = "scalp_early" → exit_edge_threshold MORE
-  negative. = "hold_long" → exit_edge_threshold LESS negative.
+Trigger mappings (manual-only — route to `manual_observations`):
 - edge_calibration: high-edge bucket WR < low-edge bucket WR by 2× noise → max_edge LOWER.
 - ghost_analysis.adverse_rate_30s with high pct_profitable + positive sim_pnl →
   adverse_selection_threshold HIGHER (gate over-filters). Negative sim_pnl → keep tight.
-- time_patterns: late-window WR much lower than early → late_max_penalty LOWER.
+
+Note: exit_edge_threshold, normal_fraction, late_max_penalty, flip_edge_premium are now
+pipeline-tunable — propose them in `changes` with predicted_delta_sharpe_7d, backed by
+counterfactual_analysis / time_patterns / flip outcomes as you would any other tunable.
 
 ## Response (return ONLY valid JSON, no fences):
 {
@@ -163,8 +163,8 @@ Trigger mappings:
      "predicted_delta_sharpe_7d": 0.025, "confidence_interval": [-0.005, 0.045]}
   ],
   "manual_observations": [
-    {"param": "exit_edge_threshold", "current": -0.05, "suggested": -0.12,
-     "evidence": {"metric": "scalp_accuracy", "value": 0.46, "n": 900, "source": "counterfactual_analysis"},
+    {"param": "adverse_selection_threshold", "current": 0.65, "suggested": 0.72,
+     "evidence": {"metric": "adverse_rate_30s", "value": 0.58, "n": 900, "source": "ghost_analysis"},
      "reason": "one sentence", "confidence": "high"}
   ],
   "key_findings": ["finding 1", "finding 2"],
@@ -270,24 +270,19 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     # - Risk caps (operator-owned policy)
     # - Circuit breaker (bankroll protection)
     MANUAL_ONLY_PARAMS = {
-        # Exit / scalp / loss-cut behavior
-        "exit_edge_threshold",
+        # Loss-cut behavior
         "loss_cut_fraction",
         "loss_cut_time_s",
         # Entry-time filters (informed flow, stale price)
         "adverse_selection_threshold",
         "max_edge",
-        # Entry-timing Kelly envelope
-        "normal_fraction",
-        "late_max_penalty",
         # Schedule
         "trading_start_hour_et",
         "trading_start_minute",
         "trading_end_hour_et",
         "trading_end_minute",
-        # Flip-trade behavior
+        # Flip-trade switch (premium is pipeline-tunable, on/off is not)
         "flip_enabled",
-        "flip_edge_premium",
         # Risk caps (operator-owned)
         "max_concurrent_positions",
         "max_bankroll_deployed",

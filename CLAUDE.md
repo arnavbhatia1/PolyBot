@@ -48,8 +48,7 @@ L3+L3b combined capped at ±0.35 logits. Final logit clamped ±3.0 → prob ∈ 
 - CLOB WS heartbeat: PING every 10s, force reconnect if no PONG within 25s.
 - `fill.fill_size` is always USDC notional (BUY: requested; SELL: shares × fill_price).
 - Per-mode DB (`polybot_paper.db` / `polybot_live.db`); `memory/` shared.
-
-Bybit REST is geo-blocked for US; WS is the only OI source.
+- WS is the only OI source.
 
 ## Project Structure
 

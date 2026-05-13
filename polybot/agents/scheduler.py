@@ -1161,7 +1161,7 @@ class AgentScheduler:
                 elif param == "kelly_fraction":
                     self.signal_engine.kelly_fraction = _clamp(float(value), 0.05, 0.25)
                 elif param == "exit_edge_threshold":
-                    self._exit_edge_threshold = _clamp(float(value), -0.25, 0.0)
+                    self._exit_edge_threshold = _clamp(float(value), -0.10, -0.03)
                 elif param == "atr_sigma_ratio":
                     self.signal_engine.atr_sigma_ratio = _clamp(float(value), 1.2, 2.5)
                 elif param == "spot_flow_weight":
@@ -1184,7 +1184,10 @@ class AgentScheduler:
                         self._config.setdefault("entry_timing", {})["normal_fraction"] = _clamp(float(value), 0.40, 0.80)
                 elif param == "late_max_penalty":
                     if self._config:
-                        self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(value), 0.20, 0.80)
+                        self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(value), 0.10, 0.60)
+                elif param == "flip_edge_premium":
+                    if self._config:
+                        self._config.setdefault("entry_timing", {})["flip_edge_premium"] = _clamp(float(value), 0.005, 0.05)
                 elif param == "trading_start_hour_et":
                     self._trading_start = (int(value), 0)
                 elif param == "trading_end_hour_et":
@@ -1221,7 +1224,9 @@ class AgentScheduler:
                 elif param == "normal_fraction":
                     self._config.setdefault("entry_timing", {})["normal_fraction"] = _clamp(float(value), 0.40, 0.80)
                 elif param == "late_max_penalty":
-                    self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(value), 0.20, 0.80)
+                    self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(value), 0.10, 0.60)
+                elif param == "flip_edge_premium":
+                    self._config.setdefault("entry_timing", {})["flip_edge_premium"] = _clamp(float(value), 0.005, 0.05)
                 elif param == "min_atr":
                     sig["min_atr"] = _clamp(float(value), 4.0, 25.0)
                 elif param == "max_edge":
@@ -1237,7 +1242,7 @@ class AgentScheduler:
                 elif param == "kelly_fraction":
                     math_sec["kelly_fraction"] = _clamp(float(value), 0.05, 0.25)
                 elif param == "exit_edge_threshold":
-                    sig["exit_edge_threshold"] = _clamp(float(value), -0.25, 0.0)
+                    sig["exit_edge_threshold"] = _clamp(float(value), -0.10, -0.03)
                 elif param == "trading_start_hour_et":
                     sched["trading_start_hour_et"] = int(value)
                 elif param == "trading_end_hour_et":
@@ -1371,6 +1376,8 @@ class AgentScheduler:
                              "prev_margin_weight", "min_atr", "student_t_df",
                              "max_edge", "exit_edge_threshold"):
                         sig[p] = v
+                    elif p in ("normal_fraction", "late_max_penalty", "flip_edge_premium"):
+                        self._config.setdefault("entry_timing", {})[p] = v
                     elif p == "kelly_fraction":
                         math_sec[p] = v
                 try:

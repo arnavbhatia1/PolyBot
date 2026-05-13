@@ -68,8 +68,6 @@ def validate_config(config: dict[str, Any]) -> None:
         _check_range(_spec.yaml_key, _spec.lo, _spec.hi, integer=(_spec.cast is int))
 
     _check_range("signal.max_edge", 0.10, 0.30)
-    _check_range("signal.exit_edge_threshold", -0.25, 0.0)
-
     weights_val, weights_found = _get_nested(config, "signal.weights")
     if not weights_found:
         errors.append("signal.weights: missing from config")
