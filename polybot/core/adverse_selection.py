@@ -139,7 +139,7 @@ class AdverseSelectionMonitor:
                 fill.midprice_60s = mid
                 fill.resolved = True
 
-    def get_adverse_rate(self, window_s: float = 30.0, lookback_s: float = 7200.0) -> float:
+    def get_adverse_rate(self, window_s: float = 30.0, lookback_s: float = 1800.0) -> float:
         """Fraction of fills where price moved AGAINST us within window_s.
 
         For Up bets: adverse = midprice dropped after fill

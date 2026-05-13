@@ -180,10 +180,10 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
         if ctx["direction"] == prev_dir and (now - prev_time) < 30:
             return
     _last_gate_skip_state[cid] = (ctx["direction"], gate_key, now)
-    _sprt_part = f"  |  {ctx['sprt']}" if ctx.get("sprt") and not gate_key.startswith("sprt") else ""
+    _sprt_part = f" | {ctx['sprt']}" if ctx.get("sprt") and not gate_key.startswith("sprt") else ""
     logger.info(
-        f"{_C.DIM}SKIP {ctx['direction']:<4}  {ctx['window_slug']}  |  "
-        f"prob {ctx['prob']:.0%}  edge {ctx['edge']:+.1%}  BTC {ctx['dist']:+,.0f}  |  "
+        f"{_C.DIM}SKIP {ctx['direction']}  {ctx['window_slug']} | "
+        f"prob {ctx['prob']:.0%} edge {ctx['edge']:+.1%} BTC {ctx['dist']:+,.0f} | "
         f"{reason}{_sprt_part}{_C.RESET}"
     )
 
@@ -539,8 +539,9 @@ async def _evaluate_signal_and_enter(
     dist = btc_price - strike
     _sprt_info = ""
     if _sprt:
-        _s, _c, _f = _sprt.get_status(), _sprt.get_confidence(), _sprt.favored_side()
-        _sprt_info = f"SPRT {_s} {_c:.0%}" + (f" ({_f})" if _f else "")
+        _s, _c, _f, _n = _sprt.get_status(), _sprt.get_confidence(), _sprt.favored_side(), _sprt.observation_count()
+        _side_str = f" ({_f})" if _f and _c >= 0.20 else f" {_n}obs"
+        _sprt_info = f"SPRT {_s} {_c:.0%}{_side_str}"
     _pending_eval_ctx[cid] = {
         "direction": _direction,
         "prob": signal.prob,

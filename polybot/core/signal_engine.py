@@ -343,7 +343,7 @@ class SignalEngine:
 
         if best_prob < self.min_model_probability:
             return TradeSignal("SKIP", best_prob, best_edge, 0,
-                               f"Low confidence on entered side: model={best_prob:.0%} < min={self.min_model_probability:.0%}")
+                               f"model={best_prob:.0%} < min={self.min_model_probability:.0%}")
 
         if best_edge < self.min_edge:
             return TradeSignal("SKIP", best_prob, best_edge, 0,
