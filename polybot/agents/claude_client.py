@@ -17,7 +17,7 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
-from polybot.config.param_registry import CLAMP_RANGES as _CLAMP_RANGES
+from polybot.config.param_registry import CLAMP_RANGES as _CLAMP_RANGES, default_for as _d
 
 
 def _cfg_get(cfg: dict[str, Any], dotted: str) -> Any:
@@ -415,15 +415,32 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         if param in CLAMP_RANGES:
             lo, hi, cast = CLAMP_RANGES[param]
             try:
-                clamped = cast(max(lo, min(hi, cast(value))))
+                raw_value = cast(value)
+                clamped = cast(max(lo, min(hi, raw_value)))
             except (TypeError, ValueError):
                 continue
             # Extra: momentum magnitude must stay below min_edge
+            momentum_floor_applied = False
             if param == "momentum_weight":
-                min_edge_live = cfg.get("min_edge", 0.04)
+                min_edge_live = cfg.get("min_edge", _d("min_edge"))
                 if abs(clamped) >= min_edge_live:
                     clamped = float((min_edge_live - 0.001) * (1.0 if clamped >= 0 else -1.0))
+                    momentum_floor_applied = True
             entry: dict[str, Any] = {"param": param, "value": clamped, "reason": reason}
+            # Surface clamps explicitly. Without this, a Claude proposal that
+            # exceeded the range was silently replaced with the clamp endpoint
+            # and the directional table attributed the backtest result to the
+            was_clamped = (raw_value != clamped)
+            if was_clamped:
+                entry["clamped"] = True
+                entry["proposed_value"] = raw_value
+                entry["clamp_range"] = [lo, hi]
+                logger.warning(
+                    "Claude proposed %s=%s outside [%s, %s] — clamped to %s "
+                    "(momentum_floor=%s). Directional table will be attributed "
+                    "to the clamped value.",
+                    param, raw_value, lo, hi, clamped, momentum_floor_applied,
+                )
             for pred_key in ("predicted_delta_sharpe_7d", "confidence_interval"):
                 if pred_key in change:
                     entry[pred_key] = change[pred_key]
@@ -506,42 +523,42 @@ def _section_config(cfg: dict[str, Any]) -> str:
     return (
         "## Current Configuration\n"
         "### YOU CAN CHANGE THESE (backtestable):\n"
-        f"Indicator weights: {json.dumps(cfg.get('weights', {}))}\n"
-        f"momentum_weight (Layer 4): {cfg.get('momentum_weight', 0.04)}\n"
-        f"regime_weight (Layer 2): {cfg.get('regime_weight', 0.05)}\n"
-        f"flow_weight (Layer 3): {cfg.get('flow_weight', 0.06)}\n"
-        f"spot_flow_weight (L3b): {cfg.get('spot_flow_weight', 0.04)}\n"
-        f"liquidation_weight (L3e): {cfg.get('liquidation_weight', 0.03)}\n"
-        f"prev_margin_weight (L5): {cfg.get('prev_margin_weight', 0.02)}\n"
-        f"atr_sigma_ratio: {cfg.get('atr_sigma_ratio', 1.7)}\n"
-        f"student_t_df (Layer 1): {cfg.get('student_t_df', 4)}\n"
-        f"logit_scale: {cfg.get('logit_scale', 4.0)}\n"
-        f"kelly_fraction: {cfg.get('kelly_fraction', 0.15)}\n"
-        f"min_atr: {cfg.get('min_atr', 8.0)}\n"
-        f"min_model_probability: {cfg.get('min_model_probability', 0.58)}  (pipeline-tunable since ghosts joined backtest)\n"
-        f"min_edge (entry_threshold): {cfg.get('min_edge', 0.04)}  (pipeline-tunable since ghosts joined backtest)\n"
-        f"min_kelly (entry gate): {cfg.get('min_kelly', 0.015)}  (pipeline-tunable since ghosts joined backtest)\n"
+        f"Indicator weights: {json.dumps(cfg.get('weights', _d('weights')))}\n"
+        f"momentum_weight (Layer 4): {cfg.get('momentum_weight', _d('momentum_weight'))}\n"
+        f"regime_weight (Layer 2): {cfg.get('regime_weight', _d('regime_weight'))}\n"
+        f"flow_weight (Layer 3): {cfg.get('flow_weight', _d('flow_weight'))}\n"
+        f"spot_flow_weight (L3b): {cfg.get('spot_flow_weight', _d('spot_flow_weight'))}\n"
+        f"liquidation_weight (L3e): {cfg.get('liquidation_weight', _d('liquidation_weight'))}\n"
+        f"prev_margin_weight (L5): {cfg.get('prev_margin_weight', _d('prev_margin_weight'))}\n"
+        f"atr_sigma_ratio: {cfg.get('atr_sigma_ratio', _d('atr_sigma_ratio'))}\n"
+        f"student_t_df (Layer 1): {cfg.get('student_t_df', _d('student_t_df'))}\n"
+        f"logit_scale: {cfg.get('logit_scale', _d('logit_scale'))}\n"
+        f"kelly_fraction: {cfg.get('kelly_fraction', _d('kelly_fraction'))}\n"
+        f"min_atr: {cfg.get('min_atr', _d('min_atr'))}\n"
+        f"min_model_probability: {cfg.get('min_model_probability', _d('min_model_probability'))}  (pipeline-tunable since ghosts joined backtest)\n"
+        f"min_edge (entry_threshold): {cfg.get('min_edge', _d('min_edge'))}  (pipeline-tunable since ghosts joined backtest)\n"
+        f"min_kelly (entry gate): {cfg.get('min_kelly', _d('min_kelly'))}  (pipeline-tunable since ghosts joined backtest)\n"
         "\n### MANUAL-ONLY (not in `changes` — propose via `manual_observations` if data warrants):\n"
         f"# Exit / scalp / loss-cut\n"
-        f"exit_edge_threshold: {cfg.get('exit_edge_threshold', -0.05)}\n"
-        f"loss_cut_fraction: {cfg.get('loss_cut_fraction', 0.65)}  "
-        f"loss_cut_time_s: {cfg.get('loss_cut_time_s', 120.0)}\n"
+        f"exit_edge_threshold: {cfg.get('exit_edge_threshold', _d('exit_edge_threshold'))}\n"
+        f"loss_cut_fraction: {cfg.get('loss_cut_fraction', _d('loss_cut_fraction'))}  "
+        f"loss_cut_time_s: {cfg.get('loss_cut_time_s', _d('loss_cut_time_s'))}\n"
         f"# Entry filters (informed flow / stale price)\n"
-        f"adverse_selection_threshold: {cfg.get('adverse_selection_threshold', 0.55)}\n"
-        f"max_edge: {cfg.get('max_edge', 0.20)}\n"
+        f"adverse_selection_threshold: {cfg.get('adverse_selection_threshold', _d('adverse_selection_threshold'))}\n"
+        f"max_edge: {cfg.get('max_edge', _d('max_edge'))}\n"
         f"# Entry-timing Kelly envelope\n"
-        f"normal_fraction: {cfg.get('normal_fraction', 0.60)}\n"
-        f"late_max_penalty: {cfg.get('late_max_penalty', 0.60)}\n"
+        f"normal_fraction: {cfg.get('normal_fraction', _d('normal_fraction'))}\n"
+        f"late_max_penalty: {cfg.get('late_max_penalty', _d('late_max_penalty'))}\n"
         f"# Schedule\n"
         f"trading_start_hour_et: {cfg.get('trading_start_hour_et', 0)}, trading_start_minute: {cfg.get('trading_start_minute', 1)}\n"
         f"trading_end_hour_et: {cfg.get('trading_end_hour_et', 22)}, trading_end_minute: {cfg.get('trading_end_minute', 30)}\n"
         f"# Flip behavior\n"
-        f"flip_enabled: {cfg.get('flip_enabled', True)}, flip_edge_premium: {cfg.get('flip_edge_premium', 0.015)}\n"
+        f"flip_enabled: {cfg.get('flip_enabled', _d('flip_enabled'))}, flip_edge_premium: {cfg.get('flip_edge_premium', _d('flip_edge_premium'))}\n"
         f"# Risk caps (operator-owned policy)\n"
-        f"max_concurrent_positions: {cfg.get('max_concurrent_positions', 2)}, max_bankroll_deployed: {cfg.get('max_bankroll_deployed', 0.80)}\n"
+        f"max_concurrent_positions: {cfg.get('max_concurrent_positions', _d('max_concurrent_positions'))}, max_bankroll_deployed: {cfg.get('max_bankroll_deployed', _d('max_bankroll_deployed'))}\n"
         f"# Circuit breaker\n"
-        f"circuit_breaker.floor_pct: {cfg.get('circuit_breaker', {}).get('floor_pct', 0.85)}, "
-        f"circuit_breaker.min_multiplier: {cfg.get('circuit_breaker', {}).get('min_multiplier', 0.40)}\n"
+        f"circuit_breaker.floor_pct: {cfg.get('circuit_breaker', {}).get('floor_pct', _d('circuit_breaker.floor_pct'))}, "
+        f"circuit_breaker.min_multiplier: {cfg.get('circuit_breaker', {}).get('min_multiplier', _d('circuit_breaker.min_multiplier'))}\n"
         f"# Indicator periods (manual-only — shown in /config, not relevant to `changes`)\n"
         f"# SPRT (manual-only): alpha={_cfg_get(cfg, 'sprt.alpha')} "
         f"beta={_cfg_get(cfg, 'sprt.beta')} "

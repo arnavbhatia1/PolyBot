@@ -21,11 +21,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_PARAMS_PATH = Path("polybot/memory/calibration/platt_params.json")
 
 
+_EPS = 1e-6  # canonical clip — keep all clipping sites consistent
+
+
 def compute_log_loss(probs: list[float], outcomes: list[int]) -> float:
     """Binary cross-entropy loss."""
     total = 0.0
     for p, y in zip(probs, outcomes):
-        p = max(1e-10, min(1 - 1e-10, p))
+        p = max(_EPS, min(1 - _EPS, p))
         total += -(y * math.log(p) + (1 - y) * math.log(1 - p))
     return total / len(probs) if probs else float("inf")
 
@@ -44,7 +47,7 @@ class PlattCalibrator:
 
     def calibrate(self, raw_prob: float) -> float:
         """Apply Platt scaling. With defaults (a=-1, b=0), returns raw_prob unchanged."""
-        raw_prob = max(1e-6, min(1 - 1e-6, raw_prob))
+        raw_prob = max(_EPS, min(1 - _EPS, raw_prob))
         logit = math.log(raw_prob / (1.0 - raw_prob))
         return 1.0 / (1.0 + math.exp(self.a * logit + self.b))
 
@@ -61,7 +64,7 @@ class PlattCalibrator:
             logger.info(f"Platt calibration: {len(probs)} samples < {min_samples} minimum, skipping")
             return False
 
-        probs_arr = np.clip(np.array(probs), 1e-6, 1 - 1e-6)
+        probs_arr = np.clip(np.array(probs), _EPS, 1 - _EPS)
         outcomes_arr = np.array(outcomes, dtype=float)
         logits = np.log(probs_arr / (1 - probs_arr))
         if sample_weights is not None and len(sample_weights) == len(probs):
@@ -73,7 +76,7 @@ class PlattCalibrator:
         def neg_log_likelihood(params):
             a, b_param = params
             p = 1.0 / (1.0 + np.exp(a * logits + b_param))
-            p = np.clip(p, 1e-10, 1 - 1e-10)
+            p = np.clip(p, _EPS, 1 - _EPS)
             return -np.sum(w_arr * (outcomes_arr * np.log(p) + (1 - outcomes_arr) * np.log(1 - p)))
 
         result = minimize(neg_log_likelihood, x0=[-1.0, 0.0], method="L-BFGS-B")

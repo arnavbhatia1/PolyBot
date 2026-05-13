@@ -17,7 +17,7 @@ from collections import defaultdict
 from typing import Any
 
 # Ranges sourced from param_registry — single source of truth.
-from polybot.config.param_registry import CLAMP_RANGES
+from polybot.config.param_registry import CLAMP_RANGES, default_for as _d
 
 # Parameter families — each cycle's proposals should span ≥3 of these so the
 # pipeline doesn't pile changes onto a single mechanism.
@@ -331,7 +331,7 @@ class LocalRecommender:
             return
         if cf.get("net_exit_direction") != "scalp_early":
             return  # hold_long / calibrated → Platt re-fit handles it
-        cur = float(self.cfg.get("atr_sigma_ratio", 1.4))
+        cur = float(self.cfg.get("atr_sigma_ratio", _d("atr_sigma_ratio")))
         ok, _why = self._direction_ok("atr_sigma_ratio", "down")
         if not ok:
             return
@@ -364,7 +364,7 @@ class LocalRecommender:
         param, direction, bt = best
         if bt <= 0.005:  # too weak even by historical avg
             return
-        cur = float(self.cfg.get(param, 0.04))
+        cur = float(self.cfg.get(param, _d(param) if param in {"flow_weight", "spot_flow_weight", "liquidation_weight"} else 0.04))
         new_val = self._decisive_value(param, cur, direction, min_step=0.02)
         self._propose(
             param, new_val,
@@ -384,7 +384,7 @@ class LocalRecommender:
         r_sharpe = float(reverting.get("sharpe", 0))
         # Fade indicators stronger if mean-reverting outperforms trending.
         if reverting.get("n", 0) >= 50 and r_sharpe - t_sharpe > self._noise["sharpe_2x"]:
-            cur = float(self.cfg.get("momentum_weight", -0.02))
+            cur = float(self.cfg.get("momentum_weight", _d("momentum_weight")))
             target = max(-0.10, cur - 0.04)  # more negative = fade harder
             ok, why = self._direction_ok("momentum_weight", "down")
             if ok and target != cur:
@@ -398,7 +398,7 @@ class LocalRecommender:
             # Trending wins; the regime-conditional flip already amplifies in trending,
             # so the right move is to raise regime_weight (not momentum_weight, which
             # would flip in trending and could fight the runtime amplifier).
-            cur = float(self.cfg.get("regime_weight", 0.03))
+            cur = float(self.cfg.get("regime_weight", _d("regime_weight")))
             target = self._decisive_value("regime_weight", cur, "up", min_step=0.015)
             ok, why = self._direction_ok("regime_weight", "up")
             if ok:
@@ -508,7 +508,7 @@ class LocalRecommender:
             return
         scalp_acc = float(cf.get("scalp_accuracy", 0))
         net_dir = cf.get("net_exit_direction", "calibrated")
-        cur = self.cfg.get("exit_edge_threshold", -0.10)
+        cur = self.cfg.get("exit_edge_threshold", _d("exit_edge_threshold"))
         if net_dir == "scalp_early":
             self._emit_manual(
                 "exit_edge_threshold", cur, max(-0.25, float(cur) - 0.05),
@@ -536,7 +536,7 @@ class LocalRecommender:
             return
         pct_profit = float(gate.get("pct_profitable", 0))
         sim_pnl = float(gate.get("simulated_pnl", 0))
-        cur = float(self.cfg.get("adverse_selection_threshold", 0.55))
+        cur = float(self.cfg.get("adverse_selection_threshold", _d("adverse_selection_threshold")))
         if pct_profit > 0.60 and sim_pnl > 0:
             self._emit_manual(
                 "adverse_selection_threshold", cur, round(min(0.75, cur + 0.05), 3),
@@ -700,7 +700,7 @@ class LocalRecommender:
             )
         elif gap > 2 * self._noise["sharpe_2x"]:
             # Flip lags but is still profitable — raise the premium
-            cur = float(self.cfg.get("flip_edge_premium", 0.015))
+            cur = float(self.cfg.get("flip_edge_premium", _d("flip_edge_premium")))
             self._emit_manual(
                 "flip_edge_premium", cur, round(min(0.05, cur + 0.01), 4),
                 f"Flip-trade Sharpe {flip_sharpe:+.3f} trails base {base_sharpe:+.3f} "

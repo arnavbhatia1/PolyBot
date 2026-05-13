@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 HEARTBEAT_INTERVAL = 10  # seconds — Polymarket requires PING every 10s
+HEARTBEAT_TIMEOUT = 25   # seconds — force reconnect if no PONG within 2.5× interval
 RECONNECT_BASE = 1       # seconds — exponential backoff start
 RECONNECT_MAX = 30       # seconds — backoff cap
 
@@ -45,6 +46,7 @@ class ClobWebSocket:
         self._task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._closing: bool = False
+        self._last_pong_ts: float = 0.0
 
     async def start(self) -> None:
         """Launch the WebSocket connection as a background task."""
@@ -193,17 +195,33 @@ class ClobWebSocket:
         self._ws = None
 
     async def _heartbeat(self, ws: Any) -> None:
-        """Send PING every 10s to keep connection alive."""
+        """Send PING every interval and detect dead connections via missing PONGs.
+
+        Polymarket's server can stop responding while the TCP socket stays
+        nominally open, leaving the reader stuck on a half-dead connection.
+        Tracking _last_pong_ts and closing the socket when it goes stale forces
+        _run_forever's reconnect path to kick in instead of waiting forever
+        for data that won't arrive.
+        """
+        self._last_pong_ts = time.time()
         try:
             while True:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
                 await ws.send("PING")
+                if time.time() - self._last_pong_ts > HEARTBEAT_TIMEOUT:
+                    logger.warning(
+                        "CLOB WS: no PONG in %.0fs — forcing reconnect",
+                        time.time() - self._last_pong_ts,
+                    )
+                    await ws.close()
+                    return
         except (asyncio.CancelledError, websockets.ConnectionClosed):
             pass
 
     def _handle_message(self, raw: str) -> None:
         """Parse and dispatch a WebSocket message. Non-async for speed."""
         if raw == "PONG":
+            self._last_pong_ts = time.time()
             return
 
         try:

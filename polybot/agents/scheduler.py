@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from polybot.config.loader import save_config
+from polybot.config.param_registry import default_for as _d
 
 logger = logging.getLogger(__name__)
 
@@ -285,29 +286,29 @@ class AgentScheduler:
         current_config = {
             "weights": {k: v for k, v in current_weights.items()
                         if k in ["rsi", "macd", "stochastic", "obv", "vwap"]},
-            "momentum_weight": getattr(self.signal_engine, 'momentum_weight', 0.04),
-            "regime_weight": getattr(self.signal_engine, 'regime_weight', 0.05),
-            "flow_weight": getattr(self.signal_engine, 'flow_weight', 0.06),
-            "student_t_df": getattr(self.signal_engine, 'student_t_df', 4),
-            "min_edge": getattr(self.signal_engine, 'min_edge', 0.20),
-            "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
-            "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.65),
-            "exit_edge_threshold": getattr(self, '_exit_edge_threshold', -0.10),
+            "momentum_weight": getattr(self.signal_engine, 'momentum_weight', _d("momentum_weight")),
+            "regime_weight": getattr(self.signal_engine, 'regime_weight', _d("regime_weight")),
+            "flow_weight": getattr(self.signal_engine, 'flow_weight', _d("flow_weight")),
+            "student_t_df": getattr(self.signal_engine, 'student_t_df', _d("student_t_df")),
+            "min_edge": getattr(self.signal_engine, 'min_edge', _d("min_edge")),
+            "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', _d("kelly_fraction")),
+            "min_model_probability": getattr(self.signal_engine, 'min_model_probability', _d("min_model_probability")),
+            "exit_edge_threshold": getattr(self, '_exit_edge_threshold', _d("exit_edge_threshold")),
             "min_time_remaining": getattr(self, '_min_time_remaining', 0),
             "trading_start_hour_et": self._trading_start[0] if self._trading_start else 0,
             "trading_end_hour_et": self._trading_end[0] if self._trading_end else 23,
             "trading_end_minute": self._trading_end[1] if self._trading_end else 59,
-            "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
-            "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.7),
-            "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', 0.04),
-            "prev_margin_weight": getattr(self.signal_engine, 'prev_margin_weight', 0.02),
-            "logit_scale": getattr(self.signal_engine, 'logit_scale', 4.0),
-            "liquidation_weight": getattr(self.signal_engine, 'liquidation_weight', 0.03),
-            "adverse_selection_threshold": (self._config or {}).get("signal", {}).get("adverse_selection_threshold", 0.65),
-            "normal_fraction": (self._config or {}).get("entry_timing", {}).get("normal_fraction", 0.60),
-            "late_max_penalty": (self._config or {}).get("entry_timing", {}).get("late_max_penalty", 0.60),
-            "min_atr": getattr(self.signal_engine, 'min_atr', 8.0),
-            "max_edge": getattr(self.signal_engine, 'max_edge', 0.20),
+            "min_kelly": getattr(self.signal_engine, 'min_kelly', _d("min_kelly")),
+            "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', _d("atr_sigma_ratio")),
+            "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', _d("spot_flow_weight")),
+            "prev_margin_weight": getattr(self.signal_engine, 'prev_margin_weight', _d("prev_margin_weight")),
+            "logit_scale": getattr(self.signal_engine, 'logit_scale', _d("logit_scale")),
+            "liquidation_weight": getattr(self.signal_engine, 'liquidation_weight', _d("liquidation_weight")),
+            "adverse_selection_threshold": (self._config or {}).get("signal", {}).get("adverse_selection_threshold", _d("adverse_selection_threshold")),
+            "normal_fraction": (self._config or {}).get("entry_timing", {}).get("normal_fraction", _d("normal_fraction")),
+            "late_max_penalty": (self._config or {}).get("entry_timing", {}).get("late_max_penalty", _d("late_max_penalty")),
+            "min_atr": getattr(self.signal_engine, 'min_atr', _d("min_atr")),
+            "max_edge": getattr(self.signal_engine, 'max_edge', _d("max_edge")),
         }
 
         if hasattr(self, '_last_per_change_results') and self._last_per_change_results:
@@ -464,18 +465,27 @@ class AgentScheduler:
         kelly_fraction: float,
         min_kelly: float,
         min_prob: float,
-        regime_weight: float = 0.03,
-        flow_weight: float = 0.04,
-        spot_flow_weight: float = 0.04,
-        liquidation_weight: float = 0.03,
-        prev_margin_weight: float = 0.02,
-        logit_scale: float = 4.0,
-        min_atr: float = 8.0,
+        regime_weight: float | None = None,
+        flow_weight: float | None = None,
+        spot_flow_weight: float | None = None,
+        liquidation_weight: float | None = None,
+        prev_margin_weight: float | None = None,
+        logit_scale: float | None = None,
+        min_atr: float | None = None,
     ) -> list[float]:
         """Replay the full logit composition used in production for a candidate
         config and return the Kelly-sized per-trade returns. Sharpe of the result
         is the candidate's adoption metric.
         """
+        # Pull every optional default from the registry — keeps this method
+        # in lockstep with settings.yaml / param_registry.
+        if regime_weight is None: regime_weight = _d("regime_weight")
+        if flow_weight is None: flow_weight = _d("flow_weight")
+        if spot_flow_weight is None: spot_flow_weight = _d("spot_flow_weight")
+        if liquidation_weight is None: liquidation_weight = _d("liquidation_weight")
+        if prev_margin_weight is None: prev_margin_weight = _d("prev_margin_weight")
+        if logit_scale is None: logit_scale = _d("logit_scale")
+        if min_atr is None: min_atr = _d("min_atr")
         from scipy.stats import t as t_dist
         max_flow_logit = 0.35
         realism_factor = 1.0
@@ -1002,76 +1012,111 @@ class AgentScheduler:
                     KNOWN_INTERACTING_PAIRS.append((p1, p2))
         if len(adopted_changes) >= 2:
             try:
-                combined_rec: dict[str, Any] = {}
+                # Iterative interaction back-out: keep removing the weakest
+                # adopted change until the combined Sharpe delta clears 70% of
+                # the sum of remaining individual deltas. The original logic
+                # backed out only the single weakest change once, which left
+                # multi-way interactions among the survivors untreated and
+                # silently degraded combined performance.
+                MAX_BACKOUT_ITERATIONS = len(adopted_changes)  # at most n-1 useful passes
+                backed_out_params: list[str] = []
+                first_pass_metrics: dict[str, float] | None = None
+                combined_sharpe = current_sharpe
+                combined_delta = 0.0
                 sum_individual_delta = 0.0
-                for c in adopted_changes:
-                    param = c["param"]
-                    value = c["value"]
-                    if param == "weights":
-                        combined_rec["recommended_weights"] = value
-                    elif param in (
-                        "momentum_weight", "atr_sigma_ratio", "student_t_df", "kelly_fraction",
-                        "regime_weight", "flow_weight", "spot_flow_weight",
-                        "liquidation_weight", "prev_margin_weight", "logit_scale", "min_atr",
-                    ):
-                        combined_rec[f"recommended_{param}"] = value
-                    ci = next((x for x in info["per_change"]
-                               if x.get("param") == param and x.get("decision") == "adopted"), {})
-                    sum_individual_delta += (ci.get("candidate_sharpe", current_sharpe) - current_sharpe)
 
-                cfg_combined = self._config_for_helper(combined_rec)
-                calibrator = self.signal_engine.calibrator if self.signal_engine else None
-                combined_returns = self._kelly_bankroll_returns(
-                    outcomes=all_outcomes,
-                    recommended_weights=cfg_combined["weights"],
-                    momentum_weight=cfg_combined["momentum_weight"],
-                    atr_sigma_ratio=cfg_combined["atr_sigma_ratio"],
-                    student_t_df=cfg_combined["student_t_df"],
-                    min_edge=cfg_combined["min_edge"],
-                    calibrator=calibrator,
-                    kelly_fraction=cfg_combined["kelly_fraction"],
-                    min_kelly=cfg_combined["min_kelly"],
-                    min_prob=cfg_combined["min_model_probability"],
-                    regime_weight=cfg_combined["regime_weight"],
-                    flow_weight=cfg_combined["flow_weight"],
-                    spot_flow_weight=cfg_combined["spot_flow_weight"],
-                    liquidation_weight=cfg_combined["liquidation_weight"],
-                    prev_margin_weight=cfg_combined["prev_margin_weight"],
-                    logit_scale=cfg_combined["logit_scale"],
-                    min_atr=cfg_combined["min_atr"],
-                )
-                combined_sharpe = _sharpe(combined_returns) if combined_returns else 0.0
-                combined_delta = combined_sharpe - current_sharpe
-                info["combined_sharpe"] = round(combined_sharpe, 4)
-                info["combined_delta"] = round(combined_delta, 4)
-                info["sum_individual_delta"] = round(sum_individual_delta, 4)
+                for iteration in range(MAX_BACKOUT_ITERATIONS):
+                    combined_rec: dict[str, Any] = {}
+                    sum_individual_delta = 0.0
+                    for c in adopted_changes:
+                        param = c["param"]
+                        value = c["value"]
+                        if param == "weights":
+                            combined_rec["recommended_weights"] = value
+                        elif param in (
+                            "momentum_weight", "atr_sigma_ratio", "student_t_df", "kelly_fraction",
+                            "regime_weight", "flow_weight", "spot_flow_weight",
+                            "liquidation_weight", "prev_margin_weight", "logit_scale", "min_atr",
+                        ):
+                            combined_rec[f"recommended_{param}"] = value
+                        ci = next((x for x in info["per_change"]
+                                   if x.get("param") == param and x.get("decision") == "adopted"), {})
+                        sum_individual_delta += (ci.get("candidate_sharpe", current_sharpe) - current_sharpe)
 
-                if sum_individual_delta > 0 and combined_delta < sum_individual_delta * 0.7:
-                    # Interaction detected — back out the weakest change.
-                    # z_score is now a structured field set by should_adopt (no string parsing).
+                    cfg_combined = self._config_for_helper(combined_rec)
+                    calibrator = self.signal_engine.calibrator if self.signal_engine else None
+                    combined_returns = self._kelly_bankroll_returns(
+                        outcomes=all_outcomes,
+                        recommended_weights=cfg_combined["weights"],
+                        momentum_weight=cfg_combined["momentum_weight"],
+                        atr_sigma_ratio=cfg_combined["atr_sigma_ratio"],
+                        student_t_df=cfg_combined["student_t_df"],
+                        min_edge=cfg_combined["min_edge"],
+                        calibrator=calibrator,
+                        kelly_fraction=cfg_combined["kelly_fraction"],
+                        min_kelly=cfg_combined["min_kelly"],
+                        min_prob=cfg_combined["min_model_probability"],
+                        regime_weight=cfg_combined["regime_weight"],
+                        flow_weight=cfg_combined["flow_weight"],
+                        spot_flow_weight=cfg_combined["spot_flow_weight"],
+                        liquidation_weight=cfg_combined["liquidation_weight"],
+                        prev_margin_weight=cfg_combined["prev_margin_weight"],
+                        logit_scale=cfg_combined["logit_scale"],
+                        min_atr=cfg_combined["min_atr"],
+                    )
+                    combined_sharpe = _sharpe(combined_returns) if combined_returns else 0.0
+                    combined_delta = combined_sharpe - current_sharpe
+
+                    if first_pass_metrics is None:
+                        first_pass_metrics = {
+                            "combined_sharpe": round(combined_sharpe, 4),
+                            "combined_delta": round(combined_delta, 4),
+                            "sum_individual_delta": round(sum_individual_delta, 4),
+                        }
+                        info["combined_sharpe"] = first_pass_metrics["combined_sharpe"]
+                        info["combined_delta"] = first_pass_metrics["combined_delta"]
+                        info["sum_individual_delta"] = first_pass_metrics["sum_individual_delta"]
+
+                    # Stop if no interaction OR only one change left to keep.
+                    if not (sum_individual_delta > 0
+                            and combined_delta < sum_individual_delta * 0.7
+                            and len(adopted_changes) >= 2):
+                        break
+
                     z_scores = {
                         c["param"]: float(c.get("z_score", 0.0))
                         for c in info["per_change"]
-                        if c.get("decision") == "adopted"
+                        if c.get("decision") == "adopted" and c["param"] in {
+                            cc["param"] for cc in adopted_changes
+                        }
                     }
                     weakest_param = min(z_scores, key=z_scores.get) if z_scores else None
-                    if weakest_param:
-                        adopted_changes = [c for c in adopted_changes if c["param"] != weakest_param]
-                        for c in info["per_change"]:
-                            if c.get("param") == weakest_param and c.get("decision") == "adopted":
-                                c["decision"] = "backed_out"
-                                c["reason"] = (
-                                    f"interaction detected: combined d={combined_delta:+.3f} < "
-                                    f"sum_individual d={sum_individual_delta:+.3f} * 0.7 - "
-                                    f"weakest change (z={z_scores[weakest_param]:.2f}) removed"
-                                )
-                        info["interaction_detected"] = True
-                        info["backed_out_param"] = weakest_param
-                        logger.info(
-                            f"Interaction detected: combined d={combined_delta:+.3f} vs "
-                            f"sum_individual d={sum_individual_delta:+.3f}. "
-                            f"Backing out {weakest_param} (z={z_scores.get(weakest_param, 0):.2f})"
-                        )
+                    if not weakest_param:
+                        break
+
+                    adopted_changes = [c for c in adopted_changes if c["param"] != weakest_param]
+                    backed_out_params.append(weakest_param)
+                    for c in info["per_change"]:
+                        if c.get("param") == weakest_param and c.get("decision") == "adopted":
+                            c["decision"] = "backed_out"
+                            c["reason"] = (
+                                f"interaction back-out pass {iteration + 1}: "
+                                f"combined d={combined_delta:+.3f} < "
+                                f"sum_individual d={sum_individual_delta:+.3f} * 0.7 — "
+                                f"weakest remaining change (z={z_scores[weakest_param]:.2f}) removed"
+                            )
+                    logger.info(
+                        f"Interaction back-out pass {iteration + 1}: combined d={combined_delta:+.3f} "
+                        f"vs sum_individual d={sum_individual_delta:+.3f}. "
+                        f"Removing {weakest_param} (z={z_scores.get(weakest_param, 0):.2f})"
+                    )
+
+                if backed_out_params:
+                    info["interaction_detected"] = True
+                    info["backed_out_params"] = backed_out_params
+                    info["backed_out_param"] = backed_out_params[0]
+                    info["final_combined_sharpe"] = round(combined_sharpe, 4)
+                    info["final_combined_delta"] = round(combined_delta, 4)
 
                 # Flag known interacting pairs for Claude's awareness
                 adopted_params = {c["param"] for c in adopted_changes}
@@ -1361,16 +1406,16 @@ class AgentScheduler:
         old_config = {}
         if self.signal_engine:
             old_config = {
-                "min_edge": getattr(self.signal_engine, 'min_edge', 0.20),
-                "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
-                "momentum_weight": getattr(self.signal_engine, 'momentum_weight', 0.08),
-                "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.65),
+                "min_edge": getattr(self.signal_engine, 'min_edge', _d("min_edge")),
+                "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', _d("kelly_fraction")),
+                "momentum_weight": getattr(self.signal_engine, 'momentum_weight', _d("momentum_weight")),
+                "min_model_probability": getattr(self.signal_engine, 'min_model_probability', _d("min_model_probability")),
                 "exit_edge_threshold": self._exit_edge_threshold,
                 "min_time_remaining": self._min_time_remaining,
                 "trading_start": self._trading_start,
                 "trading_end": self._trading_end,
-                "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
-                "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.7),
+                "min_kelly": getattr(self.signal_engine, 'min_kelly', _d("min_kelly")),
+                "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', _d("atr_sigma_ratio")),
             }
 
         # Walk-forward validation: train on first 60%, validate across 4 expanding
@@ -1486,6 +1531,16 @@ class AgentScheduler:
         from polybot.core.calibrator import PlattCalibrator, compute_log_loss
         MIN_PLATT_VALIDATION_TRADES = 50
         PLATT_ABS_FLOOR = 0.001
+        # Defer the cal.save() to AFTER the weight optimizer has run + persisted
+        # its config changes. The Platt and the weight set must be committed
+        # together: the weight optimizer backtests against the NEW Platt
+        # in-memory, and if we crash between Platt's disk write and the weights'
+        # disk write, the next restart sees a Platt that doesn't match the
+        # weights it was fit/validated against. By staging the save and only
+        # writing it after _run_weight_optimizer returns, a mid-pipeline crash
+        # just leaves the old Platt on disk — coherent with the old weights —
+        # and the next pipeline re-fits cleanly.
+        _pending_cal_save: PlattCalibrator | None = None
         if len(train_outcomes) >= 200 and self.signal_engine:
             cal_probs = []
             cal_outcomes = []
@@ -1533,9 +1588,9 @@ class AgentScheduler:
                     # Only the calibrator changes between old and new runs -> any Sharpe delta
                     # is attributable to calibration, not weight/asr/df drift.
                     cfg = self._config_for_helper()
-                    kelly_fraction = getattr(self.signal_engine, 'kelly_fraction', 0.15)
-                    min_kelly = getattr(self.signal_engine, 'min_kelly', 0.015)
-                    min_prob = getattr(self.signal_engine, 'min_model_probability', 0.58)
+                    kelly_fraction = getattr(self.signal_engine, 'kelly_fraction', _d("kelly_fraction"))
+                    min_kelly = getattr(self.signal_engine, 'min_kelly', _d("min_kelly"))
+                    min_prob = getattr(self.signal_engine, 'min_model_probability', _d("min_model_probability"))
                     helper_kwargs = dict(
                         outcomes=validation_outcomes,
                         recommended_weights=cfg["weights"],
@@ -1607,7 +1662,10 @@ class AgentScheduler:
                             f"current Platt {old_kelly_sharpe:.4f}. Reverting to identity."
                         )
                         identity = PlattCalibrator(a=-1.0, b=0.0)
-                        identity.save()
+                        # Defer save() to after weight optimizer commits, so the
+                        # on-disk Platt and on-disk weights stay coherent under
+                        # a mid-pipeline crash.
+                        _pending_cal_save = identity
                         self.signal_engine.calibrator = identity
                         platt_info["decision"] = "rejected"
                         platt_info["reason"] = "reverted to identity — calibration not earning its keep"
@@ -1621,7 +1679,9 @@ class AgentScheduler:
                         )
                     elif new_kelly_sharpe > old_kelly_sharpe and delta_sharpe >= dyn_floor:
                         platt_info["decision"] = "adopted"
-                        cal.save()
+                        # Defer save() until after the weight optimizer commits
+                        # so the on-disk Platt and on-disk weights are coherent.
+                        _pending_cal_save = cal
                         self.signal_engine.calibrator = cal
                         logger.debug(
                             f"Platt calibration adopted: kelly_sharpe {old_kelly_sharpe:.4f} -> "
@@ -1750,8 +1810,21 @@ class AgentScheduler:
                         and self.signal_engine and self._config:
                     _orig = float(self.signal_engine.kelly_fraction)
                     _reduced = max(0.04, _orig * 0.5)
+                    # Persist the kelly_reduced flag BEFORE applying the
+                    # reduction. If we crash between in-memory change and the
+                    # file write at end-of-pipeline (~80 lines below), the next
+                    # restart would otherwise see streak=2/3 unchanged and apply
+                    # the halving a SECOND time, compounding the cut. Writing
+                    # the flag first makes the operation idempotent: a crash
+                    # leaves the flag set, the next pipeline sees
+                    # kelly_reduced=True, and skips the reduction.
                     _crisis_state["original_kelly"] = _orig
                     _crisis_state["kelly_reduced"] = True
+                    try:
+                        _crisis_state_path.parent.mkdir(parents=True, exist_ok=True)
+                        _crisis_state_path.write_text(_json.dumps(_crisis_state, indent=2))
+                    except Exception as e:
+                        logger.error(f"Auto Kelly reduction: failed to persist crisis_state: {e}")
                     self.signal_engine.kelly_fraction = _reduced
                     self._config.setdefault("math", {})["kelly_fraction"] = _reduced
                     try:
@@ -1794,6 +1867,16 @@ class AgentScheduler:
                 logger.debug(f"Failed to persist crisis_state: {e}")
 
             weight_info = await self._run_weight_optimizer(recommendations, all_outcomes, pipeline_source=source)
+            # Commit point: weight optimizer has persisted its config changes,
+            # so it's now safe to flush the Platt calibrator to disk. Doing
+            # this AFTER weights means a crash at any earlier step leaves the
+            # old Platt + old weights on disk (coherent) rather than the new
+            # Platt + old weights (mismatched).
+            if _pending_cal_save is not None:
+                try:
+                    _pending_cal_save.save()
+                except Exception as e:
+                    logger.error(f"Failed to persist Platt calibrator: {e}")
         pipeline_info["weights"] = weight_info
 
         # All-time stats
@@ -1817,33 +1900,33 @@ class AgentScheduler:
         # Current config snapshot (post-pipeline values)
         if self.signal_engine:
             pipeline_info["current_config"] = {
-                "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
-                "min_edge": getattr(self.signal_engine, 'min_edge', 0.04),
-                "min_model_prob": getattr(self.signal_engine, 'min_model_probability', 0.58),
-                "momentum_weight": getattr(self.signal_engine, 'momentum_weight', -0.02),
-                "regime_weight": getattr(self.signal_engine, 'regime_weight', 0.03),
-                "flow_weight": getattr(self.signal_engine, 'flow_weight', 0.04),
-                "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', 0.04),
-                "student_t_df": getattr(self.signal_engine, 'student_t_df', 5),
-                "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.4),
+                "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', _d("kelly_fraction")),
+                "min_edge": getattr(self.signal_engine, 'min_edge', _d("min_edge")),
+                "min_model_prob": getattr(self.signal_engine, 'min_model_probability', _d("min_model_probability")),
+                "momentum_weight": getattr(self.signal_engine, 'momentum_weight', _d("momentum_weight")),
+                "regime_weight": getattr(self.signal_engine, 'regime_weight', _d("regime_weight")),
+                "flow_weight": getattr(self.signal_engine, 'flow_weight', _d("flow_weight")),
+                "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', _d("spot_flow_weight")),
+                "student_t_df": getattr(self.signal_engine, 'student_t_df', _d("student_t_df")),
+                "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', _d("atr_sigma_ratio")),
                 "exit_edge_threshold": self._exit_edge_threshold,
-                "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
+                "min_kelly": getattr(self.signal_engine, 'min_kelly', _d("min_kelly")),
             }
 
         # Compute config diff
         config_changes = {}
         if self.signal_engine and old_config:
             new_vals = {
-                "min_edge": getattr(self.signal_engine, 'min_edge', 0.20),
-                "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', 0.15),
-                "momentum_weight": getattr(self.signal_engine, 'momentum_weight', 0.08),
-                "min_model_probability": getattr(self.signal_engine, 'min_model_probability', 0.65),
+                "min_edge": getattr(self.signal_engine, 'min_edge', _d("min_edge")),
+                "kelly_fraction": getattr(self.signal_engine, 'kelly_fraction', _d("kelly_fraction")),
+                "momentum_weight": getattr(self.signal_engine, 'momentum_weight', _d("momentum_weight")),
+                "min_model_probability": getattr(self.signal_engine, 'min_model_probability', _d("min_model_probability")),
                 "exit_edge_threshold": self._exit_edge_threshold,
                 "min_time_remaining": self._min_time_remaining,
                 "trading_start": self._trading_start,
                 "trading_end": self._trading_end,
-                "min_kelly": getattr(self.signal_engine, 'min_kelly', 0.015),
-                "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', 1.7),
+                "min_kelly": getattr(self.signal_engine, 'min_kelly', _d("min_kelly")),
+                "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', _d("atr_sigma_ratio")),
             }
             for k, old_v in old_config.items():
                 new_v = new_vals.get(k)

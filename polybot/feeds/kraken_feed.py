@@ -81,7 +81,7 @@ class KrakenFeed:
         backoff = RECONNECT_BASE
         while self._running:
             try:
-                async with websockets.connect(self.ws_url, ping_interval=20, ping_timeout=10) as ws:
+                async with websockets.connect(self.ws_url, ping_interval=20, ping_timeout=30) as ws:
                     self._ws = ws
                     backoff = RECONNECT_BASE
 

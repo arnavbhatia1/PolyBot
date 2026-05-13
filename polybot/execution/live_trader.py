@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
+import time as _time
 from typing import Any
 
 from py_clob_client_v2.client import ClobClient
@@ -37,12 +39,21 @@ logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 0.1  # seconds, doubles each attempt (0.1 + 0.2 = 0.3s total)
+_RETRY_JITTER = 0.2  # ±20% jitter on backoff to avoid thundering-herd retry storms
 _MIN_ORDER_USD = 1.0  # Polymarket CLOB rejects marketable orders below $1 notional
 _NON_RETRYABLE_ERRORS = frozenset({
     "INVALID_ORDER_NOT_ENOUGH_BALANCE",
     "MARKET_NOT_READY",
     "INVALID_ORDER_EXPIRATION",
 })
+_ALLOWANCE_RECHECK_EVERY = 10
+_FILL_PRICE_LOOKUP_RETRIES = 3
+_FILL_PRICE_LOOKUP_DELAY = 0.15
+
+def _retry_sleep(attempt: int) -> float:
+    """Exponential backoff with multiplicative jitter. attempt is 1-indexed."""
+    base = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+    return base * random.uniform(1.0 - _RETRY_JITTER, 1.0 + _RETRY_JITTER)
 
 # Substrings that indicate auth/signing failure (revoked Safe, bad nonce, expired
 # API creds). On any of these we stop retrying and raise — silent fail-loops
@@ -221,6 +232,10 @@ class LiveTrader(BaseTrader):
         self.use_maker_orders: bool = kwargs.get("use_maker_orders", False)
         self.maker_timeout_s: float = kwargs.get("maker_timeout_s", 60.0)
         self._keepalive_task: asyncio.Task | None = None
+        self._submit_count_since_allowance_check: int = 0
+        self._min_allowance_warn_threshold: float = float(
+            kwargs.get("min_allowance_warn_usd", 25.0)
+        )
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
     async def start_keepalive(self) -> None:
@@ -254,6 +269,36 @@ class LiveTrader(BaseTrader):
     async def get_balance(self) -> float:
         """Fetch USDC balance from Polymarket. Returns float in dollars."""
         return _get_balance_usd(self.client)
+
+    async def _maybe_recheck_allowance(self) -> None:
+        """Periodically verify USDC allowance hasn't been revoked mid-session.
+
+        Runs every `_ALLOWANCE_RECHECK_EVERY` successful submits. Logs at
+        WARNING and surfaces in fill_stats if the allowance falls below the
+        configured threshold — gives the operator a chance to re-approve
+        before the next batch of orders silently bounces with
+        INSUFFICIENT_ALLOWANCE.
+        """
+        self._submit_count_since_allowance_check += 1
+        if self._submit_count_since_allowance_check < _ALLOWANCE_RECHECK_EVERY:
+            return
+        self._submit_count_since_allowance_check = 0
+        try:
+            _, allowance = await asyncio.to_thread(
+                _get_balance_and_allowance_usd, self.client
+            )
+        except Exception as e:
+            logger.debug("Allowance recheck failed: %s", e)
+            return
+        if allowance < self._min_allowance_warn_threshold:
+            logger.error(
+                "USDC allowance dropped to $%.2f (warn threshold $%.2f). "
+                "Safe %s may need re-approval before next batch of orders. "
+                "Subsequent orders will fail INSUFFICIENT_ALLOWANCE.",
+                allowance,
+                self._min_allowance_warn_threshold,
+                os.environ.get("POLYMARKET_FUNDER", "<safe>"),
+            )
 
     async def _execute_buy(self, token_id: str, price: float, size: float) -> FillResult:
         """Buy: try maker limit order (0% fee) if enabled, else FOK (1.8% fee)."""
@@ -482,7 +527,7 @@ class LiveTrader(BaseTrader):
                     last_error = error_msg
                     logger.debug("FOK %d/%d: price moved before fill", attempt, _MAX_RETRIES)
                     if attempt < _MAX_RETRIES:
-                        await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+                        await asyncio.sleep(_retry_sleep(attempt))
                     continue
 
                 if resp.get("status") == "matched":
@@ -493,17 +538,19 @@ class LiveTrader(BaseTrader):
                         side, order_id, fill_price, amount,
                     )
                     _update_fill_stats(filled=True, side=side)
+                    await self._maybe_recheck_allowance()
+                    notional_usdc = amount if side == BUY else amount * fill_price
                     return FillResult(
                         filled=True,
                         fill_price=fill_price,
-                        fill_size=amount if side == BUY else 0.0,
+                        fill_size=notional_usdc,
                     )
 
                 # Unexpected status
                 last_error = f"Unexpected status: {resp.get('status')}"
                 logger.warning("FOK %d/%d: unexpected status %s", attempt, _MAX_RETRIES, resp.get('status'))
                 if attempt < _MAX_RETRIES:
-                    await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+                    await asyncio.sleep(_retry_sleep(attempt))
 
             except AuthError:
                 raise
@@ -514,7 +561,7 @@ class LiveTrader(BaseTrader):
                 last_error = str(e)
                 logger.debug("FOK %d/%d: price moved before fill", attempt, _MAX_RETRIES)
                 if attempt < _MAX_RETRIES:
-                    await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+                    await asyncio.sleep(_retry_sleep(attempt))
 
         _update_fill_stats(filled=False, side=side)
         return FillResult(
@@ -525,18 +572,37 @@ class LiveTrader(BaseTrader):
     # -- Fill price lookup --------------------------------------------------
 
     async def _get_fill_price(self, order_id: str, fallback_price: float) -> float:
-        """Fetch actual fill price via VWAP from associate_trades."""
-        try:
-            order = await asyncio.to_thread(self.client.get_order, order_id)
-            trades = order.get("associate_trades", [])
-            trades = [t for t in trades if isinstance(t, dict)]
-            if not trades:
-                return fallback_price
-            total_shares = sum(float(t["size"]) for t in trades)
-            if total_shares == 0:
-                return fallback_price
-            total_cost = sum(float(t["size"]) * float(t["price"]) for t in trades)
-            return total_cost / total_shares
-        except Exception as e:
-            logger.debug("Failed to fetch fill price for %s: %s", order_id, e)
-            return fallback_price
+        """Fetch actual fill price via VWAP from associate_trades.
+
+        Retries a few times because the CLOB's REST view often lags the match
+        engine by 100–300ms — falling back to the submitted limit price
+        misreports VWAP for partial fills and breaks fee accounting downstream.
+        Only falls back to the limit price after all retries fail or the
+        order genuinely has no associated trades.
+        """
+        last_err: Exception | None = None
+        for attempt in range(_FILL_PRICE_LOOKUP_RETRIES):
+            try:
+                order = await asyncio.to_thread(self.client.get_order, order_id)
+                trades = order.get("associate_trades", [])
+                trades = [t for t in trades if isinstance(t, dict)]
+                if not trades:
+                    if attempt < _FILL_PRICE_LOOKUP_RETRIES - 1:
+                        await asyncio.sleep(_FILL_PRICE_LOOKUP_DELAY)
+                        continue
+                    return fallback_price
+                total_shares = sum(float(t["size"]) for t in trades)
+                if total_shares == 0:
+                    return fallback_price
+                total_cost = sum(float(t["size"]) * float(t["price"]) for t in trades)
+                return total_cost / total_shares
+            except Exception as e:
+                last_err = e
+                if attempt < _FILL_PRICE_LOOKUP_RETRIES - 1:
+                    await asyncio.sleep(_FILL_PRICE_LOOKUP_DELAY)
+        logger.warning(
+            "Fill price lookup for %s exhausted retries (%s) — falling back to "
+            "submitted limit %.4f. Fee math may be off if the order walked the book.",
+            order_id, last_err, fallback_price,
+        )
+        return fallback_price

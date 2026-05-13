@@ -25,6 +25,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 from polybot.config.loader import load_config, get_secret
+from polybot.config.param_registry import default_for as _d
 from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE
 from polybot.db.models import Database
 from polybot.feeds.binance_feed import BinanceFeed
@@ -202,26 +203,25 @@ _CF_CHECK_INTERVAL = 30.0  # seconds
 def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
     """Construct SignalEngine from config — shared between pipeline and main."""
     return SignalEngine(
-        min_edge=signal_cfg.get("min_edge", 0.04),
-        kelly_fraction=config["math"].get("kelly_fraction", 0.15),
-        momentum_weight=signal_cfg.get("momentum_weight", -0.02),
-        weights=signal_cfg.get("weights", {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
-                                            "obv": 0.15, "vwap": 0.20}),
-        min_model_probability=signal_cfg.get("min_model_probability", 0.58),
-        student_t_df=signal_cfg.get("student_t_df", 5),
-        regime_weight=signal_cfg.get("regime_weight", 0.03),
-        flow_weight=signal_cfg.get("flow_weight", 0.04),
-        regime_lookback=signal_cfg.get("regime_lookback", 50),
-        min_kelly=signal_cfg.get("min_kelly", 0.015),
-        atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", 1.4),
-        spot_flow_weight=signal_cfg.get("spot_flow_weight", 0.04),
-        prev_margin_weight=signal_cfg.get("prev_margin_weight", 0.02),
-        min_atr=signal_cfg.get("min_atr", 8.0),
-        liquidation_weight=signal_cfg.get("liquidation_weight", 0.03),
-        logit_scale=signal_cfg.get("logit_scale", 4.0),
-        loss_cut_fraction=signal_cfg.get("loss_cut_fraction", 0.65),
-        loss_cut_time_s=signal_cfg.get("loss_cut_time_s", 120.0),
-        consensus_dead_zone=signal_cfg.get("consensus_dead_zone", 0.05),
+        min_edge=signal_cfg.get("min_edge", _d("min_edge")),
+        kelly_fraction=config["math"].get("kelly_fraction", _d("kelly_fraction")),
+        momentum_weight=signal_cfg.get("momentum_weight", _d("momentum_weight")),
+        weights=signal_cfg.get("weights", _d("weights")),
+        min_model_probability=signal_cfg.get("min_model_probability", _d("min_model_probability")),
+        student_t_df=signal_cfg.get("student_t_df", _d("student_t_df")),
+        regime_weight=signal_cfg.get("regime_weight", _d("regime_weight")),
+        flow_weight=signal_cfg.get("flow_weight", _d("flow_weight")),
+        regime_lookback=signal_cfg.get("regime_lookback", _d("regime_lookback")),
+        min_kelly=signal_cfg.get("min_kelly", _d("min_kelly")),
+        atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", _d("atr_sigma_ratio")),
+        spot_flow_weight=signal_cfg.get("spot_flow_weight", _d("spot_flow_weight")),
+        prev_margin_weight=signal_cfg.get("prev_margin_weight", _d("prev_margin_weight")),
+        min_atr=signal_cfg.get("min_atr", _d("min_atr")),
+        liquidation_weight=signal_cfg.get("liquidation_weight", _d("liquidation_weight")),
+        logit_scale=signal_cfg.get("logit_scale", _d("logit_scale")),
+        loss_cut_fraction=signal_cfg.get("loss_cut_fraction", _d("loss_cut_fraction")),
+        loss_cut_time_s=signal_cfg.get("loss_cut_time_s", _d("loss_cut_time_s")),
+        consensus_dead_zone=signal_cfg.get("consensus_dead_zone", _d("consensus_dead_zone")),
         consensus_config=signal_cfg.get("consensus"),
     )
 
@@ -496,8 +496,8 @@ async def _evaluate_signal_and_enter(
     time_mult, phase = compute_time_multiplier(
         prob=signal.prob,
         seconds_remaining=contract["seconds_remaining"],
-        normal_fraction=timing_cfg.get("normal_fraction", 0.60),
-        late_max_penalty=timing_cfg.get("late_max_penalty", 0.60),
+        normal_fraction=timing_cfg.get("normal_fraction", _d("normal_fraction")),
+        late_max_penalty=timing_cfg.get("late_max_penalty", _d("late_max_penalty")),
     )
 
     # BUY block: once per window. SKIP: one-liner only when action changes.
@@ -563,7 +563,7 @@ async def _evaluate_signal_and_enter(
     })
     flip_count = flip_state["flip_count"]
     if flip_count >= 1:
-        flip_premium = config.get("entry_timing", {}).get("flip_edge_premium", 0.015)
+        flip_premium = config.get("entry_timing", {}).get("flip_edge_premium", _d("flip_edge_premium"))
         spread_est = -1.0
         if clob_ws:
             bba = clob_ws.best_bid_ask.get(token_id, {})
@@ -783,19 +783,24 @@ async def _evaluate_signal_and_enter(
     snapshot_str = json.dumps(snapshot)
 
     # Pre-submit edge re-check: use fresh_ask already fetched above (zero extra
-    # round trip). Symmetric upper bound mirrors the entry-time max_edge gate —
-    # if the book just moved enough to balloon edge past max_edge between signal
-    # and submit, the ask is stale and the order would fill at a worse price.
+    # round trip). The earlier net_edge gate at L709 subtracted slippage cost
+    # from signal.edge before comparing to min_edge; mirror that here so the two
+    # gates are checking the same quantity. Without this symmetry, the
+    # pre-submit check rejects orders that the entry gate would have accepted
+    # (gross > min but net < min) and lets through orders the entry gate
+    # would have rejected. Upper max_edge bound stays on gross because it's a
+    # sanity guard against stale-book "too good to be true" prints.
     if fresh_ask > 0 and fresh_ask != price:
-        fresh_edge = signal.prob - fresh_ask
+        fresh_gross_edge = signal.prob - fresh_ask
+        fresh_net_edge = fresh_gross_edge - fresh_ask * slip
         max_edge_live = config.get("signal", {}).get("max_edge", 0.20)
-        if fresh_edge < signal_engine.min_edge or fresh_edge > max_edge_live:
+        if fresh_net_edge < signal_engine.min_edge or fresh_gross_edge > max_edge_live:
             _record_skip("pre_submit_edge_drift")
             _ghost("pre_submit_edge_drift", signal, snapshot)
             _log_skip_once(cid, f"drift_{fresh_ask:.3f}",
-                           f"SKIP: pre-submit edge {fresh_edge:+.1%} outside "
+                           f"SKIP: pre-submit net edge {fresh_net_edge:+.1%} outside "
                            f"[{signal_engine.min_edge:.0%}, {max_edge_live:.0%}] "
-                           f"(ask drifted {price:.3f} -> {fresh_ask:.3f})")
+                           f"(ask drifted {price:.3f} -> {fresh_ask:.3f}, slip={slip:.2%})")
             return None, last_eval_log_window
 
     result = await trader.open_trade(
@@ -2018,7 +2023,7 @@ async def run_pipeline() -> None:
         counterfactual_tracker=counterfactual_tracker,
         pipeline_tracker=pipeline_tracker,
     )
-    scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", -0.10)
+    scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", _d("exit_edge_threshold"))
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
     scheduler._trading_start = (sched_cfg.get("trading_start_hour_et", 0), sched_cfg.get("trading_start_minute", 15))
     scheduler._trading_end = (sched_cfg.get("trading_end_hour_et", 23), sched_cfg.get("trading_end_minute", 59))
@@ -2145,7 +2150,7 @@ async def main() -> None:
         _preflight_bankroll = await db.get_bankroll()
         _kelly_fraction = config.get("signal", {}).get("kelly_fraction", 0.15)
         _max_single = _preflight_bankroll * _kelly_fraction
-        _max_concurrent = exec_cfg.get("max_concurrent_positions", 2)
+        _max_concurrent = exec_cfg.get("max_concurrent_positions", _d("max_concurrent_positions"))
         _min_allowance = _max_single * _max_concurrent * 10.0
         ok, msg, live_balance = verify_auth(min_allowance_usd=_min_allowance)
         if not ok:
@@ -2175,8 +2180,8 @@ async def main() -> None:
     init_bankroll = await db.get_bankroll()
     breaker = CircuitBreaker(
         initial_bankroll=init_bankroll,
-        floor_pct=cb_cfg.get("floor_pct", 0.85),
-        min_multiplier=cb_cfg.get("min_multiplier", 0.40),
+        floor_pct=cb_cfg.get("floor_pct", _d("circuit_breaker.floor_pct")),
+        min_multiplier=cb_cfg.get("min_multiplier", _d("circuit_breaker.min_multiplier")),
         losses_to_reduce=cb_cfg.get("losses_to_reduce", 3),
         wins_to_restore=cb_cfg.get("wins_to_restore", 2),
     )
@@ -2228,7 +2233,7 @@ async def main() -> None:
         counterfactual_tracker=counterfactual_tracker,
         pipeline_tracker=pipeline_tracker,
     )
-    scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", -0.10)
+    scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", _d("exit_edge_threshold"))
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
     scheduler._auto_shutdown = args.auto_restart
     scheduler.ghost_tracker = ghost_tracker

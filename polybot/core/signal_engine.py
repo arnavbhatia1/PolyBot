@@ -10,6 +10,7 @@ import numpy as np
 from scipy.special import stdtr as _stdtr  # direct C impl, ~10x faster than scipy.stats.t.cdf
 
 from polybot.core.exit_boundary import ExitBoundary
+from polybot.config.param_registry import default_for as _d
 
 if TYPE_CHECKING:
     from polybot.core.calibrator import PlattCalibrator
@@ -89,22 +90,46 @@ class SignalEngine:
     correction.
     """
 
-    def __init__(self, min_edge: float = 0.04, kelly_fraction: float = 0.15,
-                 momentum_weight: float = -0.02, weights: dict[str, float] | None = None,
-                 min_model_probability: float = 0.58,
-                 student_t_df: int = 5, regime_weight: float = 0.03,
-                 flow_weight: float = 0.04, regime_lookback: int = 50,
-                 min_kelly: float = 0.015, atr_sigma_ratio: float = 1.4,
+    def __init__(self, min_edge: float | None = None, kelly_fraction: float | None = None,
+                 momentum_weight: float | None = None, weights: dict[str, float] | None = None,
+                 min_model_probability: float | None = None,
+                 student_t_df: int | None = None, regime_weight: float | None = None,
+                 flow_weight: float | None = None, regime_lookback: int | None = None,
+                 min_kelly: float | None = None, atr_sigma_ratio: float | None = None,
                  calibrator: PlattCalibrator | None = None,
-                 spot_flow_weight: float = 0.04,
-                 prev_margin_weight: float = 0.02,
-                 min_atr: float = 8.0,
-                 liquidation_weight: float = 0.03,
-                 logit_scale: float = 4.0,
-                 loss_cut_fraction: float = 0.65,
-                 loss_cut_time_s: float = 120.0,
-                 consensus_dead_zone: float = 0.05,
+                 spot_flow_weight: float | None = None,
+                 prev_margin_weight: float | None = None,
+                 min_atr: float | None = None,
+                 liquidation_weight: float | None = None,
+                 logit_scale: float | None = None,
+                 loss_cut_fraction: float | None = None,
+                 loss_cut_time_s: float | None = None,
+                 consensus_dead_zone: float | None = None,
                  consensus_config: dict | None = None) -> None:
+        # Pull every default from param_registry so signal_engine has zero
+        # hardcoded literals. If the caller supplied a value, use it; otherwise
+        # fall back to the canonical default. Production wires this from
+        # settings.yaml via main._build_signal_engine; tests can override
+        # individual kwargs.
+        if min_edge is None: min_edge = _d("min_edge")
+        if kelly_fraction is None: kelly_fraction = _d("kelly_fraction")
+        if momentum_weight is None: momentum_weight = _d("momentum_weight")
+        if weights is None: weights = _d("weights")
+        if min_model_probability is None: min_model_probability = _d("min_model_probability")
+        if student_t_df is None: student_t_df = _d("student_t_df")
+        if regime_weight is None: regime_weight = _d("regime_weight")
+        if flow_weight is None: flow_weight = _d("flow_weight")
+        if regime_lookback is None: regime_lookback = _d("regime_lookback")
+        if min_kelly is None: min_kelly = _d("min_kelly")
+        if atr_sigma_ratio is None: atr_sigma_ratio = _d("atr_sigma_ratio")
+        if spot_flow_weight is None: spot_flow_weight = _d("spot_flow_weight")
+        if prev_margin_weight is None: prev_margin_weight = _d("prev_margin_weight")
+        if min_atr is None: min_atr = _d("min_atr")
+        if liquidation_weight is None: liquidation_weight = _d("liquidation_weight")
+        if logit_scale is None: logit_scale = _d("logit_scale")
+        if loss_cut_fraction is None: loss_cut_fraction = _d("loss_cut_fraction")
+        if loss_cut_time_s is None: loss_cut_time_s = _d("loss_cut_time_s")
+        if consensus_dead_zone is None: consensus_dead_zone = _d("consensus_dead_zone")
         self.min_edge: float = min_edge
         self.kelly_fraction: float = kelly_fraction
         self.momentum_weight: float = momentum_weight
@@ -113,8 +138,7 @@ class SignalEngine:
         self.regime_weight: float = regime_weight
         self.flow_weight: float = flow_weight
         self.regime_lookback: int = regime_lookback
-        self.weights: dict[str, float] = weights or {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20,
-                                   "obv": 0.15, "vwap": 0.20}
+        self.weights: dict[str, float] = weights
         self.min_kelly: float = min_kelly
         self.atr_sigma_ratio: float = atr_sigma_ratio
         self.calibrator = calibrator
@@ -367,22 +391,18 @@ class SignalEngine:
         model_prob = prob_up if side == "Up" else 1.0 - prob_up
         holding_edge = model_prob - market_price_for_side
 
-        # Fee-aware threshold: subtract exit fee cost from the trigger
-        if entry_price > 0 and market_price_for_side > 0:
-            scalp_cost = fee_rate * market_price_for_side * (1.0 - market_price_for_side)
-            effective_threshold = exit_threshold - scalp_cost
-        else:
-            effective_threshold = exit_threshold
+        itm_depth = max(0.0, (market_price_for_side - 0.5) / 0.5)
+        deep_loss_floor = exit_threshold * (1.0 + 0.5 * itm_depth)
 
         optimal_threshold = self._exit_boundary.compute_exit_threshold(
             seconds_remaining, entry_price, fee_rate, market_price_for_side)
-        # Smooth blend: at ATM (0.5) trust boundary fully; deeper ITM → weight toward
-        # the more patient (more negative) threshold so winning positions aren't scalped early.
-        # OTM stays fully boundary-driven (urgency exits intact).
-        itm_weight = max(0.0, (market_price_for_side - 0.5) / 0.5)
+        # Blend: at ATM (itm_depth=0) trust the boundary fully; deeper ITM →
+        # weight toward the more patient (more negative) threshold so winning
+        # positions aren't scalped early. OTM stays boundary-driven so urgency
+        # exits remain intact.
         effective_threshold = (
-            (1 - itm_weight) * max(effective_threshold, optimal_threshold)
-            + itm_weight * min(effective_threshold, optimal_threshold)
+            (1 - itm_depth) * max(deep_loss_floor, optimal_threshold)
+            + itm_depth * min(deep_loss_floor, optimal_threshold)
         )
 
         # Loss-cut fires independently of holding_edge: deep-underwater near
@@ -411,9 +431,21 @@ class SignalEngine:
                 f"Hold {side}: model={model_prob:.0%} mkt={market_price_for_side:.0%} "
                 f"edge={holding_edge:+.0%}")
 
-    def _kelly(self, prob: float, market_price: float) -> float:
+    def _kelly(self, prob: float, market_price: float, fee_rate: float = 0.018) -> float:
+        """Fee-aware Kelly fraction.
+
+        Polymarket collects the entry fee in shares, so for $1 invested at price
+        p you receive (1/p) × (1 - fee_rate × (1-p)) shares. Working through:
+            net_b = b × (1 - fee_rate),   where b = (1-p)/p
+        Kelly with the fee-adjusted payoff therefore divides by (1 - fee_rate)
+        less of the raw b. Effect at fee_rate=0.018: ~5% smaller positions at
+        mid prices. Resolution fees are zero (fee = rate × shares × price ×
+        (1-price), which collapses to 0 at price 0 or 1), so no second-order
+        adjustment is needed.
+        """
         if market_price <= 0.01 or market_price >= 0.99:
             return 0
         b = (1.0 - market_price) / market_price
-        raw = (prob * b - (1.0 - prob)) / b
+        net_b = b * max(1e-6, 1.0 - fee_rate)
+        raw = (prob * net_b - (1.0 - prob)) / net_b
         return max(0, raw * self.kelly_fraction)

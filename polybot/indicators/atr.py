@@ -31,14 +31,24 @@ def compute_atr_gate(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
     """
     if len(closes) < period + 2:
         return {"atr": 0.0, "passes": False, "reason": "insufficient_data"}
-    atr_current = compute_atr(highs, lows, closes, period)
-    n = min(history, len(closes) - period)
-    atr_history = []
-    for i in range(n):
-        end = len(closes) - i
-        if end < period + 1:
-            break
-        atr_history.append(compute_atr(highs[:end], lows[:end], closes[:end], period))
+    # Compute the full TR series once, then build the rolling ATR history by
+    # walking Wilder's EMA forward. The previous implementation re-sliced highs/
+    # lows/closes per step and called compute_atr again — O(n × history) ATR
+    # work every tick. Now O(n + history).
+    tr = np.maximum(
+        highs[1:] - lows[1:],
+        np.maximum(np.abs(highs[1:] - closes[:-1]), np.abs(lows[1:] - closes[:-1])),
+    )
+    if len(tr) < period:
+        return {"atr": 0.0, "passes": False, "reason": "insufficient_data"}
+    alpha = 1.0 / period
+    atr_running = float(np.mean(tr[:period]))
+    atr_series: list[float] = [atr_running]
+    for i in range(period, len(tr)):
+        atr_running = (1.0 - alpha) * atr_running + alpha * float(tr[i])
+        atr_series.append(atr_running)
+    atr_current = atr_series[-1]
+    atr_history = atr_series[-min(history, len(atr_series)):]
     if not atr_history:
         return {"atr": atr_current, "passes": False, "reason": "no_history"}
     low_thresh = float(np.percentile(atr_history, low_pct))

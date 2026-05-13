@@ -1,7 +1,7 @@
 mode: paper   # paper | live
 
 # =============================================================================
-#  SECTION 1: MONEY / RISK  — how much you bet and when to stop
+#  SECTION 1: MONEY / RISK - how much to bet and when to stop
 # =============================================================================
 math:
   kelly_fraction: 0.08        # Fraction of bankroll staked per Kelly unit. Lower = smaller bets.
@@ -29,7 +29,7 @@ execution:
   maker_timeout_s: 15.0
 
 # =============================================================================
-#  SECTION 2: ENTRY GATES  — when to enter a trade
+#  SECTION 2: ENTRY GATES - when to enter a trade
 # =============================================================================
 signal:
   # --- Edge gates (most important) ---
@@ -95,11 +95,9 @@ entry_timing:
   flip_edge_premium: 0.015    # Re-entry costs extra 1.5% edge on top of min_edge.
 
 # =============================================================================
-#  SECTION 4: SPRT GATE — sequential evidence test before entering
+#  SECTION 4: SPRT GATE - sequential evidence test before entering
 # =============================================================================
-#  SPRT watches the model signal across multiple ticks and blocks
-#  entry unless it sees consistent directional evidence. Think of it as:
-#  "wait until the signal is stable, not just a one-tick spike."
+#  SPRT watches the model signal across multiple ticks and blocks entry unless it sees consistent directional evidence.
 sprt:
   alpha: 0.05                 # False positive rate. Lower = stricter (more SKIP blocks)
   beta: 0.1                   # False negative rate. Lower = stricter (harder to get ENTER).
@@ -110,18 +108,18 @@ sprt:
 #  SECTION 5: SCHEDULE
 # =============================================================================
 schedule:
-  trading_start_hour_et: 0    # Start trading at midnight ET
-  trading_start_minute: 1     # ...at 12:01 AM
+  trading_start_hour_et: 0    # Start at 12:01 AM ET
+  trading_start_minute: 1
   trading_end_hour_et: 23     # Stop at 11:30 PM ET
   trading_end_minute: 30
 
 agents:
   outcome_reviewer_interval_seconds: 3600
-  daily_pipeline_hour: 23     # Run learning pipeline at 11:50 PM ET
+  daily_pipeline_hour: 23     # Run pipeline at 11:50 PM ET
   daily_pipeline_minute: 50
 
 # =============================================================================
-#  SECTION 6: REGIME FILTER — skip entries in bad market conditions
+#  SECTION 6: REGIME FILTER - skip entries in bad market conditions
 # =============================================================================
 regime:
   lookback: 50                # Candles to measure regime over
@@ -130,7 +128,7 @@ regime:
   autocorr_threshold: 0.25    # 1-lag autocorr threshold to call something "trending"
 
 # =============================================================================
-#  DO NOT TOUCH — infrastructure settings
+#  DO NOT TOUCH - infrastructure settings
 # =============================================================================
 market:
   contract_type: btc_5min

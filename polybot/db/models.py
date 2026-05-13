@@ -87,6 +87,22 @@ class Database:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN pnl REAL DEFAULT 0")
         if "fees" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0")
+
+        # Hot-path indexes. get_open_positions() and has_position_for_market()
+        # run every tick of the trading loop; without these indexes both
+        # degrade to full table scans as the positions table grows past a few
+        # thousand closed rows.
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status)"
+        )
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_positions_market_status "
+            "ON positions(market_id, status)"
+        )
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trade_history_exit_ts "
+            "ON trade_history(exit_timestamp)"
+        )
         await self.conn.commit()
 
     async def close(self) -> None:

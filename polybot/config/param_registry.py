@@ -30,7 +30,7 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     # ── Layer 1 ─────────────────────────────────────────────────────────────
     ParamSpec("atr_sigma_ratio",         "signal.atr_sigma_ratio",         1.2,   2.5,   float, 1.4,   "L1 aggressiveness — lower = sharper probs (HIGHEST leverage)"),
     ParamSpec("student_t_df",            "signal.student_t_df",            3,     8,     int,   5,     "L1 tail fatness — lower = fatter tails (BTC kurtosis target)"),
-    ParamSpec("min_atr",                 "signal.min_atr",                 4.0,   25.0,  float, 8.0,   "static ATR floor; runtime uses max(min_atr, 0.3 × rolling_20)"),
+    ParamSpec("min_atr",                 "signal.min_atr",                 4.0,   25.0,  float, 12.0,  "static ATR floor; runtime uses max(min_atr, 0.3 × rolling_20)"),
     # ── Logit amplifier ─────────────────────────────────────────────────────
     ParamSpec("logit_scale",             "signal.logit_scale",             2.0,   6.0,   float, 4.0,   "master amplifier on all L2–L5 weights"),
     # ── Layer 2–5 weights ───────────────────────────────────────────────────
@@ -44,7 +44,7 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec("kelly_fraction",          "math.kelly_fraction",            0.05,  0.25,  float, 0.15,  "Kelly sizing fraction — leave unchanged unless strong drawdown evidence"),
     # ── Entry gates (pipeline-tunable since ghosts are in the backtest) ─────
     ParamSpec("min_edge",                "signal.min_edge",                0.02,  0.10,  float, 0.04,  "minimum model–market edge to enter"),
-    ParamSpec("min_kelly",               "signal.min_kelly",               0.005, 0.04,  float, 0.015, "minimum Kelly fraction to enter"),
+    ParamSpec("min_kelly",               "signal.min_kelly",               0.005, 0.04,  float, 0.01,  "minimum Kelly fraction to enter"),
     ParamSpec("min_model_probability",   "signal.min_model_probability",   0.52,  0.70,  float, 0.58,  "minimum model probability to enter"),
 )
 
@@ -58,3 +58,49 @@ CLAMP_RANGES: dict[str, tuple] = {p.name: (p.lo, p.hi, p.cast) for p in PIPELINE
 
 # Set of tunable param names for O(1) membership tests
 TUNABLE_NAMES: frozenset[str] = frozenset(p.name for p in PIPELINE_PARAMS)
+
+
+# ── Manual-only param defaults ────────────────────────────────────────────────
+# These are NOT pipeline-tunable but they DO need a canonical default for the
+# `cfg.get(name, fallback)` callsites scattered across scheduler.py, main.py,
+# claude_client.py, and local_recommender.py. Centralizing them here keeps the
+# fallbacks in ONE place — settings.yaml still drives runtime, this just stops
+# the same literal from appearing in 5 different files.
+_MANUAL_DEFAULTS: dict[str, Any] = {
+    # Exit / hold policy
+    "exit_edge_threshold": -0.05,
+    "max_edge": 0.20,
+    "loss_cut_fraction": 0.65,
+    "loss_cut_time_s": 120.0,
+    "adverse_selection_threshold": 0.55,
+    # Entry timing
+    "normal_fraction": 0.60,
+    "late_max_penalty": 0.60,
+    # Flip trading
+    "flip_enabled": True,
+    "flip_edge_premium": 0.015,
+    # Risk caps
+    "max_concurrent_positions": 2,
+    "max_bankroll_deployed": 0.80,
+    # Signal/regime knobs (not pipeline-tunable)
+    "regime_lookback": 50,
+    "consensus_dead_zone": 0.05,
+    # Indicator weight dict (shape only — runtime should always supply this from YAML)
+    "weights": {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20},
+    # Circuit breaker (dotted access)
+    "circuit_breaker.floor_pct": 0.85,
+    "circuit_breaker.min_multiplier": 0.40,
+}
+
+# Unified defaults map: pipeline params + manual params.
+DEFAULTS: dict[str, Any] = {p.name: p.default for p in PIPELINE_PARAMS} | _MANUAL_DEFAULTS
+
+
+def default_for(name: str) -> Any:
+    """Canonical default for a parameter, by name. Single source of truth.
+
+    Used at every `cfg.get(name, FALLBACK)` callsite so the FALLBACK literal
+    lives in exactly one file. Raises KeyError on an unregistered name —
+    intentional, it flags drift the moment a new param sneaks in unregistered.
+    """
+    return DEFAULTS[name]

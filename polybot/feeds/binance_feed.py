@@ -78,6 +78,7 @@ class BinanceFeed:
         self.buffer: CandleBuffer = CandleBuffer(max_size=buffer_size)
         self._running: bool = False
         self._ws: Any = None
+        self._task: asyncio.Task | None = None
 
     async def backfill(self) -> None:
         url = f"{self.rest_url}/klines"
@@ -137,9 +138,16 @@ class BinanceFeed:
     async def start(self) -> None:
         self._running = True
         await self.backfill()
-        asyncio.create_task(self._connect_ws())
+        self._task = asyncio.create_task(self._connect_ws())
 
     async def stop(self) -> None:
         self._running = False
         if self._ws:
             await self._ws.close()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None

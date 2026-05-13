@@ -3,12 +3,30 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _ensure_client(http_client: httpx.AsyncClient | None) -> AsyncIterator[httpx.AsyncClient]:
+    """Yield a usable httpx client. If `http_client` is None, open a short-lived one.
+
+    Several callers (tests, ad-hoc scripts, agents constructed lazily) invoke the
+    scanner without a long-lived pooled client. The methods used to assume a
+    client was always passed and would AttributeError on .get(); this helper
+    keeps the happy path (pooled client) free of overhead while still letting
+    None callers succeed.
+    """
+    if http_client is not None:
+        yield http_client
+        return
+    async with httpx.AsyncClient(timeout=10) as client:
+        yield client
 
 class BTCMarketScanner:
     """Discovers active 5-min BTC Up/Down markets on Polymarket via Gamma API.
@@ -161,9 +179,10 @@ class BTCMarketScanner:
 
         try:
             url = f"{self.CLOB_API}/book"
-            resp = await http_client.get(url, params={"token_id": token_id})
-            resp.raise_for_status()
-            book = resp.json()
+            async with _ensure_client(http_client) as client:
+                resp = await client.get(url, params={"token_id": token_id})
+                resp.raise_for_status()
+                book = resp.json()
             self._book_cache[token_id] = (now, book)
             return book
         except Exception as e:
@@ -182,13 +201,11 @@ class BTCMarketScanner:
             return cached[1]
 
         try:
-            # The CLOB /fee-rate endpoint returns base_fee=1000 (internal scaling),
-            # NOT the actual taker fee. The real rate is in Gamma's feeSchedule.rate.
-            # Fetch from Gamma market metadata for the accurate rate.
             url = f"{self.CLOB_API}/fee-rate"
-            resp = await http_client.get(url, params={"token_id": token_id})
-            resp.raise_for_status()
-            data = resp.json()
+            async with _ensure_client(http_client) as client:
+                resp = await client.get(url, params={"token_id": token_id})
+                resp.raise_for_status()
+                data = resp.json()
             # CLOB base_fee is an internal multiplier, NOT the actual taker fee.
             # As of March 2026, Polymarket uses Dynamic Taker-Fee Model:
             #   Crypto: up to 1.8% peak (at p=0.50)
@@ -215,9 +232,10 @@ class BTCMarketScanner:
 
         try:
             url = f"{self.CLOB_API}/tick-size"
-            resp = await http_client.get(url, params={"token_id": token_id})
-            resp.raise_for_status()
-            data = resp.json()
+            async with _ensure_client(http_client) as client:
+                resp = await client.get(url, params={"token_id": token_id})
+                resp.raise_for_status()
+                data = resp.json()
             tick = str(data.get("minimum_tick_size", "0.01"))
             self._tick_size_cache[token_id] = (now, tick)
             return tick
@@ -352,9 +370,10 @@ class BTCMarketScanner:
         try:
             url = f"{self.CLOB_API}/price"
             params = {"token_id": token_id, "side": side}
-            resp = await http_client.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            async with _ensure_client(http_client) as client:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                data = resp.json()
             return float(data.get("price", 0))
         except Exception as e:
             logger.debug(f"Market price fetch failed for {token_id} {side}: {e}")
@@ -368,9 +387,10 @@ class BTCMarketScanner:
         """GET /spread — bid-ask spread as a float. Returns -1 on error."""
         try:
             url = f"{self.CLOB_API}/spread"
-            resp = await http_client.get(url, params={"token_id": token_id})
-            resp.raise_for_status()
-            return float(resp.json().get("spread", "-1"))
+            async with _ensure_client(http_client) as client:
+                resp = await client.get(url, params={"token_id": token_id})
+                resp.raise_for_status()
+                return float(resp.json().get("spread", "-1"))
         except Exception as e:
             logger.debug(f"Spread fetch failed for {token_id}: {e}")
             return -1.0

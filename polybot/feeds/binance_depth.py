@@ -79,9 +79,11 @@ class BinanceDepthFeed:
                         data = json.loads(msg)
                         bids = data.get("bids")
                         asks = data.get("asks")
-                        if bids is not None:
+                        # Only commit when both sides are present in the same
+                        # frame — otherwise compute_depth_usd would mix bids
+                        # from snapshot T with asks from snapshot T+N.
+                        if bids is not None and asks is not None:
                             self.top_bids = bids
-                        if asks is not None:
                             self.top_asks = asks
             except asyncio.CancelledError:
                 break

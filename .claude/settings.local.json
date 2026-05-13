@@ -130,7 +130,9 @@
       "Bash(Select-Object -First 20)",
       "PowerShell(\\(Get-Item \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot.log\"\\).Length; \\(Get-Content \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot.log\" | Measure-Object -Line\\).Lines)",
       "Bash(Get-ChildItem *)",
-      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot\\\\memory\\\\\" | ForEach-Object { $_.FullName })"
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot\\\\memory\\\\\" | ForEach-Object { $_.FullName })",
+      "Bash(Get-Content *)",
+      "Bash(findstr /N \"last_eval_log_window\\\\s*=\" polybot\\\\main.py)"
     ]
   }
 }

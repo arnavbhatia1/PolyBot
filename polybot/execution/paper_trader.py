@@ -147,6 +147,4 @@ class PaperTrader(BaseTrader):
             # max_slippage above requested_price, live would reject the order outright.
             if vwap > requested_price * (1 + self.max_slippage):
                 return FillResult(filled=False, reason="price moved before fill (simulated FOK rejection)")
-
-        fill_size = spent if side == "buy" else 0.0
-        return FillResult(filled=True, fill_price=fill_price, fill_size=fill_size)
+        return FillResult(filled=True, fill_price=fill_price, fill_size=spent)

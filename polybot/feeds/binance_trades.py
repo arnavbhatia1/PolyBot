@@ -97,14 +97,16 @@ class BinanceTradeAccumulator:
             return 0.0
         return recent_rate - baseline_rate
 
-    def get_taker_ratio(self, window_s: float = 60) -> float:
+    def get_taker_ratio(self, window_s: float = 60, min_trades: int = 5) -> float:
         """Fraction of volume from aggressive buyers [0, 1].
 
         1.0 = all aggressive buying, 0.0 = all aggressive selling.
-        Returns 0.5 if no trades in window.
+        Returns 0.5 when fewer than `min_trades` trades are in the window — a
+        single whale trade would otherwise return 1.0 or 0.0 and trigger
+        spurious signals downstream.
         """
         trades = self._window(window_s)
-        if not trades:
+        if len(trades) < min_trades:
             return 0.5
 
         buy_vol = 0.0
@@ -192,6 +194,7 @@ class BinanceTradesFeed:
         self.ws_url = ws_url
         self._running = False
         self._ws: Any = None
+        self._task: asyncio.Task | None = None
 
     def _handle_message(self, data: dict[str, Any]) -> None:
         """Parse an aggTrade message and feed into the accumulator."""
@@ -228,10 +231,17 @@ class BinanceTradesFeed:
     async def start(self) -> None:
         """Start consuming the aggTrade stream."""
         self._running = True
-        asyncio.create_task(self._connect_ws())
+        self._task = asyncio.create_task(self._connect_ws())
 
     async def stop(self) -> None:
         """Stop the WebSocket consumer."""
         self._running = False
         if self._ws:
             await self._ws.close()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
