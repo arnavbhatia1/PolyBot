@@ -110,13 +110,13 @@ sprt:
 schedule:
   trading_start_hour_et: 0    # Start at 12:01 AM ET
   trading_start_minute: 1
-  trading_end_hour_et: 23     # Stop at 11:30 PM ET
-  trading_end_minute: 30
+  trading_end_hour_et: 23     # Stop at 11:15 PM ET
+  trading_end_minute: 15
 
 agents:
   outcome_reviewer_interval_seconds: 3600
-  daily_pipeline_hour: 23     # Run pipeline at 11:50 PM ET
-  daily_pipeline_minute: 50
+  daily_pipeline_hour: 23     # Run pipeline at 11:30 PM ET
+  daily_pipeline_minute: 30
 
 # =============================================================================
 #  SECTION 6: REGIME FILTER - skip entries in bad market conditions
