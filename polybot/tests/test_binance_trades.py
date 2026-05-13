@@ -35,13 +35,20 @@ class TestTakerRatio:
         now = time.time()
         acc.add_trade(73000, 1.0, False, now)
         acc.add_trade(73000, 1.0, False, now)
-        assert acc.get_taker_ratio(window_s=120) == pytest.approx(1.0)
+        # Bypass the 5-trade noise floor: this test is asserting the math, not the gate.
+        assert acc.get_taker_ratio(window_s=120, min_trades=2) == pytest.approx(1.0)
 
     def test_balanced(self):
         acc = BinanceTradeAccumulator()
         now = time.time()
         acc.add_trade(73000, 1.0, False, now)
         acc.add_trade(73000, 1.0, True, now)
+        assert acc.get_taker_ratio(window_s=120, min_trades=2) == pytest.approx(0.5)
+
+    def test_below_min_trades_returns_neutral(self):
+        acc = BinanceTradeAccumulator()
+        now = time.time()
+        acc.add_trade(73000, 1.0, False, now)
         assert acc.get_taker_ratio(window_s=120) == pytest.approx(0.5)
 
 class TestLargeTrades:

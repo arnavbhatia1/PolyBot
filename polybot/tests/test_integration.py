@@ -85,13 +85,16 @@ async def test_scalp_exit_flow(db):
         exit_target=1.0, stop_loss=0.0)
     assert result.success is True
 
-    # Market drift inside the profitable scalp zone: edge in (-0.10, -0.05] → EXIT.
-    # BTC barely above strike with high ATR → model ~60%, market 67% → edge ~-0.07.
-    # Confirms the legitimate scalp window still triggers; the deep-loss-hold rule
-    # only suppresses scalps once edge has crashed past -0.10.
+    # Market drift inside the scalp zone: edge in (-0.10, deep_loss_floor] → EXIT.
+    # BTC barely above strike with high ATR → model ~60%, market 70% → edge ~-0.10.
+    # Confirms the legitimate scalp window still triggers AFTER the ITM patience
+    # scaling (-0.10 × (1 + 0.5 × itm_depth)) — at market=0.70 the floor is
+    # ~-0.12 but the optimal_threshold blend gives effective ≈ -0.085, so
+    # edge = -0.10 cleanly clears the trigger without hitting deep-loss-hold
+    # (which requires edge strictly less than -0.10).
     action, _, _, _ = engine.evaluate_hold(
         _make_indicators(atr_value=80), btc_price=66420, strike_price=66400,
-        seconds_remaining=180, market_price_for_side=0.67, side="Up")
+        seconds_remaining=180, market_price_for_side=0.70, side="Up")
     assert action == "EXIT"
 
     # Close at current market price (still profitable vs 0.55 entry)

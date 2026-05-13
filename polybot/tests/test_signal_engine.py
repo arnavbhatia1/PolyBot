@@ -78,9 +78,13 @@ def test_more_distance_bigger_edge(engine):
     assert s2.edge > s1.edge
 
 def test_less_time_higher_probability(engine):
-    """Less time = more certain = higher probability."""
-    p1 = engine.compute_probability(66500, 66400, 240, 30)
-    p2 = engine.compute_probability(66500, 66400, 60, 30)
+    """Less time = more certain = higher probability.
+
+    Distance/ATR chosen so both probabilities stay below the ±3 logit clamp;
+    a saturated `p1` would make this test pass-by-tie.
+    """
+    p1 = engine.compute_probability(66430, 66400, 240, 30)
+    p2 = engine.compute_probability(66430, 66400, 60, 30)
     assert p2 > p1
 
 def test_momentum_nudges_probability(engine):
@@ -132,7 +136,7 @@ def test_deep_loss_holds_to_resolution(engine):
         seconds_remaining=120, market_price_for_side=0.60, side="Up", exit_threshold=-0.05)
     assert action == "HOLD"
     assert edge < -0.10
-    assert "deep-loss" in reason
+    assert "deeply underwater" in reason
 
 def test_deep_underwater_holds_unless_loss_cut(engine):
     """Deep-negative edge with time remaining → HOLD (loss-cut fires only near expiry).
@@ -230,9 +234,11 @@ def test_regime_factor_insufficient_data():
 # --- Order flow integration tests ---
 
 def test_flow_signal_bullish():
+    # Inputs sized so the L1 logit stays well below the ±3 clamp — otherwise
+    # both probs saturate at the same ceiling and the flow contribution is lost.
     se = SignalEngine(flow_weight=0.06)
-    prob_neutral = se.compute_probability(71100, 71000, 180, 50.0, flow_signal=0.0)
-    prob_bullish = se.compute_probability(71100, 71000, 180, 50.0, flow_signal=1.0)
+    prob_neutral = se.compute_probability(71050, 71000, 180, 80.0, flow_signal=0.0)
+    prob_bullish = se.compute_probability(71050, 71000, 180, 80.0, flow_signal=1.0)
     assert prob_bullish > prob_neutral  # bullish flow increases P(Up)
 
 

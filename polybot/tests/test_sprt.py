@@ -10,16 +10,21 @@ class TestSPRT:
         assert result == "ENTER"
 
     def test_weak_signal_skips(self):
-        """Weak signals (0.55) accumulate little evidence and correctly SKIP after 4+ obs."""
+        """Weak signals (0.51) accumulate little evidence and SKIP after 12+ obs.
+
+        At 0.55 the per-tick evidence (log(0.55/0.5) ≈ 0.095) crosses the 15%
+        SKIP threshold within ~5 obs — that's already a tradeable signal, not
+        a weak one. 0.51 is the right end of the noise band for this test.
+        """
         sprt = SPRTAccumulator(alpha=0.05, beta=0.10, min_interval_s=0.0)
-        for _ in range(5):
-            result = sprt.update(prob_up=0.55)
+        for _ in range(12):
+            result = sprt.update(prob_up=0.51)
         assert result == "SKIP"
 
     def test_coin_flip_skips(self):
-        """Coin-flip signals (0.50) add zero evidence and correctly SKIP after 4+ obs."""
+        """Coin-flip signals (0.50) add zero evidence and correctly SKIP after 12+ obs."""
         sprt = SPRTAccumulator(alpha=0.05, beta=0.10, min_interval_s=0.0)
-        for _ in range(5):
+        for _ in range(12):
             result = sprt.update(prob_up=0.50)
         assert result == "SKIP"
 
