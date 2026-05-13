@@ -473,3 +473,28 @@
 - None
 
 **Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
+
+## 2026-05-13T03:46:47.771481+00:00
+
+**Source:** Claude (low)
+**Proposed Changes (2):**
+  - kelly_fraction=0.06 (Q4 edge realization at 0.55 means high-conviction positions are overbet; reducing kelly_fraction cuts exposure at high-edge entries where the model is most overconfident, untested direction with prior support from edge calibration inversion.)
+  - prev_margin_weight=0.01 (Only tested upward (failed at +0.04); downward direction untested and L5 prev-window margin signal may be adding noise given neutral-dominant regime where window boundary effects are weakest.)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.1 -> -0.05 [high]
+    The <-0.10 bucket has 37% accuracy at n=1058 (13pp below break-even, ~10× noise floor) and all 6 scalping_too_early segments span every time window and regime — the exit threshold is systematically too permissive; the -0.02 to -0.05 bucket at 56% is the only profitable exit zone.
+
+**Findings:**
+- Q4 edge realization at 0.55 confirms model overconfidence at high-conviction entries — overbetting is the main drag.
+- Scalp exits below -0.10 edge correct only 37% of time (n=1058, ~10× noise) — largest single value leak.
+- All 15+ parameter families exhausted; 0/1 adoptions improved 7d Sharpe — parameter search space genuinely depleted.
+- Side asymmetry: Up WR=55.9% vs Down=52.9% is 5× noise but no backtestable lever targets this directly.
+- Recent 100 trades WR=65%, PnL=+$230 — possible regime recovery but too early to confirm trend reversal.
+
+**Warnings:**
+- 0/1 adoption success rate with the one attempt producing -0.167 live delta — any proposed change carries elevated overfitting risk in current regime.
+- Mean gain DEGRADING trend (bucket 4 at +0.017) with Q4 edge realization also DEGRADING suggests structural model decay, not just noise — further parameter tuning may mask rather than fix the root cause.
+- SPRT at 50% enter rate and avg confidence 0.16 in last 50 trades indicates the entry gate is still filtering aggressively; trade frequency may be too low to generate reliable live feedback on any changes adopted this cycle.
+
+**Reasoning:** With 15+ parameter families exhausted and the sole adoption producing -0.167 live delta, the priority is minimal intervention — only two untested directions (kelly_fraction ↓ and prev_margin_weight ↓) have any rationale grounded in live data (Q4 overbetting and noisy L5 signal in neutral-dominant regime). The exit_edge_threshold manual observation at n=1058 and 37% accuracy in the <-0.10 bucket remains the highest-confidence actionable lever across multiple cycles and is reproduced again here for operator action. Empty changes remains defensible, but the adoption floor of 0.0097 this cycle is low enough that these two untested directions warrant a single backtest each.

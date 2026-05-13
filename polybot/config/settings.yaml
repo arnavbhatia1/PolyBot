@@ -39,7 +39,7 @@ signal:
   min_kelly: 0.01            # Kelly fraction must be at least x% (filters near-worthless bets)
 
   # --- Exit / loss-cut ---
-  exit_edge_threshold: -0.10  # Scalp when holding_edge drops below -10%. More negative = hold longer.
+  exit_edge_threshold: -0.05  # Scalp when holding_edge drops below -5%. Pipeline 2026-05-13: <-0.10 bucket 37% acc on n=1058, -0.02..-0.05 bucket 56% acc.
   loss_cut_fraction: 0.65     # Force exit if market < entry × 65% with < loss_cut_time_s remaining.
   loss_cut_time_s: 90.0      # Last X seconds: if position is deeply underwater, cut it.
 

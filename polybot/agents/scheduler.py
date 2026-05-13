@@ -1424,7 +1424,31 @@ class AgentScheduler:
         ghost_rolled = self.ghost_tracker.rollup_old_ghosts() if self.ghost_tracker else 0
         cf_rolled = self.counterfactual_tracker.rollup_old_counterfactuals() if self.counterfactual_tracker else 0
 
-        all_outcomes = self._load_combined_outcomes()
+        _raw_outcomes = self._load_combined_outcomes()
+        # Bound the active dataset to the last PIPELINE_WINDOW_DAYS. Trades older
+        # than this came from a probability machine that has since drifted —
+        # different weights, different layer composition, different Platt — so
+        # they inject bias into both weight-candidate evaluation and the
+        # baseline Sharpe. Walk-forward (train=older 60% / val=newer 40%) is
+        # preserved INSIDE this window so the lookahead-free property is intact.
+        PIPELINE_WINDOW_DAYS = 60
+        _cutoff_ts = datetime.now(timezone.utc).timestamp() - PIPELINE_WINDOW_DAYS * 86400.0
+        def _otime(o: dict) -> float:
+            s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
+            try:
+                return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                return 0.0
+        _windowed = [o for o in _raw_outcomes if _otime(o) >= _cutoff_ts]
+        # Fall back to the full history if the window is too thin for a useful
+        # walk-forward (need ≥500 to give the 4-fold expanding test power).
+        if len(_windowed) >= 500:
+            all_outcomes = _windowed
+            _window_note = f"  |  bounded to last {PIPELINE_WINDOW_DAYS}d (was {len(_raw_outcomes):,})"
+        else:
+            all_outcomes = _raw_outcomes
+            _window_note = (f"  |  window {PIPELINE_WINDOW_DAYS}d had only "
+                            f"{len(_windowed)} trades — using full history {len(_raw_outcomes):,}")
         n_ghosts = sum(1 for o in all_outcomes if o.get("is_ghost"))
         split_idx = max(1, int(len(all_outcomes) * 0.6))
         train_outcomes = all_outcomes[:split_idx]
@@ -1433,6 +1457,7 @@ class AgentScheduler:
         logger.info(
             f"  [1/4] Data loaded  |  {len(all_outcomes):,} trades "
             f"({len(train_outcomes):,} train / {len(validation_outcomes):,} val)"
+            + _window_note
             + (f"  |  rolled up: {rolled} outcomes, {cf_rolled} scalps, {ghost_rolled} ghosts"
                if rolled or cf_rolled or ghost_rolled else "")
         )
@@ -1541,10 +1566,44 @@ class AgentScheduler:
         # just leaves the old Platt on disk — coherent with the old weights —
         # and the next pipeline re-fits cleanly.
         _pending_cal_save: PlattCalibrator | None = None
-        if len(train_outcomes) >= 200 and self.signal_engine:
+        # Platt-specific window: last 14 days only. The walk-forward 60/40 split
+        # used by the weight optimizer is the wrong basis for calibration — it
+        # forces Platt to fit on the OLDEST 60% of trades, which were generated
+        # by older versions of the probability machine (different weights,
+        # different atr_sigma, etc.). Calibrating today's model against last
+        # month's outputs averages incompatible curves. We override
+        # train_outcomes/validation_outcomes locally to a 14-day pool, 60/40
+        # split inside that window. If the recent window can't muster 200
+        # trades for the fit, fall back to the global walk-forward split.
+        _PLATT_WINDOW_DAYS = 14
+        _platt_cutoff = datetime.now(timezone.utc).timestamp() - _PLATT_WINDOW_DAYS * 86400.0
+        def _ts(o: dict) -> float:
+            s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
+            try:
+                return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                return 0.0
+        _platt_pool = [o for o in all_outcomes if _ts(o) >= _platt_cutoff]
+        if len(_platt_pool) >= 250:
+            _split = max(1, int(len(_platt_pool) * 0.6))
+            platt_train = _platt_pool[:_split]
+            platt_val = _platt_pool[_split:]
+            logger.info(
+                f"  Platt window: last {_PLATT_WINDOW_DAYS}d "
+                f"({len(platt_train)} train / {len(platt_val)} val)"
+            )
+        else:
+            platt_train = train_outcomes
+            platt_val = validation_outcomes
+            logger.info(
+                f"  Platt window: insufficient {_PLATT_WINDOW_DAYS}d sample "
+                f"({len(_platt_pool)}) — falling back to walk-forward split"
+            )
+
+        if len(platt_train) >= 200 and self.signal_engine:
             cal_probs = []
             cal_outcomes = []
-            for o in train_outcomes:
+            for o in platt_train:
                 ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
                 mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
                 if mp > 0:
@@ -1559,7 +1618,7 @@ class AgentScheduler:
                 # Recency weights for Platt fitting — recent outcomes carry more signal
                 platt_now_ts = datetime.now(timezone.utc).timestamp()
                 cal_weights = []
-                for o in train_outcomes:
+                for o in platt_train:
                     ctx2 = o.get("indicator_snapshot", {}).get("trade_context", {})
                     if ctx2.get("model_probability_raw", ctx2.get("model_probability", 0)) <= 0:
                         continue
@@ -1572,7 +1631,7 @@ class AgentScheduler:
                     cal_weights.append(w2)
                 if cal.fit(cal_probs, cal_outcomes, sample_weights=cal_weights):
                     val_probs, val_outs = [], []
-                    for o in validation_outcomes:
+                    for o in platt_val:
                         ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
                         mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
                         if mp > 0:
@@ -1592,7 +1651,7 @@ class AgentScheduler:
                     min_kelly = getattr(self.signal_engine, 'min_kelly', _d("min_kelly"))
                     min_prob = getattr(self.signal_engine, 'min_model_probability', _d("min_model_probability"))
                     helper_kwargs = dict(
-                        outcomes=validation_outcomes,
+                        outcomes=platt_val,
                         recommended_weights=cfg["weights"],
                         momentum_weight=cfg["momentum_weight"],
                         atr_sigma_ratio=cfg["atr_sigma_ratio"],
