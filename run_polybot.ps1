@@ -1,10 +1,5 @@
 # PolyBot Auto-Restart Wrapper
-# Runs the bot with --auto-restart. After the daily pipeline (11:50 PM ET),
-# the bot exits cleanly. This script commits updated config/weights to git,
-# pushes to remote, and restarts the bot at 12:01 AM ET.
-#
-# Usage: powershell -ExecutionPolicy Bypass -File run_polybot.ps1
-# Or:    .\run_polybot.ps1
+# Usage: .\run_polybot.ps1
 
 $ErrorActionPreference = "Continue"
 Set-Location $PSScriptRoot
