@@ -245,8 +245,8 @@ class CounterfactualTracker:
             # wrong training data. The 10-min expiry window above gives Chainlink
             # enough time to post (typically 2-5 min after round close).
             meta = event_metadata.get(market_id)
-            if not meta:
-                continue  # keep waiting — Chainlink not posted yet
+            if not meta or meta.get("final_price") is None:
+                continue  # keep waiting — Chainlink final_price not posted yet
 
             chainlink_ptb = meta["price_to_beat"]
             chainlink_fp = meta["final_price"]
