@@ -933,6 +933,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
                             last_eval_log_window: int,
                             chainlink_feed: Any = None,
                             coinbase_feed: Any = None,
+                            contract: Any = None,
                             **kwargs) -> tuple[float | None, float | None, dict[int, float], int, str]:
     """Derive strike and BTC price, preferring Chainlink (resolution source) over Binance."""
     now_ts = int(time.time())
@@ -943,13 +944,20 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
         contract_window_ts = int(now_ts // 300) * 300  # fallback
 
     if contract_window_ts not in window_strikes:
-        # Prefer Chainlink boundary price (matches Polymarket's priceToBeat)
-        if chainlink_feed:
+        # Priority 1: Polymarket's own priceToBeat from Gamma API — exact same value
+        # used for resolution, no boundary-capture timing risk.
+        ptb = (contract or {}).get("event_metadata") or {}
+        ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
+        if ptb:
+            window_strikes[contract_window_ts] = ptb
+            logger.info(f"NEW WINDOW {_slug_to_window(cid)} | strike ${ptb:,.2f} (Polymarket)")
+
+        # Priority 2: Chainlink boundary capture (fallback when Gamma hasn't sent priceToBeat yet)
+        elif chainlink_feed:
             cl_strike = chainlink_feed.get_strike(contract_window_ts)
             if cl_strike:
                 window_strikes[contract_window_ts] = cl_strike
                 logger.info(f"NEW WINDOW {_slug_to_window(cid)} | strike ${cl_strike:,.2f} (Chainlink)")
-                logger.debug(f"STRIKE: using Chainlink ${cl_strike:,.2f} for window {contract_window_ts}")
 
         # Fall back to Binance candle if Chainlink didn't capture it
         if contract_window_ts not in window_strikes:
@@ -1467,7 +1475,7 @@ async def _resolve_expired_position(
     if live.get("closed") and (live["price_up"] >= 0.99 or live["price_up"] <= 0.01):
         # Polymarket has resolved: use the actual outcome prices
         exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
-    elif live.get("event_metadata"):
+    elif live.get("event_metadata") and live["event_metadata"].get("final_price") is not None:
         # Gamma has Chainlink oracle prices but outcome prices not yet clear
         meta = live["event_metadata"]
         up_won = meta["final_price"] >= meta["price_to_beat"]
@@ -1546,7 +1554,7 @@ async def _manage_orphaned_position(
         return True, day_wins, day_losses, day_fees, None  # too young, skip
     # Try direct Gamma fetch for eventMetadata (Chainlink oracle)
     direct = await _get_contract_prices(market_scanner, pos["market_id"], http_client)
-    if direct and direct.get("event_metadata"):
+    if direct and direct.get("event_metadata") and direct["event_metadata"].get("final_price") is not None:
         meta = direct["event_metadata"]
         up_won = meta["final_price"] >= meta["price_to_beat"]
         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
@@ -1917,7 +1925,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 _compute_strike_and_btc(cid, binance_feed, window_strikes,
                                         eval_window, last_eval_log_window,
                                         chainlink_feed=chainlink_feed,
-                                        coinbase_feed=coinbase_feed)
+                                        coinbase_feed=coinbase_feed,
+                                        contract=contract)
             if strike is None:
                 continue
 

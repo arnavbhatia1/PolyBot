@@ -115,16 +115,18 @@ class BTCMarketScanner:
         condition_id = market.get("conditionId", "")
         neg_risk = market.get("negRisk", False)
 
-        # Extract Chainlink oracle prices (populated after resolution)
+        # Extract Chainlink oracle prices.
+        # price_to_beat is set at window open and available during active windows.
+        # final_price is only available after resolution.
         raw_meta = event.get("eventMetadata")
         event_metadata = None
         if raw_meta and isinstance(raw_meta, dict):
             ptb = raw_meta.get("priceToBeat")
             fp = raw_meta.get("finalPrice")
-            if ptb is not None and fp is not None:
+            if ptb is not None:
                 event_metadata = {
                     "price_to_beat": float(ptb),
-                    "final_price": float(fp),
+                    "final_price": float(fp) if fp is not None else None,
                 }
 
         return {
