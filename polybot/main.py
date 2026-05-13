@@ -150,7 +150,7 @@ _last_eval_buy_window: int = 0  # show full BUY block only once per window
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count since last reset
 _GATE_STATS_PATH = Path("polybot/memory/gate_stats.json")
 _pending_eval_ctx: dict[str, dict] = {}
-_last_gate_skip_state: dict[str, tuple] = {}
+_last_gate_skip_state: dict[str, tuple] = {}   # cid -> (direction, gate_key, logged_at)
 _last_skip_log: dict[tuple[str, str], int] = {}
 
 
@@ -177,8 +177,7 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
     prev = _last_gate_skip_state.get(cid)  # (direction, gate_key, logged_at)
     if prev:
         prev_dir, prev_gate, prev_time = prev
-        same_block = (ctx["direction"] == prev_dir and gate_key == prev_gate)
-        if same_block and (now - prev_time) < 30:
+        if ctx["direction"] == prev_dir and (now - prev_time) < 30:
             return
     _last_gate_skip_state[cid] = (ctx["direction"], gate_key, now)
     logger.info(
@@ -529,30 +528,31 @@ async def _evaluate_signal_and_enter(
         late_max_penalty=timing_cfg.get("late_max_penalty", _d("late_max_penalty")),
     )
 
-    # For BUY signals: store context for _emit_gate_skip — whichever gate fires first
-    # will emit the combined "SKIP Dir  window  |  prob  edge  BTC  |  reason" line.
+    # Populate eval context for all evaluations — BUY uses actual direction,
+    # model-level SKIP infers it from signal.prob 
     global _last_logged_action, _last_eval_buy_window
-    _direction = "Up" if signal.action == "BUY_YES" else ("Down" if signal.action == "BUY_NO" else "SKIP")
+    _is_buy = signal.action in ("BUY_YES", "BUY_NO")
+    _direction = "Up" if signal.action == "BUY_YES" else ("Down" if signal.action == "BUY_NO"
+                 else ("Up" if signal.prob >= 0.5 else "Down"))
     action_changed = _direction != _last_logged_action or eval_window != last_eval_log_window
-    if signal.action in ("BUY_YES", "BUY_NO"):
+    dist = btc_price - strike
+    _pending_eval_ctx[cid] = {
+        "direction": _direction,
+        "prob": signal.prob,
+        "edge": signal.edge,
+        "dist": dist,
+        "window_slug": _slug_to_window(cid),
+    }
+    if _is_buy:
         if action_changed:
             last_eval_log_window = eval_window
             _last_logged_action = _direction
             _last_eval_buy_window = eval_window
             _last_gate_skip_state.pop(cid, None)
-        dist = btc_price - strike
-        _pending_eval_ctx[cid] = {
-            "direction": _direction,
-            "prob": signal.prob,
-            "edge": signal.edge,
-            "dist": dist,
-            "window_slug": _slug_to_window(cid),
-        }
-    elif action_changed:
+    else:
         last_eval_log_window = eval_window
-        _pending_eval_ctx.pop(cid, None)
-        _log_skip_once(cid, f"modelskip_{signal.reason[:30]}",
-                       f"{_C.DIM}SKIP {_slug_to_window(cid):<14} | {signal.reason}{_C.RESET}")
+        _reason_type = signal.reason.split(":")[0].strip()
+        _emit_gate_skip(cid, f"model_{_reason_type}", signal.reason)
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         _record_skip(f"model:{signal.reason[:30]}")
