@@ -407,12 +407,25 @@ class SignalEngine:
 
         # Loss-cut fires independently of holding_edge: deep-underwater near
         # expiry, where the position has no realistic recovery.
+        # Whip-saw guard: only fire if BTC is genuinely on the wrong side of
+        # strike by ≥0.5×ATR. Near-strike, the contract price can flash 5¢→70¢
+        # on thin-book prints; selling into that noise locks losses on positions
+        # that would have resolved correctly.
+        atr_for_cut = indicators.get("atr", {}).get("atr", 0) or 0
+        btc_dist = abs(btc_price - strike_price)
+        wrong_side = (
+            (side == "Up" and btc_price < strike_price)
+            or (side == "Down" and btc_price > strike_price)
+        )
+        whip_saw_safe = wrong_side and (atr_for_cut <= 0 or btc_dist > 0.5 * atr_for_cut)
         if (entry_price > 0
                 and market_price_for_side < entry_price * self.loss_cut_fraction
-                and seconds_remaining < self.loss_cut_time_s):
+                and seconds_remaining < self.loss_cut_time_s
+                and whip_saw_safe):
             return ("EXIT", model_prob, holding_edge,
                     f"cutting loss — market dropped to {market_price_for_side:.2f} "
-                    f"(entered at {entry_price:.2f}) with only {seconds_remaining:.0f}s left")
+                    f"(entered at {entry_price:.2f}) with only {seconds_remaining:.0f}s left, "
+                    f"BTC {btc_dist:.0f} from strike (>0.5×ATR={0.5*atr_for_cut:.0f})")
 
         # Past _DEEP_LOSS_HOLD_THRESHOLD the binary residual is +EV vs locking in
         # the loss. Only applies when the exit would actually be at a loss vs entry.

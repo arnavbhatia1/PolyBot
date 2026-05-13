@@ -39,7 +39,7 @@ signal:
   min_kelly: 0.01            # Kelly fraction must be at least x% (filters near-worthless bets)
 
   # --- Exit / loss-cut ---
-  exit_edge_threshold: -0.05  # Scalp when holding_edge drops below -5%. Pipeline 2026-05-13: <-0.10 bucket 37% acc on n=1058, -0.02..-0.05 bucket 56% acc.
+  exit_edge_threshold: -0.05  # Scalp when holding_edge drops below x%.
   loss_cut_fraction: 0.65     # Force exit if market < entry × 65% with < loss_cut_time_s remaining.
   loss_cut_time_s: 90.0      # Last X seconds: if position is deeply underwater, cut it.
 
@@ -47,7 +47,7 @@ signal:
   adverse_selection_threshold: 0.65  # Skip entry if 65%+ of recent fills reversed within 30s.
 
   # --- Volatility filter ---
-  min_atr: 12.0               # Skip entries when the market is too quiet (ATR below 5th percentile of history).
+  min_atr: 12.0               # Skip entries when the market is too quiet.
 
   # --- Late window ---
   late_window_min_prob: 0.4   # In last 2 mins: model must be at least x% to enter (filters deep underdogs).
@@ -58,7 +58,7 @@ signal:
   atr_sigma_ratio: 1.3        # L1: lower = sharper/more confident probabilities from BTC distance
   student_t_df: 5             # L1: tail fatness (5 = BTC-appropriate fat tails, don't change)
   logit_scale: 4.0            # Amplifier on all signal layers (L2-L5). Higher = signals matter more.
-  momentum_weight: -0.04      # L4: negative = fade indicators (contrarian). 60d data: RSI/Stoch/VWAP avg <50% acc → fade harder.
+  momentum_weight: -0.04      # L4: negative = fade indicators.
   regime_weight: 0.03         # L2: how much trending/reverting autocorrelation affects the bet.
   flow_weight: 0.04           # L3: CLOB order book imbalance signal strength.
   spot_flow_weight: 0.1       # L3b: Binance CVD (buy/sell pressure) signal strength.
