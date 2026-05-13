@@ -180,10 +180,11 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
         if ctx["direction"] == prev_dir and (now - prev_time) < 30:
             return
     _last_gate_skip_state[cid] = (ctx["direction"], gate_key, now)
+    _sprt_part = f"  |  {ctx['sprt']}" if ctx.get("sprt") and not gate_key.startswith("sprt") else ""
     logger.info(
         f"{_C.DIM}SKIP {ctx['direction']:<4}  {ctx['window_slug']}  |  "
         f"prob {ctx['prob']:.0%}  edge {ctx['edge']:+.1%}  BTC {ctx['dist']:+,.0f}  |  "
-        f"{reason}{_C.RESET}"
+        f"{reason}{_sprt_part}{_C.RESET}"
     )
 
 # Startup banner — emitted once after all systems are ready, inside trading_loop
@@ -536,12 +537,17 @@ async def _evaluate_signal_and_enter(
                  else ("Up" if signal.prob >= 0.5 else "Down"))
     action_changed = _direction != _last_logged_action or eval_window != last_eval_log_window
     dist = btc_price - strike
+    _sprt_info = ""
+    if _sprt:
+        _s, _c, _f = _sprt.get_status(), _sprt.get_confidence(), _sprt.favored_side()
+        _sprt_info = f"SPRT {_s} {_c:.0%}" + (f" ({_f})" if _f else "")
     _pending_eval_ctx[cid] = {
         "direction": _direction,
         "prob": signal.prob,
         "edge": signal.edge,
         "dist": dist,
         "window_slug": _slug_to_window(cid),
+        "sprt": _sprt_info,
     }
     if _is_buy:
         if action_changed:
@@ -626,7 +632,7 @@ async def _evaluate_signal_and_enter(
         # Side mismatch: only veto when SPRT has built strong opposite evidence (60%+, 6+ obs)
         if sprt_obs >= 6 and _sprt.get_confidence() > 0.60 and _sprt.favored_side() != side:
             _record_skip("sprt_side_mismatch")
-            _emit_gate_skip(cid, f"sprt_{side}", f"SPRT favors {_sprt.favored_side()} ({_sprt.get_confidence():.0%})")
+            _emit_gate_skip(cid, f"sprt_{side}", f"SPRT {_sprt.get_confidence():.0%} and favors ({_sprt.favored_side()})")
             return None, last_eval_log_window
 
     # --- LAYER DISAGREEMENT GATE ---
