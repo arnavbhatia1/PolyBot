@@ -455,3 +455,21 @@
 - None
 
 **Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
+
+## 2026-05-13T03:30:53.264355+00:00
+
+**Source:** Local
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.1 -> -0.07 [medium]
+    Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
+
+**Findings:**
+- Recent 100 trades improving: WR 65% vs overall 54%
+
+**Warnings:**
+- None
+
+**Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
