@@ -164,16 +164,23 @@ def _log_skip_once(cid: str, key: str, msg: str) -> None:
 
 
 def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
-    """Emit one combined SKIP line (signal context + gate reason)."""
+    """Emit one combined SKIP line (signal context + gate reason).
+
+    Logs immediately when direction or blocking gate changes; otherwise throttles
+    to once per 30s so edge micro-fluctuations don't spam the terminal.
+    """
     ctx = _pending_eval_ctx.get(cid)
     if not ctx:
         logger.info(f"{_C.DIM}SKIP — {reason}{_C.RESET}")
         return
-    edge_bucket = round(ctx["edge"] / 0.02) * 0.02
-    state = (ctx["direction"], gate_key, edge_bucket)
-    if _last_gate_skip_state.get(cid) == state:
-        return
-    _last_gate_skip_state[cid] = state
+    now = time.time()
+    prev = _last_gate_skip_state.get(cid)  # (direction, gate_key, logged_at)
+    if prev:
+        prev_dir, prev_gate, prev_time = prev
+        same_block = (ctx["direction"] == prev_dir and gate_key == prev_gate)
+        if same_block and (now - prev_time) < 30:
+            return
+    _last_gate_skip_state[cid] = (ctx["direction"], gate_key, now)
     logger.info(
         f"{_C.DIM}SKIP {ctx['direction']:<4}  {ctx['window_slug']}  |  "
         f"prob {ctx['prob']:.0%}  edge {ctx['edge']:+.1%}  BTC {ctx['dist']:+,.0f}  |  "
@@ -1358,7 +1365,7 @@ async def _evaluate_and_exit_position(
         logger.info(
             f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {live['seconds_remaining']:.0f}s  |  "
             f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
-            f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}  |  {reason}"
+            f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}"
         )
 
         # Apply slippage to sell price (worse fill for seller).
