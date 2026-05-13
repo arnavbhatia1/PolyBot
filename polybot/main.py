@@ -207,7 +207,7 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
     _sprt_part = f" | {ctx['sprt']}" if ctx.get("sprt") and not gate_key.startswith("sprt") else ""
     logger.info(
         f"{_C.DIM}SKIP {ctx['direction']}  {ctx['window_slug']} | "
-        f"prob {ctx['prob']:.0%} edge {ctx['edge']:+.1%} BTC {ctx['dist']:+,.0f} | "
+        f"prob {ctx['prob']:.0%} BTC {ctx['dist']:+,.0f} | "
         f"{reason}{_sprt_part}{_C.RESET}"
     )
 
