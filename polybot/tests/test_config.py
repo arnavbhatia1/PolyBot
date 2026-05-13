@@ -1,5 +1,4 @@
 import copy
-import os
 import pytest
 from polybot.config.loader import load_config, get_config, get_secret, validate_config
 
@@ -33,7 +32,6 @@ def test_get_secret_returns_env_var(sample_config):
 def test_get_secret_raises_on_missing():
     with pytest.raises(ValueError, match="Missing required secret"):
         get_secret("NONEXISTENT_SECRET_KEY_XYZ")
-
 
 # ---------------------------------------------------------------------------
 # Helper: deep-copy the conftest SAMPLE_CONFIG for mutation in tests
@@ -79,7 +77,7 @@ class TestValidateConfigPasses:
         _set_nested(cfg, "signal.min_edge", 0.02)
         _set_nested(cfg, "signal.min_kelly", 0.005)
         _set_nested(cfg, "signal.atr_sigma_ratio", 1.2)
-        _set_nested(cfg, "signal.exit_edge_threshold", -0.25)
+        _set_nested(cfg, "signal.exit_edge_threshold", -0.10)
         _set_nested(cfg, "signal.min_model_probability", 0.52)
         _set_nested(cfg, "signal.momentum_weight", 0.02)
         _set_nested(cfg, "signal.regime_weight", 0.02)
@@ -104,7 +102,7 @@ class TestValidateConfigPasses:
         _set_nested(cfg, "signal.min_edge", 0.10)
         _set_nested(cfg, "signal.min_kelly", 0.04)
         _set_nested(cfg, "signal.atr_sigma_ratio", 2.5)
-        _set_nested(cfg, "signal.exit_edge_threshold", 0.0)
+        _set_nested(cfg, "signal.exit_edge_threshold", -0.03)
         _set_nested(cfg, "signal.min_model_probability", 0.70)
         _set_nested(cfg, "signal.momentum_weight", 0.10)
         _set_nested(cfg, "signal.regime_weight", 0.10)

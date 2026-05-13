@@ -87,12 +87,12 @@ def test_validate_no_changes_with_few_trades():
 
 def test_validate_drops_manual_only_params():
     data = {"changes": [
-        {"param": "exit_edge_threshold", "value": -0.03, "reason": "ignored"},
+        {"param": "loss_cut_fraction", "value": 0.70, "reason": "ignored"},
         {"param": "atr_sigma_ratio", "value": 1.6, "reason": "kept"},
     ]}
     result = _validate_strategy_response(data, total_trades=100)
     params = {c["param"] for c in result["changes"]}
-    assert "exit_edge_threshold" not in params
+    assert "loss_cut_fraction" not in params
     assert "atr_sigma_ratio" in params
 
 def test_format_strategy_context_includes_sections():
