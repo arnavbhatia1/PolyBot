@@ -49,20 +49,19 @@ class ChainlinkFeed:
         return self._boundary_prices.get(window_ts)
 
     def _check_boundary(self) -> None:
-        """Capture the first Chainlink price after each 5-min boundary as the window's strike."""
+        """Keep the upcoming window's strike current with the latest Chainlink price."""
         if self._price <= 0:
             return
         now_ts = int(time.time())
         boundary_ts = (now_ts // 300) * 300
+        next_boundary_ts = boundary_ts + 300
+        self._boundary_prices[next_boundary_ts] = self._price
+
         if boundary_ts != self._last_boundary_ts:
-            self._boundary_prices[boundary_ts] = self._price
             self._last_boundary_ts = boundary_ts
-            lag = now_ts - boundary_ts
             logger.debug(
-                f"ChainlinkFeed: captured strike ${self._price:,.2f} "
-                f"at boundary {boundary_ts} (lag {lag}s)"
+                f"ChainlinkFeed: boundary crossed, next strike ${self._boundary_prices.get(next_boundary_ts, 0):,.2f}"
             )
-            # Clean old boundaries (keep last 10 minutes)
             cutoff = now_ts - 600
             self._boundary_prices = {
                 k: v for k, v in self._boundary_prices.items() if k > cutoff

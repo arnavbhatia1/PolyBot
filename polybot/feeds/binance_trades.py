@@ -161,6 +161,18 @@ class BinanceTradeAccumulator:
         """Total trades currently in the buffer."""
         return len(self._trades)
 
+    @property
+    def latest_price(self) -> float:
+        """Price of the most recent aggregated trade (0.0 if no trades)."""
+        return self._trades[-1].price if self._trades else 0.0
+
+    @property
+    def latest_age_s(self) -> float:
+        """Age of the most recent trade in seconds (inf if no trades)."""
+        if not self._trades:
+            return float("inf")
+        return time.time() - self._trades[-1].ts
+
 
 class BinanceTradesFeed:
     """WebSocket consumer for Binance.US aggTrade stream.

@@ -163,6 +163,30 @@ def _log_skip_once(cid: str, key: str, msg: str) -> None:
         logger.info(msg)
 
 
+def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) -> tuple[float, str]:
+    """Return the freshest available BTC price + its source label.
+
+    Priority order:
+      1. Coinbase WS (<2s) — direct exchange feed, sub-second tick stream
+      2. Binance aggTrade (<3s) — per-trade WS stream, also sub-second
+      3. Binance 1-min candle close — coarse fallback, may be up to 60s old
+    """
+    if coinbase_feed:
+        cb_age = coinbase_feed.state.age_seconds
+        cb_price = coinbase_feed.state.price
+        if cb_price > 0 and cb_age < 2:
+            return cb_price, f"coinbase ({cb_age:.2f}s)"
+    if trades_feed and trades_feed.accumulator:
+        bt_age = trades_feed.accumulator.latest_age_s
+        bt_price = trades_feed.accumulator.latest_price
+        if bt_price > 0 and bt_age < 3:
+            return bt_price, f"binance_trades ({bt_age:.2f}s)"
+    latest_candle = binance_feed.buffer.latest() if binance_feed and binance_feed.buffer else None
+    if latest_candle:
+        return latest_candle.close, "binance_candle"
+    return 0.0, "none"
+
+
 def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
     """Emit one combined SKIP line (signal context + gate reason).
 
@@ -943,17 +967,21 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     except (ValueError, IndexError):
         contract_window_ts = int(now_ts // 300) * 300  # fallback
 
-    if contract_window_ts not in window_strikes:
-        # Priority 1: Polymarket's own priceToBeat from Gamma API — exact same value
-        # used for resolution, no boundary-capture timing risk.
-        ptb = (contract or {}).get("event_metadata") or {}
-        ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
-        if ptb:
-            window_strikes[contract_window_ts] = ptb
+    # Always prefer Gamma's priceToBeat — it's the authoritative resolution value.
+    # Override any cached strike if Gamma now has it (it may not be available at
+    # window open but appears mid-window as Gamma catches up).
+    ptb = (contract or {}).get("event_metadata") or {}
+    ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
+    if ptb and window_strikes.get(contract_window_ts) != ptb:
+        if contract_window_ts in window_strikes:
+            logger.info(f"STRIKE UPDATE {_slug_to_window(cid)} | ${window_strikes[contract_window_ts]:,.2f} → ${ptb:,.2f} (Polymarket priceToBeat)")
+        else:
             logger.info(f"NEW WINDOW {_slug_to_window(cid)} | strike ${ptb:,.2f} (Polymarket)")
+        window_strikes[contract_window_ts] = ptb
 
-        # Priority 2: Chainlink boundary capture (fallback when Gamma hasn't sent priceToBeat yet)
-        elif chainlink_feed:
+    if contract_window_ts not in window_strikes:
+        # Chainlink boundary capture (fallback when Gamma hasn't sent priceToBeat yet)
+        if chainlink_feed:
             cl_strike = chainlink_feed.get_strike(contract_window_ts)
             if cl_strike:
                 window_strikes[contract_window_ts] = cl_strike
@@ -986,14 +1014,9 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             logger.info(f"EVAL: no strike for window {contract_window_ts} — candle buffer has {buf_len} candles")
         return None, None, window_strikes, last_eval_log_window, "none"
 
-    # BTC price priority: Coinbase (fastest) > Binance (fallback)
-    _price_source = "none"
-    if coinbase_feed and coinbase_feed.state.price > 0 and coinbase_feed.state.age_seconds < 5:
-        btc_price = coinbase_feed.state.price
-        _price_source = f"coinbase ({coinbase_feed.state.age_seconds:.1f}s)"
-    else:
-        btc_price = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
-        _price_source = f"binance (fallback)"
+    # BTC price priority: Coinbase WS > Binance aggTrade > Binance 1-min candle
+    trades_feed = kwargs.get("trades_feed")
+    btc_price, _price_source = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed)
     if btc_price <= 0:
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
@@ -1222,11 +1245,8 @@ async def _evaluate_and_exit_position(
     """Re-evaluate an active position and exit (scalp) if holding edge is gone."""
     if pos["id"] in _abandoned_scalp_positions:
         return day_wins, day_losses, day_fees, None
-    # BTC price priority: Coinbase > Binance
-    if coinbase_feed and coinbase_feed.state.price > 0 and coinbase_feed.state.age_seconds < 5:
-        btc_now = coinbase_feed.state.price
-    else:
-        btc_now = binance_feed.buffer.latest().close if binance_feed.buffer.latest() else 0
+    # BTC price priority: Coinbase WS > Binance aggTrade > Binance 1-min candle
+    btc_now, _ = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed)
     if btc_now <= 0:
         return day_wins, day_losses, day_fees, None
 
@@ -1926,6 +1946,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                                         eval_window, last_eval_log_window,
                                         chainlink_feed=chainlink_feed,
                                         coinbase_feed=coinbase_feed,
+                                        trades_feed=trades_feed,
                                         contract=contract)
             if strike is None:
                 continue
