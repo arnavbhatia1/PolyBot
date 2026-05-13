@@ -149,14 +149,36 @@ _last_logged_action: str = ""  # suppress repeated EVAL blocks when action hasn'
 _last_eval_buy_window: int = 0  # show full BUY block only once per window
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count since last reset
 _GATE_STATS_PATH = Path("polybot/memory/gate_stats.json")
-_last_skip_log: dict[str, str] = {}  # cid -> last logged skip reason (suppresses repeat skips per window)
+_pending_eval_ctx: dict[str, dict] = {}
+_last_gate_skip_state: dict[str, tuple] = {}
+_last_skip_log: dict[tuple[str, str], int] = {}
 
 
 def _log_skip_once(cid: str, key: str, msg: str) -> None:
-    """Log a skip message only if the reason changed since last log for this contract."""
-    if _last_skip_log.get(cid) != key:
-        _last_skip_log[cid] = key
+    """Log a pre-signal skip at most once per 5-min window per (cid, reason)."""
+    window = int(time.time() // 300) * 300
+    k = (cid, key)
+    if _last_skip_log.get(k) != window:
+        _last_skip_log[k] = window
         logger.info(msg)
+
+
+def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
+    """Emit one combined SKIP line (signal context + gate reason)."""
+    ctx = _pending_eval_ctx.get(cid)
+    if not ctx:
+        logger.info(f"{_C.DIM}SKIP — {reason}{_C.RESET}")
+        return
+    edge_bucket = round(ctx["edge"] / 0.02) * 0.02
+    state = (ctx["direction"], gate_key, edge_bucket)
+    if _last_gate_skip_state.get(cid) == state:
+        return
+    _last_gate_skip_state[cid] = state
+    logger.info(
+        f"{_C.DIM}SKIP {ctx['direction']:<4}  {ctx['window_slug']}  |  "
+        f"prob {ctx['prob']:.0%}  edge {ctx['edge']:+.1%}  BTC {ctx['dist']:+,.0f}  |  "
+        f"{reason}{_C.RESET}"
+    )
 
 # Startup banner — emitted once after all systems are ready, inside trading_loop
 _startup_banner_logged: bool = False
@@ -500,28 +522,30 @@ async def _evaluate_signal_and_enter(
         late_max_penalty=timing_cfg.get("late_max_penalty", _d("late_max_penalty")),
     )
 
-    # BUY block: once per window. SKIP: one-liner only when action changes.
+    # For BUY signals: store context for _emit_gate_skip — whichever gate fires first
+    # will emit the combined "SKIP Dir  window  |  prob  edge  BTC  |  reason" line.
     global _last_logged_action, _last_eval_buy_window
     _direction = "Up" if signal.action == "BUY_YES" else ("Down" if signal.action == "BUY_NO" else "SKIP")
     action_changed = _direction != _last_logged_action or eval_window != last_eval_log_window
-    if action_changed:
+    if signal.action in ("BUY_YES", "BUY_NO"):
+        if action_changed:
+            last_eval_log_window = eval_window
+            _last_logged_action = _direction
+            _last_eval_buy_window = eval_window
+            _last_gate_skip_state.pop(cid, None)
+        dist = btc_price - strike
+        _pending_eval_ctx[cid] = {
+            "direction": _direction,
+            "prob": signal.prob,
+            "edge": signal.edge,
+            "dist": dist,
+            "window_slug": _slug_to_window(cid),
+        }
+    elif action_changed:
         last_eval_log_window = eval_window
-        _last_logged_action = _direction
-        if signal.action in ("BUY_YES", "BUY_NO"):
-            if eval_window != _last_eval_buy_window:
-                _last_eval_buy_window = eval_window
-            dist = btc_price - strike
-            sprt_status = _sprt.get_status() if _sprt else "N/A"
-            sprt_conf = _sprt.get_confidence() if _sprt else 0.0
-            logger.info(
-                f"{_C.CYAN}EVAL {_direction:<4}{_C.RESET}  {_slug_to_window(cid)}  |  "
-                f"prob {signal.prob:.0%}  edge {signal.edge:+.1%}  BTC {dist:+,.0f}  |  "
-                f"SPRT {sprt_status} {sprt_conf:.0%}")
-        else:
-            # Gate-level _log_skip_once calls below will log the specific reason — skip redundant model-level line
-            # unless it's a purely model-level block (no downstream gate will fire)
-            _log_skip_once(cid, f"modelskip_{signal.reason[:30]}",
-                           f"{_C.DIM}SKIP {_slug_to_window(cid):<14} | {signal.reason}{_C.RESET}")
+        _pending_eval_ctx.pop(cid, None)
+        _log_skip_once(cid, f"modelskip_{signal.reason[:30]}",
+                       f"{_C.DIM}SKIP {_slug_to_window(cid):<14} | {signal.reason}{_C.RESET}")
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         _record_skip(f"model:{signal.reason[:30]}")
@@ -590,13 +614,12 @@ async def _evaluate_signal_and_enter(
         if sprt_status == "SKIP":
             _record_skip("sprt_skip")
             _ghost("sprt_skip", signal, {})
-            _log_skip_once(cid, f"sprt_skip_{side}",
-                           f"SKIP: SPRT found signal too weak after {sprt_obs} obs")
+            _emit_gate_skip(cid, f"sprt_skip_{side}", f"SPRT: signal too weak ({sprt_obs} obs)")
             return None, last_eval_log_window
         # Side mismatch: only veto when SPRT has built strong opposite evidence (60%+, 6+ obs)
         if sprt_obs >= 6 and _sprt.get_confidence() > 0.60 and _sprt.favored_side() != side:
             _record_skip("sprt_side_mismatch")
-            _log_skip_once(cid, f"sprt_{side}", f"SKIP: SPRT favors {_sprt.favored_side()} ({_sprt.get_confidence():.0%} conf), opposes {side}")
+            _emit_gate_skip(cid, f"sprt_{side}", f"SPRT favors {_sprt.favored_side()} ({_sprt.get_confidence():.0%})")
             return None, last_eval_log_window
 
     # --- LAYER DISAGREEMENT GATE ---
@@ -610,7 +633,7 @@ async def _evaluate_signal_and_enter(
     if momentum_opposes and signal.edge * 0.5 < signal_engine.min_edge:
         _record_skip("layer_disagreement")
         _ghost("layer_disagreement", signal, {})
-        _log_skip_once(cid, f"layer_disagree_{side}", f"SKIP: layer disagreement — momentum={momentum_score:+.2f} opposes {side}, penalized edge {signal.edge * 0.5:+.1%} < min {signal_engine.min_edge:.0%}")
+        _emit_gate_skip(cid, f"layer_disagree_{side}", f"layer disagree — momentum {momentum_score:+.2f} opposes {side}")
         return None, last_eval_log_window
 
     # --- CVD DECELERATION GATE ---
@@ -621,8 +644,7 @@ async def _evaluate_signal_and_enter(
     if abs(spot_flow_signal) >= 0.20 and spot_flow_signal * cvd_accel_val < 0:
         _record_skip("cvd_decel")
         _ghost("cvd_decel", signal, {})
-        _log_skip_once(cid, f"cvd_decel_{side}",
-                       f"SKIP: spot_flow {spot_flow_signal:+.3f} fading (cvd_accel {cvd_accel_val:+.4f}) — spike already peaked")
+        _emit_gate_skip(cid, f"cvd_decel_{side}", f"CVD fading — spot_flow {spot_flow_signal:+.3f} accel {cvd_accel_val:+.4f}")
         return None, last_eval_log_window
 
     price = price_up if side == "Up" else price_down
@@ -646,7 +668,7 @@ async def _evaluate_signal_and_enter(
         )
         if regime_state.skip:
             _record_skip(f"regime:{regime_state.name}")
-            _log_skip_once(cid, f"regime_{regime_state.name}", f"SKIP: regime={regime_state.name} — no edge in this market state")
+            _emit_gate_skip(cid, f"regime_{regime_state.name}", f"regime={regime_state.name}")
             return None, last_eval_log_window
         # Regime: logged for pipeline, NOT applied to sizing (operates near noise at SE=0.14)
 
@@ -700,7 +722,7 @@ async def _evaluate_signal_and_enter(
             size = round(max_fill, 2)
             if size < 0.10:
                 _record_skip("thin_book_depth")
-                _log_skip_once(cid, "thin_book_depth", f"SKIP: size capped to ${size:.2f} by book depth ${side_depth:.0f} — too small")
+                _emit_gate_skip(cid, "thin_book_depth", f"thin book ${side_depth:.0f}")
                 return None, last_eval_log_window
 
     # Net-edge gate: reject if slippage eats the edge below threshold.
@@ -710,7 +732,7 @@ async def _evaluate_signal_and_enter(
     if net_edge < signal_engine.min_edge:
         _record_skip("net_edge_after_slippage")
         _ghost("net_edge_after_slippage", signal, {})
-        _log_skip_once(cid, "net_edge_slippage", f"SKIP: net edge {net_edge:+.1%} < min {signal_engine.min_edge:.0%} after {est_slip:.2%} slippage (gross {signal.edge:+.1%})")
+        _emit_gate_skip(cid, "net_edge_slippage", f"net edge {net_edge:+.1%} after {est_slip:.2%} slippage")
         return None, last_eval_log_window
 
     # Final minimum size check — after all caps have been applied. Polymarket's
@@ -719,7 +741,7 @@ async def _evaluate_signal_and_enter(
     # so backtest sample matches live execution.
     if size < 1.0:
         _record_skip("min_size")
-        _log_skip_once(cid, "min_size", f"SKIP: size ${size:.2f} < $1.00 (Polymarket min order)")
+        _emit_gate_skip(cid, "min_size", f"size ${size:.2f} < $1 min")
         return None, last_eval_log_window
 
     # Fetch fee rate and tick size in parallel. Fresh ask comes from the direct
@@ -797,10 +819,8 @@ async def _evaluate_signal_and_enter(
         if fresh_net_edge < signal_engine.min_edge or fresh_gross_edge > max_edge_live:
             _record_skip("pre_submit_edge_drift")
             _ghost("pre_submit_edge_drift", signal, snapshot)
-            _log_skip_once(cid, f"drift_{fresh_ask:.3f}",
-                           f"SKIP: pre-submit net edge {fresh_net_edge:+.1%} outside "
-                           f"[{signal_engine.min_edge:.0%}, {max_edge_live:.0%}] "
-                           f"(ask drifted {price:.3f} -> {fresh_ask:.3f}, slip={slip:.2%})")
+            _emit_gate_skip(cid, "pre_submit_drift",
+                            f"ask drifted {price:.3f}→{fresh_ask:.3f}, net edge {fresh_net_edge:+.1%}")
             return None, last_eval_log_window
 
     result = await trader.open_trade(
