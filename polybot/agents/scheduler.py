@@ -1425,12 +1425,9 @@ class AgentScheduler:
         cf_rolled = self.counterfactual_tracker.rollup_old_counterfactuals() if self.counterfactual_tracker else 0
 
         _raw_outcomes = self._load_combined_outcomes()
-        # Bound the active dataset to the last PIPELINE_WINDOW_DAYS. Trades older
-        # than this came from a probability machine that has since drifted —
-        # different weights, different layer composition, different Platt — so
-        # they inject bias into both weight-candidate evaluation and the
-        # baseline Sharpe. Walk-forward (train=older 60% / val=newer 40%) is
-        # preserved INSIDE this window so the lookahead-free property is intact.
+        # Bound active dataset to the last PIPELINE_WINDOW_DAYS so weight
+        # candidates aren't judged against probability machines that no longer
+        # exist. Walk-forward 60/40 is preserved INSIDE the window.
         PIPELINE_WINDOW_DAYS = 60
         _cutoff_ts = datetime.now(timezone.utc).timestamp() - PIPELINE_WINDOW_DAYS * 86400.0
         def _otime(o: dict) -> float:
@@ -1440,9 +1437,7 @@ class AgentScheduler:
             except Exception:
                 return 0.0
         _windowed = [o for o in _raw_outcomes if _otime(o) >= _cutoff_ts]
-        # Fall back to the full history if the window is too thin for a useful
-        # walk-forward (need ≥500 to give the 4-fold expanding test power).
-        if len(_windowed) >= 500:
+        if len(_windowed) >= 500:  # need ≥500 for the 4-fold expanding test
             all_outcomes = _windowed
             _window_note = f"  |  bounded to last {PIPELINE_WINDOW_DAYS}d (was {len(_raw_outcomes):,})"
         else:
@@ -1548,33 +1543,18 @@ class AgentScheduler:
                 analysis["ghost_analysis"] = self.bias_detector.analyze_ghosts(resolved_ghosts)
                 pass  # rolled into [2/4] summary below
 
-        # Platt re-fit. Adoption gated on Kelly-Sharpe of holdout (matches production
-        # PnL dynamics); log-loss is telemetry only. The holdout comparison is the
-        # noise guard, so a small absolute floor is enough.
+        # Platt re-fit. Adoption gated on Kelly-Sharpe of holdout; log-loss is telemetry.
         platt_info: dict[str, Any] = {"decision": "skipped"}
         from polybot.agents.weight_optimizer import _sharpe, _sharpe_z_test
         from polybot.core.calibrator import PlattCalibrator, compute_log_loss
         MIN_PLATT_VALIDATION_TRADES = 50
         PLATT_ABS_FLOOR = 0.001
-        # Defer the cal.save() to AFTER the weight optimizer has run + persisted
-        # its config changes. The Platt and the weight set must be committed
-        # together: the weight optimizer backtests against the NEW Platt
-        # in-memory, and if we crash between Platt's disk write and the weights'
-        # disk write, the next restart sees a Platt that doesn't match the
-        # weights it was fit/validated against. By staging the save and only
-        # writing it after _run_weight_optimizer returns, a mid-pipeline crash
-        # just leaves the old Platt on disk — coherent with the old weights —
-        # and the next pipeline re-fits cleanly.
+        # cal.save() is deferred until after the weight optimizer commits so a
+        # mid-pipeline crash leaves on-disk Platt + weights coherent.
         _pending_cal_save: PlattCalibrator | None = None
-        # Platt-specific window: last 14 days only. The walk-forward 60/40 split
-        # used by the weight optimizer is the wrong basis for calibration — it
-        # forces Platt to fit on the OLDEST 60% of trades, which were generated
-        # by older versions of the probability machine (different weights,
-        # different atr_sigma, etc.). Calibrating today's model against last
-        # month's outputs averages incompatible curves. We override
-        # train_outcomes/validation_outcomes locally to a 14-day pool, 60/40
-        # split inside that window. If the recent window can't muster 200
-        # trades for the fit, fall back to the global walk-forward split.
+        # Platt fits on the last 14 days only — older trades came from a
+        # different probability machine and bias the calibration. Falls back to
+        # the full walk-forward split if the recent window has too few trades.
         _PLATT_WINDOW_DAYS = 14
         _platt_cutoff = datetime.now(timezone.utc).timestamp() - _PLATT_WINDOW_DAYS * 86400.0
         def _ts(o: dict) -> float:
@@ -1869,14 +1849,8 @@ class AgentScheduler:
                         and self.signal_engine and self._config:
                     _orig = float(self.signal_engine.kelly_fraction)
                     _reduced = max(0.04, _orig * 0.5)
-                    # Persist the kelly_reduced flag BEFORE applying the
-                    # reduction. If we crash between in-memory change and the
-                    # file write at end-of-pipeline (~80 lines below), the next
-                    # restart would otherwise see streak=2/3 unchanged and apply
-                    # the halving a SECOND time, compounding the cut. Writing
-                    # the flag first makes the operation idempotent: a crash
-                    # leaves the flag set, the next pipeline sees
-                    # kelly_reduced=True, and skips the reduction.
+                    # Persist kelly_reduced BEFORE applying the cut so a crash
+                    # mid-pipeline can't compound the halving on restart.
                     _crisis_state["original_kelly"] = _orig
                     _crisis_state["kelly_reduced"] = True
                     try:

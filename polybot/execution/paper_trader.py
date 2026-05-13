@@ -1,11 +1,4 @@
-"""Paper trader — simulated fills that approximate live CLOB mechanics:
-gaussian-jittered submission latency, post-latency book re-check, VWAP across
-consumed levels, FOK rejection on `max_slippage` violation, and a configurable
-network-failure rate to exercise the retry path.
-
-When no CLOB WebSocket is attached (e.g. unit tests, first-tick) the trader
-fills at the requested price.
-"""
+"""Paper trader: simulates FOK fills with latency, VWAP book-walk, slippage, and a network-fail rate."""
 from __future__ import annotations
 
 import asyncio

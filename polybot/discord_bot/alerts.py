@@ -97,27 +97,6 @@ class AlertManager:
             f"**{header}**  |  {window}\n"
             f"```\n{body}```")
 
-    async def send_pipeline_summary(self, summary: str) -> None:
-        channel = self._get_channel(self.daily_channel_name)
-        if not channel:
-            return
-        await self._safe_send(channel, f"**Learning Pipeline Complete**\n{summary}")
-
-    async def send_strategy_recommendation(self, recommendations: list[Any]) -> None:
-        channel = self._get_channel(self.control_channel_name)
-        if not channel:
-            return
-        lines = ["**Strategy Recommendation**\n"]
-        for rec in recommendations:
-            lines.append(f"`{rec.param}`: {rec.current_value} -> {rec.recommended_value}")
-            lines.append(f"  Reason: {rec.reason}")
-        try:
-            msg = await channel.send("\n".join(lines))
-            await msg.add_reaction("\u2705")
-            await msg.add_reaction("\u274c")
-        except Exception as e:
-            logger.warning("Discord send failed (#%s): %s", getattr(channel, 'name', '?'), e)
-
     async def send_error(self, error_message: str) -> None:
         channel = self._get_channel(self.control_channel_name)
         if not channel:

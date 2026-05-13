@@ -1,15 +1,4 @@
-"""Real-time Chainlink BTC/USD price via Polymarket RTDS WebSocket.
-
-Polymarket resolves 5-min BTC contracts using the Chainlink BTC/USD oracle,
-NOT Binance spot. This feed provides the actual resolution price source so
-the probability model uses the same data the market resolves against.
-
-Also captures the Chainlink price at each 5-minute boundary — this is the
-strike (priceToBeat) that Polymarket uses for resolution.
-
-Connection: wss://ws-live-data.polymarket.com
-Topic: crypto_prices_chainlink, symbol: btc/usd
-"""
+"""Chainlink BTC/USD oracle (Polymarket RTDS WS). The resolution price source + 5-min strike capture."""
 from __future__ import annotations
 
 import asyncio
@@ -60,15 +49,7 @@ class ChainlinkFeed:
         return self._boundary_prices.get(window_ts)
 
     def _check_boundary(self) -> None:
-        """If we crossed a 5-min boundary since the last capture, record the current
-        price as that boundary's strike.
-
-        The original implementation only captured within 5 s of the boundary, which
-        silently dropped strikes when Chainlink's next push arrived >5 s after the
-        boundary (common during quiet periods). We now capture on the *first* price
-        update after any new boundary is crossed — the first post-boundary Chainlink
-        print is the closest approximation of the resolution oracle's boundary value.
-        """
+        """Capture the first Chainlink price after each 5-min boundary as the window's strike."""
         if self._price <= 0:
             return
         now_ts = int(time.time())

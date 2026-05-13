@@ -1,12 +1,4 @@
-"""Live trader — real Polymarket CLOB orders via py-clob-client-v2 SDK.
-
-py-clob-client v0.34.6 was hardcoded to v1 order structs and signed against the
-v1 EIP-712 domain. After Polymarket migrated wallets to v2 contracts
-(0xE111180000d2663C0091e4f400237545B87B996B regular,
-0xe2222d279d744050d28e00520010520000310F59 NegRisk), every order POST returned
-{"error": "order_version_mismatch"}. py-clob-client-v2 ships v2 order structs
-(timestamp/metadata/builder; no expiration/nonce/feeRateBps) and the v2 domain.
-"""
+"""Live trader: real Polymarket CLOB orders via py-clob-client-v2 (v2 contracts)."""
 from __future__ import annotations
 
 import asyncio
@@ -271,14 +263,7 @@ class LiveTrader(BaseTrader):
         return _get_balance_usd(self.client)
 
     async def _maybe_recheck_allowance(self) -> None:
-        """Periodically verify USDC allowance hasn't been revoked mid-session.
-
-        Runs every `_ALLOWANCE_RECHECK_EVERY` successful submits. Logs at
-        WARNING and surfaces in fill_stats if the allowance falls below the
-        configured threshold — gives the operator a chance to re-approve
-        before the next batch of orders silently bounces with
-        INSUFFICIENT_ALLOWANCE.
-        """
+        """Re-check USDC allowance every _ALLOWANCE_RECHECK_EVERY submits; warn if revoked mid-session."""
         self._submit_count_since_allowance_check += 1
         if self._submit_count_since_allowance_check < _ALLOWANCE_RECHECK_EVERY:
             return

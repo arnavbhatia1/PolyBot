@@ -36,19 +36,11 @@ def _lag_autocorr(values: list[float], lag: int) -> float:
 
 
 def _lag1_autocorr(values: list[float]) -> float:
-    """Back-compat shim. Most callers want the Newey-West adjustment below."""
     return _lag_autocorr(values, 1)
 
 
 def _newey_west_factor(returns: list[float], max_lag: int = 5) -> float:
-    """Newey-West variance inflation factor with Bartlett weights.
-
-    Returns sqrt(1 + 2 * Σ_{k=1}^{L} w_k * ρ_k) where w_k = 1 - k/(L+1).
-    The original implementation used only lag-1 autocorrelation, which
-    understates SE when Kelly returns have multi-day persistence
-    (Sharpe momentum). Capping the sum at sqrt(1) prevents the rare
-    case of strongly negative autocorr deflating SE below the IID baseline.
-    """
+    """sqrt(1 + 2·Σ wₖ·ρₖ) with Bartlett weights wₖ = 1 − k/(L+1). Floors at 1 (IID baseline)."""
     n = len(returns)
     if n < 4:
         return 1.0
@@ -62,13 +54,7 @@ def _newey_west_factor(returns: list[float], max_lag: int = 5) -> float:
 
 
 def _jk_se(sharpe: float, n_trades: int, returns: list[float] | None = None) -> float:
-    """Jobson-Korkie standard error for a per-trade Sharpe, autocorr-adjusted.
-
-    Uses Newey-West Bartlett-weighted multi-lag adjustment (up to 5 lags). Prior
-    versions used only ρ₁, which captured ~40% of the actual SE inflation when
-    Kelly returns showed 3–5 day persistence and let occasional spurious
-    adoptions through.
-    """
+    """Jobson-Korkie SE for per-trade Sharpe, Newey-West autocorr-adjusted (up to 5 lags)."""
     if n_trades < 2:
         return 0.0
     se = math.sqrt((1.0 + 0.5 * sharpe ** 2) / max(n_trades, 1))

@@ -1,9 +1,4 @@
-"""ClaudeClient: Anthropic API wrapper for nightly strategy analysis.
-
-Formats the BiasDetector analysis card and recent trade sample into a structured prompt,
-calls Claude, validates and clamps the returned recommendations against safe parameter
-ranges, and returns a recommendations dict for the WeightOptimizer.
-"""
+"""ClaudeClient: nightly strategy analysis. Builds prompt, calls Claude, validates/clamps response."""
 from __future__ import annotations
 
 import asyncio
@@ -427,9 +422,7 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
                     clamped = float((min_edge_live - 0.001) * (1.0 if clamped >= 0 else -1.0))
                     momentum_floor_applied = True
             entry: dict[str, Any] = {"param": param, "value": clamped, "reason": reason}
-            # Surface clamps explicitly. Without this, a Claude proposal that
-            # exceeded the range was silently replaced with the clamp endpoint
-            # and the directional table attributed the backtest result to the
+            # Surface clamps so the directional table attributes results to the actual tested value.
             was_clamped = (raw_value != clamped)
             if was_clamped:
                 entry["clamped"] = True

@@ -88,10 +88,7 @@ class Database:
         if "fees" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0")
 
-        # Hot-path indexes. get_open_positions() and has_position_for_market()
-        # run every tick of the trading loop; without these indexes both
-        # degrade to full table scans as the positions table grows past a few
-        # thousand closed rows.
+        # Hot-path indexes — get_open_positions / has_position_for_market run every tick.
         await self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status)"
         )
@@ -379,18 +376,6 @@ class Database:
         total = row[0] or 0
         wins = row[1] or 0
         return total, (wins / total if total > 0 else 0.0)
-
-    async def get_avg_edge(self) -> float:
-        """Average edge at entry across all trades, for uncertainty discount."""
-        cursor = await self.conn.execute(
-            "SELECT AVG(ev_at_entry) FROM trade_history WHERE ev_at_entry > 0"
-        )
-        row = await cursor.fetchone()
-        return row[0] if row[0] is not None else 0.0
-
-    async def adjust_bankroll(self, delta: float) -> None:
-        await self.conn.execute("UPDATE bankroll SET amount = amount + ? WHERE id = 1", (delta,))
-        await self.conn.commit()
 
     async def set_bankroll(self, amount: float) -> None:
         await self.conn.execute(

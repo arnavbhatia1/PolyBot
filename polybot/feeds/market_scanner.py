@@ -14,14 +14,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _ensure_client(http_client: httpx.AsyncClient | None) -> AsyncIterator[httpx.AsyncClient]:
-    """Yield a usable httpx client. If `http_client` is None, open a short-lived one.
-
-    Several callers (tests, ad-hoc scripts, agents constructed lazily) invoke the
-    scanner without a long-lived pooled client. The methods used to assume a
-    client was always passed and would AttributeError on .get(); this helper
-    keeps the happy path (pooled client) free of overhead while still letting
-    None callers succeed.
-    """
+    """Yield `http_client` if given, else a short-lived one. Lets None callers (tests, scripts) work."""
     if http_client is not None:
         yield http_client
         return

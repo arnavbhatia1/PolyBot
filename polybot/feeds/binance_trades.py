@@ -1,14 +1,4 @@
-"""Binance aggregate trade feed with CVD, taker ratio, and volume surge detection.
-
-Consumes the Binance.US aggTrade WebSocket stream for BTCUSDT and accumulates
-trades in a rolling window. Provides:
-- CVD (Cumulative Volume Delta): net aggressive buying vs selling pressure
-- Taker ratio: fraction of volume from aggressive buyers
-- Large trade detection: whale trades above a BTC threshold
-- Volume surge detection: recent volume rate vs baseline
-
-These are leading directional indicators -- order flow LEADS price movement.
-"""
+"""Binance.US aggTrade feed: CVD, taker ratio, large-trade and volume-surge detection."""
 from __future__ import annotations
 
 import asyncio

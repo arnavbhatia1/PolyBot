@@ -30,12 +30,10 @@ class BinanceDepthFeed:
         self,
         symbol: str = "btcusdt",
         ws_url: str = "wss://stream.binance.us:9443/ws",
-        rest_url: str = "https://api.binance.us/api/v3",
-        rest_interval: float = 5.0,
+        **_unused: Any,
     ) -> None:
         self.symbol = symbol
         self.ws_url = ws_url
-        # rest_url / rest_interval accepted for config-wiring symmetry; only the WS feed runs.
         self.top_bids: list[list[str]] = []
         self.top_asks: list[list[str]] = []
         self._running: bool = False

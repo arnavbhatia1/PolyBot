@@ -106,11 +106,7 @@ class SignalEngine:
                  loss_cut_time_s: float | None = None,
                  consensus_dead_zone: float | None = None,
                  consensus_config: dict | None = None) -> None:
-        # Pull every default from param_registry so signal_engine has zero
-        # hardcoded literals. If the caller supplied a value, use it; otherwise
-        # fall back to the canonical default. Production wires this from
-        # settings.yaml via main._build_signal_engine; tests can override
-        # individual kwargs.
+        # Defaults resolve from param_registry — settings.yaml drives production via _build_signal_engine.
         if min_edge is None: min_edge = _d("min_edge")
         if kelly_fraction is None: kelly_fraction = _d("kelly_fraction")
         if momentum_weight is None: momentum_weight = _d("momentum_weight")
@@ -396,21 +392,15 @@ class SignalEngine:
 
         optimal_threshold = self._exit_boundary.compute_exit_threshold(
             seconds_remaining, entry_price, fee_rate, market_price_for_side)
-        # Blend: at ATM (itm_depth=0) trust the boundary fully; deeper ITM →
-        # weight toward the more patient (more negative) threshold so winning
-        # positions aren't scalped early. OTM stays boundary-driven so urgency
-        # exits remain intact.
+        # Blend: ATM trusts the boundary; deeper ITM weights toward the more patient floor.
         effective_threshold = (
             (1 - itm_depth) * max(deep_loss_floor, optimal_threshold)
             + itm_depth * min(deep_loss_floor, optimal_threshold)
         )
 
-        # Loss-cut fires independently of holding_edge: deep-underwater near
-        # expiry, where the position has no realistic recovery.
-        # Whip-saw guard: only fire if BTC is genuinely on the wrong side of
-        # strike by ≥0.5×ATR. Near-strike, the contract price can flash 5¢→70¢
-        # on thin-book prints; selling into that noise locks losses on positions
-        # that would have resolved correctly.
+        # Loss-cut: deep underwater near expiry AND BTC is genuinely past strike
+        # (>0.5×ATR). The ATR guard suppresses whipsaw-induced false cuts when
+        # BTC sits on the strike and the contract flickers 5¢↔70¢ on thin prints.
         atr_for_cut = indicators.get("atr", {}).get("atr", 0) or 0
         btc_dist = abs(btc_price - strike_price)
         wrong_side = (
@@ -427,10 +417,8 @@ class SignalEngine:
                     f"(entered at {entry_price:.2f}) with only {seconds_remaining:.0f}s left, "
                     f"BTC {btc_dist:.0f} from strike (>0.5×ATR={0.5*atr_for_cut:.0f})")
 
-        # Past _DEEP_LOSS_HOLD_THRESHOLD the binary residual is +EV vs locking in
-        # the loss. Only applies when the exit would actually be at a loss vs entry.
-        # If market_price > entry_price the position is profitable — always scalp it
-        # (e.g. a random order-book spike to 0.80 when we bought at 0.40).
+        # Past _DEEP_LOSS_HOLD_THRESHOLD the binary residual beats scalping the loss.
+        # Skipped on profitable positions (market > entry) so a price spike still exits.
         if (holding_edge < _DEEP_LOSS_HOLD_THRESHOLD
                 and (entry_price <= 0 or market_price_for_side < entry_price)):
             return ("HOLD", model_prob, holding_edge,
