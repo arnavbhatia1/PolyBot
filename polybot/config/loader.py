@@ -4,12 +4,10 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any
-
 import yaml
 from dotenv import load_dotenv
 
 _config: dict[str, Any] | None = None
-
 
 def _get_nested(config: dict[str, Any], dotted_key: str) -> tuple[Any, bool]:
     keys = dotted_key.split(".")
@@ -20,7 +18,6 @@ def _get_nested(config: dict[str, Any], dotted_key: str) -> tuple[Any, bool]:
         current = current[k]
     return current, True
 
-
 def _set_nested_ruamel(doc: Any, dotted_key: str, value: Any) -> None:
     """Set a value in a ruamel CommentedMap by dotted path."""
     keys = dotted_key.split(".")
@@ -28,7 +25,6 @@ def _set_nested_ruamel(doc: Any, dotted_key: str, value: Any) -> None:
     for k in keys[:-1]:
         d = d[k]
     d[keys[-1]] = value
-
 
 def validate_config(config: dict[str, Any]) -> None:
     errors: list[str] = []
@@ -67,7 +63,7 @@ def validate_config(config: dict[str, Any]) -> None:
     for _spec in PIPELINE_PARAMS:
         _check_range(_spec.yaml_key, _spec.lo, _spec.hi, integer=(_spec.cast is int))
 
-    _check_range("signal.max_edge", 0.10, 0.30)
+    _check_range("signal.max_edge", 0.15, 0.30)
     weights_val, weights_found = _get_nested(config, "signal.weights")
     if not weights_found:
         errors.append("signal.weights: missing from config")
@@ -105,7 +101,6 @@ def validate_config(config: dict[str, Any]) -> None:
         detail = "\n  - ".join([""] + errors)
         raise ValueError(header + detail)
 
-
 def load_config(config_path: str | Path | None = None, env_path: str | Path | None = None) -> dict[str, Any]:
     global _config
     config_dir = Path(__file__).parent
@@ -119,12 +114,10 @@ def load_config(config_path: str | Path | None = None, env_path: str | Path | No
     validate_config(_config)
     return _config
 
-
 def get_config() -> dict[str, Any]:
     if _config is None:
         return load_config()
     return _config
-
 
 def save_config(config: dict[str, Any], config_path: str | Path | None = None) -> None:
     """Write pipeline-adopted values back into settings.yaml, preserving all comments.
@@ -175,7 +168,6 @@ def save_config(config: dict[str, Any], config_path: str | Path | None = None) -
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
         raise
-
 
 def get_secret(key: str) -> str:
     value = os.environ.get(key)

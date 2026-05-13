@@ -98,7 +98,7 @@ class TestValidateConfigPasses:
     def test_boundary_high_values(self):
         """All parameters at their maximum allowed values."""
         cfg = _valid_config()
-        _set_nested(cfg, "math.kelly_fraction", 0.25)
+        _set_nested(cfg, "math.kelly_fraction", 0.18)
         _set_nested(cfg, "signal.min_edge", 0.10)
         _set_nested(cfg, "signal.min_kelly", 0.04)
         _set_nested(cfg, "signal.atr_sigma_ratio", 2.5)
@@ -158,13 +158,13 @@ class TestValidateConfigMissing:
 class TestValidateConfigOutOfRange:
     @pytest.mark.parametrize("key, bad_value, expected_fragment", [
         # math
-        ("math.kelly_fraction", 0.01, "not in [0.05, 0.25]"),
-        ("math.kelly_fraction", 0.50, "not in [0.05, 0.25]"),
+        ("math.kelly_fraction", 0.01, "not in [0.05, 0.18]"),
+        ("math.kelly_fraction", 0.50, "not in [0.05, 0.18]"),
         # signal scalars
         ("signal.min_edge", 0.001, "not in [0.02, 0.1]"),
         ("signal.min_edge", 0.20, "not in [0.02, 0.1]"),
-        ("signal.exit_edge_threshold", -0.30, "not in [-0.25, 0.0]"),
-        ("signal.exit_edge_threshold", 0.01, "not in [-0.25, 0.0]"),
+        ("signal.exit_edge_threshold", -0.30, "not in [-0.1, -0.03]"),
+        ("signal.exit_edge_threshold", 0.01, "not in [-0.1, -0.03]"),
         ("signal.min_model_probability", 0.50, "not in [0.52, 0.7]"),
         ("signal.min_model_probability", 0.90, "not in [0.52, 0.7]"),
         ("signal.momentum_weight", -0.15, "not in [-0.1, 0.1]"),

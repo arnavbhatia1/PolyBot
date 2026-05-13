@@ -27,7 +27,7 @@ def _make_indicators(atr_value=30.0):
 @pytest.mark.asyncio
 async def test_full_trade_flow(db):
     """End-to-end: signal engine finds edge -> paper trade placed -> close at profit."""
-    engine = SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08)
+    engine = SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08, atr_sigma_ratio=1.4)
 
     # BTC $100 above strike with 3 min left, market at 55% — model finds edge
     signal = engine.evaluate(
@@ -67,7 +67,7 @@ async def test_full_trade_flow(db):
 @pytest.mark.asyncio
 async def test_scalp_exit_flow(db):
     """Signal engine finds edge, enters, conditions flip, exits early with profit."""
-    engine = SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08)
+    engine = SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08, atr_sigma_ratio=1.4)
 
     # Enter: BTC above strike, model sees edge
     signal = engine.evaluate(

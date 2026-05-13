@@ -55,7 +55,7 @@ def test_validate_clamps_kelly_fraction():
     data = {"changes": [{"param": "kelly_fraction", "value": 0.50, "reason": "test"}]}
     result = _validate_strategy_response(data, total_trades=100)
     by_param = {c["param"]: c["value"] for c in result["changes"]}
-    assert by_param["kelly_fraction"] == 0.25
+    assert by_param["kelly_fraction"] == 0.18
 
 def test_validate_enforces_min_weight():
     data = {"changes": [

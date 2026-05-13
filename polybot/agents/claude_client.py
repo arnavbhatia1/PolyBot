@@ -2,7 +2,6 @@
 from __future__ import annotations
 from typing import Any
 from polybot.config.param_registry import CLAMP_RANGES as _CLAMP_RANGES, default_for as _d
-
 import asyncio
 import json
 import logging
@@ -92,13 +91,13 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
 
 ## Backtestable Params (you can propose these in `changes`)
 - atr_sigma_ratio (1.2-2.5, HIGHEST leverage; lower = sharper probs)
-- logit_scale (2.0-6.0, master amplifier on L2-L5)
+- logit_scale (2.0-5.0, master amplifier on L2-L5)
 - student_t_df (3-8, lower = fatter tails)
-- min_atr (4.0-25.0, ATR floor)
+- min_atr (8.0-25.0, ATR floor)
 - flow_weight (0.02-0.12), spot_flow_weight (0.01-0.15), liquidation_weight (0.01-0.10)
 - regime_weight (0.02-0.10), prev_margin_weight (0.01-0.05)
 - momentum_weight (-0.10 to +0.10; NEGATIVE = fade indicators)
-- kelly_fraction (0.05-0.25; leave unchanged unless strong risk evidence)
+- kelly_fraction (0.05-0.18; leave unchanged unless strong risk evidence)
 - min_edge (0.02-0.10), min_kelly (0.005-0.04), min_model_probability (0.52-0.70)
 - weights (RSI/MACD/Stoch/OBV/VWAP dict, sum=1.0, each ≥0.05)
 - exit_edge_threshold (-0.10 to -0.03; TIGHT range — directly changes realized P&L,

@@ -21,24 +21,24 @@ class ParamSpec:
 
 PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     # ── Layer 1 ─────────────────────────────────────────────────────────────
-    ParamSpec("atr_sigma_ratio",         "signal.atr_sigma_ratio",         1.2,   2.5,   float, 1.4,   "L1 aggressiveness — lower = sharper probs (HIGHEST leverage)"),
+    ParamSpec("atr_sigma_ratio",         "signal.atr_sigma_ratio",         1.2,   2.5,   float, 1.3,   "L1 aggressiveness — lower = sharper probs (HIGHEST leverage)"),
     ParamSpec("student_t_df",            "signal.student_t_df",            3,     8,     int,   5,     "L1 tail fatness — lower = fatter tails (BTC kurtosis target)"),
-    ParamSpec("min_atr",                 "signal.min_atr",                 4.0,   25.0,  float, 12.0,  "static ATR floor; runtime uses max(min_atr, 0.3 × rolling_20)"),
+    ParamSpec("min_atr",                 "signal.min_atr",                 8.0,   25.0,  float, 12.0,  "static ATR floor; runtime uses max(min_atr, 0.3 × rolling_20)"),
     # ── Logit amplifier ─────────────────────────────────────────────────────
-    ParamSpec("logit_scale",             "signal.logit_scale",             2.0,   6.0,   float, 4.0,   "master amplifier on all L2–L5 weights"),
+    ParamSpec("logit_scale",             "signal.logit_scale",             2.0,   5.0,   float, 4.0,   "master amplifier on all L2–L5 weights"),
     # ── Layer 2–5 weights ───────────────────────────────────────────────────
     ParamSpec("regime_weight",           "signal.regime_weight",           0.02,  0.10,  float, 0.03,  "L2 regime autocorr × direction"),
     ParamSpec("flow_weight",             "signal.flow_weight",             0.02,  0.12,  float, 0.04,  "L3 CLOB book imbalance + trade flow"),
-    ParamSpec("spot_flow_weight",        "signal.spot_flow_weight",        0.01,  0.15,  float, 0.04,  "L3b Binance CVD + taker ratio"),
+    ParamSpec("spot_flow_weight",        "signal.spot_flow_weight",        0.01,  0.15,  float, 0.10,  "L3b Binance CVD + taker ratio"),
     ParamSpec("liquidation_weight",      "signal.liquidation_weight",      0.01,  0.10,  float, 0.03,  "L3e Bybit OI liquidation pressure"),
     ParamSpec("prev_margin_weight",      "signal.prev_margin_weight",      0.01,  0.05,  float, 0.02,  "L5 prev-window resolution margin carry"),
-    ParamSpec("momentum_weight",         "signal.momentum_weight",         -0.10, 0.10,  float, -0.02, "L4 indicator momentum — NEGATIVE = fade (mean-revert)"),
+    ParamSpec("momentum_weight",         "signal.momentum_weight",         -0.10, 0.10,  float, -0.04, "L4 indicator momentum — NEGATIVE = fade (mean-revert)"),
     # ── Sizing ──────────────────────────────────────────────────────────────
-    ParamSpec("kelly_fraction",          "math.kelly_fraction",            0.05,  0.25,  float, 0.15,  "Kelly sizing fraction — leave unchanged unless strong drawdown evidence"),
+    ParamSpec("kelly_fraction",          "math.kelly_fraction",            0.05,  0.18,  float, 0.08,  "Kelly sizing fraction — leave unchanged unless strong drawdown evidence"),
     # ── Entry gates (pipeline-tunable since ghosts are in the backtest) ─────
     ParamSpec("min_edge",                "signal.min_edge",                0.02,  0.10,  float, 0.04,  "minimum model–market edge to enter"),
     ParamSpec("min_kelly",               "signal.min_kelly",               0.005, 0.04,  float, 0.01,  "minimum Kelly fraction to enter"),
-    ParamSpec("min_model_probability",   "signal.min_model_probability",   0.52,  0.70,  float, 0.58,  "minimum model probability to enter"),
+    ParamSpec("min_model_probability",   "signal.min_model_probability",   0.52,  0.70,  float, 0.56,  "minimum model probability to enter"),
     # ── Entry timing envelope ───────────────────────────────────────────────
     ParamSpec("normal_fraction",         "entry_timing.normal_fraction",   0.40,  0.80,  float, 0.60,  "fraction of window with full Kelly (no late-window penalty)"),
     ParamSpec("late_max_penalty",        "entry_timing.late_max_penalty",  0.10,  0.60,  float, 0.30,  "max Kelly penalty at the very end of the window (ATM trades)"),
@@ -60,11 +60,6 @@ CLAMP_RANGES: dict[str, tuple] = {p.name: (p.lo, p.hi, p.cast) for p in PIPELINE
 TUNABLE_NAMES: frozenset[str] = frozenset(p.name for p in PIPELINE_PARAMS)
 
 # ── Manual-only param defaults ────────────────────────────────────────────────
-# These are NOT pipeline-tunable but they DO need a canonical default for the
-# `cfg.get(name, fallback)` callsites scattered across scheduler.py, main.py,
-# claude_client.py, and local_recommender.py. Centralizing them here keeps the
-# fallbacks in ONE place — settings.yaml still drives runtime, this just stops
-# the same literal from appearing in 5 different files.
 _MANUAL_DEFAULTS: dict[str, Any] = {
     # Exit / hold policy
     "max_edge": 0.20,
@@ -90,8 +85,5 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
 DEFAULTS: dict[str, Any] = {p.name: p.default for p in PIPELINE_PARAMS} | _MANUAL_DEFAULTS
 
 def default_for(name: str) -> Any:
-    """Canonical default for a parameter, by name. Single source of truth.
-
-    Used at every `cfg.get(name, FALLBACK)` callsite so the FALLBACK literal lives in exactly one file.
-    """
+    """Canonical default for a parameter, by name. Single source of truth."""
     return DEFAULTS[name]

@@ -1,4 +1,4 @@
-"""AgentScheduler: orchestrates the nightly learning pipeline (12:05 AM ET).
+"""Orchestrates the nightly learning pipeline.
 
 Runs BiasDetector, Platt calibration (with recency-weighted MLE), distribution shift
 detection, SPRT aggregation, TA Evolver (Claude), and WeightOptimizer in sequence.
@@ -14,12 +14,10 @@ import math
 import logging
 from datetime import datetime, timezone
 from typing import Any
-
 from polybot.config.loader import save_config
 from polybot.config.param_registry import default_for as _d
 
 logger = logging.getLogger(__name__)
-
 
 def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     """Human-readable nightly pipeline result — logged and sent to Discord."""
@@ -1159,7 +1157,7 @@ class AgentScheduler:
                 elif param == "student_t_df":
                     self.signal_engine.student_t_df = _clamp(int(value), 3, 8)
                 elif param == "kelly_fraction":
-                    self.signal_engine.kelly_fraction = _clamp(float(value), 0.05, 0.25)
+                    self.signal_engine.kelly_fraction = _clamp(float(value), 0.05, 0.18)
                 elif param == "exit_edge_threshold":
                     self._exit_edge_threshold = _clamp(float(value), -0.10, -0.03)
                 elif param == "atr_sigma_ratio":
@@ -1169,13 +1167,13 @@ class AgentScheduler:
                 elif param == "prev_margin_weight":
                     self.signal_engine.prev_margin_weight = _clamp(float(value), 0.01, 0.05)
                 elif param == "logit_scale":
-                    self.signal_engine.logit_scale = _clamp(float(value), 2.0, 6.0)
+                    self.signal_engine.logit_scale = _clamp(float(value), 2.0, 5.0)
                 elif param == "liquidation_weight":
                     self.signal_engine.liquidation_weight = _clamp(float(value), 0.01, 0.06)
                 elif param == "min_atr":
-                    self.signal_engine.min_atr = _clamp(float(value), 4.0, 25.0)
+                    self.signal_engine.min_atr = _clamp(float(value), 8.0, 25.0)
                 elif param == "max_edge":
-                    self.signal_engine.max_edge = _clamp(float(value), 0.10, 0.30)
+                    self.signal_engine.max_edge = _clamp(float(value), 0.15, 0.30)
                 elif param == "adverse_selection_threshold":
                     if self._config:
                         self._config.setdefault("signal", {})["adverse_selection_threshold"] = _clamp(float(value), 0.45, 0.75)
@@ -1216,7 +1214,7 @@ class AgentScheduler:
                 elif param == "prev_margin_weight":
                     sig["prev_margin_weight"] = _clamp(float(value), 0.01, 0.05)
                 elif param == "logit_scale":
-                    sig["logit_scale"] = _clamp(float(value), 2.0, 6.0)
+                    sig["logit_scale"] = _clamp(float(value), 2.0, 5.0)
                 elif param == "liquidation_weight":
                     sig["liquidation_weight"] = _clamp(float(value), 0.01, 0.06)
                 elif param == "adverse_selection_threshold":
@@ -1228,9 +1226,9 @@ class AgentScheduler:
                 elif param == "flip_edge_premium":
                     self._config.setdefault("entry_timing", {})["flip_edge_premium"] = _clamp(float(value), 0.005, 0.05)
                 elif param == "min_atr":
-                    sig["min_atr"] = _clamp(float(value), 4.0, 25.0)
+                    sig["min_atr"] = _clamp(float(value), 8.0, 25.0)
                 elif param == "max_edge":
-                    sig["max_edge"] = _clamp(float(value), 0.10, 0.30)
+                    sig["max_edge"] = _clamp(float(value), 0.15, 0.30)
                 elif param == "momentum_weight":
                     sig["momentum_weight"] = _clamp(float(value), -0.10, 0.10)
                 elif param == "regime_weight":
@@ -1240,7 +1238,7 @@ class AgentScheduler:
                 elif param == "student_t_df":
                     sig["student_t_df"] = _clamp(int(value), 3, 8)
                 elif param == "kelly_fraction":
-                    math_sec["kelly_fraction"] = _clamp(float(value), 0.05, 0.25)
+                    math_sec["kelly_fraction"] = _clamp(float(value), 0.05, 0.18)
                 elif param == "exit_edge_threshold":
                     sig["exit_edge_threshold"] = _clamp(float(value), -0.10, -0.03)
                 elif param == "trading_start_hour_et":
