@@ -1419,15 +1419,6 @@ async def _evaluate_and_exit_position(
                 return day_wins, day_losses, day_fees, None
             market_price = verified_price
 
-        # Force-emit a final HOLD-style line right before the scalp so the price
-        # the scalp triggered on is always visible (otherwise the 30s log throttle
-        # can hide a fast end-of-window price move from the operator).
-        logger.info(
-            f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {live['seconds_remaining']:.0f}s  |  "
-            f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
-            f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}"
-        )
-
         # Apply slippage to sell price (worse fill for seller).
         # Prefer the WS BBO bid size over the book snapshot — the snapshot can be
         # stale (>30s) while ws_bid is required to be fresh (≤10s, checked above).
@@ -1477,6 +1468,14 @@ async def _evaluate_and_exit_position(
                 f"  SCALP RESUMED — position recovered to ${exit_size_usd:.2f}, "
                 f"attempting exit"
             )
+
+        # Emit the pre-scalp snapshot here (after size guard) so the price the
+        # scalp triggers on is always visible, without spamming on deferred ticks.
+        logger.info(
+            f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {live['seconds_remaining']:.0f}s  |  "
+            f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
+            f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}"
+        )
 
         result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token, position=pos)
         if not result.success:
