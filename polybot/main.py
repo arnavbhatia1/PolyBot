@@ -839,6 +839,9 @@ async def _evaluate_signal_and_enter(
         "sprt_status": _sprt.get_status() if _sprt else "N/A",
         # Adverse-selection rolling state (gate diagnostic)
         "adverse_selection_30s": _adverse_monitor.get_adverse_rate(30.0) if _adverse_monitor else 0.5,
+        # Token IDs for both outcomes — required for startup reconciliation and dust sweeping.
+        "token_id_up": contract.get("token_id_up", ""),
+        "token_id_down": contract.get("token_id_down", ""),
     }
     snapshot_str = json.dumps(snapshot)
 
@@ -1243,8 +1246,11 @@ async def _evaluate_and_exit_position(
         coinbase_feed: Any = None,
         chainlink_feed: Any = None) -> tuple[int, int, float, str | None]:
     """Re-evaluate an active position and exit (scalp) if holding edge is gone."""
-    if pos["id"] in _abandoned_scalp_positions:
-        return day_wins, day_losses, day_fees, None
+    # NOTE: previously we short-circuited the whole function for any position in
+    # _abandoned_scalp_positions, which silenced 30s hold logs AND prevented any
+    # re-attempt if the price recovered above the $1 CLOB minimum. The deferral
+    # now happens at the actual scalp step (just before close_trade), so we keep
+    # monitoring, keep emitting heartbeats, and resume scalping on recovery.
     # BTC price priority: Coinbase WS > Binance aggTrade > Binance 1-min candle
     btc_now, _ = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed)
     if btc_now <= 0:
@@ -1334,6 +1340,17 @@ async def _evaluate_and_exit_position(
     mid = pos["market_id"]
 
     if action == "HOLD":
+        # If the position was previously deferred (too small to scalp) and the
+        # model has now decided to hold, clear the flag and surface the recovery
+        # once so the operator sees the state transition. Subsequent ticks just
+        # emit the normal HOLD heartbeat — no "SCALP RESUMED" later because the
+        # position isn't being scalped at all.
+        if pos["id"] in _abandoned_scalp_positions:
+            _abandoned_scalp_positions.discard(pos["id"])
+            logger.info(
+                f"  POSITION RECOVERED — model now favors holding "
+                f"(prob {model_prob:.0%}, edge {holding_edge:+.0%}); deferred scalp cleared"
+            )
         # Log hold status every 30s so the operator knows the bot is alive
         now_ts = time.time()
         if now_ts - _last_hold_log.get(mid, 0) >= 30:
@@ -1420,11 +1437,50 @@ async def _evaluate_and_exit_position(
         slip = slippage_pct(exit_size_usd, bid_depth_usd, impact)
         exit_fill = round(market_price * (1 - slip), 4)
 
+        # Polymarket rejects marketable orders below $1 notional. Pre-check here
+        # so we don't spam the CLOB with guaranteed-fail attempts. Mark deferred
+        # (not abandoned) so subsequent ticks keep monitoring — if the bid
+        # recovers above $1 (e.g., BTC moves in our favor), we'll resume scalping.
+        # Heartbeat log every 30s mirrors the normal HOLD cadence so the operator
+        # always knows the position is being watched.
+        if exit_size_usd < 1.0:
+            now_ts = time.time()
+            if pos["id"] not in _abandoned_scalp_positions:
+                _abandoned_scalp_positions.add(pos["id"])
+                logger.info(
+                    f"  SCALP DEFERRED — position too small (${exit_size_usd:.2f} < $1.00), "
+                    f"monitoring for recovery or resolution"
+                )
+                _last_hold_log[mid] = now_ts
+            elif now_ts - _last_hold_log.get(mid, 0) >= 30:
+                _last_hold_log[mid] = now_ts
+                logger.info(
+                    f"  {_C.DIM}HOLD (small) {pos['side']}{_C.RESET}  "
+                    f"{live['seconds_remaining']:.0f}s  |  size ${exit_size_usd:.2f}  "
+                    f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  mkt {market_price:.2f}"
+                )
+            return day_wins, day_losses, day_fees, traded_market_id
+
+        # Size recovered above the $1 floor — clear the deferred flag and proceed
+        # with the scalp. Surface the transition so the operator sees the resume.
+        if pos["id"] in _abandoned_scalp_positions:
+            _abandoned_scalp_positions.discard(pos["id"])
+            logger.info(
+                f"  SCALP RESUMED — position recovered to ${exit_size_usd:.2f}, "
+                f"attempting exit"
+            )
+
         result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token)
         if not result.success:
             if "CLOB minimum" in (result.reason or ""):
+                # Race: size was >= $1 when we checked but the price dropped
+                # by the time the order hit. Treat the same as the pre-check
+                # path — defer, monitor, retry next tick.
                 _abandoned_scalp_positions.add(pos["id"])
-                logger.info(f"  SCALP ABANDONED — position too small to sell (${exit_size_usd:.2f}), holding to resolution")
+                logger.info(
+                    f"  SCALP DEFERRED — order rejected by CLOB minimum (${exit_size_usd:.2f}), "
+                    f"monitoring for recovery"
+                )
                 return day_wins, day_losses, day_fees, traded_market_id
             logger.warning(f"  SCALP RETRY — close_trade failed (will retry next tick): {result.reason}")
         elif result.success:
@@ -2354,6 +2410,12 @@ async def main() -> None:
                 logger.info(f"Startup reconciliation OK: {len(db_open)} open position(s) match Polymarket")
         except Exception as e:
             logger.warning(f"Startup position reconciliation failed (non-blocking): {e}")
+
+        # Sweep on-chain dust from recently-closed positions.
+            if hasattr(trader, "reconcile_dust"):
+                await trader.reconcile_dust(db, max_age_hours=24)
+        except Exception as e:
+            logger.warning(f"Dust reconciliation failed (non-blocking): {e}")
 
     # CLOB WebSocket — real-time order book feed
     clob_ws_url = market_cfg.get("clob_ws_url", "wss://ws-subscriptions-clob.polymarket.com/ws/market")

@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import random
-import time as _time
 from typing import Any
-
 from py_clob_client_v2.client import ClobClient
 from py_clob_client_v2.clob_types import (
     AssetType,
@@ -19,7 +18,6 @@ from py_clob_client_v2.clob_types import (
 )
 from py_clob_client_v2.order_builder.constants import BUY, SELL
 from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV2
-
 from polybot.db.models import Database
 from polybot.execution.base import BaseTrader, FillResult
 
@@ -41,6 +39,8 @@ _NON_RETRYABLE_ERRORS = frozenset({
 _ALLOWANCE_RECHECK_EVERY = 10
 _FILL_PRICE_LOOKUP_RETRIES = 3
 _FILL_PRICE_LOOKUP_DELAY = 0.15
+_DUST_THRESHOLD_SHARES = 0.01
+_BALANCE_SETTLE_DELAY = 0.25
 
 def _retry_sleep(attempt: int) -> float:
     """Exponential backoff with multiplicative jitter. attempt is 1-indexed."""
@@ -228,27 +228,30 @@ class LiveTrader(BaseTrader):
         self._min_allowance_warn_threshold: float = float(
             kwargs.get("min_allowance_warn_usd", 25.0)
         )
+        self._sign_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="clob-sign"
+        )
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
     async def start_keepalive(self) -> None:
-        """Ping the CLOB API every 30s to keep the HTTP/2 connection warm.
+        """Ping the CLOB API every 10s to keep the HTTP/2 connection warm.
 
         py-clob-client uses a persistent httpx.Client(http2=True). If the connection
         goes idle between trades (>60s), the HTTP/2 stream may close and the next
-        order submission pays a full TLS handshake penalty (~100-200ms). Keepalive
-        pings prevent that by re-using the already-established connection.
+        order submission pays a full TLS handshake penalty (~100-200ms). Pinging
+        every 10s gives 3× more retry attempts before that 60s cliff.
         """
         async def _ping() -> None:
             while True:
                 try:
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(10)
                     await asyncio.to_thread(self.client.get_sampling_simplified_markets)
                 except asyncio.CancelledError:
                     break
                 except Exception:
                     pass  # best-effort — never crash trading on a keepalive failure
         self._keepalive_task = asyncio.create_task(_ping())
-        logger.info("LiveTrader: HTTP keepalive started (ping every 30s)")
+        logger.info("LiveTrader: HTTP keepalive started (ping every 10s)")
 
     async def stop_keepalive(self) -> None:
         if self._keepalive_task:
@@ -257,6 +260,11 @@ class LiveTrader(BaseTrader):
                 await self._keepalive_task
             except asyncio.CancelledError:
                 pass
+        # Tear down the dedicated sign executor on shutdown.
+        try:
+            self._sign_executor.shutdown(wait=False)
+        except Exception:
+            pass
 
     async def get_balance(self) -> float:
         """Fetch USDC balance from Polymarket. Returns float in dollars."""
@@ -452,6 +460,114 @@ class LiveTrader(BaseTrader):
             logger.warning("Maker order flow failed: %s — falling back to FOK", e)
             return await self._submit_fok_order(token_id, BUY, size, price)
 
+    # -- Dust helpers (Polymarket FOK fills sometimes leave fractional residuals
+    # when `_get_fill_price` falls back to the limit price and shares_received is
+    # undercount) --
+    async def _get_token_balance(self, token_id: str) -> float:
+        """Return on-chain conditional-token balance in shares. 0.0 on failure."""
+        if not token_id:
+            return 0.0
+        try:
+            result = await asyncio.to_thread(
+                self.client.get_balance_allowance,
+                BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id),
+            )
+            return int(result.get("balance", "0")) / 1e6
+        except Exception as e:
+            logger.warning("Token balance query failed for %s: %s", token_id[:12], e)
+            return 0.0
+
+    async def _sweep_residual(self, token_id: str, ref_price: float) -> None:
+        """Sell any leftover shares of token_id (FOK fill-price-lookup undercount).
+
+        Best-effort: failures are logged but never propagate. Always called as a
+        background task so it doesn't add latency to the originating SELL's return.
+        """
+        if not token_id:
+            return
+        try:
+            await asyncio.sleep(_BALANCE_SETTLE_DELAY)
+            residual = await self._get_token_balance(token_id)
+            if residual <= _DUST_THRESHOLD_SHARES:
+                return
+            logger.warning(
+                "Dust detected: %.4f shares of token %s (ref_price=%.4f) — sweeping",
+                residual, token_id[:12], ref_price,
+            )
+            # Clamp ref_price into a valid FOK range so the sweep doesn't bounce on
+            # tick / spread issues. Use the existing ref_price as best-effort.
+            safe_price = max(0.01, min(0.99, float(ref_price) if ref_price else 0.5))
+            sweep_args = MarketOrderArgs(
+                token_id=token_id, amount=residual, side=SELL, price=safe_price,
+            )
+            def _sweep_sign_and_post() -> dict:
+                return self.client.post_order(
+                    self.client.create_market_order(sweep_args), OrderType.FOK,
+                )
+            resp = await asyncio.to_thread(_sweep_sign_and_post)
+            if resp.get("success") and resp.get("status") == "matched":
+                logger.info(
+                    "Dust swept: %.4f shares of %s @ ~%.4f",
+                    residual, token_id[:12], safe_price,
+                )
+            else:
+                logger.warning(
+                    "Dust sweep did not match for %s: status=%s err=%s — "
+                    "shares may resolve on their own at expiry",
+                    token_id[:12], resp.get("status"), resp.get("errorMsg", ""),
+                )
+        except Exception as e:
+            logger.warning("Dust sweep error for %s: %s", token_id[:12], e)
+
+    async def reconcile_dust(self, db: Database, max_age_hours: int = 24) -> int:
+        """Scan recently-closed positions for residual on-chain shares and sweep them.
+
+        Called once at startup. Reads token_ids from the indicator_snapshot of
+        recently-closed positions and queries each conditional-token balance; if
+        residual shares > dust threshold, fires a FOK SELL to recover value before
+        expiry. Returns count of swept token_ids. Non-blocking on any error.
+        """
+        swept = 0
+        try:
+            cursor = await db.conn.execute(
+                "SELECT indicator_snapshot, exit_price, side, market_id "
+                "FROM positions WHERE status='closed' "
+                "AND exit_timestamp >= datetime('now', ?) "
+                "AND indicator_snapshot IS NOT NULL",
+                (f"-{max_age_hours} hours",),
+            )
+            rows = await cursor.fetchall()
+        except Exception as e:
+            logger.warning("Dust reconciliation: DB scan failed: %s", e)
+            return 0
+
+        seen: set[str] = set()
+        for snap_text, exit_price, side, market_id in rows:
+            try:
+                snap = _json.loads(snap_text) if isinstance(snap_text, str) else {}
+                ctx = snap.get("trade_context", {}) if isinstance(snap, dict) else {}
+                tok = ctx.get("token_id_up") if side == "Up" else ctx.get("token_id_down")
+                if not tok or tok in seen:
+                    continue
+                seen.add(tok)
+                bal = await self._get_token_balance(tok)
+                if bal <= _DUST_THRESHOLD_SHARES:
+                    continue
+                logger.warning(
+                    "Startup dust: %.4f shares of token %s (market %s, side %s) — sweeping",
+                    bal, tok[:12], market_id, side,
+                )
+                await self._sweep_residual(tok, float(exit_price or 0.5))
+                swept += 1
+            except Exception as e:
+                logger.debug("Dust reconciliation row skipped: %s", e)
+                continue
+        if swept:
+            logger.warning("Dust reconciliation swept %d token(s)", swept)
+        else:
+            logger.info("Dust reconciliation: no residuals found in last %dh", max_age_hours)
+        return swept
+
     # -- FOK order submission with retry ------------------------------------
 
     async def _submit_fok_order(
@@ -486,19 +602,22 @@ class LiveTrader(BaseTrader):
                 reason=f"Order ${notional_usd:.2f} below ${_MIN_ORDER_USD:.2f} CLOB minimum",
             )
 
+        balance_task: asyncio.Task[float] | None = None
+        balance_before: float = -1.0
+        if side == BUY:
+            balance_task = asyncio.create_task(self._get_token_balance(token_id))
+
         last_error = ""
+        loop = asyncio.get_running_loop()
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                # Pass expected_price as the FOK limit. py-clob-client treats price=0
-                # as "fetch from /price cross-matched API" which would silently bypass
-                # the bot's best_ask/best_bid-based slippage protection from main.py.
                 mo = MarketOrderArgs(token_id=token_id, amount=amount, side=side, price=expected_price)
-                # Sign and post in one thread dispatch — avoids two event-loop round trips
+                # Sign and post in one thread dispatch on the dedicated executor.
                 def _sign_and_post(order_args: MarketOrderArgs) -> dict:
                     return self.client.post_order(
                         self.client.create_market_order(order_args), OrderType.FOK
                     )
-                resp = await asyncio.to_thread(_sign_and_post, mo)
+                resp = await loop.run_in_executor(self._sign_executor, _sign_and_post, mo)
 
                 if not resp.get("success"):
                     error_msg = resp.get("errorMsg", "unknown error")
@@ -517,13 +636,34 @@ class LiveTrader(BaseTrader):
 
                 if resp.get("status") == "matched":
                     order_id = resp.get("orderID", "")
-                    fill_price = await self._get_fill_price(order_id, expected_price)
+                    fill_price: float | None = None
+                    if side == BUY and balance_task is not None:
+                        try:
+                            balance_before = await balance_task
+                        except Exception:
+                            balance_before = -1.0
+                        balance_task = None
+                    if side == BUY and balance_before >= 0:
+                        await asyncio.sleep(_BALANCE_SETTLE_DELAY)
+                        balance_after = await self._get_token_balance(token_id)
+                        delta = balance_after - balance_before
+                        if delta > _DUST_THRESHOLD_SHARES:
+                            fill_price = amount / delta
+                            logger.debug(
+                                "BUY balance-delta VWAP: %.4f shares -> price=%.4f "
+                                "(before=%.4f after=%.4f notional=%.2f)",
+                                delta, fill_price, balance_before, balance_after, amount,
+                            )
+                    if fill_price is None:
+                        fill_price = await self._get_fill_price(order_id, expected_price)
                     logger.info(
                         "FOK %s filled: order=%s, price=%.4f, amount=%.4f",
                         side, order_id, fill_price, amount,
                     )
                     _update_fill_stats(filled=True, side=side)
                     await self._maybe_recheck_allowance()
+                    if side == SELL:
+                        asyncio.create_task(self._sweep_residual(token_id, fill_price))
                     notional_usdc = amount if side == BUY else amount * fill_price
                     return FillResult(
                         filled=True,
@@ -548,6 +688,10 @@ class LiveTrader(BaseTrader):
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_retry_sleep(attempt))
 
+        # All retries exhausted — order never executed. Cancel the orphaned
+        # balance_task so it doesn't leave a dangling reference.
+        if balance_task is not None and not balance_task.done():
+            balance_task.cancel()
         _update_fill_stats(filled=False, side=side)
         return FillResult(
             filled=False,
