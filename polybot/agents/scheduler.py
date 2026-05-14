@@ -1815,7 +1815,7 @@ class AgentScheduler:
             # trades the train split excluded). The backtest is purely mathematical so
             # Claude seeing recent trades doesn't create lookahead in the adoption gate.
             recommendations = await self._run_ta_evolver(analysis, all_outcomes)
-            source = "claude" if recommendations.get("confidence") else "local"
+            source = recommendations.get("_pipeline_source", "local")
             pipeline_info["source"] = source
             # Manual-lever observations — evidence-backed suggestions for operator-only
             # params. These are never auto-applied; just surfaced in the summary table,

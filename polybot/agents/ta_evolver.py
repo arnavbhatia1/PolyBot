@@ -45,6 +45,7 @@ class TAEvolver:
         if self.claude_client:
             try:
                 recommendations = await self.claude_client.analyze_strategy(context)
+                recommendations["_pipeline_source"] = "claude"
                 self._save_log(recommendations, source=f"Claude ({recommendations.get('confidence', '?')})")
                 logger.info(f"  [3/4] Claude done  |  confidence: {recommendations.get('confidence', '?')}  |  {len(recommendations.get('changes', []))} changes proposed")
                 return recommendations
@@ -52,6 +53,7 @@ class TAEvolver:
                 logger.warning(f"Claude unavailable, using local recommender: {e}")
 
         recs = LocalRecommender(analysis, current_config).recommend()
+        recs["_pipeline_source"] = "local"
         self._save_log(recs, source="Local")
         return recs
 

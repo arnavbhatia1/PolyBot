@@ -217,6 +217,7 @@ class BaseTrader(ABC):
         exit_price: float,
         token_id: str = "",
         position: dict[str, Any] | None = None,
+        exit_reason: str = "scalp",
     ) -> TradeResult:
         # --- Lookup position ---
         if position is None:
@@ -254,7 +255,7 @@ class BaseTrader(ABC):
         total_fees = entry_fee_usd + fee_usdc
         await self.db.close_position_and_credit_bankroll(
             position_id, exit_price=fill.fill_price, log_return=lr,
-            bankroll_delta=revenue, pnl=pnl, fees=total_fees,
+            bankroll_delta=revenue, pnl=pnl, fees=total_fees, exit_reason=exit_reason,
         )
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
@@ -295,7 +296,7 @@ class BaseTrader(ABC):
         new_bankroll = await self._resolve_bankroll(position, exit_price)
         await self.db.close_position_and_set_bankroll(
             position_id, exit_price=exit_price, log_return=lr,
-            new_bankroll=new_bankroll, pnl=pnl, fees=total_fees,
+            new_bankroll=new_bankroll, pnl=pnl, fees=total_fees, exit_reason="resolution",
         )
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,

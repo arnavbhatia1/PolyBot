@@ -61,7 +61,8 @@ class Database:
                 log_return REAL NOT NULL,
                 weight_version TEXT NOT NULL,
                 entry_timestamp TEXT NOT NULL,
-                exit_timestamp TEXT NOT NULL
+                exit_timestamp TEXT NOT NULL,
+                exit_reason TEXT NOT NULL DEFAULT 'resolution'
             );
 
             CREATE TABLE IF NOT EXISTS bankroll (
@@ -87,6 +88,8 @@ class Database:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN pnl REAL DEFAULT 0")
         if "fees" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0")
+        if "exit_reason" not in th_cols:
+            await self.conn.execute("ALTER TABLE trade_history ADD COLUMN exit_reason TEXT NOT NULL DEFAULT 'resolution'")
 
         # Hot-path indexes — get_open_positions / has_position_for_market run every tick.
         await self.conn.execute(
@@ -203,7 +206,8 @@ class Database:
         await self.conn.commit()
 
     async def close_position(self, position_id: int, exit_price: float, log_return: float,
-                             pnl: float = 0.0, fees: float = 0.0) -> None:
+                             pnl: float = 0.0, fees: float = 0.0,
+                             exit_reason: str = "resolution") -> None:
         now = datetime.now(timezone.utc).isoformat()
         await self.conn.execute(
             "UPDATE positions SET status='closed', exit_price=?, exit_timestamp=?, log_return=? WHERE id=?",
@@ -217,18 +221,19 @@ class Database:
             """INSERT INTO trade_history
             (position_id, market_id, question, side, entry_price, exit_price, size,
              signal_score, signal_strength, ev_at_entry, log_return,
-             weight_version, entry_timestamp, exit_timestamp, pnl, fees)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             weight_version, entry_timestamp, exit_timestamp, pnl, fees, exit_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (pos["id"], pos["market_id"], pos["question"], pos["side"],
              pos["entry_price"], exit_price, pos["size"],
              pos["signal_score"], pos["signal_strength"], pos["ev_at_entry"],
-             log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees),
+             log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees, exit_reason),
         )
         await self.conn.commit()
 
     async def close_position_and_set_bankroll(
         self, position_id: int, exit_price: float, log_return: float,
         new_bankroll: float, pnl: float = 0.0, fees: float = 0.0,
+        exit_reason: str = "resolution",
     ) -> None:
         """Close position, write trade_history, and set bankroll absolute in one transaction.
 
@@ -249,12 +254,12 @@ class Database:
                 """INSERT INTO trade_history
                 (position_id, market_id, question, side, entry_price, exit_price, size,
                  signal_score, signal_strength, ev_at_entry, log_return,
-                 weight_version, entry_timestamp, exit_timestamp, pnl, fees)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 weight_version, entry_timestamp, exit_timestamp, pnl, fees, exit_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (pos["id"], pos["market_id"], pos["question"], pos["side"],
                  pos["entry_price"], exit_price, pos["size"],
                  pos["signal_score"], pos["signal_strength"], pos["ev_at_entry"],
-                 log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees),
+                 log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees, exit_reason),
             )
             await self.conn.execute(
                 "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
@@ -269,6 +274,7 @@ class Database:
     async def close_position_and_credit_bankroll(
         self, position_id: int, exit_price: float, log_return: float,
         bankroll_delta: float, pnl: float = 0.0, fees: float = 0.0,
+        exit_reason: str = "resolution",
     ) -> None:
         """Close position, write trade_history, and credit bankroll in a single transaction.
 
@@ -289,12 +295,12 @@ class Database:
                 """INSERT INTO trade_history
                 (position_id, market_id, question, side, entry_price, exit_price, size,
                  signal_score, signal_strength, ev_at_entry, log_return,
-                 weight_version, entry_timestamp, exit_timestamp, pnl, fees)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 weight_version, entry_timestamp, exit_timestamp, pnl, fees, exit_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (pos["id"], pos["market_id"], pos["question"], pos["side"],
                  pos["entry_price"], exit_price, pos["size"],
                  pos["signal_score"], pos["signal_strength"], pos["ev_at_entry"],
-                 log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees),
+                 log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees, exit_reason),
             )
             await self.conn.execute(
                 "UPDATE bankroll SET amount = amount + ? WHERE id = 1",

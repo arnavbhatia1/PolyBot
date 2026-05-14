@@ -987,7 +987,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
         if contract_window_ts in window_strikes:
             logger.info(f"STRIKE UPDATE {_slug_to_window(cid)} | ${window_strikes[contract_window_ts]:,.2f} → ${ptb:,.2f} (Polymarket priceToBeat)")
         else:
-            logger.info(f"NEW WINDOW {_slug_to_window(cid)} | strike ${ptb:,.2f} (Polymarket)")
+            logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | strike ${ptb:,.2f} (Polymarket){_C.RESET}")
         window_strikes[contract_window_ts] = ptb
 
     if contract_window_ts not in window_strikes:
@@ -996,7 +996,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             cl_strike = chainlink_feed.get_strike(contract_window_ts)
             if cl_strike:
                 window_strikes[contract_window_ts] = cl_strike
-                logger.info(f"NEW WINDOW {_slug_to_window(cid)} | strike ${cl_strike:,.2f} (Chainlink)")
+                logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
 
         # Fall back to Binance candle if Chainlink didn't capture it
         if contract_window_ts not in window_strikes:
