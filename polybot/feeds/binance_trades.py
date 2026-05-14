@@ -30,6 +30,7 @@ class BinanceTradeAccumulator:
     def __init__(self, max_age_s: float = 300) -> None:
         self.max_age_s = max_age_s
         self._trades: deque[AggTrade] = deque()
+        self._cache: dict[tuple, tuple[tuple, float]] = {}
 
     def add_trade(self, price: float, qty: float, is_buyer_maker: bool, ts: float) -> None:
         """Append a trade and prune expired entries."""
@@ -42,8 +43,20 @@ class BinanceTradeAccumulator:
         while self._trades and self._trades[0].ts < cutoff:
             self._trades.popleft()
 
+    def _cache_key(self) -> tuple:
+        """Snapshot of accumulator state used as cache key. Changes when a trade
+        is appended (different len + latest_ts) or pruned (different len)."""
+        if not self._trades:
+            return (0, 0.0)
+        return (len(self._trades), self._trades[-1].ts)
+
     def _window(self, window_s: float) -> list[AggTrade]:
-        """Return trades within the last window_s seconds."""
+        """Return trades within the last window_s seconds.
+
+        Retained for callers that need the materialized list (e.g.
+        get_large_trades). Hot-path consumers (get_cvd, get_taker_ratio) use
+        single-pass iteration directly to avoid this list allocation.
+        """
         cutoff = time.time() - window_s
         return [t for t in self._trades if t.ts >= cutoff]
 
@@ -56,13 +69,17 @@ class BinanceTradeAccumulator:
         is_buyer_maker=False means buyer was taker (aggressor) -> +qty
         is_buyer_maker=True means seller was taker (aggressor) -> -qty
         """
-        trades = self._window(window_s)
+        key = self._cache_key()
+        cached = self._cache.get(("cvd", window_s))
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        cutoff = time.time() - window_s
         cvd = 0.0
-        for t in trades:
-            if t.is_buyer_maker:
-                cvd -= t.qty  # Seller aggressor
-            else:
-                cvd += t.qty  # Buyer aggressor
+        for t in reversed(self._trades):
+            if t.ts < cutoff:
+                break
+            cvd += -t.qty if t.is_buyer_maker else t.qty
+        self._cache[("cvd", window_s)] = (key, cvd)
         return cvd
 
     def get_cvd_acceleration(self, recent_s: float = 15.0, baseline_s: float = 45.0) -> float:
@@ -95,20 +112,28 @@ class BinanceTradeAccumulator:
         single whale trade would otherwise return 1.0 or 0.0 and trigger
         spurious signals downstream.
         """
-        trades = self._window(window_s)
-        if len(trades) < min_trades:
-            return 0.5
-
+        key = self._cache_key()
+        cache_id = ("taker", window_s, min_trades)
+        cached = self._cache.get(cache_id)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        cutoff = time.time() - window_s
+        count = 0
         buy_vol = 0.0
         total_vol = 0.0
-        for t in trades:
+        for t in reversed(self._trades):
+            if t.ts < cutoff:
+                break
+            count += 1
             total_vol += t.qty
             if not t.is_buyer_maker:
                 buy_vol += t.qty
-
-        if total_vol == 0:
-            return 0.5
-        return buy_vol / total_vol
+        if count < min_trades or total_vol == 0:
+            ratio = 0.5
+        else:
+            ratio = buy_vol / total_vol
+        self._cache[cache_id] = (key, ratio)
+        return ratio
 
     def get_large_trades(self, window_s: float = 120, min_btc: float = 0.5) -> list[dict[str, Any]]:
         """Return trades above min_btc threshold within the window.

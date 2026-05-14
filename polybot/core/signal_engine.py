@@ -155,6 +155,8 @@ class SignalEngine:
         self._exit_boundary = ExitBoundary(df=self.student_t_df)
         self._atr_history: deque[float] = deque(maxlen=_ATR_HISTORY_SIZE)
         self._atr_long_term: deque[float] = deque(maxlen=_ATR_LONG_TERM_SIZE)
+        self._atr_history_sum: float = 0.0
+        self._atr_long_term_sum: float = 0.0
         self.last_regime_autocorr: float = 0.0
         self.last_regime_direction: float = 0.0
         # P(Up) BEFORE Platt calibration on the most recent compute_probability call.
@@ -163,17 +165,29 @@ class SignalEngine:
         self.last_raw_prob_up: float = 0.5
 
     def _record_atr(self, atr: float) -> None:
-        if atr > 0:
-            self._atr_history.append(float(atr))
-            self._atr_long_term.append(float(atr))
+        if atr <= 0:
+            return
+        v = float(atr)
+        h = self._atr_history
+        if len(h) == h.maxlen:
+            self._atr_history_sum -= h[0]
+        h.append(v)
+        self._atr_history_sum += v
+        lt = self._atr_long_term
+        if len(lt) == lt.maxlen:
+            self._atr_long_term_sum -= lt[0]
+        lt.append(v)
+        self._atr_long_term_sum += v
 
     def _effective_atr_floor(self) -> float:
-        if len(self._atr_history) < _ATR_HISTORY_MIN_SAMPLES:
+        n_short = len(self._atr_history)
+        if n_short < _ATR_HISTORY_MIN_SAMPLES:
             return self.min_atr
-        rolling_mean = sum(self._atr_history) / len(self._atr_history)
+        rolling_mean = self._atr_history_sum / n_short
         base_floor = max(self.min_atr, _ATR_FLOOR_FRACTION * rolling_mean)
-        if len(self._atr_long_term) >= _ATR_LONG_TERM_MIN_SAMPLES:
-            long_term_mean = sum(self._atr_long_term) / len(self._atr_long_term)
+        n_long = len(self._atr_long_term)
+        if n_long >= _ATR_LONG_TERM_MIN_SAMPLES:
+            long_term_mean = self._atr_long_term_sum / n_long
             if long_term_mean > 0 and rolling_mean / long_term_mean < _ATR_REGIME_SHIFT_THRESHOLD:
                 regime_floor = long_term_mean * _ATR_REGIME_SHIFT_THRESHOLD * _ATR_FLOOR_FRACTION
                 return max(base_floor, regime_floor)
@@ -199,18 +213,31 @@ class SignalEngine:
         self.min_edge = value
 
     def compute_regime_factor(self, closes) -> float:
-        """1-lag autocorr of recent returns. Positive=trending, negative=reverting."""
+        """1-lag autocorr of recent returns. Positive=trending, negative=reverting.
+
+        Inlined Pearson r over the (returns[:-1], returns[1:]) lag pair instead
+        of going through np.corrcoef — that function builds a full 2x2 matrix
+        and goes through a generic dispatcher, ~3-5× slower for n<30 samples.
+        """
         n = self.regime_lookback
         if len(closes) < n + 2:
             return 0.0
         returns = np.diff(closes[-(n + 1):]) / closes[-(n + 1):-1]
         if len(returns) < 6:
             return 0.0
-        r1, r2 = returns[:-1], returns[1:]
-        if np.std(r1) == 0 or np.std(r2) == 0:
+        r1 = returns[:-1]
+        r2 = returns[1:]
+        m1 = r1.mean()
+        m2 = r2.mean()
+        d1 = r1 - m1
+        d2 = r2 - m2
+        num = float((d1 * d2).sum())
+        var1 = float((d1 * d1).sum())
+        var2 = float((d2 * d2).sum())
+        if var1 <= 0 or var2 <= 0:
             return 0.0
-        corr = float(np.corrcoef(r1, r2)[0, 1])
-        return 0.0 if np.isnan(corr) else max(-1.0, min(1.0, corr))
+        corr = num / math.sqrt(var1 * var2)
+        return 0.0 if math.isnan(corr) else max(-1.0, min(1.0, corr))
 
     def compute_probability(self, btc_price: float, strike_price: float,
                             seconds_remaining: float, atr: float,
