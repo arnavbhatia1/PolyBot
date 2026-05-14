@@ -498,3 +498,26 @@
 - SPRT at 50% enter rate and avg confidence 0.16 in last 50 trades indicates the entry gate is still filtering aggressively; trade frequency may be too low to generate reliable live feedback on any changes adopted this cycle.
 
 **Reasoning:** With 15+ parameter families exhausted and the sole adoption producing -0.167 live delta, the priority is minimal intervention — only two untested directions (kelly_fraction ↓ and prev_margin_weight ↓) have any rationale grounded in live data (Q4 overbetting and noisy L5 signal in neutral-dominant regime). The exit_edge_threshold manual observation at n=1058 and 37% accuracy in the <-0.10 bucket remains the highest-confidence actionable lever across multiple cycles and is reproduced again here for operator action. Empty changes remains defensible, but the adoption floor of 0.0097 this cycle is low enough that these two untested directions warrant a single backtest each.
+
+## 2026-05-14T03:31:20.995793+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (0) [operator-only]:**
+  - none
+
+**Findings:**
+- Win rate IMPROVING (55%→63% last bucket) — self-resolving, no intervention needed.
+- Scalp exits below -0.10 edge correct only 38% of time (n=1106, ~9× noise) — primary value leak.
+- 15+ parameter families exhausted; every tested direction failed adoption floor or live validation.
+- Both adoptions decayed live (spot_flow_weight, atr_sigma_ratio each -0.167) — overfitting risk is high.
+- Platt calibration near identity (raw ≥ 0.95× platt) — calibrator adding no lift this cycle.
+
+**Warnings:**
+- 0/1 adoption success with -0.167 live delta on the sole attempt — any change carries elevated overfitting risk until regime stabilizes.
+- Mean gain DEGRADING (-0.0238 trend delta) while WR is IMPROVING suggests position sizing or exit quality is the drag, not entry selection.
+- With Platt near identity and all major parameter families exhausted, further tuning risks fitting noise; a structural model review may be warranted.
+
+**Reasoning:** Every backtestable parameter family has now been tested across multiple values and directions, with no candidate clearing the 0.016 safety-margin delta needed for meaningful confidence — empty changes is the only defensible call. The sole adoption produced -0.167 live Sharpe decay, reinforcing that backtest deltas near the noise floor are not translating to live edge in the current regime. The manual observation on exit_edge_threshold remains the highest-confidence actionable lever, backed by n=1106 at 38% accuracy in the destructive <-0.10 bucket, consistently reproduced across multiple cycles at 9× the noise floor.
