@@ -15,6 +15,14 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 
+try:
+    import orjson as _orjson
+    def _fast_dumps(obj: Any) -> str:
+        return _orjson.dumps(obj).decode("utf-8")
+except ImportError:
+    def _fast_dumps(obj: Any) -> str:
+        return json.dumps(obj)
+
 # Force UTF-8 on stdout/stderr so Windows cp1252 consoles don't choke on box-drawing
 # chars (═ ─ Δ ± ✓ ✗ ⚠ →) used in pipeline summary output. errors='replace' keeps the
 # process alive if a terminal still can't render a given codepoint.
@@ -843,7 +851,7 @@ async def _evaluate_signal_and_enter(
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
     }
-    snapshot_str = json.dumps(snapshot)
+    snapshot_str = _fast_dumps(snapshot)
 
     # Pre-submit edge re-check: use fresh_ask already fetched above (zero extra
     # round trip). The earlier net_edge gate at L709 subtracted slippage cost
@@ -1470,7 +1478,7 @@ async def _evaluate_and_exit_position(
                 f"attempting exit"
             )
 
-        result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token)
+        result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token, position=pos)
         if not result.success:
             if "CLOB minimum" in (result.reason or ""):
                 # Race: size was >= $1 when we checked but the price dropped

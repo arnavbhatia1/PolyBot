@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MAX_RETRIES = 3
-_RETRY_BASE_DELAY = 0.1  # seconds, doubles each attempt (0.1 + 0.2 = 0.3s total)
+_RETRY_BASE_DELAY = 0.05
 _RETRY_JITTER = 0.2  # ±20% jitter on backoff to avoid thundering-herd retry storms
 _MIN_ORDER_USD = 1.0  # Polymarket CLOB rejects marketable orders below $1 notional
 _NON_RETRYABLE_ERRORS = frozenset({

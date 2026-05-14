@@ -1,16 +1,15 @@
 """Base execution layer: shared dataclasses, fee math, and BaseTrader ABC."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
-
 from polybot.db.models import Database
 from polybot.core.returns import log_return
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -27,8 +26,7 @@ class TradeResult:
     exit_fee_usd: float = 0.0
     gain_pct: float = 0.0
     shares: float = 0.0
-    fill_price: float = 0.0  # actual fill price after latency/book-walk (may differ from signal-moment ask)
-
+    fill_price: float = 0.0
 
 @dataclass
 class FillResult:
@@ -42,7 +40,7 @@ class FillResult:
 # Fee math (canonical — imported by paper_trader, live_trader, main)
 # ---------------------------------------------------------------------------
 
-DEFAULT_FEE_RATE = 0.018  # Polymarket crypto taker fee: 1.8% peak (Dynamic Taker-Fee Model)
+DEFAULT_FEE_RATE = 0.018  # Polymarket Dynamic taker fee model: 1.8% peak
 
 
 def slippage_pct(order_size_usd: float, book_depth_usd: float,
@@ -151,14 +149,16 @@ class BaseTrader(ABC):
         fee_rate: float = DEFAULT_FEE_RATE,
     ) -> TradeResult:
         # --- Rejection gates ---
-        if await self.db.has_position_for_market(market_id):
+        has_pos, pos_count, bankroll, deployed = await asyncio.gather(
+            self.db.has_position_for_market(market_id),
+            self.db.get_open_position_count(),
+            self.db.get_bankroll(),
+            self._get_deployed_capital(),
+        )
+        if has_pos:
             return TradeResult(success=False, reason="Duplicate market — already have position")
-
-        if await self.db.get_open_position_count() >= self.max_concurrent_positions:
+        if pos_count >= self.max_concurrent_positions:
             return TradeResult(success=False, reason="Max positions reached")
-
-        bankroll = await self.db.get_bankroll()
-        deployed = await self._get_deployed_capital()
         max_deployable = bankroll * self.max_bankroll_deployed
         if deployed + size > max_deployable:
             return TradeResult(
@@ -216,10 +216,12 @@ class BaseTrader(ABC):
         position_id: int,
         exit_price: float,
         token_id: str = "",
+        position: dict[str, Any] | None = None,
     ) -> TradeResult:
         # --- Lookup position ---
-        positions = await self.db.get_open_positions()
-        position = next((p for p in positions if p["id"] == position_id), None)
+        if position is None:
+            positions = await self.db.get_open_positions()
+            position = next((p for p in positions if p["id"] == position_id), None)
         if not position:
             return TradeResult(
                 success=False,
