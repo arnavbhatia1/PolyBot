@@ -1,121 +1,3 @@
-
-**Findings:**
-- Every tested parameter direction has failed fold consistency — config may be at a local optimum
-- Scalps wrong 55% of time — $1,568 left on table from premature exits
-- Low-edge trades (4-8%) win 56% vs high-edge (12-20%) at 52% — inverted edge-WR persists
-- 60-180s entries win only 48% at n=477 — mid-window timing is a consistent losing window
-- ATR halved (mean 29→15, KS=0.462) — live regime diverging from backtest history
-
-**Warnings:**
-- Sharpe degrading across all 5 recent buckets (-0.147 trend) — structural deterioration, not noise
-- 20+ parameter combinations tested with zero live-validated adoptions — backtest may not reflect current market
-- ATR regime shift means walk-forward folds trained on different volatility environment — all BT deltas suspect
-
-**Reasoning:** With nearly every parameter direction exhausted and consistent fold-consistency failures despite positive BT deltas, this cycle proposes only genuinely untested directions: min_kelly ↑ (never tried, targets the persistent inverted edge-WR), flow_weight ↓ (only ↑ tested and failed), and min_edge ↓ (only ↑ tested). The structural Sharpe degradation and ATR regime shift suggest the backtest environment is increasingly misaligned with live conditions — a rest period may be warranted if these also fail fold consistency. The exit threshold manual observation remains the highest-confidence actionable finding, supported by n=577 scalps at 34% accuracy.
-
-## 2026-04-27T02:50:52.490239+00:00
-
-**Source:** Claude (low)
-**Proposed Changes (3):**
-  - spot_flow_weight=0.12 (7 prior ↑ tests all showed positive BT delta (avg +0.018); 0.12 is untested and the largest move yet in the consistently positive direction — needed to clear the 0.0131 adoption floor with safety margin.)
-  - probability_compression=0.7 (All 9 prior tests (0.75–0.88) showed positive BT delta (avg +0.014) but failed fold consistency — a more aggressive compression at 0.70 (untested) is needed to produce a large enough Δ to clear folds, directly addressing the inverted edge-WR where high-conviction entries underperform.)
-  - liquidation_weight=0.08 (Both prior ↑ tests (0.05, 0.06) showed positive delta; ATR mean jumped from 27 to 40 in the distribution shift, meaning liquidation cascades are more frequent now — 0.08 (untested) pushes further in the confirmed positive direction.)
-
-**Manual Suggestions (3) [operator-only]:**
-  - exit_edge_threshold: -0.02 -> -0.07 [high]
-    Scalps triggered at holding_edge < -0.10 are correct only 34% of the time across 653 exits — 16pp below break-even and far exceeding 2× noise — meaning the current -0.02 threshold allows deeply wrong early exits that consistently destroy value; a more negative threshold keeps positions held to resolution.
-  - late_max_penalty: 0.4 -> 0.25 [medium]
-    The 60-180s window wins only 48.4% vs 55.4% in the early window — a 7pp gap at 3.5× the noise floor — indicating late entries are systematically unprofitable; reducing late_max_penalty further cuts Kelly for these entries.
-  - adverse_selection_threshold: 0.8 -> 0.85 [low]
-    The pre_submit_edge_drift gate blocked 154 trades of which 64% were profitable with +$203 simulated PnL — exceeding the 60% profitable bar — suggesting the gate is over-filtering winning entries and a slightly higher threshold would let more edge-positive trades through.
-
-**Findings:**
-- Sharpe degrading hard across all 5 recent buckets (0.191→0.046) — structural deterioration
-- Scalp exits wrong 55% of time — $1,762 left on table from premature exits
-- 60-180s entries win only 48.4% (n=517) — below breakeven mid-window is a persistent drag
-- ATR mean jumped 27→40 (distribution shift) — high-vol regime favors liquidation cascade signals
-- Nearly all parameter directions exhausted — only untested magnitudes remain as levers
-
-**Warnings:**
-- 20+ parameter combinations tested with zero live-validated adoptions — backtest may be misaligned with live conditions
-- probability_compression at 0.70 is a large move — if it passes folds, monitor neutral regime Sharpe closely for degradation
-- spot_flow_weight + liquidation_weight both draw from OI/flow signal family — raising both may compound if L3 signal is noisy
-
-**Reasoning:** With nearly every parameter direction exhausted at tested magnitudes, this cycle pushes further in the three directions that have shown consistently positive (though sub-threshold) BT deltas: spot_flow_weight ↑ to 0.12 (7 prior positive tests, largest untested move), probability_compression ↓ to 0.70 (9 prior positive tests, all failing folds at 0.75-0.88 — needs bigger magnitude), and liquidation_weight ↑ to 0.08 (both prior tests positive, ATR jump to 40 makes cascades more frequent). The ATR distribution shift (27→40) and degrading Sharpe trend (-0.145 across 5 buckets) are the dominant structural signals; the configuration needs a meaningful calibration shift, not incremental tweaks.
-
-## 2026-04-28T03:15:56.425934+00:00
-
-**Source:** Claude (low)
-**Proposed Changes (3):**
-  - probability_compression=0.85 (Untested value between 0.82 (Δ=+0.0095) and 0.88 (best single-test Δ=+0.0265); Q4 edge realization at 0.55 confirms model overconfidence at high-conviction entries, and this compression level hasn't been tried despite the ↓ direction averaging +0.009 across 10 tests.)
-  - spot_flow_weight=0.06 (Untested value — all prior tests used 0.05, 0.07, 0.08, 0.09, 0.12; the ↑ direction averages +0.015 BT delta across 8 tests with one adoption; 0.06 sits between the failed 0.05 (Δ=-0.010) and failed 0.07 (Δ=+0.024, close to threshold) and may thread the fold-consistency needle.)
-  - atr_sigma_ratio=1.25 (Untested midpoint between 1.2 (Δ=+0.0044) and 1.3 (adopted, live); ATR mean dropped from 27.6 to 20.3 (KS=0.226, p=0.011) suggesting the model should be slightly more aggressive — 1.25 is genuinely untested and the ↓ direction has the best avg BT delta (+0.014) of all tested directions.)
-
-**Manual Suggestions (2) [operator-only]:**
-  - exit_edge_threshold: -0.05 -> -0.08 [high]
-    Scalps at holding_edge < -0.10 are correct only 35% of the time (n=706, 15pp below break-even, far exceeding 2× noise floor) — the current -0.05 threshold permits deeply wrong early exits; a more negative threshold keeps these positions held to resolution where hold accuracy is 56.9%.
-  - adverse_selection_threshold: 0.75 -> 0.8 [low]
-    The pre_submit_edge_drift gate blocked 167 trades of which 63% were profitable with +$195.84 simulated PnL — exceeding the 60% profitable threshold for loosening — suggesting the gate is over-filtering winning entries.
-
-**Findings:**
-- Sharpe degraded from 0.183 to 0.003 across last 5 buckets — structural deterioration
-- Scalp exits wrong 55% of time — $1,695 left on table from holding good positions too short
-- Q4 edge realization at 0.55 — model overconfident on highest-conviction entries
-- ATR mean dropped 27→20 (p=0.011) — live regime shift may be hurting backtest reliability
-- Nearly every single-param direction exhausted — proposing untested intermediate values only
-
-**Warnings:**
-- 30+ parameter combinations tested with zero live-validated adoptions — backtest may be misaligned with current live conditions
-- Degrading Sharpe trend across all 5 recent buckets suggests structural market regime change, not parameter miscalibration
-- If all three proposed values also fail fold consistency, recommend a rest cycle with no changes
-
-**Reasoning:** With nearly every parameter direction exhausted, this cycle proposes three genuinely untested intermediate values from the families with the best historical BT deltas: probability_compression at 0.85 (between the two best-performing tested values), spot_flow_weight at 0.06 (between the failed 0.05 and near-threshold 0.07), and atr_sigma_ratio at 1.25 (between the two tested ↓ values, targeting the ATR regime shift). The dominant structural signal is the hard Sharpe degradation (0.183→0.003) combined with ATR mean compression — if these intermediate values also fail fold consistency, a rest cycle with empty changes is the appropriate next step.
-
-## 2026-04-28T13:19:33.174457+00:00
-
-**Source:** Claude (high)
-**Proposed Changes (0):**
-  - none
-
-**Manual Suggestions (2) [operator-only]:**
-  - exit_edge_threshold: -0.05 -> -0.1 [high]
-    Scalps triggered at holding_edge < -0.10 are correct only 36% of the time across 735 exits — 14pp below break-even and far exceeding 2× noise floor — indicating the current -0.05 threshold still permits deeply destructive early exits; holding to resolution outperforms by $1,605 overall.
-  - adverse_selection_threshold: 0.75 -> 0.8 [medium]
-    The pre_submit_edge_drift gate blocked 176 trades of which 63% were profitable with +$229.61 simulated PnL — exceeding the 60% profitable threshold for loosening — suggesting the gate is over-filtering winning entries in the new low-ATR regime.
-
-**Findings:**
-- 30+ parameter combinations exhausted — backtest fold consistency failing across the board
-- ATR halved again to mean 11.6 (KS=0.543) — backtest trained on a different market
-- Sharpe collapsed from +0.180 to -0.004 across last 5 buckets — structural deterioration
-- Scalp exits wrong 54% of time — $1,605 left on table from premature exits
-- Q4 edge realization at 0.01 in most recent bucket — model confidence now near-worthless
-
-**Warnings:**
-- With SPRT at 0% enter rate and mean gain near zero, live edge may have disappeared entirely
-- ATR regime shift this severe (KS=0.543) means all historical backtest deltas are suspect
-- Continued parameter churn on a structurally broken backtest risks making live performance worse
-
-**Reasoning:** Every backtestable parameter direction has been attempted and has failed fold consistency — there is no remaining untested combination with meaningful expected delta above the 0.026 safety margin threshold. The ATR regime shift (mean 30→11.6, KS=0.543) is now so severe that the walk-forward backtest is trained on a fundamentally different market, making any BT delta unreliable as a signal. The correct action is an empty changes list while the operator reviews whether the model architecture needs structural changes to adapt to the new low-volatility regime.
-
-## 2026-04-29T03:15:44.347631+00:00
-
-**Source:** Claude (high)
-**Proposed Changes (0):**
-  - none
-
-**Manual Suggestions (3) [operator-only]:**
-  - exit_edge_threshold: -0.05 -> -0.12 [high]
-    Scalps triggered at holding_edge < -0.10 are correct only 37% of the time (n=745, 13pp below break-even) — holding to resolution outperforms scalping by $1,482 overall, and these deep-negative exits are the primary driver of destroyed value.
-  - adverse_selection_threshold: 0.8 -> 0.85 [medium]
-    The pre_submit_edge_drift gate blocked 187 trades of which 64% were profitable with +$235.73 simulated PnL — both bars for loosening are met, and in the current low-ATR regime these edge-positive trades are being incorrectly filtered.
-  - late_max_penalty: 0.6 -> 0.35 [medium]
-    The 60-180s entry window wins only 50.5% (n=992) vs 53.2% in the 180-300s window — a 2.7pp gap exceeding 2× noise floor — indicating mid-to-late entries are structurally unprofitable and deserve a harder Kelly cut.
-
-**Findings:**
-- Every backtestable parameter direction exhausted — empty changes is correct
-- Sharpe collapsed from +0.178 to -0.029 across last 5 buckets — structural degradation
-- Q4 edge realization -0.60 in most recent bucket — model confidence now inverted
-- Scalp exits wrong 53.8% of time — $1,482 left on table from premature exits
 - ATR halved (mean 27→13) — backtest trained on a fundamentally different market
 
 **Warnings:**
@@ -521,3 +403,62 @@
 - With Platt near identity and all major parameter families exhausted, further tuning risks fitting noise; a structural model review may be warranted.
 
 **Reasoning:** Every backtestable parameter family has now been tested across multiple values and directions, with no candidate clearing the 0.016 safety-margin delta needed for meaningful confidence — empty changes is the only defensible call. The sole adoption produced -0.167 live Sharpe decay, reinforcing that backtest deltas near the noise floor are not translating to live edge in the current regime. The manual observation on exit_edge_threshold remains the highest-confidence actionable lever, backed by n=1106 at 38% accuracy in the destructive <-0.10 bucket, consistently reproduced across multiple cycles at 9× the noise floor.
+
+## 2026-05-15T05:23:49.056398+00:00
+
+**Source:** Local
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [medium]
+    Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
+
+**Findings:**
+- Recent 100 trades improving: WR 62% vs overall 55%
+- Platt meta: raw_sharpe 0.2677 >= 0.95 x current_platt 0.2590 — reverting to identity
+- Top gate: stale_prices blocks 11631/34477 skips (34%) — consider loosening
+
+**Warnings:**
+- None
+
+**Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
+
+## 2026-05-15T05:37:17.280599+00:00
+
+**Source:** Local
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [medium]
+    Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
+
+**Findings:**
+- Recent 100 trades improving: WR 62% vs overall 55%
+- Top gate: stale_prices blocks 11631/34477 skips (34%) — consider loosening
+
+**Warnings:**
+- None
+
+**Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
+
+## 2026-05-15T05:38:38.667176+00:00
+
+**Source:** Local
+**Proposed Changes (0):**
+  - none
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [medium]
+    Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
+
+**Findings:**
+- Recent 100 trades improving: WR 62% vs overall 55%
+- Platt meta: raw_sharpe 0.3852 >= 0.95 x current_platt 0.3404 — reverting to identity
+- Top gate: stale_prices blocks 11631/34477 skips (34%) — consider loosening
+
+**Warnings:**
+- None
+
+**Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
