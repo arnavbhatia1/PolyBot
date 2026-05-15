@@ -46,8 +46,6 @@ class ClaudeRecommender(BaseRecommender):
         for c in (resp.get("changes") or []):
             if not isinstance(c, dict) or not c.get("param"):
                 continue
-            if c["param"] in self._blocked:
-                continue
             self.proposals.append({
                 "param": c["param"],
                 "value": c.get("value"),

@@ -56,7 +56,6 @@ class BaseRecommender:
         self.warnings: list[str] = []
         self._dir_table = self._parse_dir_table(self.analysis.get("directional_table", ""))
         self._failed_values = self._parse_failures(self.analysis.get("cumulative_failures", {}))
-        self._blocked: set[str] = self._build_blocked()
 
     def recommend(self) -> dict[str, Any]:
         raise NotImplementedError
@@ -87,15 +86,11 @@ class BaseRecommender:
     def _propose(self, param: str, value: Any, reason: str,
                  predicted_delta: float = 0.005,
                  ci: tuple[float, float] = (-0.012, 0.025)) -> bool:
-        if param in self._blocked:
-            return False
         if param in CLAMP_RANGES:
             value = _clamp(value, param)
         if param != "weights" and isinstance(value, (int, float)):
             cur = self.cfg.get(param)
             if cur is not None and abs(float(value) - float(cur)) < 1e-6:
-                return False
-            if self._value_failed(param, float(value)):
                 return False
         self.proposals.append({
             "param": param,
@@ -155,28 +150,6 @@ class BaseRecommender:
                         pass
         return out
 
-    def _build_blocked(self) -> set[str]:
-        """Block params with negative backtest delta last cycle."""
-        blocked: set[str] = set()
-        for r in self.analysis.get("last_per_change_results", []) or []:
-            s = str(r)
-            m = re.match(r"(\w+)=", s)
-            if not m:
-                continue
-            param = m.group(1)
-            bm = re.search(r"baseline=([\-\d.]+)", s)
-            cm = re.search(r"candidate=([\-\d.]+)", s)
-            if bm and cm:
-                try:
-                    if float(cm.group(1)) < float(bm.group(1)):
-                        blocked.add(param)
-                        continue
-                except ValueError:
-                    pass
-            if "worse" in s.lower():
-                blocked.add(param)
-        return blocked
-
     def _direction_ok(self, param: str, direction: str) -> bool:
         """Block (param, direction) pairs with empirical evidence of failure."""
         entry = self._dir_table.get((param, direction))
@@ -208,8 +181,6 @@ class BaseRecommender:
         """Probe every tunable param. Direction = empirical best, or rotate if no history."""
         cycle = datetime.now(timezone.utc).timetuple().tm_yday
         for param, step in EXPLORE_STEPS.items():
-            if param in self._blocked:
-                continue
             up = self._dir_table.get((param, "up"))
             dn = self._dir_table.get((param, "down"))
             up_bt = up["bt_delta"] if up and up.get("bt_delta") is not None and not up.get("decays") else None

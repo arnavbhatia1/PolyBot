@@ -71,8 +71,6 @@ class PipelineTracker:
             "predicted_sharpe": round(predicted_sharpe, 4),
             "changes": {k: [old, new] for k, (old, new) in changes.items()},
             "reason": reason,
-            "review_1d": None,
-            "review_3d": None,
             "review_7d": None,
             "review_14d": None,
             "review_30d": None,
@@ -85,10 +83,9 @@ class PipelineTracker:
     def review_past_adoptions(self, outcomes: list[dict[str, Any]]) -> None:
         """Fill in actual Sharpe for adoptions old enough to evaluate.
 
-        Review windows: 1d, 3d, 7d, 14d, 30d.
+        Review windows: 7d (rollback trigger + prediction accuracy), 14d (decay), 30d (trend).
         After both 7d and 14d are filled, computes decay status and retention ratio.
         DECAYED = Sharpe at 14d < 50% of Sharpe at 7d.
-        Also computes prediction accuracy when Claude's predicted delta was stored.
         """
         records = self._load()
         if not records or not outcomes:
@@ -99,8 +96,6 @@ class PipelineTracker:
 
         # (key, days, min_trades, compute_prediction_accuracy)
         WINDOWS = [
-            ("review_1d",  1,  5,  False),
-            ("review_3d",  3,  5,  False),
             ("review_7d",  7,  10, True),
             ("review_14d", 14, 10, False),
             ("review_30d", 30, 30, False),
@@ -132,21 +127,6 @@ class PipelineTracker:
                     "trades": len(rets),
                     "win_rate": round(sum(1 for r in rets if r > 0) / len(rets), 4),
                 }
-
-                # Early rollback trigger: if 1d Sharpe is severely negative, flag
-                # immediately without waiting for the 7d window.
-                if key == "review_1d" and len(rets) >= 20 and actual_sharpe < baseline - 0.10:
-                    if not rec.get("rollback_recommended"):
-                        rec["rollback_recommended"] = True
-                        rec["rollback_reason"] = (
-                            f"1d Sharpe {actual_sharpe:.3f} trails baseline "
-                            f"{baseline:.3f} by >{0.10:.2f} (n={len(rets)})"
-                        )
-                        logger.warning(
-                            f"[ROLLBACK RECOMMENDED — 1d] {version}: Sharpe "
-                            f"{actual_sharpe:.3f} vs baseline {baseline:.3f} "
-                            f"(n={len(rets)})"
-                        )
 
                 if check_prediction:
                     run_pred = rec.get("run_predicted_delta")
@@ -215,18 +195,6 @@ class PipelineTracker:
             if start <= dt < end:
                 rets.append(o.get("gain_pct", 0))
         return rets
-
-    def days_since_last_adoption(self) -> float | None:
-        """Return days since the most recent adoption, or None if no adoptions."""
-        records = self._load()
-        if not records:
-            return None
-        last = records[-1]
-        try:
-            adopt_dt = datetime.fromisoformat(last["date"])
-            return (datetime.now(timezone.utc) - adopt_dt).total_seconds() / 86400
-        except (ValueError, KeyError):
-            return None
 
     def get_track_record(self) -> list[dict[str, Any]]:
         """Return adoption history for Claude context."""

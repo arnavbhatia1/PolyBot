@@ -691,6 +691,16 @@ class AgentScheduler:
         param = change.get("param", "")
         value = change.get("value")
 
+        # Clamp BEFORE backtest so we test the exact value that would be applied.
+        if param != "weights" and value is not None:
+            from polybot.config.param_registry import CLAMP_RANGES
+            if param in CLAMP_RANGES:
+                lo, hi, cast = CLAMP_RANGES[param]
+                try:
+                    value = cast(max(lo, min(hi, cast(value))))
+                except (TypeError, ValueError):
+                    pass
+
         # Build a thin recommendations dict for _config_for_helper
         single_rec: dict[str, Any] = {}
         from polybot.config.param_registry import TUNABLE_NAMES
@@ -931,8 +941,10 @@ class AgentScheduler:
 
             # Regime-stratified check: a change that passes aggregate stats
             # but hurts a specific regime is likely overfitting to the dominant sample.
-            if adopt and all_outcomes:
-                regime_ok, regime_reason = self._check_regime_adoption(change, all_outcomes, current_sharpe)
+            # Use only the validation fold (40%) — same data the z-test used.
+            validation_outcomes = all_outcomes[int(len(all_outcomes) * 0.60):]
+            if adopt and validation_outcomes:
+                regime_ok, regime_reason = self._check_regime_adoption(change, validation_outcomes, current_sharpe)
                 if not regime_ok:
                     adopt = False
                     adopt_reason = f"regime gate: {regime_reason}"
@@ -1045,8 +1057,12 @@ class AgentScheduler:
 
                     cfg_combined = self._config_for_helper(combined_rec)
                     calibrator = self.signal_engine.calibrator if self.signal_engine else None
+                    # Use validation fold only — same data the per-change z-tests used.
+                    # Using all_outcomes here inflated combined Sharpe (includes training data)
+                    # making the 0.7 threshold almost never trigger.
+                    _val_fold = all_outcomes[int(len(all_outcomes) * 0.60):]
                     combined_returns = self._kelly_bankroll_returns(
-                        outcomes=all_outcomes,
+                        outcomes=_val_fold,
                         recommended_weights=cfg_combined["weights"],
                         momentum_weight=cfg_combined["momentum_weight"],
                         atr_sigma_ratio=cfg_combined["atr_sigma_ratio"],
@@ -1709,6 +1725,9 @@ class AgentScheduler:
                         platt_info["decision"] = "adopted"
                         _pending_cal_save = cal
                         self.signal_engine.calibrator = cal
+                        self._baseline_kelly_sharpe = None
+                        self._baseline_n_trades = None
+                        self._baseline_jk_se = None
                         logger.debug(
                             f"Platt calibration adopted: new={new_kelly_sharpe:.4f} beats "
                             f"raw={raw_kelly_sharpe:.4f} (d={delta_vs_raw:+.4f}, "
