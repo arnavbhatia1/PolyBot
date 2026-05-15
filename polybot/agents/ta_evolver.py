@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from polybot.agents.local_recommender import LocalRecommender
+from polybot.agents.claude_recommender import ClaudeRecommender
 
 logger = logging.getLogger(__name__)
 
@@ -35,19 +36,22 @@ class TAEvolver:
                 text = trimmed
             prev = text[-15000:] if len(text) > 15000 else text
 
-        context = {
-            "current_config": current_config,
-            "analysis": analysis,
-            "trades": outcomes,
-            "previous_recommendations": prev,
-        }
-
+        # Both recommenders share the same BaseRecommender — same exploratory
+        # probe, same dedupe, same envelope schema. Only difference is whether
+        # reactive candidates come from Claude (API) or local rules.
         if self.claude_client:
             try:
-                recommendations = await self.claude_client.analyze_strategy(context)
+                recommender = ClaudeRecommender(
+                    analysis, current_config, self.claude_client,
+                    trades=outcomes, previous_recommendations=prev,
+                )
+                recommendations = await recommender.recommend()
                 recommendations["_pipeline_source"] = "claude"
                 self._save_log(recommendations, source=f"Claude ({recommendations.get('confidence', '?')})")
-                logger.info(f"  [3/4] Claude done  |  confidence: {recommendations.get('confidence', '?')}  |  {len(recommendations.get('changes', []))} changes proposed")
+                logger.info(
+                    f"  [3/4] Claude done  |  confidence: {recommendations.get('confidence', '?')}  |  "
+                    f"{len(recommendations.get('changes', []))} changes proposed"
+                )
                 return recommendations
             except Exception as e:
                 logger.warning(f"Claude unavailable, using local recommender: {e}")

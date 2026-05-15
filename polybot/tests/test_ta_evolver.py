@@ -15,14 +15,22 @@ def _make_outcomes(n: int) -> list[dict]:
 async def test_evolve_uses_claude_when_available(tmp_path):
     mock = AsyncMock()
     mock.analyze_strategy = AsyncMock(return_value={
-        "changes": [{"param": "logit_scale", "value": 4.5, "reason": "test"}],
+        "changes": [{"param": "logit_scale", "value": 4.5, "reason": "test",
+                     "predicted_delta_sharpe_7d": 0.02}],
+        "manual_observations": [],
         "key_findings": [],
         "risk_warnings": [],
         "reasoning": "test",
         "confidence": "medium",
     })
     evolver = TAEvolver(strategy_log_path=str(tmp_path / "log.md"), claude_client=mock)
-    result = await evolver.evolve(_make_outcomes(20), {"overall": {"total_trades": 20}}, {})
+    # n=100 trades — clears the BaseRecommender's 50-trade insufficient-data gate
+    # so Claude actually gets called and the exploratory probe runs.
+    result = await evolver.evolve(_make_outcomes(100), {"overall": {"total_trades": 100}}, {})
+    # Claude's logit_scale proposal has predicted_delta 0.02, higher than any
+    # exploratory probe (0.005), so it must win the dedupe + sort and sit at index 0.
+    params = [c["param"] for c in result["changes"]]
+    assert "logit_scale" in params
     assert result["changes"][0]["param"] == "logit_scale"
     mock.analyze_strategy.assert_called_once()
     assert (tmp_path / "log.md").exists()

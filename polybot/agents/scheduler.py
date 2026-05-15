@@ -88,20 +88,22 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     # Platt calibration
     p_dec = platt.get("decision", "skipped")
     if p_dec in ("adopted", "rejected"):
-        old_ks = platt.get("old_kelly_sharpe", 0.0)
-        new_ks = platt.get("new_kelly_sharpe", 0.0)
-        p_delta = platt.get("delta_sharpe")
+        p_delta = platt.get("delta_sharpe")   # new vs raw
         p_floor = platt.get("dyn_floor")
-        old_ll = platt.get("old_loss", 0.0)
-        new_ll = platt.get("new_loss", 0.0)
-        verdict = "updated" if p_dec == "adopted" else "no improvement"
-        delta_str = f"delta {p_delta:+.3f}, need {p_floor:.3f}" if p_delta is not None and p_floor is not None else ""
+        p_z = platt.get("z_score")
+        raw_ks = platt.get("raw_kelly_sharpe")
+        new_ks = platt.get("new_kelly_sharpe", 0.0)
+        old_ll = platt.get("old_loss") or 0.0
+        new_ll = platt.get("new_loss") or 0.0
+        verdict = "updated" if p_dec == "adopted" else platt.get("reason", "rejected")
+        delta_str = (f"Δ_vs_raw {p_delta:+.3f}, need {p_floor:.3f}, z={p_z:.2f}"
+                     if p_delta is not None and p_floor is not None and p_z is not None
+                     else "")
+        raw_str = f"  raw={raw_ks:.4f}  new={new_ks:.4f}" if raw_ks is not None else ""
         lines.append(f"  Calibration (Platt):  {verdict}"
                      + (f"  ({delta_str})" if delta_str else "")
-                     + f"  — log-loss {old_ll:.3f} → {new_ll:.3f}")
-        meta = platt.get("meta_warning")
-        if meta:
-            lines.append(f"    ! {meta}")
+                     + (f"  — log-loss {old_ll:.3f} → {new_ll:.3f}" if old_ll else "")
+                     + raw_str)
     elif p_dec == "skipped":
         reason = platt.get("reason", "")
         lines.append(f"  Calibration (Platt):  skipped" + (f" — {reason}" if reason else ""))
@@ -1554,12 +1556,8 @@ class AgentScheduler:
         from polybot.core.calibrator import PlattCalibrator, compute_log_loss
         MIN_PLATT_VALIDATION_TRADES = 50
         PLATT_ABS_FLOOR = 0.001
-        # cal.save() is deferred until after the weight optimizer commits so a
-        # mid-pipeline crash leaves on-disk Platt + weights coherent.
+        PLATT_Z_FLOOR = 0.3   # same bar as parameter changes
         _pending_cal_save: PlattCalibrator | None = None
-        # Platt fits on the last 14 days only — older trades came from a
-        # different probability machine and bias the calibration. Falls back to
-        # the full walk-forward split if the recent window has too few trades.
         _PLATT_WINDOW_DAYS = 14
         _platt_cutoff = datetime.now(timezone.utc).timestamp() - _PLATT_WINDOW_DAYS * 86400.0
         def _ts(o: dict) -> float:
@@ -1688,32 +1686,17 @@ class AgentScheduler:
                     platt_info["delta_sharpe"] = round(delta_sharpe, 4)
                     platt_info["dyn_floor"] = round(dyn_floor, 4)
 
-                    # Meta-alert: only meaningful when current calibrator is non-identity.
-                    # When current IS identity, raw_sharpe ≡ old_sharpe by definition, so the
-                    # check would always fire and permanently block any new Platt from being adopted.
-                    current_is_identity = (
-                        self.signal_engine.calibrator is None
-                        or self.signal_engine.calibrator.is_identity
-                    )
-                    if (not current_is_identity and old_kelly_sharpe > 0
-                            and raw_kelly_sharpe >= 0.95 * old_kelly_sharpe):
-                        platt_info["meta_warning"] = (
-                            f"raw_sharpe {raw_kelly_sharpe:.4f} >= 0.95 x current_platt "
-                            f"{old_kelly_sharpe:.4f} — reverting to identity"
-                        )
-                        logger.warning(
-                            f"Platt meta-check: raw model Sharpe {raw_kelly_sharpe:.4f} within 5% of "
-                            f"current Platt {old_kelly_sharpe:.4f}. Reverting to identity."
-                        )
-                        identity = PlattCalibrator(a=-1.0, b=0.0)
-                        # Defer save() to after weight optimizer commits, so the
-                        # on-disk Platt and on-disk weights stay coherent under
-                        # a mid-pipeline crash.
-                        _pending_cal_save = identity
-                        self.signal_engine.calibrator = identity
-                        platt_info["decision"] = "rejected"
-                        platt_info["reason"] = "reverted to identity — calibration not earning its keep"
-                    elif insufficient:
+                    # Adoption decision: does the new Platt fit beat the raw (identity)
+                    # model on the holdout? We compare new vs raw
+                    # If yes and z ≥ PLATT_Z_FLOOR → adopt.
+                    # If no → revert to identity; raw passthrough is better.
+                    delta_vs_raw = new_kelly_sharpe - raw_kelly_sharpe
+                    z_vs_raw = _sharpe_z_test(raw_kelly_sharpe, new_kelly_sharpe, n_for_z) if n_for_z else 0.0
+                    platt_info["z_score"] = round(z_vs_raw, 3)
+                    platt_info["delta_sharpe"] = round(delta_vs_raw, 4)
+                    platt_info["dyn_floor"] = round(dyn_floor, 4)
+                    platt_info["raw_kelly_sharpe"] = round(raw_kelly_sharpe, 4)
+                    if insufficient:
                         platt_info["decision"] = "rejected"
                         platt_info["reason"] = (f"validation trades below {MIN_PLATT_VALIDATION_TRADES} "
                                                 f"(old={len(old_returns)}, new={len(new_returns)})")
@@ -1721,26 +1704,40 @@ class AgentScheduler:
                             f"Platt calibration rejected: insufficient validation trades "
                             f"(old={len(old_returns)}, new={len(new_returns)})"
                         )
-                    elif new_kelly_sharpe > old_kelly_sharpe and delta_sharpe >= dyn_floor:
+                    elif delta_vs_raw >= dyn_floor and z_vs_raw >= PLATT_Z_FLOOR:
+                        # New fit clearly beats raw — adopt it.
                         platt_info["decision"] = "adopted"
-                        # Defer save() until after the weight optimizer commits
-                        # so the on-disk Platt and on-disk weights are coherent.
                         _pending_cal_save = cal
                         self.signal_engine.calibrator = cal
                         logger.debug(
-                            f"Platt calibration adopted: kelly_sharpe {old_kelly_sharpe:.4f} -> "
-                            f"{new_kelly_sharpe:.4f} (d={delta_sharpe:+.4f}, floor={dyn_floor:.4f}, "
-                            f"z={z_score:.2f}, log-loss {old_loss:.4f} -> {new_loss:.4f})"
+                            f"Platt calibration adopted: new={new_kelly_sharpe:.4f} beats "
+                            f"raw={raw_kelly_sharpe:.4f} (d={delta_vs_raw:+.4f}, "
+                            f"z={z_vs_raw:.2f}, log-loss {old_loss:.4f} → {new_loss:.4f})"
                         )
                     else:
+                        # New fit can't beat raw model — revert to identity.
+                        if not (self.signal_engine.calibrator is None
+                                or self.signal_engine.calibrator.is_identity):
+                            identity = PlattCalibrator(a=-1.0, b=0.0)
+                            _pending_cal_save = identity
+                            self.signal_engine.calibrator = identity
                         platt_info["decision"] = "rejected"
-                        reason = ("below dyn_floor" if new_kelly_sharpe > old_kelly_sharpe
-                                  else "no Sharpe improvement")
-                        platt_info["reason"] = f"{reason} (d={delta_sharpe:+.4f}, need >= {dyn_floor:.4f})"
+                        if delta_vs_raw < 0:
+                            reason = (f"new fit worse than raw (d={delta_vs_raw:+.4f}) — "
+                                      f"reverting to identity")
+                        elif z_vs_raw < PLATT_Z_FLOOR:
+                            reason = (f"improvement vs raw not z-significant "
+                                      f"(z={z_vs_raw:.2f} < {PLATT_Z_FLOOR}, "
+                                      f"d={delta_vs_raw:+.4f}) — reverting to identity")
+                        else:
+                            reason = (f"improvement vs raw too small "
+                                      f"(d={delta_vs_raw:+.4f} < {dyn_floor:.4f}) — "
+                                      f"reverting to identity")
+                        platt_info["reason"] = reason
                         logger.debug(
-                            f"Platt calibration rejected: kelly_sharpe {old_kelly_sharpe:.4f} -> "
-                            f"{new_kelly_sharpe:.4f} (d={delta_sharpe:+.4f}, floor={dyn_floor:.4f}, "
-                            f"z={z_score:.2f}, log-loss {old_loss:.4f} -> {new_loss:.4f})"
+                            f"Platt calibration rejected: new={new_kelly_sharpe:.4f} vs "
+                            f"raw={raw_kelly_sharpe:.4f} (d={delta_vs_raw:+.4f}, "
+                            f"z={z_vs_raw:.2f}, need d>={dyn_floor:.4f} and z>={PLATT_Z_FLOOR})"
                         )
         pipeline_info["platt"] = platt_info
         # Expose Platt meta-check (raw-vs-calibrated) so Claude sees the diagnostic
