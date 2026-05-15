@@ -998,30 +998,9 @@ class AgentScheduler:
             return info
 
         # --- Pairwise interaction check ---
-        # If ≥2 changes were adopted, run ONE combined backtest.
+        # If ≥2 changes were adopted, run ONE combined backtest on the validation fold.
         # If combined Δ < sum(individual Δ) × 0.7, the changes interact and one is riding
         # on the other's signal. Back out the lowest-conviction change (smallest z-score).
-        #
-        # Coupled parameter groups — any two params in the SAME group interact through
-        # shared signal composition (L1 sharpness, L3 flow, L2/L4 momentum, L4 sizing).
-        # Config-driven: `pipeline_groups` in settings.yaml overrides these defaults.
-        DEFAULT_COUPLED_GROUPS: dict[str, list[str]] = {
-            "volatility_core": ["atr_sigma_ratio", "student_t_df", "logit_scale"],
-            "flow_stack": ["flow_weight", "spot_flow_weight", "liquidation_weight"],
-            "momentum_regime": ["momentum_weight", "regime_weight"],
-            "sizing": ["kelly_fraction"],
-        }
-        coupled_groups: dict[str, list[str]] = DEFAULT_COUPLED_GROUPS
-        if self._config:
-            cfg_groups = self._config.get("pipeline_groups")
-            if isinstance(cfg_groups, dict):
-                coupled_groups = cfg_groups
-        # Expand groups to all within-group pairs for the "known interaction" logger.
-        KNOWN_INTERACTING_PAIRS: list[tuple[str, str]] = []
-        for members in coupled_groups.values():
-            for i, p1 in enumerate(members):
-                for p2 in members[i + 1:]:
-                    KNOWN_INTERACTING_PAIRS.append((p1, p2))
         if len(adopted_changes) >= 2:
             try:
                 # Iterative interaction back-out: keep removing the weakest
@@ -1032,7 +1011,6 @@ class AgentScheduler:
                 # silently degraded combined performance.
                 MAX_BACKOUT_ITERATIONS = len(adopted_changes)  # at most n-1 useful passes
                 backed_out_params: list[str] = []
-                first_pass_metrics: dict[str, float] | None = None
                 combined_sharpe = current_sharpe
                 combined_delta = 0.0
                 sum_individual_delta = 0.0
@@ -1083,15 +1061,10 @@ class AgentScheduler:
                     combined_sharpe = _sharpe(combined_returns) if combined_returns else 0.0
                     combined_delta = combined_sharpe - current_sharpe
 
-                    if first_pass_metrics is None:
-                        first_pass_metrics = {
-                            "combined_sharpe": round(combined_sharpe, 4),
-                            "combined_delta": round(combined_delta, 4),
-                            "sum_individual_delta": round(sum_individual_delta, 4),
-                        }
-                        info["combined_sharpe"] = first_pass_metrics["combined_sharpe"]
-                        info["combined_delta"] = first_pass_metrics["combined_delta"]
-                        info["sum_individual_delta"] = first_pass_metrics["sum_individual_delta"]
+                    if not info.get("combined_sharpe"):
+                        info["combined_sharpe"] = round(combined_sharpe, 4)
+                        info["combined_delta"] = round(combined_delta, 4)
+                        info["sum_individual_delta"] = round(sum_individual_delta, 4)
 
                     # Stop if no interaction OR only one change left to keep.
                     if not (sum_individual_delta > 0
@@ -1134,11 +1107,6 @@ class AgentScheduler:
                     info["final_combined_sharpe"] = round(combined_sharpe, 4)
                     info["final_combined_delta"] = round(combined_delta, 4)
 
-                # Flag known interacting pairs for Claude's awareness
-                adopted_params = {c["param"] for c in adopted_changes}
-                for p1, p2 in KNOWN_INTERACTING_PAIRS:
-                    if p1 in adopted_params and p2 in adopted_params:
-                        logger.info(f"Known interacting pair adopted: {p1} + {p2}")
             except Exception as e:
                 logger.debug(f"Combined backtest failed (non-critical): {e}")
 
@@ -1159,62 +1127,38 @@ class AgentScheduler:
                 if k in ("rsi", "macd", "stochastic", "obv", "vwap")
             })
 
+        # Apply adopted changes to signal_engine. Registry is the single source of
+        # truth for clamp ranges — no inline literals that diverge from param_registry.
         if self.signal_engine:
+            from polybot.config.param_registry import BY_NAME as _BY_NAME
             for change in adopted_changes:
                 param = change["param"]
                 value = change["value"]
                 if param == "weights":
                     self.signal_engine.weights = {k: v for k, v in new_weights.items()
                                                    if k in ["rsi", "macd", "stochastic", "obv", "vwap"]}
-                elif param == "momentum_weight":
-                    self.signal_engine.momentum_weight = _clamp(float(value), -0.10, 0.10)
-                elif param == "regime_weight":
-                    self.signal_engine.regime_weight = _clamp(float(value), 0.02, 0.10)
-                elif param == "flow_weight":
-                    self.signal_engine.flow_weight = _clamp(float(value), 0.02, 0.12)
-                elif param == "student_t_df":
-                    self.signal_engine.student_t_df = _clamp(int(value), 3, 8)
-                elif param == "kelly_fraction":
-                    self.signal_engine.kelly_fraction = _clamp(float(value), 0.05, 0.18)
                 elif param == "exit_edge_threshold":
-                    self._exit_edge_threshold = _clamp(float(value), -0.10, -0.03)
-                elif param == "atr_sigma_ratio":
-                    self.signal_engine.atr_sigma_ratio = _clamp(float(value), 1.2, 2.5)
-                elif param == "spot_flow_weight":
-                    self.signal_engine.spot_flow_weight = _clamp(float(value), 0.0, 0.10)
-                elif param == "prev_margin_weight":
-                    self.signal_engine.prev_margin_weight = _clamp(float(value), 0.01, 0.05)
-                elif param == "logit_scale":
-                    self.signal_engine.logit_scale = _clamp(float(value), 2.0, 5.0)
-                elif param == "liquidation_weight":
-                    self.signal_engine.liquidation_weight = _clamp(float(value), 0.01, 0.06)
-                elif param == "min_atr":
-                    self.signal_engine.min_atr = _clamp(float(value), 8.0, 25.0)
+                    spec = _BY_NAME[param]
+                    self._exit_edge_threshold = spec.cast(max(spec.lo, min(spec.hi, spec.cast(value))))
+                elif param in _BY_NAME:
+                    spec = _BY_NAME[param]
+                    clamped = spec.cast(max(spec.lo, min(spec.hi, spec.cast(value))))
+                    if hasattr(self.signal_engine, param):
+                        setattr(self.signal_engine, param, clamped)
+                elif param == "adverse_selection_threshold" and self._config:
+                    self._config.setdefault("signal", {})["adverse_selection_threshold"] = _clamp(float(value), 0.45, 0.75)
                 elif param == "max_edge":
                     self.signal_engine.max_edge = _clamp(float(value), 0.15, 0.30)
-                elif param == "adverse_selection_threshold":
-                    if self._config:
-                        self._config.setdefault("signal", {})["adverse_selection_threshold"] = _clamp(float(value), 0.45, 0.75)
-                elif param == "normal_fraction":
-                    if self._config:
-                        self._config.setdefault("entry_timing", {})["normal_fraction"] = _clamp(float(value), 0.40, 0.80)
-                elif param == "late_max_penalty":
-                    if self._config:
-                        self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(value), 0.10, 0.60)
-                elif param == "flip_edge_premium":
-                    if self._config:
-                        self._config.setdefault("entry_timing", {})["flip_edge_premium"] = _clamp(float(value), 0.005, 0.05)
                 elif param == "trading_start_hour_et":
                     self._trading_start = (int(value), 0)
                 elif param == "trading_end_hour_et":
                     self._trading_end = (int(value), 59)
 
-        # Persist to settings.yaml
+        # Persist to settings.yaml — registry yaml_key drives section routing.
         if self._config:
+            from polybot.config.param_registry import BY_NAME as _BY_NAME
             sig = self._config.setdefault("signal", {})
-            mkt = self._config.setdefault("market", {})
             sched = self._config.setdefault("schedule", {})
-            math_sec = self._config.setdefault("math", {})
 
             if weights_change:
                 sig["weights"] = {k: v for k, v in new_weights.items()
@@ -1225,40 +1169,15 @@ class AgentScheduler:
                 value = change["value"]
                 if param == "weights":
                     pass  # handled above
-                elif param == "atr_sigma_ratio":
-                    sig["atr_sigma_ratio"] = _clamp(float(value), 1.2, 2.5)
-                elif param == "spot_flow_weight":
-                    sig["spot_flow_weight"] = _clamp(float(value), 0.0, 0.10)
-                elif param == "prev_margin_weight":
-                    sig["prev_margin_weight"] = _clamp(float(value), 0.01, 0.05)
-                elif param == "logit_scale":
-                    sig["logit_scale"] = _clamp(float(value), 2.0, 5.0)
-                elif param == "liquidation_weight":
-                    sig["liquidation_weight"] = _clamp(float(value), 0.01, 0.06)
+                elif param in _BY_NAME:
+                    spec = _BY_NAME[param]
+                    clamped = spec.cast(max(spec.lo, min(spec.hi, spec.cast(value))))
+                    section, field = spec.yaml_key.split(".", 1)
+                    self._config.setdefault(section, {})[field] = clamped
                 elif param == "adverse_selection_threshold":
                     sig["adverse_selection_threshold"] = _clamp(float(value), 0.45, 0.75)
-                elif param == "normal_fraction":
-                    self._config.setdefault("entry_timing", {})["normal_fraction"] = _clamp(float(value), 0.40, 0.80)
-                elif param == "late_max_penalty":
-                    self._config.setdefault("entry_timing", {})["late_max_penalty"] = _clamp(float(value), 0.10, 0.60)
-                elif param == "flip_edge_premium":
-                    self._config.setdefault("entry_timing", {})["flip_edge_premium"] = _clamp(float(value), 0.005, 0.05)
-                elif param == "min_atr":
-                    sig["min_atr"] = _clamp(float(value), 8.0, 25.0)
                 elif param == "max_edge":
                     sig["max_edge"] = _clamp(float(value), 0.15, 0.30)
-                elif param == "momentum_weight":
-                    sig["momentum_weight"] = _clamp(float(value), -0.10, 0.10)
-                elif param == "regime_weight":
-                    sig["regime_weight"] = _clamp(float(value), 0.02, 0.10)
-                elif param == "flow_weight":
-                    sig["flow_weight"] = _clamp(float(value), 0.02, 0.12)
-                elif param == "student_t_df":
-                    sig["student_t_df"] = _clamp(int(value), 3, 8)
-                elif param == "kelly_fraction":
-                    math_sec["kelly_fraction"] = _clamp(float(value), 0.05, 0.18)
-                elif param == "exit_edge_threshold":
-                    sig["exit_edge_threshold"] = _clamp(float(value), -0.10, -0.03)
                 elif param == "trading_start_hour_et":
                     sched["trading_start_hour_et"] = int(value)
                 elif param == "trading_end_hour_et":
@@ -1355,47 +1274,30 @@ class AgentScheduler:
 
             # Apply to signal_engine (takes effect in the 45-min window before restart)
             if self.signal_engine:
+                from polybot.config.param_registry import BY_NAME as _BY_NAME
                 for rc in revert_changes:
                     p, v = rc["param"], rc["value"]
-                    if p == "momentum_weight":
-                        self.signal_engine.momentum_weight = _clamp(float(v), -0.10, 0.10)
-                    elif p == "regime_weight":
-                        self.signal_engine.regime_weight = _clamp(float(v), 0.02, 0.10)
-                    elif p == "flow_weight":
-                        self.signal_engine.flow_weight = _clamp(float(v), 0.02, 0.12)
-                    elif p == "spot_flow_weight":
-                        self.signal_engine.spot_flow_weight = _clamp(float(v), 0.0, 0.15)
-                    elif p == "atr_sigma_ratio":
-                        self.signal_engine.atr_sigma_ratio = _clamp(float(v), 1.2, 2.5)
-                    elif p == "logit_scale":
-                        self.signal_engine.logit_scale = _clamp(float(v), 2.0, 6.0)
-                    elif p == "student_t_df":
-                        self.signal_engine.student_t_df = _clamp(int(v), 3, 8)
-                    elif p == "liquidation_weight":
-                        self.signal_engine.liquidation_weight = _clamp(float(v), 0.01, 0.10)
-                    elif p == "prev_margin_weight":
-                        self.signal_engine.prev_margin_weight = _clamp(float(v), 0.01, 0.05)
-                    elif p == "min_atr":
-                        self.signal_engine.min_atr = _clamp(float(v), 4.0, 25.0)
-                    elif p == "kelly_fraction":
-                        self.signal_engine.kelly_fraction = _clamp(float(v), 0.05, 0.25)
+                    if p == "exit_edge_threshold":
+                        spec = _BY_NAME[p]
+                        self._exit_edge_threshold = spec.cast(max(spec.lo, min(spec.hi, spec.cast(v))))
+                    elif p in _BY_NAME and hasattr(self.signal_engine, p):
+                        spec = _BY_NAME[p]
+                        setattr(self.signal_engine, p, spec.cast(max(spec.lo, min(spec.hi, spec.cast(v)))))
+                    elif p == "max_edge":
+                        self.signal_engine.max_edge = _clamp(float(v), 0.15, 0.30)
 
             # Apply to config dict and persist to settings.yaml
             if self._config:
-                sig = self._config.setdefault("signal", {})
-                math_sec = self._config.setdefault("math", {})
+                from polybot.config.param_registry import BY_NAME as _BY_NAME
                 for rc in revert_changes:
                     p, v = rc["param"], rc["value"]
-                    if p in ("atr_sigma_ratio", "spot_flow_weight", "momentum_weight",
-                             "regime_weight", "flow_weight", "logit_scale",
-                             "liquidation_weight",
-                             "prev_margin_weight", "min_atr", "student_t_df",
-                             "max_edge", "exit_edge_threshold"):
-                        sig[p] = v
-                    elif p in ("normal_fraction", "late_max_penalty", "flip_edge_premium"):
-                        self._config.setdefault("entry_timing", {})[p] = v
-                    elif p == "kelly_fraction":
-                        math_sec[p] = v
+                    if p in _BY_NAME:
+                        spec = _BY_NAME[p]
+                        clamped = spec.cast(max(spec.lo, min(spec.hi, spec.cast(v))))
+                        section, field = spec.yaml_key.split(".", 1)
+                        self._config.setdefault(section, {})[field] = clamped
+                    elif p == "max_edge":
+                        self._config.setdefault("signal", {})["max_edge"] = _clamp(float(v), 0.15, 0.30)
                 try:
                     from polybot.config.loader import save_config
                     save_config(dict(self._config))
@@ -1600,34 +1502,30 @@ class AgentScheduler:
             )
 
         if len(platt_train) >= 200 and self.signal_engine:
-            cal_probs = []
-            cal_outcomes = []
+            cal_probs: list[float] = []
+            cal_outcomes: list[int] = []
+            cal_weights: list[float] = []
+            platt_now_ts = datetime.now(timezone.utc).timestamp()
             for o in platt_train:
                 ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
                 mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
-                if mp > 0:
-                    cal_probs.append(mp)
-                    cal_outcomes.append(1 if o.get("correct", False) else 0)
+                if mp <= 0:
+                    continue
+                cal_probs.append(mp)
+                cal_outcomes.append(1 if o.get("correct", False) else 0)
+                ts2 = o.get("exit_timestamp", o.get("timestamp", ""))
+                try:
+                    t2 = datetime.fromisoformat(ts2.replace("Z", "+00:00")).timestamp() if ts2 else platt_now_ts
+                    w2 = 0.97 ** max(0.0, (platt_now_ts - t2) / 86400.0)
+                except Exception:
+                    w2 = 1.0
+                cal_weights.append(w2)
 
             if len(cal_probs) >= 200:
                 cal = PlattCalibrator()
                 if self.signal_engine.calibrator:
                     cal.a = self.signal_engine.calibrator.a
                     cal.b = self.signal_engine.calibrator.b
-                # Recency weights for Platt fitting — recent outcomes carry more signal
-                platt_now_ts = datetime.now(timezone.utc).timestamp()
-                cal_weights = []
-                for o in platt_train:
-                    ctx2 = o.get("indicator_snapshot", {}).get("trade_context", {})
-                    if ctx2.get("model_probability_raw", ctx2.get("model_probability", 0)) <= 0:
-                        continue
-                    ts2 = o.get("exit_timestamp", o.get("timestamp", ""))
-                    try:
-                        t2 = datetime.fromisoformat(ts2.replace("Z", "+00:00")).timestamp() if ts2 else platt_now_ts
-                        w2 = 0.97 ** max(0.0, (platt_now_ts - t2) / 86400.0)
-                    except Exception:
-                        w2 = 1.0
-                    cal_weights.append(w2)
                 if cal.fit(cal_probs, cal_outcomes, sample_weights=cal_weights):
                     val_probs, val_outs = [], []
                     for o in platt_val:
@@ -1692,20 +1590,10 @@ class AgentScheduler:
 
                     insufficient = (len(old_returns) < MIN_PLATT_VALIDATION_TRADES
                                     or len(new_returns) < MIN_PLATT_VALIDATION_TRADES)
-                    # Adoption: holdout Sharpe improvement >= PLATT_ABS_FLOOR.
-                    # z_score is telemetry only.
                     n_for_z = min(len(old_returns), len(new_returns))
-                    z_score = _sharpe_z_test(old_kelly_sharpe, new_kelly_sharpe, n_for_z) if n_for_z else 0.0
-                    delta_sharpe = new_kelly_sharpe - old_kelly_sharpe
                     dyn_floor = PLATT_ABS_FLOOR
-                    platt_info["z_score"] = round(z_score, 3)
-                    platt_info["delta_sharpe"] = round(delta_sharpe, 4)
-                    platt_info["dyn_floor"] = round(dyn_floor, 4)
-
-                    # Adoption decision: does the new Platt fit beat the raw (identity)
-                    # model on the holdout? We compare new vs raw
-                    # If yes and z ≥ PLATT_Z_FLOOR → adopt.
-                    # If no → revert to identity; raw passthrough is better.
+                    # Gate: new fit vs raw (identity). Old calibrator is not the bar —
+                    # we want to know if fitting Platt at all beats passthrough.
                     delta_vs_raw = new_kelly_sharpe - raw_kelly_sharpe
                     z_vs_raw = _sharpe_z_test(raw_kelly_sharpe, new_kelly_sharpe, n_for_z) if n_for_z else 0.0
                     platt_info["z_score"] = round(z_vs_raw, 3)
@@ -1842,7 +1730,7 @@ class AgentScheduler:
             # adoption floor so the pipeline keeps adapting instead of going silent.
             _recent_50 = all_outcomes[-50:] if len(all_outcomes) >= 50 else all_outcomes
             _recent_wr = sum(1 for o in _recent_50 if o.get("correct", False)) / max(len(_recent_50), 1)
-            _in_crisis = _recent_wr < 0.48 and self._baseline_kelly_sharpe < 0.10
+            _in_crisis = _recent_wr < 0.48 and (self._baseline_kelly_sharpe or 0.0) < 0.10
 
             # Sustained crisis (≥3 cycles) → halve kelly_fraction, restore on first non-crisis.
             from pathlib import Path as _Path

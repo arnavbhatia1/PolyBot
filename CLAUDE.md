@@ -96,7 +96,7 @@ Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older 
 
 **Platt** has its own 14-day window — calibration must reflect the *current* model, not last month's.
 
-**Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Regime-stratified: dominant regime improves AND no regime degrades >0.10 (≥35 trades to veto). 2-day per-param cooldown.
+**Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Regime-stratified: dominant regime improves AND no regime degrades >0.10 (≥35 trades to veto).
 
 **Interaction back-out:** if combined Δ_sharpe < 0.7 × sum(individual deltas), iteratively remove the weakest-z change until either the bound clears or ≤1 change remains.
 
