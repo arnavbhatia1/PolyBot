@@ -350,6 +350,9 @@ class AgentScheduler:
                 decay_analysis = self.pipeline_tracker.format_decay_analysis()
                 if decay_analysis:
                     analysis["decay_analysis"] = decay_analysis
+                recently_tested = self.pipeline_tracker.get_recently_tested_params(n_cycles=3)
+                if recently_tested:
+                    analysis["recently_tested_params"] = list(recently_tested)
             except Exception as e:
                 logger.debug(f"Failed to build prediction/directional/decay context: {e}")
 
@@ -1625,6 +1628,16 @@ class AgentScheduler:
                         gap = current_loss - new_loss_full if not math.isnan(new_loss_full) else 0
                         platt_info["reason"] = (f"new fit doesn't beat current by enough "
                                                 f"(loss gap {gap:+.4f}, need -{LOG_LOSS_FLOOR})")
+        # Save rejected Platt fits so next cycle can skip identical ones quickly
+        if platt_info.get("decision") == "rejected" and "a" in platt_info:
+            _pr_path = _Path("polybot/memory/calibration/platt_rejected.json")
+            try:
+                _pr = _json.loads(_pr_path.read_text()) if _pr_path.exists() else []
+                _pr.append({"a": platt_info["a"], "b": platt_info["b"]})
+                _pr_path.write_text(_json.dumps(_pr[-30:], indent=2))  # keep last 30
+            except Exception:
+                pass
+
         pipeline_info["platt"] = platt_info
         # Expose Platt meta-check (raw-vs-calibrated) so Claude sees the diagnostic
         if platt_info.get("meta_warning"):

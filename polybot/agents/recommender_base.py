@@ -74,8 +74,20 @@ class BaseRecommender:
 
     def _finalize(self, reasoning: str = "", confidence: str = "medium") -> dict[str, Any]:
         deduped = self._dedupe(self.proposals)
-        deduped.sort(key=lambda c: -abs(float(c.get("predicted_delta_sharpe_7d", 0.0))))
-        return self._envelope(deduped[:_CAP], reasoning=reasoning, confidence=confidence)
+        recently_tested = set(self.analysis.get("recently_tested_params", []))
+
+        # Guarantee at least 2 slots go to params not tested in the last 3 cycles.
+        # Prevents the same 5 params being proposed every run when nothing adopts.
+        fresh = [p for p in deduped if p.get("param") not in recently_tested]
+        stale = [p for p in deduped if p.get("param") in recently_tested]
+        for bucket in (fresh, stale):
+            bucket.sort(key=lambda c: -abs(float(c.get("predicted_delta_sharpe_7d", 0.0))))
+
+        guaranteed = fresh[:2]
+        remaining = (fresh[2:] + stale)
+        remaining.sort(key=lambda c: -abs(float(c.get("predicted_delta_sharpe_7d", 0.0))))
+        result = (guaranteed + remaining)[:_CAP]
+        return self._envelope(result, reasoning=reasoning, confidence=confidence)
 
     def _insufficient(self, n: int) -> dict[str, Any]:
         self.warnings.append(f"Only {n} trades — insufficient data (need >={_MIN_N})")

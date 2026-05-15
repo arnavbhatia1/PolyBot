@@ -268,6 +268,18 @@ class PipelineTracker:
         runs.append(entry)
         self._save_runs(runs)
 
+    def get_recently_tested_params(self, n_cycles: int = 3) -> set[str]:
+        """Return params tested in the last n_cycles pipeline runs."""
+        runs = self._load_runs()
+        recent = runs[-n_cycles:] if len(runs) >= n_cycles else runs
+        tested: set[str] = set()
+        for run in recent:
+            for c in run.get("changes", []):
+                p = c.get("param", "")
+                if p:
+                    tested.add(p)
+        return tested
+
     def get_cumulative_failures(self, max_per_param: int = 5) -> dict[str, list[str]]:
         """Derive {param: ["value (delta)", ...]} for all historically rejected changes.
 
