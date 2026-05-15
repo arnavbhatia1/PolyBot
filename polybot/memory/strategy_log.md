@@ -462,3 +462,69 @@
 - None
 
 **Reasoning:** No high-conviction changes found above 2x noise; current configuration appears defensible at this sample size.
+
+## 2026-05-15T14:32:30.199201+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - atr_sigma_ratio=1.4000000000000001 (exploratory up step)
+  - logit_scale=4.25 (exploratory up step)
+  - student_t_df=4 (exploratory down step)
+  - momentum_weight=-0.009999999999999998 (exploratory up step)
+  - regime_weight=0.035 (exploratory down step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
+
+## 2026-05-15T14:35:56.322549+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - atr_sigma_ratio=1.4 (exploratory up step)
+  - student_t_df=6 (exploratory up step)
+  - logit_scale=3.75 (exploratory down step)
+  - momentum_weight=-0.01 (exploratory up step)
+  - regime_weight=0.035 (exploratory down step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
+
+## 2026-05-15T14:40:12.689569+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - logit_scale=3.75 (exploratory down step)
+  - student_t_df=6 (exploratory up step)
+  - momentum_weight=-0.01 (exploratory up step)
+  - regime_weight=0.035 (exploratory down step)
+  - spot_flow_weight=0.09 (exploratory down step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender

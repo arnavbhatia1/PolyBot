@@ -204,6 +204,8 @@ class BaseRecommender:
             new_val: Any = cur + (step if direction == "up" else -step)
             if param == "student_t_df":
                 new_val = int(round(new_val))
+            else:
+                new_val = round(new_val, 4)
 
             evidence = up_bt if direction == "up" else dn_bt
             predicted = max(0.005, abs(evidence) * 0.5) if evidence is not None else 0.005

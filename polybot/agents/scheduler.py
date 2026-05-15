@@ -1476,7 +1476,7 @@ class AgentScheduler:
         PLATT_ABS_FLOOR = 0.001
         PLATT_Z_FLOOR = 0.3   # same bar as parameter changes
         _pending_cal_save: PlattCalibrator | None = None
-        _PLATT_WINDOW_DAYS = 14
+        _PLATT_WINDOW_DAYS = 7
         _platt_cutoff = datetime.now(timezone.utc).timestamp() - _PLATT_WINDOW_DAYS * 86400.0
         def _ts(o: dict) -> float:
             s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
@@ -1485,7 +1485,7 @@ class AgentScheduler:
             except Exception:
                 return 0.0
         _platt_pool = [o for o in all_outcomes if _ts(o) >= _platt_cutoff]
-        if len(_platt_pool) >= 250:
+        if len(_platt_pool) >= 125:
             _split = max(1, int(len(_platt_pool) * 0.6))
             platt_train = _platt_pool[:_split]
             platt_val = _platt_pool[_split:]

@@ -667,5 +667,221 @@
         ]
       }
     ]
+  },
+  {
+    "date": "2026-05-15T14:32:30.773489+00:00",
+    "source": "local",
+    "baseline_sharpe": 0.262,
+    "changes": [
+      {
+        "param": "atr_sigma_ratio",
+        "old_value": 1.35,
+        "new_value": 1.4000000000000001,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0008,
+        "predicted_delta_sharpe_7d": 0.012,
+        "confidence_interval": [
+          -0.012,
+          0.024
+        ]
+      },
+      {
+        "param": "logit_scale",
+        "old_value": 4.0,
+        "new_value": 4.25,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0006,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "student_t_df",
+        "old_value": 5,
+        "new_value": 4,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0004,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "momentum_weight",
+        "old_value": -0.03,
+        "new_value": -0.009999999999999998,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0008,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "regime_weight",
+        "old_value": 0.04,
+        "new_value": 0.035,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      }
+    ]
+  },
+  {
+    "date": "2026-05-15T14:35:56.902592+00:00",
+    "source": "local",
+    "baseline_sharpe": 0.2048,
+    "changes": [
+      {
+        "param": "atr_sigma_ratio",
+        "old_value": 1.35,
+        "new_value": 1.4,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.001,
+        "predicted_delta_sharpe_7d": 0.006,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "student_t_df",
+        "old_value": 5,
+        "new_value": 6,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0018,
+        "predicted_delta_sharpe_7d": 0.0055,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "logit_scale",
+        "old_value": 4.0,
+        "new_value": 3.75,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "momentum_weight",
+        "old_value": -0.03,
+        "new_value": -0.01,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0019,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "regime_weight",
+        "old_value": 0.04,
+        "new_value": 0.035,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0001,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      }
+    ]
+  },
+  {
+    "date": "2026-05-15T14:40:13.217602+00:00",
+    "source": "local",
+    "baseline_sharpe": 0.2048,
+    "changes": [
+      {
+        "param": "logit_scale",
+        "old_value": 4.0,
+        "new_value": 3.75,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "student_t_df",
+        "old_value": 5,
+        "new_value": 6,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0018,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "momentum_weight",
+        "old_value": -0.03,
+        "new_value": -0.01,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0019,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "regime_weight",
+        "old_value": 0.04,
+        "new_value": 0.035,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0001,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "spot_flow_weight",
+        "old_value": 0.1,
+        "new_value": 0.09,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0009,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      }
+    ]
   }
 ]
