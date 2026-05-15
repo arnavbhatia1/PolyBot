@@ -528,3 +528,47 @@
 - None
 
 **Reasoning:** Local recommender
+
+## 2026-05-15T14:45:50.651429+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - logit_scale=4.25 (exploratory up step)
+  - student_t_df=6 (exploratory up step)
+  - momentum_weight=-0.01 (exploratory up step)
+  - regime_weight=0.035 (exploratory down step)
+  - spot_flow_weight=0.09 (exploratory down step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
+
+## 2026-05-15T14:56:39.062623+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - logit_scale=4.25 (exploratory up step)
+  - student_t_df=6 (exploratory up step)
+  - momentum_weight=-0.01 (exploratory up step)
+  - regime_weight=0.035 (exploratory down step)
+  - spot_flow_weight=0.09 (exploratory down step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
