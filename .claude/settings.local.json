@@ -132,7 +132,8 @@
       "Bash(Get-ChildItem *)",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\abhat\\\\Personal\\\\PolyBot\\\\PolyBot\\\\polybot\\\\memory\\\\\" | ForEach-Object { $_.FullName })",
       "Bash(Get-Content *)",
-      "Bash(findstr /N \"last_eval_log_window\\\\s*=\" polybot\\\\main.py)"
+      "Bash(findstr /N \"last_eval_log_window\\\\s*=\" polybot\\\\main.py)",
+      "WebFetch(domain:gamma-api.polymarket.com)"
     ]
   }
 }
