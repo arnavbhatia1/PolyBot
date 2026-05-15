@@ -1622,24 +1622,21 @@ class AgentScheduler:
                             f"z={z_vs_raw:.2f}, log-loss {old_loss:.4f} → {new_loss:.4f})"
                         )
                     else:
-                        # New fit can't beat raw model — revert to identity.
-                        if not (self.signal_engine.calibrator is None
-                                or self.signal_engine.calibrator.is_identity):
-                            identity = PlattCalibrator(a=-1.0, b=0.0)
-                            _pending_cal_save = identity
-                            self.signal_engine.calibrator = identity
+                        # New fit can't beat raw — keep existing calibrator unchanged.
+                        # Do NOT revert to identity: the current calibrator may be better
+                        # than raw even if today's new fit isn't. Only replace when a
+                        # new fit clearly wins.
                         platt_info["decision"] = "rejected"
                         if delta_vs_raw < 0:
-                            reason = (f"new fit worse than raw (d={delta_vs_raw:+.4f}) — "
-                                      f"reverting to identity")
+                            reason = f"new fit worse than raw (d={delta_vs_raw:+.4f}) — keeping existing calibrator"
                         elif z_vs_raw < PLATT_Z_FLOOR:
                             reason = (f"improvement vs raw not z-significant "
                                       f"(z={z_vs_raw:.2f} < {PLATT_Z_FLOOR}, "
-                                      f"d={delta_vs_raw:+.4f}) — reverting to identity")
+                                      f"d={delta_vs_raw:+.4f}) — keeping existing calibrator")
                         else:
                             reason = (f"improvement vs raw too small "
                                       f"(d={delta_vs_raw:+.4f} < {dyn_floor:.4f}) — "
-                                      f"reverting to identity")
+                                      f"keeping existing calibrator")
                         platt_info["reason"] = reason
                         logger.debug(
                             f"Platt calibration rejected: new={new_kelly_sharpe:.4f} vs "
