@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 # Adoption requires this many candidate trades AND z-score above this floor.
-# z = delta_sharpe / JK_SE (autocorr-adjusted). z=0.5 ≈ 69% one-sided confidence
+# z = delta_sharpe / JK_SE (autocorr-adjusted). z=0.3 ≈ 62% one-sided confidence
 # the change is real — chosen to be permissive enough for the pipeline to keep
 # adapting through regime shifts, strict enough to filter noise.
 MIN_CANDIDATE_TRADES = 100
@@ -74,8 +74,8 @@ class WeightOptimizer:
     """Adoption gate for pipeline-proposed parameter changes.
 
     Single statistical test — no static absolute floor, no crisis-mode toggle.
-    A candidate change adopts when its Sharpe improvement clears z=0.5 against
-    the autocorr-adjusted Jobson-Korkie SE (≈69% one-sided confidence). This
+    A candidate change adopts when its Sharpe improvement clears z=0.3 against
+    the autocorr-adjusted Jobson-Korkie SE (≈62% one-sided confidence). This
     scales naturally with sample size: small N → wider SE → tighter floor;
     large N → narrower SE → looser floor.
     """

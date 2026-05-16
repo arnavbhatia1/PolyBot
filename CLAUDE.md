@@ -94,7 +94,7 @@ python -m pytest polybot/tests/
 
 Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older trades came from probability machines that no longer exist). Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][90:100] applied inside that window.
 
-**Platt** has its own 14-day window — calibration must reflect the *current* model, not last month's.
+**Platt** has its own 7-day window (needs ≥125 trades to fit; skips entirely if below threshold) — calibration must reflect the *current* model, not last month's.
 
 **Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Regime-stratified: dominant regime improves AND no regime degrades >0.10 (≥35 trades to veto).
 

@@ -713,10 +713,12 @@ class AgentScheduler:
         elif param in TUNABLE_NAMES:
             single_rec[f"recommended_{param}"] = value
         else:
-            # Params not plumbed through _config_for_helper (timing/exit/etc.) —
-            # still attempt to backtest by re-using current config unchanged; the
-            # change will be applied at hot-swap time if adopted.
-            pass
+            # Param not plumbed through _config_for_helper — backtest runs with
+            # baseline config unchanged and cannot show improvement.
+            logger.warning(
+                f"Backtest for '{param}' falls back to baseline config (param not in TUNABLE_NAMES). "
+                f"It cannot show improvement and will always be rejected by the z-test."
+            )
 
         cfg = self._config_for_helper(single_rec)
         calibrator = self.signal_engine.calibrator if self.signal_engine else None
@@ -771,7 +773,7 @@ class AgentScheduler:
             else:
                 regime_buckets["neutral"].append(o)
 
-        MIN_REGIME_N = 35
+        MIN_REGIME_N = 20
         populated = {k: v for k, v in regime_buckets.items() if len(v) >= MIN_REGIME_N}
         if len(populated) < 2:
             return True, "regime check skipped (insufficient per-regime sample)"
@@ -928,6 +930,18 @@ class AgentScheduler:
                 continue
 
             candidate_sharpe = _sharpe(all_candidate_returns)
+
+            # Fold consistency: reject if >1 fold has non-positive Sharpe.
+            # Prevents a single lucky period inflating the aggregate z-score.
+            n_negative_folds = sum(1 for s in fold_sharpes if s <= 0)
+            if len(fold_sharpes) >= 2 and n_negative_folds > 1:
+                msg = (f"fold inconsistency: {n_negative_folds}/{len(fold_sharpes)} folds non-positive "
+                       f"({[f'{s:+.3f}' for s in fold_sharpes]})")
+                change_info.update({"decision": "rejected", "reason": msg})
+                logger.debug(f"REJECTED {param}: {msg}")
+                info["per_change"].append(change_info)
+                continue
+
             candidate_win_rate = sum(1 for r in all_candidate_returns if r > 0) / len(all_candidate_returns)
             change_info.update({
                 "candidate_sharpe": round(candidate_sharpe, 4),
@@ -1472,7 +1486,7 @@ class AgentScheduler:
                 analysis["ghost_analysis"] = self.bias_detector.analyze_ghosts(resolved_ghosts)
                 pass  # rolled into [2/4] summary below
 
-        # Platt re-fit. Gate: new fit must beat current on log-loss (full 7d pool) by ≥0.005
+        # Platt re-fit. Gate: new fit must beat current on log-loss (full 7d pool) by ≥0.010
         # AND not hurt Kelly-Sharpe vs identity on holdout.
         platt_info: dict[str, Any] = {"decision": "skipped"}
         from polybot.agents.weight_optimizer import _sharpe
@@ -1497,14 +1511,16 @@ class AgentScheduler:
                 f"({len(platt_train)} train / {len(platt_val)} val)"
             )
         else:
-            platt_train = train_outcomes
-            platt_val = validation_outcomes
+            platt_train = []
+            platt_val = []
+            platt_info["reason"] = (
+                f"only {len(_platt_pool)} trades in last {_PLATT_WINDOW_DAYS}d (need 125) — skipping calibration"
+            )
             logger.info(
-                f"  Platt window: insufficient {_PLATT_WINDOW_DAYS}d sample "
-                f"({len(_platt_pool)}) — falling back to walk-forward split"
+                f"  Platt window: only {len(_platt_pool)} trades in last {_PLATT_WINDOW_DAYS}d — skipping calibration"
             )
 
-        if len(platt_train) >= 200 and self.signal_engine:
+        if len(platt_train) >= 75 and self.signal_engine:
             cal_probs: list[float] = []
             cal_outcomes: list[int] = []
             cal_weights: list[float] = []
@@ -1524,12 +1540,12 @@ class AgentScheduler:
                     w2 = 1.0
                 cal_weights.append(w2)
 
-            if len(cal_probs) >= 200:
+            if len(cal_probs) >= 60:
                 cal = PlattCalibrator()
                 if self.signal_engine.calibrator:
                     cal.a = self.signal_engine.calibrator.a
                     cal.b = self.signal_engine.calibrator.b
-                if cal.fit(cal_probs, cal_outcomes, sample_weights=cal_weights):
+                if cal.fit(cal_probs, cal_outcomes, min_samples=60, sample_weights=cal_weights):
                     # Log-loss on full 7-day pool (more data = more reliable calibration signal).
                     # Hierarchy: identity (no-cal) → current (live) → new (today's fit).
                     # Each tier should beat the one below it.
@@ -1594,8 +1610,8 @@ class AgentScheduler:
                     # Gate 1: new fit must beat current on log-loss by ≥ 0.010
                     new_beats_current = (not (math.isnan(new_loss_full) or math.isnan(current_loss))
                                          and new_loss_full < current_loss - LOG_LOSS_FLOOR)
-                    # Gate 2: new fit must beat current AND identity on Kelly-Sharpe
-                    sizing_ok = new_sharpe >= identity_sharpe and new_sharpe >= current_sharpe
+                    # Gate 2: new fit must not hurt sizing vs current (parallel structure to log-loss gate)
+                    sizing_ok = new_sharpe >= current_sharpe
                     # Revert check: if current calibrator is worse than identity, revert
                     current_worse_than_identity = (not (math.isnan(current_loss) or math.isnan(identity_loss))
                                                     and current_loss > identity_loss
@@ -1605,14 +1621,30 @@ class AgentScheduler:
                         platt_info["decision"] = "rejected"
                         platt_info["reason"] = f"only {len(new_returns)} validation trades (need {MIN_PLATT_VALIDATION_TRADES})"
                     elif current_worse_than_identity:
-                        # Current calibrator is hurting probability accuracy — revert to identity
-                        identity_cal = PlattCalibrator(a=-1.0, b=0.0)
-                        _pending_cal_save = identity_cal
-                        self.signal_engine.calibrator = identity_cal
-                        platt_info["decision"] = "reverted"
-                        platt_info["reason"] = (f"current calibrator (loss={current_loss:.3f}) worse than "
-                                                f"identity (loss={identity_loss:.3f}) — reverting")
-                        logger.warning(f"Platt reverted to identity: current loss {current_loss:.4f} > identity {identity_loss:.4f}")
+                        # Current calibrator hurts accuracy vs identity. Try the new fit first —
+                        # it may already beat identity directly, skipping the revert step.
+                        new_beats_identity_loss = (not (math.isnan(new_loss_full) or math.isnan(identity_loss))
+                                                   and new_loss_full < identity_loss - LOG_LOSS_FLOOR)
+                        new_beats_identity_sharpe = new_sharpe >= identity_sharpe
+                        if new_beats_identity_loss and new_beats_identity_sharpe:
+                            platt_info["decision"] = "adopted"
+                            platt_info["reason"] = (f"current calibrator (loss={current_loss:.3f}) worse than identity "
+                                                    f"(loss={identity_loss:.3f}); new fit beats identity — upgrading directly")
+                            _pending_cal_save = cal
+                            self.signal_engine.calibrator = cal
+                            self._baseline_kelly_sharpe = None
+                            self._baseline_n_trades = None
+                            self._baseline_jk_se = None
+                            logger.info(f"Platt adopted (bypassing bad current): loss {identity_loss:.4f} → {new_loss_full:.4f}, "
+                                        f"sharpe {identity_sharpe:.4f} → {new_sharpe:.4f}")
+                        else:
+                            identity_cal = PlattCalibrator(a=-1.0, b=0.0)
+                            _pending_cal_save = identity_cal
+                            self.signal_engine.calibrator = identity_cal
+                            platt_info["decision"] = "reverted"
+                            platt_info["reason"] = (f"current calibrator (loss={current_loss:.3f}) worse than "
+                                                    f"identity (loss={identity_loss:.3f}); new fit also doesn't beat identity — reverting")
+                            logger.warning(f"Platt reverted to identity: current loss {current_loss:.4f} > identity {identity_loss:.4f}")
                     elif new_beats_current and sizing_ok:
                         # New fit beats current on accuracy AND doesn't hurt sizing — adopt
                         platt_info["decision"] = "adopted"
@@ -1626,7 +1658,7 @@ class AgentScheduler:
                     elif new_beats_current and not sizing_ok:
                         platt_info["decision"] = "rejected"
                         platt_info["reason"] = (f"new fit improves accuracy (loss {current_loss:.3f}→{new_loss_full:.3f}) "
-                                                f"but hurts sizing vs identity ({new_sharpe:.3f} < {identity_sharpe:.3f})")
+                                                f"but hurts sizing vs current ({new_sharpe:.3f} < {current_sharpe:.3f})")
                     else:
                         platt_info["decision"] = "rejected"
                         gap = current_loss - new_loss_full if not math.isnan(new_loss_full) else 0

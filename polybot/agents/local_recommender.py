@@ -41,7 +41,7 @@ class LocalRecommender(BaseRecommender):
                                 ("low_kelly", "min_kelly"),
                                 ("low_prob", "min_model_probability")]:
             stats = by_gate.get(gate_key)
-            if not stats or stats.get("count", 0) < 100:
+            if not stats or stats.get("count", 0) < 50:
                 continue
             if float(stats.get("pct_profitable", 0)) > 0.60 and float(stats.get("simulated_pnl", 0)) > 0:
                 cur = float(self.cfg.get(param, 0.0))
