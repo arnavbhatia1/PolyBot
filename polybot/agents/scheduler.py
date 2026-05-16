@@ -95,8 +95,9 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
             loss_str = f"accuracy:  identity {id_loss:.3f}  →  current {cur_loss:.3f}  →  new {new_loss:.3f}"
         else:
             loss_str = ""
-        sharpe_str = (f"  |  sizing:  identity {id_sharpe:.3f}  →  new {new_sharpe:.3f}"
-                      if id_sharpe is not None and new_sharpe is not None else "")
+        cur_sharpe = platt.get("current_sharpe")
+        sharpe_str = (f"  |  sizing:  identity {id_sharpe:.3f}  →  current {cur_sharpe:.3f}  →  new {new_sharpe:.3f}"
+                      if id_sharpe is not None and cur_sharpe is not None and new_sharpe is not None else "")
         if p_dec == "adopted":
             lines.append(f"  Calibration:  updated  —  {loss_str}{sharpe_str}")
         elif p_dec == "reverted":
@@ -1570,15 +1571,18 @@ class AgentScheduler:
                     )
                     identity_returns = self._kelly_bankroll_returns(calibrator=None, **helper_kwargs)
                     new_returns = self._kelly_bankroll_returns(calibrator=cal, **helper_kwargs)
+                    current_returns = self._kelly_bankroll_returns(calibrator=cur_cal, **helper_kwargs)
                     identity_sharpe = _sharpe(identity_returns)
                     new_sharpe = _sharpe(new_returns)
+                    current_sharpe = _sharpe(current_returns)
 
-                    LOG_LOSS_FLOOR = 0.005
+                    LOG_LOSS_FLOOR = 0.010
                     platt_info = {
                         "identity_loss": round(identity_loss, 4) if all_pool_probs else None,
                         "current_loss": round(current_loss, 4) if all_pool_probs else None,
                         "new_loss": round(new_loss_full, 4) if all_pool_probs else None,
                         "identity_sharpe": round(identity_sharpe, 4),
+                        "current_sharpe": round(current_sharpe, 4),
                         "new_sharpe": round(new_sharpe, 4),
                         "n_pool": len(all_pool_probs),
                         "n_val": len(new_returns),
@@ -1587,11 +1591,11 @@ class AgentScheduler:
                     }
 
                     insufficient = len(new_returns) < MIN_PLATT_VALIDATION_TRADES
-                    # Gate 1: new fit must beat current calibrator on log-loss by ≥ 0.005
+                    # Gate 1: new fit must beat current on log-loss by ≥ 0.010
                     new_beats_current = (not (math.isnan(new_loss_full) or math.isnan(current_loss))
                                          and new_loss_full < current_loss - LOG_LOSS_FLOOR)
-                    # Gate 2: new fit must not make sizing worse than identity (Kelly-Sharpe sanity)
-                    sizing_ok = new_sharpe >= identity_sharpe
+                    # Gate 2: new fit must beat current AND identity on Kelly-Sharpe
+                    sizing_ok = new_sharpe >= identity_sharpe and new_sharpe >= current_sharpe
                     # Revert check: if current calibrator is worse than identity, revert
                     current_worse_than_identity = (not (math.isnan(current_loss) or math.isnan(identity_loss))
                                                     and current_loss > identity_loss
