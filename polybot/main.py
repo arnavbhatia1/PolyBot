@@ -99,6 +99,9 @@ logging.basicConfig(
     handlers=[_console_handler, _file_handler],
 )
 logging.getLogger("py_clob_client_v2").setLevel(logging.CRITICAL)
+# Suppress discord.py's internal reconnect tracebacks — run_discord() already logs these cleanly
+logging.getLogger("discord.gateway").setLevel(logging.CRITICAL)
+logging.getLogger("discord.client").setLevel(logging.CRITICAL)
 
 # ANSI color codes for terminal readability
 class _C:

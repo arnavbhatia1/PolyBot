@@ -54,6 +54,7 @@ class BTCMarketScanner:
         self._fee_rate_cache_seconds: int = 3600  # 1 hour — fee rates rarely change
         self._tick_size_cache: dict[str, tuple[float, str]] = {}    # token_id -> (timestamp, tick_size)
         self._tick_size_cache_seconds: int = 3600
+        self._last_dns_error_ts: float = 0.0  # throttle DNS-failure log to once per 30s
 
     def _current_window_ts(self) -> int:
         return int(time.time() // self.WINDOW_SECONDS) * self.WINDOW_SECONDS
@@ -423,7 +424,12 @@ class BTCMarketScanner:
                         resp.raise_for_status()
                         data = resp.json()
             except Exception as e:
-                logger.error(f"Gamma API error for {slug}: {e}")
+                if "getaddrinfo" in str(e).lower() or "dnserror" in type(e).__name__.lower():
+                    if now - self._last_dns_error_ts >= 30:
+                        logger.warning("Gamma API: DNS failure — network down? (suppressing for 30s)")
+                        self._last_dns_error_ts = now
+                else:
+                    logger.error(f"Gamma API error for {slug}: {e}")
                 continue
 
             if not data:
