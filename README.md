@@ -36,7 +36,7 @@ python -m polybot.main --run-pipeline  # one pipeline run, no trading
         |
   Edge = calibrated_model_prob - market_price (CLOB /price endpoint)
         |
-  Entry gates: prob ≥ 0.58, edge ≥ 0.04, Kelly ≥ 0.015, spread ≤ 10%, depth ≥ $50,
+  Entry gates: prob ≥ 0.56, edge ≥ 0.04, Kelly ≥ 0.01, spread ≤ 10%, depth ≥ $50,
     price_sum ∈ [0.98, 1.02], edge ≤ 0.20, adverse_rate_30s ≤ 0.85, ATR ≥ 5th-pctile,
     SPRT not SKIP (and not opposing), pre-submit edge re-check, CVD-deceleration skip
         |
@@ -114,8 +114,8 @@ python -m polybot.main --run-pipeline  # one pipeline run, no trading
 
 All parameters in `polybot/config/settings.yaml`. Key knobs:
 
-- `kelly_fraction` 0.15, `min_edge` 0.04, `min_model_probability` 0.58, `min_kelly` 0.015
-- L2 0.03 / L3 0.04 / L3b 0.10 / L3e 0.03 / L4 -0.02 (fade) / L5 0.02
+- `kelly_fraction` 0.08, `min_edge` 0.04, `min_model_probability` 0.56, `min_kelly` 0.01
+- L2 0.03 / L3 0.04 / L3b 0.10 / L3e 0.03 / L4 0.04 (magnitude only — sign is regime-conditional) / L5 0.02
 - `max_concurrent_positions` 2 (correlation-aware sizing on top)
 - Circuit breaker: tiered floor at $100/$150/$200/... locks at 85% of crossed tier; Kelly 1.0→0.40 between tier and floor
 - SPRT: alpha 0.05, beta 0.10, observation_interval 10s, min_confidence 0.20 (gates entries)
@@ -132,7 +132,7 @@ Daily 23:15 ET. Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][
 4. **TAEvolver** — Claude (or `LocalRecommender` fallback) reads the analysis card, returns `{changes, manual_observations}`.
 5. **WeightOptimizer** — per-param walk-forward backtest. Adoption gate: `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.5`. Regime-stratified veto. 2-day per-param cooldown. Combined backtest after ≥2 adoptions backs out lowest-z change if combined Δ < 0.7 × sum.
 
-Crisis mode (recent-50 WR < 48% AND baseline Sharpe < 0.10): after 3 consecutive cycles, halve `kelly_fraction` (floor 0.04). Restored on first non-crisis cycle.
+Crisis mode (baseline Sharpe < 0.10 AND (recent-50 WR < 48% OR recent-50 `avg_loss/avg_win > 2.0`)): after 3 consecutive cycles, halve `kelly_fraction` (floor 0.04). Restored on first non-crisis cycle.
 
 Tunes ~15 backtestable params plus the L4 weight vector. Manual-only params (exit/timing/risk/schedule) get `manual_observations` for operator review.
 

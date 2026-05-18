@@ -13,13 +13,13 @@ All layers compose in logit space (except L1's CDF), then sigmoid + Platt.
 - **L3e** — Bybit OI drop × price direction, normalized to %/minute using `oi_updated - oi_updated_prev`. tanh saturation `× 8` per minute (5%/min → 0.38, 10%/min → 0.66, 15%/min → 0.83 — softer than the old `× 20` on raw drop).
 - **L4** — RSI/MACD/Stoch/OBV/VWAP. Polarity-split: mean-revert group (RSI/Stoch/VWAP) vs trend-confirm group (MACD/OBV). Trending (autocorr > +0.15) flips ONLY mean-revert sign; reverting (< −0.15) keeps mean-revert + dampens trend-confirm 0.5×; neutral dampens both 0.5×. Magnitude scaler from `effective_momentum_weight` is unsigned, clamped ±0.10.
 - **L5** — `tanh(prev_margin/atr) · prev_margin_weight · logit_scale · (1 − min(0.7, |regime|))`. Dampened by regime strength to orthogonalize with L2 early in the window.
-- **Platt** — sole overconfidence correction, re-fit on last 14d of trades (not the global walk-forward split). Identity `a=-1.0, b=0.0` when no calibrator. Optimizer bounded `a ∈ [-5, -0.05]`; fits pinned within 0.03 of the upper bound are treated as degenerate and revert to identity.
+- **Platt** — sole overconfidence correction, re-fit on last 7d of trades (not the global walk-forward split; needs ≥125 trades in window or skips entirely). Identity `a=-1.0, b=0.0` when no calibrator. Optimizer bounded `a ∈ [-5, -0.05]`; fits pinned within 0.03 of the upper bound are treated as degenerate and revert to identity.
 
-L3+L3b combined capped at ±0.35 logits. Final logit clamped ±3.0 → prob ∈ [0.05, 0.95].
+L3+L3b combined capped at ±0.35 logits. Final logit clamped ±4.0 → prob ∈ [0.018, 0.982].
 
 ## Entry Gates
 
-`prob ≥ 0.58`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_30s ≤ adverse_selection_threshold` (30-min rolling window over the last 20 fills, neutral 0.5 below 5 resolved samples). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP, low-confidence after 2+ obs, or favored-side mismatch > 30%. ATR gate: lower-bound only (`atr < 5th pctile`).
+`prob ≥ 0.56`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_30s ≤ adverse_selection_threshold` (30-min rolling window over the last 20 fills, neutral 0.5 below 5 resolved samples). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP, low-confidence after 2+ obs, or favored-side mismatch > 30%. ATR gate: lower-bound only (`atr < 5th pctile`).
 
 ## Sizing & Exit
 
@@ -35,7 +35,7 @@ L3+L3b combined capped at ±0.35 logits. Final logit clamped ±3.0 → prob ∈ 
 
 **Flip trading:** after a scalp, re-enter the same window unboundedly (one position at a time). Each re-entry pays `flip_edge_premium` (or actual spread cost, whichever is higher) above `min_edge`.
 
-**Circuit breaker:** tier-locked floor at $100/$150/$200/$300/…; locks at 85% of tier crossed. Kelly scales 1.0 → `min_multiplier` between tier and floor (concave sqrt). Never resets down.
+**Circuit breaker:** tier-locked floor at $100/$150/$200/$300/…/$10,000; locks at 85% of tier crossed. Kelly scales 1.0 → `min_multiplier` between tier and floor (concave sqrt). Never resets down.
 
 ## Live Execution & Safety
 
@@ -96,11 +96,11 @@ Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older 
 
 **Platt** has its own 7-day window (needs ≥125 trades to fit; skips entirely if below threshold) — calibration must reflect the *current* model, not last month's.
 
-**Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Fold-consistency: ≤1 of 4 walk-forward folds may have non-positive candidate Sharpe — i.e. ≥3 of 4 folds must be positive. Regime-stratified veto activates per regime bucket once that bucket has ≥20 trades: dominant regime must improve AND no other regime may degrade >0.10 Sharpe.
+**Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Fold-consistency: worst-fold floor `min(fold_sharpes) ≥ -0.10` (magnitude-aware — a single tiny dip is fine, a deep collapse rejects). Regime-stratified veto activates per regime bucket once that bucket has ≥20 trades: dominant regime must improve AND no other regime may degrade >0.10 Sharpe.
 
 **Interaction back-out:** if combined Δ_sharpe < 0.7 × sum(individual deltas), iteratively remove the weakest-z change until either the bound clears or ≤1 change remains.
 
-**Crisis mode:** recent-50 WR < 48% AND baseline Sharpe < 0.10. ≥3 consecutive cycles → halve `kelly_fraction` (floor 0.04), restore on first non-crisis. `kelly_reduced` flag persisted BEFORE the cut applies so a crash can't compound the halving.
+**Crisis mode:** baseline Sharpe < 0.10 AND (recent-50 WR < 48% OR recent-50 `avg_loss/avg_win > 2.0`). The loss-ratio leg catches winning-small/losing-big pathologies the WR-only trigger misses. ≥3 consecutive cycles → halve `kelly_fraction` (floor 0.04), restore on first non-crisis. `kelly_reduced` flag persisted BEFORE the cut applies so a crash can't compound the halving.
 
 **Atomic commit:** Platt save is deferred until after weight-optimizer persists config; mid-pipeline crash leaves on-disk Platt + weights coherent.
 

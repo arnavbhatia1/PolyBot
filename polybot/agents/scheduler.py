@@ -964,11 +964,10 @@ class AgentScheduler:
 
             candidate_sharpe = _sharpe(all_candidate_returns)
 
-            # Fold consistency: reject if >1 fold has non-positive Sharpe.
-            # Prevents a single lucky period inflating the aggregate z-score.
-            n_negative_folds = sum(1 for s in fold_sharpes if s <= 0)
-            if len(fold_sharpes) >= 2 and n_negative_folds > 1:
-                msg = (f"fold inconsistency: {n_negative_folds}/{len(fold_sharpes)} folds non-positive "
+            # Fold consistency: reject if the worst fold collapses below -0.10 Sharpe.
+            worst_fold = min(fold_sharpes) if fold_sharpes else 0.0
+            if len(fold_sharpes) >= 2 and worst_fold < -0.10:
+                msg = (f"fold inconsistency: worst fold Sharpe {worst_fold:+.3f} < -0.10 "
                        f"({[f'{s:+.3f}' for s in fold_sharpes]})")
                 change_info.update({"decision": "rejected", "reason": msg})
                 logger.debug(f"REJECTED {param}: {msg}")
@@ -1787,11 +1786,16 @@ class AgentScheduler:
             # Discord alert, and strategy_log.md for the operator to review.
             pipeline_info["manual_observations"] = recommendations.get("manual_observations", []) or []
 
-            # Crisis mode: when recent WR < 48% AND baseline Sharpe < 0.10, lower the
-            # adoption floor so the pipeline keeps adapting instead of going silent.
+            # Crisis mode: baseline Sharpe < 0.10 AND (recent WR < 48% OR loss/win ratio > 2.0).
             _recent_50 = all_outcomes[-50:] if len(all_outcomes) >= 50 else all_outcomes
             _recent_wr = sum(1 for o in _recent_50 if o.get("correct", False)) / max(len(_recent_50), 1)
-            _in_crisis = _recent_wr < 0.48 and (self._baseline_kelly_sharpe or 0.0) < 0.10
+            _recent_gains = [o.get("gain_pct", 0) for o in _recent_50]
+            _wins = [g for g in _recent_gains if g > 0]
+            _losses = [-g for g in _recent_gains if g < 0]
+            _avg_win = (sum(_wins) / len(_wins)) if _wins else 0.0
+            _avg_loss = (sum(_losses) / len(_losses)) if _losses else 0.0
+            _loss_ratio = (_avg_loss / _avg_win) if _avg_win > 0 else 0.0
+            _in_crisis = (self._baseline_kelly_sharpe or 0.0) < 0.10 and (_recent_wr < 0.48 or _loss_ratio > 2.0)
 
             # Sustained crisis (≥3 cycles) → halve kelly_fraction, restore on first non-crisis.
             from pathlib import Path as _Path
