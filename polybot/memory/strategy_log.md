@@ -638,3 +638,26 @@
 - None
 
 **Reasoning:** Local recommender
+
+## 2026-05-18T03:31:13.143134+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (5):**
+  - min_model_probability=0.55 (exploratory down step)
+  - min_edge=0.045 (exploratory up step)
+  - min_kelly=0.008 (exploratory down step)
+  - logit_scale=4.25 (exploratory up step)
+  - student_t_df=6 (exploratory up step)
+
+**Manual Suggestions (0) [operator-only]:**
+  - none
+
+**Findings:**
+- None
+
+**Warnings:**
+- 100% of adopted changes decayed live — backtest deltas near noise floor are not translating to live edge in current regime; hold off on any marginal proposals.
+- IMPROVING win rate and Sharpe trend risks being disrupted by parameter changes that target symptoms already self-resolving.
+- With all major parameter families exhausted, further tuning pressure risks fitting the IMPROVING regime as a new baseline — structural patience is warranted.
+
+**Reasoning:** Every backtestable parameter family has been tested across multiple values and directions with no candidate clearing the 0.007 adoption floor in backtest, and the one live adoption decayed -0.167 Sharpe. Win rate and Sharpe are explicitly IMPROVING per the trend buckets, making intervention counterproductive. The only persistent, high-confidence signal is the exit_edge_threshold manual observation, reproduced at 37% scalp accuracy in the <-0.10 bucket across n=1476 trades (~10× noise), which is routed correctly to manual_observations.
