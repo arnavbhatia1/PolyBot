@@ -5,11 +5,10 @@ import logging
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-
 import numpy as np
-from scipy.special import stdtr as _stdtr  # direct C impl, ~10x faster than scipy.stats.t.cdf
-
+from scipy.special import stdtr as _stdtr
 from polybot.core.exit_boundary import ExitBoundary
+from polybot.core.returns import lag1_autocorr
 from polybot.config.param_registry import default_for as _d
 
 if TYPE_CHECKING:
@@ -35,6 +34,18 @@ _ATR_REGIME_SHIFT_THRESHOLD = 0.60
 # scalp; the binary residual is +EV vs locking in the loss. Loss-cut still
 # fires near expiry when market collapses below entry × loss_cut_fraction.
 _DEEP_LOSS_HOLD_THRESHOLD = -0.10
+# L1 prob clip — tight enough that the final ±4 logit clamp (not this clip) is
+# the precision floor. Old 1e-3 clip collapsed deep-ITM precision before any
+# other layer ran; 1e-6 maps to logit ±13.8, well past the final clamp.
+_L1_CLIP = 1e-6
+# Minimum Student-t df. Pipeline range is 3-8; df ≤ 2 has undefined variance.
+# Clamping at 3 removes the t_scale fallback discontinuity (was 1.0 at df ≤ 2,
+# jumping to √3 = 1.73 at df = 3).
+_MIN_STUDENT_T_DF = 3
+# L5 (prev-window margin carry) overlaps with L2 (regime × direction of last
+# 1-min return) early in a window. Dampen L5 by (1 - min(_L5_DAMP_CAP, |regime|))
+# so the orthogonal-info portion still contributes when regime is weak.
+_L5_REGIME_DAMP_CAP = 0.7
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +57,7 @@ class TradeSignal:
     kelly_size: float    # Optimal fraction of bankroll
     reason: str
 
-
-def compute_signal_consensus(signals: dict[str, float], side: str,
-                              dead_zone: float = 0.05,
-                              consensus_config: dict | None = None) -> float:
+def compute_signal_consensus(signals: dict[str, float], side: str, dead_zone: float = 0.05, consensus_config: dict | None = None) -> float:
     """Kelly multiplier from how many signals agree with the chosen side."""
     cc = consensus_config or {
         "very_high_pct": 0.80, "very_high_mult": 1.3,
@@ -159,9 +167,6 @@ class SignalEngine:
         self._atr_long_term_sum: float = 0.0
         self.last_regime_autocorr: float = 0.0
         self.last_regime_direction: float = 0.0
-        # P(Up) BEFORE Platt calibration on the most recent compute_probability call.
-        # Persisted per-trade as `model_probability_raw` so the next pipeline cycle's
-        # Platt re-fit sees genuinely raw probabilities (not Platt(Platt(raw))).
         self.last_raw_prob_up: float = 0.5
 
     def _record_atr(self, atr: float) -> None:
@@ -194,15 +199,23 @@ class SignalEngine:
         return base_floor
 
     def effective_momentum_weight(self, regime_autocorr: float) -> float:
-        """Trending: flip sign and amplify. Reverting: keep fade and amplify. Else: dampen."""
-        base = self.momentum_weight
-        if regime_autocorr > _REGIME_MOMENTUM_THRESHOLD:
-            effective = abs(base) * _REGIME_MOMENTUM_AMPLIFY
-        elif regime_autocorr < -_REGIME_MOMENTUM_THRESHOLD:
-            effective = -abs(base) * _REGIME_MOMENTUM_AMPLIFY
+        """Regime-aware magnitude scaler for L4 (unsigned).
+
+        Polarity per-indicator-group is handled inside `compute_momentum`; this
+        function returns only the *magnitude* with regime amplification:
+          |autocorr| > threshold → amplify 1.5× (clear regime, lean harder)
+          else                    → dampen 0.5× (no regime, soft contribution)
+
+        Returned magnitude is clamped to _MOMENTUM_WEIGHT_CLAMP. The sign of
+        `momentum_weight` is irrelevant after this change — only |momentum_weight|
+        is consulted, so legacy negative-fade defaults still work unchanged.
+        """
+        base = abs(self.momentum_weight)
+        if abs(regime_autocorr) > _REGIME_MOMENTUM_THRESHOLD:
+            magnitude = base * _REGIME_MOMENTUM_AMPLIFY
         else:
-            effective = base * _REGIME_MOMENTUM_DAMPEN
-        return max(-_MOMENTUM_WEIGHT_CLAMP, min(_MOMENTUM_WEIGHT_CLAMP, effective))
+            magnitude = base * _REGIME_MOMENTUM_DAMPEN
+        return min(_MOMENTUM_WEIGHT_CLAMP, magnitude)
 
     @property
     def entry_threshold(self) -> float:
@@ -213,31 +226,10 @@ class SignalEngine:
         self.min_edge = value
 
     def compute_regime_factor(self, closes) -> float:
-        """1-lag autocorr of recent returns. Positive=trending, negative=reverting.
-
-        Inlined Pearson r over the (returns[:-1], returns[1:]) lag pair instead
-        of going through np.corrcoef — that function builds a full 2x2 matrix
-        and goes through a generic dispatcher, ~3-5× slower for n<30 samples.
+        """1-lag autocorr of recent returns so the regime detector and L2
+        cannot disagree on the same closes array.. Positive=trending, negative=reverting.
         """
-        n = self.regime_lookback
-        if len(closes) < n + 2:
-            return 0.0
-        returns = np.diff(closes[-(n + 1):]) / closes[-(n + 1):-1]
-        if len(returns) < 6:
-            return 0.0
-        r1 = returns[:-1]
-        r2 = returns[1:]
-        m1 = r1.mean()
-        m2 = r2.mean()
-        d1 = r1 - m1
-        d2 = r2 - m2
-        num = float((d1 * d2).sum())
-        var1 = float((d1 * d1).sum())
-        var2 = float((d2 * d2).sum())
-        if var1 <= 0 or var2 <= 0:
-            return 0.0
-        corr = num / math.sqrt(var1 * var2)
-        return 0.0 if math.isnan(corr) else max(-1.0, min(1.0, corr))
+        return lag1_autocorr(closes, self.regime_lookback)
 
     def compute_probability(self, btc_price: float, strike_price: float,
                             seconds_remaining: float, atr: float,
@@ -261,10 +253,15 @@ class SignalEngine:
             return 0.5
 
         z = distance / vol_scaled
-        t_scale = math.sqrt(self.student_t_df / (self.student_t_df - 2)) if self.student_t_df > 2 else 1.0
-        prob_up = float(_stdtr(self.student_t_df, z * t_scale))
+        # df clamped to ≥3 (pipeline range is 3-8). Removes the t_scale=1.0 fallback
+        # discontinuity that jumped to √(3/1)=1.73 the moment df reached 3.
+        df_eff = max(_MIN_STUDENT_T_DF, self.student_t_df)
+        t_scale = math.sqrt(df_eff / (df_eff - 2))
+        prob_up = float(_stdtr(df_eff, z * t_scale))
 
-        prob_up = max(0.001, min(0.999, prob_up))
+        # Tight clip — preserves deep-ITM/OTM precision so the final logit
+        # clamp is the only place L1 information is bounded.
+        prob_up = max(_L1_CLIP, min(1.0 - _L1_CLIP, prob_up))
         logit_p = math.log(prob_up / (1.0 - prob_up))
 
         logit_regime_w = self.regime_weight * self.logit_scale
@@ -273,7 +270,7 @@ class SignalEngine:
         # L2 — regime autocorr × direction of last 1-min return
         regime = self.compute_regime_factor(closes) if closes is not None else 0.0
         self.last_regime_autocorr = regime
-        # L4 weight is regime-conditional (computed once, applied at the bottom)
+        # L4 magnitude is regime-amplified; polarity is handled per-group inside compute_momentum.
         logit_momentum_w = self.effective_momentum_weight(regime) * self.logit_scale
         if closes is not None and len(closes) >= 2:
             last_return = float(closes[-1] - closes[-2]) / float(closes[-2])
@@ -296,13 +293,18 @@ class SignalEngine:
         if liquidation_pressure != 0.0:
             logit_p += liquidation_pressure * (self.liquidation_weight * self.logit_scale)
 
-        # L5 — previous-window margin carry, tanh-normalized by ATR
+        # L5 — previous-window margin carry, tanh-normalized by ATR. Dampened by
+        # regime strength: |regime| ~1 means L2 already encodes the same drift,
+        # so L5 contributes only its orthogonal-info portion.
         if prev_resolution_margin != 0.0 and atr > 0:
-            logit_p += math.tanh(prev_resolution_margin / max(atr, 1.0)) * (self.prev_margin_weight * self.logit_scale)
+            l5_damp = 1.0 - min(_L5_REGIME_DAMP_CAP, abs(regime))
+            logit_p += (math.tanh(prev_resolution_margin / max(atr, 1.0))
+                        * (self.prev_margin_weight * self.logit_scale)
+                        * l5_damp)
 
-        # L4 — indicator momentum
+        # L4 — indicator committee (regime-aware polarity per-group, sign-coherent)
         if indicators:
-            logit_p += self.compute_momentum(indicators) * logit_momentum_w
+            logit_p += self.compute_momentum(indicators, regime) * logit_momentum_w
 
         # Hard-clamp total logit to prevent any single day's signal stack from
         # producing absurd probabilities (e.g., 0.998 on a cascade of aligned signals).
@@ -314,18 +316,56 @@ class SignalEngine:
             prob_up = self.calibrator.calibrate(prob_up)
         return prob_up
 
-    def compute_momentum(self, indicators: dict[str, dict]) -> float:
+    def compute_momentum(self, indicators: dict[str, dict], regime_autocorr: float = 0.0) -> float:
+        """L4 indicator aggregate, signed coherently with the regime.
+
+        Indicators split by *native polarity*:
+          Mean-reverting (fade-aligned by construction):
+            RSI score: high → negative (overbought → bearish)
+            Stochastic score: high → negative
+            VWAP score: -(price - vwap) — above vwap → negative
+          Trend-confirming (trend-aligned by construction):
+            MACD score: positive histogram → positive (bullish momentum)
+            OBV score: agreement between volume slope and price slope → ±
+
+        Regime conditioning is applied PER GROUP so trend-confirm indicators
+        aren't sign-flipped together with mean-revert indicators (the original
+        aggregate-level flip stomped OBV's correct directional reading in
+        trending regimes):
+
+          Trending (autocorr > +0.15):
+            flip mean-revert sign → both groups now align with the trend.
+          Mean-reverting (autocorr < -0.15):
+            keep mean-revert; dampen trend-confirm (it's mostly noise in chop).
+          Neutral:
+            dampen both — no regime signal to lean on.
+
+        Output is clamped to [-1, 1]; the magnitude/regime amp lives in
+        `effective_momentum_weight` at the call site.
+        """
         w = self.weights
-        def _score(name: str) -> float:
+        def _s(name: str) -> float:
             ind = indicators.get(name, {})
             return ind.get("norm_score", ind.get("score", 0))
-        return max(-1.0, min(1.0,
-            _score("rsi") * w.get("rsi", 0.20) +
-            _score("macd") * w.get("macd", 0.25) +
-            _score("stochastic") * w.get("stochastic", 0.20) +
-            _score("obv") * w.get("obv", 0.15) +
-            _score("vwap") * w.get("vwap", 0.20)
-        ))
+
+        mean_revert = (
+            _s("rsi") * w.get("rsi", 0.20)
+            + _s("stochastic") * w.get("stochastic", 0.20)
+            + _s("vwap") * w.get("vwap", 0.20)
+        )
+        trend_confirm = (
+            _s("macd") * w.get("macd", 0.25)
+            + _s("obv") * w.get("obv", 0.15)
+        )
+
+        if regime_autocorr > _REGIME_MOMENTUM_THRESHOLD:
+            score = -mean_revert + trend_confirm
+        elif regime_autocorr < -_REGIME_MOMENTUM_THRESHOLD:
+            score = mean_revert + _REGIME_MOMENTUM_DAMPEN * trend_confirm
+        else:
+            score = _REGIME_MOMENTUM_DAMPEN * (mean_revert + trend_confirm)
+
+        return max(-1.0, min(1.0, score))
 
     def evaluate(self, indicators: dict[str, dict], has_position: bool, in_entry_window: bool,
                  btc_price: float = 0, strike_price: float = 0,
@@ -394,7 +434,7 @@ class SignalEngine:
     def evaluate_hold(self, indicators: dict[str, dict], btc_price: float, strike_price: float,
                       seconds_remaining: float, market_price_for_side: float,
                       side: str, exit_threshold: float = -0.10,
-                      entry_price: float = 0.0, fee_rate: float = 0.072,
+                      entry_price: float = 0.0, fee_rate: float = 0.018,
                       closes: np.ndarray | None = None,
                       flow_signal: float = 0.0,
                       spot_flow_signal: float = 0.0,

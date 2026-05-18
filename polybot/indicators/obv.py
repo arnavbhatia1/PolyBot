@@ -4,6 +4,14 @@ import numpy as np
 
 
 def compute_obv(closes: np.ndarray, volumes: np.ndarray) -> np.ndarray:
+    """Windowed-cumulative signed volume — NOT true session-start OBV.
+
+    True OBV is a running cumulative from listing/session start. This routine
+    resets to 0 at the start of the supplied closes window. That's fine here
+    because the only downstream consumer (compute_obv_signal) uses the SLOPE
+    over `slope_period`, which is window-anchor-invariant. Treat the array's
+    absolute level as meaningless; only deltas matter.
+    """
     if len(closes) < 2:
         return np.array([0.0])
     obv = np.zeros(len(closes))

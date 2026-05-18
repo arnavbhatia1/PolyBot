@@ -34,6 +34,7 @@ class ClobWebSocket:
         self.last_trade: dict[str, dict[str, Any]] = {}         # token_id -> {price, size, side}
         self.trade_buffer: dict[str, deque[dict[str, Any]]] = {}     # token_id -> deque of recent trades
         self._price_samples: dict[str, deque[tuple[float, float]]] = {}  # token_id -> deque of (timestamp, midprice)
+        self._trade_events: dict[str, asyncio.Event] = {}       # token_id -> Event fired on each trade
 
         # Events — trading loop awaits these
         self.book_updated: asyncio.Event = asyncio.Event()
@@ -326,3 +327,17 @@ class ClobWebSocket:
         if asset_id not in self.trade_buffer:
             self.trade_buffer[asset_id] = deque(maxlen=100)
         self.trade_buffer[asset_id].append(trade)
+        ev = self._trade_events.get(asset_id)
+        if ev is not None:
+            ev.set()
+
+    def trade_event_for(self, token_id: str) -> asyncio.Event:
+        """Return an asyncio.Event for ``token_id`` that fires on every trade
+        message for that token. Lazily created — the caller must ``.clear()``
+        before awaiting the next fire.
+        """
+        ev = self._trade_events.get(token_id)
+        if ev is None:
+            ev = asyncio.Event()
+            self._trade_events[token_id] = ev
+        return ev

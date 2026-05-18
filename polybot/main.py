@@ -28,7 +28,7 @@ except ImportError:
 # process alive if a terminal still can't render a given codepoint.
 for _stream in (sys.stdout, sys.stderr):
     try:
-        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        _stream.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
         pass
 
@@ -533,9 +533,11 @@ async def _evaluate_signal_and_enter(
     # Liquidation pressure from Bybit OI changes
     liquidation_val = 0.0
     if bybit_feed and bybit_feed.state.open_interest > 0 and bybit_feed.state.open_interest_prev > 0:
+        _oi_elapsed = bybit_feed.state.oi_updated - bybit_feed.state.oi_updated_prev
         liquidation_val = compute_liquidation_pressure(
             bybit_feed.state.open_interest, bybit_feed.state.open_interest_prev,
-            bybit_feed.state.price_at_oi, bybit_feed.state.price_at_oi_prev)
+            bybit_feed.state.price_at_oi, bybit_feed.state.price_at_oi_prev,
+            elapsed_seconds=_oi_elapsed if _oi_elapsed > 0 else 1.0)
 
     # Get closes array for regime detection
     closes = binance_feed.buffer.get_closes()
@@ -644,7 +646,18 @@ async def _evaluate_signal_and_enter(
                 spread_est = float(bba.get("spread", -1)) if bba.get("spread") else -1.0
             except (TypeError, ValueError):
                 spread_est = -1.0
-        spread_cost = (spread_est * 0.5 + DEFAULT_FEE_RATE) if spread_est >= 0 else flip_premium
+        # Real round-trip cost in price units: enter at ask (cross half-spread),
+        # exit at bid (cross half-spread) = full `spread` plus fee impact on both
+        # legs. Polymarket fee impact = fee_rate × p × (1-p), max ~0.45% at ATM.
+        # Old formula `spread/2 + fee_rate` mixed half-spread (price units) with
+        # raw fee_rate (a rate), over-conservative on tight spreads and
+        # under-conservative on wide ones.
+        side_price = price_up if side == "Up" else price_down
+        if spread_est >= 0:
+            fee_impact_one_leg = DEFAULT_FEE_RATE * side_price * (1.0 - side_price)
+            spread_cost = spread_est + 2.0 * fee_impact_one_leg
+        else:
+            spread_cost = flip_premium
         flip_hurdle = signal_engine.min_edge + max(flip_premium, spread_cost)
         if signal.edge < flip_hurdle:
             _record_skip("flip_insufficient_edge")
@@ -672,12 +685,17 @@ async def _evaluate_signal_and_enter(
             return None, last_eval_log_window
 
     # --- LAYER DISAGREEMENT GATE ---
-    momentum_score = signal_engine.compute_momentum(indicators)
-    mw_sign = 1.0 if signal_engine.momentum_weight >= 0 else -1.0
-    effective_momentum = momentum_score * mw_sign
+    # `compute_momentum` is regime-aware and sign-coherent (positive = bullish in
+    # the current regime). `mw_sign` is gone — momentum_weight's sign no longer
+    # encodes polarity after the L4 polarity-split fix; polarity is per-group.
+    # Threshold 0.5 matches a strong-disagreement signal on the unit-clamped
+    # output (group sums × weights, regime-conditioned).
+    momentum_score = signal_engine.compute_momentum(
+        indicators, signal_engine.last_regime_autocorr
+    )
     momentum_opposes = (
-        (side == "Down" and effective_momentum > 0.5) or
-        (side == "Up" and effective_momentum < -0.5)
+        (side == "Up" and momentum_score < -0.5)
+        or (side == "Down" and momentum_score > 0.5)
     )
     if momentum_opposes and signal.edge * 0.5 < signal_engine.min_edge:
         _record_skip("layer_disagreement")
@@ -762,17 +780,30 @@ async def _evaluate_signal_and_enter(
         size = round(bankroll * max_bankroll_pct, 2)
 
     # Cap size to fraction of book depth (realistic fill constraint — unlike risk caps,
-    # this is about whether the order can actually fill)
+    # this is about whether the order can actually fill).
+    #
+    # The thin-CLOB-depth gate upstream uses AND across both sides (proceeds if EITHER
+    # side has depth ≥ min). When the chosen side is the empty/thin one of a one-sided
+    # book, we'd previously skip this entire branch (`side_depth > 0` was False) and
+    # blast a full-Kelly order into a 0-liquidity book. Treat an empty/below-floor
+    # chosen-side depth as an explicit skip instead.
     side_depth = depth_usd_up if side == "Up" else depth_usd_down
     max_fill_pct = config.get("execution", {}).get("max_book_fill_pct", 0.50)
-    if side_depth > 0:
-        max_fill = side_depth * max_fill_pct
-        if size > max_fill:
-            size = round(max_fill, 2)
-            if size < 0.10:
-                _record_skip("thin_book_depth")
-                _emit_gate_skip(cid, "thin_book_depth", f"thin book ${side_depth:.0f}")
-                return None, last_eval_log_window
+    # Reuse the same floor as the upstream both-sides-thin gate so configuration
+    # has one source of truth and the two gates can't drift apart.
+    min_side_depth = market_scanner.min_book_depth_usd
+    if side_depth < min_side_depth:
+        _record_skip("thin_book_depth")
+        _emit_gate_skip(cid, "thin_book_depth",
+                        f"chosen side {side} depth ${side_depth:.0f} < ${min_side_depth:.0f}")
+        return None, last_eval_log_window
+    max_fill = side_depth * max_fill_pct
+    if size > max_fill:
+        size = round(max_fill, 2)
+        if size < 0.10:
+            _record_skip("thin_book_depth")
+            _emit_gate_skip(cid, "thin_book_depth", f"thin book ${side_depth:.0f}")
+            return None, last_eval_log_window
 
     # Net-edge gate: reject if slippage eats the edge below threshold.
     impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
@@ -1331,12 +1362,16 @@ async def _evaluate_and_exit_position(
         taker_comp = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
         hold_spot_flow = max(-1.0, min(1.0, cvd_comp + taker_comp))
 
-    # Liquidation pressure for hold evaluation
+    # Liquidation pressure for hold evaluation — must mirror the entry-side
+    # elapsed_seconds normalization, otherwise the hold path applies the new
+    # per-minute formula with raw-second inputs and over-saturates at 5-10×.
     hold_liquidation = 0.0
     if bybit_feed and bybit_feed.state.open_interest > 0 and bybit_feed.state.open_interest_prev > 0:
+        _hold_oi_elapsed = bybit_feed.state.oi_updated - bybit_feed.state.oi_updated_prev
         hold_liquidation = compute_liquidation_pressure(
             bybit_feed.state.open_interest, bybit_feed.state.open_interest_prev,
-            bybit_feed.state.price_at_oi, bybit_feed.state.price_at_oi_prev)
+            bybit_feed.state.price_at_oi, bybit_feed.state.price_at_oi_prev,
+            elapsed_seconds=_hold_oi_elapsed if _hold_oi_elapsed > 0 else 1.0)
 
     action, model_prob, holding_edge, reason = signal_engine.evaluate_hold(
         indicators, btc_now, strike_now, live["seconds_remaining"],
@@ -1613,9 +1648,13 @@ async def _resolve_expired_position(
             counterfactual_tracker.record_hold_resolution(
                 pos["market_id"], exit_price, pnl, gain_pct)
         traded_market_id = pos["market_id"]
-        # Track resolution margin for adjacent window momentum (D2)
+        # Track resolution margin (final - strike) for next window's L5 carry.
+        # Pulled from event_metadata regardless of which branch above set
+        # exit_price — the previous `elif`-only placement silently zeroed L5
+        # for the closed+binary path even when meta carried the Chainlink
+        # final price.
         meta = live.get("event_metadata")
-        if meta and meta.get("final_price") and meta.get("price_to_beat"):
+        if meta and meta.get("final_price") is not None and meta.get("price_to_beat") is not None:
             _prev_resolution_margin = meta["final_price"] - meta["price_to_beat"]
             _save_prev_resolution_margin(_prev_resolution_margin)
             flush_gate_stats()  # keep on-disk stats current for pipeline reads
@@ -1630,6 +1669,7 @@ async def _manage_orphaned_position(
         chainlink_feed: Any = None) -> tuple[bool, int, int, float, str | None]:
     """Resolve positions where the contract can no longer be found via Gamma API."""
     from datetime import datetime, timezone
+    global _prev_resolution_margin
 
     try:
         entry_dt = datetime.fromisoformat(pos.get("entry_timestamp", ""))
@@ -1638,12 +1678,18 @@ async def _manage_orphaned_position(
         age = 0
     if age < 600:
         return True, day_wins, day_losses, day_fees, None  # too young, skip
+    # Track (final_price, strike) for L5 carry — populated by whichever branch
+    # below has the data. Saved at the end alongside resolve_position.
+    resolved_final: float | None = None
+    resolved_strike: float | None = None
     # Try direct Gamma fetch for eventMetadata (Chainlink oracle)
     direct = await _get_contract_prices(market_scanner, pos["market_id"], http_client)
     if direct and direct.get("event_metadata") and direct["event_metadata"].get("final_price") is not None:
         meta = direct["event_metadata"]
         up_won = meta["final_price"] >= meta["price_to_beat"]
         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
+        resolved_final = meta.get("final_price")
+        resolved_strike = meta.get("price_to_beat")
         logger.info(f"RESOLVE orphan via eventMetadata: priceToBeat={meta['price_to_beat']:,.2f} final={meta['final_price']:,.2f} -> {'Up' if up_won else 'Down'}")
     elif direct and direct.get("closed") and (direct["price_up"] >= 0.99 or direct["price_up"] <= 0.01):
         exit_price = direct["price_up"] if pos["side"] == "Up" else direct["price_down"]
@@ -1662,6 +1708,8 @@ async def _manage_orphaned_position(
             return True, day_wins, day_losses, day_fees, None
         up_won = chainlink_feed.price >= strike_at_boundary
         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
+        resolved_final = chainlink_feed.price
+        resolved_strike = strike_at_boundary
         logger.warning(
             f"RESOLVE orphan via Chainlink fallback after {age:.0f}s wait: "
             f"strike=${strike_at_boundary:,.2f} now=${chainlink_feed.price:,.2f} -> "
@@ -1721,6 +1769,13 @@ async def _manage_orphaned_position(
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
                               exit_reason="resolution", pnl=pnl, fees=total_fees)
         traded_market_id = pos["market_id"]
+        # L5 carry — orphan path previously dropped this even when both
+        # final_price and strike were known (eventMetadata or Chainlink
+        # fallback branches). Persist whichever branch captured them.
+        if resolved_final is not None and resolved_strike is not None:
+            _prev_resolution_margin = resolved_final - resolved_strike
+            _save_prev_resolution_margin(_prev_resolution_margin)
+            flush_gate_stats()
     return True, day_wins, day_losses, day_fees, traded_market_id
 
 

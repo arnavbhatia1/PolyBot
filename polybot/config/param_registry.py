@@ -32,7 +32,7 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec("spot_flow_weight",        "signal.spot_flow_weight",        0.01,  0.15,  float, 0.10,  "L3b Binance CVD + taker ratio"),
     ParamSpec("liquidation_weight",      "signal.liquidation_weight",      0.01,  0.10,  float, 0.03,  "L3e Bybit OI liquidation pressure"),
     ParamSpec("prev_margin_weight",      "signal.prev_margin_weight",      0.01,  0.05,  float, 0.02,  "L5 prev-window resolution margin carry"),
-    ParamSpec("momentum_weight",         "signal.momentum_weight",         -0.10, 0.10,  float, -0.04, "L4 indicator momentum — NEGATIVE = fade (mean-revert)"),
+    ParamSpec("momentum_weight",         "signal.momentum_weight",         0.0,   0.10,  float, 0.04,  "L4 indicator magnitude"),
     # ── Sizing ──────────────────────────────────────────────────────────────
     ParamSpec("kelly_fraction",          "math.kelly_fraction",            0.05,  0.18,  float, 0.08,  "Kelly sizing fraction — leave unchanged unless strong drawdown evidence"),
     # ── Entry gates (pipeline-tunable since ghosts are in the backtest) ─────

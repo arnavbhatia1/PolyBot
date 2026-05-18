@@ -58,7 +58,7 @@ signal:
   atr_sigma_ratio: 1.3        # L1: lower = sharper/more confident probabilities from BTC distance
   student_t_df: 5             # L1: tail fatness (5 = BTC-appropriate fat tails, don't change)
   logit_scale: 4.0            # Amplifier on all signal layers (L2-L5). Higher = signals matter more.
-  momentum_weight: -0.04      # L4: negative = fade indicators.
+  momentum_weight: 0.04       # L4 magnitude (unsigned).
   regime_weight: 0.03         # L2: how much trending/reverting autocorrelation affects the bet.
   flow_weight: 0.04           # L3: CLOB order book imbalance signal strength.
   spot_flow_weight: 0.1       # L3b: Binance CVD (buy/sell pressure) signal strength.

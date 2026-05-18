@@ -71,6 +71,7 @@ class BybitState:
     price_at_oi: float = 0.0
     price_at_oi_prev: float = 0.0
     oi_updated: float = 0.0
+    oi_updated_prev: float = 0.0
 
     def is_stale(self, spot_price: float, spot_updated: float,
                  threshold_usd: float = 20.0) -> bool:
@@ -214,6 +215,7 @@ class BybitFeed:
                 if new_oi > 0 and new_oi != self.state.open_interest:
                     self.state.open_interest_prev = self.state.open_interest
                     self.state.price_at_oi_prev = self.state.price_at_oi
+                    self.state.oi_updated_prev = self.state.oi_updated
                     self.state.open_interest = new_oi
                     self.state.price_at_oi = self.state.perp_price
                     self.state.oi_updated = now

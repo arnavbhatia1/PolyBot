@@ -6,20 +6,20 @@
 
 All layers compose in logit space (except L1's CDF), then sigmoid + Platt.
 
-- **L1 — Student-t CDF** (df=5). `vol = max(atr, atr_floor)/atr_sigma_ratio · √min`, `z = (btc-strike)/vol · √(df/(df-2))`. ATR floor: `max(min_atr, 0.3 × rolling_20)`, widens when rolling_20 < 60% of long-term_200.
-- **L2** — 1-lag autocorr × sign(last 1-min return).
-- **L3** — CLOB book imbalance × 0.6 + trade flow × 0.4.
-- **L3b** — Binance CVD + taker ratio (taker requires trade_count ≥ 5).
-- **L3e** — Bybit OI drop × price direction.
-- **L4** — RSI/MACD/Stoch/OBV/VWAP. Regime-conditional: trending (autocorr > +0.15) flips sign + amplifies 1.5×; reverting (< −0.15) keeps fade + amplifies 1.5×; neutral dampens 0.5×. Clamped ±0.10.
-- **L5** — `tanh(prev_margin/atr) · prev_margin_weight · logit_scale`.
-- **Platt** — sole overconfidence correction, re-fit on last 14d of trades (not the global walk-forward split). Identity `a=-1.0, b=0.0` when no calibrator.
+- **L1 — Student-t CDF** (df=5, clamped ≥3). `vol = max(atr, atr_floor)/atr_sigma_ratio · √min`, `z = (btc-strike)/vol · √(df/(df-2))`. ATR floor: `max(min_atr, 0.3 × rolling_20)`, widens when rolling_20 < 60% of long-term_200. Prob clipped to [1e-6, 1-1e-6] before logit (final ±4 clamp is the precision floor).
+- **L2** — 1-lag autocorr × sign(last 1-min return). Single `lag1_autocorr` helper in `returns.py` — signal_engine and `RegimeDetector` both delegate to it.
+- **L3** — CLOB book imbalance (top-5 levels each side, by best price) × 0.6 + trade flow × 0.4. Trade flow recency-weighted, 30s half-life inside the 120s window.
+- **L3b** — Binance CVD + taker ratio (taker requires trade_count ≥ 5). CVD acceleration gate requires ≥ 3 trades in the recent 15s window (returns 0 otherwise).
+- **L3e** — Bybit OI drop × price direction, normalized to %/minute using `oi_updated - oi_updated_prev`. tanh saturation `× 8` per minute (5%/min → 0.38, 10%/min → 0.66, 15%/min → 0.83 — softer than the old `× 20` on raw drop).
+- **L4** — RSI/MACD/Stoch/OBV/VWAP. Polarity-split: mean-revert group (RSI/Stoch/VWAP) vs trend-confirm group (MACD/OBV). Trending (autocorr > +0.15) flips ONLY mean-revert sign; reverting (< −0.15) keeps mean-revert + dampens trend-confirm 0.5×; neutral dampens both 0.5×. Magnitude scaler from `effective_momentum_weight` is unsigned, clamped ±0.10.
+- **L5** — `tanh(prev_margin/atr) · prev_margin_weight · logit_scale · (1 − min(0.7, |regime|))`. Dampened by regime strength to orthogonalize with L2 early in the window.
+- **Platt** — sole overconfidence correction, re-fit on last 14d of trades (not the global walk-forward split). Identity `a=-1.0, b=0.0` when no calibrator. Optimizer bounded `a ∈ [-5, -0.05]`; fits pinned within 0.03 of the upper bound are treated as degenerate and revert to identity.
 
 L3+L3b combined capped at ±0.35 logits. Final logit clamped ±3.0 → prob ∈ [0.05, 0.95].
 
 ## Entry Gates
 
-`prob ≥ 0.58`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_30s ≤ 0.85`. Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP, low-confidence after 2+ obs, or favored-side mismatch > 30%. ATR gate: lower-bound only (`atr < 5th pctile`).
+`prob ≥ 0.58`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_30s ≤ adverse_selection_threshold` (30-min rolling window over the last 20 fills, neutral 0.5 below 5 resolved samples). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP, low-confidence after 2+ obs, or favored-side mismatch > 30%. ATR gate: lower-bound only (`atr < 5th pctile`).
 
 ## Sizing & Exit
 
@@ -74,7 +74,7 @@ polybot/
 `param_registry.py` is the single source of truth for ALL defaults. Code-side fallbacks read `default_for(name)`; settings.yaml drives runtime.
 
 **Pipeline-tunable** (Claude proposes, walk-forward adopts):
-`atr_sigma_ratio` 1.2–2.5 (L1, highest leverage), `logit_scale` 2.0–6.0, `student_t_df` 3–8, `momentum_weight` −0.10..+0.10 (negative=fade), `regime_weight` 0.02–0.10, `flow_weight` 0.02–0.12, `spot_flow_weight` 0.01–0.15, `liquidation_weight` 0.01–0.10, `prev_margin_weight` 0.01–0.05, `min_atr` 4.0–25.0, `kelly_fraction` 0.05–0.25, `weights` (sum=1.0, ≥0.05 each), `min_model_probability` 0.52–0.70, `min_edge` 0.02–0.10, `min_kelly` 0.005–0.04.
+`atr_sigma_ratio` 1.2–2.5 (L1, highest leverage), `logit_scale` 2.0–6.0, `student_t_df` 3–8, `momentum_weight` 0.0..0.10 (magnitude only — sign is dead, polarity is regime-conditional per group inside `compute_momentum`), `regime_weight` 0.02–0.10, `flow_weight` 0.02–0.12, `spot_flow_weight` 0.01–0.15, `liquidation_weight` 0.01–0.10, `prev_margin_weight` 0.01–0.05, `min_atr` 4.0–25.0, `kelly_fraction` 0.05–0.25, `weights` (sum=1.0, ≥0.05 each), `min_model_probability` 0.52–0.70, `min_edge` 0.02–0.10, `min_kelly` 0.005–0.04.
 
 **Manual-only** (claude_client validator reroutes `changes` → `manual_observations`):
 `exit_edge_threshold`, `loss_cut_*`, `max_edge`, `adverse_selection_threshold`, `normal_fraction`, `late_max_penalty`, `flip_*`, `trading_*`, `max_concurrent_positions`, `max_bankroll_deployed`, `circuit_breaker.*`, `indicators.*`, `sprt.*`.
@@ -96,7 +96,7 @@ Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older 
 
 **Platt** has its own 7-day window (needs ≥125 trades to fit; skips entirely if below threshold) — calibration must reflect the *current* model, not last month's.
 
-**Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Regime-stratified: dominant regime improves AND no regime degrades >0.10 (≥35 trades to veto).
+**Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Fold-consistency: ≤1 of 4 walk-forward folds may have non-positive candidate Sharpe — i.e. ≥3 of 4 folds must be positive. Regime-stratified veto activates per regime bucket once that bucket has ≥20 trades: dominant regime must improve AND no other regime may degrade >0.10 Sharpe.
 
 **Interaction back-out:** if combined Δ_sharpe < 0.7 × sum(individual deltas), iteratively remove the weakest-z change until either the bound clears or ≤1 change remains.
 

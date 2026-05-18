@@ -576,18 +576,51 @@ class AgentScheduler:
             if liq != 0.0:
                 logit_p += liq * (liquidation_weight * logit_scale)
 
-            # L5 — previous-window margin carry (tanh-normalized by ATR)
+            # L5 — previous-window margin carry (tanh-normalized by ATR).
+            # Live applies a (1 - min(0.7, |regime|)) dampener to orthogonalize
+            # with L2 early in a window; backtest must mirror or it will
+            # over-credit prev_margin_weight in strong-regime samples.
             if prev_margin != 0.0 and atr_raw > 0:
                 normalized = prev_margin / max(atr_raw, 1.0)
-                logit_p += math.tanh(normalized) * (prev_margin_weight * logit_scale)
+                l5_damp = 1.0 - min(0.7, abs(regime_factor))
+                logit_p += math.tanh(normalized) * (prev_margin_weight * logit_scale) * l5_damp
 
-            # L4 — indicator momentum (recomputed from stored norm_scores × candidate weights).
-            momentum_score = sum(
-                snap.get(ind, {}).get("norm_score", snap.get(ind, {}).get("score", 0)) * recommended_weights.get(ind, 0)
-                for ind in ("rsi", "macd", "stochastic", "obv", "vwap")
+            # L4 — indicator committee. Must mirror live `compute_momentum`:
+            # split fade-aligned (RSI/Stoch/VWAP) from trend-aligned (MACD/OBV),
+            # apply regime-conditional polarity per group, then magnitude-amplify
+            # by |momentum_weight| × (1.5 if |regime|>0.15 else 0.5), clamped at 0.10.
+            # The sign of momentum_weight is dead in live; backtest must use abs()
+            # too so adoption decisions reflect live behavior, not stale physics.
+            def _ind_score(name: str) -> float:
+                ind = snap.get(name, {})
+                return ind.get("norm_score", ind.get("score", 0))
+            mean_revert_score = (
+                _ind_score("rsi") * recommended_weights.get("rsi", 0)
+                + _ind_score("stochastic") * recommended_weights.get("stochastic", 0)
+                + _ind_score("vwap") * recommended_weights.get("vwap", 0)
             )
+            trend_confirm_score = (
+                _ind_score("macd") * recommended_weights.get("macd", 0)
+                + _ind_score("obv") * recommended_weights.get("obv", 0)
+            )
+            if regime_factor > 0.15:
+                momentum_score = -mean_revert_score + trend_confirm_score
+            elif regime_factor < -0.15:
+                momentum_score = mean_revert_score + 0.5 * trend_confirm_score
+            else:
+                momentum_score = 0.5 * (mean_revert_score + trend_confirm_score)
             momentum_score = max(-1.0, min(1.0, momentum_score))
-            logit_p += momentum_score * momentum_weight * logit_scale
+            if abs(regime_factor) > 0.15:
+                eff_mw = min(0.10, abs(momentum_weight) * 1.5)
+            else:
+                eff_mw = min(0.10, abs(momentum_weight) * 0.5)
+            logit_p += momentum_score * eff_mw * logit_scale
+
+            # Final clamp — mirrors live (signal_engine.compute_probability:
+            # max(-4.0, min(4.0, logit_p))). Pre-existing gap; matters more
+            # post-L4 fix because coherent-regime windows produce larger
+            # logit_p than the old mixed-polarity aggregate ever did.
+            logit_p = max(-4.0, min(4.0, logit_p))
 
             prob_up_adj = 1.0 / (1.0 + math.exp(-logit_p))
             if calibrator is not None and hasattr(calibrator, "calibrate"):

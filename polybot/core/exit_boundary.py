@@ -20,7 +20,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 class ExitBoundary:
     """Time-varying exit threshold for binary option positions.
 
@@ -34,9 +33,7 @@ class ExitBoundary:
         self.df = df
         self.price_vol_per_min = price_vol_per_min
 
-    def compute_exit_threshold(self, seconds_remaining: float, entry_price: float,
-                                fee_rate: float = 0.072,
-                                market_price: float = 0.5) -> float:
+    def compute_exit_threshold(self, seconds_remaining: float, entry_price: float, fee_rate: float = 0.018, market_price: float = 0.5) -> float:
         """Compute minimum holding_edge to justify holding.
 
         For binary options, the threshold depends on WHERE the market price is:
@@ -62,10 +59,6 @@ class ExitBoundary:
         urgency_premium = 0.0  # only set in the OTM branch below
         if market_price >= 0.70:
             # Deep ITM: time value is NEGATIVE near expiry.
-            # You're almost certainly winning $1. Exiting now at $0.85 loses $0.15.
-            # The closer to expiry, the MORE patient (want resolution).
-            # Scale: at 0.90 market with 30s left, barely any time value but huge
-            # incentive to hold for $1.
             itm_depth = (market_price - 0.50) / 0.50  # 0.0 at ATM, 1.0 at $1
             # Reduce time value (less reason to exit) and add resolution premium
             resolution_premium = itm_depth * 0.05 * (1.0 - minutes_remaining / 5.0)
@@ -76,10 +69,6 @@ class ExitBoundary:
             # Deep OTM: time value decays faster. Less reason to hold.
             otm_depth = (0.50 - market_price) / 0.50  # 0.0 at ATM, 1.0 at $0
             time_value = base_time_value * (1.0 - otm_depth * 0.7)
-            # Urgency: near expiry the option has no realistic recovery path.
-            # Allows threshold to go positive so holding_edge = model - market
-            # can trigger an exit even when the model is still somewhat optimistic.
-            # Ramps from 0 at 2-min remaining to full at expiry.
             urgency = max(0.0, 1.0 - minutes_remaining / 2.0)
             urgency_premium = otm_depth * urgency * 0.45
 
@@ -89,24 +78,15 @@ class ExitBoundary:
             urgency_premium = 0.0
 
         # Threshold: tolerate adverse edge up to (time_value + fee_cost).
-        # OTM urgency can push the threshold positive, forcing exit even when the
-        # model is still optimistic — a recovery in the last 90s is unlikely.
+        # OTM urgency can push the threshold positive, forcing exit even when the model is still optimistic
         threshold = -(time_value + fee_cost) + urgency_premium
         upper_cap = 0.30 if urgency_premium > 0 else -0.01
         return max(-0.30, min(upper_cap, threshold))
 
-    def should_exit(self, seconds_remaining: float, market_price: float,
-                    entry_price: float, fee_rate: float = 0.072,
-                    model_prob: float | None = None) -> tuple[bool, float]:
-        """Whether to exit based on binary option optimal boundary.
-
-        Returns: (should_exit, boundary_price)
-        """
+    def should_exit(self, seconds_remaining: float, market_price: float, entry_price: float, fee_rate: float = 0.018, model_prob: float | None = None) -> tuple[bool, float]:
+        """Whether to exit based on binary option optimal boundary. Returns: (should_exit, boundary_price)"""
         if seconds_remaining <= 0:
             return False, 0.0  # At expiry, let it resolve
-
-        exit_fee = fee_rate * market_price * (1.0 - market_price)
-        exit_value = market_price - exit_fee
 
         prob = model_prob if model_prob is not None else market_price
         threshold = self.compute_exit_threshold(

@@ -7,14 +7,13 @@ quiet skips entry (no edge in flat-vol); all others allow entry.
 
 from dataclasses import dataclass
 import numpy as np
-
+from polybot.core.returns import lag1_autocorr
 
 @dataclass(frozen=True)
 class RegimeState:
     """Immutable regime classification result."""
     name: str
     skip: bool = False
-
 
 # Pre-built regime states (immutable singletons)
 _REGIMES = {
@@ -26,7 +25,6 @@ _REGIMES = {
     "neutral":        RegimeState(name="neutral"),
     "unknown":        RegimeState(name="unknown"),
 }
-
 
 class RegimeDetector:
     """Classifies market regime from price closes, ATR, and CVD.
@@ -124,22 +122,9 @@ class RegimeDetector:
 
     @staticmethod
     def _compute_autocorr(closes: np.ndarray, n: int) -> float:
-        """1-lag autocorrelation of the last n returns.
-
-        Mirrors signal_engine.compute_regime_factor -- returns 0.0
-        when data is insufficient or std is zero.
-        """
-        returns = np.diff(closes[-(n + 1):]) / closes[-(n + 1):-1]
-        if len(returns) < 6:
-            return 0.0
-        r1 = returns[:-1]
-        r2 = returns[1:]
-        if np.std(r1) == 0 or np.std(r2) == 0:
-            return 0.0
-        corr = float(np.corrcoef(r1, r2)[0, 1])
-        if np.isnan(corr):
-            return 0.0
-        return max(-1.0, min(1.0, corr))
+        """1-lag autocorrelation of the last n returns so signal_engine
+        and regime detector can never disagree on the same closes."""
+        return lag1_autocorr(closes, n)
 
     @staticmethod
     def _compute_vol_percentile(atr: float, atr_history: list[float]) -> float:
@@ -160,9 +145,8 @@ class RegimeDetector:
     def _compute_directional_ratio(closes: np.ndarray, n: int) -> float:
         """Fraction of returns in the dominant direction over the lookback.
 
-        A value of 1.0 means every return was in the same direction
-        (monotonic series). A value of 0.5 means equal up/down moves.
-        Returns 0.0 if insufficient data.
+        A value of 1.0 means every return was in the same direction.
+        A value of 0.5 means equal up/down moves. Returns 0.0 if insufficient data.
         """
         returns = np.diff(closes[-(n + 1):]) / closes[-(n + 1):-1]
         if len(returns) < 2:

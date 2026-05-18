@@ -10,10 +10,13 @@ where positive = bullish (favors Up) and negative = bearish (favors Down).
 from __future__ import annotations
 
 import logging
+import math
+import time
 from typing import Any, TypedDict
 
 logger = logging.getLogger(__name__)
-
+_BOOK_DEPTH_LEVELS = 5
+_TRADE_FLOW_HALF_LIFE_S = 30.0
 
 class FlowData(TypedDict):
     flow_score: float
@@ -22,20 +25,45 @@ class FlowData(TypedDict):
     trade_count: int
 
 
-def book_imbalance(book_up: dict[str, Any], book_down: dict[str, Any]) -> float:
+def _sum_top_levels(orders: list[dict[str, Any]], best_first: str, n: int) -> float:
+    """Sum size over the top-N price levels.
+
+    best_first = "high" → highest prices first (use for bids: best bid = highest)
+    best_first = "low"  → lowest prices first  (use for asks: best ask = lowest)
+
+    Far-out resting orders are dropped — they don't reflect tradeable
+    intent on the timescale this signal operates over.
+    """
+    try:
+        sorted_orders = sorted(
+            orders,
+            key=lambda o: float(o.get("price", 0)),
+            reverse=(best_first == "high"),
+        )
+    except (ValueError, TypeError):
+        sorted_orders = orders
+    return sum(float(o.get("size", 0)) for o in sorted_orders[:n])
+
+
+def book_imbalance(book_up: dict[str, Any], book_down: dict[str, Any],
+                   depth_levels: int = _BOOK_DEPTH_LEVELS) -> float:
     """Compute bid/ask imbalance across both sides of the binary market.
 
     Returns float from -1 (bearish / Down pressure) to +1 (bullish / Up pressure).
 
+    Only the top `depth_levels` levels on each side are counted. A 10k-share
+    resting bid 20¢ from the market is non-informative noise — the previous
+    full-book sum gave it equal weight to a 100-share top-of-book bid, which
+    distorted the imbalance.
+
     Logic:
     - If Up bids >> Up asks -> buyers accumulating Up -> bullish
     - If Down bids >> Down asks -> buyers accumulating Down -> bearish
-    - Combines both books for a net directional signal
     """
-    bid_up = sum(float(b.get("size", 0)) for b in book_up.get("bids", []))
-    ask_up = sum(float(a.get("size", 0)) for a in book_up.get("asks", []))
-    bid_down = sum(float(b.get("size", 0)) for b in book_down.get("bids", []))
-    ask_down = sum(float(a.get("size", 0)) for a in book_down.get("asks", []))
+    bid_up = _sum_top_levels(book_up.get("bids", []), "high", depth_levels)
+    ask_up = _sum_top_levels(book_up.get("asks", []), "low", depth_levels)
+    bid_down = _sum_top_levels(book_down.get("bids", []), "high", depth_levels)
+    ask_down = _sum_top_levels(book_down.get("asks", []), "low", depth_levels)
 
     # Net buying pressure: bid-heavy on Up OR ask-heavy on Down = bullish
     up_pressure = bid_up - ask_up    # positive = buying Up
@@ -49,51 +77,41 @@ def book_imbalance(book_up: dict[str, Any], book_down: dict[str, Any]) -> float:
     return max(-1.0, min(1.0, net))
 
 
-def trade_flow(trades_up: list[dict[str, Any]], trades_down: list[dict[str, Any]],
-               lookback_seconds: float = 120.0) -> float:
-    """Compute net trade flow direction from recent trade history.
-
-    Returns float from -1 (net selling/Down buying) to +1 (net buying Up).
-
-    Uses trade side and size from WebSocket last_trade_price events.
-    Only considers trades within lookback_seconds.
+def trade_flow(trades_up: list[dict[str, Any]], trades_down: list[dict[str, Any]], lookback_seconds: float = 120.0, half_life_s: float = _TRADE_FLOW_HALF_LIFE_S) -> float:
+    """Compute net trade flow direction from recent trade history. Returns float from -1 (net selling/Down buying) to +1 (net buying Up).
+    
+    Trades are recency-weighted by an exponential decay (`half_life_s` = 30s
+    by default). Polymarket CLOB sizes are in shares. Bullish-Up activity = buying Up OR
+    selling Down (each share represents the same $1 binary payoff).
     """
-    import time
-    cutoff = time.time() - lookback_seconds
+    now = time.time()
+    cutoff = now - lookback_seconds
+    decay_k = math.log(2) / max(half_life_s, 1.0)
 
-    buy_vol_up = 0.0
-    sell_vol_up = 0.0
-    buy_vol_down = 0.0
-    sell_vol_down = 0.0
+    def _accum(trades: list[dict[str, Any]]) -> tuple[float, float]:
+        buy_v = 0.0
+        sell_v = 0.0
+        for t in trades:
+            ts = t.get("timestamp", 0)
+            if ts < cutoff:
+                continue
+            age = max(0.0, now - ts)  # future-dated timestamps clamped to "fresh"
+            w = math.exp(-decay_k * age)
+            sz = float(t.get("size", 0)) * w
+            side = t.get("side", "").upper()
+            if side == "BUY":
+                buy_v += sz
+            elif side == "SELL":
+                sell_v += sz
+        return buy_v, sell_v
 
-    for t in trades_up:
-        if t.get("timestamp", 0) < cutoff:
-            continue
-        size = float(t.get("size", 0))
-        side = t.get("side", "").upper()
-        if side == "BUY":
-            buy_vol_up += size
-        elif side == "SELL":
-            sell_vol_up += size
+    buy_up, sell_up = _accum(trades_up)
+    buy_down, sell_down = _accum(trades_down)
 
-    for t in trades_down:
-        if t.get("timestamp", 0) < cutoff:
-            continue
-        size = float(t.get("size", 0))
-        side = t.get("side", "").upper()
-        if side == "BUY":
-            buy_vol_down += size
-        elif side == "SELL":
-            sell_vol_down += size
-
-    # Net Up buying = buy_vol_up + sell_vol_down (buying Up = selling Down)
-    # Net Down buying = buy_vol_down + sell_vol_up (buying Down = selling Up)
-    net_up = (buy_vol_up + sell_vol_down) - (buy_vol_down + sell_vol_up)
-    total = buy_vol_up + sell_vol_up + buy_vol_down + sell_vol_down
-
+    net_up = (buy_up + sell_down) - (buy_down + sell_up)
+    total = buy_up + sell_up + buy_down + sell_down
     if total == 0:
         return 0.0
-
     return max(-1.0, min(1.0, net_up / total))
 
 

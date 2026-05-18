@@ -82,20 +82,27 @@ class BinanceTradeAccumulator:
         self._cache[("cvd", window_s)] = (key, cvd)
         return cvd
 
-    def get_cvd_acceleration(self, recent_s: float = 15.0, baseline_s: float = 45.0) -> float:
+    def get_cvd_acceleration(self, recent_s: float = 15.0, baseline_s: float = 45.0, min_recent_trades: int = 3) -> float:
         """First derivative of CVD: rate of change in buying pressure.
 
         Compares CVD rate in the recent window vs an older baseline window.
         Positive = buying accelerating, Negative = buying decelerating.
+
+        Returns 0 when fewer than `min_recent_trades` trades fall inside the recent window (On Binance.US the 15s window contains 0-3)
         """
         now = time.time()
         recent_cvd = 0.0
         baseline_cvd = 0.0
+        recent_count = 0
         for t in self._trades:
             if t.ts >= now - recent_s:
                 recent_cvd += t.qty if not t.is_buyer_maker else -t.qty
+                recent_count += 1
             elif t.ts >= now - recent_s - baseline_s:
                 baseline_cvd += t.qty if not t.is_buyer_maker else -t.qty
+
+        if recent_count < min_recent_trades:
+            return 0.0
 
         recent_rate = recent_cvd / max(recent_s, 1.0)
         baseline_rate = baseline_cvd / max(baseline_s, 1.0)

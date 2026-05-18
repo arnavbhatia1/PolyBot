@@ -40,7 +40,8 @@ _ALLOWANCE_RECHECK_EVERY = 10
 _FILL_PRICE_LOOKUP_RETRIES = 3
 _FILL_PRICE_LOOKUP_DELAY = 0.15
 _DUST_THRESHOLD_SHARES = 0.01
-_BALANCE_SETTLE_DELAY = 0.25
+_BALANCE_SETTLE_FLOOR = 0.05  # min chain-settle wait even if WS fires immediately
+_BALANCE_SETTLE_DELAY = 0.25  # max wait (legacy fixed delay, used as ceiling + no-WS fallback)
 
 def _retry_sleep(attempt: int) -> float:
     """Exponential backoff with multiplicative jitter. attempt is 1-indexed."""
@@ -231,6 +232,7 @@ class LiveTrader(BaseTrader):
         self._sign_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="clob-sign"
         )
+        self._latched_auth_error: str | None = None
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
     async def start_keepalive(self) -> None:
@@ -240,6 +242,10 @@ class LiveTrader(BaseTrader):
         goes idle between trades (>60s), the HTTP/2 stream may close and the next
         order submission pays a full TLS handshake penalty (~100-200ms). Pinging
         every 10s gives 3× more retry attempts before that 60s cliff.
+
+        Auth-looking failures during a ping latch `self._latched_auth_error`;
+        the next FOK submit then raises AuthError without making a live order
+        attempt, so the main loop's AuthError handler can shut trading down.
         """
         async def _ping() -> None:
             while True:
@@ -248,8 +254,15 @@ class LiveTrader(BaseTrader):
                     await asyncio.to_thread(self.client.get_sampling_simplified_markets)
                 except asyncio.CancelledError:
                     break
-                except Exception:
-                    pass  # best-effort — never crash trading on a keepalive failure
+                except Exception as e:
+                    if _looks_like_auth_error(e):
+                        logger.error(
+                            "AUTH FAILURE during keepalive ping: %s — "
+                            "latching for fail-fast on next FOK submit", e,
+                        )
+                        self._latched_auth_error = str(e)
+                        break  # stop pinging; next FOK submit raises AuthError
+                    # other transient errors — best-effort, never crash trading
         self._keepalive_task = asyncio.create_task(_ping())
         logger.info("LiveTrader: HTTP keepalive started (ping every 10s)")
 
@@ -260,7 +273,6 @@ class LiveTrader(BaseTrader):
                 await self._keepalive_task
             except asyncio.CancelledError:
                 pass
-        # Tear down the dedicated sign executor on shutdown.
         try:
             self._sign_executor.shutdown(wait=False)
         except Exception:
@@ -302,6 +314,32 @@ class LiveTrader(BaseTrader):
     def set_clob_ws(self, clob_ws) -> None:
         """Attach CLOB WebSocket for fast maker fill detection via trade events."""
         self._clob_ws = clob_ws
+
+    async def _await_buy_settle(self, ws_event: asyncio.Event | None) -> None:
+        """Wait for the chain to register a BUY fill before reading balance.
+
+        Adaptive: always waits the floor (~50ms) for chain settlement, then
+        either returns the moment the CLOB WS reports a trade on our token,
+        or hits the legacy 250ms ceiling. Falls back to the fixed delay if
+        no WS is attached (parity with the pre-event-driven behavior).
+
+        Wakes from any trade on our token, not just ours — the downstream
+        balance-delta check tolerates that (a noise wake reads `delta=0`,
+        which gracefully falls through to associate_trades VWAP).
+        """
+        await asyncio.sleep(_BALANCE_SETTLE_FLOOR)
+        if ws_event is None:
+            await asyncio.sleep(_BALANCE_SETTLE_DELAY - _BALANCE_SETTLE_FLOOR)
+            return
+        if ws_event.is_set():
+            return  # trade landed during the floor sleep
+        try:
+            await asyncio.wait_for(
+                ws_event.wait(),
+                timeout=_BALANCE_SETTLE_DELAY - _BALANCE_SETTLE_FLOOR,
+            )
+        except asyncio.TimeoutError:
+            pass
 
     async def _execute_sell(self, token_id: str, shares: float, price: float) -> FillResult:
         """FOK market sell for `shares` shares."""
@@ -588,6 +626,9 @@ class LiveTrader(BaseTrader):
         Returns:
             FillResult with fill details or failure reason.
         """
+        if self._latched_auth_error is not None:
+            raise AuthError(f"latched from keepalive: {self._latched_auth_error}")
+
         # Polymarket rejects marketable orders below $1 notional. Short-circuit
         # before hammering CLOB 3× for a guaranteed-fail order. BUY amount is
         # USDC; SELL amount is shares (× expected_price for notional).
@@ -604,8 +645,13 @@ class LiveTrader(BaseTrader):
 
         balance_task: asyncio.Task[float] | None = None
         balance_before: float = -1.0
+        ws_settle_event: asyncio.Event | None = None
         if side == BUY:
             balance_task = asyncio.create_task(self._get_token_balance(token_id))
+            clob_ws = getattr(self, "_clob_ws", None)
+            if clob_ws is not None and hasattr(clob_ws, "trade_event_for"):
+                ws_settle_event = clob_ws.trade_event_for(token_id)
+                ws_settle_event.clear()
 
         last_error = ""
         loop = asyncio.get_running_loop()
@@ -644,7 +690,7 @@ class LiveTrader(BaseTrader):
                             balance_before = -1.0
                         balance_task = None
                     if side == BUY and balance_before >= 0:
-                        await asyncio.sleep(_BALANCE_SETTLE_DELAY)
+                        await self._await_buy_settle(ws_settle_event)
                         balance_after = await self._get_token_balance(token_id)
                         delta = balance_after - balance_before
                         if delta > _DUST_THRESHOLD_SHARES:
