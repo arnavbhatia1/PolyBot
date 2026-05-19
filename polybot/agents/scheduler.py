@@ -92,7 +92,7 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
         reason = platt.get("reason", "")
         # Loss string: identity → current → new
         if id_loss and cur_loss and new_loss:
-            loss_str = f"accuracy:  identity {id_loss:.3f}  →  current {cur_loss:.3f}  →  new {new_loss:.3f}"
+            loss_str = f"log-loss (lower=better):  identity {id_loss:.3f}  →  current {cur_loss:.3f}  →  new {new_loss:.3f}"
         else:
             loss_str = ""
         cur_sharpe = platt.get("current_sharpe")
