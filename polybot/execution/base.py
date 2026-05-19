@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -10,6 +11,14 @@ from polybot.db.models import Database
 from polybot.core.returns import log_return
 
 logger = logging.getLogger(__name__)
+
+try:
+    import orjson as _orjson
+    def _dumps_snapshot(obj: Any) -> str:
+        return _orjson.dumps(obj).decode("utf-8")
+except ImportError:
+    def _dumps_snapshot(obj: Any) -> str:
+        return _json.dumps(obj)
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -123,11 +132,22 @@ class BaseTrader(ABC):
     # -- abstract hooks --------------------------------------------------
 
     @abstractmethod
-    async def _execute_buy(self, token_id: str, price: float, size: float) -> FillResult:
-        """Execute a buy order. Returns FillResult with actual fill details."""
+    async def _execute_buy(
+        self, token_id: str, price: float, size: float,
+        fee_rate: float = DEFAULT_FEE_RATE,
+    ) -> FillResult:
+        """Execute a buy order. Returns FillResult with actual fill details.
+
+        ``fee_rate`` is forwarded so live execution can convert a gross VWAP
+        (from WS trade events) into the net-shares-based fill_price the rest
+        of the system expects. Paper execution can ignore it.
+        """
 
     @abstractmethod
-    async def _execute_sell(self, token_id: str, shares: float, price: float) -> FillResult:
+    async def _execute_sell(
+        self, token_id: str, shares: float, price: float,
+        fee_rate: float = DEFAULT_FEE_RATE,
+    ) -> FillResult:
         """Execute a sell order. Returns FillResult with actual fill details."""
 
     @abstractmethod
@@ -157,7 +177,7 @@ class BaseTrader(ABC):
         ev_at_entry: float,
         exit_target: float,
         stop_loss: float,
-        indicator_snapshot: str = "",
+        indicator_snapshot: str | dict[str, Any] = "",
         token_id: str = "",
         fee_rate: float = DEFAULT_FEE_RATE,
     ) -> TradeResult:
@@ -180,7 +200,7 @@ class BaseTrader(ABC):
             )
 
         # --- Execute buy ---
-        fill = await self._execute_buy(token_id, price, size)
+        fill = await self._execute_buy(token_id, price, size, fee_rate=fee_rate)
         if not fill.filled:
             return TradeResult(success=False, reason=fill.reason or "Buy not filled")
 
@@ -188,6 +208,12 @@ class BaseTrader(ABC):
         shares_ordered = fill.fill_size / fill.fill_price
         fee_in_shares = entry_fee_shares(shares_ordered, fill.fill_price, fee_rate)
         shares_received = shares_ordered - fee_in_shares
+
+        # Serialize snapshot lazily — caller may pass a dict to defer the
+        # JSON dump off the path-to-submit. On a rejected entry the dump
+        # never happens at all.
+        if isinstance(indicator_snapshot, dict):
+            indicator_snapshot = _dumps_snapshot(indicator_snapshot)
 
         # --- Persist atomically: position insert + bankroll debit in one transaction.
         # Either both writes happen or neither, so a crash mid-write cannot leave
@@ -247,7 +273,7 @@ class BaseTrader(ABC):
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
 
         # --- Execute sell ---
-        fill = await self._execute_sell(token_id, shares, exit_price)
+        fill = await self._execute_sell(token_id, shares, exit_price, fee_rate=fee_rate)
         if not fill.filled:
             return TradeResult(success=False, reason=fill.reason or "Sell not filled")
 

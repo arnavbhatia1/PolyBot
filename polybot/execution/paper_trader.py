@@ -30,15 +30,23 @@ class PaperTrader(BaseTrader):
         """Attach the CLOB WebSocket so fills can re-check the book post-latency."""
         self._clob_ws = clob_ws
 
-    async def _execute_buy(self, token_id: str, price: float, size: float) -> FillResult:
+    async def _execute_buy(
+        self, token_id: str, price: float, size: float,
+        fee_rate: float = DEFAULT_FEE_RATE,
+    ) -> FillResult:
         """Simulate a FOK market buy with realistic latency + VWAP + rejects."""
+        del fee_rate  # paper applies fee math in base.py via the same DEFAULT_FEE_RATE
         await self._simulate_latency()
         if random.random() < self.network_fail_rate:
             return FillResult(filled=False, reason="simulated network error")
         return self._walk_book(token_id, side="buy", requested_price=price, size_usd=size)
 
-    async def _execute_sell(self, token_id: str, shares: float, price: float) -> FillResult:
+    async def _execute_sell(
+        self, token_id: str, shares: float, price: float,
+        fee_rate: float = DEFAULT_FEE_RATE,
+    ) -> FillResult:
         """Simulate a FOK market sell for `shares` shares at realistic VWAP."""
+        del fee_rate
         await self._simulate_latency()
         if random.random() < self.network_fail_rate:
             return FillResult(filled=False, reason="simulated network error")

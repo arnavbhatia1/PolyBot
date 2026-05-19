@@ -117,6 +117,18 @@ class ClobWebSocket:
         """Return list of recent trades for a token, oldest first."""
         return list(self.trade_buffer.get(token_id, []))
 
+    def trades_since(self, token_id: str, since_ts: float) -> list[dict[str, Any]]:
+        """Return trades for token_id with timestamp >= since_ts (epoch seconds).
+
+        Used by LiveTrader to derive fill VWAP from WS trade events instead
+        of issuing a second REST balance read. Each trade dict carries
+        ``price`` (str), ``size`` (str), ``side`` (str), ``timestamp`` (float).
+        """
+        buf = self.trade_buffer.get(token_id)
+        if not buf:
+            return []
+        return [t for t in buf if t.get("timestamp", 0.0) >= since_ts]
+
     def get_price_velocity(self, token_id: str, window_s: float = 5.0) -> float:
         """Price velocity: cents per second over the last window_s seconds.
 

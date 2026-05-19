@@ -6,6 +6,7 @@ import concurrent.futures
 import logging
 import os
 import random
+import time
 from typing import Any
 from py_clob_client_v2.client import ClobClient
 from py_clob_client_v2.clob_types import (
@@ -19,7 +20,7 @@ from py_clob_client_v2.clob_types import (
 from py_clob_client_v2.order_builder.constants import BUY, SELL
 from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV2
 from polybot.db.models import Database
-from polybot.execution.base import BaseTrader, FillResult
+from polybot.execution.base import BaseTrader, DEFAULT_FEE_RATE, FillResult
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ _NON_RETRYABLE_ERRORS = frozenset({
 })
 _ALLOWANCE_RECHECK_EVERY = 10
 _FILL_PRICE_LOOKUP_RETRIES = 3
-_FILL_PRICE_LOOKUP_DELAY = 0.15
+_FILL_PRICE_LOOKUP_DELAY = 0.075
 _DUST_THRESHOLD_SHARES = 0.01
 _BALANCE_SETTLE_FLOOR = 0.05  # min chain-settle wait even if WS fires immediately
 _BALANCE_SETTLE_DELAY = 0.25  # max wait (legacy fixed delay, used as ceiling + no-WS fallback)
@@ -305,11 +306,14 @@ class LiveTrader(BaseTrader):
                 os.environ.get("POLYMARKET_FUNDER", "<safe>"),
             )
 
-    async def _execute_buy(self, token_id: str, price: float, size: float) -> FillResult:
+    async def _execute_buy(
+        self, token_id: str, price: float, size: float,
+        fee_rate: float = DEFAULT_FEE_RATE,
+    ) -> FillResult:
         """Buy: try maker limit order (0% fee) if enabled, else FOK (1.8% fee)."""
         if self.use_maker_orders:
             return await self._execute_buy_limit(token_id, price, size, self.maker_timeout_s)
-        return await self._submit_fok_order(token_id, BUY, size, price)
+        return await self._submit_fok_order(token_id, BUY, size, price, fee_rate=fee_rate)
 
     def set_clob_ws(self, clob_ws) -> None:
         """Attach CLOB WebSocket for fast maker fill detection via trade events."""
@@ -341,9 +345,12 @@ class LiveTrader(BaseTrader):
         except asyncio.TimeoutError:
             pass
 
-    async def _execute_sell(self, token_id: str, shares: float, price: float) -> FillResult:
+    async def _execute_sell(
+        self, token_id: str, shares: float, price: float,
+        fee_rate: float = DEFAULT_FEE_RATE,
+    ) -> FillResult:
         """FOK market sell for `shares` shares."""
-        return await self._submit_fok_order(token_id, SELL, shares, price)
+        return await self._submit_fok_order(token_id, SELL, shares, price, fee_rate=fee_rate)
 
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
         """Sync bankroll with real Polymarket balance.
@@ -614,6 +621,7 @@ class LiveTrader(BaseTrader):
         side: str,
         amount: float,
         expected_price: float,
+        fee_rate: float = DEFAULT_FEE_RATE,
     ) -> FillResult:
         """Submit FOK market order with exponential-backoff retry.
 
@@ -622,6 +630,8 @@ class LiveTrader(BaseTrader):
             side: BUY or SELL.
             amount: USDC for BUY, shares for SELL.
             expected_price: Used as fallback if fill price lookup fails.
+            fee_rate: Used to convert WS-derived gross VWAP into the
+                net-shares-based fill_price the rest of the system expects.
 
         Returns:
             FillResult with fill details or failure reason.
@@ -646,9 +656,16 @@ class LiveTrader(BaseTrader):
         balance_task: asyncio.Task[float] | None = None
         balance_before: float = -1.0
         ws_settle_event: asyncio.Event | None = None
+        clob_ws = getattr(self, "_clob_ws", None) if side == BUY else None
+        # submit_ts is captured BEFORE signing so the WS trade-buffer scan
+        # below can find our matched trades — they land on the WS within
+        # ~50-200ms of the POST returning success, but their `timestamp` is
+        # set when the trade is dispatched (close to submit_ts + chain latency).
+        # A small slack (-50ms) tolerates clock skew between our host and
+        # Polymarket's match-engine timestamp.
+        submit_ts = time.time()
         if side == BUY:
             balance_task = asyncio.create_task(self._get_token_balance(token_id))
-            clob_ws = getattr(self, "_clob_ws", None)
             if clob_ws is not None and hasattr(clob_ws, "trade_event_for"):
                 ws_settle_event = clob_ws.trade_event_for(token_id)
                 ws_settle_event.clear()
@@ -683,23 +700,79 @@ class LiveTrader(BaseTrader):
                 if resp.get("status") == "matched":
                     order_id = resp.get("orderID", "")
                     fill_price: float | None = None
-                    if side == BUY and balance_task is not None:
-                        try:
-                            balance_before = await balance_task
-                        except Exception:
-                            balance_before = -1.0
-                        balance_task = None
-                    if side == BUY and balance_before >= 0:
+                    if side == BUY:
+                        # Same settle window the balance-delta path used — gives
+                        # the WS time to deliver our matched trade event(s).
                         await self._await_buy_settle(ws_settle_event)
-                        balance_after = await self._get_token_balance(token_id)
-                        delta = balance_after - balance_before
-                        if delta > _DUST_THRESHOLD_SHARES:
-                            fill_price = amount / delta
-                            logger.debug(
-                                "BUY balance-delta VWAP: %.4f shares -> price=%.4f "
-                                "(before=%.4f after=%.4f notional=%.2f)",
-                                delta, fill_price, balance_before, balance_after, amount,
-                            )
+                        # --- Fast path: WS-derived VWAP ---
+                        # Skips the second _get_token_balance REST call
+                        # (~30-100ms saved). Sanity-bound against expected fill
+                        # size so background trades on our level or a missed WS
+                        # event fall through to the balance-delta fallback.
+                        if clob_ws is not None and hasattr(clob_ws, "trades_since"):
+                            try:
+                                ws_trades = clob_ws.trades_since(token_id, submit_ts - 0.05)
+                            except Exception:
+                                ws_trades = []
+                            # Taker buys can't fill above limit; 0.005 absorbs tick rounding.
+                            candidates = [
+                                t for t in ws_trades
+                                if 0 < float(t.get("price", 0) or 0) <= expected_price + 0.005
+                            ]
+                            if candidates:
+                                gross_shares = sum(float(t["size"]) for t in candidates)
+                                gross_cost = sum(
+                                    float(t["size"]) * float(t["price"]) for t in candidates
+                                )
+                                if gross_shares > _DUST_THRESHOLD_SHARES:
+                                    gross_vwap = gross_cost / gross_shares
+                                    expected_shares = amount / expected_price
+                                    # Lower 0.85: tolerate small slippage / one
+                                    # missed level. Upper 1.30: VWAP >23% below
+                                    # limit would be very surprising — likely
+                                    # background trade pollution.
+                                    if 0.85 * expected_shares <= gross_shares <= 1.30 * expected_shares:
+                                        # Polymarket entry fee in shares:
+                                        #   fee_shares = fee_rate * shares * p * (1-p)
+                                        # Convert gross VWAP -> net-shares so
+                                        # downstream sees the same "amount/net"
+                                        # form the balance-delta path emits.
+                                        fee_shares = (
+                                            fee_rate * gross_shares
+                                            * gross_vwap * (1 - gross_vwap)
+                                        )
+                                        net_shares = max(
+                                            gross_shares - fee_shares, _DUST_THRESHOLD_SHARES
+                                        )
+                                        fill_price = amount / net_shares
+                                        logger.debug(
+                                            "BUY WS-derived VWAP: %d trade(s), "
+                                            "gross=%.4f @ %.4f -> fill_price=%.4f "
+                                            "(skipped 2nd balance read)",
+                                            len(candidates), gross_shares, gross_vwap, fill_price,
+                                        )
+                                        # WS path won — discard the parallel balance
+                                        # pre-fetch so it doesn't leak a task.
+                                        if balance_task is not None and not balance_task.done():
+                                            balance_task.cancel()
+                                            balance_task = None
+                        # --- Fallback: balance-delta (existing path) ---
+                        if fill_price is None and balance_task is not None:
+                            try:
+                                balance_before = await balance_task
+                            except Exception:
+                                balance_before = -1.0
+                            balance_task = None
+                            if balance_before >= 0:
+                                balance_after = await self._get_token_balance(token_id)
+                                delta = balance_after - balance_before
+                                if delta > _DUST_THRESHOLD_SHARES:
+                                    fill_price = amount / delta
+                                    logger.debug(
+                                        "BUY balance-delta VWAP fallback: %.4f shares -> "
+                                        "price=%.4f (before=%.4f after=%.4f notional=%.2f)",
+                                        delta, fill_price, balance_before, balance_after, amount,
+                                    )
                     if fill_price is None:
                         fill_price = await self._get_fill_price(order_id, expected_price)
                     logger.info(
@@ -707,7 +780,10 @@ class LiveTrader(BaseTrader):
                         side, order_id, fill_price, amount,
                     )
                     _update_fill_stats(filled=True, side=side)
-                    await self._maybe_recheck_allowance()
+                    # Fire-and-forget: the recheck only logs a warning when allowance
+                    # drops below threshold; blocking the FOK return path on it cost
+                    # 30-100ms every 10th submit for zero trading-logic benefit.
+                    asyncio.create_task(self._maybe_recheck_allowance())
                     if side == SELL:
                         asyncio.create_task(self._sweep_residual(token_id, fill_price))
                     notional_usdc = amount if side == BUY else amount * fill_price

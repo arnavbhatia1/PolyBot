@@ -35,13 +35,19 @@ class StubTrader(BaseTrader):
         self.buy_fill: FillResult | None = None
         self.sell_fill: FillResult | None = None
 
-    async def _execute_buy(self, token_id: str, price: float, size: float) -> FillResult:
+    async def _execute_buy(
+        self, token_id: str, price: float, size: float,
+        fee_rate: float = DEFAULT_FEE_RATE,
+    ) -> FillResult:
         if self.buy_fill is not None:
             return self.buy_fill
         # Default: instant fill at requested price and size
         return FillResult(filled=True, fill_price=price, fill_size=size)
 
-    async def _execute_sell(self, token_id: str, shares: float, price: float) -> FillResult:
+    async def _execute_sell(
+        self, token_id: str, shares: float, price: float,
+        fee_rate: float = DEFAULT_FEE_RATE,
+    ) -> FillResult:
         if self.sell_fill is not None:
             return self.sell_fill
         return FillResult(filled=True, fill_price=price, fill_size=shares * price)

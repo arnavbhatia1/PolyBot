@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -55,6 +56,8 @@ class BTCMarketScanner:
         self._tick_size_cache: dict[str, tuple[float, str]] = {}    # token_id -> (timestamp, tick_size)
         self._tick_size_cache_seconds: int = 3600
         self._last_dns_error_ts: float = 0.0  # throttle DNS-failure log to once per 30s
+        self._prewarmed_condition_id: str = ""  # last contract we kicked pre-warm fetches for
+        self._prewarm_tasks: set[asyncio.Task[Any]] = set()  # strong refs so GC doesn't kill them
 
     def _current_window_ts(self) -> int:
         return int(time.time() // self.WINDOW_SECONDS) * self.WINDOW_SECONDS
@@ -445,6 +448,23 @@ class BTCMarketScanner:
                 self._cache_time = now
                 logger.debug(f"Found active contract: {contract['question']} "
                            f"({contract['seconds_remaining']:.0f}s remaining)")
+                # Pre-warm fee_rate + tick_size caches for both sides on new
+                # contract discovery. First-trade-per-window otherwise pays
+                # 30-100ms RTT on each (in parallel inside _evaluate_signal_and_enter
+                # for ~50ms total) — and that first signal is often the cleanest
+                # entry of the window. Pre-warm makes it 0ms.
+                cid = contract.get("condition_id", "")
+                if cid and cid != self._prewarmed_condition_id:
+                    self._prewarmed_condition_id = cid
+                    for tok in (contract.get("token_id_up", ""),
+                                contract.get("token_id_down", "")):
+                        if not tok:
+                            continue
+                        for coro in (self.fetch_fee_rate(tok, http_client),
+                                     self.fetch_tick_size(tok, http_client)):
+                            task = asyncio.create_task(coro)
+                            self._prewarm_tasks.add(task)
+                            task.add_done_callback(self._prewarm_tasks.discard)
                 return contract
 
         return None

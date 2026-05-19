@@ -898,16 +898,8 @@ async def _evaluate_signal_and_enter(
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
     }
-    snapshot_str = _fast_dumps(snapshot)
-
     # Pre-submit edge re-check: use fresh_ask already fetched above (zero extra
-    # round trip). The earlier net_edge gate at L709 subtracted slippage cost
-    # from signal.edge before comparing to min_edge; mirror that here so the two
-    # gates are checking the same quantity. Without this symmetry, the
-    # pre-submit check rejects orders that the entry gate would have accepted
-    # (gross > min but net < min) and lets through orders the entry gate
-    # would have rejected. Upper max_edge bound stays on gross because it's a
-    # sanity guard against stale-book "too good to be true" prints.
+    # round trip).
     if fresh_ask > 0 and fresh_ask != price:
         fresh_gross_edge = signal.prob - fresh_ask
         fresh_net_edge = fresh_gross_edge - fresh_ask * slip
@@ -930,7 +922,7 @@ async def _evaluate_signal_and_enter(
         ev_at_entry=signal.edge,
         exit_target=1.0,
         stop_loss=0.0,
-        indicator_snapshot=snapshot_str,
+        indicator_snapshot=snapshot,
         token_id=token_id,
         fee_rate=fee_rate,
     )
