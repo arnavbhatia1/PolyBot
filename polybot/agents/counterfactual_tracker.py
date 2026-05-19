@@ -76,8 +76,12 @@ class CounterfactualTracker:
             "btc_distance_atr": scalp_context.get("btc_distance_atr", 0.0),
             "watched_at": time.time(),
         }
-        logger.info(f"SCALP watching {_slug_to_window(market_id)} | {pos.get('side', '?')} @ "
-                    f"{scalp_context.get('exit_fill', 0):.3f}, edge={scalp_context.get('holding_edge', 0):+.2f}")
+        # Implicit from the preceding SCALP block — move to debug to stop
+        # duplicating the just-emitted exit context in the console stream.
+        logger.debug(
+            f"SCALP watching {_slug_to_window(market_id)} | {pos.get('side', '?')} @ "
+            f"{scalp_context.get('exit_fill', 0):.3f}, edge={scalp_context.get('holding_edge', 0):+.2f}"
+        )
 
     def track_hold_moment(self, market_id: str, pos: dict[str, Any], hold_context: dict[str, Any]) -> None:
         """Track the worst holding moment for a position being held to resolution.

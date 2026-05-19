@@ -161,7 +161,7 @@ _last_eval_buy_window: int = 0  # show full BUY block only once per window
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count since last reset
 _GATE_STATS_PATH = Path("polybot/memory/gate_stats.json")
 _pending_eval_ctx: dict[str, dict] = {}
-_last_gate_skip_state: dict[str, tuple] = {}   # cid -> (direction, gate_key, logged_at)
+_last_gate_skip_state: dict[tuple[str, str], float] = {}   # (cid, gate_key) -> logged_at
 _last_skip_log: dict[tuple[str, str], int] = {}
 
 
@@ -198,23 +198,30 @@ def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) 
     return 0.0, "none"
 
 
+def _fmt_secs(s: float) -> str:
+    """Seconds remaining formatted as M:SS — 298 → '4:58'. Easier to scan than '298s'."""
+    s_int = max(0, int(s))
+    return f"{s_int // 60}:{s_int % 60:02d}"
+
+
 def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
     """Emit one combined SKIP line (signal context + gate reason).
 
-    Logs immediately when direction or blocking gate changes; otherwise throttles
-    to once per 30s so edge micro-fluctuations don't spam the terminal.
+    Throttled per (cid, gate_key) — direction is intentionally NOT in the key, so
+    rapid Up/Down ping-pong on the same gate (e.g. "No edge" firing alternately
+    for each side as model prob hovers around the threshold) emits a single
+    SKIP rather than 20× in 5 seconds. New gate or new window logs immediately.
     """
     ctx = _pending_eval_ctx.get(cid)
     if not ctx:
         logger.info(f"{_C.DIM}SKIP — {reason}{_C.RESET}")
         return
     now = time.time()
-    prev = _last_gate_skip_state.get(cid)  # (direction, gate_key, logged_at)
-    if prev:
-        prev_dir, prev_gate, prev_time = prev
-        if ctx["direction"] == prev_dir and (now - prev_time) < 30:
-            return
-    _last_gate_skip_state[cid] = (ctx["direction"], gate_key, now)
+    key = (cid, gate_key)
+    prev_time = _last_gate_skip_state.get(key)
+    if prev_time is not None and (now - prev_time) < 30:
+        return
+    _last_gate_skip_state[key] = now
     _sprt_part = f" | {ctx['sprt']}" if ctx.get("sprt") and not gate_key.startswith("sprt") else ""
     logger.info(
         f"{_C.DIM}SKIP {ctx['direction']}  {ctx['window_slug']} | "
@@ -620,12 +627,11 @@ async def _evaluate_signal_and_enter(
             if eval_window != _last_adverse_skip_log_window:
                 _last_adverse_skip_log_window = eval_window
                 logger.info(
-                    f"SKIP: adverse selection rate {adverse_rate:.0%} > {adverse_threshold:.0%} "
-                    f"(recent fills fading post-entry)"
+                    f"{_C.DIM}SKIP adverse selection — fade rate {adverse_rate:.0%} > {adverse_threshold:.0%}{_C.RESET}"
                 )
             else:
                 logger.debug(
-                    f"SKIP: adverse selection rate {adverse_rate:.0%} > {adverse_threshold:.0%}"
+                    f"SKIP adverse selection — fade rate {adverse_rate:.0%} > {adverse_threshold:.0%}"
                 )
             return None, last_eval_log_window
 
@@ -933,9 +939,8 @@ async def _evaluate_signal_and_enter(
         reason = result.reason or "unknown"
         _log_skip_once(
             cid, f"open_rejected_{reason}",
-            f"OPEN {side} REJECTED  |  ${size:.2f} @ {price:.3f}  |  "
-            f"{contract.get('question', cid)}  |  reason: {reason}  "
-            f"— continuing, will re-evaluate next tick"
+            f"{_C.DIM}OPEN {side} REJECTED  ${size:.2f} @ {price:.3f}  |  "
+            f"{_slug_to_window(cid)}  |  {reason}{_C.RESET}"
         )
         return None, last_eval_log_window
 
@@ -982,11 +987,11 @@ async def _evaluate_signal_and_enter(
         _why = ", ".join(_why_parts)
         logger.info(
             f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
-            f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}{slip_note}\n"
-            f"  {contract.get('question', cid)}  [{phase}]\n"
+            f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}{slip_note}  |  "
+            f"{_slug_to_window(cid)} [{phase}]\n"
             f"  {_C.DIM}Why: {_why}{_C.RESET}\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}\n"
-            f"{_C.YELLOW}{'=' * 69}{_C.RESET}")
+            f"{_C.YELLOW}{'=' * 60}{_C.RESET}")
         if _adverse_monitor:
             mkt_mid = (price_up + price_down) / 2 if price_up + price_down > 0 else fill_price
             _adverse_monitor.record_fill(side=side, fill_price=fill_price, token_id=token_id, midprice=mkt_mid)
@@ -1334,7 +1339,7 @@ async def _evaluate_and_exit_position(
             _last_hold_log[mid] = now_ts
             cl_str = f"  cl ${chainlink_feed.price:,.0f}" if chainlink_feed and chainlink_feed.price > 0 else ""
             logger.info(
-                f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {live['seconds_remaining']:.0f}s  |  "
+                f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
                 f"BTC ${btc_now:,.0f}{cl_str}  (no fresh bid)"
             )
         return day_wins, day_losses, day_fees, None
@@ -1406,19 +1411,14 @@ async def _evaluate_and_exit_position(
         now_ts = time.time()
         if now_ts - _last_hold_log.get(mid, 0) >= 30:
             _last_hold_log[mid] = now_ts
-            secs = live['seconds_remaining']
             if abs(holding_edge) < 0.005:
-                edge_color = _C.GREEN
-                edge_str = "0%"
-            elif holding_edge > 0:
-                edge_color = _C.GREEN
-                edge_str = f"{holding_edge:+.0%}"
+                edge_color, edge_str = _C.GREEN, "0%"
             else:
-                edge_color = _C.RED
+                edge_color = _C.GREEN if holding_edge > 0 else _C.RED
                 edge_str = f"{holding_edge:+.0%}"
             cl_str = f"  cl ${chainlink_feed.price:,.0f}" if chainlink_feed and chainlink_feed.price > 0 else ""
             logger.info(
-                f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {secs:.0f}s  |  "
+                f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
                 f"prob {model_prob:.0%}  {edge_color}edge {edge_str}{_C.RESET}  |  "
                 f"BTC ${btc_now:,.0f}{cl_str}  mkt {market_price:.2f}")
         if counterfactual_tracker:
@@ -1453,7 +1453,7 @@ async def _evaluate_and_exit_position(
             # Dramatic mismatch — ws_bid is phantom. Re-evaluate with the real price.
             real_edge = model_prob - verified_price
             logger.info(
-                f"  SCALP VERIFY {pos['side']}  {live['seconds_remaining']:.0f}s  |  "
+                f"  SCALP VERIFY {pos['side']}  {_fmt_secs(live['seconds_remaining'])}  |  "
                 f"ws_bid={ws_bid:.3f} vs /price={verified_price:.3f} — using real price  "
                 f"real_edge={real_edge:+.0%} thresh={exit_threshold:+.0%}"
             )
@@ -1498,7 +1498,7 @@ async def _evaluate_and_exit_position(
                 _last_hold_log[mid] = now_ts
                 logger.info(
                     f"  {_C.DIM}HOLD (small) {pos['side']}{_C.RESET}  "
-                    f"{live['seconds_remaining']:.0f}s  |  size ${exit_size_usd:.2f}  "
+                    f"{_fmt_secs(live['seconds_remaining'])}  |  size ${exit_size_usd:.2f}  "
                     f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  mkt {market_price:.2f}"
                 )
             return day_wins, day_losses, day_fees, traded_market_id
@@ -1515,7 +1515,7 @@ async def _evaluate_and_exit_position(
         # Emit the pre-scalp snapshot here (after size guard) so the price the
         # scalp triggers on is always visible, without spamming on deferred ticks.
         logger.info(
-            f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {live['seconds_remaining']:.0f}s  |  "
+            f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
             f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
             f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}"
         )
@@ -1547,11 +1547,11 @@ async def _evaluate_and_exit_position(
             bankroll_after = await db.get_bankroll()
             logger.info(
                 f"{color}{'=' * 60}{_C.RESET}\n"
-                f"  {color}{_C.BOLD}SCALP {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_fill:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
-                f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
+                f"  {color}{_C.BOLD}SCALP {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_fill:.3f}  |  "
+                f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
                 f"  {_C.DIM}Why: {reason}{_C.RESET}\n"
-                f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
-                f"{color}{'=' * 69}{_C.RESET}")
+                f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees ${total_fees:.2f}{_C.RESET}\n"
+                f"{color}{'=' * 60}{_C.RESET}")
             if alert_manager:
                 await alert_manager.send_trade_closed(
                     question=pos.get("question", ""), exit_price=exit_fill, log_return=0, hold_hours=0,
@@ -1630,10 +1630,10 @@ async def _resolve_expired_position(
         bankroll_after = await db.get_bankroll()
         logger.info(
             f"{color}{'=' * 60}{_C.RESET}\n"
-            f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
-            f"  {pos.get('question', pos['market_id'])}  |  fees ${total_fees:.2f}\n"
-            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
-            f"{color}{'=' * 69}{_C.RESET}")
+            f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  "
+            f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
+            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees ${total_fees:.2f}{_C.RESET}\n"
+            f"{color}{'=' * 60}{_C.RESET}")
         if alert_manager:
             await alert_manager.send_trade_closed(
                 question=pos.get("question", ""), exit_price=exit_price, log_return=0, hold_hours=0,
@@ -1755,10 +1755,10 @@ async def _manage_orphaned_position(
         bankroll_after = await db.get_bankroll()
         logger.info(
             f"{color}{'=' * 60}{_C.RESET}\n"
-            f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']} (orphan){_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  {gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}\n"
-            f"  {pos.get('question', pos['market_id'])}\n"
-            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}{_C.RESET}\n"
-            f"{color}{'=' * 69}{_C.RESET}")
+            f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']} (orphan){_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  "
+            f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
+            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees ${total_fees:.2f}{_C.RESET}\n"
+            f"{color}{'=' * 60}{_C.RESET}")
         if alert_manager:
             await alert_manager.send_trade_closed(
                 question=pos.get("question", ""), exit_price=exit_price, log_return=0, hold_hours=0,
