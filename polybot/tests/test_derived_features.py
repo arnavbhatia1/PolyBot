@@ -112,7 +112,7 @@ def test_signal_engine_l6_contribution_capped():
         seconds_remaining=150.0,
         flow_signal=10.0, spot_flow_signal=10.0,
         liquidation_pressure=0.0, prev_resolution_margin=0.0,
-        closes=None,
+        last_return=0.0,
     )
     assert abs(val) <= L6_LOGIT_CAP + 1e-9
 

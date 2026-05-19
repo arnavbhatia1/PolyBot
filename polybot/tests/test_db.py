@@ -11,7 +11,8 @@ async def db():
 
 @pytest.mark.asyncio
 async def test_initialize_creates_tables(db):
-    tables = await db.get_tables()
+    cursor = await db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {row[0] for row in await cursor.fetchall()}
     assert "positions" in tables
     assert "trade_history" in tables
 

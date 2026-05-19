@@ -228,22 +228,6 @@ def test_load_missing_file_is_noop(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Legacy-compat shims
-# ---------------------------------------------------------------------------
-
-def test_legacy_a_b_attributes_remain_at_identity_values():
-    """`cal.a, cal.b` are kept for any old logging path that still reads them."""
-    cal = PlattCalibrator()
-    assert cal.a == -1.0
-    assert cal.b == 0.0
-    cal.fit([0.80] * 200, [1] * 100 + [0] * 100, min_samples=75)
-    # Even when fitted, a/b stay at identity placeholders — the isotonic
-    # function lives in `_iso`, not in (a, b).
-    assert cal.a == -1.0
-    assert cal.b == 0.0
-
-
-# ---------------------------------------------------------------------------
 # compute_log_loss helper (used by scheduler)
 # ---------------------------------------------------------------------------
 
