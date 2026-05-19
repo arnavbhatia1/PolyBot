@@ -129,14 +129,30 @@ def test_exit_in_profitable_scalp_window(engine):
     assert -0.10 < edge < 0.0
 
 
-def test_deep_loss_holds_to_resolution(engine):
-    """Edge < -0.10 → empirically scalping is 38% accurate → HOLD to resolution."""
+def test_deep_loss_holds_to_resolution_when_model_still_gives_chance(engine):
+    """Edge < -0.10 AND model_prob still ≥ 0.05 → HOLD (binary residual is real)."""
+    # Modest distance + high ATR keeps model_prob well above the dead-side floor.
     action, _prob, edge, reason = engine.evaluate_hold(
-        _make_indicators(atr_value=30), btc_price=66200, strike_price=66400,
+        _make_indicators(atr_value=80), btc_price=66360, strike_price=66400,
         seconds_remaining=120, market_price_for_side=0.60, side="Up", exit_threshold=-0.05)
     assert action == "HOLD"
     assert edge < -0.10
     assert "deeply underwater" in reason
+
+
+def test_deep_loss_exits_when_model_says_side_is_dead(engine):
+    """Edge < -0.10 AND model_prob < 0.05 → EXIT (no binary residual to ride out).
+
+    After isotonic calibration corrected the model's overconfidence, a near-zero
+    model_prob is a credible "the side really will pay zero" signal; selling at
+    market beats holding for ~$0 expected. Mirrors the user's 10:00 scenario
+    where BTC moved decisively below strike with low ATR and the deep-loss-hold
+    rule would have otherwise trapped the position to expiry.
+    """
+    action, _prob, _edge, _ = engine.evaluate_hold(
+        _make_indicators(atr_value=30), btc_price=66200, strike_price=66400,
+        seconds_remaining=120, market_price_for_side=0.30, side="Up", exit_threshold=-0.05)
+    assert action == "EXIT"
 
 def test_deep_underwater_holds_unless_loss_cut(engine):
     """Deep-negative edge with time remaining → HOLD (loss-cut fires only near expiry).
