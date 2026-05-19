@@ -130,15 +130,19 @@ class RegimeDetector:
     def _compute_vol_percentile(atr: float, atr_history: list[float]) -> float:
         """Where the current ATR ranks in recent history (0-100).
 
-        Uses midrank percentile: values strictly below count fully,
-        values equal to atr count as half.  This avoids the degenerate
-        case where atr == all history values yields 0th percentile.
+        Midrank percentile: values strictly below count fully, values equal to
+        atr count as half. Avoids the degenerate case where atr == all history
+        values yields 0th percentile.
         """
-        if not atr_history:
-            return 50.0
         n = len(atr_history)
-        below = sum(1 for v in atr_history if v < atr)
-        equal = sum(1 for v in atr_history if v == atr)
+        if n == 0:
+            return 50.0
+        below = equal = 0
+        for v in atr_history:
+            if v < atr:
+                below += 1
+            elif v == atr:
+                equal += 1
         return ((below + 0.5 * equal) / n) * 100.0
 
     @staticmethod

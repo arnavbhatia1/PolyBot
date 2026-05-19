@@ -109,13 +109,6 @@ class Database:
         if self.conn:
             await self.conn.close()
 
-    async def get_tables(self) -> list[str]:
-        cursor = await self.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )
-        rows = await cursor.fetchall()
-        return [row[0] for row in rows]
-
     async def open_position(
         self,
         market_id: str,
@@ -205,9 +198,15 @@ class Database:
         )
         await self.conn.commit()
 
-    async def close_position(self, position_id: int, exit_price: float, log_return: float,
-                             pnl: float = 0.0, fees: float = 0.0,
-                             exit_reason: str = "resolution") -> None:
+    async def _close_position_and_history(
+        self, position_id: int, exit_price: float, log_return: float,
+        pnl: float, fees: float, exit_reason: str,
+    ) -> None:
+        """Mark position closed and write the trade_history row.
+
+        Pure inner step shared by every close path — does NOT commit. Callers
+        wrap this together with any bankroll update inside a single transaction.
+        """
         now = datetime.now(timezone.utc).isoformat()
         await self.conn.execute(
             "UPDATE positions SET status='closed', exit_price=?, exit_timestamp=?, log_return=? WHERE id=?",
@@ -228,84 +227,39 @@ class Database:
              pos["signal_score"], pos["signal_strength"], pos["ev_at_entry"],
              log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees, exit_reason),
         )
-        await self.conn.commit()
 
-    async def close_position_and_set_bankroll(
+    async def close_position(
         self, position_id: int, exit_price: float, log_return: float,
-        new_bankroll: float, pnl: float = 0.0, fees: float = 0.0,
-        exit_reason: str = "resolution",
+        pnl: float = 0.0, fees: float = 0.0, exit_reason: str = "resolution",
+        new_bankroll: float | None = None, bankroll_delta: float | None = None,
     ) -> None:
-        """Close position, write trade_history, and set bankroll absolute in one transaction.
+        """Close a position atomically. Pass at most one of new_bankroll / bankroll_delta.
 
-        Used by resolve_position where the subclass computes new_bankroll directly
-        (paper: bankroll + revenue; live: on-chain balance).
+        * new_bankroll: set absolute (used by resolve_position — paper computes
+          bankroll + revenue, live reads on-chain balance).
+        * bankroll_delta: credit relative (mirror of open_position_and_debit_bankroll).
+        * Neither: position-only close, no bankroll write.
+
+        Either every write commits or none does — a crash can never leave a
+        closed position with an unaccounted bankroll change (or vice versa).
         """
-        now = datetime.now(timezone.utc).isoformat()
+        if new_bankroll is not None and bankroll_delta is not None:
+            raise ValueError("Pass at most one of new_bankroll / bankroll_delta")
         try:
-            await self.conn.execute(
-                "UPDATE positions SET status='closed', exit_price=?, exit_timestamp=?, log_return=? WHERE id=?",
-                (exit_price, now, log_return, position_id),
+            await self._close_position_and_history(
+                position_id, exit_price, log_return, pnl, fees, exit_reason,
             )
-            cursor = await self.conn.execute(
-                "SELECT * FROM positions WHERE id=?", (position_id,)
-            )
-            pos = dict(await cursor.fetchone())
-            await self.conn.execute(
-                """INSERT INTO trade_history
-                (position_id, market_id, question, side, entry_price, exit_price, size,
-                 signal_score, signal_strength, ev_at_entry, log_return,
-                 weight_version, entry_timestamp, exit_timestamp, pnl, fees, exit_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (pos["id"], pos["market_id"], pos["question"], pos["side"],
-                 pos["entry_price"], exit_price, pos["size"],
-                 pos["signal_score"], pos["signal_strength"], pos["ev_at_entry"],
-                 log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees, exit_reason),
-            )
-            await self.conn.execute(
-                "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
-                "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
-                (new_bankroll,),
-            )
-            await self.conn.commit()
-        except Exception:
-            await self.conn.rollback()
-            raise
-
-    async def close_position_and_credit_bankroll(
-        self, position_id: int, exit_price: float, log_return: float,
-        bankroll_delta: float, pnl: float = 0.0, fees: float = 0.0,
-        exit_reason: str = "resolution",
-    ) -> None:
-        """Close position, write trade_history, and credit bankroll in a single transaction.
-
-        Mirror of open_position_and_debit_bankroll. A crash mid-write can never leave
-        a closed position with the bankroll uncredited (or vice versa).
-        """
-        now = datetime.now(timezone.utc).isoformat()
-        try:
-            await self.conn.execute(
-                "UPDATE positions SET status='closed', exit_price=?, exit_timestamp=?, log_return=? WHERE id=?",
-                (exit_price, now, log_return, position_id),
-            )
-            cursor = await self.conn.execute(
-                "SELECT * FROM positions WHERE id=?", (position_id,)
-            )
-            pos = dict(await cursor.fetchone())
-            await self.conn.execute(
-                """INSERT INTO trade_history
-                (position_id, market_id, question, side, entry_price, exit_price, size,
-                 signal_score, signal_strength, ev_at_entry, log_return,
-                 weight_version, entry_timestamp, exit_timestamp, pnl, fees, exit_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (pos["id"], pos["market_id"], pos["question"], pos["side"],
-                 pos["entry_price"], exit_price, pos["size"],
-                 pos["signal_score"], pos["signal_strength"], pos["ev_at_entry"],
-                 log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees, exit_reason),
-            )
-            await self.conn.execute(
-                "UPDATE bankroll SET amount = amount + ? WHERE id = 1",
-                (bankroll_delta,),
-            )
+            if new_bankroll is not None:
+                await self.conn.execute(
+                    "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
+                    (new_bankroll,),
+                )
+            elif bankroll_delta is not None:
+                await self.conn.execute(
+                    "UPDATE bankroll SET amount = amount + ? WHERE id = 1",
+                    (bankroll_delta,),
+                )
             await self.conn.commit()
         except Exception:
             await self.conn.rollback()

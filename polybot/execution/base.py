@@ -75,6 +75,19 @@ def exit_fee_usdc(shares: float, price: float, fee_rate: float = DEFAULT_FEE_RAT
     return taker_fee(shares, price, fee_rate)
 
 
+def _entry_fee_usd_from_position(position: dict[str, Any], shares_held: float) -> float:
+    """Reconstruct the USD value of the entry fee (which was paid in shares).
+
+    `shares_ordered = size / entry_price`, and `shares_held = shares_ordered −
+    fee_in_shares`. So `fee_in_shares = shares_ordered − shares_held`, and the
+    USD-equivalent is that delta × entry_price. Used for logging only — the
+    bankroll math doesn't double-count the fee.
+    """
+    entry_price = position["entry_price"]
+    shares_ordered = position["size"] / entry_price
+    return (shares_ordered - shares_held) * entry_price
+
+
 # ---------------------------------------------------------------------------
 # BaseTrader ABC
 # ---------------------------------------------------------------------------
@@ -242,18 +255,13 @@ class BaseTrader(ABC):
         lr = log_return(position["entry_price"], fill.fill_price)
         fee_usdc = exit_fee_usdc(shares, fill.fill_price, fee_rate)
         revenue = shares * fill.fill_price - fee_usdc
-
-        # Entry fee breakdown (already deducted in shares at entry — express as USD for logging)
-        shares_ordered = position["size"] / position["entry_price"]
-        entry_fee_in_shares = shares_ordered - shares
-        entry_fee_usd = entry_fee_in_shares * position["entry_price"]
-
+        entry_fee_usd = _entry_fee_usd_from_position(position, shares)
         pnl = revenue - position["size"]
         gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
 
         # --- Persist to DB (atomic: close + bankroll credit in one transaction) ---
         total_fees = entry_fee_usd + fee_usdc
-        await self.db.close_position_and_credit_bankroll(
+        await self.db.close_position(
             position_id, exit_price=fill.fill_price, log_return=lr,
             bankroll_delta=revenue, pnl=pnl, fees=total_fees, exit_reason=exit_reason,
         )
@@ -282,9 +290,7 @@ class BaseTrader(ABC):
         # --- Fee breakdown for logging ---
         shares = position.get("shares_held") or position["size"] / position["entry_price"]
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
-        shares_ordered = position["size"] / position["entry_price"]
-        entry_fee_in_shares = shares_ordered - shares
-        entry_fee_usd = entry_fee_in_shares * position["entry_price"]
+        entry_fee_usd = _entry_fee_usd_from_position(position, shares)
         exit_fee_usd_val = exit_fee_usdc(shares, exit_price, fee_rate)
         revenue = shares * exit_price - exit_fee_usd_val
         pnl = revenue - position["size"]
@@ -294,7 +300,7 @@ class BaseTrader(ABC):
         lr = log_return(position["entry_price"], exit_price)
         total_fees = entry_fee_usd + exit_fee_usd_val
         new_bankroll = await self._resolve_bankroll(position, exit_price)
-        await self.db.close_position_and_set_bankroll(
+        await self.db.close_position(
             position_id, exit_price=exit_price, log_return=lr,
             new_bankroll=new_bankroll, pnl=pnl, fees=total_fees, exit_reason="resolution",
         )

@@ -122,3 +122,63 @@ DEFAULTS: dict[str, Any] = {p.name: p.default for p in PIPELINE_PARAMS} | _MANUA
 def default_for(name: str) -> Any:
     """Canonical default for a parameter, by name. Single source of truth."""
     return DEFAULTS[name]
+
+
+# ── Manual-only params (operator-owned, never pipeline-touched) ─────────────
+# Claude/local recommenders may propose these, but the validator reroutes them
+# from `changes` into `manual_observations` so the operator reviews them. The
+# backtest can't simulate exit/timing/schedule changes, so adopting them would
+# bypass the adoption gate. Single source of truth — claude_client imports this.
+MANUAL_ONLY_PARAMS: frozenset[str] = frozenset({
+    # Exit / hold policy (backtest replays stored fills — can't re-simulate exits).
+    # exit_edge_threshold is pipeline-tunable (see PIPELINE_PARAMS) — the loss-cut
+    # magnitudes around it stay operator-owned because they're outside the curve.
+    "loss_cut_fraction",
+    "loss_cut_time_s",
+    # Entry-time filters (informed flow, stale price)
+    "adverse_selection_threshold",
+    "max_edge",
+    # Schedule
+    "trading_start_hour_et",
+    "trading_start_minute",
+    "trading_end_hour_et",
+    "trading_end_minute",
+    # Flip-trade switch (premium is pipeline-tunable, on/off is not)
+    "flip_enabled",
+    # Risk caps (operator-owned policy)
+    "max_concurrent_positions",
+    "max_bankroll_deployed",
+    # Circuit breaker (bankroll protection)
+    "circuit_breaker.floor_pct",
+    "circuit_breaker.min_multiplier",
+    # Indicator periods — backtest replays stored norm_scores at the active
+    # period; alternate periods would need raw 1-min candles per snapshot.
+    "indicators.rsi.period",
+    "indicators.rsi.overbought",
+    "indicators.rsi.oversold",
+    "indicators.macd.fast_period",
+    "indicators.macd.slow_period",
+    "indicators.macd.signal_period",
+    "indicators.stochastic.k_period",
+    "indicators.stochastic.d_smoothing",
+    "indicators.stochastic.overbought",
+    "indicators.stochastic.oversold",
+    "indicators.ema.fast_period",
+    "indicators.ema.slow_period",
+    "indicators.ema.chop_threshold",
+    "indicators.obv.slope_period",
+    "indicators.atr.period",
+    "indicators.atr.low_percentile",
+    "indicators.atr.history_periods",
+    # SPRT — controls intra-window entry timing; backtest replays a single
+    # stored fill instant, so alternate timings produce uncomparable fills.
+    "sprt.alpha",
+    "sprt.beta",
+    "sprt.observation_interval_s",
+    "sprt.min_confidence",
+}) - TUNABLE_NAMES  # tunable wins over manual if both lists ever overlap
+
+
+def is_manual_only(name: str) -> bool:
+    """True iff a parameter is operator-owned (rerouted out of `changes`)."""
+    return name in MANUAL_ONLY_PARAMS

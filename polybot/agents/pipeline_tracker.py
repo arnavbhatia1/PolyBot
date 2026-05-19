@@ -13,23 +13,13 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from polybot.agents.pipeline_analytics import sharpe as _sharpe
 
 logger = logging.getLogger(__name__)
-
-
-def _sharpe(returns: list[float]) -> float:
-    if len(returns) < 2:
-        return 0.0
-    avg = sum(returns) / len(returns)
-    var = sum((r - avg) ** 2 for r in returns) / len(returns)
-    std = math.sqrt(var) if var > 0 else 0.0
-    return avg / std if std > 0 else 0.0
-
 
 class PipelineTracker:
     def __init__(self, path: str | Path) -> None:

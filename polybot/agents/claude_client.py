@@ -1,7 +1,11 @@
 """ClaudeClient: nightly strategy analysis. Builds prompt, calls Claude, validates/clamps response."""
 from __future__ import annotations
 from typing import Any
-from polybot.config.param_registry import CLAMP_RANGES as _CLAMP_RANGES, default_for as _d
+from polybot.config.param_registry import (
+    CLAMP_RANGES as _CLAMP_RANGES,
+    MANUAL_ONLY_PARAMS as _MANUAL_ONLY_PARAMS,
+    default_for as _d,
+)
 import asyncio
 import json
 import logging
@@ -275,59 +279,11 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     # ghosts, so raising or lowering a gate filters baseline and candidate identically.
     READ_ONLY_PARAMS: set[str] = set()
 
-    # All manual-only params — Claude cannot adopt these via `changes` (they get
-    # rerouted to manual_observations for the operator to review). Includes:
-    # - Exit/timing/schedule (backtest can't simulate)
-    # - Risk caps (operator-owned policy)
-    # - Circuit breaker (bankroll protection)
-    MANUAL_ONLY_PARAMS = {
-        # Loss-cut behavior
-        "loss_cut_fraction",
-        "loss_cut_time_s",
-        # Entry-time filters (informed flow, stale price)
-        "adverse_selection_threshold",
-        "max_edge",
-        # Schedule
-        "trading_start_hour_et",
-        "trading_start_minute",
-        "trading_end_hour_et",
-        "trading_end_minute",
-        # Flip-trade switch (premium is pipeline-tunable, on/off is not)
-        "flip_enabled",
-        # Risk caps (operator-owned)
-        "max_concurrent_positions",
-        "max_bankroll_deployed",
-        # Circuit breaker
-        "circuit_breaker.floor_pct",
-        "circuit_breaker.min_multiplier",
-        # Indicator periods — manual-only because the backtest replays stored
-        # norm_scores (computed live with the active period) and can't recompute
-        # alternate periods without raw 1-min candle history per snapshot.
-        "indicators.rsi.period",
-        "indicators.rsi.overbought",
-        "indicators.rsi.oversold",
-        "indicators.macd.fast_period",
-        "indicators.macd.slow_period",
-        "indicators.macd.signal_period",
-        "indicators.stochastic.k_period",
-        "indicators.stochastic.d_smoothing",
-        "indicators.stochastic.overbought",
-        "indicators.stochastic.oversold",
-        "indicators.ema.fast_period",
-        "indicators.ema.slow_period",
-        "indicators.ema.chop_threshold",
-        "indicators.obv.slope_period",
-        "indicators.atr.period",
-        "indicators.atr.low_percentile",
-        "indicators.atr.history_periods",
-        # SPRT — manual-only because SPRT decides intra-window entry timing,
-        # and the backtest replays stored gain_pct from a fixed entry instant
-        # (alternate timings would produce different fills, which aren't stored).
-        "sprt.alpha",
-        "sprt.beta",
-        "sprt.observation_interval_s",
-        "sprt.min_confidence",
-    }
+    # All operator-owned (manual-only) params — Claude cannot adopt these via
+    # `changes`; the rerouting block below moves them to `manual_observations`
+    # for operator review. Sourced from param_registry so adding a manual param
+    # touches one file (the registry), not two.
+    MANUAL_ONLY_PARAMS = _MANUAL_ONLY_PARAMS
 
     # Per-param clamp ranges — imported from param_registry (single source of truth).
     CLAMP_RANGES = _CLAMP_RANGES

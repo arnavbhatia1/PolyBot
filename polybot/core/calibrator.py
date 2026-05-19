@@ -23,9 +23,7 @@ Fit protocol:
 
 Storage format (JSON, single file):
   - `type: "isotonic"` with `x_thresholds` / `y_thresholds` for round-trip,
-    plus `n_samples` and `log_loss_improvement` for telemetry. Optionally
-    `a, b` keys are written as identity values for backward compat with any
-    older reader that hasn't been updated.
+    plus `n_samples` and `log_loss_improvement` for telemetry.
   - `type: "identity"` or absent → calibrator stays at identity.
 """
 from __future__ import annotations
@@ -80,19 +78,12 @@ class PlattCalibrator:
         beats identity on weighted log-loss by `_ISO_IMPROVEMENT_FLOOR`.
       * `is_identity: bool` — True when calibration is a no-op.
       * `save(path)` / `load(path)` — JSON round-trip.
-
-    Legacy attributes `a, b` are kept (as identity values −1.0 / 0.0) so
-    pre-existing logging or telemetry that reads `cal.a, cal.b` doesn't break.
-    They no longer parametrise the fit.
     """
 
-    def __init__(self, a: float = -1.0, b: float = 0.0) -> None:
-        # `a, b` accepted for backward-compat constructors but unused.
+    def __init__(self) -> None:
         self._iso = None  # sklearn IsotonicRegression instance or None
         self._n_samples: int = 0
         self._log_loss_improvement: float = 0.0
-        self.a: float = -1.0
-        self.b: float = 0.0
 
     # ---- public read-only state ----
 
@@ -191,7 +182,7 @@ class PlattCalibrator:
         path = path or DEFAULT_PARAMS_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
         if self._iso is None:
-            payload: dict = {"type": "identity", "a": -1.0, "b": 0.0}
+            payload: dict = {"type": "identity"}
         else:
             payload = {
                 "type": "isotonic",
@@ -199,9 +190,6 @@ class PlattCalibrator:
                 "y_thresholds": self._iso.y_thresholds_.tolist(),
                 "n_samples": self._n_samples,
                 "log_loss_improvement": round(self._log_loss_improvement, 4),
-                # Legacy keys — kept so a stale reader sees identity-shaped (a, b).
-                "a": -1.0,
-                "b": 0.0,
             }
         path.write_text(json.dumps(payload, indent=2))
 
@@ -241,15 +229,3 @@ class PlattCalibrator:
             except Exception as e:
                 logger.warning(f"Failed to rehydrate isotonic state ({e}); falling back to identity")
                 self._iso = None
-        elif "a" in data and "b" in data:
-            # Legacy 2-param Platt file from a prior version — old (a, b) can't be
-            # translated to an isotonic shape, so start at identity. The next fit
-            # cycle will rebuild on real data.
-            a_val = float(data.get("a", -1.0))
-            b_val = float(data.get("b", 0.0))
-            if abs(a_val - (-1.0)) > 1e-4 or abs(b_val) > 1e-4:
-                logger.info(
-                    f"Legacy Platt parameters detected (a={a_val:.4f}, b={b_val:.4f}); "
-                    f"isotonic calibrator starts at identity until next fit"
-                )
-        # Else: unknown shape → silently stay at identity.

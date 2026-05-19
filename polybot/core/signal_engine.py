@@ -43,6 +43,16 @@ _MIN_STUDENT_T_DF = 3
 
 logger = logging.getLogger(__name__)
 
+# Default Kelly multiplier ladder by fraction of signals that agree with the
+# chosen side. Both compute_signal_consensus and SignalEngine.__init__ read this
+# when no `consensus_config` is supplied, so the shape can't drift.
+_DEFAULT_CONSENSUS_CONFIG: dict[str, float] = {
+    "very_high_pct": 0.80, "very_high_mult": 1.3,
+    "high_pct": 0.60, "high_mult": 1.0,
+    "medium_pct": 0.40, "medium_mult": 0.8,
+    "low_mult": 0.6,
+}
+
 @dataclass
 class TradeSignal:
     action: str          # "BUY_YES", "BUY_NO", "SKIP"
@@ -53,12 +63,7 @@ class TradeSignal:
 
 def compute_signal_consensus(signals: dict[str, float], side: str, dead_zone: float = 0.05, consensus_config: dict | None = None) -> float:
     """Kelly multiplier from how many signals agree with the chosen side."""
-    cc = consensus_config or {
-        "very_high_pct": 0.80, "very_high_mult": 1.3,
-        "high_pct": 0.60, "high_mult": 1.0,
-        "medium_pct": 0.40, "medium_mult": 0.8,
-        "low_mult": 0.6,
-    }
+    cc = consensus_config or _DEFAULT_CONSENSUS_CONFIG
     if not signals:
         return 1.0
     agree = 0
@@ -87,9 +92,9 @@ class SignalEngine:
     """Computes P(Up) for a 5-min BTC Up/Down contract via:
     L1 Student-t CDF, L2 regime autocorr, L3 CLOB flow, L3b spot CVD,
     L3e Bybit OI liquidation, L4 indicator momentum, L5 prev-window carry,
-    plus Platt calibration. Trades when |model - market| >= min_edge.
-    Platt scaling (re-fit each pipeline cycle) is the sole overconfidence
-    correction.
+    L6 derived feature library, plus isotonic calibration (class name is legacy
+    `PlattCalibrator`). Trades when |model - market| >= min_edge. Isotonic
+    re-fit each pipeline cycle is the sole overconfidence correction.
     """
 
     def __init__(self, min_edge: float | None = None, kelly_fraction: float | None = None,
@@ -177,12 +182,7 @@ class SignalEngine:
             name: float(_dw.get(name, _d(f"derived_{name}_weight")))
             for name in DERIVED_FEATURES.keys()
         }
-        self.consensus_config: dict = consensus_config or {
-            "very_high_pct": 0.80, "very_high_mult": 1.3,
-            "high_pct": 0.60, "high_mult": 1.0,
-            "medium_pct": 0.40, "medium_mult": 0.8,
-            "low_mult": 0.6,
-        }
+        self.consensus_config: dict = consensus_config or dict(_DEFAULT_CONSENSUS_CONFIG)
         self._exit_boundary = ExitBoundary(df=self.student_t_df)
         self._atr_history: deque[float] = deque(maxlen=_ATR_HISTORY_SIZE)
         self._atr_long_term: deque[float] = deque(maxlen=_ATR_LONG_TERM_SIZE)
@@ -240,34 +240,20 @@ class SignalEngine:
             magnitude = base * _REGIME_MOMENTUM_DAMPEN
         return min(_MOMENTUM_WEIGHT_CLAMP, magnitude)
 
-    @property
-    def entry_threshold(self) -> float:
-        return self.min_edge
-
-    @entry_threshold.setter
-    def entry_threshold(self, value: float) -> None:
-        self.min_edge = value
-
     def _apply_derived_features(self, *, atr: float, regime: float, distance: float,
                                 seconds_remaining: float, flow_signal: float,
                                 spot_flow_signal: float, liquidation_pressure: float,
                                 prev_resolution_margin: float,
-                                closes) -> float:
+                                last_return: float) -> float:
         """L6 — sum non-zero-weighted derived features in logit space, capped.
 
-        Returns the additive logit contribution (0.0 if every weight is 0.0,
-        which is enforced by the call-site guard but checked here too as
-        defense-in-depth). Output magnitude bounded by L6_LOGIT_CAP.
+        Output magnitude bounded by L6_LOGIT_CAP. `last_return` is computed once
+        in compute_probability and passed in to avoid a second `closes` walk.
         """
-        # Rolling-mean snapshots from the same ATR history L1 already maintains.
         n_short = len(self._atr_history)
         atr_rolling_20 = (self._atr_history_sum / n_short) if n_short > 0 else 0.0
         n_long = len(self._atr_long_term)
         atr_long_term_mean = (self._atr_long_term_sum / n_long) if n_long > 0 else 0.0
-        if closes is not None and len(closes) >= 2 and float(closes[-2]) != 0.0:
-            last_return = float(closes[-1] - closes[-2]) / float(closes[-2])
-        else:
-            last_return = 0.0
         ctx = FeatureContext(
             atr=atr,
             atr_rolling_20=atr_rolling_20,
@@ -340,11 +326,12 @@ class SignalEngine:
         self.last_regime_autocorr = regime
         # L4 magnitude is regime-amplified; polarity is handled per-group inside compute_momentum.
         logit_momentum_w = self.effective_momentum_weight(regime) * self.logit_scale
-        if closes is not None and len(closes) >= 2:
+        # Compute last_return once; reused for L2 direction and L6 FeatureContext.
+        if closes is not None and len(closes) >= 2 and float(closes[-2]) != 0.0:
             last_return = float(closes[-1] - closes[-2]) / float(closes[-2])
-            direction = 1.0 if last_return > 0 else (-1.0 if last_return < 0 else 0.0)
         else:
-            direction = 0.0
+            last_return = 0.0
+        direction = 1.0 if last_return > 0 else (-1.0 if last_return < 0 else 0.0)
         self.last_regime_direction = direction
         logit_p += regime * direction * logit_regime_w
 
@@ -383,7 +370,7 @@ class SignalEngine:
                 flow_signal=flow_signal, spot_flow_signal=spot_flow_signal,
                 liquidation_pressure=liquidation_pressure,
                 prev_resolution_margin=prev_resolution_margin,
-                closes=closes,
+                last_return=last_return,
             )
 
         # Hard-clamp total logit to prevent any single day's signal stack from

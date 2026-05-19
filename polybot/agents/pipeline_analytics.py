@@ -5,8 +5,38 @@ import math
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+_ET = ZoneInfo("America/New_York")
+
+
+def sharpe(returns: list[float]) -> float:
+    """Per-trade unannualized Sharpe from a list of gain_pct values.
+
+    Population variance (divide by n, not n-1) for consistency with the
+    weighted variant below. Returns 0.0 for n<2 or zero variance.
+    """
+    if len(returns) < 2:
+        return 0.0
+    avg = sum(returns) / len(returns)
+    var = sum((r - avg) ** 2 for r in returns) / len(returns)
+    std = math.sqrt(var) if var > 0 else 0.0
+    return avg / std if std > 0 else 0.0
+
+
+def utc_ts_to_et_date(ts: str) -> str:
+    """Convert a UTC ISO timestamp string to an ET date string YYYY-MM-DD.
+
+    Falls back to the leading 10 chars on parse failure so a malformed
+    timestamp never crashes a daily rollup.
+    """
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.astimezone(_ET).strftime("%Y-%m-%d")
+    except Exception:
+        return ts[:10] if ts else ""
 
 
 def compute_sample_weights(outcomes: list[dict[str, Any]], half_life_days: float = 14.0) -> list[float]:

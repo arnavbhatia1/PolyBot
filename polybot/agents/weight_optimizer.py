@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import logging
+from polybot.agents.pipeline_analytics import sharpe as _sharpe
 
 logger = logging.getLogger(__name__)
 
@@ -12,16 +13,6 @@ logger = logging.getLogger(__name__)
 # adapting through regime shifts, strict enough to filter noise.
 MIN_CANDIDATE_TRADES = 100
 ADOPTION_Z_FLOOR = 0.3
-
-
-def _sharpe(returns: list[float]) -> float:
-    """Per-trade unannualized Sharpe from a list of gain_pct values."""
-    if len(returns) < 2:
-        return 0.0
-    avg = sum(returns) / len(returns)
-    var = sum((r - avg) ** 2 for r in returns) / len(returns)
-    std = math.sqrt(var) if var > 0 else 0.0
-    return avg / std if std > 0 else 0.0
 
 
 def _lag_autocorr(values: list[float], lag: int) -> float:

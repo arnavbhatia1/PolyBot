@@ -15,18 +15,10 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-_ET = ZoneInfo("America/New_York")
-
-
-def _utc_ts_to_et_date(ts: str) -> str:
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return dt.astimezone(_ET).strftime("%Y-%m-%d")
-    except Exception:
-        return ts[:10] if ts else ""
 from pathlib import Path
 from typing import Any
+
+from polybot.agents.pipeline_analytics import utc_ts_to_et_date as _utc_ts_to_et_date
 
 logger = logging.getLogger(__name__)
 

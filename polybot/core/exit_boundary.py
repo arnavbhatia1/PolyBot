@@ -16,9 +16,7 @@ but significant downside risk. Holding is correct — exiting wastes the near-ce
 from __future__ import annotations
 
 import math
-import logging
-
-logger = logging.getLogger(__name__)
+_PRICE_VOL_PER_MIN = 0.07
 
 class ExitBoundary:
     """Time-varying exit threshold for binary option positions.
@@ -29,9 +27,8 @@ class ExitBoundary:
     - ATM early: HOLD (positive time value from volatility)
     """
 
-    def __init__(self, df: int = 5, price_vol_per_min: float = 0.07) -> None:
+    def __init__(self, df: int = 5) -> None:
         self.df = df
-        self.price_vol_per_min = price_vol_per_min
 
     def compute_exit_threshold(self, seconds_remaining: float, entry_price: float, fee_rate: float = 0.018, market_price: float = 0.5) -> float:
         """Compute minimum holding_edge to justify holding.
@@ -53,7 +50,7 @@ class ExitBoundary:
         fee_cost = fee_rate * market_price * (1.0 - market_price)
 
         # Base time value: sqrt(time) optionality (ATM case)
-        base_time_value = self.price_vol_per_min * math.sqrt(minutes_remaining) * 0.4
+        base_time_value = _PRICE_VOL_PER_MIN * math.sqrt(minutes_remaining) * 0.4
 
         # Binary payoff adjustment: modify time value based on moneyness
         urgency_premium = 0.0  # only set in the OTM branch below
@@ -82,17 +79,3 @@ class ExitBoundary:
         threshold = -(time_value + fee_cost) + urgency_premium
         upper_cap = 0.30 if urgency_premium > 0 else -0.01
         return max(-0.30, min(upper_cap, threshold))
-
-    def should_exit(self, seconds_remaining: float, market_price: float, entry_price: float, fee_rate: float = 0.018, model_prob: float | None = None) -> tuple[bool, float]:
-        """Whether to exit based on binary option optimal boundary. Returns: (should_exit, boundary_price)"""
-        if seconds_remaining <= 0:
-            return False, 0.0  # At expiry, let it resolve
-
-        prob = model_prob if model_prob is not None else market_price
-        threshold = self.compute_exit_threshold(
-            seconds_remaining, entry_price, fee_rate, market_price)
-
-        holding_edge = prob - market_price
-        should = holding_edge <= threshold
-
-        return should, market_price + threshold

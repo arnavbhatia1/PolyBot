@@ -15,21 +15,11 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-_ET = ZoneInfo("America/New_York")
-
-
-def _utc_ts_to_et_date(ts: str) -> str:
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return dt.astimezone(_ET).strftime("%Y-%m-%d")
-    except Exception:
-        return ts[:10] if ts else ""
 from pathlib import Path
 from typing import Any
+from polybot.agents.pipeline_analytics import utc_ts_to_et_date as _utc_ts_to_et_date
 
 logger = logging.getLogger(__name__)
-
 
 def _slug_to_window(slug: str) -> str:
     """Convert btc-updown-5m-1776691500 to '9:25-9:30 ET'."""
@@ -43,7 +33,6 @@ def _slug_to_window(slug: str) -> str:
         return f"{start.strftime('%I:%M').lstrip('0')}-{end.strftime('%I:%M ET').lstrip('0')}"
     except Exception:
         return slug
-
 
 class CounterfactualTracker:
     def __init__(self, memory_dir: str) -> None:

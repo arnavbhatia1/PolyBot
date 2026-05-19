@@ -42,7 +42,7 @@ L3+L3b combined capped at ±`flow_combined_cap` (default 0.35) logits. Final log
 
 - FOK-only via py-clob-client-v2; 3 retries w/ jittered exp backoff; HTTP/2 keepalive 30s.
 - `verify_auth`: `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER`, USDC balance + allowance ≥ `max_single × max_concurrent × 10`. Allowance re-checked every 10 fills mid-session.
-- `open_position_and_debit_bankroll` / `close_position_and_credit_bankroll`: atomic SQLite tx.
+- `open_position_and_debit_bankroll` / `close_position(... bankroll_delta=... | new_bankroll=...)`: atomic SQLite tx (single close path; pass `bankroll_delta` for relative credit, `new_bankroll` to set absolute on resolution).
 - Auth errors → `AuthError` → clean exit; `run_polybot.ps1` won't auto-restart on auth.
 - Feed staleness skip: Coinbase >30s, Chainlink >30s.
 - Chainlink orphan fallback: Gamma silent 30+ min past expiry.
