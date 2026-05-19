@@ -315,10 +315,6 @@ class LiveTrader(BaseTrader):
             return await self._execute_buy_limit(token_id, price, size, self.maker_timeout_s)
         return await self._submit_fok_order(token_id, BUY, size, price, fee_rate=fee_rate)
 
-    def set_clob_ws(self, clob_ws) -> None:
-        """Attach CLOB WebSocket for fast maker fill detection via trade events."""
-        self._clob_ws = clob_ws
-
     async def _await_buy_settle(self, ws_event: asyncio.Event | None) -> None:
         """Wait for the chain to register a BUY fill before reading balance.
 
@@ -436,7 +432,7 @@ class LiveTrader(BaseTrader):
 
             # Wait for fill — use CLOB WebSocket trade events for near-instant
             # detection, with periodic REST poll as backup.
-            clob_ws = getattr(self, "_clob_ws", None)
+            clob_ws = self._clob_ws
             elapsed = 0.0
             check_interval = 0.3  # fast cycle: WS event or short sleep
             last_rest_check = 0.0
@@ -656,7 +652,7 @@ class LiveTrader(BaseTrader):
         balance_task: asyncio.Task[float] | None = None
         balance_before: float = -1.0
         ws_settle_event: asyncio.Event | None = None
-        clob_ws = getattr(self, "_clob_ws", None) if side == BUY else None
+        clob_ws = self._clob_ws if side == BUY else None
         # submit_ts is captured BEFORE signing so the WS trade-buffer scan
         # below can find our matched trades — they land on the WS within
         # ~50-200ms of the POST returning success, but their `timestamp` is

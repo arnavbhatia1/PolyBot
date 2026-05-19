@@ -24,11 +24,6 @@ class PaperTrader(BaseTrader):
         self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.4)
         self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.15)
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.02)
-        self._clob_ws: Any = None
-
-    def set_clob_ws(self, clob_ws: Any) -> None:
-        """Attach the CLOB WebSocket so fills can re-check the book post-latency."""
-        self._clob_ws = clob_ws
 
     async def _execute_buy(
         self, token_id: str, price: float, size: float,

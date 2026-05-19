@@ -121,6 +121,13 @@ class BaseTrader(ABC):
         self.max_slippage: float = max_slippage
         self.max_bankroll_deployed: float = max_bankroll_deployed
         self.max_concurrent_positions: int = max_concurrent_positions
+        self._clob_ws: Any = None
+
+    def set_clob_ws(self, clob_ws: Any) -> None:
+        """Attach the CLOB WebSocket. Paper uses it for book snapshots in
+        ``_walk_book``; live uses it for fast maker-fill detection and the
+        WS-derived fill-price fast path in ``_submit_fok_order``."""
+        self._clob_ws = clob_ws
 
     # -- deployed capital ------------------------------------------------
 
