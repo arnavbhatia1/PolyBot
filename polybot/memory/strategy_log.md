@@ -661,3 +661,26 @@
 - With all major parameter families exhausted, further tuning pressure risks fitting the IMPROVING regime as a new baseline — structural patience is warranted.
 
 **Reasoning:** Every backtestable parameter family has been tested across multiple values and directions with no candidate clearing the 0.007 adoption floor in backtest, and the one live adoption decayed -0.167 Sharpe. Win rate and Sharpe are explicitly IMPROVING per the trend buckets, making intervention counterproductive. The only persistent, high-confidence signal is the exit_edge_threshold manual observation, reproduced at 37% scalp accuracy in the <-0.10 bucket across n=1476 trades (~10× noise), which is routed correctly to manual_observations.
+
+## 2026-05-19T03:54:29.638980+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (5):**
+  - logit_scale=4.25 (exploratory up step)
+  - student_t_df=6 (exploratory up step)
+  - momentum_weight=0.06 (exploratory up step)
+  - regime_weight=0.025 (exploratory down step)
+  - flow_weight=0.03 (exploratory down step)
+
+**Manual Suggestions (0) [operator-only]:**
+  - none
+
+**Findings:**
+- None
+
+**Warnings:**
+- 0/1 live adoption success rate with -0.167 Sharpe decay on the sole attempt — any marginal backtest delta should be treated as noise until regime stabilizes.
+- IMPROVING win rate and Sharpe trend risks disruption if parameter changes are adopted targeting symptoms already self-resolving.
+- Q4 edge realization at 0.56 persists as structural overconfidence at high-conviction entries, but every addressable parameter (kelly_fraction, logit_scale, min_edge) has failed in both directions — root cause may be model architecture rather than tunable params.
+
+**Reasoning:** With every backtestable parameter family tested across multiple values and directions — all failing to clear even the minimal 0.0086 adoption floor — and the one live adoption producing -0.167 Sharpe decay, empty changes is the only defensible position this cycle. Win rate and Sharpe are explicitly IMPROVING per trend buckets, meaning intervention now risks disrupting a natural recovery. The exit_edge_threshold manual observation at 37% accuracy in the <-0.10 bucket (n=1552, ~10× noise) remains the single highest-confidence actionable lever and is correctly routed to the operator.

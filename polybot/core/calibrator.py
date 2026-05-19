@@ -55,7 +55,7 @@ class PlattCalibrator:
         logit = math.log(raw_prob / (1.0 - raw_prob))
         return 1.0 / (1.0 + math.exp(self.a * logit + self.b))
 
-    def fit(self, probs: list[float], outcomes: list[int],mmin_samples: int = 60, sample_weights: list[float] | None = None) -> bool:
+    def fit(self, probs: list[float], outcomes: list[int], min_samples: int = 60, sample_weights: list[float] | None = None) -> bool:
         """Fit calibration parameters from historical data. Returns True if successful.
 
         ``min_samples`` default of 60 matches the scheduler's calibration call

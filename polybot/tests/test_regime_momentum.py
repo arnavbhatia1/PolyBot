@@ -22,37 +22,71 @@ def _engine(mw: float = -0.02, min_atr: float = 8.0) -> SignalEngine:
 
 
 # --- Regime-conditional momentum --------------------------------------------------
+#
+# After the L4 polarity-split refactor:
+#   * effective_momentum_weight returns an UNSIGNED magnitude (regime-amplified).
+#   * Sign/polarity is handled per indicator group inside compute_momentum.
 
-def test_momentum_weight_flips_sign_in_trending_regime():
+def test_momentum_magnitude_amplified_in_trending_regime():
     eng = _engine(mw=-0.02)
-    # Trending: |autocorr| > threshold, positive. L4 should switch from fade to follow.
     result = eng.effective_momentum_weight(regime_autocorr=0.30)
-    # Expected: +|mw| * amplify = +0.03
     assert result == 0.02 * _REGIME_MOMENTUM_AMPLIFY
     assert result > 0
 
 
-def test_momentum_weight_amplifies_in_mean_reverting_regime():
+def test_momentum_magnitude_amplified_in_mean_reverting_regime():
     eng = _engine(mw=-0.02)
     result = eng.effective_momentum_weight(regime_autocorr=-0.30)
-    # Mean-reverting: -|mw| * amplify = -0.03
-    assert result == -0.02 * _REGIME_MOMENTUM_AMPLIFY
-    assert result < 0
+    # Same magnitude as trending — polarity is no longer encoded here.
+    assert result == 0.02 * _REGIME_MOMENTUM_AMPLIFY
 
 
-def test_momentum_weight_dampened_when_autocorr_in_noise_band():
+def test_momentum_magnitude_dampened_when_autocorr_in_noise_band():
     eng = _engine(mw=-0.02)
     for rho in [0.0, 0.10, -0.10, _REGIME_MOMENTUM_THRESHOLD]:
         result = eng.effective_momentum_weight(regime_autocorr=rho)
-        assert result == -0.02 * _REGIME_MOMENTUM_DAMPEN
+        assert result == 0.02 * _REGIME_MOMENTUM_DAMPEN
 
 
-def test_momentum_weight_clamped_to_invariant():
-    eng = _engine(mw=-0.08)  # Already close to ±0.10 cap.
-    # Trending + 1.5x amplify would be 0.12 > 0.10 clamp.
+def test_momentum_magnitude_clamped_to_invariant():
+    eng = _engine(mw=-0.08)  # |mw| × 1.5 = 0.12 > 0.10 clamp.
     assert eng.effective_momentum_weight(0.50) == _MOMENTUM_WEIGHT_CLAMP
-    # Mean-reverting + 1.5x amplify would be -0.12 < -0.10 clamp.
-    assert eng.effective_momentum_weight(-0.50) == -_MOMENTUM_WEIGHT_CLAMP
+    assert eng.effective_momentum_weight(-0.50) == _MOMENTUM_WEIGHT_CLAMP
+
+
+def test_compute_momentum_flips_mean_revert_in_trending_regime():
+    """Mean-revert indicators (RSI/Stoch/VWAP) get sign-flipped in trending so
+    they align with the trend rather than fighting it."""
+    eng = _engine(mw=-0.02)
+    indicators = {
+        "rsi": {"score": -0.6},        # overbought, fade signal
+        "stochastic": {"score": -0.5},
+        "vwap": {"score": -0.4},        # price above vwap
+        "macd": {"score": 0.5},         # trend-confirm bullish
+        "obv": {"score": 0.4},          # trend-confirm bullish
+    }
+    trending = eng.compute_momentum(indicators, regime_autocorr=0.30)
+    reverting = eng.compute_momentum(indicators, regime_autocorr=-0.30)
+    # In trending we add (-mean_revert) + trend_confirm — both contribute positively.
+    assert trending > 0
+    # In reverting we keep mean_revert (negative) and dampen trend_confirm.
+    assert reverting < trending
+
+
+def test_compute_momentum_neutral_dampens_both_groups():
+    eng = _engine(mw=-0.02)
+    indicators = {
+        "rsi": {"score": -0.6},
+        "stochastic": {"score": 0.0},
+        "vwap": {"score": 0.0},
+        "macd": {"score": 0.5},
+        "obv": {"score": 0.0},
+    }
+    trending = abs(eng.compute_momentum(indicators, regime_autocorr=0.30))
+    neutral = abs(eng.compute_momentum(indicators, regime_autocorr=0.0))
+    # Neutral applies 0.5× damp to both groups, so magnitude is smaller than
+    # the trending case where groups are coherently summed without damp.
+    assert neutral < trending
 
 
 # --- Dynamic ATR floor ------------------------------------------------------------
