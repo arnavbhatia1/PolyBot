@@ -4,7 +4,7 @@
 
 ## Probability Model
 
-All layers compose in logit space (except L1's CDF), then sigmoid + Platt.
+All layers compose in logit space (except L1's CDF), then sigmoid + isotonic calibration.
 
 - **L1 — Student-t CDF** (df=5, clamped ≥3). `vol = max(atr, atr_floor)/atr_sigma_ratio · √min`, `z = (btc-strike)/vol · √(df/(df-2))`. ATR floor: `max(min_atr, 0.3 × rolling_20)`, widens when rolling_20 < 60% of long-term_200. Prob clipped to [1e-6, 1-1e-6] before logit (final ±4 clamp is the precision floor).
 - **L2** — 1-lag autocorr × sign(last 1-min return). Single `lag1_autocorr` helper in `returns.py` — signal_engine and `RegimeDetector` both delegate to it.
@@ -12,10 +12,11 @@ All layers compose in logit space (except L1's CDF), then sigmoid + Platt.
 - **L3b** — Binance CVD + taker ratio (taker requires trade_count ≥ 5). CVD acceleration gate requires ≥ 3 trades in the recent 15s window (returns 0 otherwise).
 - **L3e** — Bybit OI drop × price direction, normalized to %/minute using `oi_updated - oi_updated_prev`. tanh saturation `× 8` per minute (5%/min → 0.38, 10%/min → 0.66, 15%/min → 0.83 — softer than the old `× 20` on raw drop).
 - **L4** — RSI/MACD/Stoch/OBV/VWAP. Polarity-split: mean-revert group (RSI/Stoch/VWAP) vs trend-confirm group (MACD/OBV). Trending (autocorr > +0.15) flips ONLY mean-revert sign; reverting (< −0.15) keeps mean-revert + dampens trend-confirm 0.5×; neutral dampens both 0.5×. Magnitude scaler from `effective_momentum_weight` is unsigned, clamped ±0.10.
-- **L5** — `tanh(prev_margin/atr) · prev_margin_weight · logit_scale · (1 − min(0.7, |regime|))`. Dampened by regime strength to orthogonalize with L2 early in the window.
-- **Platt** — sole overconfidence correction, re-fit on last 7d of trades (not the global walk-forward split; needs ≥125 trades in window or skips entirely). Identity `a=-1.0, b=0.0` when no calibrator. Optimizer bounded `a ∈ [-5, -0.05]`; fits pinned within 0.03 of the upper bound are treated as degenerate and revert to identity.
+- **L5** — `tanh(prev_margin/atr) · prev_margin_weight · logit_scale · (1 − min(l5_regime_damp_cap, |regime|))`. Dampened by regime strength to orthogonalize with L2 early in the window. `l5_regime_damp_cap` default 0.7, pipeline-tunable.
+- **L6 — derived feature library.** Closed library of bounded transforms of already-tracked state (see `polybot/core/derived_features.py`). Every weight defaults to 0.0; the layer is dead until the pipeline raises one off zero. Combined L6 contribution hard-capped at ±0.25 logits regardless of individual weights.
+- **Calibration (isotonic)** — sole overconfidence correction. Class name is legacy (`PlattCalibrator`); internals are isotonic regression. Fit on last 7d of trades (not the global walk-forward split; needs ≥125 trades in window or skips entirely; train split ≥75 to fit). Identity by default. Adoption requires the fit to beat identity on weighted log-loss by ≥ `1e-4` on the same pool — replaces the brittle Platt slope-near-zero heuristic that previously let near-degenerate sigmoid collapses through.
 
-L3+L3b combined capped at ±0.35 logits. Final logit clamped ±4.0 → prob ∈ [0.018, 0.982].
+L3+L3b combined capped at ±`flow_combined_cap` (default 0.35) logits. Final logit clamped ±`final_logit_clamp` (default 4.0) → prob ∈ [0.018, 0.982]. Both caps pipeline-tunable.
 
 ## Entry Gates
 
@@ -29,7 +30,7 @@ L3+L3b combined capped at ±0.35 logits. Final logit clamped ±4.0 → prob ∈ 
 
 **Exit (`evaluate_hold`):** `holding_edge = model_prob − market_price`.
 - `effective_threshold` blends `deep_loss_floor = exit_edge_threshold × (1 + 0.5 × itm_depth)` with the `ExitBoundary.compute_exit_threshold` curve. ATM trusts the boundary; deep ITM weights toward the more patient floor.
-- Scalp when `_DEEP_LOSS_HOLD_THRESHOLD < holding_edge ≤ effective_threshold`.
+- Scalp when `deep_loss_hold_threshold < holding_edge ≤ effective_threshold` (deep_loss_hold_threshold pipeline-tunable, default −0.10).
 - **Deep-loss hold:** `holding_edge < −0.10` AND `market < entry` → hold (binary residual beats locking the loss).
 - **Loss-cut:** `market < entry × loss_cut_fraction` AND `seconds_remaining < loss_cut_time_s` AND BTC on wrong side of strike by ≥ 0.5×ATR (whipsaw guard).
 
@@ -74,7 +75,9 @@ polybot/
 `param_registry.py` is the single source of truth for ALL defaults. Code-side fallbacks read `default_for(name)`; settings.yaml drives runtime.
 
 **Pipeline-tunable** (Claude proposes, walk-forward adopts):
-`atr_sigma_ratio` 1.2–2.5 (L1, highest leverage), `logit_scale` 2.0–6.0, `student_t_df` 3–8, `momentum_weight` 0.0..0.10 (magnitude only — sign is dead, polarity is regime-conditional per group inside `compute_momentum`), `regime_weight` 0.02–0.10, `flow_weight` 0.02–0.12, `spot_flow_weight` 0.01–0.15, `liquidation_weight` 0.01–0.10, `prev_margin_weight` 0.01–0.05, `min_atr` 4.0–25.0, `kelly_fraction` 0.05–0.25, `weights` (sum=1.0, ≥0.05 each), `min_model_probability` 0.52–0.70, `min_edge` 0.02–0.10, `min_kelly` 0.005–0.04.
+- **Layer weights / L1:** `atr_sigma_ratio` 1.2–2.5 (L1, highest leverage), `logit_scale` 2.0–5.0, `student_t_df` 3–8, `momentum_weight` 0.0–0.10 (magnitude only — sign is dead, polarity is regime-conditional per group inside `compute_momentum`), `regime_weight` 0.02–0.10, `flow_weight` 0.02–0.12, `spot_flow_weight` 0.01–0.15, `liquidation_weight` 0.01–0.10, `prev_margin_weight` 0.01–0.05, `min_atr` 8.0–25.0, `kelly_fraction` 0.05–0.18, `weights` (sum=1.0, ≥0.05 each), `min_model_probability` 0.52–0.70, `min_edge` 0.02–0.10, `min_kelly` 0.005–0.04, `exit_edge_threshold` −0.10..−0.03.
+- **Structural constants (Investment 2 — promoted 2026-05-19):** `regime_momentum_threshold` 0.08–0.25, `flow_combined_cap` 0.20–0.60, `final_logit_clamp` 3.0–5.0, `deep_loss_hold_threshold` −0.20..−0.05, `l5_regime_damp_cap` 0.4–0.9, `atr_regime_shift_threshold` 0.40–0.80.
+- **L6 derived feature weights (Investment 3 — added 2026-05-19, default 0.0):** `derived_log_atr_ratio_weight`, `derived_autocorr_signed_mag_weight`, `derived_vol_regime_shift_weight`, `derived_flow_disagreement_weight`, `derived_distance_atr_ratio_weight`, `derived_time_remaining_logit_weight`, `derived_liq_signed_sqrt_weight`, `derived_prev_margin_sq_weight`. Each 0.0–0.05; combined L6 contribution hard-capped at ±0.25 logits. Library is closed — see `polybot/core/derived_features.py`.
 
 **Manual-only** (claude_client validator reroutes `changes` → `manual_observations`):
 `exit_edge_threshold`, `loss_cut_*`, `max_edge`, `adverse_selection_threshold`, `normal_fraction`, `late_max_penalty`, `flip_*`, `trading_*`, `max_concurrent_positions`, `max_bankroll_deployed`, `circuit_breaker.*`, `indicators.*`, `sprt.*`.
@@ -94,7 +97,7 @@ python -m pytest polybot/tests/
 
 Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older trades came from probability machines that no longer exist). Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][90:100] applied inside that window.
 
-**Platt** has its own 7-day window (needs ≥125 trades to fit; skips entirely if below threshold) — calibration must reflect the *current* model, not last month's.
+**Calibration** (isotonic) has its own 7-day window (needs ≥125 trades in pool; ≥75 in train split; skips entirely if below either threshold) — calibration must reflect the *current* model, not last month's.
 
 **Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Fold-consistency: worst-fold floor `min(fold_sharpes) ≥ -0.10` (magnitude-aware — a single tiny dip is fine, a deep collapse rejects). Regime-stratified veto activates per regime bucket once that bucket has ≥20 trades: dominant regime must improve AND no other regime may degrade >0.10 Sharpe.
 
@@ -102,18 +105,19 @@ Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older 
 
 **Crisis mode:** baseline Sharpe < 0.10 AND (recent-50 WR < 48% OR recent-50 `avg_loss/avg_win > 2.0`). The loss-ratio leg catches winning-small/losing-big pathologies the WR-only trigger misses. ≥3 consecutive cycles → halve `kelly_fraction` (floor 0.04), restore on first non-crisis. `kelly_reduced` flag persisted BEFORE the cut applies so a crash can't compound the halving.
 
-**Atomic commit:** Platt save is deferred until after weight-optimizer persists config; mid-pipeline crash leaves on-disk Platt + weights coherent.
+**Atomic commit:** Calibrator save is deferred until after weight-optimizer persists config; mid-pipeline crash leaves on-disk calibrator + weights coherent.
 
-**Stages:** PipelineTracker (review + auto-revert) → BiasDetector → PlattCalibrator → KS shift → SPRT aggregate → TAEvolver (Claude or LocalRecommender) → WeightOptimizer → deferred Platt save.
+**Stages:** PipelineTracker (review + auto-revert) → BiasDetector → Calibrator (isotonic) → KS shift → SPRT aggregate → TAEvolver (Claude or LocalRecommender) → WeightOptimizer → deferred calibrator save.
 
 ## Invariants
 
 - **Direction sourcing:** empirical directional table only (`pipeline_run_log.json`); no hardcoded priors.
-- **`model_probability_raw`** stores pre-Platt P(side) so re-fits don't compound.
-- **Recency weighting:** `0.97^days_ago` on backtest + Platt MLE (~23-day half-life), applied inside the window cutoff.
+- **`model_probability_raw`** stores pre-calibration P(side) so re-fits don't compound.
+- **Recency weighting:** `0.97^days_ago` on backtest + isotonic fit (~23-day half-life), applied inside the window cutoff.
 - **`gain_pct = pnl/size`** (arithmetic). Never `log_return` for Sharpe.
 - **UTC everywhere**; ET only for date-bucketing and trading-window logic.
 - **Daily rollup** at 12:05 AM bundles per-trade JSON into `rollup_YYYY-MM-DD.json`.
+- **L6 derived feature library is closed.** New entries require a code change in `polybot/core/derived_features.py` plus a ParamSpec; never generated at runtime.
 
 ## What NOT to Change
 

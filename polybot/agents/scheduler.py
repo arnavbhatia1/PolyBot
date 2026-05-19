@@ -476,6 +476,16 @@ class AgentScheduler:
         prev_margin_weight: float | None = None,
         logit_scale: float | None = None,
         min_atr: float | None = None,
+        # Investment 2: promoted structural constants — mirror live values so
+        # baseline/candidate Sharpe comparisons stay aligned with production math.
+        regime_momentum_threshold: float | None = None,
+        flow_combined_cap: float | None = None,
+        final_logit_clamp: float | None = None,
+        l5_regime_damp_cap: float | None = None,
+        atr_regime_shift_threshold: float | None = None,
+        # Investment 3: L6 weights — default 0.0 makes L6 dead in backtest unless
+        # the pipeline raises a weight off zero (matching live behavior).
+        derived_weights: dict[str, float] | None = None,
     ) -> list[float]:
         """Replay the full logit composition used in production for a candidate
         config and return the Kelly-sized per-trade returns. Sharpe of the result
@@ -490,8 +500,37 @@ class AgentScheduler:
         if prev_margin_weight is None: prev_margin_weight = _d("prev_margin_weight")
         if logit_scale is None: logit_scale = _d("logit_scale")
         if min_atr is None: min_atr = _d("min_atr")
+        if regime_momentum_threshold is None: regime_momentum_threshold = _d("regime_momentum_threshold")
+        if flow_combined_cap is None: flow_combined_cap = _d("flow_combined_cap")
+        if final_logit_clamp is None: final_logit_clamp = _d("final_logit_clamp")
+        if l5_regime_damp_cap is None: l5_regime_damp_cap = _d("l5_regime_damp_cap")
+        if atr_regime_shift_threshold is None: atr_regime_shift_threshold = _d("atr_regime_shift_threshold")
+        # L6 weights — pre-resolve so the hot loop doesn't dict-lookup defaults per outcome.
+        from polybot.core.derived_features import DERIVED_FEATURES, FeatureContext, L6_LOGIT_CAP
+        # Constants shared with live (kept in lockstep via single import — if signal_engine.py
+        # changes these, the backtest moves too).
+        from polybot.core.signal_engine import (
+            _ATR_HISTORY_MIN_SAMPLES as _ATR_MIN_SHORT,
+            _ATR_LONG_TERM_MIN_SAMPLES as _ATR_MIN_LONG,
+            _ATR_FLOOR_FRACTION as _ATR_FLOOR_FRAC,
+        )
+        _dw_in = derived_weights or {}
+        l6_weights: dict[str, float] = {
+            name: float(_dw_in.get(name, _d(f"derived_{name}_weight")))
+            for name in DERIVED_FEATURES.keys()
+        }
+        l6_active = any(w != 0.0 for w in l6_weights.values())
+        # Rolling ATR history mirrors signal_engine._record_atr (sized 20/200).
+        # Outcomes arrive sorted by exit_timestamp (see _get_outcomes_for_pipeline),
+        # so this rolling state is causal at each tick — and is used both by L1's
+        # dynamic floor (mirroring _effective_atr_floor) and by L6 features.
+        from collections import deque as _deque
+        _atr_short = _deque(maxlen=20)
+        _atr_long = _deque(maxlen=200)
+        _atr_short_sum = 0.0
+        _atr_long_sum = 0.0
+
         from scipy.stats import t as t_dist
-        max_flow_logit = 0.35
         realism_factor = 1.0
         if self._config:
             realism_factor = float(self._config.get("execution", {}).get("backtest_realism_factor", 1.0))
@@ -522,8 +561,40 @@ class AgentScheduler:
             btc = ctx.get("btc_price", 0)
             strike = ctx.get("strike_price", 0)
             atr_raw = ctx.get("atr", 0)
-            atr = max(atr_raw, min_atr)
             secs = ctx.get("seconds_remaining", 0)
+
+            # Update rolling ATR state BEFORE the floor is read — mirrors
+            # SignalEngine._record_atr → _effective_atr_floor ordering exactly.
+            # Used by L1's dynamic floor and (if active) L6 features below.
+            if atr_raw > 0:
+                if len(_atr_short) == _atr_short.maxlen:
+                    _atr_short_sum -= _atr_short[0]
+                _atr_short.append(atr_raw)
+                _atr_short_sum += atr_raw
+                if len(_atr_long) == _atr_long.maxlen:
+                    _atr_long_sum -= _atr_long[0]
+                _atr_long.append(atr_raw)
+                _atr_long_sum += atr_raw
+
+            # Dynamic ATR floor mirrors signal_engine._effective_atr_floor:
+            # base = max(min_atr, FLOOR_FRAC × rolling_20); widened when rolling/
+            # long-term ratio falls below atr_regime_shift_threshold.
+            _n_short = len(_atr_short)
+            if _n_short >= _ATR_MIN_SHORT:
+                _rolling_short = _atr_short_sum / _n_short
+                _base_floor = max(min_atr, _ATR_FLOOR_FRAC * _rolling_short)
+                _n_long = len(_atr_long)
+                if _n_long >= _ATR_MIN_LONG:
+                    _rolling_long = _atr_long_sum / _n_long
+                    if (_rolling_long > 0
+                            and _rolling_short / _rolling_long < atr_regime_shift_threshold):
+                        _regime_floor = _rolling_long * atr_regime_shift_threshold * _ATR_FLOOR_FRAC
+                        _base_floor = max(_base_floor, _regime_floor)
+                atr_effective = max(atr_raw, _base_floor)
+            else:
+                # Pre-warmup: fall back to static floor (same as live).
+                atr_effective = max(atr_raw, min_atr)
+            atr = atr_effective
 
 
             raw_prob_up = stored_raw
@@ -568,8 +639,8 @@ class AgentScheduler:
             spot_flow = ctx.get("spot_flow_signal", 0.0)
             logit_p += spot_flow * (spot_flow_weight * logit_scale)
             flow_total = logit_p - logit_before_flow
-            if abs(flow_total) > max_flow_logit:
-                logit_p = logit_before_flow + max_flow_logit * (1.0 if flow_total > 0 else -1.0)
+            if abs(flow_total) > flow_combined_cap:
+                logit_p = logit_before_flow + flow_combined_cap * (1.0 if flow_total > 0 else -1.0)
 
             # L3e — liquidation pressure
             liq = ctx.get("liquidation_pressure", 0.0)
@@ -577,18 +648,18 @@ class AgentScheduler:
                 logit_p += liq * (liquidation_weight * logit_scale)
 
             # L5 — previous-window margin carry (tanh-normalized by ATR).
-            # Live applies a (1 - min(0.7, |regime|)) dampener to orthogonalize
-            # with L2 early in a window; backtest must mirror or it will
-            # over-credit prev_margin_weight in strong-regime samples.
+            # Live applies a (1 - min(l5_regime_damp_cap, |regime|)) dampener to
+            # orthogonalize with L2 early in a window; backtest must mirror or it
+            # will over-credit prev_margin_weight in strong-regime samples.
             if prev_margin != 0.0 and atr_raw > 0:
                 normalized = prev_margin / max(atr_raw, 1.0)
-                l5_damp = 1.0 - min(0.7, abs(regime_factor))
+                l5_damp = 1.0 - min(l5_regime_damp_cap, abs(regime_factor))
                 logit_p += math.tanh(normalized) * (prev_margin_weight * logit_scale) * l5_damp
 
             # L4 — indicator committee. Must mirror live `compute_momentum`:
             # split fade-aligned (RSI/Stoch/VWAP) from trend-aligned (MACD/OBV),
             # apply regime-conditional polarity per group, then magnitude-amplify
-            # by |momentum_weight| × (1.5 if |regime|>0.15 else 0.5), clamped at 0.10.
+            # by |momentum_weight| × (1.5 if |regime|>threshold else 0.5), clamped at 0.10.
             # The sign of momentum_weight is dead in live; backtest must use abs()
             # too so adoption decisions reflect live behavior, not stale physics.
             def _ind_score(name: str) -> float:
@@ -603,24 +674,59 @@ class AgentScheduler:
                 _ind_score("macd") * recommended_weights.get("macd", 0)
                 + _ind_score("obv") * recommended_weights.get("obv", 0)
             )
-            if regime_factor > 0.15:
+            if regime_factor > regime_momentum_threshold:
                 momentum_score = -mean_revert_score + trend_confirm_score
-            elif regime_factor < -0.15:
+            elif regime_factor < -regime_momentum_threshold:
                 momentum_score = mean_revert_score + 0.5 * trend_confirm_score
             else:
                 momentum_score = 0.5 * (mean_revert_score + trend_confirm_score)
             momentum_score = max(-1.0, min(1.0, momentum_score))
-            if abs(regime_factor) > 0.15:
+            if abs(regime_factor) > regime_momentum_threshold:
                 eff_mw = min(0.10, abs(momentum_weight) * 1.5)
             else:
                 eff_mw = min(0.10, abs(momentum_weight) * 0.5)
             logit_p += momentum_score * eff_mw * logit_scale
 
-            # Final clamp — mirrors live (signal_engine.compute_probability:
-            # max(-4.0, min(4.0, logit_p))). Pre-existing gap; matters more
-            # post-L4 fix because coherent-regime windows produce larger
-            # logit_p than the old mixed-polarity aggregate ever did.
-            logit_p = max(-4.0, min(4.0, logit_p))
+            # L6 — derived features (Investment 3). Mirrors live signal engine.
+            # Rolling ATR state was updated at the L1 floor block above, so the
+            # short/long means below are causal-through-this-tick (same as live).
+            if l6_active and atr_raw > 0:
+                atr_short_mean = _atr_short_sum / len(_atr_short) if _atr_short else 0.0
+                atr_long_mean = _atr_long_sum / len(_atr_long) if _atr_long else 0.0
+                # `last_return` reconstructed from the stored snapshot's closes
+                # tail when present; otherwise zero (feature degrades gracefully).
+                _closes_tail = snap.get("closes_tail") or ctx.get("closes_tail")
+                if _closes_tail and len(_closes_tail) >= 2 and float(_closes_tail[-2]) != 0.0:
+                    _last_return = float(_closes_tail[-1] - _closes_tail[-2]) / float(_closes_tail[-2])
+                else:
+                    _last_return = 0.0
+                fctx = FeatureContext(
+                    atr=atr_raw,
+                    atr_rolling_20=atr_short_mean,
+                    atr_long_term_mean=atr_long_mean,
+                    regime=regime_factor,
+                    last_return=_last_return,
+                    flow_signal=flow_signal,
+                    spot_flow_signal=spot_flow,
+                    liquidation_pressure=liq,
+                    prev_resolution_margin=prev_margin,
+                    seconds_remaining=secs,
+                    distance=(btc - strike),
+                )
+                l6_total = 0.0
+                for _name, _fn in DERIVED_FEATURES.items():
+                    _w = l6_weights[_name]
+                    if _w == 0.0:
+                        continue
+                    l6_total += _fn(fctx) * (_w * logit_scale)
+                if l6_total > L6_LOGIT_CAP:
+                    l6_total = L6_LOGIT_CAP
+                elif l6_total < -L6_LOGIT_CAP:
+                    l6_total = -L6_LOGIT_CAP
+                logit_p += l6_total
+
+            # Final clamp — mirrors live (signal_engine: max(-clamp, min(clamp, logit_p))).
+            logit_p = max(-final_logit_clamp, min(final_logit_clamp, logit_p))
 
             prob_up_adj = 1.0 / (1.0 + math.exp(-logit_p))
             if calibrator is not None and hasattr(calibrator, "calibrate"):
@@ -664,6 +770,7 @@ class AgentScheduler:
         the comparison stays clean.
         """
         from polybot.config.param_registry import PIPELINE_PARAMS
+        from polybot.core.derived_features import DERIVED_FEATURES
         rec = recommendations or {}
         live_weights = self.indicator_engine.get_weights() if self.indicator_engine else {}
         cfg: dict[str, Any] = {
@@ -672,10 +779,19 @@ class AgentScheduler:
             },
         }
         for _spec in PIPELINE_PARAMS:
-            cfg[_spec.name] = _spec.cast(
-                rec.get(f"recommended_{_spec.name}",
-                        getattr(self.signal_engine, _spec.name, _spec.default))
-            )
+            # SignalEngine stores L6 weights in self.derived_weights[name], not in
+            # a `derived_<name>_weight` attribute — handle that lookup specially.
+            if _spec.name.startswith("derived_") and _spec.name.endswith("_weight"):
+                _fname = _spec.name[len("derived_"):-len("_weight")]
+                live_val = (self.signal_engine.derived_weights.get(_fname, _spec.default)
+                            if self.signal_engine is not None else _spec.default)
+            else:
+                live_val = getattr(self.signal_engine, _spec.name, _spec.default)
+            cfg[_spec.name] = _spec.cast(rec.get(f"recommended_{_spec.name}", live_val))
+        # Assemble the L6 weights dict for the backtest call site.
+        cfg["derived_weights"] = {
+            name: cfg.get(f"derived_{name}_weight", 0.0) for name in DERIVED_FEATURES.keys()
+        }
         return cfg
 
     def _backtest_recommendations(self, recommendations: dict[str, Any],
@@ -712,6 +828,12 @@ class AgentScheduler:
             prev_margin_weight=cfg["prev_margin_weight"],
             logit_scale=cfg["logit_scale"],
             min_atr=cfg["min_atr"],
+            regime_momentum_threshold=cfg["regime_momentum_threshold"],
+            flow_combined_cap=cfg["flow_combined_cap"],
+            final_logit_clamp=cfg["final_logit_clamp"],
+            l5_regime_damp_cap=cfg["l5_regime_damp_cap"],
+            atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],
+            derived_weights=cfg["derived_weights"],
         )
 
     def _backtest_single_change(self, change: dict[str, Any],
@@ -774,6 +896,12 @@ class AgentScheduler:
             prev_margin_weight=cfg["prev_margin_weight"],
             logit_scale=cfg["logit_scale"],
             min_atr=cfg["min_atr"],
+            regime_momentum_threshold=cfg["regime_momentum_threshold"],
+            flow_combined_cap=cfg["flow_combined_cap"],
+            final_logit_clamp=cfg["final_logit_clamp"],
+            l5_regime_damp_cap=cfg["l5_regime_damp_cap"],
+            atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],
+            derived_weights=cfg["derived_weights"],
         )
         return {"returns": returns, "sharpe": _s(returns), "candidate_trades": len(returns)}
 
@@ -1068,16 +1196,13 @@ class AgentScheduler:
                 for iteration in range(MAX_BACKOUT_ITERATIONS):
                     combined_rec: dict[str, Any] = {}
                     sum_individual_delta = 0.0
+                    from polybot.config.param_registry import TUNABLE_NAMES as _TN
                     for c in adopted_changes:
                         param = c["param"]
                         value = c["value"]
                         if param == "weights":
                             combined_rec["recommended_weights"] = value
-                        elif param in (
-                            "momentum_weight", "atr_sigma_ratio", "student_t_df", "kelly_fraction",
-                            "regime_weight", "flow_weight", "spot_flow_weight",
-                            "liquidation_weight", "prev_margin_weight", "logit_scale", "min_atr",
-                        ):
+                        elif param in _TN:
                             combined_rec[f"recommended_{param}"] = value
                         ci = next((x for x in info["per_change"]
                                    if x.get("param") == param and x.get("decision") == "adopted"), {})
@@ -1107,6 +1232,12 @@ class AgentScheduler:
                         prev_margin_weight=cfg_combined["prev_margin_weight"],
                         logit_scale=cfg_combined["logit_scale"],
                         min_atr=cfg_combined["min_atr"],
+                        regime_momentum_threshold=cfg_combined["regime_momentum_threshold"],
+                        flow_combined_cap=cfg_combined["flow_combined_cap"],
+                        final_logit_clamp=cfg_combined["final_logit_clamp"],
+                        l5_regime_damp_cap=cfg_combined["l5_regime_damp_cap"],
+                        atr_regime_shift_threshold=cfg_combined["atr_regime_shift_threshold"],
+                        derived_weights=cfg_combined["derived_weights"],
                     )
                     combined_sharpe = _sharpe(combined_returns) if combined_returns else 0.0
                     combined_delta = combined_sharpe - current_sharpe
@@ -1193,7 +1324,11 @@ class AgentScheduler:
                 elif param in _BY_NAME:
                     spec = _BY_NAME[param]
                     clamped = spec.cast(max(spec.lo, min(spec.hi, spec.cast(value))))
-                    if hasattr(self.signal_engine, param):
+                    if param.startswith("derived_") and param.endswith("_weight"):
+                        # L6 weights live in self.derived_weights[feature_name].
+                        _fname = param[len("derived_"):-len("_weight")]
+                        self.signal_engine.derived_weights[_fname] = clamped
+                    elif hasattr(self.signal_engine, param):
                         setattr(self.signal_engine, param, clamped)
                 elif param == "adverse_selection_threshold" and self._config:
                     self._config.setdefault("signal", {})["adverse_selection_threshold"] = _clamp(float(value), 0.45, 0.75)
@@ -1222,8 +1357,13 @@ class AgentScheduler:
                 elif param in _BY_NAME:
                     spec = _BY_NAME[param]
                     clamped = spec.cast(max(spec.lo, min(spec.hi, spec.cast(value))))
-                    section, field = spec.yaml_key.split(".", 1)
-                    self._config.setdefault(section, {})[field] = clamped
+                    # Walk the dotted yaml_key path so nested keys (e.g. signal.derived.x)
+                    # produce real nested dicts, not a literal "derived.x" key under signal.
+                    _parts = spec.yaml_key.split(".")
+                    _node = self._config
+                    for _p in _parts[:-1]:
+                        _node = _node.setdefault(_p, {})
+                    _node[_parts[-1]] = clamped
                 elif param == "adverse_selection_threshold":
                     sig["adverse_selection_threshold"] = _clamp(float(value), 0.45, 0.75)
                 elif param == "max_edge":
@@ -1330,9 +1470,14 @@ class AgentScheduler:
                     if p == "exit_edge_threshold":
                         spec = _BY_NAME[p]
                         self._exit_edge_threshold = spec.cast(max(spec.lo, min(spec.hi, spec.cast(v))))
-                    elif p in _BY_NAME and hasattr(self.signal_engine, p):
+                    elif p in _BY_NAME:
                         spec = _BY_NAME[p]
-                        setattr(self.signal_engine, p, spec.cast(max(spec.lo, min(spec.hi, spec.cast(v)))))
+                        _clamped = spec.cast(max(spec.lo, min(spec.hi, spec.cast(v))))
+                        if p.startswith("derived_") and p.endswith("_weight"):
+                            _fname = p[len("derived_"):-len("_weight")]
+                            self.signal_engine.derived_weights[_fname] = _clamped
+                        elif hasattr(self.signal_engine, p):
+                            setattr(self.signal_engine, p, _clamped)
                     elif p == "max_edge":
                         self.signal_engine.max_edge = _clamp(float(v), 0.15, 0.30)
 
@@ -1344,8 +1489,11 @@ class AgentScheduler:
                     if p in _BY_NAME:
                         spec = _BY_NAME[p]
                         clamped = spec.cast(max(spec.lo, min(spec.hi, spec.cast(v))))
-                        section, field = spec.yaml_key.split(".", 1)
-                        self._config.setdefault(section, {})[field] = clamped
+                        _parts = spec.yaml_key.split(".")
+                        _node = self._config
+                        for _p in _parts[:-1]:
+                            _node = _node.setdefault(_p, {})
+                        _node[_parts[-1]] = clamped
                     elif p == "max_edge":
                         self._config.setdefault("signal", {})["max_edge"] = _clamp(float(v), 0.15, 0.30)
                 try:
@@ -1572,12 +1720,11 @@ class AgentScheduler:
                     w2 = 1.0
                 cal_weights.append(w2)
 
-            if len(cal_probs) >= 60:
+            if len(cal_probs) >= 75:
                 cal = PlattCalibrator()
-                if self.signal_engine.calibrator:
-                    cal.a = self.signal_engine.calibrator.a
-                    cal.b = self.signal_engine.calibrator.b
-                if cal.fit(cal_probs, cal_outcomes, min_samples=60, sample_weights=cal_weights):
+                # Note: PlattCalibrator is now isotonic-backed (see calibrator.py).
+                # Isotonic is non-parametric — no warm start from previous fit.
+                if cal.fit(cal_probs, cal_outcomes, min_samples=75, sample_weights=cal_weights):
                     # Log-loss on full 7-day pool (more data = more reliable calibration signal).
                     # Hierarchy: identity (no-cal) → current (live) → new (today's fit).
                     # Each tier should beat the one below it.
@@ -1616,6 +1763,12 @@ class AgentScheduler:
                         prev_margin_weight=cfg["prev_margin_weight"],
                         logit_scale=cfg["logit_scale"],
                         min_atr=cfg["min_atr"],
+                        regime_momentum_threshold=cfg["regime_momentum_threshold"],
+                        flow_combined_cap=cfg["flow_combined_cap"],
+                        final_logit_clamp=cfg["final_logit_clamp"],
+                        l5_regime_damp_cap=cfg["l5_regime_damp_cap"],
+                        atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],
+                        derived_weights=cfg["derived_weights"],
                     )
                     identity_returns = self._kelly_bankroll_returns(calibrator=None, **helper_kwargs)
                     new_returns = self._kelly_bankroll_returns(calibrator=cal, **helper_kwargs)
@@ -1634,8 +1787,8 @@ class AgentScheduler:
                         "new_sharpe": round(new_sharpe, 4),
                         "n_pool": len(all_pool_probs),
                         "n_val": len(new_returns),
-                        "a": round(cal.a, 4),
-                        "b": round(cal.b, 4),
+                        "n_knots": cal.n_knots,
+                        "log_loss_improvement": round(cal.log_loss_improvement, 4),
                     }
 
                     insufficient = len(new_returns) < MIN_PLATT_VALIDATION_TRADES
@@ -1696,12 +1849,17 @@ class AgentScheduler:
                         gap = current_loss - new_loss_full if not math.isnan(new_loss_full) else 0
                         platt_info["reason"] = (f"new fit doesn't beat current by enough "
                                                 f"(loss gap {gap:+.4f}, need -{LOG_LOSS_FLOOR})")
-        # Save rejected Platt fits so next cycle can skip identical ones quickly
-        if platt_info.get("decision") == "rejected" and "a" in platt_info:
+        # Diagnostic log of rejected isotonic fits (kept for telemetry; no
+        # de-dup logic any more since each isotonic fit is fully data-driven).
+        if platt_info.get("decision") == "rejected" and "n_knots" in platt_info:
             _pr_path = _Path("polybot/memory/calibration/platt_rejected.json")
             try:
                 _pr = _json.loads(_pr_path.read_text()) if _pr_path.exists() else []
-                _pr.append({"a": platt_info["a"], "b": platt_info["b"]})
+                _pr.append({
+                    "n_knots": platt_info["n_knots"],
+                    "log_loss_improvement": platt_info["log_loss_improvement"],
+                    "reason": platt_info.get("reason", ""),
+                })
                 _pr_path.write_text(_json.dumps(_pr[-30:], indent=2))  # keep last 30
             except Exception:
                 pass

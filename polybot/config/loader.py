@@ -19,10 +19,18 @@ def _get_nested(config: dict[str, Any], dotted_key: str) -> tuple[Any, bool]:
     return current, True
 
 def _set_nested_ruamel(doc: Any, dotted_key: str, value: Any) -> None:
-    """Set a value in a ruamel CommentedMap by dotted path."""
+    """Set a value in a ruamel CommentedMap by dotted path.
+
+    Creates intermediate maps if missing so a fresh ParamSpec that references a
+    new nested section (e.g. ``signal.derived.x``) doesn't crash save_config
+    when the section hasn't been written yet.
+    """
+    from ruamel.yaml.comments import CommentedMap
     keys = dotted_key.split(".")
     d = doc
     for k in keys[:-1]:
+        if k not in d:
+            d[k] = CommentedMap()
         d = d[k]
     d[keys[-1]] = value
 

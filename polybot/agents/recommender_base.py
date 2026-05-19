@@ -29,6 +29,20 @@ EXPLORE_STEPS: dict[str, float] = {
     "min_model_probability": 0.01,
     "min_edge":              0.005,
     "min_kelly":             0.002,
+    "regime_momentum_threshold":  0.02,
+    "flow_combined_cap":          0.05,
+    "final_logit_clamp":          0.25,
+    "deep_loss_hold_threshold":   0.02,
+    "l5_regime_damp_cap":         0.05,
+    "atr_regime_shift_threshold": 0.05,
+    "derived_log_atr_ratio_weight":        0.005,
+    "derived_autocorr_signed_mag_weight":  0.005,
+    "derived_vol_regime_shift_weight":     0.005,
+    "derived_flow_disagreement_weight":    0.005,
+    "derived_distance_atr_ratio_weight":   0.005,
+    "derived_time_remaining_logit_weight": 0.005,
+    "derived_liq_signed_sqrt_weight":      0.005,
+    "derived_prev_margin_sq_weight":       0.005,
 }
 
 _CAP = 5         # max changes adopted per cycle

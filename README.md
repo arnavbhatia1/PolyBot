@@ -24,7 +24,7 @@ python -m polybot.main --run-pipeline  # one pipeline run, no trading
   BTC price: Coinbase (primary) > Kraken (secondary) > Binance.US (fallback)
   Strike:    Chainlink BTC/USD (preferred) → Binance candle boundary
         |
-  PROBABILITY MODEL (logit space, then sigmoid + Platt):
+  PROBABILITY MODEL (logit space, then sigmoid + isotonic calibration):
     L1  Student-t CDF (df=5, fat tails)
     L2  Regime: 1-lag autocorr × sign(last 1-min return)
     L3  CLOB flow: book imbalance + trade flow
@@ -32,7 +32,7 @@ python -m polybot.main --run-pipeline  # one pipeline run, no trading
     L3e Liquidation: Bybit OI drop × price direction
     L4  Indicator momentum: RSI/MACD/Stoch/OBV/VWAP (regime-conditional)
     L5  Previous-window margin carry
-    +   Platt scaling (sole overconfidence correction; re-fit each pipeline cycle)
+    +   Isotonic calibration (sole overconfidence correction; re-fit each pipeline cycle)
         |
   Edge = calibrated_model_prob - market_price (CLOB /price endpoint)
         |
@@ -59,7 +59,7 @@ python -m polybot.main --run-pipeline  # one pipeline run, no trading
 | Module | Purpose |
 |---|---|
 | `core/signal_engine.py` | Probability model + `evaluate_hold` |
-| `core/calibrator.py` | Platt scaling (`a`, `b`) |
+| `core/calibrator.py` | Isotonic calibration (legacy class name `PlattCalibrator`) |
 | `core/order_flow.py` | Book imbalance + trade flow signal |
 | `core/regime.py` | Multi-state regime classifier |
 | `core/liquidation.py` | OI-based liquidation pressure |
@@ -128,7 +128,7 @@ Daily 23:15 ET. Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][
 
 1. **PipelineTracker** — fills 1d/3d/7d/14d/30d Sharpe; auto-revert if 1d trailing < -0.10 (n≥20) or 7d < -0.05 (n≥100).
 2. **BiasDetector** — per-indicator/side/edge/time/regime/phase/flip stats + edge-realization quartiles + KS shift.
-3. **PlattCalibrator** — recency-weighted MLE on train; adopts only if Kelly-Sharpe on holdout improves. Meta-warning when raw-model Sharpe ≥ 0.95 × Platt Sharpe.
+3. **Calibrator (isotonic)** — recency-weighted isotonic regression on train; adopts only if weighted log-loss beats identity by ≥ `1e-4` AND Kelly-Sharpe on holdout doesn't degrade. Meta-warning when raw-model Sharpe ≥ 0.95 × calibrated Sharpe.
 4. **TAEvolver** — Claude (or `LocalRecommender` fallback) reads the analysis card, returns `{changes, manual_observations}`.
 5. **WeightOptimizer** — per-param walk-forward backtest. Adoption gate: `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.5`. Regime-stratified veto. 2-day per-param cooldown. Combined backtest after ≥2 adoptions backs out lowest-z change if combined Δ < 0.7 × sum.
 

@@ -48,6 +48,41 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     # TIGHT bound — directly changes realized P&L. Lower (more negative) = hold
     # longer through noise; upper (less negative) = exit faster on any tick against.
     ParamSpec("exit_edge_threshold",     "signal.exit_edge_threshold",     -0.10, -0.03, float, -0.05, "holding_edge floor before scalping; blended with exit_boundary curve"),
+    # ── Structural constants (Investment 2) ─────────────────────────────────
+    # Promoted from module-level Python so the pipeline can search them. Ranges
+    # are tight enough that the pipeline cannot violate model invariants.
+    ParamSpec("regime_momentum_threshold", "signal.regime_momentum_threshold", 0.08, 0.25, float, 0.15,
+              "|autocorr| threshold separating noise band from real regime (L2/L4)"),
+    ParamSpec("flow_combined_cap",       "signal.flow_combined_cap",       0.20,  0.60,  float, 0.35,
+              "max combined L3+L3b logit contribution per tick (prevents flow saturation)"),
+    ParamSpec("final_logit_clamp",       "signal.final_logit_clamp",       3.0,   5.0,   float, 4.0,
+              "absolute clamp on stacked logit before sigmoid (precision floor on extreme probs)"),
+    ParamSpec("deep_loss_hold_threshold","signal.deep_loss_hold_threshold",-0.20, -0.05, float, -0.10,
+              "below this holding_edge, hold to resolution rather than scalp the loss"),
+    ParamSpec("l5_regime_damp_cap",      "signal.l5_regime_damp_cap",      0.4,   0.9,   float, 0.7,
+              "max damp applied to L5 by |regime| (L5 retains 1 − min(cap, |regime|) of its weight)"),
+    ParamSpec("atr_regime_shift_threshold","signal.atr_regime_shift_threshold",0.40,0.80,float,0.60,
+              "rolling/long-term ATR ratio below this widens the ATR floor (L1 vol-shift guard)"),
+    # ── Derived feature weights (Investment 3, L6) ──────────────────────────
+    # Default 0.0 — the L6 layer contributes nothing until the pipeline raises
+    # a weight off zero. Each weight scaled by logit_scale at use; combined L6
+    # output is hard-clamped to ±0.25 logits.
+    ParamSpec("derived_log_atr_ratio_weight",         "signal.derived.log_atr_ratio",         0.0, 0.05, float, 0.0,
+              "L6 log(ATR_short/ATR_long) — vol regime indicator"),
+    ParamSpec("derived_autocorr_signed_mag_weight",   "signal.derived.autocorr_signed_mag",   0.0, 0.05, float, 0.0,
+              "L6 regime × |last_return| — momentum strength conditional on regime"),
+    ParamSpec("derived_vol_regime_shift_weight",      "signal.derived.vol_regime_shift",      0.0, 0.05, float, 0.0,
+              "L6 ATR_short/ATR_long − 1 (linear sibling of log_atr_ratio)"),
+    ParamSpec("derived_flow_disagreement_weight",     "signal.derived.flow_disagreement",     0.0, 0.05, float, 0.0,
+              "L6 flow × spot_flow — positive when CLOB and spot agree, negative when they fight"),
+    ParamSpec("derived_distance_atr_ratio_weight",    "signal.derived.distance_atr_ratio",    0.0, 0.05, float, 0.0,
+              "L6 tanh(distance/ATR) — bounded alternative to L1 z-score"),
+    ParamSpec("derived_time_remaining_logit_weight",  "signal.derived.time_remaining_logit",  0.0, 0.05, float, 0.0,
+              "L6 (seconds_remaining − 150)/150 — late-window asymmetry"),
+    ParamSpec("derived_liq_signed_sqrt_weight",       "signal.derived.liq_signed_sqrt",       0.0, 0.05, float, 0.0,
+              "L6 sign(liq) × min(√|liq|, 1) — softer-saturation liquidation pressure"),
+    ParamSpec("derived_prev_margin_sq_weight",        "signal.derived.prev_margin_sq",        0.0, 0.05, float, 0.0,
+              "L6 sign(prev_margin) × min((prev_margin/ATR)², 1) — non-linear prev-window carry"),
 )
 
 # ── Derived lookups (everything else imports these, not PIPELINE_PARAMS directly) ──

@@ -9,13 +9,15 @@ import numpy as np
 from scipy.special import stdtr as _stdtr
 from polybot.core.exit_boundary import ExitBoundary
 from polybot.core.returns import lag1_autocorr
+from polybot.core.derived_features import DERIVED_FEATURES, FeatureContext, L6_LOGIT_CAP
 from polybot.config.param_registry import default_for as _d
 
 if TYPE_CHECKING:
     from polybot.core.calibrator import PlattCalibrator
 
-# Regime-conditional L4: |autocorr| > threshold = real regime signal.
-_REGIME_MOMENTUM_THRESHOLD = 0.15
+# Regime-conditional L4 amplifier/dampen factors. The *threshold* separating
+# noise band from real regime is now pipeline-tunable (`regime_momentum_threshold`);
+# these per-side multipliers stay constant — they're design choices, not data-fit.
 _REGIME_MOMENTUM_AMPLIFY = 1.5
 _REGIME_MOMENTUM_DAMPEN = 0.5
 _MOMENTUM_WEIGHT_CLAMP = 0.10
@@ -23,18 +25,14 @@ _MOMENTUM_WEIGHT_CLAMP = 0.10
 # Dynamic ATR floor: max(static, FRACTION × rolling_mean). When the rolling-20
 # ATR collapses well below the long-term mean (regime shift to low vol), widen
 # the floor proportionally so L1 doesn't produce overconfident probabilities.
+# `atr_regime_shift_threshold` (0.60 default) is now pipeline-tunable.
 _ATR_HISTORY_SIZE = 20
 _ATR_FLOOR_FRACTION = 0.30
 _ATR_HISTORY_MIN_SAMPLES = 5
 _ATR_LONG_TERM_SIZE = 200
 _ATR_LONG_TERM_MIN_SAMPLES = 50
-_ATR_REGIME_SHIFT_THRESHOLD = 0.60
 
-# When holding_edge < this and time remains, hold to resolution rather than
-# scalp; the binary residual is +EV vs locking in the loss. Loss-cut still
-# fires near expiry when market collapses below entry × loss_cut_fraction.
-_DEEP_LOSS_HOLD_THRESHOLD = -0.10
-# L1 prob clip — tight enough that the final ±4 logit clamp (not this clip) is
+# L1 prob clip — tight enough that the final logit clamp (not this clip) is
 # the precision floor. Old 1e-3 clip collapsed deep-ITM precision before any
 # other layer ran; 1e-6 maps to logit ±13.8, well past the final clamp.
 _L1_CLIP = 1e-6
@@ -42,10 +40,6 @@ _L1_CLIP = 1e-6
 # Clamping at 3 removes the t_scale fallback discontinuity (was 1.0 at df ≤ 2,
 # jumping to √3 = 1.73 at df = 3).
 _MIN_STUDENT_T_DF = 3
-# L5 (prev-window margin carry) overlaps with L2 (regime × direction of last
-# 1-min return) early in a window. Dampen L5 by (1 - min(_L5_DAMP_CAP, |regime|))
-# so the orthogonal-info portion still contributes when regime is weak.
-_L5_REGIME_DAMP_CAP = 0.7
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +107,16 @@ class SignalEngine:
                  loss_cut_fraction: float | None = None,
                  loss_cut_time_s: float | None = None,
                  consensus_dead_zone: float | None = None,
-                 consensus_config: dict | None = None) -> None:
+                 consensus_config: dict | None = None,
+                 # ── Investment 2: promoted structural constants ────────────
+                 regime_momentum_threshold: float | None = None,
+                 flow_combined_cap: float | None = None,
+                 final_logit_clamp: float | None = None,
+                 deep_loss_hold_threshold: float | None = None,
+                 l5_regime_damp_cap: float | None = None,
+                 atr_regime_shift_threshold: float | None = None,
+                 # ── Investment 3: derived feature weights (default 0.0) ────
+                 derived_weights: dict[str, float] | None = None) -> None:
         # Defaults resolve from param_registry — settings.yaml drives production via _build_signal_engine.
         if min_edge is None: min_edge = _d("min_edge")
         if kelly_fraction is None: kelly_fraction = _d("kelly_fraction")
@@ -134,6 +137,12 @@ class SignalEngine:
         if loss_cut_fraction is None: loss_cut_fraction = _d("loss_cut_fraction")
         if loss_cut_time_s is None: loss_cut_time_s = _d("loss_cut_time_s")
         if consensus_dead_zone is None: consensus_dead_zone = _d("consensus_dead_zone")
+        if regime_momentum_threshold is None: regime_momentum_threshold = _d("regime_momentum_threshold")
+        if flow_combined_cap is None: flow_combined_cap = _d("flow_combined_cap")
+        if final_logit_clamp is None: final_logit_clamp = _d("final_logit_clamp")
+        if deep_loss_hold_threshold is None: deep_loss_hold_threshold = _d("deep_loss_hold_threshold")
+        if l5_regime_damp_cap is None: l5_regime_damp_cap = _d("l5_regime_damp_cap")
+        if atr_regime_shift_threshold is None: atr_regime_shift_threshold = _d("atr_regime_shift_threshold")
         self.min_edge: float = min_edge
         self.kelly_fraction: float = kelly_fraction
         self.momentum_weight: float = momentum_weight
@@ -154,6 +163,20 @@ class SignalEngine:
         self.loss_cut_fraction: float = loss_cut_fraction
         self.loss_cut_time_s: float = loss_cut_time_s
         self.consensus_dead_zone: float = consensus_dead_zone
+        # Promoted structural constants — used in compute_probability / evaluate_hold.
+        self.regime_momentum_threshold: float = regime_momentum_threshold
+        self.flow_combined_cap: float = flow_combined_cap
+        self.final_logit_clamp: float = final_logit_clamp
+        self.deep_loss_hold_threshold: float = deep_loss_hold_threshold
+        self.l5_regime_damp_cap: float = l5_regime_damp_cap
+        self.atr_regime_shift_threshold: float = atr_regime_shift_threshold
+        # L6 derived feature weights — default every entry to its registry default (0.0).
+        # `derived_weights` may supply overrides; missing entries fall back to _d(...).
+        _dw = derived_weights or {}
+        self.derived_weights: dict[str, float] = {
+            name: float(_dw.get(name, _d(f"derived_{name}_weight")))
+            for name in DERIVED_FEATURES.keys()
+        }
         self.consensus_config: dict = consensus_config or {
             "very_high_pct": 0.80, "very_high_mult": 1.3,
             "high_pct": 0.60, "high_mult": 1.0,
@@ -193,8 +216,8 @@ class SignalEngine:
         n_long = len(self._atr_long_term)
         if n_long >= _ATR_LONG_TERM_MIN_SAMPLES:
             long_term_mean = self._atr_long_term_sum / n_long
-            if long_term_mean > 0 and rolling_mean / long_term_mean < _ATR_REGIME_SHIFT_THRESHOLD:
-                regime_floor = long_term_mean * _ATR_REGIME_SHIFT_THRESHOLD * _ATR_FLOOR_FRACTION
+            if long_term_mean > 0 and rolling_mean / long_term_mean < self.atr_regime_shift_threshold:
+                regime_floor = long_term_mean * self.atr_regime_shift_threshold * _ATR_FLOOR_FRACTION
                 return max(base_floor, regime_floor)
         return base_floor
 
@@ -211,7 +234,7 @@ class SignalEngine:
         is consulted, so legacy negative-fade defaults still work unchanged.
         """
         base = abs(self.momentum_weight)
-        if abs(regime_autocorr) > _REGIME_MOMENTUM_THRESHOLD:
+        if abs(regime_autocorr) > self.regime_momentum_threshold:
             magnitude = base * _REGIME_MOMENTUM_AMPLIFY
         else:
             magnitude = base * _REGIME_MOMENTUM_DAMPEN
@@ -224,6 +247,51 @@ class SignalEngine:
     @entry_threshold.setter
     def entry_threshold(self, value: float) -> None:
         self.min_edge = value
+
+    def _apply_derived_features(self, *, atr: float, regime: float, distance: float,
+                                seconds_remaining: float, flow_signal: float,
+                                spot_flow_signal: float, liquidation_pressure: float,
+                                prev_resolution_margin: float,
+                                closes) -> float:
+        """L6 — sum non-zero-weighted derived features in logit space, capped.
+
+        Returns the additive logit contribution (0.0 if every weight is 0.0,
+        which is enforced by the call-site guard but checked here too as
+        defense-in-depth). Output magnitude bounded by L6_LOGIT_CAP.
+        """
+        # Rolling-mean snapshots from the same ATR history L1 already maintains.
+        n_short = len(self._atr_history)
+        atr_rolling_20 = (self._atr_history_sum / n_short) if n_short > 0 else 0.0
+        n_long = len(self._atr_long_term)
+        atr_long_term_mean = (self._atr_long_term_sum / n_long) if n_long > 0 else 0.0
+        if closes is not None and len(closes) >= 2 and float(closes[-2]) != 0.0:
+            last_return = float(closes[-1] - closes[-2]) / float(closes[-2])
+        else:
+            last_return = 0.0
+        ctx = FeatureContext(
+            atr=atr,
+            atr_rolling_20=atr_rolling_20,
+            atr_long_term_mean=atr_long_term_mean,
+            regime=regime,
+            last_return=last_return,
+            flow_signal=flow_signal,
+            spot_flow_signal=spot_flow_signal,
+            liquidation_pressure=liquidation_pressure,
+            prev_resolution_margin=prev_resolution_margin,
+            seconds_remaining=seconds_remaining,
+            distance=distance,
+        )
+        total = 0.0
+        for name, fn in DERIVED_FEATURES.items():
+            w = self.derived_weights.get(name, 0.0)
+            if w == 0.0:
+                continue
+            total += fn(ctx) * (w * self.logit_scale)
+        if total > L6_LOGIT_CAP:
+            return L6_LOGIT_CAP
+        if total < -L6_LOGIT_CAP:
+            return -L6_LOGIT_CAP
+        return total
 
     def compute_regime_factor(self, closes) -> float:
         """1-lag autocorr of recent returns so the regime detector and L2
@@ -284,10 +352,9 @@ class SignalEngine:
         logit_before_flow = logit_p
         logit_p += flow_signal * logit_flow_w
         logit_p += spot_flow_signal * (self.spot_flow_weight * self.logit_scale)
-        max_flow_logit = 0.35
         flow_total = logit_p - logit_before_flow
-        if abs(flow_total) > max_flow_logit:
-            logit_p = logit_before_flow + max_flow_logit * (1.0 if flow_total > 0 else -1.0)
+        if abs(flow_total) > self.flow_combined_cap:
+            logit_p = logit_before_flow + self.flow_combined_cap * (1.0 if flow_total > 0 else -1.0)
 
         # L3e — liquidation pressure
         if liquidation_pressure != 0.0:
@@ -297,7 +364,7 @@ class SignalEngine:
         # regime strength: |regime| ~1 means L2 already encodes the same drift,
         # so L5 contributes only its orthogonal-info portion.
         if prev_resolution_margin != 0.0 and atr > 0:
-            l5_damp = 1.0 - min(_L5_REGIME_DAMP_CAP, abs(regime))
+            l5_damp = 1.0 - min(self.l5_regime_damp_cap, abs(regime))
             logit_p += (math.tanh(prev_resolution_margin / max(atr, 1.0))
                         * (self.prev_margin_weight * self.logit_scale)
                         * l5_damp)
@@ -306,9 +373,23 @@ class SignalEngine:
         if indicators:
             logit_p += self.compute_momentum(indicators, regime) * logit_momentum_w
 
+        # L6 — derived feature library. Skip entirely if every weight is 0.0
+        # (default), so this layer has zero cost when the pipeline hasn't
+        # adopted any feature yet. See polybot/core/derived_features.py.
+        if any(w != 0.0 for w in self.derived_weights.values()):
+            logit_p += self._apply_derived_features(
+                atr=atr, regime=regime, distance=distance,
+                seconds_remaining=seconds_remaining,
+                flow_signal=flow_signal, spot_flow_signal=spot_flow_signal,
+                liquidation_pressure=liquidation_pressure,
+                prev_resolution_margin=prev_resolution_margin,
+                closes=closes,
+            )
+
         # Hard-clamp total logit to prevent any single day's signal stack from
         # producing absurd probabilities (e.g., 0.998 on a cascade of aligned signals).
-        logit_p = max(-4.0, min(4.0, logit_p))
+        clamp = self.final_logit_clamp
+        logit_p = max(-clamp, min(clamp, logit_p))
 
         prob_up = 1.0 / (1.0 + math.exp(-logit_p))
         self.last_raw_prob_up = prob_up
@@ -358,9 +439,9 @@ class SignalEngine:
             + _s("obv") * w.get("obv", 0.15)
         )
 
-        if regime_autocorr > _REGIME_MOMENTUM_THRESHOLD:
+        if regime_autocorr > self.regime_momentum_threshold:
             score = -mean_revert + trend_confirm
-        elif regime_autocorr < -_REGIME_MOMENTUM_THRESHOLD:
+        elif regime_autocorr < -self.regime_momentum_threshold:
             score = mean_revert + _REGIME_MOMENTUM_DAMPEN * trend_confirm
         else:
             score = _REGIME_MOMENTUM_DAMPEN * (mean_revert + trend_confirm)
@@ -484,9 +565,9 @@ class SignalEngine:
                     f"(entered at {entry_price:.2f}) with only {seconds_remaining:.0f}s left, "
                     f"BTC {btc_dist:.0f} from strike (>0.5×ATR={0.5*atr_for_cut:.0f})")
 
-        # Past _DEEP_LOSS_HOLD_THRESHOLD the binary residual beats scalping the loss.
+        # Past self.deep_loss_hold_threshold the binary residual beats scalping the loss.
         # Skipped on profitable positions (market > entry) so a price spike still exits.
-        if (holding_edge < _DEEP_LOSS_HOLD_THRESHOLD
+        if (holding_edge < self.deep_loss_hold_threshold
                 and (entry_price <= 0 or market_price_for_side < entry_price)):
             return ("HOLD", model_prob, holding_edge,
                     f"holding to resolution — deeply underwater but better odds holding than selling now")

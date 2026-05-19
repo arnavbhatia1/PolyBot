@@ -1,7 +1,6 @@
 """Regime-conditional momentum weight + dynamic ATR floor."""
 from polybot.core.signal_engine import (
     SignalEngine,
-    _REGIME_MOMENTUM_THRESHOLD,
     _REGIME_MOMENTUM_AMPLIFY,
     _REGIME_MOMENTUM_DAMPEN,
     _MOMENTUM_WEIGHT_CLAMP,
@@ -19,6 +18,13 @@ def _engine(mw: float = -0.02, min_atr: float = 8.0) -> SignalEngine:
         min_model_probability=0.58,
         min_atr=min_atr,
     )
+
+
+# `regime_momentum_threshold` was promoted from a module constant to an instance
+# attribute (Investment 2). Tests reference the live engine attribute so the
+# threshold can be tuned through settings.yaml without breaking the asserts.
+def _threshold(eng: SignalEngine) -> float:
+    return eng.regime_momentum_threshold
 
 
 # --- Regime-conditional momentum --------------------------------------------------
@@ -43,7 +49,8 @@ def test_momentum_magnitude_amplified_in_mean_reverting_regime():
 
 def test_momentum_magnitude_dampened_when_autocorr_in_noise_band():
     eng = _engine(mw=-0.02)
-    for rho in [0.0, 0.10, -0.10, _REGIME_MOMENTUM_THRESHOLD]:
+    thresh = _threshold(eng)
+    for rho in [0.0, thresh - 0.05, -(thresh - 0.05), thresh]:
         result = eng.effective_momentum_weight(regime_autocorr=rho)
         assert result == 0.02 * _REGIME_MOMENTUM_DAMPEN
 

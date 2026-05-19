@@ -1,22 +1,22 @@
 {
   "per_indicator": {
     "rsi": {
-      "accuracy": 0.5571,
-      "bullish_accuracy": 0.5651,
-      "bearish_accuracy": 0.5504,
-      "sample_size": 6898
+      "accuracy": 0.5578,
+      "bullish_accuracy": 0.5641,
+      "bearish_accuracy": 0.5527,
+      "sample_size": 7002
     },
     "macd": {
-      "accuracy": 0.5566,
-      "bullish_accuracy": 0.5533,
-      "bearish_accuracy": 0.5595,
-      "sample_size": 5437
+      "accuracy": 0.5567,
+      "bullish_accuracy": 0.5562,
+      "bearish_accuracy": 0.5573,
+      "sample_size": 5525
     },
     "stochastic": {
       "accuracy": 0.5634,
-      "bullish_accuracy": 0.5639,
-      "bearish_accuracy": 0.5629,
-      "sample_size": 6367
+      "bullish_accuracy": 0.5625,
+      "bearish_accuracy": 0.5643,
+      "sample_size": 6454
     },
     "obv": {
       "accuracy": 0.6383,
@@ -25,80 +25,80 @@
       "sample_size": 47
     },
     "vwap": {
-      "accuracy": 0.5613,
-      "bullish_accuracy": 0.5609,
-      "bearish_accuracy": 0.5616,
-      "sample_size": 6268
+      "accuracy": 0.562,
+      "bullish_accuracy": 0.5624,
+      "bearish_accuracy": 0.5617,
+      "sample_size": 6366
     }
   },
   "side_analysis": {
     "up": {
-      "win_rate": 0.5687,
-      "avg_gain_pct": 0.102577,
-      "count": 3680
+      "win_rate": 0.5691,
+      "avg_gain_pct": 0.10026,
+      "count": 3790
     },
     "down": {
-      "win_rate": 0.5486,
-      "avg_gain_pct": 0.076645,
-      "count": 3810
+      "win_rate": 0.5484,
+      "avg_gain_pct": 0.076603,
+      "count": 3811
     }
   },
   "edge_calibration": {
     "4-8%": {
-      "win_rate": 0.5616,
-      "count": 2427
+      "win_rate": 0.563,
+      "count": 2446
     },
     "8-12%": {
-      "win_rate": 0.5753,
-      "count": 2456
+      "win_rate": 0.5743,
+      "count": 2497
     },
     "12-20%": {
-      "win_rate": 0.5397,
-      "count": 2607
+      "win_rate": 0.5403,
+      "count": 2658
     }
   },
   "time_patterns": {
     "0-60s": {
-      "win_rate": 0.6111,
-      "count": 378
+      "win_rate": 0.6005,
+      "count": 388
     },
     "60-180s": {
-      "win_rate": 0.5554,
-      "count": 1689
+      "win_rate": 0.5558,
+      "count": 1702
     },
     "180-300s": {
-      "win_rate": 0.5558,
-      "count": 5423
+      "win_rate": 0.5567,
+      "count": 5511
     }
   },
   "volatility_patterns": {
     "low_atr": {
-      "win_rate": 0.5563,
-      "count": 2497
+      "win_rate": 0.5568,
+      "count": 2534
     },
     "mid_atr": {
-      "win_rate": 0.5639,
-      "count": 2497
+      "win_rate": 0.5624,
+      "count": 2534
     },
     "high_atr": {
-      "win_rate": 0.5553,
-      "count": 2496
+      "win_rate": 0.557,
+      "count": 2533
     }
   },
   "overall": {
-    "total_trades": 7490,
-    "win_rate": 0.5585,
-    "avg_edge": 0.1079,
-    "avg_gain_pct": 0.089386,
-    "sharpe": 0.1119
+    "total_trades": 7601,
+    "win_rate": 0.5587,
+    "avg_edge": 0.108,
+    "avg_gain_pct": 0.088399,
+    "sharpe": 0.1111
   },
   "by_regime": {
     "neutral": {
-      "n": 6936,
-      "win_rate": 0.5593,
-      "sharpe": 0.1134,
-      "avg_edge": 0.1078,
-      "avg_gain_pct": 0.09131
+      "n": 7042,
+      "win_rate": 0.5595,
+      "sharpe": 0.1125,
+      "avg_edge": 0.1079,
+      "avg_gain_pct": 0.09024
     },
     "reverting": {
       "n": 242,
@@ -108,95 +108,95 @@
       "avg_gain_pct": 0.075282
     },
     "trending": {
-      "n": 312,
-      "win_rate": 0.5288,
-      "sharpe": 0.0857,
+      "n": 317,
+      "win_rate": 0.53,
+      "sharpe": 0.086,
       "avg_edge": 0.1117,
-      "avg_gain_pct": 0.057566
+      "avg_gain_pct": 0.057514
     }
   },
   "by_entry_phase": {
     "normal": {
-      "n": 5424,
-      "win_rate": 0.5559,
-      "avg_gain_pct": 0.086866,
-      "sharpe": 0.125
+      "n": 5512,
+      "win_rate": 0.5568,
+      "avg_gain_pct": 0.086141,
+      "sharpe": 0.1243
     },
     "final": {
-      "n": 84,
-      "win_rate": 0.7143,
-      "avg_gain_pct": 0.051649,
-      "sharpe": 0.1345
+      "n": 85,
+      "win_rate": 0.7059,
+      "avg_gain_pct": 0.046705,
+      "sharpe": 0.1215
     },
     "late": {
-      "n": 1982,
-      "win_rate": 0.559,
-      "avg_gain_pct": 0.097882,
-      "sharpe": 0.094
+      "n": 2004,
+      "win_rate": 0.5579,
+      "avg_gain_pct": 0.09638,
+      "sharpe": 0.0929
     }
   },
   "flip_analysis": {
     "base": {
-      "n": 5084,
-      "win_rate": 0.5565,
-      "avg_gain_pct": 0.089601,
-      "sharpe": 0.1096
+      "n": 5167,
+      "win_rate": 0.5574,
+      "avg_gain_pct": 0.08877,
+      "sharpe": 0.109
     },
     "flip": {
-      "n": 2406,
-      "win_rate": 0.5628,
-      "avg_gain_pct": 0.088933,
-      "sharpe": 0.1174
+      "n": 2434,
+      "win_rate": 0.5616,
+      "avg_gain_pct": 0.087612,
+      "sharpe": 0.116
     }
   },
   "edge_realization_quartiles": [
-    1.239,
-    0.89,
-    0.968,
-    0.559
+    1.216,
+    0.887,
+    0.948,
+    0.554
   ],
   "time_weighted": {
     "win_rate": 0.5774,
-    "sharpe": 0.129
+    "sharpe": 0.1267
   },
   "by_sprt_confidence": {
     "low": {
-      "n": 6714,
-      "win_rate": 0.5573,
-      "avg_gain_pct": 0.093785,
-      "sharpe": 0.1137
+      "n": 6821,
+      "win_rate": 0.5577,
+      "avg_gain_pct": 0.092599,
+      "sharpe": 0.1128
     },
     "medium": {
-      "n": 404,
-      "win_rate": 0.5718,
-      "avg_gain_pct": 0.071229,
-      "sharpe": 0.1315
+      "n": 407,
+      "win_rate": 0.57,
+      "avg_gain_pct": 0.070715,
+      "sharpe": 0.1305
     },
     "high": {
-      "n": 372,
-      "win_rate": 0.5645,
-      "avg_gain_pct": 0.02972,
-      "sharpe": 0.0584
+      "n": 373,
+      "win_rate": 0.5657,
+      "avg_gain_pct": 0.030889,
+      "sharpe": 0.0607
     }
   },
   "by_adverse_selection": {
     "low": {
-      "n": 1467,
-      "win_rate": 0.5671,
-      "avg_gain_pct": 0.08046,
-      "sharpe": 0.1235
+      "n": 1496,
+      "win_rate": 0.5655,
+      "avg_gain_pct": 0.077677,
+      "sharpe": 0.1194
     },
     "medium": {
-      "n": 5557,
-      "win_rate": 0.5543,
-      "avg_gain_pct": 0.090382,
-      "sharpe": 0.1091
+      "n": 5630,
+      "win_rate": 0.5549,
+      "avg_gain_pct": 0.089681,
+      "sharpe": 0.1087
     },
     "high": {
-      "n": 466,
-      "win_rate": 0.5815,
-      "avg_gain_pct": 0.105617,
-      "sharpe": 0.1231
+      "n": 475,
+      "win_rate": 0.5832,
+      "avg_gain_pct": 0.106975,
+      "sharpe": 0.1252
     }
   }
 }

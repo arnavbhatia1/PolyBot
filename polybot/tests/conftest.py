@@ -48,12 +48,30 @@ SAMPLE_CONFIG = {
         "spot_flow_weight": 0.04,
         "liquidation_weight": 0.03,
         "prev_margin_weight": 0.02,
+        # Investment 2 — promoted structural constants
+        "regime_momentum_threshold": 0.15,
+        "flow_combined_cap": 0.35,
+        "final_logit_clamp": 4.0,
+        "deep_loss_hold_threshold": -0.10,
+        "l5_regime_damp_cap": 0.7,
+        "atr_regime_shift_threshold": 0.60,
         "weights": {
             "rsi": 0.20,
             "macd": 0.25,
             "stochastic": 0.20,
             "obv": 0.15,
             "vwap": 0.20,
+        },
+        # Investment 3 — L6 derived weights (all 0.0 = layer inert)
+        "derived": {
+            "log_atr_ratio": 0.0,
+            "autocorr_signed_mag": 0.0,
+            "vol_regime_shift": 0.0,
+            "flow_disagreement": 0.0,
+            "distance_atr_ratio": 0.0,
+            "time_remaining_logit": 0.0,
+            "liq_signed_sqrt": 0.0,
+            "prev_margin_sq": 0.0,
         },
     },
     "entry_timing": {

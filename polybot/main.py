@@ -287,6 +287,13 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
         loss_cut_time_s=signal_cfg.get("loss_cut_time_s", _d("loss_cut_time_s")),
         consensus_dead_zone=signal_cfg.get("consensus_dead_zone", _d("consensus_dead_zone")),
         consensus_config=signal_cfg.get("consensus"),
+        regime_momentum_threshold=signal_cfg.get("regime_momentum_threshold", _d("regime_momentum_threshold")),
+        flow_combined_cap=signal_cfg.get("flow_combined_cap", _d("flow_combined_cap")),
+        final_logit_clamp=signal_cfg.get("final_logit_clamp", _d("final_logit_clamp")),
+        deep_loss_hold_threshold=signal_cfg.get("deep_loss_hold_threshold", _d("deep_loss_hold_threshold")),
+        l5_regime_damp_cap=signal_cfg.get("l5_regime_damp_cap", _d("l5_regime_damp_cap")),
+        atr_regime_shift_threshold=signal_cfg.get("atr_regime_shift_threshold", _d("atr_regime_shift_threshold")),
+        derived_weights=signal_cfg.get("derived") or {},
     )
 
 
@@ -1896,7 +1903,12 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     _mode_label = "LIVE" if not isinstance(trader, PaperTrader) else "PAPER"
     _bankroll = await db.get_bankroll()
     _cal = signal_engine.calibrator
-    _cal_str = f"Platt a={_cal.a:.3f} b={_cal.b:.3f}" if _cal is not None else "uncalibrated"
+    if _cal is None:
+        _cal_str = "uncalibrated"
+    elif getattr(_cal, "is_identity", True):
+        _cal_str = "identity"
+    else:
+        _cal_str = f"isotonic knots={_cal.n_knots} Δll={_cal.log_loss_improvement:+.4f}"
     def _f(feed: Any) -> str: return "OK" if feed is not None else "--"
     _sep = "═" * 60
     logger.info(

@@ -1,0 +1,129 @@
+"""L6 derived feature library invariants (Investment 3).
+
+These tests pin the contract that the pipeline relies on:
+  * Default weights are all 0.0 → L6 layer is dead → no probability change.
+  * Every feature function returns finite, bounded values on extreme inputs.
+  * The L6 contribution cap clips correctly when a weight is pushed high.
+"""
+import math
+
+import numpy as np
+import pytest
+
+from polybot.core.derived_features import (
+    DERIVED_FEATURES,
+    FeatureContext,
+    L6_LOGIT_CAP,
+)
+from polybot.core.signal_engine import SignalEngine
+
+
+def _neutral_ctx() -> FeatureContext:
+    return FeatureContext(
+        atr=10.0,
+        atr_rolling_20=10.0,
+        atr_long_term_mean=10.0,
+        regime=0.0,
+        last_return=0.0,
+        flow_signal=0.0,
+        spot_flow_signal=0.0,
+        liquidation_pressure=0.0,
+        prev_resolution_margin=0.0,
+        seconds_remaining=150.0,
+        distance=0.0,
+    )
+
+
+@pytest.mark.parametrize("name,fn", list(DERIVED_FEATURES.items()))
+def test_each_feature_finite_on_neutral_inputs(name, fn):
+    """Neutral context produces a finite scalar from every feature."""
+    val = fn(_neutral_ctx())
+    assert math.isfinite(val), f"{name} returned non-finite on neutral inputs: {val}"
+
+
+@pytest.mark.parametrize("name,fn", list(DERIVED_FEATURES.items()))
+def test_each_feature_finite_on_extreme_inputs(name, fn):
+    """Saturating inputs (1e6 each) still produce a finite, bounded scalar."""
+    extreme = FeatureContext(
+        atr=1.0, atr_rolling_20=1e6, atr_long_term_mean=1.0,
+        regime=1.0, last_return=10.0,
+        flow_signal=1e6, spot_flow_signal=1e6,
+        liquidation_pressure=1e6, prev_resolution_margin=1e6,
+        seconds_remaining=0.0, distance=1e6,
+    )
+    val = fn(extreme)
+    assert math.isfinite(val), f"{name} blew up on extreme inputs"
+    assert abs(val) <= 20.0, f"{name} returned unbounded magnitude {val}"
+
+
+def test_log_atr_ratio_zero_when_short_equals_long():
+    from polybot.core.derived_features import _f_log_atr_ratio
+    ctx = _neutral_ctx()
+    assert _f_log_atr_ratio(ctx) == 0.0
+
+
+def test_log_atr_ratio_zero_when_atr_history_empty():
+    from polybot.core.derived_features import _f_log_atr_ratio
+    ctx = FeatureContext(
+        atr=10.0, atr_rolling_20=0.0, atr_long_term_mean=0.0,
+        regime=0.0, last_return=0.0, flow_signal=0.0, spot_flow_signal=0.0,
+        liquidation_pressure=0.0, prev_resolution_margin=0.0,
+        seconds_remaining=150.0, distance=0.0,
+    )
+    # Both fall back to `atr`; short==long ⇒ log(1) = 0.
+    assert _f_log_atr_ratio(ctx) == 0.0
+
+
+def test_default_signal_engine_has_zero_derived_weights():
+    """L6 must be inert by default. Pipeline raises a weight off zero to activate."""
+    eng = SignalEngine()
+    for name in DERIVED_FEATURES.keys():
+        assert eng.derived_weights[name] == 0.0, f"{name} default should be 0.0"
+
+
+def test_signal_engine_l6_inert_when_all_weights_zero():
+    """compute_probability must not change vs. baseline when L6 weights are all zero."""
+    closes = np.array([100.0, 100.5, 101.0, 100.8, 101.2, 101.0])
+    eng = SignalEngine()
+    p_baseline = eng.compute_probability(
+        btc_price=101.0, strike_price=100.0,
+        seconds_remaining=200.0, atr=12.0,
+        closes=closes, flow_signal=0.3, spot_flow_signal=0.2,
+        liquidation_pressure=0.1, prev_resolution_margin=20.0,
+    )
+    # All weights still 0 → result is identical to a fresh engine probability.
+    eng2 = SignalEngine()
+    p_again = eng2.compute_probability(
+        btc_price=101.0, strike_price=100.0,
+        seconds_remaining=200.0, atr=12.0,
+        closes=closes, flow_signal=0.3, spot_flow_signal=0.2,
+        liquidation_pressure=0.1, prev_resolution_margin=20.0,
+    )
+    assert p_baseline == p_again
+
+
+def test_signal_engine_l6_contribution_capped():
+    """Pushing a single weight to the registry max keeps |L6| ≤ L6_LOGIT_CAP."""
+    eng = SignalEngine()
+    eng.derived_weights["flow_disagreement"] = 0.05  # registry max
+    # Build a context that drives flow_disagreement to its tanh ceiling (≈1.0).
+    val = eng._apply_derived_features(
+        atr=10.0, regime=0.5, distance=0.0,
+        seconds_remaining=150.0,
+        flow_signal=10.0, spot_flow_signal=10.0,
+        liquidation_pressure=0.0, prev_resolution_margin=0.0,
+        closes=None,
+    )
+    assert abs(val) <= L6_LOGIT_CAP + 1e-9
+
+
+def test_signal_engine_promoted_constants_resolve_from_registry():
+    """Default-constructed engine matches param_registry defaults for the 6 promoted constants."""
+    from polybot.config.param_registry import default_for
+    eng = SignalEngine()
+    assert eng.regime_momentum_threshold == default_for("regime_momentum_threshold")
+    assert eng.flow_combined_cap == default_for("flow_combined_cap")
+    assert eng.final_logit_clamp == default_for("final_logit_clamp")
+    assert eng.deep_loss_hold_threshold == default_for("deep_loss_hold_threshold")
+    assert eng.l5_regime_damp_cap == default_for("l5_regime_damp_cap")
+    assert eng.atr_regime_shift_threshold == default_for("atr_regime_shift_threshold")

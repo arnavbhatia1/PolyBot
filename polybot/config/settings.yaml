@@ -74,6 +74,31 @@ signal:
     obv: 0.15
     vwap: 0.2
 
+  # =============================================================================
+  #  STRUCTURAL CONSTANTS - shape params, pipeline-tunable
+  # =============================================================================
+  regime_momentum_threshold: 0.15   # |autocorr| above this → real regime (L2/L4)
+  flow_combined_cap: 0.35           # max combined L3+L3b logit per tick
+  final_logit_clamp: 4.0            # ±N clamp on stacked logit before sigmoid
+  deep_loss_hold_threshold: -0.10   # below this holding_edge → hold to resolution
+  l5_regime_damp_cap: 0.7           # max regime damp on L5
+  atr_regime_shift_threshold: 0.60  # ATR_short/ATR_long below this widens floor
+
+  # =============================================================================
+  #  DERIVED FEATURES (L6) - default 0.0 = layer is dead
+  # =============================================================================
+  # Pipeline raises any of these off zero to switch the corresponding L6
+  # feature on. Each contribution is bounded; total L6 capped at ±0.25 logits.
+  derived:
+    log_atr_ratio: 0.0
+    autocorr_signed_mag: 0.0
+    vol_regime_shift: 0.0
+    flow_disagreement: 0.0
+    distance_atr_ratio: 0.0
+    time_remaining_logit: 0.0
+    liq_signed_sqrt: 0.0
+    prev_margin_sq: 0.0
+
   # Consensus sizing: how much to scale bet when all flow signals agree
   consensus_dead_zone: 0.05
   consensus:

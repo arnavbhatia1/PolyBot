@@ -155,6 +155,18 @@ Note: exit_edge_threshold, normal_fraction, late_max_penalty, flip_edge_premium 
 pipeline-tunable — propose them in `changes` with predicted_delta_sharpe_7d, backed by
 counterfactual_analysis / time_patterns / flip outcomes as you would any other tunable.
 
+## Newly pipeline-tunable structural constants
+regime_momentum_threshold, flow_combined_cap, final_logit_clamp, deep_loss_hold_threshold,
+l5_regime_damp_cap, atr_regime_shift_threshold. These shape the signal stack; small
+steps only. Each has a tight range — see CLAMP_RANGES in context.
+
+## Derived feature weights (L6)
+Eight `derived_<name>_weight` parameters (all default 0.0). Each turns on a feature
+listed in polybot/core/derived_features.py. Raise off zero ONLY with bias-bucket
+evidence the corresponding feature would have helped — never random walk. Hard
+contribution cap of ±0.25 logits across the combined L6 layer means more than two
+features active at >0.02 will saturate.
+
 ## Response (return ONLY valid JSON, no fences):
 {
   "changes": [

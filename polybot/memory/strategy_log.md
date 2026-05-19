@@ -684,3 +684,25 @@
 - Q4 edge realization at 0.56 persists as structural overconfidence at high-conviction entries, but every addressable parameter (kelly_fraction, logit_scale, min_edge) has failed in both directions — root cause may be model architecture rather than tunable params.
 
 **Reasoning:** With every backtestable parameter family tested across multiple values and directions — all failing to clear even the minimal 0.0086 adoption floor — and the one live adoption producing -0.167 Sharpe decay, empty changes is the only defensible position this cycle. Win rate and Sharpe are explicitly IMPROVING per trend buckets, meaning intervention now risks disrupting a natural recovery. The exit_edge_threshold manual observation at 37% accuracy in the <-0.10 bucket (n=1552, ~10× noise) remains the single highest-confidence actionable lever and is correctly routed to the operator.
+
+## 2026-05-19T13:40:19.898771+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - atr_sigma_ratio=1.35 (exploratory up step)
+  - spot_flow_weight=0.09 (exploratory down step)
+  - regime_momentum_threshold=0.17 (exploratory up step)
+  - flow_combined_cap=0.4 (exploratory up step)
+  - final_logit_clamp=3.75 (exploratory down step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
