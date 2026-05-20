@@ -2467,60 +2467,13 @@ async def main() -> None:
         # Sync DB bankroll with real Polymarket balance (fetched during preflight)
         await db.set_bankroll(live_balance)
 
-        # Reconcile DB-open positions against actual Polymarket share holdings.
-        # If a buy filled but the DB write was lost (rare crash window), or if a
-        # share was settled on-chain but the DB still shows it open, surface the
-        # mismatch loudly so the operator can intervene before more trades happen.
         try:
-            from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
-            db_open = await db.get_open_positions()
-            mismatches: list[str] = []
-            for pos in db_open:
-                snap = pos.get("indicator_snapshot") or "{}"
-                try:
-                    ctx = json.loads(snap).get("trade_context", {}) if isinstance(snap, str) else {}
-                except (ValueError, TypeError):
-                    ctx = {}
-                # token_id wasn't always stored historically — skip those, can't reconcile
-                token_id = ctx.get("token_id_up") if pos.get("side") == "Up" else ctx.get("token_id_down")
-                if not token_id:
-                    continue
-                expected_shares = float(pos.get("shares_held") or 0)
-                try:
-                    bal = trader.client.get_balance_allowance(
-                        BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
-                    )
-                    actual_shares = int(bal.get("balance", "0")) / 1e6
-                except Exception as e:
-                    logger.warning(
-                        f"Reconciliation: could not fetch shares for position {pos['id']} "
-                        f"({pos['market_id']}): {e}"
-                    )
-                    continue
-                # 5% tolerance — fees and rounding are normal
-                if expected_shares > 0 and abs(actual_shares - expected_shares) / expected_shares > 0.05:
-                    mismatches.append(
-                        f"position {pos['id']} ({pos['market_id']}, {pos['side']}): "
-                        f"DB expects {expected_shares:.4f} shares, Polymarket has {actual_shares:.4f}"
-                    )
-            if mismatches:
-                msg = "STARTUP RECONCILIATION MISMATCH:\n  " + "\n  ".join(mismatches)
-                logger.error(msg)
-                if alert_manager:
-                    try:
-                        await alert_manager.send_error(msg[:1900])
-                    except Exception:
-                        pass
-            else:
-                logger.info(f"Startup reconciliation OK: {len(db_open)} open position(s) match Polymarket")
-        except Exception as e:
-            logger.warning(f"Startup position reconciliation failed (non-blocking): {e}")
-
-        # Sweep on-chain dust from recently-closed positions.
+            if hasattr(trader, "reconcile_open"):
+                await trader.reconcile_open(db)
             if hasattr(trader, "reconcile_dust"):
                 await trader.reconcile_dust(db, max_age_hours=24)
         except Exception as e:
-            logger.warning(f"Dust reconciliation failed (non-blocking): {e}")
+            logger.warning(f"Startup reconciliation failed (non-blocking): {e}")
 
     # CLOB WebSocket — real-time order book feed
     clob_ws_url = market_cfg.get("clob_ws_url", "wss://ws-subscriptions-clob.polymarket.com/ws/market")

@@ -7,6 +7,7 @@ import logging
 import os
 import random
 import time
+from collections import deque
 from typing import Any
 from py_clob_client_v2.client import ClobClient
 from py_clob_client_v2.clob_types import (
@@ -79,6 +80,29 @@ from pathlib import Path as _Path
 from datetime import datetime as _dt, timezone as _tz
 
 _FILL_STATS_PATH = _Path("polybot/memory/fill_stats.json")
+_LATENCY_STATS_PATH = _Path("polybot/memory/latency_stats.json")
+_LATENCY_SAMPLES: deque[float] = deque(maxlen=200)
+
+def _record_submit_latency(seconds: float) -> None:
+    try:
+        _LATENCY_SAMPLES.append(seconds)
+        if len(_LATENCY_SAMPLES) < 5:
+            return
+        s = sorted(_LATENCY_SAMPLES)
+        n = len(s)
+        p50 = s[n // 2]
+        p99 = s[max(0, int(n * 0.99) - 1)]
+        stats = {
+            "n": n,
+            "p50_ms": round(p50 * 1000, 1),
+            "p99_ms": round(p99 * 1000, 1),
+            "max_ms": round(s[-1] * 1000, 1),
+            "last_updated": _dt.now(_tz.utc).isoformat(),
+        }
+        _LATENCY_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _LATENCY_STATS_PATH.write_text(_json.dumps(stats, indent=2))
+    except Exception:
+        pass
 
 
 def _update_fill_stats(filled: bool, side: str) -> None:
@@ -618,6 +642,53 @@ class LiveTrader(BaseTrader):
             logger.info("Dust reconciliation: no residuals found in last %dh", max_age_hours)
         return swept
 
+    async def reconcile_open(self, db: Database) -> int:
+        changed = 0
+        try:
+            positions = await db.get_open_positions()
+        except Exception as e:
+            logger.warning("Reconcile open: DB read failed: %s", e)
+            return 0
+        for pos in positions:
+            try:
+                snap = _json.loads(pos.get("indicator_snapshot") or "{}")
+                ctx = snap.get("trade_context", {}) if isinstance(snap, dict) else {}
+                tok = ctx.get("token_id_up") if pos.get("side") == "Up" else ctx.get("token_id_down")
+                if not tok:
+                    continue
+                chain_shares = await self._get_token_balance(tok)
+                db_shares = float(pos.get("shares_held") or 0.0)
+                if chain_shares <= _DUST_THRESHOLD_SHARES and db_shares > _DUST_THRESHOLD_SHARES:
+                    logger.warning(
+                        "Reconcile: position %d (%s %s) chain=%.4f db=%.4f - closing DB to match chain",
+                        pos["id"], pos.get("market_id"), pos.get("side"), chain_shares, db_shares,
+                    )
+                    await db.conn.execute(
+                        "UPDATE positions SET status='closed', exit_price=0, exit_timestamp=? WHERE id=?",
+                        (_dt.now(_tz.utc).isoformat(), pos["id"]),
+                    )
+                    await db.conn.commit()
+                    changed += 1
+                elif chain_shares > _DUST_THRESHOLD_SHARES and abs(chain_shares - db_shares) > 0.5:
+                    logger.warning(
+                        "Reconcile: position %d (%s %s) chain=%.4f db=%.4f - updating shares to match chain",
+                        pos["id"], pos.get("market_id"), pos.get("side"), chain_shares, db_shares,
+                    )
+                    await db.conn.execute(
+                        "UPDATE positions SET shares_held=? WHERE id=?",
+                        (chain_shares, pos["id"]),
+                    )
+                    await db.conn.commit()
+                    changed += 1
+            except Exception as e:
+                logger.debug("Reconcile open row %s skipped: %s", pos.get("id"), e)
+                continue
+        if changed:
+            logger.warning("Reconcile open: %d position(s) synced to chain", changed)
+        else:
+            logger.info("Reconcile open: all positions match chain")
+        return changed
+
     # -- FOK order submission with retry ------------------------------------
 
     async def _submit_fok_order(
@@ -685,7 +756,9 @@ class LiveTrader(BaseTrader):
                     return self.client.post_order(
                         self.client.create_market_order(order_args), OrderType.FOK
                     )
+                _lat_t0 = time.perf_counter()
                 resp = await loop.run_in_executor(self._sign_executor, _sign_and_post, mo)
+                _record_submit_latency(time.perf_counter() - _lat_t0)
 
                 if not resp.get("success"):
                     error_msg = resp.get("errorMsg", "unknown error")
