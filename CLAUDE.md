@@ -13,14 +13,14 @@ All layers compose in logit space (except L1's CDF), then sigmoid + isotonic cal
 - **L3e** — Bybit OI drop × price direction, normalized to %/minute using `oi_updated - oi_updated_prev`. tanh saturation `× 8` per minute (5%/min → 0.38, 10%/min → 0.66, 15%/min → 0.83 — softer than the old `× 20` on raw drop).
 - **L4** — RSI/MACD/Stoch/OBV/VWAP. Polarity-split: mean-revert group (RSI/Stoch/VWAP) vs trend-confirm group (MACD/OBV). Per-group multiplier is a smooth `tanh(autocorr / regime_momentum_threshold)` curve between three anchors (strong-trend / neutral / strong-revert) — no cliff at the threshold, so a tick at 0.149 vs 0.151 no longer flips three indicators' signs. Magnitude scaler from `effective_momentum_weight` is unsigned, also smoothed via tanh between DAMPEN (0.5×) and AMPLIFY (1.5×), clamped ±0.10.
 - **L5** — `tanh(prev_margin/atr) · prev_margin_weight · logit_scale · (1 − min(l5_regime_damp_cap, |regime|))`. Dampened by regime strength to orthogonalize with L2 early in the window. `l5_regime_damp_cap` default 0.7, pipeline-tunable.
-- **L6 — derived feature library.** Closed library of bounded transforms of already-tracked state (see `polybot/core/derived_features.py`). Every weight defaults to 0.0; the layer is dead until the pipeline raises one off zero. Combined L6 contribution hard-capped at ±0.25 logits regardless of individual weights.
-- **Calibration (isotonic)** — sole overconfidence correction. Class name is legacy (`PlattCalibrator`); internals are isotonic regression. Fit on last 7d of trades (not the global walk-forward split; needs ≥125 trades in window or skips entirely; train split ≥75 to fit). Identity by default. Adoption requires the bootstrap-CI lower bound (100 resamples, lower 80%) of weighted log-loss improvement vs identity to exceed 0 — accounts for the step-function variance of isotonic on thin pools.
+- **L6 — derived feature library.** Closed library of bounded transforms of already-tracked state (see `polybot/core/derived_features.py`). Every weight defaults to 0.0; the layer is dead until the pipeline raises one off zero. Combined L6 contribution hard-capped at ±0.25 logits regardless of individual weights — and `claude_client` validator drops any L6 weight change set whose `sum(|w|) · logit_scale` would push past that cap, so the optimizer can't search above adoptable space.
+- **Calibration (isotonic) — `IsotonicCalibrator`** — sole overconfidence correction. Fit on last 7d of trades (not the global walk-forward split; needs ≥125 trades in window or skips entirely; train split ≥75 to fit). Identity by default. Adoption requires the bootstrap-CI lower bound (100 resamples, lower 80%) of weighted log-loss improvement vs identity to exceed 0 — accounts for the step-function variance of isotonic on thin pools.
 
 L3+L3b combined capped at ±`flow_combined_cap` (default 0.35) logits. Final logit clamped ±`final_logit_clamp` (default 4.0) → prob ∈ [0.018, 0.982]. Both caps pipeline-tunable.
 
 ## Entry Gates
 
-`prob ≥ 0.56`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_30s ≤ adverse_selection_threshold` (30-min lookback, Bayesian-shrunk to a neutral prior so the gate stays active in low-volume hours). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP, low-confidence after 2+ obs, or favored-side mismatch > 30%. ATR gate: lower-bound only (`atr < 5th pctile`).
+`prob ≥ 0.56`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_at_30s ≤ adverse_selection_threshold` (30s post-fill checkpoint over a 30-min lookback, Bayesian-shrunk to a neutral prior so the gate stays active in low-volume hours), `mean_decay_15s ≥ edge_decay_threshold` (signed mean post-fill drift; default −0.05, inactive until ≥5 resolved fills in the lookback). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP, low-confidence after 2+ obs, or favored-side mismatch (SPRT's accumulated favored side differs from current proposal when confidence > 60% with ≥6 obs). ATR gate: lower-bound only (`atr < 5th pctile`).
 
 ## Sizing & Exit
 
@@ -44,7 +44,7 @@ L3+L3b combined capped at ±`flow_combined_cap` (default 0.35) logits. Final log
 - `verify_auth`: `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER`, USDC balance + allowance ≥ `max_single × max_concurrent × 10`. Allowance re-checked every 10 fills mid-session.
 - `open_position_and_debit_bankroll` / `close_position(... bankroll_delta=... | new_bankroll=...)`: atomic SQLite tx (single close path; pass `bankroll_delta` for relative credit, `new_bankroll` to set absolute on resolution).
 - Auth errors → `AuthError` → clean exit; `run_polybot.ps1` won't auto-restart on auth.
-- Feed staleness skip: Coinbase >30s, Chainlink >30s.
+- Feed staleness skip: Coinbase >30s, Chainlink >60s, Binance aggTrade >30s (L3b CVD/taker), Bybit OI >60s (L3e liquidation).
 - Chainlink orphan fallback: Gamma silent 30+ min past expiry.
 - CLOB WS heartbeat: PING every 10s, force reconnect if no PONG within 25s.
 - `fill.fill_size` is always USDC notional (BUY: requested; SELL: shares × fill_price).
@@ -80,7 +80,7 @@ polybot/
 - **L6 derived feature weights (Investment 3 — added 2026-05-19, default 0.0):** `derived_log_atr_ratio_weight`, `derived_autocorr_signed_mag_weight`, `derived_vol_regime_shift_weight`, `derived_flow_disagreement_weight`, `derived_distance_atr_ratio_weight`, `derived_time_remaining_logit_weight`, `derived_liq_signed_sqrt_weight`, `derived_prev_margin_sq_weight`. Each 0.0–0.05; combined L6 contribution hard-capped at ±0.25 logits. Library is closed — see `polybot/core/derived_features.py`.
 
 **Manual-only** (claude_client validator reroutes `changes` → `manual_observations`):
-`exit_edge_threshold`, `loss_cut_*`, `max_edge`, `adverse_selection_threshold`, `normal_fraction`, `late_max_penalty`, `flip_*`, `trading_*`, `max_concurrent_positions`, `max_bankroll_deployed`, `circuit_breaker.*`, `indicators.*`, `sprt.*`.
+`exit_edge_threshold`, `loss_cut_*`, `max_edge`, `adverse_selection_threshold`, `edge_decay_threshold`, `normal_fraction`, `late_max_penalty`, `flip_*`, `trading_*`, `max_concurrent_positions`, `max_bankroll_deployed`, `circuit_breaker.*`, `indicators.*`, `sprt.*`.
 
 ## Running
 
@@ -120,7 +120,7 @@ Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older 
 - **L6 derived feature library is closed.** New entries require a code change in `polybot/core/derived_features.py` plus a ParamSpec; never generated at runtime.
 - **Per-trade telemetry stamped at open, persisted at close:**
   - `trade_context.calibrator_hash` — 12-char digest (or `"identity"`) of the calibration curve live at fill time, so backtests can stratify by calibrator-in-effect across the 60-day window.
-  - `edge_decay.deltas` — side-signed post-fill mid drift at 5/10/15/30/60s (positive = market moved in our favor). Captured by `AdverseSelectionMonitor` keyed by `position_id` and merged into the outcome JSON at close. Null windows = trade closed before that checkpoint resolved.
+  - `edge_decay.deltas` — side-signed post-fill mid drift at 5/10/15/30/60s (positive = market moved in our favor). Captured by `AdverseSelectionMonitor` keyed by `position_id` and merged into the outcome JSON at close. The 15s mean over a 30-min lookback drives the live `edge_decay_threshold` entry gate. Null windows = trade closed before that checkpoint resolved.
 
 ## What NOT to Change
 

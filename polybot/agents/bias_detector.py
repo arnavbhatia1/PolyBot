@@ -393,7 +393,10 @@ class BiasDetector:
         wins: dict[str, int] = {"low": 0, "medium": 0, "high": 0}
         for o in outcomes:
             ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
-            rate = float(ctx.get("adverse_selection_30s", 0.5) or 0.5)
+            rate = float(
+                ctx.get("adverse_rate_at_30s",
+                        ctx.get("adverse_selection_30s", 0.5)) or 0.5
+            )
             if rate < 0.40:
                 k = "low"
             elif rate <= 0.60:
@@ -694,7 +697,8 @@ class BiasDetector:
         total_wins = sum(1 for g in all_resolved if g.get("ghost_correct", False))
 
         # Gates where LOW win_rate is expected/good — filtering informed flow.
-        PROTECTIVE_GATES = {"adverse_rate_30s", "adverse_selection", "adverse_selection_30s"}
+        PROTECTIVE_GATES = {"adverse_rate_at_30s", "adverse_rate_30s",
+                            "adverse_selection", "adverse_selection_30s"}
 
         by_gate_result: dict[str, Any] = {}
         for gate, records in by_gate.items():

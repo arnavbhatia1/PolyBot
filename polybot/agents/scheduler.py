@@ -1,6 +1,6 @@
 """Orchestrates the nightly learning pipeline.
 
-Runs BiasDetector, Platt calibration (with recency-weighted MLE), distribution shift
+Runs BiasDetector, Isotonic calibration (with recency-weighted MLE), distribution shift
 detection, SPRT aggregation, TA Evolver (Claude), and WeightOptimizer in sequence.
 Adopts parameter changes only when they pass: z = Δ_sharpe / JK_SE >= 0.3 (autocorr
 adjusted, no static abs floor), n >= 100 candidate trades, regime-stratified Sharpe
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     """Human-readable nightly pipeline result — logged and sent to Discord."""
     wi: dict[str, Any] = pipeline_info.get("weights", {}) or {}
-    platt: dict[str, Any] = pipeline_info.get("platt", {}) or {}
+    calibration: dict[str, Any] = pipeline_info.get("calibration", {}) or {}
     source = pipeline_info.get("source", "?")
     _now = datetime.now(timezone.utc)
     ts = f"{_now.strftime('%b')} {_now.day}, {_now.strftime('%Y  %H:%M UTC')}"
@@ -81,21 +81,21 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
         reason = wi.get("reason", "all parameter combinations tested, none cleared the bar")
         lines.append(f"  No parameter changes — {reason}")
 
-    # Platt calibration
-    p_dec = platt.get("decision", "skipped")
+    # Isotonic calibration
+    p_dec = calibration.get("decision", "skipped")
     if p_dec in ("adopted", "rejected", "reverted"):
-        id_loss = platt.get("identity_loss")
-        cur_loss = platt.get("current_loss")
-        new_loss = platt.get("new_loss")
-        id_sharpe = platt.get("identity_sharpe")
-        new_sharpe = platt.get("new_sharpe")
-        reason = platt.get("reason", "")
+        id_loss = calibration.get("identity_loss")
+        cur_loss = calibration.get("current_loss")
+        new_loss = calibration.get("new_loss")
+        id_sharpe = calibration.get("identity_sharpe")
+        new_sharpe = calibration.get("new_sharpe")
+        reason = calibration.get("reason", "")
         # Loss string: identity → current → new
         if id_loss and cur_loss and new_loss:
             loss_str = f"log-loss (lower=better):  identity {id_loss:.3f}  →  current {cur_loss:.3f}  →  new {new_loss:.3f}"
         else:
             loss_str = ""
-        cur_sharpe = platt.get("current_sharpe")
+        cur_sharpe = calibration.get("current_sharpe")
         sharpe_str = (f"  |  sizing:  identity {id_sharpe:.3f}  →  current {cur_sharpe:.3f}  →  new {new_sharpe:.3f}"
                       if id_sharpe is not None and cur_sharpe is not None and new_sharpe is not None else "")
         if p_dec == "adopted":
@@ -106,7 +106,7 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
             lines.append(f"  Calibration:  kept existing  —  {reason}"
                          + (f"  |  {loss_str}{sharpe_str}" if loss_str else ""))
     elif p_dec == "skipped":
-        reason = platt.get("reason", "")
+        reason = calibration.get("reason", "")
         lines.append(f"  Calibration:  skipped" + (f" — {reason}" if reason else ""))
 
     # Manual actions needed
@@ -818,10 +818,10 @@ class AgentScheduler:
                                     outcomes: list[dict[str, Any]]) -> list[float]:
         """Kelly-sized portfolio returns under candidate recommendations.
 
-        Uses ``self.signal_engine.calibrator`` — which is the *just-adopted* Platt for
-        this cycle, since Platt fitting + adoption runs earlier in the pipeline (see
+        Uses ``self.signal_engine.calibrator`` — which is the *just-adopted* Isotonic for
+        this cycle, since Isotonic fitting + adoption runs earlier in the pipeline (see
         `run_daily_pipeline`). So calibration is part of the optimization loop: every
-        cycle, Platt is re-fit on the train split and adopted if it improves
+        cycle, isotonic is re-fit on the train split and adopted if it improves
         Kelly-Sharpe on the holdout, then weight backtests run against that fresh
         calibrator. Within a single weight backtest the calibrator is held fixed
         (one variable at a time), but across cycles both layers are continually
@@ -1703,46 +1703,46 @@ class AgentScheduler:
                 analysis["ghost_analysis"] = self.bias_detector.analyze_ghosts(resolved_ghosts)
                 pass  # rolled into [2/4] summary below
 
-        # Platt re-fit. Gate: new fit must beat current on log-loss (full 7d pool) by ≥0.010
+        # Isotonic re-fit. Gate: new fit must beat current on log-loss (full 7d pool) by ≥0.010
         # AND not hurt Kelly-Sharpe vs identity on holdout.
-        platt_info: dict[str, Any] = {"decision": "skipped"}
+        cal_info: dict[str, Any] = {"decision": "skipped"}
         from polybot.agents.weight_optimizer import _sharpe
-        from polybot.core.calibrator import PlattCalibrator, compute_log_loss
-        MIN_PLATT_VALIDATION_TRADES = 50
-        _pending_cal_save: PlattCalibrator | None = None
-        _PLATT_WINDOW_DAYS = 7
-        _platt_cutoff = datetime.now(timezone.utc).timestamp() - _PLATT_WINDOW_DAYS * 86400.0
+        from polybot.core.calibrator import IsotonicCalibrator, compute_log_loss
+        MIN_CAL_VALIDATION_TRADES = 50
+        _pending_cal_save: IsotonicCalibrator | None = None
+        _CAL_WINDOW_DAYS = 7
+        _cal_cutoff = datetime.now(timezone.utc).timestamp() - _CAL_WINDOW_DAYS * 86400.0
         def _ts(o: dict) -> float:
             s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
             try:
                 return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
             except Exception:
                 return 0.0
-        _platt_pool = [o for o in all_outcomes if _ts(o) >= _platt_cutoff]
-        if len(_platt_pool) >= 125:
-            _split = max(1, int(len(_platt_pool) * 0.6))
-            platt_train = _platt_pool[:_split]
-            platt_val = _platt_pool[_split:]
+        _cal_pool = [o for o in all_outcomes if _ts(o) >= _cal_cutoff]
+        if len(_cal_pool) >= 125:
+            _split = max(1, int(len(_cal_pool) * 0.6))
+            cal_train = _cal_pool[:_split]
+            cal_val = _cal_pool[_split:]
             logger.info(
-                f"  Platt window: last {_PLATT_WINDOW_DAYS}d "
-                f"({len(platt_train)} train / {len(platt_val)} val)"
+                f"  Isotonic window: last {_CAL_WINDOW_DAYS}d "
+                f"({len(cal_train)} train / {len(cal_val)} val)"
             )
         else:
-            platt_train = []
-            platt_val = []
-            platt_info["reason"] = (
-                f"only {len(_platt_pool)} trades in last {_PLATT_WINDOW_DAYS}d (need 125) — skipping calibration"
+            cal_train = []
+            cal_val = []
+            cal_info["reason"] = (
+                f"only {len(_cal_pool)} trades in last {_CAL_WINDOW_DAYS}d (need 125) — skipping calibration"
             )
             logger.info(
-                f"  Platt window: only {len(_platt_pool)} trades in last {_PLATT_WINDOW_DAYS}d — skipping calibration"
+                f"  Isotonic window: only {len(_cal_pool)} trades in last {_CAL_WINDOW_DAYS}d — skipping calibration"
             )
 
-        if len(platt_train) >= 75 and self.signal_engine:
+        if len(cal_train) >= 75 and self.signal_engine:
             cal_probs: list[float] = []
             cal_outcomes: list[int] = []
             cal_weights: list[float] = []
-            platt_now_ts = datetime.now(timezone.utc).timestamp()
-            for o in platt_train:
+            cal_now_ts = datetime.now(timezone.utc).timestamp()
+            for o in cal_train:
                 ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
                 mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
                 if mp <= 0:
@@ -1751,22 +1751,22 @@ class AgentScheduler:
                 cal_outcomes.append(1 if o.get("correct", False) else 0)
                 ts2 = o.get("exit_timestamp", o.get("timestamp", ""))
                 try:
-                    t2 = datetime.fromisoformat(ts2.replace("Z", "+00:00")).timestamp() if ts2 else platt_now_ts
-                    w2 = RECENCY_DECAY_PER_DAY ** max(0.0, (platt_now_ts - t2) / 86400.0)
+                    t2 = datetime.fromisoformat(ts2.replace("Z", "+00:00")).timestamp() if ts2 else cal_now_ts
+                    w2 = RECENCY_DECAY_PER_DAY ** max(0.0, (cal_now_ts - t2) / 86400.0)
                 except Exception:
                     w2 = 1.0
                 cal_weights.append(w2)
 
             if len(cal_probs) >= 75:
-                cal = PlattCalibrator()
-                # Note: PlattCalibrator is now isotonic-backed (see calibrator.py).
+                cal = IsotonicCalibrator()
+                # IsotonicCalibrator: monotone isotonic regression (see calibrator.py).
                 # Isotonic is non-parametric — no warm start from previous fit.
                 if cal.fit(cal_probs, cal_outcomes, min_samples=75, sample_weights=cal_weights):
                     # Log-loss on full 7-day pool (more data = more reliable calibration signal).
                     # Hierarchy: identity (no-cal) → current (live) → new (today's fit).
                     # Each tier should beat the one below it.
                     all_pool_probs, all_pool_outs = [], []
-                    for o in _platt_pool:
+                    for o in _cal_pool:
                         ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
                         mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
                         if mp > 0:
@@ -1784,7 +1784,7 @@ class AgentScheduler:
                     # Kelly-Sharpe on holdout only (sizing sanity check).
                     cfg = self._config_for_helper()
                     helper_kwargs = dict(
-                        outcomes=platt_val,
+                        outcomes=cal_val,
                         recommended_weights=cfg["weights"],
                         momentum_weight=cfg["momentum_weight"],
                         atr_sigma_ratio=cfg["atr_sigma_ratio"],
@@ -1815,7 +1815,7 @@ class AgentScheduler:
                     current_sharpe = _sharpe(current_returns)
 
                     LOG_LOSS_FLOOR = 0.010
-                    platt_info = {
+                    cal_info = {
                         "identity_loss": round(identity_loss, 4) if all_pool_probs else None,
                         "current_loss": round(current_loss, 4) if all_pool_probs else None,
                         "new_loss": round(new_loss_full, 4) if all_pool_probs else None,
@@ -1828,7 +1828,7 @@ class AgentScheduler:
                         "log_loss_improvement": round(cal.log_loss_improvement, 4),
                     }
 
-                    insufficient = len(new_returns) < MIN_PLATT_VALIDATION_TRADES
+                    insufficient = len(new_returns) < MIN_CAL_VALIDATION_TRADES
                     # Gate 1: new fit must beat current on log-loss by ≥ 0.010
                     new_beats_current = (not (math.isnan(new_loss_full) or math.isnan(current_loss))
                                          and new_loss_full < current_loss - LOG_LOSS_FLOOR)
@@ -1840,8 +1840,8 @@ class AgentScheduler:
                                                     and cur_cal and not getattr(cur_cal, 'is_identity', False))
 
                     if insufficient:
-                        platt_info["decision"] = "rejected"
-                        platt_info["reason"] = f"only {len(new_returns)} validation trades (need {MIN_PLATT_VALIDATION_TRADES})"
+                        cal_info["decision"] = "rejected"
+                        cal_info["reason"] = f"only {len(new_returns)} validation trades (need {MIN_CAL_VALIDATION_TRADES})"
                     elif current_worse_than_identity:
                         # Current calibrator hurts accuracy vs identity. Try the new fit first —
                         # it may already beat identity directly, skipping the revert step.
@@ -1849,62 +1849,62 @@ class AgentScheduler:
                                                    and new_loss_full < identity_loss - LOG_LOSS_FLOOR)
                         new_beats_identity_sharpe = new_sharpe >= identity_sharpe
                         if new_beats_identity_loss and new_beats_identity_sharpe:
-                            platt_info["decision"] = "adopted"
-                            platt_info["reason"] = (f"current calibrator (loss={current_loss:.3f}) worse than identity "
+                            cal_info["decision"] = "adopted"
+                            cal_info["reason"] = (f"current calibrator (loss={current_loss:.3f}) worse than identity "
                                                     f"(loss={identity_loss:.3f}); new fit beats identity — upgrading directly")
                             _pending_cal_save = cal
                             self.signal_engine.calibrator = cal
                             self._baseline_kelly_sharpe = None
                             self._baseline_n_trades = None
                             self._baseline_jk_se = None
-                            logger.info(f"Platt adopted (bypassing bad current): loss {identity_loss:.4f} → {new_loss_full:.4f}, "
+                            logger.info(f"Isotonic adopted (bypassing bad current): loss {identity_loss:.4f} → {new_loss_full:.4f}, "
                                         f"sharpe {identity_sharpe:.4f} → {new_sharpe:.4f}")
                         else:
-                            identity_cal = PlattCalibrator(a=-1.0, b=0.0)
+                            identity_cal = IsotonicCalibrator()  # unfitted == identity
                             _pending_cal_save = identity_cal
                             self.signal_engine.calibrator = identity_cal
-                            platt_info["decision"] = "reverted"
-                            platt_info["reason"] = (f"current calibrator (loss={current_loss:.3f}) worse than "
+                            cal_info["decision"] = "reverted"
+                            cal_info["reason"] = (f"current calibrator (loss={current_loss:.3f}) worse than "
                                                     f"identity (loss={identity_loss:.3f}); new fit also doesn't beat identity — reverting")
-                            logger.warning(f"Platt reverted to identity: current loss {current_loss:.4f} > identity {identity_loss:.4f}")
+                            logger.warning(f"Isotonic reverted to identity: current loss {current_loss:.4f} > identity {identity_loss:.4f}")
                     elif new_beats_current and sizing_ok:
                         # New fit beats current on accuracy AND doesn't hurt sizing — adopt
-                        platt_info["decision"] = "adopted"
+                        cal_info["decision"] = "adopted"
                         _pending_cal_save = cal
                         self.signal_engine.calibrator = cal
                         self._baseline_kelly_sharpe = None
                         self._baseline_n_trades = None
                         self._baseline_jk_se = None
-                        logger.debug(f"Platt adopted: loss {current_loss:.4f} → {new_loss_full:.4f} "
+                        logger.debug(f"Isotonic adopted: loss {current_loss:.4f} → {new_loss_full:.4f} "
                                      f"(identity {identity_loss:.4f}), sharpe {identity_sharpe:.4f} → {new_sharpe:.4f}")
                     elif new_beats_current and not sizing_ok:
-                        platt_info["decision"] = "rejected"
-                        platt_info["reason"] = (f"new fit improves accuracy (loss {current_loss:.3f}→{new_loss_full:.3f}) "
+                        cal_info["decision"] = "rejected"
+                        cal_info["reason"] = (f"new fit improves accuracy (loss {current_loss:.3f}→{new_loss_full:.3f}) "
                                                 f"but hurts sizing vs current ({new_sharpe:.3f} < {current_sharpe:.3f})")
                     else:
-                        platt_info["decision"] = "rejected"
+                        cal_info["decision"] = "rejected"
                         gap = current_loss - new_loss_full if not math.isnan(new_loss_full) else 0
-                        platt_info["reason"] = (f"new fit doesn't beat current by enough "
+                        cal_info["reason"] = (f"new fit doesn't beat current by enough "
                                                 f"(loss gap {gap:+.4f}, need -{LOG_LOSS_FLOOR})")
         # Diagnostic log of rejected isotonic fits (kept for telemetry; no
         # de-dup logic any more since each isotonic fit is fully data-driven).
-        if platt_info.get("decision") == "rejected" and "n_knots" in platt_info:
+        if cal_info.get("decision") == "rejected" and "n_knots" in cal_info:
             _pr_path = _Path("polybot/memory/calibration/platt_rejected.json")
             try:
                 _pr = _json.loads(_pr_path.read_text()) if _pr_path.exists() else []
                 _pr.append({
-                    "n_knots": platt_info["n_knots"],
-                    "log_loss_improvement": platt_info["log_loss_improvement"],
-                    "reason": platt_info.get("reason", ""),
+                    "n_knots": cal_info["n_knots"],
+                    "log_loss_improvement": cal_info["log_loss_improvement"],
+                    "reason": cal_info.get("reason", ""),
                 })
                 _pr_path.write_text(_json.dumps(_pr[-30:], indent=2))  # keep last 30
             except Exception:
                 pass
 
-        pipeline_info["platt"] = platt_info
+        pipeline_info["calibration"] = cal_info
         # Expose Platt meta-check (raw-vs-calibrated) so Claude sees the diagnostic
-        if platt_info.get("meta_warning"):
-            analysis["platt_meta_warning"] = platt_info["meta_warning"]
+        if cal_info.get("meta_warning"):
+            analysis["cal_meta_warning"] = cal_info["meta_warning"]
 
         # SPRT aggregate evidence
         from polybot.agents.pipeline_analytics import aggregate_sprt_evidence, format_trends
@@ -2077,15 +2077,15 @@ class AgentScheduler:
 
             weight_info = await self._run_weight_optimizer(recommendations, opt_outcomes, pipeline_source=source, holdout_outcomes=holdout_outcomes)
             # Commit point: weight optimizer has persisted its config changes,
-            # so it's now safe to flush the Platt calibrator to disk. Doing
+            # so it's now safe to flush the isotonic calibrator to disk. Doing
             # this AFTER weights means a crash at any earlier step leaves the
-            # old Platt + old weights on disk (coherent) rather than the new
+            # old calibrator + old weights on disk (coherent) rather than the new
             # Platt + old weights (mismatched).
             if _pending_cal_save is not None:
                 try:
                     _pending_cal_save.save()
                 except Exception as e:
-                    logger.error(f"Failed to persist Platt calibrator: {e}")
+                    logger.error(f"Failed to persist isotonic calibrator: {e}")
         pipeline_info["weights"] = weight_info
 
         # All-time stats

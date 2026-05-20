@@ -502,6 +502,19 @@ async def _evaluate_signal_and_enter(
         stale_feeds.append(f"coinbase={coinbase_feed.state.age_seconds:.0f}s")
     if chainlink_feed and chainlink_feed.age_seconds > 60:
         stale_feeds.append(f"chainlink={chainlink_feed.age_seconds:.0f}s")
+    # Binance aggTrade WS feeds L3b (CVD + taker ratio). High-frequency stream:
+    # >30s of silence in active hours means the WS dropped and L3b is reading a
+    # frozen accumulator. Same skip behaviour as Coinbase.
+    if trades_feed is not None and trades_feed.accumulator is not None:
+        binance_age = trades_feed.accumulator.latest_age_s
+        if binance_age > 30:
+            stale_feeds.append(f"binance_trades={binance_age:.0f}s")
+    # Bybit OI underpins L3e (liquidation pressure). Updates ~5s normally;
+    # >60s of silence means we'd be reading a frozen OI snapshot.
+    if bybit_feed is not None and bybit_feed.state.oi_updated > 0:
+        bybit_age = time.time() - bybit_feed.state.oi_updated
+        if bybit_age > 60:
+            stale_feeds.append(f"bybit_oi={bybit_age:.0f}s")
     if stale_feeds:
         _record_skip("stale_feed")
         _log_skip_once(cid, f"stale_{cid}", f"SKIP: stale feeds — {', '.join(stale_feeds)}")
@@ -637,6 +650,25 @@ async def _evaluate_signal_and_enter(
                 logger.debug(
                     f"SKIP adverse selection — fade rate {adverse_rate:.0%} > {adverse_threshold:.0%}"
                 )
+            return None, last_eval_log_window
+
+    # --- EDGE DECAY GATE ---
+    # Mean side-signed mid drift in the 15s window after recent fills. The
+    # adverse_selection gate above counts fills crossing the wrong way; this
+    # gate measures HOW HARD they cross. A consistently negative drift means
+    # quotes are repositioning against us faster than we can scalp out — a
+    # direct read on whether the structural edge has decayed.
+    if _adverse_monitor is not None:
+        edge_decay_threshold = config.get("signal", {}).get("edge_decay_threshold", -0.05)
+        recent_decay = _adverse_monitor.get_recent_decay_mean(window_s=15.0, lookback_s=1800.0,
+                                                              min_samples=5)
+        if recent_decay is not None and recent_decay < edge_decay_threshold:
+            _record_skip("edge_decay")
+            _ghost("edge_decay", signal, {})
+            _emit_gate_skip(
+                cid, "edge_decay",
+                f"15s post-fill drift {recent_decay:+.3f} < {edge_decay_threshold:+.3f}"
+            )
             return None, last_eval_log_window
 
     # --- EDGE CAP GATE ---
@@ -870,7 +902,7 @@ async def _evaluate_signal_and_enter(
         "market_price_down": price_down,
         "model_probability": signal.prob,
         # Pre-calibrator P(side). Stored separately from `model_probability` so the
-        # next pipeline cycle's Platt re-fit sees raw probabilities, not Platt(Platt(...)).
+        # next pipeline cycle's isotonic re-fit sees raw probabilities, not calibrate(calibrate(...)).
         "model_probability_raw": (
             signal_engine.last_raw_prob_up if side == "Up"
             else 1.0 - signal_engine.last_raw_prob_up
@@ -896,8 +928,10 @@ async def _evaluate_signal_and_enter(
         # SPRT diagnostic state (consumed by pipeline_analytics.aggregate_sprt_evidence)
         "sprt_confidence": _sprt.get_confidence() if _sprt else 0,
         "sprt_status": _sprt.get_status() if _sprt else "N/A",
-        # Adverse-selection rolling state (gate diagnostic)
-        "adverse_selection_30s": _adverse_monitor.get_adverse_rate(30.0) if _adverse_monitor else 0.5,
+        # Adverse-selection rolling state (gate diagnostic). Field name reads as
+        # "fraction of fills that moved against us measured AT 30s post-fill" over
+        # the monitor's 30-minute lookback — 30s is the checkpoint, not the lookback.
+        "adverse_rate_at_30s": _adverse_monitor.get_adverse_rate(30.0) if _adverse_monitor else 0.5,
         # Which calibrator was live at fill time — lets the pipeline stratify
         # outcomes by calibrator-in-effect so the 7d calibration window and
         # 60d backtest window don't blend trades decided under different curves.
@@ -2171,8 +2205,8 @@ async def run_pipeline() -> None:
 
     signal_engine = _build_signal_engine(signal_cfg, config)
 
-    from polybot.core.calibrator import PlattCalibrator
-    calibrator = PlattCalibrator()
+    from polybot.core.calibrator import IsotonicCalibrator
+    calibrator = IsotonicCalibrator()
     _cal_path = Path(base_dir) / "memory" / "calibration" / "platt_params.json"
     calibrator.load(_cal_path)
     signal_engine.calibrator = calibrator
@@ -2327,12 +2361,12 @@ async def main() -> None:
     )
 
     # Signal engine — probability model with edge-based entry
-    from polybot.core.calibrator import PlattCalibrator
+    from polybot.core.calibrator import IsotonicCalibrator
 
     signal_engine = _build_signal_engine(signal_cfg, config)
 
-    # Load Platt calibrator (identity if file doesn't exist)
-    calibrator = PlattCalibrator()
+    # Load isotonic calibrator (identity if file doesn't exist)
+    calibrator = IsotonicCalibrator()
     _cal_path = Path(base_dir) / "memory" / "calibration" / "platt_params.json"
     calibrator.load(_cal_path)
     signal_engine.calibrator = calibrator

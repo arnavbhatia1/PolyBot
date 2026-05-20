@@ -13,7 +13,7 @@ from polybot.core.derived_features import DERIVED_FEATURES, FeatureContext, L6_L
 from polybot.config.param_registry import default_for as _d
 
 if TYPE_CHECKING:
-    from polybot.core.calibrator import PlattCalibrator
+    from polybot.core.calibrator import IsotonicCalibrator
 
 # Regime-conditional L4 amplifier/dampen factors. The *threshold* separating
 # noise band from real regime is now pipeline-tunable (`regime_momentum_threshold`);
@@ -93,7 +93,7 @@ class SignalEngine:
     L1 Student-t CDF, L2 regime autocorr, L3 CLOB flow, L3b spot CVD,
     L3e Bybit OI liquidation, L4 indicator momentum, L5 prev-window carry,
     L6 derived feature library, plus isotonic calibration (class name is legacy
-    `PlattCalibrator`). Trades when |model - market| >= min_edge. Isotonic
+    `IsotonicCalibrator`). Trades when |model - market| >= min_edge. Isotonic
     re-fit each pipeline cycle is the sole overconfidence correction.
     """
 
@@ -103,7 +103,7 @@ class SignalEngine:
                  student_t_df: int | None = None, regime_weight: float | None = None,
                  flow_weight: float | None = None, regime_lookback: int | None = None,
                  min_kelly: float | None = None, atr_sigma_ratio: float | None = None,
-                 calibrator: PlattCalibrator | None = None,
+                 calibrator: IsotonicCalibrator | None = None,
                  spot_flow_weight: float | None = None,
                  prev_margin_weight: float | None = None,
                  min_atr: float | None = None,
@@ -292,7 +292,7 @@ class SignalEngine:
                             spot_flow_signal: float = 0.0,
                             prev_resolution_margin: float = 0.0,
                             liquidation_pressure: float = 0.0) -> float:
-        """P(Up) at expiry — Student-t CDF + logit-space layer adjustments + Platt."""
+        """P(Up) at expiry — Student-t CDF + logit-space layer adjustments + isotonic."""
         if atr <= 0 or seconds_remaining <= 0:
             return 0.5
 

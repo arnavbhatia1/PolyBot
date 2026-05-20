@@ -87,7 +87,7 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
     L3e liquidation pressure (Bybit OI drop × direction)
     L5  prev-window margin (tanh-normalized by ATR)
     L4  indicator momentum (RSI/MACD/Stoch/OBV/VWAP — weakest signal)
-  Then Platt calibration (re-fit each cycle on the train split) is the sole
+  Then isotonic calibration (re-fit each cycle on the train split) is the sole
   overconfidence correction.
 
   Edge = model_prob - market_price. Entry needs edge >= min_edge AND Kelly >= min_kelly.
@@ -406,6 +406,44 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
 
     data["changes"] = validated_changes
 
+    # L6 cap constraint: weights live in a bounded layer (combined output clamped
+    # to ±L6_LOGIT_CAP). The optimizer searches in unconstrained weight space, so
+    # a proposed set with sum(|w_i|) * logit_scale > L6_LOGIT_CAP would be silently
+    # clipped at runtime — the optimizer's expected Sharpe would not match deployed
+    # behavior. Reject the L6 change set this cycle when its union with live values
+    # would exceed headroom; the next cycle can propose smaller weights.
+    try:
+        from polybot.core.derived_features import DERIVED_FEATURES, L6_LOGIT_CAP
+        _logit_scale = float(cfg.get("logit_scale", _d("logit_scale")))
+        _l6_pending: dict[str, float] = {}
+        _l6_change_indices: list[int] = []
+        for idx, ch in enumerate(data["changes"]):
+            p = ch.get("param", "")
+            if p.startswith("derived_") and p.endswith("_weight"):
+                _fname = p[len("derived_"):-len("_weight")]
+                _l6_pending[_fname] = float(ch.get("value", 0.0))
+                _l6_change_indices.append(idx)
+        if _l6_pending:
+            _l6_live = {
+                fname: float(_cfg_get(cfg, f"signal.derived.{fname}") or 0.0)
+                for fname in DERIVED_FEATURES.keys()
+            }
+            _l6_merged = {**_l6_live, **_l6_pending}
+            _l6_sum = sum(abs(w) for w in _l6_merged.values())
+            _l6_max_contrib = _l6_sum * _logit_scale
+            if _l6_max_contrib > L6_LOGIT_CAP:
+                logger.warning(
+                    "L6 weight set would exceed cap: sum(|w|)*logit_scale=%.3f > L6_LOGIT_CAP=%.3f. "
+                    "Dropping %d proposed derived weight change(s) this cycle.",
+                    _l6_max_contrib, L6_LOGIT_CAP, len(_l6_change_indices),
+                )
+                data["changes"] = [
+                    ch for i, ch in enumerate(data["changes"])
+                    if i not in set(_l6_change_indices)
+                ]
+    except Exception as _e:
+        logger.debug(f"L6 cap constraint check skipped: {_e}")
+
     # Validate manual_observations: strict evidence bar. Silently drop any that fail.
     # Each must have a manual-only param, an evidence dict with n >= 50, and a direction.
     # Rerouted entries (flagged above) are allowed through with confidence="low" so the
@@ -666,7 +704,7 @@ def _section_counterfactual(ana: dict[str, Any]) -> str:
             f"→ HOLDING TOO LONG: scalp would have added value. "
             f"exit_edge_threshold is manual-only — the actionable finding is that "
             f"the entry-side model is OVERCONFIDENT (positions look good at entry "
-            f"but decay). Raise atr_sigma_ratio (wider L1 sigma) — Platt will then "
+            f"but decay). Raise atr_sigma_ratio (wider L1 sigma) — the isotonic calibrator will then"
             f"recalibrate next cycle."
         )
     else:
@@ -676,7 +714,7 @@ def _section_counterfactual(ana: dict[str, Any]) -> str:
     hedge_acc = cf.get("holding_edge_accuracy", {})
     if hedge_acc:
         lines.append("\nScalp accuracy by holding_edge at exit (diagnostic — exit_edge_threshold is MANUAL-ONLY):")
-        lines.append("  If accuracy <50% across buckets, the entry model is overconfident — Platt re-fit will compensate next cycle.")
+        lines.append("  If accuracy <50% across buckets, the entry model is overconfident — isotonic re-fit will compensate next cycle.")
         for bucket, stats in hedge_acc.items():
             lines.append(
                 f"  {bucket:>16}: {stats.get('scalp_accuracy', 0):.0%} accuracy "
@@ -964,7 +1002,7 @@ def _section_adverse_selection(ana: dict[str, Any]) -> str:
         return ""
     lines = [
         "## Adverse Selection at Entry",
-        "WR by adverse_selection_30s rate (low <0.40 / medium 0.40-0.60 / high >0.60):",
+        "WR by adverse_rate_at_30s (rate of fills moving against us at 30s post-fill; low <0.40 / medium 0.40-0.60 / high >0.60):",
         "If high-rate entries underperform, adverse_selection_threshold should be tightened.",
     ]
     for bucket in ("low", "medium", "high"):
@@ -1109,15 +1147,15 @@ def _section_per_change_results(ana: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _section_platt_meta(ana: dict[str, Any]) -> str:
-    # Platt meta-check: raw model vs current calibrator (surfaced only when close)
-    platt_meta = ana.get("platt_meta_warning", "")
-    if not platt_meta:
+def _section_cal_meta(ana: dict[str, Any]) -> str:
+    # Calibrator meta-check: raw model vs current calibrator (surfaced only when close)
+    cal_meta = ana.get("cal_meta_warning", "")
+    if not cal_meta:
         return ""
     return (
-        f"## Platt Calibration Meta-Warning\n{platt_meta}\n"
-        f"If this persists across cycles, the operator may drop Platt entirely — "
-        f"do not propose calibrator-dependent changes assuming Platt is load-bearing."
+        f"## Calibration Meta-Warning\n{cal_meta}\n"
+        f"If this persists across cycles, the operator may drop the isotonic calibrator — "
+        f"do not propose calibrator-dependent changes assuming it is load-bearing."
     )
 
 
@@ -1195,7 +1233,7 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         _section_adoption_target(context),
         _section_cumulative_failures(ana),
         _section_per_change_results(ana),
-        _section_platt_meta(ana),
+        _section_cal_meta(ana),
         _section_pipeline_track_record(ana),
         _section_decay_analysis(ana),
         _section_prediction_accuracy(ana),

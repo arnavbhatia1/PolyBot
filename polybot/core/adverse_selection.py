@@ -223,6 +223,40 @@ class AdverseSelectionMonitor:
         prior_n, prior_rate = 10, 0.5
         return (prior_n * prior_rate + adverse) / (prior_n + total)
 
+    def get_recent_decay_mean(self, window_s: float = 15.0, lookback_s: float = 1800.0,
+                              min_samples: int = 5) -> float | None:
+        """Mean side-signed post-fill drift at ``window_s`` over the last ``lookback_s``.
+
+        Positive return = market drifted in our favor on average; negative = drifted
+        against us (edge decay / adverse selection bleeding through). Returns
+        ``None`` when fewer than ``min_samples`` resolved checkpoints exist — the
+        caller should treat that as "gate inactive" rather than substitute a prior,
+        since this measures a directional drift and the natural neutral prior 0
+        is on the same scale as a real signal.
+        """
+        now = time.time()
+        deltas: list[float] = []
+        for fill in self._fills:
+            if now - fill.timestamp > lookback_s:
+                continue
+            if window_s <= 5.0:
+                post = fill.midprice_5s
+            elif window_s <= 10.0:
+                post = fill.midprice_10s
+            elif window_s <= 15.0:
+                post = fill.midprice_15s
+            elif window_s <= 30.0:
+                post = fill.midprice_30s
+            else:
+                post = fill.midprice_60s
+            if post is None:
+                continue
+            sign = 1.0 if fill.side == "Up" else -1.0
+            deltas.append((post - fill.midprice_at_fill) * sign)
+        if len(deltas) < min_samples:
+            return None
+        return sum(deltas) / len(deltas)
+
     def get_stats(self) -> dict:
         """Return summary stats for logging/pipeline."""
         return {

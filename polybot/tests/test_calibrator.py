@@ -1,4 +1,4 @@
-"""PlattCalibrator (isotonic-backed) — calibration semantics and persistence.
+"""IsotonicCalibrator (isotonic-backed) — calibration semantics and persistence.
 
 Class name is legacy; internals are isotonic regression. Tests pin the
 contract every caller depends on:
@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from polybot.core.calibrator import PlattCalibrator, compute_log_loss
+from polybot.core.calibrator import IsotonicCalibrator, compute_log_loss
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +22,7 @@ from polybot.core.calibrator import PlattCalibrator, compute_log_loss
 # ---------------------------------------------------------------------------
 
 def test_default_is_identity():
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     assert cal.is_identity
     assert cal.n_knots == 0
     assert cal.log_loss_improvement == 0.0
@@ -34,16 +34,16 @@ def test_state_hash_identity_then_fit():
     """state_hash distinguishes identity from fitted, and matches across instances
     fitted on the same data — so per-trade stratification can group trades by the
     calibration curve that was live at fill time."""
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     assert cal.state_hash == "identity"
 
     rng = np.random.default_rng(0)
     probs = list(rng.uniform(0.3, 0.7, 250))
     outcomes = [1 if p + rng.normal(0, 0.2) > 0.5 else 0 for p in probs]
 
-    a = PlattCalibrator()
+    a = IsotonicCalibrator()
     a.fit(probs, outcomes, min_samples=150)
-    b = PlattCalibrator()
+    b = IsotonicCalibrator()
     b.fit(probs, outcomes, min_samples=150)
     assert a.state_hash != "identity"
     assert a.state_hash == b.state_hash  # determinism
@@ -51,14 +51,14 @@ def test_state_hash_identity_then_fit():
     rng2 = np.random.default_rng(7)
     probs2 = list(rng2.uniform(0.2, 0.8, 250))
     outcomes2 = [1 if p > 0.55 else 0 for p in probs2]
-    c = PlattCalibrator()
+    c = IsotonicCalibrator()
     c.fit(probs2, outcomes2, min_samples=150)
     assert c.state_hash != a.state_hash  # different fit -> different hash
 
 
 def test_calibrate_clips_inputs():
     """Inputs outside (eps, 1-eps) get clipped but never raise."""
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     # At identity, the clip still returns the (clipped) raw — finite.
     assert 0.0 <= cal.calibrate(0.0) <= 1.0
     assert 0.0 <= cal.calibrate(1.0) <= 1.0
@@ -69,7 +69,7 @@ def test_calibrate_clips_inputs():
 # ---------------------------------------------------------------------------
 
 def test_fit_requires_min_samples():
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     probs = [0.6] * 50
     outcomes = [1] * 30 + [0] * 20
     assert cal.fit(probs, outcomes) is False
@@ -77,7 +77,7 @@ def test_fit_requires_min_samples():
 
 
 def test_fit_returns_false_below_threshold_with_explicit_min():
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     probs = [0.6] * 74
     outcomes = [1] * 40 + [0] * 34
     assert cal.fit(probs, outcomes, min_samples=75) is False
@@ -95,7 +95,7 @@ def test_fit_rejects_when_calibration_no_better_than_identity():
     # Perfectly-calibrated: P(outcome=1 | prob=p) = p
     probs = list(np.random.uniform(0.05, 0.95, n))
     outcomes = [int(np.random.random() < p) for p in probs]
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     # With well-calibrated data, isotonic gain should be ≤ noise floor → reject.
     # Allow either decision (depending on RNG luck), but if rejected, must be identity.
     fitted = cal.fit(probs, outcomes, min_samples=100)
@@ -105,7 +105,7 @@ def test_fit_rejects_when_calibration_no_better_than_identity():
 
 def test_fit_adopts_on_clearly_biased_data():
     """Overconfident model — every raw prob is 0.80 but actual win rate is 50%."""
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     probs = [0.80] * 200
     outcomes = [1] * 100 + [0] * 100
     assert cal.fit(probs, outcomes, min_samples=75) is True
@@ -116,7 +116,7 @@ def test_fit_adopts_on_clearly_biased_data():
 
 def test_fit_pulls_overconfident_predictions_down():
     """Stronger bias: 90% probs, 50% true rate. Isotonic must shift 0.9 → ~0.5."""
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     np.random.seed(1)
     probs = [0.90] * 200
     outcomes = [1] * 100 + [0] * 100
@@ -128,7 +128,7 @@ def test_fit_pulls_overconfident_predictions_down():
 def test_fit_monotonic_across_probability_levels():
     """For binary outcomes that genuinely increase with raw prob, isotonic
     output must also increase monotonically across the input range."""
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     np.random.seed(2)
     n_per_bucket = 50
     probs: list[float] = []
@@ -145,7 +145,7 @@ def test_fit_monotonic_across_probability_levels():
 def test_fit_handles_out_of_distribution_inputs():
     """sklearn's out_of_bounds='clip' should pin predictions at the training
     boundary instead of extrapolating wildly."""
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     np.random.seed(3)
     probs = [0.40] * 100 + [0.60] * 100
     outcomes = [1] * 30 + [0] * 70 + [1] * 75 + [0] * 25
@@ -164,7 +164,7 @@ def test_fit_handles_out_of_distribution_inputs():
 def test_fit_respects_sample_weights():
     """Heavy recent weight on a different distribution should pull the fit
     toward the recent bias."""
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     n = 200
     probs = [0.70] * n
     # First half: 70% win rate. Second half: 30% win rate. Recency-weight
@@ -180,7 +180,7 @@ def test_fit_respects_sample_weights():
 
 def test_fit_rejects_non_positive_weights():
     """A degenerate weight vector (all zero) must be rejected, not crash."""
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     probs = [0.5] * 100
     outcomes = [1] * 50 + [0] * 50
     weights = [0.0] * 100
@@ -193,10 +193,10 @@ def test_fit_rejects_non_positive_weights():
 # ---------------------------------------------------------------------------
 
 def test_save_and_load_identity(tmp_path):
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     path = tmp_path / "cal.json"
     cal.save(path)
-    cal2 = PlattCalibrator()
+    cal2 = IsotonicCalibrator()
     cal2.load(path)
     assert cal2.is_identity
     data = json.loads(path.read_text())
@@ -207,13 +207,13 @@ def test_save_and_load_isotonic_roundtrip_exact(tmp_path):
     """A fitted isotonic must reproduce the SAME calibration function after
     save/load. This is the contract that protects against calibration drift
     across restarts."""
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     cal.fit([0.30] * 60 + [0.70] * 60, [1] * 12 + [0] * 48 + [1] * 48 + [0] * 12, min_samples=75)
     assert not cal.is_identity
 
     path = tmp_path / "cal.json"
     cal.save(path)
-    cal2 = PlattCalibrator()
+    cal2 = IsotonicCalibrator()
     cal2.load(path)
     assert not cal2.is_identity
     assert cal2.n_knots == cal.n_knots
@@ -229,7 +229,7 @@ def test_load_legacy_platt_file_falls_back_to_identity(tmp_path):
     translated to an isotonic shape, so silently dropping them is correct."""
     path = tmp_path / "platt.json"
     path.write_text(json.dumps({"a": -0.0809, "b": -0.5366}))
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     cal.load(path)
     assert cal.is_identity
     # Calibrate identity → returns input
@@ -240,7 +240,7 @@ def test_load_corrupt_file_falls_back_to_identity(tmp_path):
     """A garbled JSON file must not crash the bot; identity is the safe fallback."""
     path = tmp_path / "broken.json"
     path.write_text("not valid json {")
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     cal.load(path)
     assert cal.is_identity
 
@@ -248,7 +248,7 @@ def test_load_corrupt_file_falls_back_to_identity(tmp_path):
 def test_load_missing_file_is_noop(tmp_path):
     """Cold-start path: no file yet → calibrator stays identity."""
     path = tmp_path / "nope.json"
-    cal = PlattCalibrator()
+    cal = IsotonicCalibrator()
     cal.load(path)
     assert cal.is_identity
 

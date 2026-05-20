@@ -6,7 +6,7 @@ we record the signal context as a "ghost trade" and track the window to resoluti
 
 Ghost trades give the pipeline 5-10x more training data per day. They're used by
 the BiasDetector and TA Evolver (to see which gates block profitable trades) but
-NOT by Platt calibration (ghost trades were never filled, so probability → outcome
+NOT by isotonic calibration (ghost trades were never filled, so probability → outcome
 pairing is noisy).
 """
 from __future__ import annotations

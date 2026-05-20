@@ -101,6 +101,7 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     "loss_cut_fraction": 0.65,
     "loss_cut_time_s": 120.0,
     "adverse_selection_threshold": 0.55,
+    "edge_decay_threshold": -0.05,
     # Flip trading
     "flip_enabled": True,
     # Risk caps
@@ -137,6 +138,7 @@ MANUAL_ONLY_PARAMS: frozenset[str] = frozenset({
     "loss_cut_time_s",
     # Entry-time filters (informed flow, stale price)
     "adverse_selection_threshold",
+    "edge_decay_threshold",
     "max_edge",
     # Schedule
     "trading_start_hour_et",

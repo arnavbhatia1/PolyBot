@@ -1,17 +1,12 @@
 """Isotonic probability calibration.
 
-Despite the legacy class name (`PlattCalibrator`), the internal calibration
-function is a **monotone isotonic regression**. Platt scaling — a 2-parameter
-sigmoid — was structurally incapable of correcting per-quartile miscalibration
-(e.g. "Q4 edge realization 0.56 but Q1–Q3 well-calibrated"); a fit on small
-windows could collapse to near-flat slope and crush the model's dynamic range
-to a 12-point band. Isotonic learns an arbitrary monotonic step function with
-as many knots as the data supports, so the same 7-day window now produces a
-useful correction whenever one exists, and an explicit identity fallback when
-it doesn't.
-
-Class and method names are preserved so the rest of the codebase doesn't
-care which fit family lives behind `calibrate()`.
+A 2-parameter Platt sigmoid was structurally incapable of correcting
+per-quartile miscalibration (e.g. "Q4 edge realization 0.56 but Q1–Q3
+well-calibrated") — fits on small windows could collapse to near-flat slope
+and crush the model's dynamic range to a 12-point band. Isotonic learns an
+arbitrary monotonic step function with as many knots as the data supports,
+so the same 7-day window produces a useful correction whenever one exists,
+and an explicit identity fallback when it doesn't.
 
 Fit protocol:
   1. Need at least `min_samples` data points (default 150).
@@ -36,6 +31,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Filename retains the `platt_` prefix only for on-disk continuity with existing
+# state snapshots — the contents are isotonic thresholds, not Platt parameters.
 DEFAULT_PARAMS_PATH = Path("polybot/memory/calibration/platt_params.json")
 
 _EPS = 1e-6  # canonical clip — keep all clipping sites consistent
@@ -46,14 +43,13 @@ _EPS = 1e-6  # canonical clip — keep all clipping sites consistent
 _BOOTSTRAP_N = 100
 _BOOTSTRAP_LOWER_PCT = 20
 
-# Minimum samples for a stable isotonic fit. Higher than Platt's 60 because
-# isotonic has more degrees of freedom and overfits more readily on small data.
+# Minimum samples for a stable isotonic fit. Isotonic has many degrees of
+# freedom and overfits readily on small data — keep this generous.
 _DEFAULT_MIN_SAMPLES = 150
 
 
 def compute_log_loss(probs: list[float], outcomes: list[int]) -> float:
-    """Binary cross-entropy loss, identical to the previous Platt module
-    implementation so all external call sites keep working."""
+    """Binary cross-entropy loss."""
     total = 0.0
     for p, y in zip(probs, outcomes):
         p = max(_EPS, min(1 - _EPS, p))
@@ -68,8 +64,8 @@ def _weighted_log_loss(probs: np.ndarray, outcomes: np.ndarray, weights: np.ndar
     return float(np.sum(weights * loss) / np.sum(weights))
 
 
-class PlattCalibrator:
-    """Isotonic regression calibrator. Class name is legacy.
+class IsotonicCalibrator:
+    """Monotone isotonic-regression probability calibrator.
 
     External contract:
       * `calibrate(raw_prob: float) -> float` — apply calibration; identity when

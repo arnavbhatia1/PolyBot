@@ -125,3 +125,25 @@ class TestAdverseSelectionMonitor:
         m = _isolated_monitor(tmp_path)
         m.record_fill("Up", 0.60, "tA", midprice=0.60, position_id=1)
         assert m.get_decay_for_position(999) is None
+
+    def test_recent_decay_mean_returns_none_under_min_samples(self, tmp_path):
+        """Gate stays inactive when there are too few resolved checkpoints."""
+        m = _isolated_monitor(tmp_path)
+        # 3 resolved fills with min_samples=5 -> None (gate inactive)
+        for i in range(3):
+            m.record_fill("Up", 0.60, f"t{i}", midprice=0.60, position_id=i)
+            m._fills[-1].timestamp = time.time() - 20.0
+        m.update_prices(lambda tid: 0.62)
+        assert m.get_recent_decay_mean(window_s=15.0, min_samples=5) is None
+
+    def test_recent_decay_mean_negative_when_drift_against(self, tmp_path):
+        """Mean is negative (signed against us) when post-fill mid moves the wrong way."""
+        m = _isolated_monitor(tmp_path)
+        for i in range(6):
+            m.record_fill("Up", 0.60, f"t{i}", midprice=0.60, position_id=i)
+            m._fills[-1].timestamp = time.time() - 20.0
+        # post-mid 0.57: Up trade lost 3 cents -> signed delta -0.03
+        m.update_prices(lambda tid: 0.57)
+        mean = m.get_recent_decay_mean(window_s=15.0, min_samples=5)
+        assert mean is not None
+        assert mean == pytest.approx(-0.03)
