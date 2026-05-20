@@ -139,6 +139,9 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     lines.append(SEP)
     return "\n".join(lines)
 
+RECENCY_DECAY_PER_DAY = 0.94
+HOLDOUT_DAYS = 3
+HOLDOUT_MIN_TRADES = 30
 
 class AgentScheduler:
     def __init__(self, outcome_reviewer: Any, bias_detector: Any, ta_evolver: Any, weight_optimizer: Any,
@@ -243,6 +246,23 @@ class AgentScheduler:
         combined = real + ghost_outcomes
         combined.sort(key=lambda x: str(x.get("exit_timestamp") or x.get("timestamp") or ""))
         return combined
+
+    @staticmethod
+    def _split_holdout(outcomes: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Split outcomes by exit_timestamp: (optimizer_pool, last-HOLDOUT_DAYS pool)."""
+        if not outcomes:
+            return [], []
+        cutoff = datetime.now(timezone.utc).timestamp() - HOLDOUT_DAYS * 86400.0
+        def _ts(o: dict) -> float:
+            s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
+            try:
+                return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                return 0.0
+        opt, hold = [], []
+        for o in outcomes:
+            (hold if _ts(o) >= cutoff else opt).append(o)
+        return opt, hold
 
     def _precompute_baseline(self, all_outcomes: list[dict[str, Any]]) -> None:
         """Compute baseline Kelly-Sharpe + JK_SE + N and cache on self BEFORE Claude runs.
@@ -534,7 +554,7 @@ class AgentScheduler:
         realism_factor = 1.0
         if self._config:
             realism_factor = float(self._config.get("execution", {}).get("backtest_realism_factor", 1.0))
-        # Recency: 0.97/day decay (~23-day half-life). Applied symmetrically to
+        # Recency: RECENCY_DECAY_PER_DAY per day. Applied symmetrically to
         # baseline and candidate, so relative Sharpe comparisons remain valid.
         now_ts = datetime.now(timezone.utc).timestamp()
         returns: list[float] = []
@@ -749,14 +769,14 @@ class AgentScheduler:
             if kelly_frac < min_kelly:
                 continue
 
-            # Recency weight: recent trades count more (0.97^days_ago decay, ~23d half-life)
+            # Recency weight: recent trades count more.
             ts_str = o.get("exit_timestamp", o.get("timestamp", ""))
             try:
                 trade_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp() if ts_str else now_ts
                 days_ago = max(0.0, (now_ts - trade_ts) / 86400.0)
             except Exception:
                 days_ago = 0.0
-            recency_w = 0.97 ** days_ago
+            recency_w = RECENCY_DECAY_PER_DAY ** days_ago
             returns.append(kelly_frac * o.get("gain_pct", 0.0) * realism_factor * recency_w)
 
         return returns
@@ -967,7 +987,8 @@ class AgentScheduler:
 
     async def _run_weight_optimizer(self, recommendations: dict[str, Any],
                                     all_outcomes: list[dict[str, Any]] | None = None,
-                                    pipeline_source: str = "local") -> dict[str, Any]:
+                                    pipeline_source: str = "local",
+                                    holdout_outcomes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Run per-parameter walk-forward backtests and adopt each change independently.
 
         Walk-forward folds (each fold's test set is genuinely out-of-sample):
@@ -1128,6 +1149,22 @@ class AgentScheduler:
                     adopt_reason = f"regime gate: {regime_reason}"
                 else:
                     adopt_reason += f" | {regime_reason}"
+
+            # Holdout confirmation: the last HOLDOUT_DAYS of trades were excluded from
+            # all folds above. Reject if the candidate underperforms baseline there.
+            if adopt and holdout_outcomes and len(holdout_outcomes) >= HOLDOUT_MIN_TRADES:
+                base_h = self._backtest_recommendations({}, holdout_outcomes)
+                cand_h = self._backtest_single_change(change, holdout_outcomes)["returns"]
+                base_sh = _sharpe(base_h) if base_h else 0.0
+                cand_sh = _sharpe(cand_h) if cand_h else 0.0
+                change_info["holdout_baseline_sharpe"] = round(base_sh, 4)
+                change_info["holdout_candidate_sharpe"] = round(cand_sh, 4)
+                if cand_sh < base_sh:
+                    adopt = False
+                    adopt_reason = (f"holdout gate: candidate {cand_sh:+.3f} < baseline "
+                                    f"{base_sh:+.3f} on last {HOLDOUT_DAYS}d (n={len(cand_h)})")
+                else:
+                    adopt_reason += f" | holdout {cand_sh:+.3f} ≥ {base_sh:+.3f}"
 
             if adopt:
                 change_info.update({"decision": "adopted", "reason": adopt_reason})
@@ -1715,7 +1752,7 @@ class AgentScheduler:
                 ts2 = o.get("exit_timestamp", o.get("timestamp", ""))
                 try:
                     t2 = datetime.fromisoformat(ts2.replace("Z", "+00:00")).timestamp() if ts2 else platt_now_ts
-                    w2 = 0.97 ** max(0.0, (platt_now_ts - t2) / 86400.0)
+                    w2 = RECENCY_DECAY_PER_DAY ** max(0.0, (platt_now_ts - t2) / 86400.0)
                 except Exception:
                     w2 = 1.0
                 cal_weights.append(w2)
@@ -1923,9 +1960,17 @@ class AgentScheduler:
             recommendations = {}
             weight_info["reason"] = f"only {len(all_outcomes)} trades (need {MIN_TRADES_FOR_LEARNING})"
         else:
+            # Hold out the last HOLDOUT_DAYS of trades from the optimizer pool so the
+            # adoption gate has one window the walk-forward folds never touched.
+            opt_outcomes, holdout_outcomes = self._split_holdout(all_outcomes)
+            if len(holdout_outcomes) >= HOLDOUT_MIN_TRADES and len(opt_outcomes) >= MIN_TRADES_FOR_LEARNING:
+                logger.info(f"Holdout split: opt={len(opt_outcomes)} trades, holdout={len(holdout_outcomes)} (last {HOLDOUT_DAYS}d)")
+            else:
+                opt_outcomes, holdout_outcomes = all_outcomes, []
+
             # Precompute baseline Sharpe/SE/N so Claude's context shows real numbers
             # instead of None on the first cycle after restart.
-            self._precompute_baseline(all_outcomes)
+            self._precompute_baseline(opt_outcomes)
 
             # Build Claude context including pipeline track record
             if self.pipeline_tracker:
@@ -1933,10 +1978,9 @@ class AgentScheduler:
                 if track_record:
                     analysis["pipeline_track_record"] = track_record
 
-            # Pass all_outcomes so Claude sees the current regime (last 40% includes recent
-            # trades the train split excluded). The backtest is purely mathematical so
-            # Claude seeing recent trades doesn't create lookahead in the adoption gate.
-            recommendations = await self._run_ta_evolver(analysis, all_outcomes)
+            # Pass opt_outcomes so the evolver and adoption gates share the same data.
+            # Holdout trades are reserved for the post-gate confirmation backtest below.
+            recommendations = await self._run_ta_evolver(analysis, opt_outcomes)
             source = recommendations.get("_pipeline_source", "local")
             pipeline_info["source"] = source
             # Manual-lever observations — evidence-backed suggestions for operator-only
@@ -2031,7 +2075,7 @@ class AgentScheduler:
             except Exception as e:
                 logger.debug(f"Failed to persist crisis_state: {e}")
 
-            weight_info = await self._run_weight_optimizer(recommendations, all_outcomes, pipeline_source=source)
+            weight_info = await self._run_weight_optimizer(recommendations, opt_outcomes, pipeline_source=source, holdout_outcomes=holdout_outcomes)
             # Commit point: weight optimizer has persisted its config changes,
             # so it's now safe to flush the Platt calibrator to disk. Doing
             # this AFTER weights means a crash at any earlier step leaves the

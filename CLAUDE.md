@@ -11,22 +11,22 @@ All layers compose in logit space (except L1's CDF), then sigmoid + isotonic cal
 - **L3** — CLOB book imbalance (top-5 levels each side, by best price) × 0.6 + trade flow × 0.4. Trade flow recency-weighted, 30s half-life inside the 120s window.
 - **L3b** — Binance CVD + taker ratio (taker requires trade_count ≥ 5). CVD acceleration gate requires ≥ 3 trades in the recent 15s window (returns 0 otherwise).
 - **L3e** — Bybit OI drop × price direction, normalized to %/minute using `oi_updated - oi_updated_prev`. tanh saturation `× 8` per minute (5%/min → 0.38, 10%/min → 0.66, 15%/min → 0.83 — softer than the old `× 20` on raw drop).
-- **L4** — RSI/MACD/Stoch/OBV/VWAP. Polarity-split: mean-revert group (RSI/Stoch/VWAP) vs trend-confirm group (MACD/OBV). Trending (autocorr > +0.15) flips ONLY mean-revert sign; reverting (< −0.15) keeps mean-revert + dampens trend-confirm 0.5×; neutral dampens both 0.5×. Magnitude scaler from `effective_momentum_weight` is unsigned, clamped ±0.10.
+- **L4** — RSI/MACD/Stoch/OBV/VWAP. Polarity-split: mean-revert group (RSI/Stoch/VWAP) vs trend-confirm group (MACD/OBV). Per-group multiplier is a smooth `tanh(autocorr / regime_momentum_threshold)` curve between three anchors (strong-trend / neutral / strong-revert) — no cliff at the threshold, so a tick at 0.149 vs 0.151 no longer flips three indicators' signs. Magnitude scaler from `effective_momentum_weight` is unsigned, also smoothed via tanh between DAMPEN (0.5×) and AMPLIFY (1.5×), clamped ±0.10.
 - **L5** — `tanh(prev_margin/atr) · prev_margin_weight · logit_scale · (1 − min(l5_regime_damp_cap, |regime|))`. Dampened by regime strength to orthogonalize with L2 early in the window. `l5_regime_damp_cap` default 0.7, pipeline-tunable.
 - **L6 — derived feature library.** Closed library of bounded transforms of already-tracked state (see `polybot/core/derived_features.py`). Every weight defaults to 0.0; the layer is dead until the pipeline raises one off zero. Combined L6 contribution hard-capped at ±0.25 logits regardless of individual weights.
-- **Calibration (isotonic)** — sole overconfidence correction. Class name is legacy (`PlattCalibrator`); internals are isotonic regression. Fit on last 7d of trades (not the global walk-forward split; needs ≥125 trades in window or skips entirely; train split ≥75 to fit). Identity by default. Adoption requires the fit to beat identity on weighted log-loss by ≥ `1e-4` on the same pool — replaces the brittle Platt slope-near-zero heuristic that previously let near-degenerate sigmoid collapses through.
+- **Calibration (isotonic)** — sole overconfidence correction. Class name is legacy (`PlattCalibrator`); internals are isotonic regression. Fit on last 7d of trades (not the global walk-forward split; needs ≥125 trades in window or skips entirely; train split ≥75 to fit). Identity by default. Adoption requires the bootstrap-CI lower bound (100 resamples, lower 80%) of weighted log-loss improvement vs identity to exceed 0 — accounts for the step-function variance of isotonic on thin pools.
 
 L3+L3b combined capped at ±`flow_combined_cap` (default 0.35) logits. Final logit clamped ±`final_logit_clamp` (default 4.0) → prob ∈ [0.018, 0.982]. Both caps pipeline-tunable.
 
 ## Entry Gates
 
-`prob ≥ 0.56`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_30s ≤ adverse_selection_threshold` (30-min rolling window over the last 20 fills, neutral 0.5 below 5 resolved samples). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP, low-confidence after 2+ obs, or favored-side mismatch > 30%. ATR gate: lower-bound only (`atr < 5th pctile`).
+`prob ≥ 0.56`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_30s ≤ adverse_selection_threshold` (30-min lookback, Bayesian-shrunk to a neutral prior so the gate stays active in low-volume hours). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP, low-confidence after 2+ obs, or favored-side mismatch > 30%. ATR gate: lower-bound only (`atr < 5th pctile`).
 
 ## Sizing & Exit
 
 **Sizing:** `bankroll · kelly · breaker · time_mult · consensus_mult · concurrent_mult`, clipped to `bankroll · max_bankroll_deployed` and `book_depth · max_book_fill_pct`. Min $1 (Polymarket CLOB floor).
 
-**Concurrent (correlation-aware + size-weighted):** same-side full-size ≈ 0.35×; opposite ≈ 0.90×. Same-market → flip logic instead.
+**Concurrent (correlation-aware):** worst ρ across open positions buckets to 0.35× (ρ>0.6) / 0.55× / 0.70× / 0.90× (ρ≤−0.2). Same-market → flip logic instead.
 
 **Exit (`evaluate_hold`):** `holding_edge = model_prob − market_price`.
 - `effective_threshold` blends `deep_loss_floor = exit_edge_threshold × (1 + 0.5 × itm_depth)` with the `ExitBoundary.compute_exit_threshold` curve. ATM trusts the boundary; deep ITM weights toward the more patient floor.
@@ -99,7 +99,7 @@ Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older 
 
 **Calibration** (isotonic) has its own 7-day window (needs ≥125 trades in pool; ≥75 in train split; skips entirely if below either threshold) — calibration must reflect the *current* model, not last month's.
 
-**Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Fold-consistency: worst-fold floor `min(fold_sharpes) ≥ -0.10` (magnitude-aware — a single tiny dip is fine, a deep collapse rejects). Regime-stratified veto activates per regime bucket once that bucket has ≥20 trades: dominant regime must improve AND no other regime may degrade >0.10 Sharpe.
+**Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Fold-consistency: worst-fold floor `min(fold_sharpes) ≥ -0.10` (magnitude-aware — a single tiny dip is fine, a deep collapse rejects). Regime-stratified veto activates per regime bucket once that bucket has ≥20 trades: dominant regime must improve AND no other regime may degrade >0.10 Sharpe. **Holdout confirmation:** the last 3 days are excluded from all folds and the evolver context; after a candidate clears the gates above, candidate-vs-baseline backtests run on the holdout pool (when ≥30 trades) and adoption is blocked if the candidate underperforms baseline there.
 
 **Interaction back-out:** if combined Δ_sharpe < 0.7 × sum(individual deltas), iteratively remove the weakest-z change until either the bound clears or ≤1 change remains.
 
@@ -113,7 +113,7 @@ Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older 
 
 - **Direction sourcing:** empirical directional table only (`pipeline_run_log.json`); no hardcoded priors.
 - **`model_probability_raw`** stores pre-calibration P(side) so re-fits don't compound.
-- **Recency weighting:** `0.97^days_ago` on backtest + isotonic fit (~23-day half-life), applied inside the window cutoff.
+- **Recency weighting:** `0.94^days_ago` on backtest + isotonic fit (~11-day half-life), applied inside the window cutoff. Microstructure-trade edge decays faster than weeks.
 - **`gain_pct = pnl/size`** (arithmetic). Never `log_return` for Sharpe.
 - **UTC everywhere**; ET only for date-bucketing and trading-window logic.
 - **Daily rollup** at 12:05 AM bundles per-trade JSON into `rollup_YYYY-MM-DD.json`.

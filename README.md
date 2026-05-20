@@ -19,7 +19,7 @@ python -m polybot.main --run-pipeline  # one pipeline run, no trading
 ## How It Works
 
 ```
-9 WebSocket feeds + REST polls
+WebSocket feeds + REST polls
         |
   BTC price: Coinbase (primary) > Kraken (secondary) > Binance.US (fallback)
   Strike:    Chainlink BTC/USD (preferred) → Binance candle boundary
@@ -73,7 +73,6 @@ python -m polybot.main --run-pipeline  # one pipeline run, no trading
 | `feeds/binance_depth.py` | L2 book depth |
 | `feeds/binance_trades.py` | aggTrades → CVD, taker ratio |
 | `feeds/bybit_feed.py` | OI + funding (WS only — REST is US geo-blocked) |
-| `feeds/deribit_iv.py` | ATM implied vol |
 | `feeds/chainlink_feed.py` | BTC/USD oracle (strike + resolution) |
 | `feeds/clob_ws.py` | Polymarket CLOB stream |
 | `feeds/market_scanner.py` | Gamma contract discovery + CLOB helpers |
@@ -96,7 +95,6 @@ python -m polybot.main --run-pipeline  # one pipeline run, no trading
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/fee-rate` | Books, fills, fees |
 | Polymarket Gamma | `GET /events?slug=...` | Discovery + resolution |
 | Bybit | `tickers.BTCUSDT` WS | OI + funding |
-| Deribit | `GET /get_book_summary_by_currency` | ATM IV |
 | Chainlink | `latestRoundData()` via Eth RPC | Strike + resolution oracle |
 | Anthropic | `claude-sonnet-4-6` SDK | Daily learning pipeline |
 
@@ -124,13 +122,13 @@ All parameters in `polybot/config/settings.yaml`. Key knobs:
 
 ## Learning Pipeline
 
-Daily 23:15 ET. Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][90:100].
+Daily 23:30 ET. Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][90:100], inside the last 60 days only.
 
-1. **PipelineTracker** — fills 1d/3d/7d/14d/30d Sharpe; auto-revert if 1d trailing < -0.10 (n≥20) or 7d < -0.05 (n≥100).
+1. **PipelineTracker** — fills 7d/14d/30d Sharpe per adopted version; flags rollback when 7d Sharpe trails baseline by ≥ 0.05 (n≥100).
 2. **BiasDetector** — per-indicator/side/edge/time/regime/phase/flip stats + edge-realization quartiles + KS shift.
 3. **Calibrator (isotonic)** — recency-weighted isotonic regression on train; adopts only if weighted log-loss beats identity by ≥ `1e-4` AND Kelly-Sharpe on holdout doesn't degrade. Meta-warning when raw-model Sharpe ≥ 0.95 × calibrated Sharpe.
 4. **TAEvolver** — Claude (or `LocalRecommender` fallback) reads the analysis card, returns `{changes, manual_observations}`.
-5. **WeightOptimizer** — per-param walk-forward backtest. Adoption gate: `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.5`. Regime-stratified veto. 2-day per-param cooldown. Combined backtest after ≥2 adoptions backs out lowest-z change if combined Δ < 0.7 × sum.
+5. **WeightOptimizer** — per-param walk-forward backtest. Adoption gate: `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West autocorr-adjusted). Worst-fold floor `≥ -0.10`. Regime-stratified veto (≥20 trades per bucket). 2-day per-param cooldown. Combined backtest after ≥2 adoptions backs out lowest-z change if combined Δ < 0.7 × sum.
 
 Crisis mode (baseline Sharpe < 0.10 AND (recent-50 WR < 48% OR recent-50 `avg_loss/avg_win > 2.0`)): after 3 consecutive cycles, halve `kelly_fraction` (floor 0.04). Restored on first non-crisis cycle.
 

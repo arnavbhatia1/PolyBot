@@ -17,7 +17,7 @@ Fit protocol:
   1. Need at least `min_samples` data points (default 150).
   2. Fit isotonic on (probs, outcomes) with recency `sample_weights`.
   3. Compute weighted log-loss for both isotonic and identity on the same
-     pool. Adopt only if isotonic beats identity by `_ISO_IMPROVEMENT_FLOOR`.
+     pool. Adopt only if the bootstrap-CI lower bound of the improvement > 0.
   4. Otherwise revert to identity. This replaces Platt's brittle
      "slope-near-zero" heuristic with a direct beat-identity test.
 
@@ -40,10 +40,11 @@ DEFAULT_PARAMS_PATH = Path("polybot/memory/calibration/platt_params.json")
 
 _EPS = 1e-6  # canonical clip — keep all clipping sites consistent
 
-# Minimum log-loss reduction (in nats per sample) required to adopt an isotonic
-# fit over identity. 1e-4 is roughly 1/100 of a "small" calibration miss; below
-# this the gain is indistinguishable from sampling noise on a 7-day window.
-_ISO_IMPROVEMENT_FLOOR = 1e-4
+# Bootstrap CI gate: how many resamples to draw, and the lower-percentile bound
+# the improvement-over-identity must clear. 100 resamples / lower-80% bound > 0
+# replaces a static 1e-4 floor that was within sampling noise on a 7-day window.
+_BOOTSTRAP_N = 100
+_BOOTSTRAP_LOWER_PCT = 20
 
 # Minimum samples for a stable isotonic fit. Higher than Platt's 60 because
 # isotonic has more degrees of freedom and overfits more readily on small data.
@@ -75,7 +76,7 @@ class PlattCalibrator:
         unfitted.
       * `fit(probs, outcomes, min_samples=150, sample_weights=None) -> bool` —
         attempt to learn the calibration; returns True only if the fit
-        beats identity on weighted log-loss by `_ISO_IMPROVEMENT_FLOOR`.
+        beats identity on weighted log-loss with the bootstrap CI lower bound > 0.
       * `is_identity: bool` — True when calibration is a no-op.
       * `save(path)` / `load(path)` — JSON round-trip.
     """
@@ -120,10 +121,10 @@ class PlattCalibrator:
             sample_weights: list[float] | None = None) -> bool:
         """Fit isotonic on (probs, outcomes). Returns True iff adopted.
 
-        Adoption requires weighted log-loss reduction ≥ ``_ISO_IMPROVEMENT_FLOOR``
-        vs identity on the same pool. The pool's weights are recency-decayed
-        by the caller (typically 0.97 / day, ~23-day half-life) so the fit
-        and the identity-floor check share the same emphasis.
+        Adoption requires the bootstrap-CI lower bound of the weighted log-loss
+        improvement over identity to exceed 0 (100 resamples, lower 80% bound).
+        Weights are recency-decayed by the caller (~0.94/day, ~11d half-life)
+        so the fit and gate share the same emphasis.
 
         On rejection the calibrator state is unchanged; it remains identity
         if it was identity, otherwise it keeps the previous fit. This mirrors
@@ -153,17 +154,36 @@ class PlattCalibrator:
             logger.warning(f"Isotonic fit failed: {e}")
             return False
 
-        # Adoption gate: did isotonic actually beat identity on this pool?
-        # Both losses use the same weights so the comparison is apples-to-apples.
+        # Adoption gate: bootstrap CI on log-loss improvement vs identity.
+        # Refitting on N resamples accounts for the isotonic step-function variance
+        # that the previous static 1e-4 threshold ignored.
         iso_predictions = iso.predict(probs_arr)
-        iso_loss = _weighted_log_loss(iso_predictions, outcomes_arr, w_arr)
-        identity_loss = _weighted_log_loss(probs_arr, outcomes_arr, w_arr)
-        improvement = identity_loss - iso_loss
+        improvement = (_weighted_log_loss(probs_arr, outcomes_arr, w_arr)
+                       - _weighted_log_loss(iso_predictions, outcomes_arr, w_arr))
 
-        if improvement < _ISO_IMPROVEMENT_FLOOR:
+        rng = np.random.default_rng(42)
+        n = len(probs_arr)
+        boot_improvements: list[float] = []
+        for _ in range(_BOOTSTRAP_N):
+            idx = rng.integers(0, n, n)
+            p_b, o_b, w_b = probs_arr[idx], outcomes_arr[idx], w_arr[idx]
+            if w_b.sum() <= 0 or len(np.unique(o_b)) < 2:
+                continue
+            try:
+                iso_b = IsotonicRegression(out_of_bounds="clip", y_min=_EPS, y_max=1.0 - _EPS)
+                iso_b.fit(p_b, o_b, sample_weight=w_b)
+                boot_improvements.append(
+                    _weighted_log_loss(p_b, o_b, w_b)
+                    - _weighted_log_loss(iso_b.predict(p_b), o_b, w_b)
+                )
+            except Exception:
+                continue
+
+        ci_lower = float(np.percentile(boot_improvements, _BOOTSTRAP_LOWER_PCT)) if boot_improvements else 0.0
+        if ci_lower <= 0:
             logger.info(
-                f"Isotonic fit does not beat identity (Δlog-loss={improvement:+.5f} "
-                f"< floor={_ISO_IMPROVEMENT_FLOOR}); keeping previous state"
+                f"Isotonic fit not significant (Δlog-loss={improvement:+.5f}, "
+                f"bootstrap lower-{100-_BOOTSTRAP_LOWER_PCT}% CI={ci_lower:+.5f}); keeping previous state"
             )
             return False
 

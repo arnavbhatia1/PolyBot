@@ -142,12 +142,10 @@ class AdverseSelectionMonitor:
     def get_adverse_rate(self, window_s: float = 30.0, lookback_s: float = 1800.0) -> float:
         """Fraction of fills where price moved AGAINST us within window_s.
 
-        For Up bets: adverse = midprice dropped after fill
-        For Down bets: adverse = midprice rose after fill
-
-        Only fills recorded within ``lookback_s`` seconds are counted — older
-        fills reflect stale market regimes and must not gate current entries.
-        Returns 0.5 (neutral) if insufficient recent data.
+        Bayesian shrinkage toward a neutral prior (n=10, rate=0.5): with zero
+        samples the rate is 0.5; with many samples the prior washes out. This
+        keeps the guard active during low-volume hours where the prior cliff
+        previously disabled it.
         """
         now = time.time()
         adverse = 0
@@ -168,9 +166,8 @@ class AdverseSelectionMonitor:
                 adverse += 1
             elif fill.side == "Down" and post > fill.midprice_at_fill:
                 adverse += 1
-        if total < 5:
-            return 0.5  # not enough recent data
-        return adverse / total
+        prior_n, prior_rate = 10, 0.5
+        return (prior_n * prior_rate + adverse) / (prior_n + total)
 
     def get_stats(self) -> dict:
         """Return summary stats for logging/pipeline."""

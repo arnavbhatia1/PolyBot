@@ -225,19 +225,18 @@ class SignalEngine:
         """Regime-aware magnitude scaler for L4 (unsigned).
 
         Polarity per-indicator-group is handled inside `compute_momentum`; this
-        function returns only the *magnitude* with regime amplification:
-          |autocorr| > threshold → amplify 1.5× (clear regime, lean harder)
-          else                    → dampen 0.5× (no regime, soft contribution)
+        function returns only the *magnitude* with smooth regime amplification:
+          |t| = |tanh(autocorr / threshold)| interpolates DAMPEN (0.5×) at t=0
+          up to AMPLIFY (1.5×) as |t|→1, matching the previous cliff anchors
+          without the discontinuity at |autocorr| = threshold.
 
         Returned magnitude is clamped to _MOMENTUM_WEIGHT_CLAMP. The sign of
         `momentum_weight` is irrelevant after this change — only |momentum_weight|
         is consulted, so legacy negative-fade defaults still work unchanged.
         """
         base = abs(self.momentum_weight)
-        if abs(regime_autocorr) > self.regime_momentum_threshold:
-            magnitude = base * _REGIME_MOMENTUM_AMPLIFY
-        else:
-            magnitude = base * _REGIME_MOMENTUM_DAMPEN
+        t_abs = abs(math.tanh(regime_autocorr / self.regime_momentum_threshold)) if self.regime_momentum_threshold > 0 else 0.0
+        magnitude = base * (_REGIME_MOMENTUM_DAMPEN + (_REGIME_MOMENTUM_AMPLIFY - _REGIME_MOMENTUM_DAMPEN) * t_abs)
         return min(_MOMENTUM_WEIGHT_CLAMP, magnitude)
 
     def _apply_derived_features(self, *, atr: float, regime: float, distance: float,
@@ -396,17 +395,15 @@ class SignalEngine:
             MACD score: positive histogram → positive (bullish momentum)
             OBV score: agreement between volume slope and price slope → ±
 
-        Regime conditioning is applied PER GROUP so trend-confirm indicators
-        aren't sign-flipped together with mean-revert indicators (the original
-        aggregate-level flip stomped OBV's correct directional reading in
-        trending regimes):
+        Regime conditioning is applied PER GROUP via a smooth tanh polarity
+        scaler so a trade at autocorr=0.149 vs 0.151 no longer flips three
+        indicators' signs. With `t = tanh(autocorr / regime_momentum_threshold)`
+        the group multipliers reproduce the previous three-branch behavior at
+        the anchor points and interpolate smoothly between them:
 
-          Trending (autocorr > +0.15):
-            flip mean-revert sign → both groups now align with the trend.
-          Mean-reverting (autocorr < -0.15):
-            keep mean-revert; dampen trend-confirm (it's mostly noise in chop).
-          Neutral:
-            dampen both — no regime signal to lean on.
+          t = +1 (strong trend):    mean_revert × -1,   trend_confirm × +1
+          t =  0 (neutral):         mean_revert × +0.5, trend_confirm × +0.5
+          t = -1 (strong revert):   mean_revert × +1,   trend_confirm × +0.5
 
         Output is clamped to [-1, 1]; the magnitude/regime amp lives in
         `effective_momentum_weight` at the call site.
@@ -426,12 +423,10 @@ class SignalEngine:
             + _s("obv") * w.get("obv", 0.15)
         )
 
-        if regime_autocorr > self.regime_momentum_threshold:
-            score = -mean_revert + trend_confirm
-        elif regime_autocorr < -self.regime_momentum_threshold:
-            score = mean_revert + _REGIME_MOMENTUM_DAMPEN * trend_confirm
-        else:
-            score = _REGIME_MOMENTUM_DAMPEN * (mean_revert + trend_confirm)
+        t = math.tanh(regime_autocorr / self.regime_momentum_threshold) if self.regime_momentum_threshold > 0 else 0.0
+        mr_mult = -t + (1.0 - abs(t)) * _REGIME_MOMENTUM_DAMPEN
+        tc_mult = _REGIME_MOMENTUM_DAMPEN + (1.0 - _REGIME_MOMENTUM_DAMPEN) * max(0.0, t)
+        score = mr_mult * mean_revert + tc_mult * trend_confirm
 
         return max(-1.0, min(1.0, score))
 
