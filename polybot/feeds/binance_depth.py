@@ -80,9 +80,9 @@ class BinanceDepthFeed:
                     logger.debug(f"Binance depth WS connected: {stream}")
                     while self._running:
                         try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                            msg = await asyncio.wait_for(ws.recv(), timeout=60.0)
                         except asyncio.TimeoutError:
-                            logger.warning("depth WS idle >10s, forcing reconnect")
+                            logger.warning("depth WS idle >60s, forcing reconnect")
                             break
                         data = json.loads(msg)
                         bids = data.get("bids")

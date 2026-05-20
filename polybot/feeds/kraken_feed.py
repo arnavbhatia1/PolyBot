@@ -100,9 +100,9 @@ class KrakenFeed:
                     # XBT/USD ticker fires on every trade; >30s silence is a dead stream.
                     while self._running:
                         try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=30.0)
+                            msg = await asyncio.wait_for(ws.recv(), timeout=90.0)
                         except asyncio.TimeoutError:
-                            logger.warning("Kraken WS idle >30s, forcing reconnect")
+                            logger.warning("Kraken WS idle >90s, forcing reconnect")
                             break
                         self._handle_message(json.loads(msg))
 

@@ -123,9 +123,9 @@ class CoinbaseFeed:
                     # 30s of no data = unambiguously dead; force reconnect.
                     while self._running:
                         try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=30.0)
+                            msg = await asyncio.wait_for(ws.recv(), timeout=90.0)
                         except asyncio.TimeoutError:
-                            logger.warning("Coinbase WS idle >30s, forcing reconnect")
+                            logger.warning("Coinbase WS idle >90s, forcing reconnect")
                             break
                         self._handle_message(json.loads(msg))
 

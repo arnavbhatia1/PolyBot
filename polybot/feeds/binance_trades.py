@@ -262,9 +262,9 @@ class BinanceTradesFeed:
                     logger.debug(f"Binance aggTrade WebSocket connected: {stream}")
                     while self._running:
                         try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=45.0)
+                            msg = await asyncio.wait_for(ws.recv(), timeout=180.0)
                         except asyncio.TimeoutError:
-                            logger.warning("aggTrade WS idle >45s, forcing reconnect")
+                            logger.warning("aggTrade WS idle >180s, forcing reconnect")
                             break
                         self._handle_message(json.loads(msg))
             except Exception as e:

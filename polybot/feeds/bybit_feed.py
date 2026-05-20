@@ -168,9 +168,9 @@ class BybitFeed:
 
                     while self._running:
                         try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=30.0)
+                            msg = await asyncio.wait_for(ws.recv(), timeout=120.0)
                         except asyncio.TimeoutError:
-                            logger.warning("Bybit WS idle >30s, forcing reconnect")
+                            logger.warning("Bybit WS idle >120s, forcing reconnect")
                             break
                         self._handle_message(json.loads(msg))
             except asyncio.CancelledError:
