@@ -125,6 +125,16 @@ class IsotonicCalibrator:
             logger.warning(f"Isotonic fit failed: {e}")
             return False
 
+        # Healthy fit must be able to output across at least [0.2, 0.8].
+        y_min = float(iso.y_thresholds_[0])
+        y_max = float(iso.y_thresholds_[-1])
+        if y_min > 0.2 or y_max < 0.8:
+            logger.info(
+                f"Isotonic fit rejected: output range [{y_min:.3f}, {y_max:.3f}] "
+                f"does not span [0.2, 0.8] — directionally asymmetric"
+            )
+            return False
+
         # Adoption gate: bootstrap CI on log-loss improvement vs identity.
         # Refitting on N resamples accounts for the isotonic step-function variance
         # that the previous static 1e-4 threshold ignored.
