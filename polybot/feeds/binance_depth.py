@@ -30,7 +30,7 @@ class BinanceDepthFeed:
     def __init__(
         self,
         symbol: str = "btcusdt",
-        ws_url: str = "wss://stream.binance.us:9443/ws",
+        ws_url: str = "wss://stream.binance.com:9443/ws",
         **_unused: Any,
     ) -> None:
         self.symbol = symbol

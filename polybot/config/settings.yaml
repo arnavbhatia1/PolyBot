@@ -177,17 +177,17 @@ database:
 
 binance:
   symbol: btcusdt
-  ws_url: wss://stream.binance.us:9443/ws
-  rest_url: https://api.binance.us/api/v3
+  ws_url: wss://stream.binance.com:9443/ws
+  rest_url: https://api.binance.com/api/v3
   candle_buffer_size: 200
 
 binance_depth:
-  ws_url: wss://stream.binance.us:9443/ws/btcusdt@depth20@100ms
-  rest_url: https://api.binance.us/api/v3
+  ws_url: wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms
+  rest_url: https://api.binance.com/api/v3
   poll_interval_s: 5.0
 
 binance_trades:
-  ws_url: wss://stream.binance.us:9443/ws/btcusdt@aggTrade
+  ws_url: wss://stream.binance.com:9443/ws/btcusdt@aggTrade
 
 coinbase:
   ws_url: wss://ws-feed.exchange.coinbase.com

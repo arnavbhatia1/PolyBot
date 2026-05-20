@@ -502,13 +502,6 @@ async def _evaluate_signal_and_enter(
         stale_feeds.append(f"coinbase={coinbase_feed.state.age_seconds:.0f}s")
     if chainlink_feed and chainlink_feed.age_seconds > 60:
         stale_feeds.append(f"chainlink={chainlink_feed.age_seconds:.0f}s")
-    # Binance aggTrade WS feeds L3b (CVD + taker ratio). High-frequency stream:
-    # >30s of silence in active hours means the WS dropped and L3b is reading a
-    # frozen accumulator. Same skip behaviour as Coinbase.
-    if trades_feed is not None and trades_feed.accumulator is not None:
-        binance_age = trades_feed.accumulator.latest_age_s
-        if binance_age > 30:
-            stale_feeds.append(f"binance_trades={binance_age:.0f}s")
     # Bybit OI underpins L3e (liquidation pressure). Updates ~5s normally;
     # >60s of silence means we'd be reading a frozen OI snapshot.
     if bybit_feed is not None and bybit_feed.state.oi_updated > 0:
@@ -543,7 +536,7 @@ async def _evaluate_signal_and_enter(
     # --- New signals from extended feeds ---
     spot_flow_signal = 0.0
 
-    if trades_feed and trades_feed.accumulator:
+    if trades_feed and trades_feed.accumulator and trades_feed.accumulator.latest_age_s <= 30:
         acc = trades_feed.accumulator
         cvd = acc.get_cvd(window_s=120)
         taker = acc.get_taker_ratio(window_s=60)
@@ -558,7 +551,7 @@ async def _evaluate_signal_and_enter(
 
     # CVD acceleration (first derivative of buying pressure)
     cvd_accel_val = 0.0
-    if trades_feed and trades_feed.accumulator:
+    if trades_feed and trades_feed.accumulator and trades_feed.accumulator.latest_age_s <= 30:
         cvd_accel_val = trades_feed.accumulator.get_cvd_acceleration(recent_s=15, baseline_s=45)
 
     # Liquidation pressure from Bybit OI changes
@@ -2543,15 +2536,15 @@ async def main() -> None:
     # --- New data feeds ---
     depth_cfg = config.get("binance_depth", {})
     depth_feed = BinanceDepthFeed(
-        ws_url=depth_cfg.get("ws_url", "wss://stream.binance.us:9443/ws"),
-        rest_url=depth_cfg.get("rest_url", "https://api.binance.us/api/v3"),
+        ws_url=depth_cfg.get("ws_url", "wss://stream.binance.com:9443/ws"),
+        rest_url=depth_cfg.get("rest_url", "https://api.binance.com/api/v3"),
         rest_interval=86400,  # REST snapshot effectively disabled; top-20 WS provides depth sizing.
     )
     trades_cfg = config.get("binance_trades", {})
     trades_accumulator = BinanceTradeAccumulator(max_age_s=trades_cfg.get("max_age_s", 300))
     trades_feed = BinanceTradesFeed(
         accumulator=trades_accumulator,
-        ws_url=trades_cfg.get("ws_url", "wss://stream.binance.us:9443/ws"),
+        ws_url=trades_cfg.get("ws_url", "wss://stream.binance.com:9443/ws"),
     )
     bybit_cfg = config.get("bybit", {})
     bybit_feed_inst = BybitFeed(

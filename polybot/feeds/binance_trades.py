@@ -223,7 +223,7 @@ class BinanceTradesFeed:
 
     def __init__(self, accumulator: BinanceTradeAccumulator,
                  symbol: str = "btcusdt",
-                 ws_url: str = "wss://stream.binance.us:9443/ws") -> None:
+                 ws_url: str = "wss://stream.binance.com:9443/ws") -> None:
         self.accumulator = accumulator
         self.symbol = symbol
         self.ws_url = ws_url
