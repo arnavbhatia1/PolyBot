@@ -6,9 +6,11 @@ Alerts fire on trade open/close, circuit breaker events, and daily session banne
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -77,7 +79,8 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             "`!history [n]` — Last n closed trades (default 10)\n"
             "`!pause` / `!resume` — Pause or resume entries\n"
             "`!clear [trades|control|all]` — Purge channel messages\n"
-            "`!session` — Re-send session banner"
+            "`!session` — Re-send session banner\n"
+            "`!pipeline` — Last run, adopted changes, calibrator state, next run"
         )
 
     @bot.command(name="status")
@@ -227,6 +230,64 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             count = await am.purge_channel(name)
             results.append(f"#{name}: {count} messages cleared" if count >= 0 else f"#{name}: failed")
         await ctx.send("**Clear Complete**\n" + "\n".join(results))
+
+    @bot.command(name="pipeline")
+    async def pipeline_status(ctx):
+        history_path = Path("polybot/memory/pipeline_history.json")
+        cal_path = Path("polybot/memory/calibration/platt_params.json")
+
+        last_run = "no data"
+        adopted_line = "no data"
+        if history_path.exists():
+            try:
+                history = json.loads(history_path.read_text())
+                if history:
+                    latest = history[-1]
+                    dt = datetime.fromisoformat(latest["date"].replace("Z", "+00:00")).astimezone(_ET)
+                    last_run = dt.strftime("%Y-%m-%d %H:%M ET")
+                    changes = latest.get("changes", {})
+                    if changes:
+                        keys = list(changes.keys())
+                        shown = ", ".join(keys[:3]) + ("..." if len(keys) > 3 else "")
+                        adopted_line = f"{len(keys)} changes ({shown})"
+                    else:
+                        adopted_line = "none"
+                    if latest.get("reverted"):
+                        adopted_line += " [REVERTED]"
+            except Exception:
+                pass
+
+        cal_line = "no data"
+        if cal_path.exists():
+            try:
+                cal_data = json.loads(cal_path.read_text())
+                if cal_data.get("type") == "isotonic":
+                    n = cal_data.get("n_samples", 0)
+                    dll = cal_data.get("log_loss_improvement", 0.0)
+                    cal_line = f"isotonic, n={n}, dll={dll:+.4f}"
+                else:
+                    cal_line = "identity (not fit)"
+            except Exception:
+                pass
+
+        now_et = datetime.now(_ET)
+        next_run = now_et.replace(hour=23, minute=30, second=0, microsecond=0)
+        if next_run <= now_et:
+            next_run = next_run + timedelta(days=1)
+        delta = next_run - now_et
+        hours = int(delta.total_seconds() // 3600)
+        mins = int((delta.total_seconds() % 3600) // 60)
+        next_str = f"{next_run.strftime('%Y-%m-%d 23:30 ET')} (in {hours}h {mins}m)"
+
+        await ctx.send(
+            f"**Pipeline**\n"
+            f"```\n"
+            f"  Last run    {last_run}\n"
+            f"  Adopted     {adopted_line}\n"
+            f"  Calibrator  {cal_line}\n"
+            f"  Next run    {next_str}\n"
+            f"```"
+        )
 
     @bot.command(name="session")
     async def session_banner(ctx):
