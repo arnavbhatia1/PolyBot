@@ -706,3 +706,25 @@
 - None
 
 **Reasoning:** Local recommender
+
+## 2026-05-20T03:39:19.127790+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - liquidation_weight=0.04 (exploratory up step)
+  - prev_margin_weight=0.015 (exploratory down step)
+  - min_atr=13.0 (exploratory up step)
+  - kelly_fraction=0.07 (exploratory down step)
+  - deep_loss_hold_threshold=-0.08 (exploratory up step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender

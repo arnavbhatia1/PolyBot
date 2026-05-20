@@ -1459,5 +1459,77 @@
         ]
       }
     ]
+  },
+  {
+    "date": "2026-05-20T03:39:20.355612+00:00",
+    "source": "local",
+    "baseline_sharpe": 0.1909,
+    "changes": [
+      {
+        "param": "liquidation_weight",
+        "old_value": 0.03,
+        "new_value": 0.04,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0001,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "prev_margin_weight",
+        "old_value": 0.02,
+        "new_value": 0.015,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0052,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "min_atr",
+        "old_value": 12.0,
+        "new_value": 13.0,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0003,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "kelly_fraction",
+        "old_value": 0.08,
+        "new_value": 0.07,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.003,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "deep_loss_hold_threshold",
+        "old_value": -0.1,
+        "new_value": -0.08,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      }
+    ]
   }
 ]

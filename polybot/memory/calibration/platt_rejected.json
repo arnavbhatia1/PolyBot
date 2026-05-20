@@ -1,10 +1,7 @@
 [
   {
-    "a": -0.1207,
-    "b": -0.5837
-  },
-  {
-    "a": -0.1039,
-    "b": -0.5255
+    "n_knots": 15,
+    "log_loss_improvement": 0.1172,
+    "reason": "new fit doesn't beat current by enough (loss gap +0.0031, need -0.01)"
   }
 ]
