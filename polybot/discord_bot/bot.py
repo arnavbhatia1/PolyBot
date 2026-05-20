@@ -237,9 +237,10 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         cal_path = Path("polybot/memory/calibration/platt_params.json")
 
         last_run = "no data"
-        result_line = "no data"
-        source_line = ""
-        sharpe_line = ""
+        status_line = "no data"
+        source_line = "?"
+        baseline_line = "n/a"
+        holdout_line = "skipped (insufficient data)"
         if run_log_path.exists():
             try:
                 runs = json.loads(run_log_path.read_text())
@@ -248,36 +249,44 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
                     dt = datetime.fromisoformat(latest["date"].replace("Z", "+00:00")).astimezone(_ET)
                     last_run = dt.strftime("%Y-%m-%d %H:%M ET")
                     source_line = latest.get("source", "?")
-                    sharpe_line = f"{latest.get('baseline_sharpe', 0.0):+.4f}"
-                    changes = latest.get("changes", [])
-                    if isinstance(changes, list) and changes:
-                        adopted = [c for c in changes if c.get("decision") == "adopted"]
-                        rejected = [c for c in changes if c.get("decision") == "rejected"]
-                        if adopted:
-                            names = ", ".join(c.get("param", "?") for c in adopted[:3])
-                            extra = "..." if len(adopted) > 3 else ""
-                            result_line = f"{len(adopted)} adopted ({names}{extra}), {len(rejected)} rejected"
-                        else:
-                            result_line = f"all {len(rejected)} proposals rejected"
-                    elif isinstance(changes, dict) and changes:
-                        keys = list(changes.keys())
-                        shown = ", ".join(keys[:3]) + ("..." if len(keys) > 3 else "")
-                        result_line = f"{len(keys)} adopted ({shown})"
+                    baseline_sharpe = latest.get("baseline_sharpe", 0.0)
+                    n_baseline = latest.get("n_baseline_trades", 0)
+                    if n_baseline:
+                        baseline_line = f"{baseline_sharpe:+.3f} Sharpe on {n_baseline:,} trades"
                     else:
-                        result_line = "no proposals"
+                        baseline_line = f"{baseline_sharpe:+.3f} Sharpe"
+                    changes = latest.get("changes", [])
+                    if isinstance(changes, list):
+                        adopted = [c for c in changes if c.get("decision") == "adopted"]
+                        rejected = [c for c in changes if c.get("decision") != "adopted"]
+                        status_line = f"{len(adopted)} adopted / {len(rejected)} rejected"
+                        h_changes = [c for c in changes if "holdout_candidate_sharpe" in c]
+                        if h_changes:
+                            h_base = h_changes[0].get("holdout_baseline_sharpe", 0.0)
+                            improving = sum(1 for c in h_changes
+                                            if c.get("holdout_candidate_sharpe", 0) >= c.get("holdout_baseline_sharpe", 0))
+                            holdout_line = (f"baseline {h_base:+.3f} Sharpe, "
+                                            f"{improving}/{len(h_changes)} non-degrading")
+                    elif isinstance(changes, dict):
+                        status_line = f"{len(changes)} adopted / 0 rejected"
+                    else:
+                        status_line = "no proposals"
             except Exception:
                 pass
 
-        cal_line = "no data"
+        cal_line = "unknown"
         if cal_path.exists():
             try:
                 cal_data = json.loads(cal_path.read_text())
                 if cal_data.get("type") == "isotonic":
-                    n = cal_data.get("n_samples", 0)
-                    dll = cal_data.get("log_loss_improvement", 0.0)
-                    cal_line = f"isotonic, n={n}, dll={dll:+.4f}"
+                    n_samples = cal_data.get("n_samples", 0)
+                    y_thr = cal_data.get("y_thresholds", [])
+                    if y_thr:
+                        cal_line = f"isotonic, n={n_samples}, span [{y_thr[0]:.3f}, {y_thr[-1]:.3f}]"
+                    else:
+                        cal_line = f"isotonic, n={n_samples}"
                 else:
-                    cal_line = "identity (not fit)"
+                    cal_line = "identity (no transform)"
             except Exception:
                 pass
 
@@ -293,12 +302,13 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         await ctx.send(
             f"**Pipeline**\n"
             f"```\n"
-            f"  Last run    {last_run}\n"
-            f"  Source      {source_line}\n"
-            f"  Baseline    {sharpe_line} Sharpe\n"
-            f"  Result      {result_line}\n"
-            f"  Calibrator  {cal_line}\n"
-            f"  Next run    {next_str}\n"
+            f"  Last run     {last_run}\n"
+            f"  Status       {status_line}\n"
+            f"  Source       {source_line}\n"
+            f"  Baseline     {baseline_line}\n"
+            f"  Calibrator   {cal_line}\n"
+            f"  Holdout      {holdout_line}\n"
+            f"  Next run     {next_str}\n"
             f"```"
         )
 
