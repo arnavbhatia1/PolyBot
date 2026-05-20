@@ -661,7 +661,7 @@ async def _evaluate_signal_and_enter(
     if _adverse_monitor is not None:
         edge_decay_threshold = config.get("signal", {}).get("edge_decay_threshold", -0.05)
         recent_decay = _adverse_monitor.get_recent_decay_mean(window_s=15.0, lookback_s=1800.0,
-                                                              min_samples=5)
+                                                              min_samples=15)
         if recent_decay is not None and recent_decay < edge_decay_threshold:
             _record_skip("edge_decay")
             _ghost("edge_decay", signal, {})

@@ -224,7 +224,7 @@ class AdverseSelectionMonitor:
         return (prior_n * prior_rate + adverse) / (prior_n + total)
 
     def get_recent_decay_mean(self, window_s: float = 15.0, lookback_s: float = 1800.0,
-                              min_samples: int = 5) -> float | None:
+                              min_samples: int = 15) -> float | None:
         """Mean side-signed post-fill drift at ``window_s`` over the last ``lookback_s``.
 
         Positive return = market drifted in our favor on average; negative = drifted

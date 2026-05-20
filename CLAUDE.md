@@ -20,13 +20,13 @@ L3+L3b combined capped at ±`flow_combined_cap` (default 0.35) logits. Final log
 
 ## Entry Gates
 
-`prob ≥ 0.56`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_at_30s ≤ adverse_selection_threshold` (30s post-fill checkpoint over a 30-min lookback, Bayesian-shrunk to a neutral prior so the gate stays active in low-volume hours), `mean_decay_15s ≥ edge_decay_threshold` (signed mean post-fill drift; default −0.05, inactive until ≥5 resolved fills in the lookback). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP, low-confidence after 2+ obs, or favored-side mismatch (SPRT's accumulated favored side differs from current proposal when confidence > 60% with ≥6 obs). ATR gate: lower-bound only (`atr < 5th pctile`).
+`prob ≥ 0.56`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_at_30s ≤ adverse_selection_threshold` (30s post-fill checkpoint over a 30-min lookback, Bayesian-shrunk to a neutral prior so the gate stays active in low-volume hours), `mean_decay_15s ≥ edge_decay_threshold` (signed mean 15s post-fill drift over a 30-min lookback; default −0.05, inactive until ≥15 resolved fills in the lookback). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP, low-confidence after 2+ obs, or favored-side mismatch (SPRT's accumulated favored side differs from current proposal when confidence > 60% with ≥6 obs). ATR gate: lower-bound only (`atr < 5th pctile`).
 
 ## Sizing & Exit
 
 **Sizing:** `bankroll · kelly · breaker · time_mult · consensus_mult · concurrent_mult`, clipped to `bankroll · max_bankroll_deployed` and `book_depth · max_book_fill_pct`. Min $1 (Polymarket CLOB floor).
 
-**Concurrent (correlation-aware):** worst ρ across open positions buckets to 0.35× (ρ>0.6) / 0.55× / 0.70× / 0.90× (ρ≤−0.2). Same-market → flip logic instead.
+**Concurrent (correlation-aware):** worst ρ across open positions buckets to 0.35× (ρ>0.6) / 0.55× / 0.70× / 0.90× (ρ≤−0.2). Same-market → flip logic instead. ρ is a **fixed prior** (`+0.75` same-side, `−0.25` opposite-side), not an empirical estimate — see `correlation.py:16-17`. Promoting to a windowed empirical estimator with sample-size shrinkage is a future-work item, not a current behavior.
 
 **Exit (`evaluate_hold`):** `holding_edge = model_prob − market_price`.
 - `effective_threshold` blends `deep_loss_floor = exit_edge_threshold × (1 + 0.5 × itm_depth)` with the `ExitBoundary.compute_exit_threshold` curve. ATM trusts the boundary; deep ITM weights toward the more patient floor.
@@ -103,7 +103,7 @@ Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older 
 
 **Interaction back-out:** if combined Δ_sharpe < 0.7 × sum(individual deltas), iteratively remove the weakest-z change until either the bound clears or ≤1 change remains.
 
-**Crisis mode:** baseline Sharpe < 0.10 AND (recent-50 WR < 48% OR recent-50 `avg_loss/avg_win > 2.0`). The loss-ratio leg catches winning-small/losing-big pathologies the WR-only trigger misses. ≥3 consecutive cycles → halve `kelly_fraction` (floor 0.04), restore on first non-crisis. `kelly_reduced` flag persisted BEFORE the cut applies so a crash can't compound the halving.
+**Crisis mode:** baseline Sharpe < 0.10 AND (recent-50 WR < 48% OR recent-50 `avg_loss/avg_win > 2.0`). The loss-ratio leg catches winning-small/losing-big pathologies the WR-only trigger misses. ≥3 consecutive cycles → halve `kelly_fraction` (floor 0.04 — **intentionally below the 0.05–0.18 pipeline-tunable range** so crisis can size more defensively than any state the optimizer can adopt; do not "fix" the discrepancy), restore on first non-crisis. `kelly_reduced` flag persisted BEFORE the cut applies so a crash can't compound the halving.
 
 **Atomic commit:** Calibrator save is deferred until after weight-optimizer persists config; mid-pipeline crash leaves on-disk calibrator + weights coherent.
 
