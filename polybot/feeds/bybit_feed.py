@@ -145,22 +145,27 @@ class BybitFeed:
         import websockets
 
         backoff = RECONNECT_BASE
+        # OI updates ~every 5s; >60s idle is the established staleness gate for L3e,
+        # but a 30s recv timeout catches dead streams sooner so reconnect runs before
+        # the gate even fires.
         while self._running:
             try:
-                async with websockets.connect(self.ws_url) as ws:
+                async with websockets.connect(self.ws_url, ping_interval=20, ping_timeout=30) as ws:
                     self._ws = ws
                     backoff = RECONNECT_BASE
                     logger.debug(f"Bybit WebSocket connected: {self.ws_url}")
 
-                    # Subscribe to BTCUSDT perpetual tickers
                     sub_msg = json.dumps({
                         "op": "subscribe",
                         "args": ["tickers.BTCUSDT"],
                     })
                     await ws.send(sub_msg)
 
-                    async for msg in ws:
-                        if not self._running:
+                    while self._running:
+                        try:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("Bybit WS idle >30s, forcing reconnect")
                             break
                         self._handle_message(json.loads(msg))
             except asyncio.CancelledError:

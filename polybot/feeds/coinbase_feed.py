@@ -113,8 +113,13 @@ class CoinbaseFeed:
                     logger.debug("Coinbase WebSocket connected, subscribed to %s ticker",
                                  self.product_id)
 
-                    async for msg in ws:
-                        if not self._running:
+                    # BTC-USD ticker fires on every trade — many per second.
+                    # 30s of no data = unambiguously dead; force reconnect.
+                    while self._running:
+                        try:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("Coinbase WS idle >30s, forcing reconnect")
                             break
                         self._handle_message(json.loads(msg))
 

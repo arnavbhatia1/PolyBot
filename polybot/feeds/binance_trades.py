@@ -247,14 +247,19 @@ class BinanceTradesFeed:
         import websockets
         stream = f"{self.ws_url}/{self.symbol}@aggTrade"
         backoff = 1
+        # ping_interval/timeout catch protocol-level stalls; the per-recv idle timeout
+        # catches the "TCP alive but data frozen" failure mode that Binance.US exhibits.
         while self._running:
             try:
-                async with websockets.connect(stream) as ws:
+                async with websockets.connect(stream, ping_interval=20, ping_timeout=30) as ws:
                     self._ws = ws
                     backoff = 1
                     logger.debug(f"Binance aggTrade WebSocket connected: {stream}")
-                    async for msg in ws:
-                        if not self._running:
+                    while self._running:
+                        try:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=45.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("aggTrade WS idle >45s, forcing reconnect")
                             break
                         self._handle_message(json.loads(msg))
             except Exception as e:

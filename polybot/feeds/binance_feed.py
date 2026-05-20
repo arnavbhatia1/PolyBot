@@ -102,14 +102,18 @@ class BinanceFeed:
         import websockets
         stream = f"{self.ws_url}/{self.symbol}@kline_1m"
         backoff = 1
+        # kline updates arrive ~once/second; >45s of silence is a dead stream.
         while self._running:
             try:
-                async with websockets.connect(stream) as ws:
+                async with websockets.connect(stream, ping_interval=20, ping_timeout=30) as ws:
                     self._ws = ws
                     backoff = 1
                     logger.debug(f"Binance WebSocket connected: {stream}")
-                    async for msg in ws:
-                        if not self._running:
+                    while self._running:
+                        try:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=45.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("kline WS idle >45s, forcing reconnect")
                             break
                         self._handle_kline(json.loads(msg))
             except Exception as e:

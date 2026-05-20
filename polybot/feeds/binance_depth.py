@@ -65,14 +65,19 @@ class BinanceDepthFeed:
 
         stream = f"{self.ws_url}/{self.symbol}@depth20@100ms"
         backoff = 1
+        # Stream delivers @100ms — anything past a few seconds of silence is dead.
+        # 10s idle is a generous floor; ping_interval=20 also catches protocol stalls.
         while self._running:
             try:
-                async with websockets.connect(stream) as ws:
+                async with websockets.connect(stream, ping_interval=20, ping_timeout=30) as ws:
                     self._ws = ws
                     backoff = 1
                     logger.debug(f"Binance depth WS connected: {stream}")
-                    async for msg in ws:
-                        if not self._running:
+                    while self._running:
+                        try:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("depth WS idle >10s, forcing reconnect")
                             break
                         data = json.loads(msg)
                         bids = data.get("bids")
