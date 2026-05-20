@@ -95,7 +95,7 @@ python -m pytest polybot/tests/
 
 ## Learning Pipeline
 
-Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older trades came from probability machines that no longer exist). Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][90:100] applied inside that window.
+Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older trades came from probability machines that no longer exist). Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][90:100] applied inside that window. **Backtest Sharpe uses realized fills** — `gain_pct = pnl/size` from closed-trade outcomes, where `pnl` already nets actual fee and actual fill price (see `pipeline_analytics.py:77`, `scheduler.py:780`). No mid-price replay, no assumed-fill correction needed; candidate strategies inherit the same slippage cost any live trade would pay.
 
 **Calibration** (isotonic) has its own 7-day window (needs ≥125 trades in pool; ≥75 in train split; skips entirely if below either threshold) — calibration must reflect the *current* model, not last month's.
 
