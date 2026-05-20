@@ -25,7 +25,7 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     calibration: dict[str, Any] = pipeline_info.get("calibration", {}) or {}
     source = pipeline_info.get("source", "?")
     _now = datetime.now(timezone.utc)
-    ts = f"{_now.strftime('%b')} {_now.day}, {_now.strftime('%Y  %H:%M UTC')}"
+    ts = f"{_now.strftime('%Y-%m-%d %H:%M UTC')}"
 
     baseline = wi.get("old_sharpe", 0.0) or 0.0
     n_baseline = wi.get("n_baseline_trades", 0) or 0
@@ -36,81 +36,119 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
         se_val = math.sqrt((1.0 + 0.5 * baseline * baseline) / n_baseline)
     dyn_floor = max(abs_floor, 0.25 * se_val) if se_val is not None else abs_floor
 
+    manual_obs: list[dict[str, Any]] = pipeline_info.get("manual_observations", []) or []
+    adopted = [c for c in per_change if c.get("decision") == "adopted"]
+    rejected = [c for c in per_change if c.get("decision") != "adopted"]
+
     SEP = "═" * 60
     lines: list[str] = []
     lines.append(SEP)
-    lines.append(f"  NIGHTLY RESULT — {ts}  [{source}]")
+    lines.append(f"  NIGHTLY PIPELINE — {ts}  [source: {source}]")
     lines.append(SEP)
-
-    # Model health line
-    sharpe_str = f"Sharpe {baseline:+.3f}" if n_baseline > 0 else "Sharpe n/a"
-    n_str = f"{n_baseline:,} trades" if n_baseline > 0 else "no trades yet"
-    lines.append(f"  Model:  {sharpe_str} on {n_str}  |  need +{dyn_floor:.3f} delta to adopt any change")
+    lines.append("")
+    lines.append(
+        f"  STATUS: {len(adopted)} adopted, {len(rejected)} rejected, "
+        f"{len(manual_obs)} manual-only"
+    )
     lines.append("")
 
-    # Parameter changes
+    # Model health block
+    lines.append("  MODEL HEALTH")
+    if n_baseline > 0:
+        lines.append(f"    Sharpe         {baseline:+.3f} on {n_baseline:,} trades")
+    else:
+        lines.append(f"    Sharpe         n/a (no trades yet)")
+    lines.append(f"    Adoption bar   +{dyn_floor:.3f} delta required (dyn floor)")
+    lines.append("")
+
+    # Proposals block - aligned columns
     if per_change:
-        adopted = [c for c in per_change if c.get("decision") == "adopted"]
-        rejected = [c for c in per_change if c.get("decision") != "adopted"]
-        if adopted:
-            lines.append(f"  Parameters updated ({len(adopted)}):")
-            for c in adopted:
-                param = c.get("param", "?")
-                old_val = c.get("old_value", "?")
-                new_val = c.get("value", "?")
-                cand_sharpe = c.get("candidate_sharpe")
-                delta = (cand_sharpe - baseline) if isinstance(cand_sharpe, (int, float)) else None
-                delta_str = f"  delta +{delta:.3f}" if delta is not None else ""
-                lines.append(f"    [+] {param}  {old_val} → {new_val}{delta_str}")
-        if rejected:
-            lines.append(f"  Tested but not adopted ({len(rejected)}):")
-            for c in rejected:
-                param = c.get("param", "?")
-                old_val = c.get("old_value", "?")
-                new_val = c.get("value", "?")
-                cand_sharpe = c.get("candidate_sharpe")
-                delta = (cand_sharpe - baseline) if isinstance(cand_sharpe, (int, float)) else None
-                if delta is not None and delta < 0:
-                    why = "made things worse"
-                elif delta is not None and delta < dyn_floor:
-                    why = f"improvement too small ({delta:+.3f}, need {dyn_floor:.3f})"
-                else:
-                    why = c.get("reason", "didn't pass gates")[:50]
-                lines.append(f"    [-] {param}  {old_val} → {new_val}  — {why}")
+        lines.append("  PROPOSALS")
+        param_w = max((len(str(c.get("param", "?"))) for c in per_change), default=20)
+        param_w = min(max(param_w, 18), 28)
+        for c in adopted:
+            param = str(c.get("param", "?"))
+            old_val = c.get("old_value", "?")
+            new_val = c.get("value", c.get("new_value", "?"))
+            cand_sharpe = c.get("candidate_sharpe")
+            delta = (cand_sharpe - baseline) if isinstance(cand_sharpe, (int, float)) else None
+            delta_str = f"Δ {delta:+.4f}" if delta is not None else "Δ   n/a   "
+            arrow = f"{old_val} → {new_val}"
+            lines.append(f"    [+] {param:<{param_w}}  {arrow:<22} {delta_str}  adopted")
+        for c in rejected:
+            param = str(c.get("param", "?"))
+            old_val = c.get("old_value", "?")
+            new_val = c.get("value", c.get("new_value", "?"))
+            cand_sharpe = c.get("candidate_sharpe")
+            delta = (cand_sharpe - baseline) if isinstance(cand_sharpe, (int, float)) else None
+            delta_str = f"Δ {delta:+.4f}" if delta is not None else "Δ   n/a   "
+            arrow = f"{old_val} → {new_val}"
+            if delta is not None and delta < 0:
+                why = "worse on backtest"
+            elif delta is not None and delta < dyn_floor:
+                why = f"below adoption bar"
+            else:
+                why = (c.get("reason", "didn't pass gates") or "didn't pass gates")[:40]
+            lines.append(f"    [-] {param:<{param_w}}  {arrow:<22} {delta_str}  {why}")
     else:
         reason = wi.get("reason", "all parameter combinations tested, none cleared the bar")
-        lines.append(f"  No parameter changes — {reason}")
+        lines.append("  PROPOSALS")
+        lines.append(f"    (none) — {reason}")
+    lines.append("")
 
-    # Isotonic calibration
+    # Calibration block — three lines: State, Span, Decision
+    lines.append("  CALIBRATION")
     p_dec = calibration.get("decision", "skipped")
-    if p_dec in ("adopted", "rejected", "reverted"):
-        id_loss = calibration.get("identity_loss")
-        cur_loss = calibration.get("current_loss")
-        new_loss = calibration.get("new_loss")
-        id_sharpe = calibration.get("identity_sharpe")
-        new_sharpe = calibration.get("new_sharpe")
-        reason = calibration.get("reason", "")
-        # Loss string: identity → current → new
-        if id_loss and cur_loss and new_loss:
-            loss_str = f"log-loss (lower=better):  identity {id_loss:.3f}  →  current {cur_loss:.3f}  →  new {new_loss:.3f}"
+    n_knots = calibration.get("n_knots", 0) or 0
+    new_state_is_isotonic = p_dec == "adopted" and n_knots > 0
+    if new_state_is_isotonic:
+        lines.append(f"    State          isotonic, {n_knots} knots")
+    elif p_dec == "reverted":
+        lines.append(f"    State          identity (reverted from isotonic)")
+    else:
+        # Inspect signal_engine calibrator if available via cal_info — fall back to "unknown active state"
+        cur_n_knots = calibration.get("current_n_knots")
+        if cur_n_knots and cur_n_knots > 0:
+            lines.append(f"    State          isotonic, {cur_n_knots} knots (kept from previous)")
         else:
-            loss_str = ""
-        cur_sharpe = calibration.get("current_sharpe")
-        sharpe_str = (f"  |  sizing:  identity {id_sharpe:.3f}  →  current {cur_sharpe:.3f}  →  new {new_sharpe:.3f}"
-                      if id_sharpe is not None and cur_sharpe is not None and new_sharpe is not None else "")
-        if p_dec == "adopted":
-            lines.append(f"  Calibration:  updated  —  {loss_str}{sharpe_str}")
-        elif p_dec == "reverted":
-            lines.append(f"  Calibration:  reverted to identity  —  {reason}")
-        else:
-            lines.append(f"  Calibration:  kept existing  —  {reason}"
-                         + (f"  |  {loss_str}{sharpe_str}" if loss_str else ""))
-    elif p_dec == "skipped":
-        reason = calibration.get("reason", "")
-        lines.append(f"  Calibration:  skipped" + (f" — {reason}" if reason else ""))
+            lines.append(f"    State          identity (no transform)")
+    # Span line — only meaningful when adopting a fitted curve
+    span_min = calibration.get("span_min")
+    span_max = calibration.get("span_max")
+    if isinstance(span_min, (int, float)) and isinstance(span_max, (int, float)):
+        lines.append(f"    Span           [{span_min:.3f}, {span_max:.3f}]")
+    else:
+        lines.append(f"    Span           n/a")
+    # Decision line
+    reason = (calibration.get("reason", "") or "").strip()
+    dec_map = {"adopted": "ADOPTED new fit",
+               "reverted": "REVERTED to identity",
+               "rejected": "kept existing",
+               "skipped": "SKIPPED"}
+    dec_word = dec_map.get(p_dec, p_dec)
+    if reason:
+        lines.append(f"    Decision       {dec_word} — {reason}")
+    else:
+        lines.append(f"    Decision       {dec_word}")
+    lines.append("")
 
-    # Manual actions needed
-    manual_obs: list[dict[str, Any]] = pipeline_info.get("manual_observations", []) or []
+    # Holdout block — read from per_change holdout fields
+    holdout_changes = [c for c in per_change if "holdout_candidate_sharpe" in c]
+    holdout_n = pipeline_info.get("holdout_n_trades")
+    lines.append("  HOLDOUT (last 3d)")
+    if holdout_changes:
+        h_base = holdout_changes[0].get("holdout_baseline_sharpe", 0.0)
+        improving = sum(1 for c in holdout_changes
+                        if c.get("holdout_candidate_sharpe", 0) >= c.get("holdout_baseline_sharpe", 0))
+        n_str = f"n={holdout_n}" if holdout_n else "active"
+        lines.append(f"    {n_str}, baseline Sharpe {h_base:+.3f}, "
+                     f"{improving}/{len(holdout_changes)} candidates non-degrading")
+    elif holdout_n:
+        lines.append(f"    n={holdout_n} trades — skipped (need ≥30)")
+    else:
+        lines.append(f"    skipped (insufficient trades in last 3d)")
+
+    # Manual-only block (unchanged structure)
     if manual_obs:
         lines.append("")
         lines.append(f"  {'─' * 56}")
@@ -123,7 +161,6 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
             reason = (ob.get("reason", "") or "").strip()
             lines.append(f"    {p}  {cur} → {sug}  [{conf}]")
             if reason:
-                # Wrap reason at ~70 chars
                 words = reason.split()
                 line_buf, wrapped = [], []
                 for w in words:
@@ -1823,6 +1860,11 @@ class AgentScheduler:
                         "n_val": len(new_returns),
                         "n_knots": cal.n_knots,
                         "log_loss_improvement": round(cal.log_loss_improvement, 4),
+                        "current_n_knots": getattr(cur_cal, "n_knots", 0) if cur_cal else 0,
+                        "span_min": (round(float(cal._iso.y_thresholds_[0]), 4)
+                                     if getattr(cal, "_iso", None) is not None else None),
+                        "span_max": (round(float(cal._iso.y_thresholds_[-1]), 4)
+                                     if getattr(cal, "_iso", None) is not None else None),
                     }
 
                     insufficient = len(new_returns) < MIN_CAL_VALIDATION_TRADES
@@ -1962,7 +2004,9 @@ class AgentScheduler:
             opt_outcomes, holdout_outcomes = self._split_holdout(all_outcomes)
             if len(holdout_outcomes) >= HOLDOUT_MIN_TRADES and len(opt_outcomes) >= MIN_TRADES_FOR_LEARNING:
                 logger.info(f"Holdout split: opt={len(opt_outcomes)} trades, holdout={len(holdout_outcomes)} (last {HOLDOUT_DAYS}d)")
+                pipeline_info["holdout_n_trades"] = len(holdout_outcomes)
             else:
+                pipeline_info["holdout_n_trades"] = len(holdout_outcomes)
                 opt_outcomes, holdout_outcomes = all_outcomes, []
 
             # Precompute baseline Sharpe/SE/N so Claude's context shows real numbers
