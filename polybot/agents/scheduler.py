@@ -496,15 +496,13 @@ class AgentScheduler:
         prev_margin_weight: float | None = None,
         logit_scale: float | None = None,
         min_atr: float | None = None,
-        # Investment 2: promoted structural constants — mirror live values so
-        # baseline/candidate Sharpe comparisons stay aligned with production math.
+        # Promoted structural constants — mirror live so baseline/candidate Sharpe stays aligned.
         regime_momentum_threshold: float | None = None,
         flow_combined_cap: float | None = None,
         final_logit_clamp: float | None = None,
         l5_regime_damp_cap: float | None = None,
         atr_regime_shift_threshold: float | None = None,
-        # Investment 3: L6 weights — default 0.0 makes L6 dead in backtest unless
-        # the pipeline raises a weight off zero (matching live behavior).
+        # L6 weights — default 0.0 keeps backtest inert until pipeline raises one (matches live).
         derived_weights: dict[str, float] | None = None,
     ) -> list[float]:
         """Replay the full logit composition used in production for a candidate
@@ -707,9 +705,8 @@ class AgentScheduler:
                 eff_mw = min(0.10, abs(momentum_weight) * 0.5)
             logit_p += momentum_score * eff_mw * logit_scale
 
-            # L6 — derived features (Investment 3). Mirrors live signal engine.
-            # Rolling ATR state was updated at the L1 floor block above, so the
-            # short/long means below are causal-through-this-tick (same as live).
+            # L6 — derived features. ATR rolling state was updated at L1 above,
+            # so short/long means here are causal-through-this-tick (matches live).
             if l6_active and atr_raw > 0:
                 atr_short_mean = _atr_short_sum / len(_atr_short) if _atr_short else 0.0
                 atr_long_mean = _atr_long_sum / len(_atr_long) if _atr_long else 0.0

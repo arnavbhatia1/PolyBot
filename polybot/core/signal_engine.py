@@ -89,13 +89,7 @@ def compute_signal_consensus(signals: dict[str, float], side: str, dead_zone: fl
 
 
 class SignalEngine:
-    """Computes P(Up) for a 5-min BTC Up/Down contract via:
-    L1 Student-t CDF, L2 regime autocorr, L3 CLOB flow, L3b spot CVD,
-    L3e Bybit OI liquidation, L4 indicator momentum, L5 prev-window carry,
-    L6 derived feature library, plus isotonic calibration (class name is legacy
-    `IsotonicCalibrator`). Trades when |model - market| >= min_edge. Isotonic
-    re-fit each pipeline cycle is the sole overconfidence correction.
-    """
+    """P(Up) for 5-min BTC Up/Down: L1 Student-t CDF + L2-L6 logit-space layers + isotonic calibration."""
 
     def __init__(self, min_edge: float | None = None, kelly_fraction: float | None = None,
                  momentum_weight: float | None = None, weights: dict[str, float] | None = None,
@@ -113,14 +107,12 @@ class SignalEngine:
                  loss_cut_time_s: float | None = None,
                  consensus_dead_zone: float | None = None,
                  consensus_config: dict | None = None,
-                 # ── Investment 2: promoted structural constants ────────────
                  regime_momentum_threshold: float | None = None,
                  flow_combined_cap: float | None = None,
                  final_logit_clamp: float | None = None,
                  deep_loss_hold_threshold: float | None = None,
                  l5_regime_damp_cap: float | None = None,
                  atr_regime_shift_threshold: float | None = None,
-                 # ── Investment 3: derived feature weights (default 0.0) ────
                  derived_weights: dict[str, float] | None = None) -> None:
         # Defaults resolve from param_registry — settings.yaml drives production via _build_signal_engine.
         if min_edge is None: min_edge = _d("min_edge")
@@ -168,15 +160,12 @@ class SignalEngine:
         self.loss_cut_fraction: float = loss_cut_fraction
         self.loss_cut_time_s: float = loss_cut_time_s
         self.consensus_dead_zone: float = consensus_dead_zone
-        # Promoted structural constants — used in compute_probability / evaluate_hold.
         self.regime_momentum_threshold: float = regime_momentum_threshold
         self.flow_combined_cap: float = flow_combined_cap
         self.final_logit_clamp: float = final_logit_clamp
         self.deep_loss_hold_threshold: float = deep_loss_hold_threshold
         self.l5_regime_damp_cap: float = l5_regime_damp_cap
         self.atr_regime_shift_threshold: float = atr_regime_shift_threshold
-        # L6 derived feature weights — default every entry to its registry default (0.0).
-        # `derived_weights` may supply overrides; missing entries fall back to _d(...).
         _dw = derived_weights or {}
         self.derived_weights: dict[str, float] = {
             name: float(_dw.get(name, _d(f"derived_{name}_weight")))
@@ -222,17 +211,8 @@ class SignalEngine:
         return base_floor
 
     def effective_momentum_weight(self, regime_autocorr: float) -> float:
-        """Regime-aware magnitude scaler for L4 (unsigned).
-
-        Polarity per-indicator-group is handled inside `compute_momentum`; this
-        function returns only the *magnitude* with smooth regime amplification:
-          |t| = |tanh(autocorr / threshold)| interpolates DAMPEN (0.5×) at t=0
-          up to AMPLIFY (1.5×) as |t|→1, matching the previous cliff anchors
-          without the discontinuity at |autocorr| = threshold.
-
-        Returned magnitude is clamped to _MOMENTUM_WEIGHT_CLAMP. The sign of
-        `momentum_weight` is irrelevant after this change — only |momentum_weight|
-        is consulted, so legacy negative-fade defaults still work unchanged.
+        """Regime-amplified L4 magnitude (unsigned). Polarity lives in compute_momentum.
+        |momentum_weight| only — sign is regime-conditional inside the group split.
         """
         base = abs(self.momentum_weight)
         t_abs = abs(math.tanh(regime_autocorr / self.regime_momentum_threshold)) if self.regime_momentum_threshold > 0 else 0.0
@@ -244,11 +224,7 @@ class SignalEngine:
                                 spot_flow_signal: float, liquidation_pressure: float,
                                 prev_resolution_margin: float,
                                 last_return: float) -> float:
-        """L6 — sum non-zero-weighted derived features in logit space, capped.
-
-        Output magnitude bounded by L6_LOGIT_CAP. `last_return` is computed once
-        in compute_probability and passed in to avoid a second `closes` walk.
-        """
+        """L6 sum, bounded by L6_LOGIT_CAP. last_return passed in to avoid a second closes walk."""
         n_short = len(self._atr_history)
         atr_rolling_20 = (self._atr_history_sum / n_short) if n_short > 0 else 0.0
         n_long = len(self._atr_long_term)
@@ -279,9 +255,6 @@ class SignalEngine:
         return total
 
     def compute_regime_factor(self, closes) -> float:
-        """1-lag autocorr of recent returns so the regime detector and L2
-        cannot disagree on the same closes array.. Positive=trending, negative=reverting.
-        """
         return lag1_autocorr(closes, self.regime_lookback)
 
     def compute_probability(self, btc_price: float, strike_price: float,
@@ -372,8 +345,7 @@ class SignalEngine:
                 last_return=last_return,
             )
 
-        # Hard-clamp total logit to prevent any single day's signal stack from
-        # producing absurd probabilities (e.g., 0.998 on a cascade of aligned signals).
+        # Hard-clamp total logit so a cascade of aligned signals can't produce >0.98 probs.
         clamp = self.final_logit_clamp
         logit_p = max(-clamp, min(clamp, logit_p))
 
@@ -384,29 +356,10 @@ class SignalEngine:
         return prob_up
 
     def compute_momentum(self, indicators: dict[str, dict], regime_autocorr: float = 0.0) -> float:
-        """L4 indicator aggregate, signed coherently with the regime.
-
-        Indicators split by *native polarity*:
-          Mean-reverting (fade-aligned by construction):
-            RSI score: high → negative (overbought → bearish)
-            Stochastic score: high → negative
-            VWAP score: -(price - vwap) — above vwap → negative
-          Trend-confirming (trend-aligned by construction):
-            MACD score: positive histogram → positive (bullish momentum)
-            OBV score: agreement between volume slope and price slope → ±
-
-        Regime conditioning is applied PER GROUP via a smooth tanh polarity
-        scaler so a trade at autocorr=0.149 vs 0.151 no longer flips three
-        indicators' signs. With `t = tanh(autocorr / regime_momentum_threshold)`
-        the group multipliers reproduce the previous three-branch behavior at
-        the anchor points and interpolate smoothly between them:
-
-          t = +1 (strong trend):    mean_revert × -1,   trend_confirm × +1
-          t =  0 (neutral):         mean_revert × +0.5, trend_confirm × +0.5
-          t = -1 (strong revert):   mean_revert × +1,   trend_confirm × +0.5
-
-        Output is clamped to [-1, 1]; the magnitude/regime amp lives in
-        `effective_momentum_weight` at the call site.
+        """L4 aggregate. Polarity-split groups + smooth tanh regime conditioning so
+        a tick at autocorr=0.149 vs 0.151 doesn't flip three indicators' signs.
+        Mean-revert group (rsi/stoch/vwap) and trend-confirm group (macd/obv)
+        get separate multipliers from t = tanh(autocorr / threshold).
         """
         w = self.weights
         def _s(name: str) -> float:
@@ -568,16 +521,8 @@ class SignalEngine:
                 f"edge={holding_edge:+.0%}")
 
     def _kelly(self, prob: float, market_price: float, fee_rate: float = 0.018) -> float:
-        """Fee-aware Kelly fraction.
-
-        Polymarket collects the entry fee in shares, so for $1 invested at price
-        p you receive (1/p) × (1 - fee_rate × (1-p)) shares. Working through:
-            net_b = b × (1 - fee_rate),   where b = (1-p)/p
-        Kelly with the fee-adjusted payoff therefore divides by (1 - fee_rate)
-        less of the raw b. Effect at fee_rate=0.018: ~5% smaller positions at
-        mid prices. Resolution fees are zero (fee = rate × shares × price ×
-        (1-price), which collapses to 0 at price 0 or 1), so no second-order
-        adjustment is needed.
+        """Fee-aware Kelly. Entry fee on shares → net_b = b × (1 - fee_rate).
+        Resolution fees collapse to 0 at price 0/1, no exit adjustment needed.
         """
         if market_price <= 0.01 or market_price >= 0.99:
             return 0

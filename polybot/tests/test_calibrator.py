@@ -1,12 +1,6 @@
-"""IsotonicCalibrator (isotonic-backed) — calibration semantics and persistence.
-
-Class name is legacy; internals are isotonic regression. Tests pin the
-contract every caller depends on:
-  * Default state is identity (no calibration).
-  * Fit only adopts if it actually beats identity on weighted log-loss.
-  * Fit on biased data adopts and shifts predictions in the correct direction.
-  * Save/load round-trips an adopted isotonic fit *exactly*.
-  * A legacy {a, b} JSON file from the previous Platt era loads as identity.
+"""IsotonicCalibrator contract: default identity, fit only adopts beating identity,
+biased-data fit shifts in correct direction, save/load round-trips exactly,
+legacy {a,b} Platt JSON loads as identity.
 """
 import json
 from pathlib import Path

@@ -1,25 +1,6 @@
-"""Isotonic probability calibration.
-
-A 2-parameter Platt sigmoid was structurally incapable of correcting
-per-quartile miscalibration (e.g. "Q4 edge realization 0.56 but Q1–Q3
-well-calibrated") — fits on small windows could collapse to near-flat slope
-and crush the model's dynamic range to a 12-point band. Isotonic learns an
-arbitrary monotonic step function with as many knots as the data supports,
-so the same 7-day window produces a useful correction whenever one exists,
-and an explicit identity fallback when it doesn't.
-
-Fit protocol:
-  1. Need at least `min_samples` data points (default 150).
-  2. Fit isotonic on (probs, outcomes) with recency `sample_weights`.
-  3. Compute weighted log-loss for both isotonic and identity on the same
-     pool. Adopt only if the bootstrap-CI lower bound of the improvement > 0.
-  4. Otherwise revert to identity. This replaces Platt's brittle
-     "slope-near-zero" heuristic with a direct beat-identity test.
-
-Storage format (JSON, single file):
-  - `type: "isotonic"` with `x_thresholds` / `y_thresholds` for round-trip,
-    plus `n_samples` and `log_loss_improvement` for telemetry.
-  - `type: "identity"` or absent → calibrator stays at identity.
+"""Isotonic probability calibration. Replaces Platt (2-param sigmoid couldn't
+correct per-quartile miscalibration on thin windows). Adopts only if bootstrap-CI
+lower bound of weighted log-loss improvement vs identity > 0; else stays identity.
 """
 from __future__ import annotations
 
@@ -65,17 +46,7 @@ def _weighted_log_loss(probs: np.ndarray, outcomes: np.ndarray, weights: np.ndar
 
 
 class IsotonicCalibrator:
-    """Monotone isotonic-regression probability calibrator.
-
-    External contract:
-      * `calibrate(raw_prob: float) -> float` — apply calibration; identity when
-        unfitted.
-      * `fit(probs, outcomes, min_samples=150, sample_weights=None) -> bool` —
-        attempt to learn the calibration; returns True only if the fit
-        beats identity on weighted log-loss with the bootstrap CI lower bound > 0.
-      * `is_identity: bool` — True when calibration is a no-op.
-      * `save(path)` / `load(path)` — JSON round-trip.
-    """
+    """Monotone isotonic-regression probability calibrator."""
 
     def __init__(self) -> None:
         self._iso = None  # sklearn IsotonicRegression instance or None
@@ -103,13 +74,8 @@ class IsotonicCalibrator:
 
     @property
     def state_hash(self) -> str:
-        """Short stable hash of the calibrator's effective function.
-
-        Returns ``"identity"`` when unfitted, else a 12-char hex digest derived
-        from the rounded threshold arrays. Two calibrators that produce the
-        same calibration curve (within rounding) hash to the same value, so
-        backtests can stratify outcomes by which calibrator was live at fill
-        time.
+        """12-char digest of fitted thresholds (or "identity"). Lets backtests
+        stratify by calibrator-in-effect at fill time.
         """
         if self._iso is None:
             return "identity"
@@ -132,16 +98,8 @@ class IsotonicCalibrator:
     def fit(self, probs: list[float], outcomes: list[int],
             min_samples: int = _DEFAULT_MIN_SAMPLES,
             sample_weights: list[float] | None = None) -> bool:
-        """Fit isotonic on (probs, outcomes). Returns True iff adopted.
-
-        Adoption requires the bootstrap-CI lower bound of the weighted log-loss
-        improvement over identity to exceed 0 (100 resamples, lower 80% bound).
-        Weights are recency-decayed by the caller (~0.94/day, ~11d half-life)
-        so the fit and gate share the same emphasis.
-
-        On rejection the calibrator state is unchanged; it remains identity
-        if it was identity, otherwise it keeps the previous fit. This mirrors
-        the existing scheduler logic that selectively replaces / reverts.
+        """Fit isotonic. Returns True iff bootstrap-CI lower bound vs identity > 0.
+        Rejection leaves state unchanged (keeps previous fit or identity).
         """
         if len(probs) < min_samples:
             logger.info(f"Isotonic calibration: {len(probs)} samples < {min_samples} minimum, skipping")
@@ -249,9 +207,8 @@ class IsotonicCalibrator:
                 if len(x_thr) == 0 or len(x_thr) != len(y_thr):
                     raise ValueError(f"degenerate thresholds (x={len(x_thr)}, y={len(y_thr)})")
                 iso = IsotonicRegression(out_of_bounds="clip", y_min=_EPS, y_max=1.0 - _EPS)
-                # Re-fitting on (x_thresholds, y_thresholds) recovers the function
-                # exactly: the projection is already monotonic so isotonic acts as
-                # identity on its own knots. Verified by round-trip test.
+                # Re-fitting on the threshold pairs recovers the function exactly
+                # — they're already monotonic so isotonic is identity on its own knots.
                 iso.fit(x_thr, y_thr)
                 self._iso = iso
                 self._n_samples = int(data.get("n_samples", 0))

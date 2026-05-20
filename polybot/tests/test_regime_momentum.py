@@ -21,18 +21,14 @@ def _engine(mw: float = -0.02, min_atr: float = 8.0) -> SignalEngine:
     )
 
 
-# `regime_momentum_threshold` was promoted from a module constant to an instance
-# attribute (Investment 2). Tests reference the live engine attribute so the
-# threshold can be tuned through settings.yaml without breaking the asserts.
+# `regime_momentum_threshold` is now an instance attribute; tests read it via the engine
+# so settings.yaml tuning doesn't break asserts.
 def _threshold(eng: SignalEngine) -> float:
     return eng.regime_momentum_threshold
 
 
-# --- Regime-conditional momentum --------------------------------------------------
-#
-# After the L4 polarity-split refactor:
-#   * effective_momentum_weight returns an UNSIGNED magnitude (regime-amplified).
-#   * Sign/polarity is handled per indicator group inside compute_momentum.
+# After the L4 polarity-split: effective_momentum_weight returns UNSIGNED magnitude,
+# sign lives in per-group multipliers inside compute_momentum.
 
 def test_momentum_magnitude_saturates_in_strong_regime():
     eng = _engine(mw=-0.02)

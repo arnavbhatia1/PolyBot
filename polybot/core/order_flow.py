@@ -1,12 +1,4 @@
-"""Order flow signal computation from Polymarket CLOB data.
-
-Combines two independent signals:
-1. Book imbalance — bid depth vs ask depth reveals directional pressure
-2. Trade flow — net buy vs sell volume from recent trades reveals informed activity
-
-The composite signal is passed to SignalEngine as flow_signal (-1 to +1),
-where positive = bullish (favors Up) and negative = bearish (favors Down).
-"""
+"""L3 flow signal: book imbalance (60%) + trade flow (40%) → flow_signal ∈ [-1, 1]."""
 from __future__ import annotations
 
 import logging
@@ -26,14 +18,7 @@ class FlowData(TypedDict):
 
 
 def _sum_top_levels(orders: list[dict[str, Any]], best_first: str, n: int) -> float:
-    """Sum size over the top-N price levels.
-
-    best_first = "high" → highest prices first (use for bids: best bid = highest)
-    best_first = "low"  → lowest prices first  (use for asks: best ask = lowest)
-
-    Far-out resting orders are dropped — they don't reflect tradeable
-    intent on the timescale this signal operates over.
-    """
+    """Far-out resting orders don't reflect tradeable intent at our timescale; drop them."""
     try:
         sorted_orders = sorted(
             orders,
@@ -47,18 +32,8 @@ def _sum_top_levels(orders: list[dict[str, Any]], best_first: str, n: int) -> fl
 
 def book_imbalance(book_up: dict[str, Any], book_down: dict[str, Any],
                    depth_levels: int = _BOOK_DEPTH_LEVELS) -> float:
-    """Compute bid/ask imbalance across both sides of the binary market.
-
-    Returns float from -1 (bearish / Down pressure) to +1 (bullish / Up pressure).
-
-    Only the top `depth_levels` levels on each side are counted. A 10k-share
-    resting bid 20¢ from the market is non-informative noise — the previous
-    full-book sum gave it equal weight to a 100-share top-of-book bid, which
-    distorted the imbalance.
-
-    Logic:
-    - If Up bids >> Up asks -> buyers accumulating Up -> bullish
-    - If Down bids >> Down asks -> buyers accumulating Down -> bearish
+    """Bid/ask imbalance ∈ [-1, 1]. Only top-N levels — full book counted distant resting
+    orders equally with top-of-book, distorting the signal.
     """
     bid_up = _sum_top_levels(book_up.get("bids", []), "high", depth_levels)
     ask_up = _sum_top_levels(book_up.get("asks", []), "low", depth_levels)
@@ -78,11 +53,8 @@ def book_imbalance(book_up: dict[str, Any], book_down: dict[str, Any],
 
 
 def trade_flow(trades_up: list[dict[str, Any]], trades_down: list[dict[str, Any]], lookback_seconds: float = 120.0, half_life_s: float = _TRADE_FLOW_HALF_LIFE_S) -> float:
-    """Compute net trade flow direction from recent trade history. Returns float from -1 (net selling/Down buying) to +1 (net buying Up).
-    
-    Trades are recency-weighted by an exponential decay (`half_life_s` = 30s
-    by default). Polymarket CLOB sizes are in shares. Bullish-Up activity = buying Up OR
-    selling Down (each share represents the same $1 binary payoff).
+    """Recency-weighted net flow ∈ [-1, 1]. Buying Up == selling Down for direction
+    (each share is the same $1 binary payoff).
     """
     now = time.time()
     cutoff = now - lookback_seconds
@@ -120,24 +92,6 @@ def compute_flow_signal(book_up: dict[str, Any], book_down: dict[str, Any],
                         book_weight: float = 0.6,
                         trade_weight: float = 0.4,
                         lookback_seconds: float = 120.0) -> FlowData:
-    """Compute composite order flow signal.
-
-    Args:
-        book_up: CLOB order book for Up token
-        book_down: CLOB order book for Down token
-        trades_up: Recent trade history for Up token
-        trades_down: Recent trade history for Down token
-        book_weight: Weight for book imbalance component
-        trade_weight: Weight for trade flow component
-        lookback_seconds: Only count trades within this window
-
-    Returns:
-        dict with:
-            flow_score: float -1 to +1 (positive = bullish)
-            book_imbalance: float -1 to +1
-            trade_flow: float -1 to +1
-            trade_count: int (total trades considered)
-    """
     bi = book_imbalance(book_up, book_down)
     tf = trade_flow(trades_up, trades_down, lookback_seconds)
 

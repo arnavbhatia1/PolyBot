@@ -1,9 +1,5 @@
-"""L6 derived feature library invariants (Investment 3).
-
-These tests pin the contract that the pipeline relies on:
-  * Default weights are all 0.0 → L6 layer is dead → no probability change.
-  * Every feature function returns finite, bounded values on extreme inputs.
-  * The L6 contribution cap clips correctly when a weight is pushed high.
+"""L6 contract: default weights 0.0 (layer inert), all features finite on extremes,
+combined contribution cap clips correctly when a weight is raised.
 """
 import math
 

@@ -30,8 +30,9 @@ WebSocket feeds + REST polls
     L3  CLOB flow: book imbalance + trade flow
     L3b Spot CVD: Binance aggTrades CVD + taker ratio
     L3e Liquidation: Bybit OI drop × price direction
-    L4  Indicator momentum: RSI/MACD/Stoch/OBV/VWAP (regime-conditional)
-    L5  Previous-window margin carry
+    L4  Indicator momentum: RSI/MACD/Stoch/OBV/VWAP (polarity-split, regime-conditional)
+    L5  Previous-window margin carry (regime-damped)
+    L6  Derived feature library (closed; 8 bounded transforms; default-off, hard-capped ±0.25)
     +   Isotonic calibration (sole overconfidence correction; re-fit each pipeline cycle)
         |
   Edge = calibrated_model_prob - market_price (CLOB /price endpoint)
@@ -59,14 +60,15 @@ WebSocket feeds + REST polls
 | Module | Purpose |
 |---|---|
 | `core/signal_engine.py` | Probability model + `evaluate_hold` |
-| `core/calibrator.py` | Isotonic calibration (legacy class name `PlattCalibrator`) |
+| `core/calibrator.py` | `IsotonicCalibrator` — bootstrap-CI gated adoption |
+| `core/derived_features.py` | L6 closed library + `FeatureContext` |
 | `core/order_flow.py` | Book imbalance + trade flow signal |
 | `core/regime.py` | Multi-state regime classifier |
 | `core/liquidation.py` | OI-based liquidation pressure |
 | `core/exit_boundary.py` | Time/price-aware exit threshold curve |
 | `core/sprt.py` | Sequential probability ratio test (entry gate) |
-| `core/adverse_selection.py` | Post-fill reversal monitor |
-| `core/returns.py` | `gain_pct` / `log_return` |
+| `core/adverse_selection.py` | Post-fill reversal monitor (edge_decay + adverse_rate) |
+| `core/returns.py` | `log_return` + shared `lag1_autocorr` (used by L2 and RegimeDetector) |
 | `feeds/coinbase_feed.py` | Primary BTC price (WS) |
 | `feeds/kraken_feed.py` | Secondary BTC price (WS, Chainlink-aligned) |
 | `feeds/binance_feed.py` | 1-min candles, ATR, fallback BTC price |
@@ -126,9 +128,9 @@ Daily 23:30 ET. Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][
 
 1. **PipelineTracker** — fills 7d/14d/30d Sharpe per adopted version; flags rollback when 7d Sharpe trails baseline by ≥ 0.05 (n≥100).
 2. **BiasDetector** — per-indicator/side/edge/time/regime/phase/flip stats + edge-realization quartiles + KS shift.
-3. **Calibrator (isotonic)** — recency-weighted isotonic regression on train; adopts only if weighted log-loss beats identity by ≥ `1e-4` AND Kelly-Sharpe on holdout doesn't degrade. Meta-warning when raw-model Sharpe ≥ 0.95 × calibrated Sharpe.
-4. **TAEvolver** — Claude (or `LocalRecommender` fallback) reads the analysis card, returns `{changes, manual_observations}`.
-5. **WeightOptimizer** — per-param walk-forward backtest. Adoption gate: `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West autocorr-adjusted). Worst-fold floor `≥ -0.10`. Regime-stratified veto (≥20 trades per bucket). 2-day per-param cooldown. Combined backtest after ≥2 adoptions backs out lowest-z change if combined Δ < 0.7 × sum.
+3. **Calibrator (isotonic)** — recency-weighted isotonic on a 7-day window (needs ≥125 trades in pool, ≥75 in train split); adopts only if bootstrap-CI (100 resamples, lower 80%) lower bound of weighted log-loss improvement vs identity > 0. Saved deferred (after weight-optimizer persists) so a mid-pipeline crash leaves on-disk state coherent.
+4. **TAEvolver** — Claude (or `LocalRecommender` fallback) reads the analysis card, returns `{changes, manual_observations}`. Manual-only params (exit/loss-cut/risk/schedule/indicator-periods/SPRT) get rerouted from `changes` to `manual_observations` by the validator.
+5. **WeightOptimizer** — per-param walk-forward backtest. Adoption gate: `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West autocorr-adjusted). Worst-fold floor `≥ -0.10`. Regime-stratified veto (≥20 trades per bucket). Holdout confirmation on last-3-day pool (≥30 trades). Combined backtest after ≥2 adoptions iteratively backs out lowest-z change if combined Δ < 0.7 × sum.
 
 Crisis mode (baseline Sharpe < 0.10 AND (recent-50 WR < 48% OR recent-50 `avg_loss/avg_win > 2.0`)): after 3 consecutive cycles, halve `kelly_fraction` (floor 0.04). Restored on first non-crisis cycle.
 
