@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 import time
 from collections import deque
 from typing import Any
@@ -166,8 +167,12 @@ class ClobWebSocket:
         backoff = RECONNECT_BASE
         while not self._closing:
             try:
-                async with websockets.connect(self.url, ping_interval=None) as ws:
+                async with websockets.connect(self.url, ping_interval=None, compression=None) as ws:
                     self._ws = ws
+                    _sock = ws.transport.get_extra_info('socket') if getattr(ws, 'transport', None) else None
+                    if _sock is not None:
+                        try: _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        except Exception: pass
                     self.connected = True
                     backoff = RECONNECT_BASE
                     logger.debug("CLOB WebSocket connected")

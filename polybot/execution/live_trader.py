@@ -248,6 +248,15 @@ class LiveTrader(BaseTrader):
         the next FOK submit then raises AuthError without making a live order
         attempt, so the main loop's AuthError handler can shut trading down.
         """
+        try:
+            await asyncio.to_thread(self.client.get_sampling_simplified_markets)
+        except Exception as e:
+            if _looks_like_auth_error(e):
+                logger.error(
+                    "AUTH FAILURE during keepalive pre-warm: %s — "
+                    "latching for fail-fast on next FOK submit", e,
+                )
+                self._latched_auth_error = str(e)
         async def _ping() -> None:
             while True:
                 try:

@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import math
+import socket
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -150,8 +151,12 @@ class BybitFeed:
         # the gate even fires.
         while self._running:
             try:
-                async with websockets.connect(self.ws_url, ping_interval=20, ping_timeout=30) as ws:
+                async with websockets.connect(self.ws_url, ping_interval=20, ping_timeout=30, compression=None) as ws:
                     self._ws = ws
+                    _sock = ws.transport.get_extra_info('socket') if getattr(ws, 'transport', None) else None
+                    if _sock is not None:
+                        try: _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        except Exception: pass
                     backoff = RECONNECT_BASE
                     logger.debug(f"Bybit WebSocket connected: {self.ws_url}")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -69,8 +70,12 @@ class BinanceDepthFeed:
         # 10s idle is a generous floor; ping_interval=20 also catches protocol stalls.
         while self._running:
             try:
-                async with websockets.connect(stream, ping_interval=20, ping_timeout=30) as ws:
+                async with websockets.connect(stream, ping_interval=20, ping_timeout=30, compression=None) as ws:
                     self._ws = ws
+                    _sock = ws.transport.get_extra_info('socket') if getattr(ws, 'transport', None) else None
+                    if _sock is not None:
+                        try: _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        except Exception: pass
                     backoff = 1
                     logger.debug(f"Binance depth WS connected: {stream}")
                     while self._running:

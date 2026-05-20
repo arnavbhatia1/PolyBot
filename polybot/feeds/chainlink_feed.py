@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 import time
 from typing import Any
 
@@ -126,8 +127,12 @@ class ChainlinkFeed:
         while self._running:
             ping_task: asyncio.Task | None = None
             try:
-                async with websockets.connect(RTDS_WS_URL, ping_interval=PING_INTERVAL_S) as ws:
+                async with websockets.connect(RTDS_WS_URL, ping_interval=PING_INTERVAL_S, compression=None) as ws:
                     self._ws = ws
+                    _sock = ws.transport.get_extra_info('socket') if getattr(ws, 'transport', None) else None
+                    if _sock is not None:
+                        try: _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        except Exception: pass
                     # Subscribe to Chainlink BTC/USD (resolution oracle)
                     await ws.send(json.dumps({
                         "action": "subscribe",

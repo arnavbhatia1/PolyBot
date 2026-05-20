@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 import time
 from dataclasses import dataclass
 from collections import deque
@@ -105,8 +106,12 @@ class BinanceFeed:
         # kline updates arrive ~once/second; >45s of silence is a dead stream.
         while self._running:
             try:
-                async with websockets.connect(stream, ping_interval=20, ping_timeout=30) as ws:
+                async with websockets.connect(stream, ping_interval=20, ping_timeout=30, compression=None) as ws:
                     self._ws = ws
+                    _sock = ws.transport.get_extra_info('socket') if getattr(ws, 'transport', None) else None
+                    if _sock is not None:
+                        try: _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        except Exception: pass
                     backoff = 1
                     logger.debug(f"Binance WebSocket connected: {stream}")
                     while self._running:

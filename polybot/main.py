@@ -1971,7 +1971,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 book_task = asyncio.create_task(clob_ws.book_updated.wait())
                 resolve_task = asyncio.create_task(clob_ws.market_resolved.wait())
                 done, pending = await asyncio.wait(
-                    {book_task, resolve_task}, timeout=0.25, return_when=asyncio.FIRST_COMPLETED)
+                    {book_task, resolve_task}, timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
                 for t in pending:
                     t.cancel()
                 if clob_ws.book_updated.is_set():
