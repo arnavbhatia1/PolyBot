@@ -233,27 +233,38 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
 
     @bot.command(name="pipeline")
     async def pipeline_status(ctx):
-        history_path = Path("polybot/memory/pipeline_history.json")
+        run_log_path = Path("polybot/memory/pipeline_run_log.json")
         cal_path = Path("polybot/memory/calibration/platt_params.json")
 
         last_run = "no data"
-        adopted_line = "no data"
-        if history_path.exists():
+        result_line = "no data"
+        source_line = ""
+        sharpe_line = ""
+        if run_log_path.exists():
             try:
-                history = json.loads(history_path.read_text())
-                if history:
-                    latest = history[-1]
+                runs = json.loads(run_log_path.read_text())
+                if runs:
+                    latest = runs[-1]
                     dt = datetime.fromisoformat(latest["date"].replace("Z", "+00:00")).astimezone(_ET)
                     last_run = dt.strftime("%Y-%m-%d %H:%M ET")
-                    changes = latest.get("changes", {})
-                    if changes:
+                    source_line = latest.get("source", "?")
+                    sharpe_line = f"{latest.get('baseline_sharpe', 0.0):+.4f}"
+                    changes = latest.get("changes", [])
+                    if isinstance(changes, list) and changes:
+                        adopted = [c for c in changes if c.get("decision") == "adopted"]
+                        rejected = [c for c in changes if c.get("decision") == "rejected"]
+                        if adopted:
+                            names = ", ".join(c.get("param", "?") for c in adopted[:3])
+                            extra = "..." if len(adopted) > 3 else ""
+                            result_line = f"{len(adopted)} adopted ({names}{extra}), {len(rejected)} rejected"
+                        else:
+                            result_line = f"all {len(rejected)} proposals rejected"
+                    elif isinstance(changes, dict) and changes:
                         keys = list(changes.keys())
                         shown = ", ".join(keys[:3]) + ("..." if len(keys) > 3 else "")
-                        adopted_line = f"{len(keys)} changes ({shown})"
+                        result_line = f"{len(keys)} adopted ({shown})"
                     else:
-                        adopted_line = "none"
-                    if latest.get("reverted"):
-                        adopted_line += " [REVERTED]"
+                        result_line = "no proposals"
             except Exception:
                 pass
 
@@ -283,7 +294,9 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             f"**Pipeline**\n"
             f"```\n"
             f"  Last run    {last_run}\n"
-            f"  Adopted     {adopted_line}\n"
+            f"  Source      {source_line}\n"
+            f"  Baseline    {sharpe_line} Sharpe\n"
+            f"  Result      {result_line}\n"
             f"  Calibrator  {cal_line}\n"
             f"  Next run    {next_str}\n"
             f"```"
