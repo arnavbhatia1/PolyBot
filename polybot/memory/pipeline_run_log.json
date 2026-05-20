@@ -1531,5 +1531,77 @@
         ]
       }
     ]
+  },
+  {
+    "date": "2026-05-20T03:56:06.587800+00:00",
+    "source": "claude",
+    "baseline_sharpe": 0.1909,
+    "changes": [
+      {
+        "param": "min_edge",
+        "old_value": 0.04,
+        "new_value": 0.045,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0001,
+        "predicted_delta_sharpe_7d": 0.01,
+        "confidence_interval": [
+          -0.008,
+          0.025
+        ]
+      },
+      {
+        "param": "min_model_probability",
+        "old_value": 0.56,
+        "new_value": 0.55,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0006,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "logit_scale",
+        "old_value": 4.0,
+        "new_value": 3.8,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0004,
+        "predicted_delta_sharpe_7d": 0.015,
+        "confidence_interval": [
+          -0.005,
+          0.035
+        ]
+      },
+      {
+        "param": "min_kelly",
+        "old_value": 0.01,
+        "new_value": 0.008,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0028,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "l5_regime_damp_cap",
+        "old_value": 0.7,
+        "new_value": 0.75,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      }
+    ]
   }
 ]

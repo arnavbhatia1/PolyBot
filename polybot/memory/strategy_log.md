@@ -1,113 +1,3 @@
-- ATR halved (mean 27→13) — backtest trained on a fundamentally different market
-
-**Warnings:**
-- With Sharpe now negative in the most recent bucket, live edge may have disappeared entirely
-- Model_probability mean shifted 0.581→0.640 but Q4 realization is -0.60 — overconfidence is worsening
-- 30+ parameter combinations exhausted with zero live-validated adoptions — architecture review warranted
-
-**Reasoning:** Every backtestable parameter has been attempted across multiple values and directions, with none clearing the fold-consistency requirement. The correct action is an empty changes list while the operator considers whether a structural model review (not parameter tuning) is needed to adapt to the new low-ATR regime. The three manual observations (exit threshold, adverse selection gate, and late-window Kelly cut) remain the highest-confidence actionable levers — these are operator-controlled and do not depend on backtest fold consistency.
-
-## 2026-04-29T13:01:52.045132+00:00
-
-**Source:** Claude (high)
-**Proposed Changes (0):**
-  - none
-
-**Manual Suggestions (2) [operator-only]:**
-  - exit_edge_threshold: -0.05 -> -0.12 [high]
-    Scalps at holding_edge < -0.10 are correct only 38% of the time (n=775, 12pp below break-even, 8× noise floor) — holding to resolution outperforms by $1,057 overall, and these deep-negative exits are the primary driver of destroyed value
-  - adverse_selection_threshold: 0.8 -> 0.85 [medium]
-    The pre_submit_edge_drift gate blocked 203 trades of which 63% were profitable with +$190.87 simulated PnL — both the 60% profitable and positive sim_pnl bars are met, indicating the gate is over-filtering edge-positive entries
-
-**Findings:**
-- Every backtestable parameter family exhausted — empty changes is correct
-- Sharpe degraded 0.164→-0.017 across 5 buckets — structural deterioration
-- Q4 edge realization at -0.38 — model overconfidence now inverted in recent window
-- Scalp exits wrong 53% of time — $1,057 left on table from premature exits
-- ATR dropped 27→18 (KS=0.283, p=0.001) — live regime still diverging from backtest
-
-**Warnings:**
-- With Sharpe negative in the most recent bucket, live edge may have disappeared entirely
-- 30+ parameter combinations tested with zero live-validated performance — architecture review warranted
-- ATR regime shift ongoing — all backtest deltas remain suspect until ATR stabilizes
-
-**Reasoning:** Every backtestable parameter has been attempted across multiple values and directions with none clearing fold consistency — there is no untested combination with credible expected delta above the 0.0114 threshold. The degrading Sharpe trend and inverted Q4 edge realization point to a structural model-market misalignment, not a tunable parameter issue. The two manual observations (exit threshold and adverse selection gate) remain the highest-confidence actionable levers available to the operator.
-
-## 2026-04-30T03:16:16.282609+00:00
-
-**Source:** Claude (low)
-**Proposed Changes (3):**
-  - probability_compression=0.78 (Untested value between the two best-performing prior tests (0.75 Δ=+0.0008, 0.82 Δ=+0.0095); ↓ direction averages +0.007 across 11 tests and the inverted edge-WR (Q4 realization -0.23) confirms ongoing model overconfidence that compression directly targets.)
-  - spot_flow_weight=0.07 (Untested gap between failed 0.06 (Δ=+0.0035) and failed 0.08 (Δ=+0.0272); ↑ direction has the strongest avg BT delta (+0.014) of any tested direction with one adoption, and ATR mean rising to 32.6 increases order-flow signal informativeness in higher-vol windows.)
-  - liquidation_weight=0.07 (Untested gap between failed 0.06 (Δ=+0.0027) and failed 0.08 (Δ=+0.0001); all three ↑ tests were positive, and ATR mean jumping from 26.7 to 32.6 signals a higher-volatility regime where liquidation cascades are more frequent and more detectable.)
-
-**Manual Suggestions (2) [operator-only]:**
-  - exit_edge_threshold: -0.12 -> -0.07 [high]
-    Scalps triggered at holding_edge < -0.10 are correct only 39% of the time (n=822, 11pp below break-even, far exceeding 2× noise floor) — the current -0.12 threshold is too permissive for deep-negative exits, but raising to -0.07 rather than tightening further balances the 0-to-(-0.02) bucket (40% accuracy, 215 exits) which shows the threshold may also be too loose at near-zero holding edge.
-  - adverse_selection_threshold: 0.85 -> 0.88 [medium]
-    The pre_submit_edge_drift gate blocked 212 trades of which 63% were profitable with +$185.97 simulated PnL — both bars for loosening are met (>60% profitable, positive sim_pnl), indicating the gate is systematically over-filtering edge-positive entries.
-
-**Findings:**
-- Sharpe collapsed from 0.165 to 0.001 across 5 buckets — structural deterioration ongoing
-- Q4 edge realization at -0.23 — model most confident entries now losing money
-- ATR mean rose 26.7→32.6 (KS=0.315) — regime shift back toward volatility may help backtest alignment
-- Scalp exits wrong 52.2% — $688 left on table, but every param direction has been exhausted
-- Win rate fell to 45.9% in most recent bucket — below break-even
-
-**Warnings:**
-- Every backtestable parameter family has failed fold consistency — changes may not clear the adoption bar
-- With 30+ failed parameter combinations, a structural model review may be warranted over further tuning
-- probability_compression + spot_flow_weight interact via logit-space signal amplification — monitor combined delta carefully
-
-**Reasoning:** With virtually every parameter direction exhausted, this cycle targets three genuinely untested gap-fill values in the families with the best historical average BT delta: probability_compression at 0.78 (between the two best prior tests in the ↓ direction), spot_flow_weight at 0.07 (between two failed adjacent tests in the consistently positive ↑ direction), and liquidation_weight at 0.07 (all prior ↑ tests positive, ATR regime rising). The ATR mean rising back to 32.6 after months of compression is the key structural signal — if the backtest now trains on data more aligned with live conditions, fold consistency may finally be achievable. If these also fail, an architecture review rather than continued parameter search is warranted.
-
-## 2026-05-01T03:16:26.893837+00:00
-
-**Source:** Claude (high)
-**Proposed Changes (0):**
-  - none
-
-**Manual Suggestions (2) [operator-only]:**
-  - exit_edge_threshold: -0.12 -> -0.05 [high]
-    Scalps triggered at holding_edge < -0.10 are correct only 40% of the time (n=896, 10pp below break-even, ~6× noise floor) — the current -0.12 threshold permits massive value destruction in this bucket; tightening to -0.05 would cut off the two worst buckets (0 to -0.02 at 40% accuracy n=233, and <-0.10 at 40% accuracy n=896) while preserving the neutral -0.02 to -0.05 bucket (59% accuracy).
-  - adverse_selection_threshold: 0.85 -> 0.88 [medium]
-    The pre_submit_edge_drift gate blocked 223 trades of which 61% were profitable with sim_pnl=+$28.31 — both the 60% profitable bar and positive sim_pnl bar for loosening are met, indicating the gate is systematically over-filtering edge-positive entries in the current low-ATR regime.
-
-**Findings:**
-- All 15+ backtestable param families exhausted — no combination clears the 0.027 delta bar.
-- Edge calibration inverted: Q4 (highest conviction) realizes only 0.42 vs Q1 at 1.36.
-- Scalp exits at holding_edge < -0.10 correct only 40% of time (n=896) — primary value leak.
-- Last 100 trades WR=60%, PnL=+$79.80 — possible regime recovery underway.
-- ATR dropped 26.6→16.4 (KS=0.327) — backtest-to-live gap persists, degrades BT reliability.
-
-**Warnings:**
-- SPRT at 0% enter rate combined with degrading 5-bucket trend suggests live edge may be structurally impaired, not just parameter-sensitive.
-- With 30+ failed parameter combinations and zero live-validated adoptions, continued parameter search risks overfitting noise — architecture review may be warranted.
-- The inverted edge-WR relationship (Q4 at 0.42) persists across regimes — if model probability is structurally miscalibrated, no single parameter fix will resolve it.
-
-**Reasoning:** Every backtestable parameter family has been tested exhaustively with none clearing the 0.027 Sharpe delta required for adoption — empty changes is the correct and only defensible call. The two manual observations (exit_edge_threshold tightening and adverse_selection loosening) remain the highest-confidence actionable levers, both backed by N>200 with unambiguous directional signals that exceed the noise floor by 6× and 3× respectively. The apparent recovery in the last 100 trades (WR=60%) warrants monitoring before any structural changes are introduced.
-
-## 2026-05-01T19:15:05.688404+00:00
-
-**Source:** Claude (high)
-**Proposed Changes (0):**
-  - none
-
-**Manual Suggestions (1) [operator-only]:**
-  - adverse_selection_threshold: 0.85 -> 0.85 [high]
-    Gate sim_pnl flipped to -$6.06 (negative) this cycle — both the 60%-profitable bar and positive sim_pnl bar for loosening are no longer met simultaneously; keep threshold at 0.85 and do not loosen further.
-
-**Findings:**
-- Every backtestable parameter family exhausted — zero untested values remain above the 0.026 delta floor
-- Last 100 trades WR=62%, PnL=+$313 — possible regime recovery but 5-bucket trend still DEGRADING
-- Adverse selection gate sim_pnl flipped negative (-$6.06) — gate is now correctly filtering losers, do NOT loosen
-- Hold positions destroyed $7,870 vs scalp counterfactual — scalp behavior correct but hold decisions are the primary value leak
-- Adaptive calibration runtime already applies 0.50 multiplier to moderate-confidence bucket — model is self-correcting in live
-
-**Warnings:**
-- All 15+ parameter families have failed fold consistency — continued parameter search risks overfitting; architecture review may be warranted
-- Distribution shift in model_probability (0.585→0.500) combined with edge rising (0.099→0.130) suggests the model is systematically entering lower-confidence higher-edge trades — monitor if this regime persists
-- Previous cycles recommended loosening adverse_selection_threshold based on positive sim_pnl; that signal has now reversed — operator should revert any loosening if already applied
 
 **Reasoning:** Every backtestable parameter has been tested exhaustively with none clearing the 0.0263 delta adoption floor — empty changes is the only defensible call for the sixth consecutive cycle. The most important new signal this cycle is the adverse_selection_threshold ghost sim_pnl flipping from positive to negative (-$6.06), which reverses the multi-cycle recommendation to loosen that gate; the gate is now correctly filtering losers and should be held at 0.85. The last 100 trades show WR=62% suggesting a possible regime recovery, but the 5-bucket degradation trend and exhausted parameter space mean no parameter action is warranted until the recovery is sustained across at least two more 953-trade buckets.
 
@@ -728,3 +618,30 @@
 - None
 
 **Reasoning:** Local recommender
+
+## 2026-05-20T03:56:05.392762+00:00
+
+**Source:** Claude (medium)
+**Proposed Changes (5):**
+  - min_edge=0.045 (Q4 edge realization 0.55 — raise min_edge to filter the most overconfident entries.)
+  - min_model_probability=0.55 (exploratory down step)
+  - logit_scale=3.8 (Edge realization Q1=1.20 vs Q4=0.55 — model overconfident in tails; compress logit_scale to pull extreme probs in.)
+  - min_kelly=0.008 (exploratory down step)
+  - l5_regime_damp_cap=0.75 (exploratory up step)
+
+**Manual Suggestions (3) [operator-only]:**
+  - late_max_penalty: 0.3 -> 0.35 [medium]
+    Late-phase Sharpe 0.094 trails normal 0.124 on n=2051 — tighten late-entry penalty to reduce late marginal entries.
+  - sprt.upper_bound: 2.94 -> operator-review [low]
+    SPRT high-confidence Sharpe 0.064 UNDERPERFORMS low-confidence 0.113 on n=390. Gate may be drawing the wrong tail; review.
+  - adverse_selection_threshold: 0.65 -> 0.7 [low]
+    High-adverse bucket Sharpe 0.125 BEATS low-adverse 0.120 — gate may be over-filtering profitable high-adverse setups.
+
+**Findings:**
+- None
+
+**Warnings:**
+- logit_scale compression affects every layer's contribution — backtest delta is the source of truth, not the proposal alone.
+- Adverse-rate 'high' bucket outperformance may be sample artifact (n<500) — manual review only.
+
+**Reasoning:** Edge realization degrades sharply at high predicted edges (Q4 below 0.75 vs Q1 above 1.0), indicating model overconfidence in the tail. Compress logit_scale and modestly raise min_edge to pull extreme probs in and filter the most-overconfident marginal entries. Two manual observations flag counterintuitive subgroup behavior (SPRT, adverse) for operator review — confidence low on those.
