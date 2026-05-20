@@ -17,8 +17,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from polybot.agents.pipeline_analytics import utc_ts_to_et_date as _utc_ts_to_et_date
+
+_ET = ZoneInfo("America/New_York")
 
 logger = logging.getLogger(__name__)
 

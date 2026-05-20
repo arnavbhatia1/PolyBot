@@ -34,16 +34,20 @@ def _neutral_ctx() -> FeatureContext:
     )
 
 
-@pytest.mark.parametrize("name,fn", list(DERIVED_FEATURES.items()))
-def test_each_feature_finite_on_neutral_inputs(name, fn):
-    """Neutral context produces a finite scalar from every feature."""
-    val = fn(_neutral_ctx())
-    assert math.isfinite(val), f"{name} returned non-finite on neutral inputs: {val}"
+def test_all_features_finite_on_neutral_inputs():
+    """Every L6 feature returns a finite scalar from a neutral context.
+
+    Looped here rather than parametrized — a single failure still points to
+    the offending feature via the assert message, and the test runs in <1ms.
+    """
+    ctx = _neutral_ctx()
+    for name, fn in DERIVED_FEATURES.items():
+        val = fn(ctx)
+        assert math.isfinite(val), f"{name} returned non-finite on neutral inputs: {val}"
 
 
-@pytest.mark.parametrize("name,fn", list(DERIVED_FEATURES.items()))
-def test_each_feature_finite_on_extreme_inputs(name, fn):
-    """Saturating inputs (1e6 each) still produce a finite, bounded scalar."""
+def test_all_features_finite_and_bounded_on_extreme_inputs():
+    """Every L6 feature stays finite and bounded under saturating inputs."""
     extreme = FeatureContext(
         atr=1.0, atr_rolling_20=1e6, atr_long_term_mean=1.0,
         regime=1.0, last_return=10.0,
@@ -51,9 +55,10 @@ def test_each_feature_finite_on_extreme_inputs(name, fn):
         liquidation_pressure=1e6, prev_resolution_margin=1e6,
         seconds_remaining=0.0, distance=1e6,
     )
-    val = fn(extreme)
-    assert math.isfinite(val), f"{name} blew up on extreme inputs"
-    assert abs(val) <= 20.0, f"{name} returned unbounded magnitude {val}"
+    for name, fn in DERIVED_FEATURES.items():
+        val = fn(extreme)
+        assert math.isfinite(val), f"{name} blew up on extreme inputs"
+        assert abs(val) <= 20.0, f"{name} returned unbounded magnitude {val}"
 
 
 def test_log_atr_ratio_zero_when_short_equals_long():

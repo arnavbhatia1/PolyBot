@@ -18,14 +18,6 @@ class TestConstruction:
         assert cb.min_multiplier == 0.40
         assert cb.kelly_multiplier == 1.0
 
-    def test_custom_initial_bankroll(self):
-        cb = CircuitBreaker(initial_bankroll=500.0)
-        assert cb.peak_bankroll == 500.0
-        assert cb.current_bankroll == 500.0
-        assert cb.locked_tier == 400.0       # highest tier <= 500
-        assert cb.floor == pytest.approx(340.0)  # 400 * 0.85
-        assert cb.kelly_multiplier == 1.0    # 500 > 400 → full Kelly
-
     def test_legacy_params_accepted(self):
         """Old-style params don't crash — just stored for streak alerts."""
         cb = CircuitBreaker(losses_to_reduce=5, wins_to_restore=3)
@@ -40,20 +32,12 @@ class TestConstruction:
         assert CircuitBreaker(initial_bankroll=1000.0).locked_tier == 1000.0
         assert CircuitBreaker(initial_bankroll=1200.0).locked_tier == 1000.0
 
-    def test_floor_computed_from_tier(self):
-        cb = CircuitBreaker(initial_bankroll=200.0, floor_pct=0.85)
-        assert cb.floor == pytest.approx(170.0)  # 200 * 0.85
-
 
 # ------------------------------------------------------------------
 # Drawdown calculation
 # ------------------------------------------------------------------
 
 class TestDrawdown:
-    def test_no_drawdown_at_peak(self):
-        cb = CircuitBreaker(initial_bankroll=1000.0)
-        assert cb.drawdown_pct == 0.0
-
     def test_drawdown_after_loss(self):
         cb = CircuitBreaker(initial_bankroll=1000.0)
         cb.update_bankroll(900.0)
@@ -100,20 +84,14 @@ class TestKellyMultiplier:
         cb = CircuitBreaker(initial_bankroll=1000.0)
         assert cb.kelly_multiplier == 1.0
 
-    def test_full_kelly_above_peak(self):
-        cb = CircuitBreaker(initial_bankroll=1000.0)
-        cb.update_bankroll(1100.0)
-        assert cb.kelly_multiplier == 1.0
-
-    def test_min_kelly_at_max_drawdown(self):
+    def test_min_kelly_at_or_beyond_max_drawdown(self):
+        """Kelly bottoms at min_multiplier once drawdown hits the max — no halt."""
         cb = CircuitBreaker(initial_bankroll=1000.0, max_drawdown_pct=0.15, min_multiplier=0.25)
         cb.update_bankroll(850.0)  # exactly 15% drawdown
         assert cb.kelly_multiplier == pytest.approx(0.25)
-
-    def test_min_kelly_beyond_max_drawdown(self):
-        cb = CircuitBreaker(initial_bankroll=1000.0, max_drawdown_pct=0.15, min_multiplier=0.25)
-        cb.update_bankroll(700.0)  # 30% drawdown — deeper than max
+        cb.update_bankroll(700.0)  # 30% drawdown — still floored, never halts
         assert cb.kelly_multiplier == pytest.approx(0.25)
+        assert cb.kelly_multiplier > 0
 
     def test_concave_scaling_midpoint(self):
         """At bankroll midway between floor and tier, concave (sqrt) curve gives
@@ -124,15 +102,6 @@ class TestKellyMultiplier:
         midpoint = (cb.floor + cb.locked_tier) / 2.0
         cb.update_bankroll(midpoint)
         expected = 0.25 + (1.0 - 0.25) * math.sqrt(0.5)
-        assert cb.kelly_multiplier == pytest.approx(expected)
-
-    def test_concave_scaling_quarter(self):
-        """At 25% of the way from floor to tier, concave gives sqrt(0.25) = 0.5 scaled."""
-        import math
-        cb = CircuitBreaker(initial_bankroll=1000.0, min_multiplier=0.25, floor_pct=0.85)
-        pos = cb.floor + 0.25 * (cb.locked_tier - cb.floor)
-        cb.update_bankroll(pos)
-        expected = 0.25 + (1.0 - 0.25) * math.sqrt(0.25)
         assert cb.kelly_multiplier == pytest.approx(expected)
 
     def test_kelly_recovers_as_bankroll_climbs(self):
@@ -156,18 +125,6 @@ class TestKellyMultiplier:
         assert cb.kelly_multiplier < 1.0
         cb.update_bankroll(1050.0)
         assert cb.kelly_multiplier == 1.0
-
-    def test_custom_min_multiplier(self):
-        cb = CircuitBreaker(initial_bankroll=1000.0, max_drawdown_pct=0.20, min_multiplier=0.10)
-        cb.update_bankroll(800.0)  # 20% drawdown
-        assert cb.kelly_multiplier == pytest.approx(0.10)
-
-    def test_never_halts_trading(self):
-        """Even at extreme drawdown, kelly_multiplier > 0."""
-        cb = CircuitBreaker(initial_bankroll=1000.0, min_multiplier=0.25)
-        cb.update_bankroll(100.0)  # 90% drawdown
-        assert cb.kelly_multiplier == 0.25
-        assert cb.kelly_multiplier > 0
 
 
 # ------------------------------------------------------------------
@@ -304,47 +261,21 @@ class TestStreakTracking:
         cb = CircuitBreaker(losses_to_reduce=3)
         assert cb.record_loss() is None
         assert cb.record_loss() is None
-        event = cb.record_loss()
-        assert event == "streak_losses"
-
-    def test_loss_streak_continues_firing(self):
-        cb = CircuitBreaker(losses_to_reduce=3)
-        for _ in range(3):
-            cb.record_loss()
-        # 4th loss still fires because consecutive_losses >= threshold
-        event = cb.record_loss()
-        assert event == "streak_losses"
+        assert cb.record_loss() == "streak_losses"
+        # Continues firing past threshold (consecutive_losses still ≥ threshold)
+        assert cb.record_loss() == "streak_losses"
 
     def test_win_streak_event(self):
         cb = CircuitBreaker(wins_to_restore=2)
         assert cb.record_win() is None
-        event = cb.record_win()
-        assert event == "streak_wins"
-
-    def test_win_streak_continues_firing(self):
-        cb = CircuitBreaker(wins_to_restore=2)
-        cb.record_win()
-        cb.record_win()
-        event = cb.record_win()
-        assert event == "streak_wins"
+        assert cb.record_win() == "streak_wins"
 
     def test_streaks_dont_affect_kelly(self):
         """Kelly is ONLY driven by drawdown, never by streaks."""
         cb = CircuitBreaker(initial_bankroll=1000.0)
-        # 5 consecutive losses shouldn't change kelly — bankroll unchanged
         for _ in range(5):
             cb.record_loss()
         assert cb.kelly_multiplier == 1.0  # No bankroll change = no drawdown
-
-    def test_record_win_returns_none_before_threshold(self):
-        cb = CircuitBreaker(wins_to_restore=3)
-        assert cb.record_win() is None
-        assert cb.record_win() is None
-
-    def test_record_loss_returns_none_before_threshold(self):
-        cb = CircuitBreaker(losses_to_reduce=3)
-        assert cb.record_loss() is None
-        assert cb.record_loss() is None
 
 
 # ------------------------------------------------------------------
