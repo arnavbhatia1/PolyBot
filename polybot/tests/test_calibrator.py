@@ -30,6 +30,32 @@ def test_default_is_identity():
         assert abs(cal.calibrate(p) - p) < 1e-9
 
 
+def test_state_hash_identity_then_fit():
+    """state_hash distinguishes identity from fitted, and matches across instances
+    fitted on the same data — so per-trade stratification can group trades by the
+    calibration curve that was live at fill time."""
+    cal = PlattCalibrator()
+    assert cal.state_hash == "identity"
+
+    rng = np.random.default_rng(0)
+    probs = list(rng.uniform(0.3, 0.7, 250))
+    outcomes = [1 if p + rng.normal(0, 0.2) > 0.5 else 0 for p in probs]
+
+    a = PlattCalibrator()
+    a.fit(probs, outcomes, min_samples=150)
+    b = PlattCalibrator()
+    b.fit(probs, outcomes, min_samples=150)
+    assert a.state_hash != "identity"
+    assert a.state_hash == b.state_hash  # determinism
+
+    rng2 = np.random.default_rng(7)
+    probs2 = list(rng2.uniform(0.2, 0.8, 250))
+    outcomes2 = [1 if p > 0.55 else 0 for p in probs2]
+    c = PlattCalibrator()
+    c.fit(probs2, outcomes2, min_samples=150)
+    assert c.state_hash != a.state_hash  # different fit -> different hash
+
+
 def test_calibrate_clips_inputs():
     """Inputs outside (eps, 1-eps) get clipped but never raise."""
     cal = PlattCalibrator()

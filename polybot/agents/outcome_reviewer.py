@@ -33,7 +33,8 @@ class OutcomeReviewer:
                        exit_reason: str = "resolution", size: float = 0.0,
                        pnl: float = 0.0, fees: float = 0.0,
                        exit_timestamp: str = "",
-                       seconds_remaining_at_exit: float = 0.0) -> None:
+                       seconds_remaining_at_exit: float = 0.0,
+                       edge_decay: dict[str, Any] | None = None) -> None:
         now_utc = datetime.now(timezone.utc).isoformat()
         # Realized edge: model prob for the chosen side minus actual fill price.
         # Compares what the model expected at signal time to what it actually cost.
@@ -58,6 +59,10 @@ class OutcomeReviewer:
                   "exit_reason": exit_reason,
                   # 0.0 = held to resolution; > 0 = scalp with this many seconds left in window
                   "seconds_remaining_at_exit": seconds_remaining_at_exit,
+                  # Side-signed post-fill mid drift at 5/10/15/30/60s. Positive = market
+                  # moved in our favor. Absent / null windows = trade closed or feed lapsed
+                  # before that checkpoint resolved. None when monitor was disabled.
+                  "edge_decay": edge_decay,
                   "exit_timestamp": exit_timestamp or now_utc,
                   "timestamp": now_utc}
         filename = f"{position_id}_{market_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}.json"

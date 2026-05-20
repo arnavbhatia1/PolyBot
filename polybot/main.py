@@ -430,6 +430,9 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
                           fees: float = 0.0,
                           seconds_remaining_at_exit: float = 0.0) -> None:
     """Persist a resolved/scalped trade outcome for the learning pipeline."""
+    edge_decay = None
+    if _adverse_monitor is not None:
+        edge_decay = _adverse_monitor.get_decay_for_position(pos["id"])
     try:
         outcome_reviewer.record_outcome(
             position_id=pos["id"],
@@ -448,6 +451,7 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
             fees=fees,
             exit_timestamp=pos.get("exit_timestamp", ""),
             seconds_remaining_at_exit=seconds_remaining_at_exit,
+            edge_decay=edge_decay,
         )
     except Exception as e:
         logger.error(f"Failed to record outcome: {e}")
@@ -894,6 +898,12 @@ async def _evaluate_signal_and_enter(
         "sprt_status": _sprt.get_status() if _sprt else "N/A",
         # Adverse-selection rolling state (gate diagnostic)
         "adverse_selection_30s": _adverse_monitor.get_adverse_rate(30.0) if _adverse_monitor else 0.5,
+        # Which calibrator was live at fill time — lets the pipeline stratify
+        # outcomes by calibrator-in-effect so the 7d calibration window and
+        # 60d backtest window don't blend trades decided under different curves.
+        "calibrator_hash": (
+            signal_engine.calibrator.state_hash if signal_engine.calibrator else "identity"
+        ),
         # Token IDs for both outcomes — required for startup reconciliation and dust sweeping.
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
@@ -986,7 +996,8 @@ async def _evaluate_signal_and_enter(
             f"{_C.YELLOW}{'=' * 60}{_C.RESET}")
         if _adverse_monitor:
             mkt_mid = (price_up + price_down) / 2 if price_up + price_down > 0 else fill_price
-            _adverse_monitor.record_fill(side=side, fill_price=fill_price, token_id=token_id, midprice=mkt_mid)
+            _adverse_monitor.record_fill(side=side, fill_price=fill_price, token_id=token_id,
+                                         midprice=mkt_mid, position_id=result.position_id)
         if alert_manager:
             mkt_price = price_up if side == "Up" else price_down
             await alert_manager.send_trade_opened(

@@ -1,4 +1,5 @@
 """Regime-conditional momentum weight + dynamic ATR floor."""
+import pytest
 from polybot.core.signal_engine import (
     SignalEngine,
     _REGIME_MOMENTUM_AMPLIFY,
@@ -33,26 +34,31 @@ def _threshold(eng: SignalEngine) -> float:
 #   * effective_momentum_weight returns an UNSIGNED magnitude (regime-amplified).
 #   * Sign/polarity is handled per indicator group inside compute_momentum.
 
-def test_momentum_magnitude_amplified_in_trending_regime():
+def test_momentum_magnitude_saturates_in_strong_regime():
     eng = _engine(mw=-0.02)
-    result = eng.effective_momentum_weight(regime_autocorr=0.30)
-    assert result == 0.02 * _REGIME_MOMENTUM_AMPLIFY
-    assert result > 0
+    # Strong regime (|autocorr| >> threshold) → tanh saturates → AMPLIFY anchor.
+    result = eng.effective_momentum_weight(regime_autocorr=1.0)
+    assert result == pytest.approx(0.02 * _REGIME_MOMENTUM_AMPLIFY, rel=1e-3)
+    assert eng.effective_momentum_weight(regime_autocorr=-1.0) == pytest.approx(
+        0.02 * _REGIME_MOMENTUM_AMPLIFY, rel=1e-3
+    )
 
 
-def test_momentum_magnitude_amplified_in_mean_reverting_regime():
+def test_momentum_magnitude_at_zero_is_dampen_anchor():
     eng = _engine(mw=-0.02)
-    result = eng.effective_momentum_weight(regime_autocorr=-0.30)
-    # Same magnitude as trending — polarity is no longer encoded here.
-    assert result == 0.02 * _REGIME_MOMENTUM_AMPLIFY
+    assert eng.effective_momentum_weight(regime_autocorr=0.0) == pytest.approx(
+        0.02 * _REGIME_MOMENTUM_DAMPEN
+    )
 
 
-def test_momentum_magnitude_dampened_when_autocorr_in_noise_band():
+def test_momentum_magnitude_is_continuous_across_threshold():
     eng = _engine(mw=-0.02)
     thresh = _threshold(eng)
-    for rho in [0.0, thresh - 0.05, -(thresh - 0.05), thresh]:
-        result = eng.effective_momentum_weight(regime_autocorr=rho)
-        assert result == 0.02 * _REGIME_MOMENTUM_DAMPEN
+    just_under = eng.effective_momentum_weight(regime_autocorr=thresh - 0.001)
+    just_over = eng.effective_momentum_weight(regime_autocorr=thresh + 0.001)
+    # The previous cliff jumped by (AMPLIFY-DAMPEN)*base = 0.02; smooth tanh
+    # version should move by < 1% of that across a 0.002 autocorr step.
+    assert abs(just_over - just_under) < 0.0002
 
 
 def test_momentum_magnitude_clamped_to_invariant():

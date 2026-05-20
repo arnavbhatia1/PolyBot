@@ -32,10 +32,13 @@ class FillEvent:
     fill_price: float      # Price we paid
     token_id: str          # Which token
     midprice_at_fill: float  # Market midprice at fill time
+    midprice_5s: float | None = None    # Midprice 5s after fill (edge-decay)
     midprice_10s: float | None = None   # Midprice 10s after fill
+    midprice_15s: float | None = None   # Midprice 15s after fill (edge-decay)
     midprice_30s: float | None = None   # Midprice 30s after fill
     midprice_60s: float | None = None   # Midprice 60s after fill
     resolved: bool = False              # All checkpoints measured
+    position_id: int | None = None      # Link to the trade row; merged into outcome at close
 
 
 class AdverseSelectionMonitor:
@@ -60,14 +63,23 @@ class AdverseSelectionMonitor:
         self._state_path: Path = state_path or _DEFAULT_STATE_PATH
         self._load()
 
-    def record_fill(self, side: str, fill_price: float, token_id: str, midprice: float) -> None:
-        """Record a new fill event for tracking."""
+    def record_fill(self, side: str, fill_price: float, token_id: str, midprice: float,
+                    position_id: int | None = None) -> None:
+        """Record a new fill event for tracking.
+
+        ``position_id`` links the FillEvent to the DB row so the close-time outcome
+        writer can pull the post-fill midprice trail and stamp ``edge_decay`` into
+        the persisted JSON. Optional for backward compatibility — callers that
+        don't supply it lose the per-trade lookup but the adverse-rate gate still
+        works.
+        """
         self._fills.append(FillEvent(
             timestamp=time.time(),
             side=side,
             fill_price=fill_price,
             token_id=token_id,
             midprice_at_fill=midprice,
+            position_id=position_id,
         ))
         self._save()
 
@@ -107,10 +119,13 @@ class AdverseSelectionMonitor:
                     fill_price=float(fd.get("fill_price", 0)),
                     token_id=fd.get("token_id", ""),
                     midprice_at_fill=float(fd.get("midprice_at_fill", 0)),
+                    midprice_5s=fd.get("midprice_5s"),
                     midprice_10s=fd.get("midprice_10s"),
+                    midprice_15s=fd.get("midprice_15s"),
                     midprice_30s=fd.get("midprice_30s"),
                     midprice_60s=fd.get("midprice_60s"),
                     resolved=bool(fd.get("resolved", False)),
+                    position_id=fd.get("position_id"),
                 ))
                 loaded += 1
             logger.info(f"AdverseSelectionMonitor: restored {loaded} fills from disk")
@@ -131,13 +146,52 @@ class AdverseSelectionMonitor:
             mid = get_midprice_fn(fill.token_id)
             if mid <= 0:
                 continue
+            if fill.midprice_5s is None and elapsed >= 5.0:
+                fill.midprice_5s = mid
             if fill.midprice_10s is None and elapsed >= 10.0:
                 fill.midprice_10s = mid
+            if fill.midprice_15s is None and elapsed >= 15.0:
+                fill.midprice_15s = mid
             if fill.midprice_30s is None and elapsed >= 30.0:
                 fill.midprice_30s = mid
             if fill.midprice_60s is None and elapsed >= 60.0:
                 fill.midprice_60s = mid
                 fill.resolved = True
+
+    def get_decay_for_position(self, position_id: int) -> dict | None:
+        """Return the edge-decay snapshot for a given trade, or None if not found.
+
+        Output schema (signed so positive = move in our favor):
+            ``{
+                "midprice_at_fill": float,
+                "deltas": {"5s": float | None, ... "60s": float | None},
+                "resolved_windows": int,
+            }``
+        Each delta is ``(post - fill) * side_sign`` where side_sign is +1 for Up,
+        −1 for Down. So a positive 5s delta means the market moved in the trade's
+        favor 5 seconds after entry; a negative delta means it moved against us.
+        """
+        for fill in self._fills:
+            if fill.position_id != position_id:
+                continue
+            sign = 1.0 if fill.side == "Up" else -1.0
+            def _d(post: float | None) -> float | None:
+                if post is None:
+                    return None
+                return round((post - fill.midprice_at_fill) * sign, 6)
+            deltas = {
+                "5s":  _d(fill.midprice_5s),
+                "10s": _d(fill.midprice_10s),
+                "15s": _d(fill.midprice_15s),
+                "30s": _d(fill.midprice_30s),
+                "60s": _d(fill.midprice_60s),
+            }
+            return {
+                "midprice_at_fill": fill.midprice_at_fill,
+                "deltas": deltas,
+                "resolved_windows": sum(1 for v in deltas.values() if v is not None),
+            }
+        return None
 
     def get_adverse_rate(self, window_s: float = 30.0, lookback_s: float = 1800.0) -> float:
         """Fraction of fills where price moved AGAINST us within window_s.

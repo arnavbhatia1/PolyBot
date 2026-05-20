@@ -105,6 +105,23 @@ class PlattCalibrator:
         0.0 when at identity."""
         return self._log_loss_improvement
 
+    @property
+    def state_hash(self) -> str:
+        """Short stable hash of the calibrator's effective function.
+
+        Returns ``"identity"`` when unfitted, else a 12-char hex digest derived
+        from the rounded threshold arrays. Two calibrators that produce the
+        same calibration curve (within rounding) hash to the same value, so
+        backtests can stratify outcomes by which calibrator was live at fill
+        time.
+        """
+        if self._iso is None:
+            return "identity"
+        import hashlib
+        x = np.round(self._iso.X_thresholds_, 6).tobytes()
+        y = np.round(self._iso.y_thresholds_, 6).tobytes()
+        return hashlib.blake2b(x + y, digest_size=6).hexdigest()
+
     # ---- application ----
 
     def calibrate(self, raw_prob: float) -> float:
