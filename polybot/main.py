@@ -1995,6 +1995,10 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         f"{_sep}"
     )
 
+    # Closure captures clob_ws once — reused across all book-update ticks instead
+    # of recreating the function each iteration.
+    _midprice_fn = _get_token_midprice(clob_ws) if clob_ws else None
+
     while True:
         # Check if scheduler requested shutdown (auto-restart cycle after pipeline)
         if scheduler and getattr(scheduler, '_shutdown_requested', False):
@@ -2015,8 +2019,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     clob_ws.book_updated.clear()
                     # Resolve pending adverse-selection checkpoints against the fresh book
                     # so the adverse-rate gate has actual data to act on.
-                    if _adverse_monitor is not None:
-                        _adverse_monitor.update_prices(_get_token_midprice(clob_ws))
+                    if _adverse_monitor is not None and _midprice_fn is not None:
+                        _adverse_monitor.update_prices(_midprice_fn)
                 if clob_ws.market_resolved.is_set():
                     clob_ws.market_resolved.clear()
                     # Invalidate price cache — Gamma should have resolution data now
