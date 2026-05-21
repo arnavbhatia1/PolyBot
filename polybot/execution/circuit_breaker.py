@@ -47,8 +47,7 @@ class CircuitBreaker:
         initial_bankroll: float = 100.0,
         floor_pct: float = 0.85,
         min_multiplier: float = 0.40,
-        # Legacy params — accepted for backward compat, ignored for sizing
-        max_drawdown_pct: float = 0.30,
+        # Streak tracking — Discord alerts only, no sizing effect
         losses_to_reduce: int = 3,
         wins_to_restore: int = 2,
     ) -> None:
