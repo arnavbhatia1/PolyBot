@@ -1284,10 +1284,14 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
         await clob_ws.subscribe(new_tokens)
         ws_subscribed_tokens.extend(new_tokens)
 
-    # Pre-warm tick_size cache for both tokens so the first entry has zero HTTP latency.
+    # Pre-warm tick_size AND fee_rate caches for both tokens so the entry path
+    # (main.py: asyncio.gather(fetch_fee_rate, fetch_tick_size)) hits cache and
+    # avoids paying ~30-100ms of HTTP latency right before order submit.
+    # Both have 1-hour TTL — well beyond the 5-minute window lifespan.
     if http_client and market_scanner and current_tokens:
         await asyncio.gather(
             *[market_scanner.fetch_tick_size(t, http_client) for t in current_tokens],
+            *[market_scanner.fetch_fee_rate(t, http_client) for t in current_tokens],
             return_exceptions=True,
         )
 
