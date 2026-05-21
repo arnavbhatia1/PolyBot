@@ -12,6 +12,7 @@ the first ~10 post-restart fills run with a neutral 0.5 rate (gate effectively o
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import logging
@@ -81,7 +82,17 @@ class AdverseSelectionMonitor:
             midprice_at_fill=midprice,
             position_id=position_id,
         ))
-        self._save()
+        self._schedule_save()
+
+    def _schedule_save(self) -> None:
+        """Defer the JSON write off the trade-open hot path. Fire-and-forget —
+        if the process dies before it completes, the next fill triggers another
+        save. Falls back to a sync write when called outside an event loop
+        (tests, startup helpers)."""
+        try:
+            asyncio.get_running_loop().create_task(asyncio.to_thread(self._save))
+        except RuntimeError:
+            self._save()
 
     def _save(self) -> None:
         """Persist current fill deque to disk. Silent on I/O errors — don't crash trading."""

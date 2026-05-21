@@ -1733,8 +1733,10 @@ async def _resolve_expired_position(
         meta = live.get("event_metadata")
         if meta and meta.get("final_price") is not None and meta.get("price_to_beat") is not None:
             _prev_resolution_margin = meta["final_price"] - meta["price_to_beat"]
-            _save_prev_resolution_margin(_prev_resolution_margin)
-            flush_gate_stats()  # keep on-disk stats current for pipeline reads
+            # Defer disk writes off the resolution path — pipeline reads happen
+            # at ≥ 5-minute granularity, well beyond any background-task delay.
+            asyncio.create_task(asyncio.to_thread(_save_prev_resolution_margin, _prev_resolution_margin))
+            asyncio.create_task(asyncio.to_thread(flush_gate_stats))
     return True, day_wins, day_losses, day_fees, traded_market_id
 
 
@@ -1851,8 +1853,8 @@ async def _manage_orphaned_position(
         # fallback branches). Persist whichever branch captured them.
         if resolved_final is not None and resolved_strike is not None:
             _prev_resolution_margin = resolved_final - resolved_strike
-            _save_prev_resolution_margin(_prev_resolution_margin)
-            flush_gate_stats()
+            asyncio.create_task(asyncio.to_thread(_save_prev_resolution_margin, _prev_resolution_margin))
+            asyncio.create_task(asyncio.to_thread(flush_gate_stats))
     return True, day_wins, day_losses, day_fees, traded_market_id
 
 
