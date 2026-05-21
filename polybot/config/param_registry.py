@@ -47,7 +47,7 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     # ── Exit / scalp threshold ──────────────────────────────────────────────
     # TIGHT bound — directly changes realized P&L. Lower (more negative) = hold
     # longer through noise; upper (less negative) = exit faster on any tick against.
-    ParamSpec("exit_edge_threshold",     "signal.exit_edge_threshold",     -0.10, -0.03, float, -0.05, "holding_edge floor before scalping; blended with exit_boundary curve"),
+    ParamSpec("exit_edge_threshold",     "signal.exit_edge_threshold",     -0.10, -0.03, float, -0.07, "holding_edge floor before scalping; blended with exit_boundary curve"),
     # ── Promoted structural constants (pipeline-searchable, model invariants protected by ranges) ──
     ParamSpec("regime_momentum_threshold", "signal.regime_momentum_threshold", 0.08, 0.25, float, 0.15,
               "|autocorr| threshold separating noise band from real regime (L2/L4)"),
@@ -95,8 +95,8 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     # Exit / hold policy
     "max_edge": 0.20,
     "loss_cut_fraction": 0.65,
-    "loss_cut_time_s": 120.0,
-    "adverse_selection_threshold": 0.55,
+    "loss_cut_time_s": 90.0,
+    "adverse_selection_threshold": 0.65,
     "edge_decay_threshold": -0.05,
     # Flip trading
     "flip_enabled": True,
