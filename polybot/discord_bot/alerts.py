@@ -261,49 +261,60 @@ class AlertManager:
             w, n, _ = _side_stats(trades)
             return f"  {label:<16} {w:>3}/{n:<3}  {w/n:.0%}\n"
 
-        # --- Message 1: TODAY ---
-        msg1 = (
-            f"**TODAY — {date_str} ET**\n"
-            f"```\n"
-            f"  P&L      ${total_pnl:+,.2f}  (fees ${total_fees:.2f})\n"
-            f"  Trades   {total}  ({wins}W/{losses}L)  WR {wr:.0%}\n"
-            f"  Sharpe   {sharpe:+.3f}\n"
-            f"\n"
-            f"  Side     UP {_fmt_side(up_trades)}  |  DOWN {_fmt_side(dn_trades)}\n"
-            f"  Exit     Scalp {_fmt_side(scalp_trades)}  |  Resolution {_fmt_side(res_trades)}\n"
-        )
-        if high_edge or low_edge:
-            he_w, he_n, _ = _side_stats(high_edge) if high_edge else (0, 0, 0)
-            le_w, le_n, _ = _side_stats(low_edge) if low_edge else (0, 0, 0)
-            msg1 += f"  Edge     >=8%: {he_w}/{he_n} {he_w/he_n:.0%}" if he_n else ""
-            if le_n:
-                msg1 += f"  |  4-8%: {le_w}/{le_n} {le_w/le_n:.0%}"
-            msg1 += "\n"
-        msg1 += "```"
-        await self._safe_send(channel, msg1[:2000])
-
-        # --- Message 2: ALL-TIME + PIPELINE RESULT summary ---
+        # Build one combined report inside a single code block.
         at = pipeline_info.get("all_time", {})
-
-        at_block = ""
-        if at:
-            at_block = (
-                f"  P&L      ${at.get('total_pnl', 0):+,.2f}\n"
-                f"  Trades   {at.get('total_trades', 0)}  WR {at.get('win_rate', 0):.0%}  Sharpe {at.get('sharpe', 0):+.3f}\n"
-            )
-
-        msg2 = f"**ALL-TIME**\n```\n{at_block}```\n"
-
-        # Single readable pipeline result block (same text the log prints).
         summary_block = pipeline_info.get("summary_block", "")
+
+        def _row(label: str, trades: list, show_pnl: bool = True) -> str | None:
+            if not trades:
+                return None
+            w, n, p = _side_stats(trades)
+            base = f"{label:<7}{w}/{n} ({w/n:.0%})"
+            if show_pnl:
+                base += f" ${p:+,.0f}"
+            return base
+
+        today_lines = [
+            f"TODAY  ({date_str} ET)",
+            f"  P&L     ${total_pnl:+,.2f}   (fees ${total_fees:.2f})",
+            f"  Trades  {total}   {wins}W / {losses}L ({wr:.0%})",
+            f"  Sharpe  {sharpe:+.3f}",
+            "",
+        ]
+        side_rows = [r for r in (_row("UP", up_trades), _row("DOWN", dn_trades)) if r]
+        for i, r in enumerate(side_rows):
+            prefix = "  Side    " if i == 0 else "          "
+            today_lines.append(f"{prefix}{r}")
+        exit_rows = [r for r in (_row("Scalp", scalp_trades), _row("Hold", res_trades)) if r]
+        for i, r in enumerate(exit_rows):
+            prefix = "  Exit    " if i == 0 else "          "
+            today_lines.append(f"{prefix}{r}")
+        edge_rows = [r for r in (_row("4-8%", low_edge, show_pnl=False),
+                                 _row("≥8%", high_edge, show_pnl=False)) if r]
+        for i, r in enumerate(edge_rows):
+            prefix = "  Edge    " if i == 0 else "          "
+            today_lines.append(f"{prefix}{r}")
+
+        at_lines: list[str] = []
+        if at:
+            at_lines = [
+                "",
+                "ALL-TIME",
+                f"  P&L     ${at.get('total_pnl', 0):+,.2f}",
+                f"  Trades  {at.get('total_trades', 0):,}   WR {at.get('win_rate', 0):.0%}",
+                f"  Sharpe  {at.get('sharpe', 0):+.3f} (includes older/broken model versions)",
+            ]
+
+        body = "\n".join(today_lines + at_lines)
         if summary_block:
-            chunk = f"```\n{summary_block}\n```"
-            # Discord 2000-char limit: send summary as separate message if needed
-            if len(msg2) + len(chunk) <= 2000:
-                msg2 += chunk
-                await self._safe_send(channel, msg2[:2000])
-            else:
-                await self._safe_send(channel, msg2[:2000])
-                await self._safe_send(channel, chunk[:2000])
+            body = body + "\n\n" + summary_block
+
+        merged = f"**Daily Report — {date_str} ET**\n```\n{body}\n```"
+
+        if len(merged) <= 2000:
+            await self._safe_send(channel, merged)
         else:
-            await self._safe_send(channel, msg2[:2000])
+            part1 = f"**Daily Report — {date_str} ET**\n```\n" + "\n".join(today_lines + at_lines) + "\n```"
+            await self._safe_send(channel, part1[:2000])
+            if summary_block:
+                await self._safe_send(channel, f"```\n{summary_block}\n```"[:2000])
