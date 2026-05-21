@@ -73,7 +73,10 @@ class IndicatorEngine:
         self.params: dict[str, dict[str, Any]] = params or DEFAULT_PARAMS
         self._weights: dict[str, float] = dict(weights) if weights else dict(DEFAULT_WEIGHTS)
         self.normalizer: IndicatorNormalizer = IndicatorNormalizer()
-        self._cache_ts: int = -1
+        # Cache key is buffer.version (bumps on add AND update_current). The
+        # previous timestamp-based key only invalidated on `add` (once per minute),
+        # silently returning stale indicators for intra-minute price changes.
+        self._cache_version: int = -1
         self._cached: dict[str, dict[str, Any]] = {}
 
     def get_weights(self) -> dict[str, float]:
@@ -84,9 +87,8 @@ class IndicatorEngine:
         self._weights = {**self._weights, **weights}
 
     def compute_all(self, buffer: CandleBuffer, *, force: bool = False) -> dict[str, dict[str, Any]]:
-        latest = buffer.latest()
-        ts = latest.timestamp if latest else -1
-        if not force and ts == self._cache_ts and self._cached:
+        v = getattr(buffer, "version", -1)
+        if not force and v == self._cache_version and self._cached:
             return self._cached
         closes = buffer.get_closes()
         highs = buffer.get_highs()
@@ -106,7 +108,7 @@ class IndicatorEngine:
             if ind_name in result and "score" in result[ind_name]:
                 result[ind_name]["norm_score"] = self.normalizer.normalize(
                     ind_name, result[ind_name]["score"])
-        self._cache_ts = ts
+        self._cache_version = v
         self._cached = result
         return result
 

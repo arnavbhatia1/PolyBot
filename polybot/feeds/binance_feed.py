@@ -33,6 +33,11 @@ class CandleBuffer:
         # work between candle events (no callers mutate the returned array — see
         # grep audit).
         self._closes_cache: np.ndarray | None = None
+        # Monotonic version — bumps on every mutation. Lets downstream caches
+        # (IndicatorEngine.compute_all) invalidate correctly. Keying off
+        # latest.timestamp would miss update_current mutations since the
+        # in-progress candle keeps the same timestamp until it closes.
+        self.version: int = 0
 
     def __len__(self) -> int:
         return len(self._candles)
@@ -40,6 +45,7 @@ class CandleBuffer:
     def add(self, candle: Candle) -> None:
         self._candles.append(candle)
         self._closes_cache = None
+        self.version += 1
 
     def update_current(self, close: float, high: float, low: float, volume: float) -> None:
         if self._candles:
@@ -49,6 +55,7 @@ class CandleBuffer:
             c.low = min(c.low, low)
             c.volume = volume
             self._closes_cache = None
+            self.version += 1
 
     def latest(self) -> Candle | None:
         return self._candles[-1] if self._candles else None
