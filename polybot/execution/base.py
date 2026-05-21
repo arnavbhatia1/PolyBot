@@ -289,6 +289,14 @@ class BaseTrader(ABC):
         shares = await self._sellable_shares(token_id, fallback_shares)
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
 
+        # Reserve a small share buffer so Polymarket's per-share fee deduction
+        # (fee_rate × shares × p × (1-p), bounded by fee_rate × 0.25 at p=0.5)
+        # doesn't push the FOK above available balance. The fallback floor of
+        # 0.005 also handles tiny 1-tick book-depth mismatches at zero fee_rate.
+        sell_fee_headroom = max(fee_rate * 0.25, 0.0) + 0.002
+        sell_fee_headroom = max(sell_fee_headroom, 0.005)
+        shares = shares * (1.0 - sell_fee_headroom)
+
         # --- Execute sell ---
         fill = await self._execute_sell(token_id, shares, exit_price, fee_rate=fee_rate)
         if not fill.filled:
