@@ -2120,11 +2120,11 @@ class AgentScheduler:
                 logger.debug(f"Failed to persist crisis_state: {e}")
 
             weight_info = await self._run_weight_optimizer(recommendations, opt_outcomes, pipeline_source=source, holdout_outcomes=holdout_outcomes)
-            # Commit point: weight optimizer has persisted its config changes,
-            # so it's now safe to flush the isotonic calibrator to disk. Doing
-            # this AFTER weights means a crash at any earlier step leaves the
-            # old calibrator + old weights on disk (coherent) rather than the new
-            # Platt + old weights (mismatched).
+            # Deferred save: weight_optimizer.save_config has already returned by here.
+            # A crash before the next line leaves new weights + the previous-session
+            # calibrator on disk — slightly mismatched but each is a valid, coherent
+            # artifact on its own. Saving the calibrator first risked a brand-new
+            # calibrator paired with stale weights, which is the worse half.
             if _pending_cal_save is not None:
                 try:
                     _pending_cal_save.save()
