@@ -184,7 +184,6 @@ binance:
 binance_depth:
   ws_url: wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms
   rest_url: https://api.binance.com/api/v3
-  poll_interval_s: 5.0
 
 binance_trades:
   ws_url: wss://stream.binance.com:9443/ws/btcusdt@aggTrade
