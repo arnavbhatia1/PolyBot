@@ -94,9 +94,25 @@ _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
 _file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="a", encoding="utf-8")
 _file_handler.setFormatter(_StripAnsiFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+
+# Async logging: QueueHandler ships records to a background thread that fans out
+# to the real (slow) console + file handlers. This removes the synchronous I/O
+# of every logger.info/warning from the hot trading path — file flushes alone
+# cost 1-5ms on disk and matter when scalp decisions chain 5-10 log lines.
+import queue as _queue
+_log_queue: _queue.Queue = _queue.Queue(-1)  # unbounded so logging never blocks
+_queue_handler = logging.handlers.QueueHandler(_log_queue)
+_queue_listener = logging.handlers.QueueListener(
+    _log_queue, _console_handler, _file_handler, respect_handler_level=True
+)
+_queue_listener.start()
+
+import atexit as _atexit
+_atexit.register(_queue_listener.stop)
+
 logging.basicConfig(
     level=logging.ERROR,
-    handlers=[_console_handler, _file_handler],
+    handlers=[_queue_handler],
 )
 logging.getLogger("py_clob_client_v2").setLevel(logging.CRITICAL)
 # Suppress discord.py's internal reconnect tracebacks — run_discord() already logs these cleanly
@@ -1468,6 +1484,26 @@ async def _evaluate_and_exit_position(
                 "regime": pos_ctx.get("regime_state", "unknown"),
                 "btc_distance_atr": round((btc_now - strike_now) / _cf_atr, 3),
             })
+
+        # Pre-sign the SELL FOK in the background when scalp is imminent
+        # (holding_edge approaching exit_threshold). Saves ~150ms of ECDSA
+        # sign work from the hot path when PRE-SCALP eventually fires.
+        # Best-effort: PaperTrader doesn't expose warm_sell_signature, so the
+        # hasattr check makes this a no-op there.
+        if (hasattr(trader, 'warm_sell_signature')
+                and -0.05 < holding_edge < -0.005):
+            _sell_token = (live.get("token_id_up", "") if pos["side"] == "Up"
+                           else live.get("token_id_down", ""))
+            if _sell_token:
+                _shares = pos.get("shares_held") or pos["size"] / pos["entry_price"]
+                # Approximate exit_fill = market_price × (1 − 8% cross floor).
+                # _take_sell_warmup tolerates ±1¢ drift between this estimate
+                # and the actual exit_fill computed at PRE-SCALP time.
+                _warm_price = round(market_price * 0.92, 4)
+                asyncio.create_task(trader.warm_sell_signature(
+                    _sell_token, _shares, _warm_price,
+                    fee_rate=pos.get("fee_rate") or DEFAULT_FEE_RATE,
+                ))
 
     traded_market_id = None
     if action == "EXIT":

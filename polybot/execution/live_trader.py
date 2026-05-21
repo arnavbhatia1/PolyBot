@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MAX_RETRIES = 3
-_RETRY_BASE_DELAY = 0.05
+_RETRY_BASE_DELAY = 0.03
 _RETRY_JITTER = 0.2  # ±20% jitter on backoff to avoid thundering-herd retry storms
 _MIN_ORDER_USD = 1.0  # Polymarket CLOB rejects marketable orders below $1 notional
 _NON_RETRYABLE_ERRORS = frozenset({
@@ -40,7 +40,7 @@ _NON_RETRYABLE_ERRORS = frozenset({
 })
 _ALLOWANCE_RECHECK_EVERY = 10
 _FILL_PRICE_LOOKUP_RETRIES = 3
-_FILL_PRICE_LOOKUP_DELAY = 0.075
+_FILL_PRICE_LOOKUP_DELAY = 0.05
 _DUST_THRESHOLD_SHARES = 0.01
 _BALANCE_SETTLE_FLOOR = 0.05  # min chain-settle wait even if WS fires immediately
 _BALANCE_SETTLE_DELAY = 0.25  # max wait (legacy fixed delay, used as ceiling + no-WS fallback)
@@ -254,10 +254,28 @@ class LiveTrader(BaseTrader):
         self._min_allowance_warn_threshold: float = float(
             kwargs.get("min_allowance_warn_usd", 25.0)
         )
+        # 2 workers lets a concurrent BUY+SELL (entry firing while a scalp is in
+        # flight) sign in parallel instead of queueing serially. Each worker
+        # holds its own ECDSA signer; py-clob-client is thread-safe per call.
         self._sign_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="clob-sign"
+            max_workers=2, thread_name_prefix="clob-sign"
         )
         self._latched_auth_error: str | None = None
+        # Post-BUY chain-balance cache: token_id → (timestamp, balance_shares).
+        # Filled after each successful FOK BUY by a background task; consumed by
+        # _sellable_shares to skip the ~300ms /balance-allowance REST call on
+        # the subsequent SELL. Safe because this bot runs single-position per
+        # market: nothing else touches the wallet between our BUY and our SELL.
+        # TTL of 300s (one full 5-min market window) bounds staleness; beyond
+        # that we re-query to be safe.
+        self._balance_cache: dict[str, tuple[float, float]] = {}
+        self._BALANCE_CACHE_TTL_S: float = 300.0
+        # Pre-signed SELL warm-ups. Filled in the background when main.py detects
+        # holding_edge is in the "danger zone" — eliminates the ECDSA sign step
+        # (~150ms) from the scalp's hot path so we just POST when PRE-SCALP fires.
+        # Entry: token_id → {"order": signed_dict, "amount": shares, "price": p, "ts": time}.
+        self._sell_warmups: dict[str, dict] = {}
+        self._SELL_WARMUP_TTL_S: float = 5.0
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
     async def start_keepalive(self) -> None:
@@ -537,6 +555,58 @@ class LiveTrader(BaseTrader):
     # -- Dust helpers (Polymarket FOK fills sometimes leave fractional residuals
     # when `_get_fill_price` falls back to the limit price and shares_received is
     # undercount) --
+    @staticmethod
+    def _estimate_fok_walk(book: dict, side: str, amount: float,
+                           limit_price: float) -> bool | None:
+        """Simulate the FOK walk against the current book snapshot.
+
+        Returns True if the order would likely fill (vwap on the correct side
+        of limit_price), False if the walk would clearly exceed the limit,
+        or None if the book is empty/unparseable (skip pre-check, let FOK try).
+
+        BUY: vwap must be ≤ limit_price. SELL: vwap must be ≥ limit_price.
+        For BUY, `amount` is USDC notional; for SELL, it is shares.
+        """
+        levels_key = "asks" if side == BUY else "bids"
+        levels_raw = book.get(levels_key) or []
+        if not levels_raw:
+            return None
+        try:
+            parsed = [(float(l["price"]), float(l["size"])) for l in levels_raw
+                      if l.get("price") and l.get("size")]
+        except (TypeError, ValueError, KeyError):
+            return None
+        if not parsed:
+            return None
+        # Asks ascending (lowest first), bids descending (highest first).
+        parsed.sort(key=lambda ps: ps[0], reverse=(side == SELL))
+
+        spent = 0.0
+        consumed = 0.0
+        if side == BUY:
+            remaining = amount  # USDC
+            for px, sz in parsed:
+                if remaining <= 0:
+                    break
+                level_usd = px * sz
+                take_usd = min(remaining, level_usd)
+                spent += take_usd
+                consumed += take_usd / px
+                remaining -= take_usd
+        else:
+            remaining = amount  # shares
+            for px, sz in parsed:
+                if remaining <= 0:
+                    break
+                take_shares = min(remaining, sz)
+                spent += px * take_shares
+                consumed += take_shares
+                remaining -= take_shares
+        if remaining > 1e-6 or consumed <= 0:
+            return None  # insufficient book depth — let FOK decide
+        vwap = spent / consumed
+        return vwap <= limit_price if side == BUY else vwap >= limit_price
+
     async def _get_token_balance(self, token_id: str) -> float:
         """Return on-chain conditional-token balance in shares. 0.0 on failure."""
         if not token_id:
@@ -554,13 +624,41 @@ class LiveTrader(BaseTrader):
     async def _sellable_shares(self, token_id: str, fallback_shares: float) -> float:
         """Query on-chain balance so close_trade sells what we really own.
 
+        Hot path: returns the cached post-BUY chain balance (set by
+        _cache_post_buy_balance after each successful entry) when it's still
+        within TTL. This skips the ~300ms /balance-allowance REST round-trip
+        on the subsequent SELL, since nothing else touches the wallet between
+        our BUY and SELL in single-position mode.
+
         Falls back to fallback_shares if (a) no token_id, (b) the API query
         failed (returned 0), or (c) the on-chain balance is implausibly far
-        from the DB-tracked value (>3x or <0.3x). The bounds catch a stale or
-        cross-contaminated query result without trusting it blindly.
+        from the DB-tracked value (>3x or <0.3x).
         """
         if not token_id:
             return fallback_shares
+
+        # Cache hit — skip the REST call.
+        cached = self._balance_cache.get(token_id)
+        if cached is not None:
+            cache_ts, cache_bal = cached
+            age = time.time() - cache_ts
+            if age <= self._BALANCE_CACHE_TTL_S and cache_bal > 0:
+                if fallback_shares > 0 and (
+                    cache_bal > 3 * fallback_shares or cache_bal < 0.3 * fallback_shares
+                ):
+                    logger.warning(
+                        "Cached chain balance %.4f diverges from DB shares %.4f for %s "
+                        "(age %.1fs) — re-querying",
+                        cache_bal, fallback_shares, token_id[:12], age,
+                    )
+                else:
+                    logger.debug(
+                        "Sell uses cached chain balance %.4f (age %.1fs) — saved REST roundtrip",
+                        cache_bal, age,
+                    )
+                    return cache_bal
+            # Stale or zero cache → fall through to live query.
+
         chain_bal = await self._get_token_balance(token_id)
         if chain_bal <= 0:
             return fallback_shares
@@ -576,6 +674,88 @@ class LiveTrader(BaseTrader):
                 chain_bal, fallback_shares, token_id[:12],
             )
         return chain_bal
+
+    async def _cache_post_buy_balance(self, token_id: str) -> None:
+        """Background task: fetch post-BUY chain balance once and cache it so
+        the subsequent SELL's _sellable_shares can skip the REST roundtrip.
+        Fire-and-forget; quiet on failure (cache miss → SELL falls back to a
+        live query, same behaviour as before this optimization)."""
+        if not token_id:
+            return
+        try:
+            bal = await self._get_token_balance(token_id)
+            if bal > 0:
+                self._balance_cache[token_id] = (time.time(), bal)
+        except Exception:
+            pass  # best-effort: missing cache just falls back to live query
+
+    def _invalidate_balance_cache(self, token_id: str) -> None:
+        """Drop the cached balance for token_id (call after SELL completes)."""
+        self._balance_cache.pop(token_id, None)
+
+    async def warm_sell_signature(self, token_id: str, shares: float,
+                                  expected_price: float, fee_rate: float = DEFAULT_FEE_RATE) -> None:
+        """Pre-sign a SELL FOK order in the background.
+
+        Called by main.py during HOLD ticks when holding_edge is close to
+        scalp threshold. Eliminates ~150ms of ECDSA sign latency from the
+        scalp's hot path: when PRE-SCALP fires, _submit_fok_order finds the
+        pre-signed order and only POSTs (skipping the create_market_order step).
+
+        Idempotent: re-running within TTL refreshes the cached signature with
+        current parameters, since the SELL price drifts every tick.
+        """
+        if not token_id or shares <= 0 or expected_price <= 0:
+            return
+        existing = self._sell_warmups.get(token_id)
+        if existing is not None:
+            # Only re-sign if the existing warmup is stale or params drifted.
+            age = time.time() - existing["ts"]
+            price_drift = abs(existing["price"] - expected_price)
+            size_drift = abs(existing["amount"] - shares) / max(shares, 1e-6)
+            if age < 1.5 and price_drift < 0.005 and size_drift < 0.02:
+                return  # still good
+        try:
+            mo = MarketOrderArgs(
+                token_id=token_id, amount=shares, side=SELL, price=expected_price,
+            )
+            loop = asyncio.get_running_loop()
+            signed = await loop.run_in_executor(
+                self._sign_executor, self.client.create_market_order, mo
+            )
+            self._sell_warmups[token_id] = {
+                "order": signed,
+                "amount": shares,
+                "price": expected_price,
+                "ts": time.time(),
+            }
+        except Exception as e:
+            # Pre-signing is best-effort: failure just means PRE-SCALP will
+            # pay the normal sign cost. Don't propagate.
+            logger.debug("warm_sell_signature failed: %s", e)
+
+    def _take_sell_warmup(self, token_id: str, shares: float,
+                          expected_price: float) -> dict | None:
+        """Consume a pre-signed SELL order if it matches current parameters.
+
+        Returns the signed-order dict or None if no usable warmup exists.
+        Always drops the cache entry to prevent stale reuse — _submit_fok_order
+        will re-issue via warm_sell_signature on the next tick if needed.
+        """
+        entry = self._sell_warmups.pop(token_id, None)
+        if entry is None:
+            return None
+        age = time.time() - entry["ts"]
+        if age > self._SELL_WARMUP_TTL_S:
+            return None
+        # Parameters must match closely. Price drift > 1 cent or size drift >
+        # 5% means the SELL conditions changed enough that the signature
+        # references the wrong amount — re-sign rather than risk a bad fill.
+        if abs(entry["price"] - expected_price) > 0.01:
+            return None
+        if abs(entry["amount"] - shares) / max(shares, 1e-6) > 0.05:
+            return None
+        return entry["order"]
 
     async def _sweep_residual(self, token_id: str, ref_price: float) -> None:
         """Sell any leftover shares of token_id (FOK fill-price-lookup undercount).
@@ -757,6 +937,22 @@ class LiveTrader(BaseTrader):
                 reason=f"Order ${notional_usd:.2f} below ${_MIN_ORDER_USD:.2f} CLOB minimum",
             )
 
+        # Order-book pre-check: simulate FOK walk against the current book.
+        # Avoids burning ~770ms × 3 retries on orders that would reject anyway
+        # because the book has already moved past our limit. Best-effort: skip
+        # the precheck if we don't have a fresh book snapshot (let the FOK try).
+        if self._clob_ws is not None and hasattr(self._clob_ws, "get_book"):
+            book = self._clob_ws.get_book(token_id) or {}
+            book_ts = float(book.get("ts", 0) or 0)
+            book_age = time.time() - book_ts if book_ts else 999
+            if book_age <= 5.0:  # only trust very fresh book for pre-check
+                walks = self._estimate_fok_walk(book, side, amount, expected_price)
+                if walks is False:
+                    return FillResult(
+                        filled=False,
+                        reason="pre-check: book walk would exceed limit (would reject in CLOB)",
+                    )
+
         balance_task: asyncio.Task[float] | None = None
         balance_before: float = -1.0
         ws_settle_event: asyncio.Event | None = None
@@ -776,17 +972,29 @@ class LiveTrader(BaseTrader):
 
         last_error = ""
         loop = asyncio.get_running_loop()
+        # Try a pre-signed SELL warmup on the first attempt only (subsequent
+        # retries always re-sign since the order has changed by then).
+        presigned = (self._take_sell_warmup(token_id, amount, expected_price)
+                     if side == SELL else None)
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                mo = MarketOrderArgs(token_id=token_id, amount=amount, side=side, price=expected_price)
-                # Sign and post in one thread dispatch on the dedicated executor.
-                def _sign_and_post(order_args: MarketOrderArgs) -> dict:
-                    return self.client.post_order(
-                        self.client.create_market_order(order_args), OrderType.FOK
-                    )
-                _lat_t0 = time.perf_counter()
-                resp = await loop.run_in_executor(self._sign_executor, _sign_and_post, mo)
-                _record_submit_latency(time.perf_counter() - _lat_t0)
+                if attempt == 1 and presigned is not None:
+                    # POST the pre-signed order directly, skip the sign step.
+                    def _post_presigned() -> dict:
+                        return self.client.post_order(presigned, OrderType.FOK)
+                    _lat_t0 = time.perf_counter()
+                    resp = await loop.run_in_executor(self._sign_executor, _post_presigned)
+                    _record_submit_latency(time.perf_counter() - _lat_t0)
+                else:
+                    mo = MarketOrderArgs(token_id=token_id, amount=amount, side=side, price=expected_price)
+                    # Sign and post in one thread dispatch on the dedicated executor.
+                    def _sign_and_post(order_args: MarketOrderArgs) -> dict:
+                        return self.client.post_order(
+                            self.client.create_market_order(order_args), OrderType.FOK
+                        )
+                    _lat_t0 = time.perf_counter()
+                    resp = await loop.run_in_executor(self._sign_executor, _sign_and_post, mo)
+                    _record_submit_latency(time.perf_counter() - _lat_t0)
 
                 if not resp.get("success"):
                     error_msg = resp.get("errorMsg", "unknown error")
@@ -896,6 +1104,14 @@ class LiveTrader(BaseTrader):
                     # drops below threshold; blocking the FOK return path on it cost
                     # 30-100ms every 10th submit for zero trading-logic benefit.
                     asyncio.create_task(self._maybe_recheck_allowance())
+                    if side == BUY:
+                        # Background prefetch of post-BUY chain balance — primes
+                        # the cache so the eventual SELL's _sellable_shares can
+                        # skip the ~300ms /balance-allowance REST roundtrip.
+                        asyncio.create_task(self._cache_post_buy_balance(token_id))
+                    else:
+                        # Sell just succeeded — cached balance is now stale.
+                        self._invalidate_balance_cache(token_id)
                     if side == SELL:
                         asyncio.create_task(self._sweep_residual(token_id, fill_price))
                     notional_usdc = amount if side == BUY else amount * fill_price

@@ -21,9 +21,18 @@ class PaperTrader(BaseTrader):
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
         # Realism knobs (all overridable via settings.yaml -> execution.*)
-        self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.4)
-        self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.15)
+        # Defaults tuned to live latency_stats.json (p50≈770ms, p99≈2.3s).
+        self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.77)
+        self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.40)
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.02)
+
+    # Match live's _MAX_RETRIES + _RETRY_BASE_DELAY semantics so paper trades
+    # the same FOK behaviour the live bot does (one shot per attempt with a
+    # short backoff between retries). Keeps paper P&L distribution honest:
+    # in live a transient "ask moved up" often clears within 50-100ms and the
+    # 2nd attempt fills — paper used to give up immediately and skip those.
+    _PAPER_MAX_RETRIES: int = 3
+    _PAPER_RETRY_BASE_DELAY: float = 0.03
 
     async def _execute_buy(
         self, token_id: str, price: float, size: float,
@@ -34,7 +43,7 @@ class PaperTrader(BaseTrader):
         await self._simulate_latency()
         if random.random() < self.network_fail_rate:
             return FillResult(filled=False, reason="simulated network error")
-        return self._walk_book(token_id, side="buy", requested_price=price, size_usd=size)
+        return await self._retry_walk(token_id, side="buy", requested_price=price, size_usd=size)
 
     async def _execute_sell(
         self, token_id: str, shares: float, price: float,
@@ -46,7 +55,30 @@ class PaperTrader(BaseTrader):
         if random.random() < self.network_fail_rate:
             return FillResult(filled=False, reason="simulated network error")
         size_usd = shares * price
-        return self._walk_book(token_id, side="sell", requested_price=price, size_usd=size_usd)
+        return await self._retry_walk(token_id, side="sell", requested_price=price, size_usd=size_usd)
+
+    async def _retry_walk(self, token_id: str, side: str, requested_price: float,
+                          size_usd: float) -> FillResult:
+        """Run _walk_book up to _PAPER_MAX_RETRIES times with exponential backoff
+        between attempts. Re-reads the book each pass so any intervening WS update
+        is reflected, matching live's behavior where the second attempt sees a
+        post-recoil snapshot of the order book."""
+        last: FillResult | None = None
+        for attempt in range(1, self._PAPER_MAX_RETRIES + 1):
+            last = self._walk_book(token_id, side=side, requested_price=requested_price,
+                                   size_usd=size_usd)
+            if last.filled:
+                return last
+            # Only retry on the same class of rejection live retries on:
+            # the FOK-rejection ("price moved before fill"). Don't retry depth
+            # exhaustion or book-empty; those won't recover in 30ms.
+            if "price moved" not in (last.reason or ""):
+                return last
+            if attempt < self._PAPER_MAX_RETRIES:
+                # Exponential backoff with jitter, same shape as live's _retry_sleep.
+                base = self._PAPER_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                await asyncio.sleep(base * random.uniform(0.8, 1.2))
+        return last or FillResult(filled=False, reason="retry exhausted")
 
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
         shares = position.get("shares_held") or position["size"] / position["entry_price"]
@@ -61,8 +93,14 @@ class PaperTrader(BaseTrader):
     # ------------------------------------------------------------------
 
     async def _simulate_latency(self) -> None:
-        """Gaussian-jittered sleep approximating Polymarket match latency (~250-600ms typical)."""
-        latency = max(0.25, random.gauss(self.latency_mean_s, self.latency_jitter_s))
+        """Gaussian-jittered sleep, plus a 4% chance of a heavy-tail spike to mirror
+        live's p99/max (2.3-4.8s outliers from network jitter or REST congestion).
+        Floor at 0.35s — live's fastest observed sign+post."""
+        if random.random() < 0.04:
+            # Heavy tail: uniform [2.0s, 4.0s] roughly matches p95-p99 from live.
+            latency = random.uniform(2.0, 4.0)
+        else:
+            latency = max(0.35, random.gauss(self.latency_mean_s, self.latency_jitter_s))
         await asyncio.sleep(latency)
 
     def _walk_book(self, token_id: str, side: str, requested_price: float,
@@ -129,18 +167,13 @@ class PaperTrader(BaseTrader):
                 reason=f"insufficient book depth (remaining={remaining:.2f})",
             )
 
-        # negRisk cross-matching: the live CLOB will execute at the better of the direct
-        # book VWAP or the cross-matched /price API price (requested_price). For sells,
-        # better = higher; for buys, better = lower. Without this, paper sells of losing
-        # tokens fill at near-zero direct bids while live would fill at the cross-matched
-        # price (and paper buys could fill at expensive direct asks while live cross-match
-        # via complementary-token "merge" matching is cheaper).
-        if side == "sell":
-            fill_price = max(vwap, requested_price)
-        else:
-            fill_price = min(vwap, requested_price)
-            # Simulate FOK price-moved rejection: if the book has moved more than
-            # max_slippage above requested_price, live would reject the order outright.
-            if vwap > requested_price * (1 + self.max_slippage):
+        # Strict FOK semantics — must match live exactly:
+        #   BUY: rejects if vwap > requested_price (book ask moved up between calc and fill)
+        #   SELL: rejects if vwap < requested_price (book bid moved down between calc and fill)
+        if side == "buy":
+            if vwap > requested_price:
                 return FillResult(filled=False, reason="price moved before fill (simulated FOK rejection)")
-        return FillResult(filled=True, fill_price=fill_price, fill_size=spent)
+        else:
+            if vwap < requested_price:
+                return FillResult(filled=False, reason="price moved before fill (simulated FOK rejection)")
+        return FillResult(filled=True, fill_price=vwap, fill_size=spent)
