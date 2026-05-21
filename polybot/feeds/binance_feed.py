@@ -103,7 +103,7 @@ class BinanceFeed:
         import websockets
         stream = f"{self.ws_url}/{self.symbol}@kline_1m"
         backoff = 1
-        # kline updates arrive ~once/second; >45s of silence is a dead stream.
+        # kline updates arrive ~once/second; >180s of silence is a dead stream.
         while self._running:
             try:
                 async with websockets.connect(stream, ping_interval=20, ping_timeout=30, compression=None) as ws:
