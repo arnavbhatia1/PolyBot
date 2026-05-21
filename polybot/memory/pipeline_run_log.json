@@ -1603,5 +1603,77 @@
         ]
       }
     ]
+  },
+  {
+    "date": "2026-05-21T03:30:53.257169+00:00",
+    "source": "claude",
+    "baseline_sharpe": 0.2258,
+    "changes": [
+      {
+        "param": "student_t_df",
+        "old_value": 5,
+        "new_value": 6,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0025,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "momentum_weight",
+        "old_value": 0.04,
+        "new_value": 0.06,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0006,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "regime_weight",
+        "old_value": 0.03,
+        "new_value": 0.025,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "flow_weight",
+        "old_value": 0.04,
+        "new_value": 0.03,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0003,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "atr_regime_shift_threshold",
+        "old_value": 0.6,
+        "new_value": 0.65,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      }
+    ]
   }
 ]

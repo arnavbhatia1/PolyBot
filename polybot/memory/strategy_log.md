@@ -645,3 +645,26 @@
 - Adverse-rate 'high' bucket outperformance may be sample artifact (n<500) — manual review only.
 
 **Reasoning:** Edge realization degrades sharply at high predicted edges (Q4 below 0.75 vs Q1 above 1.0), indicating model overconfidence in the tail. Compress logit_scale and modestly raise min_edge to pull extreme probs in and filter the most-overconfident marginal entries. Two manual observations flag counterintuitive subgroup behavior (SPRT, adverse) for operator review — confidence low on those.
+
+## 2026-05-21T03:30:52.747847+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (5):**
+  - student_t_df=6 (exploratory up step)
+  - momentum_weight=0.06 (exploratory up step)
+  - regime_weight=0.025 (exploratory down step)
+  - flow_weight=0.03 (exploratory down step)
+  - atr_regime_shift_threshold=0.65 (exploratory up step)
+
+**Manual Suggestions (0) [operator-only]:**
+  - none
+
+**Findings:**
+- None
+
+**Warnings:**
+- Every live adoption has decayed (0/1 hit rate, -0.167 Sharpe) — any marginal backtest signal should be treated as noise until regime stabilizes for 2+ weeks.
+- Mean gain DEGRADING while WR improves suggests a structural exit-quality or position-sizing issue that backtestable params cannot address — further tuning may mask rather than fix the root cause.
+- Current regime (last 100 trades WR=70%) diverges sharply from overall 56% — historical parameter fits may not apply; caution on any adoption during this divergence.
+
+**Reasoning:** With 25+ parameter families exhausted and every tested direction producing backtest deltas indistinguishable from noise (all below 0.007 floor), empty changes is the only defensible position this cycle. Win rate and Sharpe are explicitly IMPROVING per trend buckets, meaning any parameter intervention risks disrupting a natural recovery that is already underway. The single highest-confidence actionable lever remains exit_edge_threshold: scalp accuracy at 37% in the <-0.10 bucket (n=1662, ~13× noise) is reproduced consistently across multiple cycles and maps cleanly to the scalping_too_early signal dominating the exit pattern analysis — this is routed to manual_observations as the pipeline cannot backtest it directly.
