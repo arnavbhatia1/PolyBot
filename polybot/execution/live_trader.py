@@ -1050,24 +1050,17 @@ class LiveTrader(BaseTrader):
                                     # limit would be very surprising — likely
                                     # background trade pollution.
                                     if 0.85 * expected_shares <= gross_shares <= 1.30 * expected_shares:
-                                        # Polymarket entry fee in shares:
-                                        #   fee_shares = fee_rate * shares * p * (1-p)
-                                        # Convert gross VWAP -> net-shares so
-                                        # downstream sees the same "amount/net"
-                                        # form the balance-delta path emits.
-                                        fee_shares = (
-                                            fee_rate * gross_shares
-                                            * gross_vwap * (1 - gross_vwap)
-                                        )
-                                        net_shares = max(
-                                            gross_shares - fee_shares, _DUST_THRESHOLD_SHARES
-                                        )
-                                        fill_price = amount / net_shares
+                                        # Return gross VWAP. base.py applies the fee uniformly
+                                        # (entry_fee_shares on gross_shares) and records the
+                                        # correct net_shares. The earlier net-shares synthetic
+                                        # price caused base.py to deduct the fee a second time,
+                                        # leaving shares_held under-reported by ~0.45% (the
+                                        # difference showed up as on-chain dust).
+                                        fill_price = gross_vwap
                                         logger.debug(
                                             "BUY WS-derived VWAP: %d trade(s), "
-                                            "gross=%.4f @ %.4f -> fill_price=%.4f "
-                                            "(skipped 2nd balance read)",
-                                            len(candidates), gross_shares, gross_vwap, fill_price,
+                                            "gross_shares=%.4f @ %.4f",
+                                            len(candidates), gross_shares, gross_vwap,
                                         )
                                         # WS path won — discard the parallel balance
                                         # pre-fetch so it doesn't leak a task.
@@ -1085,10 +1078,20 @@ class LiveTrader(BaseTrader):
                                 balance_after = await self._get_token_balance(token_id)
                                 delta = balance_after - balance_before
                                 if delta > _DUST_THRESHOLD_SHARES:
-                                    fill_price = amount / delta
+                                    # delta is net_shares (post-fee chain balance change). We
+                                    # need gross_vwap = amount / gross_shares so base.py can
+                                    # apply the fee correctly. Solve via 2 fixed-point steps:
+                                    #   gross_shares ≈ delta / (1 - fee_rate * p * (1-p))
+                                    # Converges in 1-2 iterations for fee_rate=0.018, p≈0.5.
+                                    p_est = amount / delta
+                                    for _ in range(2):
+                                        fee_frac = fee_rate * p_est * (1.0 - p_est)
+                                        gross_shares = delta / max(1.0 - fee_frac, 1e-6)
+                                        p_est = amount / gross_shares
+                                    fill_price = p_est
                                     logger.debug(
-                                        "BUY balance-delta VWAP fallback: %.4f shares -> "
-                                        "price=%.4f (before=%.4f after=%.4f notional=%.2f)",
+                                        "BUY balance-delta VWAP fallback: net=%.4f -> "
+                                        "gross_vwap=%.4f (before=%.4f after=%.4f notional=%.2f)",
                                         delta, fill_price, balance_before, balance_after, amount,
                                     )
                     if fill_price is None:
