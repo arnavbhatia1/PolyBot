@@ -524,6 +524,15 @@ async def _evaluate_signal_and_enter(
         bybit_age = time.time() - bybit_feed.state.oi_updated
         if bybit_age > 60:
             stale_feeds.append(f"bybit_oi={bybit_age:.0f}s")
+    # Binance aggTrade underpins L3b (CVD/taker) and the CVD-deceleration gate.
+    # Previously the staleness check lived inside the spot_flow computation and
+    # silently zeroed L3b on stale data; now we skip entirely (matches CLAUDE.md's
+    # documented behavior) so we don't size off a degraded model when the feed
+    # goes silent.
+    if trades_feed is not None and trades_feed.accumulator is not None:
+        agg_age = trades_feed.accumulator.latest_age_s
+        if agg_age > 30:
+            stale_feeds.append(f"binance_aggtrade={agg_age:.0f}s")
     if stale_feeds:
         _record_skip("stale_feed")
         _log_skip_once(cid, f"stale_{cid}", f"SKIP: stale feeds — {', '.join(stale_feeds)}")
