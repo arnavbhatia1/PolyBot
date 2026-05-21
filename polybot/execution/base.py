@@ -1,7 +1,6 @@
 """Base execution layer: shared dataclasses, fee math, and BaseTrader ABC."""
 from __future__ import annotations
 
-import asyncio
 import json as _json
 import logging
 from abc import ABC, abstractmethod
@@ -195,12 +194,10 @@ class BaseTrader(ABC):
         fee_rate: float = DEFAULT_FEE_RATE,
     ) -> TradeResult:
         # --- Rejection gates ---
-        has_pos, pos_count, bankroll, deployed = await asyncio.gather(
-            self.db.has_position_for_market(market_id),
-            self.db.get_open_position_count(),
-            self.db.get_bankroll(),
-            self._get_deployed_capital(),
-        )
+        # Single composite query: aiosqlite serializes on one connection anyway,
+        # so the previous 4-way gather paid 4 round trips for what one returns.
+        # Also gives an atomic snapshot — no race between sub-reads.
+        has_pos, pos_count, bankroll, deployed = await self.db.get_open_trade_preflight(market_id)
         if has_pos:
             return TradeResult(success=False, reason="Duplicate market — already have position")
         if pos_count >= self.max_concurrent_positions:

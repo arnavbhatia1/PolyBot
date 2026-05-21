@@ -275,6 +275,22 @@ class Database:
         row = await cursor.fetchone()
         return row[0] > 0
 
+    async def get_open_trade_preflight(self, market_id: str) -> tuple[bool, int, float, float]:
+        """Return (has_position_in_market, open_count, bankroll, deployed_usdc) in one round trip.
+        Atomic snapshot — eliminates the race window where 4 separate gathered queries could
+        see inconsistent views of the positions table after a concurrent insert/update.
+        """
+        cursor = await self.conn.execute(
+            "SELECT "
+            "  (SELECT COUNT(*) FROM positions WHERE market_id=? AND status IN ('open','pending_resolution')),"
+            "  (SELECT COUNT(*) FROM positions WHERE status='open'),"
+            "  (SELECT amount FROM bankroll WHERE id=1),"
+            "  (SELECT COALESCE(SUM(size), 0) FROM positions WHERE status IN ('open','pending_resolution'))",
+            (market_id,),
+        )
+        row = await cursor.fetchone()
+        return (row[0] or 0) > 0, int(row[1] or 0), float(row[2] or 0.0), float(row[3] or 0.0)
+
     async def get_open_position_count(self) -> int:
         cursor = await self.conn.execute(
             "SELECT COUNT(*) FROM positions WHERE status='open'"
