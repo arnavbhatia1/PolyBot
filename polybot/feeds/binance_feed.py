@@ -28,12 +28,18 @@ class CandleBuffer:
     def __init__(self, max_size: int = 200):
         self.max_size = max_size
         self._candles: deque[Candle] = deque(maxlen=max_size)
+        # Cache get_closes() output — invalidated on add/update_current. Hot path
+        # calls this 2-3× per book-update tick; the ndarray allocation is wasted
+        # work between candle events (no callers mutate the returned array — see
+        # grep audit).
+        self._closes_cache: np.ndarray | None = None
 
     def __len__(self) -> int:
         return len(self._candles)
 
     def add(self, candle: Candle) -> None:
         self._candles.append(candle)
+        self._closes_cache = None
 
     def update_current(self, close: float, high: float, low: float, volume: float) -> None:
         if self._candles:
@@ -42,6 +48,7 @@ class CandleBuffer:
             c.high = max(c.high, high)
             c.low = min(c.low, low)
             c.volume = volume
+            self._closes_cache = None
 
     def latest(self) -> Candle | None:
         return self._candles[-1] if self._candles else None
@@ -51,7 +58,11 @@ class CandleBuffer:
         return items[-n:] if len(items) >= n else items
 
     def get_closes(self) -> np.ndarray:
-        return np.array([c.close for c in self._candles], dtype=np.float64)
+        if self._closes_cache is None:
+            arr = np.array([c.close for c in self._candles], dtype=np.float64)
+            arr.setflags(write=False)
+            self._closes_cache = arr
+        return self._closes_cache
 
     def get_highs(self) -> np.ndarray:
         return np.array([c.high for c in self._candles], dtype=np.float64)
