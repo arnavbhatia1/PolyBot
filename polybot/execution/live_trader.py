@@ -947,6 +947,13 @@ class LiveTrader(BaseTrader):
         for attempt in range(_FILL_PRICE_LOOKUP_RETRIES):
             try:
                 order = await asyncio.to_thread(self.client.get_order, order_id)
+                # py-clob occasionally returns None on transient REST hiccups; guard
+                # so .get() doesn't blow up the retry loop. Falls through to retry.
+                if order is None:
+                    if attempt < _FILL_PRICE_LOOKUP_RETRIES - 1:
+                        await asyncio.sleep(_FILL_PRICE_LOOKUP_DELAY)
+                        continue
+                    return fallback_price
                 trades = order.get("associate_trades", [])
                 trades = [t for t in trades if isinstance(t, dict)]
                 if not trades:

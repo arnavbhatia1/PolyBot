@@ -881,11 +881,13 @@ async def _evaluate_signal_and_enter(
             fee_rate = 0.0  # maker fill
 
     # Apply slippage to the price returned by _fetch_market_prices (already from GET /price?side=BUY).
-    # FOK rejects on any adverse tick between calc and fill; floor the slip aggressive
-    # enough to actually cross the spread (else 5-cent intra-tick moves reject the order).
+    # Entries deliberately use a tight slip (no FOK-cross floor): we WANT the FOK to
+    # reject when prices have moved adversely between signal and fill — that adverse-
+    # selection rejection is a feature, it stops us from buying post-reversal tops.
+    # Exits use a loose floor instead (see exit_fill in evaluate_hold) — there we
+    # must fill to avoid death-spiral lockout.
     impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
-    fok_floor = config.get("execution", {}).get("fok_spread_cross_floor", 0.08)
-    slip = max(slippage_pct(size, side_depth, impact), fok_floor)
+    slip = slippage_pct(size, side_depth, impact)
     price = market_scanner.snap_to_tick(price * (1 + slip), tick_size)
 
     snapshot = indicator_engine.get_snapshot(indicators)
