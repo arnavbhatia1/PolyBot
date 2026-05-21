@@ -282,6 +282,16 @@ async def _get_open_positions_cached(db: Any) -> list:
     _open_positions_cache_ts = now
     return _open_positions_cache
 
+
+def _invalidate_open_positions_cache() -> None:
+    """Force the next _get_open_positions_cached call to re-read the DB.
+    Call after any successful open/close/resolve so concurrent-position math
+    and entry-gate checks see the new state immediately instead of trailing
+    the 1s TTL.
+    """
+    global _open_positions_cache_ts
+    _open_positions_cache_ts = 0.0
+
 # Rate-limit counterfactual resolution checks (Gamma REST calls, no need every tick).
 _last_cf_check_ts: float = 0.0
 _CF_CHECK_INTERVAL = 30.0  # seconds
@@ -1002,6 +1012,9 @@ async def _evaluate_signal_and_enter(
         return None, last_eval_log_window
 
     if result.success:
+        # Drop the open-positions cache so the next entry tick sees this new
+        # position instead of trailing the 1s TTL.
+        _invalidate_open_positions_cache()
         # Use the actual fill price (may differ from signal-moment price due to
         # paper trader latency + book-walk, or live FOK slippage).
         fill_price = result.fill_price if result.fill_price > 0 else price
@@ -1617,6 +1630,7 @@ async def _evaluate_and_exit_position(
                 return day_wins, day_losses, day_fees, traded_market_id
             logger.warning(f"  SCALP RETRY — close_trade failed (will retry next tick): {result.reason}")
         elif result.success:
+            _invalidate_open_positions_cache()
             pnl = result.pnl
             gain_pct = result.gain_pct
             total_fees = result.entry_fee_usd + result.exit_fee_usd
@@ -1702,6 +1716,7 @@ async def _resolve_expired_position(
     result = await trader.resolve_position(pos["id"], exit_price)
     traded_market_id = None
     if result.success:
+        _invalidate_open_positions_cache()
         pnl = result.pnl
         gain_pct = result.gain_pct
         total_fees = result.entry_fee_usd + result.exit_fee_usd
@@ -1829,6 +1844,7 @@ async def _manage_orphaned_position(
     result = await trader.resolve_position(pos["id"], exit_price)
     traded_market_id = None
     if result.success:
+        _invalidate_open_positions_cache()
         pnl = result.pnl
         gain_pct = result.gain_pct
         total_fees = result.entry_fee_usd + result.exit_fee_usd
