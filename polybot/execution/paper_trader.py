@@ -40,6 +40,8 @@ class PaperTrader(BaseTrader):
     ) -> FillResult:
         """Simulate a FOK market buy with realistic latency + VWAP + rejects."""
         del fee_rate  # paper applies fee math in base.py via the same DEFAULT_FEE_RATE
+        if self._precheck_rejects(token_id, side="buy", requested_price=price, size_usd=size):
+            return FillResult(filled=False, reason="pre-check: book walk would exceed limit (matches live)")
         await self._simulate_latency()
         if random.random() < self.network_fail_rate:
             return FillResult(filled=False, reason="simulated network error")
@@ -51,11 +53,66 @@ class PaperTrader(BaseTrader):
     ) -> FillResult:
         """Simulate a FOK market sell for `shares` shares at realistic VWAP."""
         del fee_rate
+        size_usd = shares * price
+        if self._precheck_rejects(token_id, side="sell", requested_price=price, size_usd=size_usd):
+            return FillResult(filled=False, reason="pre-check: book walk would exceed limit (matches live)")
         await self._simulate_latency()
         if random.random() < self.network_fail_rate:
             return FillResult(filled=False, reason="simulated network error")
-        size_usd = shares * price
         return await self._retry_walk(token_id, side="sell", requested_price=price, size_usd=size_usd)
+
+    def _precheck_rejects(self, token_id: str, side: str, requested_price: float,
+                          size_usd: float) -> bool:
+        """Mirror live's FOK pre-check: walk the current book against the limit and
+        reject before sleeping if the walk would clearly exceed limit. Returns False
+        when the book is missing, stale (>5s), or empty — let _walk_book handle those
+        same as live's pre-check abstains in those cases.
+        """
+        if self._clob_ws is None or not hasattr(self._clob_ws, "get_book"):
+            return False
+        book = self._clob_ws.get_book(token_id) or {}
+        import time as _time
+        book_ts = float(book.get("ts", 0) or 0)
+        if book_ts <= 0 or (_time.time() - book_ts) > 5.0:
+            return False
+        levels_raw = book.get("asks" if side == "buy" else "bids") or []
+        if not levels_raw:
+            return False
+        try:
+            parsed = [(float(l["price"]), float(l["size"])) for l in levels_raw
+                      if l.get("price") and l.get("size")]
+        except (TypeError, ValueError, KeyError):
+            return False
+        if not parsed:
+            return False
+        parsed.sort(key=lambda ps: ps[0], reverse=(side == "sell"))
+
+        spent = 0.0
+        consumed = 0.0
+        if side == "buy":
+            remaining = size_usd
+            for px, sz in parsed:
+                if remaining <= 0:
+                    break
+                level_usd = px * sz
+                take_usd = min(remaining, level_usd)
+                spent += take_usd
+                consumed += take_usd / px
+                remaining -= take_usd
+        else:
+            remaining = size_usd / requested_price  # shares
+            for px, sz in parsed:
+                if remaining <= 0:
+                    break
+                take_shares = min(remaining, sz)
+                spent += px * take_shares
+                consumed += take_shares
+                remaining -= take_shares
+        # Insufficient depth → abstain (matches live's `return None` path).
+        if remaining > 1e-6 or consumed <= 0:
+            return False
+        vwap = spent / consumed
+        return vwap > requested_price if side == "buy" else vwap < requested_price
 
     async def _retry_walk(self, token_id: str, side: str, requested_price: float,
                           size_usd: float) -> FillResult:
