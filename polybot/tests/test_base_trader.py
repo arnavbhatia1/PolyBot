@@ -338,14 +338,19 @@ class TestCloseTrade:
         await trader.close_trade(open_res.position_id, exit_price=0.60)
         bankroll_after_close = await db.get_bankroll()
 
-        # Manually compute expected revenue
+        # Manually compute expected revenue.
+        # close_trade reserves a small share buffer (max(fee_rate*0.25, 0)+0.002,
+        # floored at 0.005) to avoid Polymarket fee-math FOK rejections — so the
+        # sold-share count is shaved relative to held shares.
         positions = await db.get_trade_history()
         pos = positions[0]
         shares_ordered = 50.0 / 0.50
         fee_sh = entry_fee_shares(shares_ordered, 0.50, 0.072)
-        shares = shares_ordered - fee_sh
-        fee_usdc = exit_fee_usdc(shares, 0.60, 0.072)
-        revenue = shares * 0.60 - fee_usdc
+        shares_held = shares_ordered - fee_sh
+        headroom = max(max(0.072 * 0.25, 0.0) + 0.002, 0.005)
+        shares_sold = shares_held * (1.0 - headroom)
+        fee_usdc = exit_fee_usdc(shares_sold, 0.60, 0.072)
+        revenue = shares_sold * 0.60 - fee_usdc
         assert bankroll_after_close == pytest.approx(bankroll_after_open + revenue, abs=0.01)
 
     @pytest.mark.asyncio
