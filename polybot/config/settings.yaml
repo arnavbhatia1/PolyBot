@@ -192,9 +192,6 @@ coinbase:
   ws_url: wss://ws-feed.exchange.coinbase.com
   product_id: BTC-USD
 
-kraken:
-  ws_url: wss://ws.kraken.com
-
 bybit:
   ws_url: wss://stream.bybit.com/v5/public/linear
   rest_url: https://api.bybit.com
