@@ -157,6 +157,12 @@ class BaseTrader(ABC):
     ) -> FillResult:
         """Execute a sell order. Returns FillResult with actual fill details."""
 
+    async def _sellable_shares(self, token_id: str, fallback_shares: float) -> float:
+        """Return shares actually available to sell. Override in LiveTrader to query
+        the on-chain balance (avoids drift between DB-tracked shares_held and
+        real chain state). Paper execution keeps DB tracking authoritative."""
+        return fallback_shares
+
     @abstractmethod
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
         """Compute new bankroll after market resolution.
@@ -276,7 +282,11 @@ class BaseTrader(ABC):
             )
 
         # --- Shares and fee rate from position ---
-        shares = position.get("shares_held") or position["size"] / position["entry_price"]
+        fallback_shares = position.get("shares_held") or position["size"] / position["entry_price"]
+        # Query actual on-chain balance via _sellable_shares so we sell what we
+        # really own, not what the DB *thinks* we own. Eliminates dust caused by
+        # drift (e.g. partial-fill on a prior close, unrecorded fee deduction).
+        shares = await self._sellable_shares(token_id, fallback_shares)
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
 
         # --- Execute sell ---

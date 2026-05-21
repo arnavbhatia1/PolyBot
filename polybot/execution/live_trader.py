@@ -551,6 +551,32 @@ class LiveTrader(BaseTrader):
             logger.warning("Token balance query failed for %s: %s", token_id[:12], e)
             return 0.0
 
+    async def _sellable_shares(self, token_id: str, fallback_shares: float) -> float:
+        """Query on-chain balance so close_trade sells what we really own.
+
+        Falls back to fallback_shares if (a) no token_id, (b) the API query
+        failed (returned 0), or (c) the on-chain balance is implausibly far
+        from the DB-tracked value (>3x or <0.3x). The bounds catch a stale or
+        cross-contaminated query result without trusting it blindly.
+        """
+        if not token_id:
+            return fallback_shares
+        chain_bal = await self._get_token_balance(token_id)
+        if chain_bal <= 0:
+            return fallback_shares
+        if fallback_shares > 0 and (chain_bal > 3 * fallback_shares or chain_bal < 0.3 * fallback_shares):
+            logger.warning(
+                "Chain balance %.4f diverges sharply from DB shares %.4f for %s — using DB value",
+                chain_bal, fallback_shares, token_id[:12],
+            )
+            return fallback_shares
+        if abs(chain_bal - fallback_shares) > 0.01:
+            logger.info(
+                "Sell uses chain balance %.4f (DB had %.4f) for %s",
+                chain_bal, fallback_shares, token_id[:12],
+            )
+        return chain_bal
+
     async def _sweep_residual(self, token_id: str, ref_price: float) -> None:
         """Sell any leftover shares of token_id (FOK fill-price-lookup undercount).
 
@@ -858,9 +884,12 @@ class LiveTrader(BaseTrader):
                     order_short = (f"{order_id[:6]}…{order_id[-4:]}"
                                    if isinstance(order_id, str) and len(order_id) > 12
                                    else order_id)
+                    # py-clob amount semantics: USDC notional on BUY, shares on SELL.
+                    qty_str = (f"notional=${amount:.2f}" if side == BUY
+                               else f"shares={amount:.2f}")
                     logger.info(
-                        "FOK %s filled: order=%s, price=$%.2f, shares=%.2f",
-                        side, order_short, fill_price, amount,
+                        "FOK %s filled: order=%s, price=$%.2f, %s",
+                        side, order_short, fill_price, qty_str,
                     )
                     _update_fill_stats(filled=True, side=side)
                     # Fire-and-forget: the recheck only logs a warning when allowance
