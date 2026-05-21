@@ -42,8 +42,12 @@ _ALLOWANCE_RECHECK_EVERY = 10
 _FILL_PRICE_LOOKUP_RETRIES = 3
 _FILL_PRICE_LOOKUP_DELAY = 0.05
 _DUST_THRESHOLD_SHARES = 0.01
-_BALANCE_SETTLE_FLOOR = 0.05  # min chain-settle wait even if WS fires immediately
-_BALANCE_SETTLE_DELAY = 0.25  # max wait (legacy fixed delay, used as ceiling + no-WS fallback)
+_BALANCE_SETTLE_FLOOR = 0.03  # min chain-settle wait even if WS fires immediately
+_BALANCE_SETTLE_DELAY = 0.15  # max wait (legacy fixed delay, used as ceiling + no-WS fallback)
+# Tightened from 0.05/0.25. WS trade events for our token typically arrive within
+# 50-150ms of the match-engine confirmation — the old 250ms ceiling left ~100ms
+# of idle wait on every successful BUY. Floor stays small enough to absorb any
+# ordering jitter between POST-success and the WS event landing.
 
 def _retry_sleep(attempt: int) -> float:
     """Exponential backoff with multiplicative jitter. attempt is 1-indexed."""
