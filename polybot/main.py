@@ -744,13 +744,11 @@ async def _evaluate_signal_and_enter(
 
     # --- LAYER DISAGREEMENT GATE ---
     # `compute_momentum` is regime-aware and sign-coherent (positive = bullish in
-    # the current regime). `mw_sign` is gone — momentum_weight's sign no longer
-    # encodes polarity after the L4 polarity-split fix; polarity is per-group.
+    # the current regime). Reuse the cached value from compute_probability above —
+    # the inputs (indicators, regime) haven't changed since signal_engine.evaluate.
     # Threshold 0.5 matches a strong-disagreement signal on the unit-clamped
     # output (group sums × weights, regime-conditioned).
-    momentum_score = signal_engine.compute_momentum(
-        indicators, signal_engine.last_regime_autocorr
-    )
+    momentum_score = signal_engine.last_momentum_score
     momentum_opposes = (
         (side == "Up" and momentum_score < -0.5)
         or (side == "Down" and momentum_score > 0.5)

@@ -180,6 +180,7 @@ class SignalEngine:
         self.last_regime_autocorr: float = 0.0
         self.last_regime_direction: float = 0.0
         self.last_raw_prob_up: float = 0.5
+        self.last_momentum_score: float = 0.0
 
     def _record_atr(self, atr: float) -> None:
         if atr <= 0:
@@ -330,7 +331,10 @@ class SignalEngine:
 
         # L4 — indicator committee (regime-aware polarity per-group, sign-coherent)
         if indicators:
-            logit_p += self.compute_momentum(indicators, regime) * logit_momentum_w
+            self.last_momentum_score = self.compute_momentum(indicators, regime)
+            logit_p += self.last_momentum_score * logit_momentum_w
+        else:
+            self.last_momentum_score = 0.0
 
         # L6 — derived feature library. Skip entirely if every weight is 0.0
         # (default), so this layer has zero cost when the pipeline hasn't
