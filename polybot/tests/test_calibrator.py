@@ -98,22 +98,37 @@ def test_fit_rejects_when_calibration_no_better_than_identity():
 
 
 def test_fit_adopts_on_clearly_biased_data():
-    """Overconfident model — every raw prob is 0.80 but actual win rate is 50%."""
+    """Overconfident model — at the 0.80 bucket, actual win rate is 50%.
+
+    Includes well-calibrated low/high anchor buckets so the isotonic fit
+    spans [0.2, 0.8] and passes the healthy-output gate. In production,
+    raw model probs naturally span a range across many trades.
+    """
     cal = IsotonicCalibrator()
-    probs = [0.80] * 200
-    outcomes = [1] * 100 + [0] * 100
+    # Anchor buckets: well-calibrated, span the output range.
+    probs = [0.15] * 50 + [0.85] * 50
+    outcomes = [1] * 8 + [0] * 42 + [1] * 42 + [0] * 8   # ~15% and ~85% wins
+    # The bucket under test: 0.80 → 50% win rate (overconfident).
+    probs += [0.80] * 200
+    outcomes += [1] * 100 + [0] * 100
     assert cal.fit(probs, outcomes, min_samples=75) is True
     assert not cal.is_identity
-    # Calibrated prob at the (single) training value must come down toward 0.5.
+    # Calibrated prob at the biased bucket must come down toward 0.5.
     assert cal.calibrate(0.80) < 0.70
 
 
 def test_fit_pulls_overconfident_predictions_down():
-    """Stronger bias: 90% probs, 50% true rate. Isotonic must shift 0.9 → ~0.5."""
+    """Stronger bias: 0.90 bucket has 50% true rate. Isotonic must shift 0.9 → ~0.5.
+
+    High anchor sits at 0.95 (above the bias bucket) so monotonicity doesn't
+    force the 0.90 fit upward toward the anchor.
+    """
     cal = IsotonicCalibrator()
     np.random.seed(1)
-    probs = [0.90] * 200
-    outcomes = [1] * 100 + [0] * 100
+    probs = [0.15] * 50 + [0.95] * 50
+    outcomes = [1] * 8 + [0] * 42 + [1] * 47 + [0] * 3   # ~16% and ~94% wins
+    probs += [0.90] * 200
+    outcomes += [1] * 100 + [0] * 100
     assert cal.fit(probs, outcomes, min_samples=75) is True
     out = cal.calibrate(0.90)
     assert 0.40 <= out <= 0.60, f"expected ~0.5 calibration, got {out:.3f}"

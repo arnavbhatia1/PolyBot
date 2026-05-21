@@ -58,8 +58,8 @@ polybot/
   main.py                Trading loop, entry/exit/sizing
   config/                {settings.yaml, loader.py, param_registry.py}
   core/                  signal_engine, calibrator, order_flow, returns,
-                         regime, liquidation, exit_boundary, sprt, adverse_selection
-  feeds/                 coinbase, kraken, binance(+depth+trades), bybit, chainlink, clob_ws, market_scanner
+                         regime, liquidation, exit_boundary, sprt, adverse_selection, derived_features
+  feeds/                 coinbase, binance(+depth+trades), bybit, chainlink, clob_ws, market_scanner
   indicators/            rsi/macd/stoch/obv/vwap/ema/atr + engine
   execution/             base, paper_trader, live_trader, circuit_breaker, correlation
   agents/                scheduler, outcome_reviewer, counterfactual_tracker, ghost_tracker,
