@@ -323,7 +323,7 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
 def compute_time_multiplier(prob: float, seconds_remaining: float,
                             window_seconds: float = 300.0,
                             normal_fraction: float = 0.60,
-                            late_max_penalty: float = 0.60) -> tuple[float, str]:
+                            late_max_penalty: float = 0.30) -> tuple[float, str]:
     """Returns (kelly_multiplier, phase). High-conviction entries barely penalized late."""
     time_fraction = seconds_remaining / window_seconds
     conviction = 2.0 * abs(prob - 0.5)
