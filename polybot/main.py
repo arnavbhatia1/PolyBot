@@ -881,8 +881,11 @@ async def _evaluate_signal_and_enter(
             fee_rate = 0.0  # maker fill
 
     # Apply slippage to the price returned by _fetch_market_prices (already from GET /price?side=BUY).
+    # FOK rejects on any adverse tick between calc and fill; floor the slip aggressive
+    # enough to actually cross the spread (else 5-cent intra-tick moves reject the order).
     impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
-    slip = slippage_pct(size, side_depth, impact)
+    fok_floor = config.get("execution", {}).get("fok_spread_cross_floor", 0.08)
+    slip = max(slippage_pct(size, side_depth, impact), fok_floor)
     price = market_scanner.snap_to_tick(price * (1 + slip), tick_size)
 
     snapshot = indicator_engine.get_snapshot(indicators)
@@ -1017,7 +1020,7 @@ async def _evaluate_signal_and_enter(
         logger.info(
             f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
             f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}{slip_note}  |  "
-            f"{_slug_to_window(cid)} [{phase}]\n"
+            f"{_slug_to_window(cid)}{'' if phase == 'normal' else f' [{phase}]'}\n"
             f"  {_C.DIM}Why: {_why}{_C.RESET}\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}\n"
             f"{_C.YELLOW}{'=' * 60}{_C.RESET}")
@@ -1506,7 +1509,8 @@ async def _evaluate_and_exit_position(
         shares_held = pos.get("shares_held") or pos["size"] / pos["entry_price"]
         exit_size_usd = shares_held * market_price
         impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
-        slip = slippage_pct(exit_size_usd, bid_depth_usd, impact)
+        fok_floor = config.get("execution", {}).get("fok_spread_cross_floor", 0.08)
+        slip = max(slippage_pct(exit_size_usd, bid_depth_usd, impact), fok_floor)
         exit_fill = round(market_price * (1 - slip), 4)
 
         # Polymarket rejects marketable orders below $1 notional. Pre-check here

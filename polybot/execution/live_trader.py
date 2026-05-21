@@ -564,9 +564,10 @@ class LiveTrader(BaseTrader):
             residual = await self._get_token_balance(token_id)
             if residual <= _DUST_THRESHOLD_SHARES:
                 return
+            approx_val = residual * (float(ref_price) if ref_price else 0.5)
             logger.warning(
-                "Dust detected: %.4f shares of token %s (ref_price=%.4f) — sweeping",
-                residual, token_id[:12], ref_price,
+                "Dust detected: %.2f shares (~$%.2f) — sweeping",
+                residual, approx_val,
             )
             # Clamp ref_price into a valid FOK range so the sweep doesn't bounce on
             # tick / spread issues. Use the existing ref_price as best-effort.
@@ -580,18 +581,19 @@ class LiveTrader(BaseTrader):
                 )
             resp = await asyncio.to_thread(_sweep_sign_and_post)
             if resp.get("success") and resp.get("status") == "matched":
-                logger.info(
-                    "Dust swept: %.4f shares of %s @ ~%.4f",
-                    residual, token_id[:12], safe_price,
-                )
+                logger.info("Dust swept: %.2f shares @ $%.2f", residual, safe_price)
             else:
                 logger.warning(
-                    "Dust sweep did not match for %s: status=%s err=%s — "
-                    "shares may resolve on their own at expiry",
-                    token_id[:12], resp.get("status"), resp.get("errorMsg", ""),
+                    "Dust sweep didn't match (status=%s) — shares left to resolve at expiry",
+                    resp.get("status"),
                 )
         except Exception as e:
-            logger.warning("Dust sweep error for %s: %s", token_id[:12], e)
+            msg = str(e)
+            if "not enough balance" in msg or "allowance" in msg:
+                short = "balance too low for order size after fees"
+            else:
+                short = msg.split("\n")[0][:80]
+            logger.warning("Dust sweep failed: %s — leaving as orphaned dust", short)
 
     async def reconcile_dust(self, db: Database, max_age_hours: int = 24) -> int:
         """Scan recently-closed positions for residual on-chain shares and sweep them.
@@ -853,9 +855,12 @@ class LiveTrader(BaseTrader):
                                     )
                     if fill_price is None:
                         fill_price = await self._get_fill_price(order_id, expected_price)
+                    order_short = (f"{order_id[:6]}…{order_id[-4:]}"
+                                   if isinstance(order_id, str) and len(order_id) > 12
+                                   else order_id)
                     logger.info(
-                        "FOK %s filled: order=%s, price=%.4f, amount=%.4f",
-                        side, order_id, fill_price, amount,
+                        "FOK %s filled: order=%s, price=$%.2f, shares=%.2f",
+                        side, order_short, fill_price, amount,
                     )
                     _update_fill_stats(filled=True, side=side)
                     # Fire-and-forget: the recheck only logs a warning when allowance
