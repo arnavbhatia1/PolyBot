@@ -12,9 +12,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Filename retains the `platt_` prefix only for on-disk continuity with existing
-# state snapshots — the contents are isotonic thresholds, not Platt parameters.
-DEFAULT_PARAMS_PATH = Path("polybot/memory/calibration/platt_params.json")
+DEFAULT_PARAMS_PATH = Path("polybot/memory/calibration/isotonic_params.json")
 
 _EPS = 1e-6  # canonical clip — keep all clipping sites consistent
 

@@ -1928,7 +1928,7 @@ class AgentScheduler:
         # Diagnostic log of rejected isotonic fits (kept for telemetry; no
         # de-dup logic any more since each isotonic fit is fully data-driven).
         if cal_info.get("decision") == "rejected" and "n_knots" in cal_info:
-            _pr_path = _Path("polybot/memory/calibration/platt_rejected.json")
+            _pr_path = _Path("polybot/memory/calibration/isotonic_rejected.json")
             try:
                 _pr = _json.loads(_pr_path.read_text()) if _pr_path.exists() else []
                 _pr.append({

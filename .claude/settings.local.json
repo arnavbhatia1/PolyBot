@@ -134,7 +134,9 @@
       "Bash(Get-Content *)",
       "Bash(findstr /N \"last_eval_log_window\\\\s*=\" polybot\\\\main.py)",
       "WebFetch(domain:gamma-api.polymarket.com)",
-      "Bash(Select-Object FullName)"
+      "Bash(Select-Object FullName)",
+      "Bash(mv polybot/memory/calibration/platt_params.json polybot/memory/calibration/isotonic_params.json)",
+      "Bash(mv polybot/memory/calibration/platt_rejected.json polybot/memory/calibration/isotonic_rejected.json)"
     ]
   }
 }

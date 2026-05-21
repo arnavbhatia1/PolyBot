@@ -234,7 +234,7 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
     @bot.command(name="pipeline")
     async def pipeline_status(ctx):
         run_log_path = Path("polybot/memory/pipeline_run_log.json")
-        cal_path = Path("polybot/memory/calibration/platt_params.json")
+        cal_path = Path("polybot/memory/calibration/isotonic_params.json")
 
         last_run = "no data"
         status_line = "no data"

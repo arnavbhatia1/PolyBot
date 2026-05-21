@@ -2200,7 +2200,7 @@ async def run_pipeline() -> None:
 
     from polybot.core.calibrator import IsotonicCalibrator
     calibrator = IsotonicCalibrator()
-    _cal_path = Path(base_dir) / "memory" / "calibration" / "platt_params.json"
+    _cal_path = Path(base_dir) / "memory" / "calibration" / "isotonic_params.json"
     calibrator.load(_cal_path)
     signal_engine.calibrator = calibrator
 
@@ -2360,7 +2360,7 @@ async def main() -> None:
 
     # Load isotonic calibrator (identity if file doesn't exist)
     calibrator = IsotonicCalibrator()
-    _cal_path = Path(base_dir) / "memory" / "calibration" / "platt_params.json"
+    _cal_path = Path(base_dir) / "memory" / "calibration" / "isotonic_params.json"
     calibrator.load(_cal_path)
     signal_engine.calibrator = calibrator
 
