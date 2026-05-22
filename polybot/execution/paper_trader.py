@@ -165,10 +165,12 @@ class PaperTrader(BaseTrader):
         """Walk book levels to compute fill-size-weighted average price (VWAP).
 
         Buy walks asks ascending; sell walks bids descending. Rejects when
-        post-latency VWAP violates `max_slippage` vs `requested_price`. Falls
-        back to instant fill at `requested_price` when no book is available
-        or when the snapshot is older than 30s (CLOB book deltas only update
-        BBA, not the full ladder).
+        post-latency VWAP violates `max_slippage` vs `requested_price`. When
+        the book is stale (>30s) or empty, paper now matches live: live's
+        FOK would have nothing to walk against either and Polymarket's match
+        engine returns insufficient-liquidity. Only the `clob_ws is None`
+        branch falls back to a synthetic fill — that path is exercised solely
+        by unit-test fixtures that pass no clob_ws.
         """
         if self._clob_ws is None:
             return FillResult(filled=True, fill_price=requested_price, fill_size=size_usd)
@@ -176,10 +178,10 @@ class PaperTrader(BaseTrader):
         import time as _time
         book_age = _time.time() - float(book.get("ts", 0) or 0)
         if book_age > 30:
-            return FillResult(filled=True, fill_price=requested_price, fill_size=size_usd)
+            return FillResult(filled=False, reason="book snapshot stale (>30s)")
         levels_raw = book.get("asks" if side == "buy" else "bids", [])
         if not levels_raw:
-            return FillResult(filled=True, fill_price=requested_price, fill_size=size_usd)
+            return FillResult(filled=False, reason="book empty on requested side")
 
         levels = []
         for lvl in levels_raw:
@@ -189,7 +191,7 @@ class PaperTrader(BaseTrader):
                 continue
         levels = [(p, s) for p, s in levels if p > 0 and s > 0]
         if not levels:
-            return FillResult(filled=True, fill_price=requested_price, fill_size=size_usd)
+            return FillResult(filled=False, reason="book empty after parse")
         levels.sort(key=lambda ps: ps[0], reverse=(side == "sell"))
 
         # Walk levels up to size_usd (buy) or size_shares (sell), compute VWAP.
