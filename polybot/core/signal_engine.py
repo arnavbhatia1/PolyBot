@@ -181,6 +181,14 @@ class SignalEngine:
         self.last_regime_direction: float = 0.0
         self.last_raw_prob_up: float = 0.5
         self.last_momentum_score: float = 0.0
+        # Memoize compute_regime_factor by (closes-array-identity, regime_lookback).
+        # CandleBuffer.get_closes() returns a read-only ndarray whose id is stable
+        # until the buffer mutates (add/update_current both invalidate the cache,
+        # which forces a fresh array allocation with a new id). Including
+        # regime_lookback defends against runtime adoption changing the lookback
+        # window mid-session.
+        self._regime_cache_key: tuple[int, int] | None = None
+        self._regime_cache_value: float = 0.0
 
     def _record_atr(self, atr: float) -> None:
         if atr <= 0:
@@ -256,7 +264,15 @@ class SignalEngine:
         return total
 
     def compute_regime_factor(self, closes) -> float:
-        return lag1_autocorr(closes, self.regime_lookback)
+        if closes is None:
+            return 0.0
+        key = (id(closes), self.regime_lookback)
+        if key == self._regime_cache_key:
+            return self._regime_cache_value
+        value = lag1_autocorr(closes, self.regime_lookback)
+        self._regime_cache_key = key
+        self._regime_cache_value = value
+        return value
 
     def compute_probability(self, btc_price: float, strike_price: float,
                             seconds_remaining: float, atr: float,
