@@ -176,6 +176,73 @@ def record_warmup_outcome(mode: str, outcome: str) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Dust sweep observability
+# ---------------------------------------------------------------------------
+# `_sweep_residual` runs as fire-and-forget after every SELL to recover the
+# small share remainder the sell-fee headroom leaves on chain. The audit found
+# the failure path silently swallowed exceptions — so a sweep that fails
+# (network error, balance/allowance mismatch, no-match) leaks the dust value
+# with zero operator visibility. Persist outcomes so the daily pipeline review
+# can surface the leak rate.
+_DUST_SWEEP_STATS_PATH = _ws_Path("polybot/memory/dust_sweep_stats.json")
+_DUST_SWEEP_OUTCOMES: tuple[str, ...] = (
+    "swept", "below_threshold", "match_failed", "exception",
+)
+
+
+def _empty_dust_sweep_stats() -> dict[str, Any]:
+    return {
+        **{k: 0 for k in _DUST_SWEEP_OUTCOMES},
+        "abandoned_shares_total": 0.0,    # cumulative shares written off (match_failed + exception)
+        "abandoned_value_usd_total": 0.0,  # approximate USD value of the above
+        "last_failure": None,             # most recent {outcome, ts, shares, approx_val} dict
+    }
+
+
+def record_dust_sweep_outcome(outcome: str, shares: float = 0.0,
+                              approx_val_usd: float = 0.0,
+                              note: str = "") -> None:
+    """Persist a single dust-sweep attempt outcome. Silent on I/O errors.
+
+    Failed sweeps (`match_failed`, `exception`) accumulate into the
+    abandoned-shares totals so the operator can quantify the bankroll leak.
+    Successful sweeps just increment the counter — no PnL adjustment needed
+    because the recovered USDC arrives via the SELL fill.
+    """
+    if outcome not in _DUST_SWEEP_OUTCOMES:
+        return
+    try:
+        stats = _empty_dust_sweep_stats()
+        if _DUST_SWEEP_STATS_PATH.exists():
+            try:
+                loaded = _ws_json.loads(_DUST_SWEEP_STATS_PATH.read_text())
+                if isinstance(loaded, dict):
+                    stats.update(loaded)
+                    for k in _empty_dust_sweep_stats():
+                        stats.setdefault(k, _empty_dust_sweep_stats()[k])
+            except Exception:
+                pass
+        stats[outcome] = stats.get(outcome, 0) + 1
+        if outcome in ("match_failed", "exception"):
+            stats["abandoned_shares_total"] = round(
+                stats.get("abandoned_shares_total", 0.0) + max(0.0, shares), 6)
+            stats["abandoned_value_usd_total"] = round(
+                stats.get("abandoned_value_usd_total", 0.0) + max(0.0, approx_val_usd), 4)
+            stats["last_failure"] = {
+                "outcome": outcome,
+                "ts": _ws_dt.now(_ws_tz.utc).isoformat(),
+                "shares": round(shares, 4),
+                "approx_val_usd": round(approx_val_usd, 4),
+                "note": note[:120],
+            }
+        stats["last_updated"] = _ws_dt.now(_ws_tz.utc).isoformat()
+        _DUST_SWEEP_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _DUST_SWEEP_STATS_PATH.write_text(_ws_json.dumps(stats, indent=2))
+    except Exception:
+        pass
+
+
 def _entry_fee_usd_from_position(position: dict[str, Any], shares_held: float) -> float:
     """Reconstruct the USD value of the entry fee (which was paid in shares).
 

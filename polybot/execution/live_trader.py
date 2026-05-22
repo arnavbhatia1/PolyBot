@@ -21,7 +21,10 @@ from py_clob_client_v2.clob_types import (
 from py_clob_client_v2.order_builder.constants import BUY, SELL
 from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV2
 from polybot.db.models import Database
-from polybot.execution.base import BaseTrader, DEFAULT_FEE_RATE, FillResult, record_warmup_outcome
+from polybot.execution.base import (
+    BaseTrader, DEFAULT_FEE_RATE, FillResult,
+    record_warmup_outcome, record_dust_sweep_outcome,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -822,6 +825,7 @@ class LiveTrader(BaseTrader):
             await asyncio.sleep(_BALANCE_SETTLE_DELAY)
             residual = await self._get_token_balance(token_id)
             if residual <= _DUST_THRESHOLD_SHARES:
+                record_dust_sweep_outcome("below_threshold")
                 return
             approx_val = residual * (float(ref_price) if ref_price else 0.5)
             logger.warning(
@@ -841,10 +845,15 @@ class LiveTrader(BaseTrader):
             resp = await asyncio.to_thread(_sweep_sign_and_post)
             if resp.get("success") and resp.get("status") == "matched":
                 logger.info("Dust swept: %.2f shares @ $%.2f", residual, safe_price)
+                record_dust_sweep_outcome("swept", shares=residual, approx_val_usd=approx_val)
             else:
                 logger.warning(
                     "Dust sweep didn't match (status=%s) — shares left to resolve at expiry",
                     resp.get("status"),
+                )
+                record_dust_sweep_outcome(
+                    "match_failed", shares=residual, approx_val_usd=approx_val,
+                    note=f"status={resp.get('status')}",
                 )
         except Exception as e:
             msg = str(e)
@@ -853,6 +862,17 @@ class LiveTrader(BaseTrader):
             else:
                 short = msg.split("\n")[0][:80]
             logger.warning("Dust sweep failed: %s — leaving as orphaned dust", short)
+            # Best-effort: shares/value were captured before the exception path.
+            # If `residual` never got assigned (rare — _get_token_balance failed),
+            # NameError is caught by the outer except and we record zeros.
+            try:
+                _r = float(residual)  # type: ignore[name-defined]
+                _v = float(approx_val)  # type: ignore[name-defined]
+            except (NameError, ValueError, TypeError):
+                _r, _v = 0.0, 0.0
+            record_dust_sweep_outcome(
+                "exception", shares=_r, approx_val_usd=_v, note=short,
+            )
 
     async def reconcile_dust(self, db: Database, max_age_hours: int = 24) -> int:
         """Scan recently-closed positions for residual on-chain shares and sweep them.
