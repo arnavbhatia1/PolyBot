@@ -28,11 +28,14 @@ class CandleBuffer:
     def __init__(self, max_size: int = 200):
         self.max_size = max_size
         self._candles: deque[Candle] = deque(maxlen=max_size)
-        # Cache get_closes() output — invalidated on add/update_current. Hot path
-        # calls this 2-3× per book-update tick; the ndarray allocation is wasted
-        # work between candle events (no callers mutate the returned array — see
-        # grep audit).
+        # Per-field caches — invalidated on add/update_current. Hot path calls
+        # these 2-3× per book-update tick; ndarray allocation is wasted work
+        # between candle events. Arrays are set read-only via setflags so any
+        # accidental in-place mutation by a consumer raises immediately.
         self._closes_cache: np.ndarray | None = None
+        self._highs_cache: np.ndarray | None = None
+        self._lows_cache: np.ndarray | None = None
+        self._volumes_cache: np.ndarray | None = None
         # Monotonic version — bumps on every mutation. Lets downstream caches
         # (IndicatorEngine.compute_all) invalidate correctly. Keying off
         # latest.timestamp would miss update_current mutations since the
@@ -42,9 +45,15 @@ class CandleBuffer:
     def __len__(self) -> int:
         return len(self._candles)
 
+    def _invalidate_caches(self) -> None:
+        self._closes_cache = None
+        self._highs_cache = None
+        self._lows_cache = None
+        self._volumes_cache = None
+
     def add(self, candle: Candle) -> None:
         self._candles.append(candle)
-        self._closes_cache = None
+        self._invalidate_caches()
         self.version += 1
 
     def update_current(self, close: float, high: float, low: float, volume: float) -> None:
@@ -54,7 +63,7 @@ class CandleBuffer:
             c.high = max(c.high, high)
             c.low = min(c.low, low)
             c.volume = volume
-            self._closes_cache = None
+            self._invalidate_caches()
             self.version += 1
 
     def latest(self) -> Candle | None:
@@ -72,13 +81,25 @@ class CandleBuffer:
         return self._closes_cache
 
     def get_highs(self) -> np.ndarray:
-        return np.array([c.high for c in self._candles], dtype=np.float64)
+        if self._highs_cache is None:
+            arr = np.array([c.high for c in self._candles], dtype=np.float64)
+            arr.setflags(write=False)
+            self._highs_cache = arr
+        return self._highs_cache
 
     def get_lows(self) -> np.ndarray:
-        return np.array([c.low for c in self._candles], dtype=np.float64)
+        if self._lows_cache is None:
+            arr = np.array([c.low for c in self._candles], dtype=np.float64)
+            arr.setflags(write=False)
+            self._lows_cache = arr
+        return self._lows_cache
 
     def get_volumes(self) -> np.ndarray:
-        return np.array([c.volume for c in self._candles], dtype=np.float64)
+        if self._volumes_cache is None:
+            arr = np.array([c.volume for c in self._candles], dtype=np.float64)
+            arr.setflags(write=False)
+            self._volumes_cache = arr
+        return self._volumes_cache
 
 
 class BinanceFeed:
