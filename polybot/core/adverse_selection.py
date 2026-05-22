@@ -4,11 +4,11 @@ After each fill, tracks the midprice 10s, 30s, and 60s later. If the price
 consistently moves against the bot's position after entry, someone is fading
 the bot with better information.
 
-adverse_selection_rate = P(price moves against you | you just filled)
-If rolling rate > 0.55, the bot is being picked off.
-
-State is persisted to JSON on fill-record so it survives restart — without that,
-the first ~10 post-restart fills run with a neutral 0.5 rate (gate effectively off).
+adverse_selection_rate = P(price moves against you | you just filled).
+Live gate threshold is signal.adverse_selection_threshold (default 0.65). The
+get_adverse_rate() result is Bayesian-shrunk to a neutral prior so the gate
+stays active in low-volume hours and across restarts (state is also persisted
+to JSON on each fill-record).
 """
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ class AdverseSelectionMonitor:
         monitor.update_prices(clob_ws, time.time())
         # Check health:
         rate = monitor.get_adverse_rate()
-        if rate > 0.55: # being picked off
+        if rate > threshold: # being picked off (threshold = signal.adverse_selection_threshold)
     """
 
     def __init__(self, max_fills: int = 20, check_windows: tuple[float, ...] = (10.0, 30.0, 60.0),
