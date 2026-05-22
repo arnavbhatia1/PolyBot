@@ -2565,7 +2565,14 @@ async def main() -> None:
 
         try:
             if hasattr(trader, "reconcile_open"):
-                await trader.reconcile_open(db)
+                # Pass outcome_reviewer + signal_engine so the missed-close recovery
+                # path can write a real trade_history row + outcome JSON instead of
+                # silently zeroing exit_price (Phase-1 Flow-5(c)). Exit_reason is
+                # stamped "reconcile_recovery_*" so the pipeline pool can be
+                # filtered post-hoc if the operator wants to quarantine these.
+                await trader.reconcile_open(
+                    db, outcome_reviewer=outcome_reviewer, signal_engine=signal_engine,
+                )
             if hasattr(trader, "reconcile_dust"):
                 await trader.reconcile_dust(db, max_age_hours=24)
         except Exception as e:

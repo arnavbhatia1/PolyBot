@@ -23,8 +23,10 @@ from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV
 from polybot.db.models import Database
 from polybot.execution.base import (
     BaseTrader, DEFAULT_FEE_RATE, FillResult,
+    exit_fee_usdc, _entry_fee_usd_from_position,
     record_warmup_outcome, record_dust_sweep_outcome,
 )
+from polybot.core.returns import log_return
 
 logger = logging.getLogger(__name__)
 
@@ -923,7 +925,26 @@ class LiveTrader(BaseTrader):
             logger.info("Dust reconciliation: no residuals found in last %dh", max_age_hours)
         return swept
 
-    async def reconcile_open(self, db: Database) -> int:
+    async def reconcile_open(self, db: Database,
+                             outcome_reviewer: Any = None,
+                             signal_engine: Any = None) -> int:
+        """Reconcile DB-open positions against on-chain balances.
+
+        Two recovery paths:
+          1) chain≤dust && db>dust → close-was-missed. Reconstruct exit_price
+             best-effort (current CLOB mid → 1.0/0.0 if at extremes, else
+             entry_price as zero-PnL fallback) and route through close_position
+             so trade_history gets a real row + outcome_reviewer.record_outcome
+             writes the per-trade JSON. exit_reason="reconcile_recovery" so the
+             pipeline pool sees these as recovered rows (operator can choose to
+             quarantine post-hoc by filtering on that reason).
+          2) chain>dust && |chain-db|>0.5 → shares-held drifted. Update DB shares
+             to chain truth, no close.
+
+        The bankroll has already been synced to chain via set_bankroll(live_balance)
+        before this method runs, so close_position is called without bankroll_delta
+        to avoid double-counting.
+        """
         changed = 0
         try:
             positions = await db.get_open_positions()
@@ -940,15 +961,11 @@ class LiveTrader(BaseTrader):
                 chain_shares = await self._get_token_balance(tok)
                 db_shares = float(pos.get("shares_held") or 0.0)
                 if chain_shares <= _DUST_THRESHOLD_SHARES and db_shares > _DUST_THRESHOLD_SHARES:
-                    logger.warning(
-                        "Reconcile: position %d (%s %s) chain=%.4f db=%.4f - closing DB to match chain",
-                        pos["id"], pos.get("market_id"), pos.get("side"), chain_shares, db_shares,
+                    await self._recover_missed_close(
+                        db, pos, tok, db_shares,
+                        outcome_reviewer=outcome_reviewer,
+                        signal_engine=signal_engine,
                     )
-                    await db.conn.execute(
-                        "UPDATE positions SET status='closed', exit_price=0, exit_timestamp=? WHERE id=?",
-                        (_dt.now(_tz.utc).isoformat(), pos["id"]),
-                    )
-                    await db.conn.commit()
                     changed += 1
                 elif chain_shares > _DUST_THRESHOLD_SHARES and abs(chain_shares - db_shares) > 0.5:
                     logger.warning(
@@ -969,6 +986,119 @@ class LiveTrader(BaseTrader):
         else:
             logger.info("Reconcile open: all positions match chain")
         return changed
+
+    async def _recover_missed_close(self, db: Database, pos: dict, token_id: str,
+                                    db_shares: float, outcome_reviewer: Any = None,
+                                    signal_engine: Any = None) -> None:
+        """Reconstruct a missed close: compute best-effort exit_price + PnL,
+        persist via close_position (no bankroll delta — already synced from chain),
+        and write the outcome JSON so the pipeline pool gets the recovered row.
+        """
+        entry_price = float(pos.get("entry_price") or 0.0)
+        if entry_price <= 0:
+            logger.warning(
+                "Reconcile recovery: position %d has invalid entry_price, skipping outcome reconstruction",
+                pos["id"],
+            )
+            return
+        size_usdc = float(pos.get("size") or 0.0)
+        fee_rate = float(pos.get("fee_rate") or DEFAULT_FEE_RATE)
+        # --- Best-effort exit_price reconstruction ---
+        exit_price, recovery_label = self._infer_recovery_exit_price(token_id, entry_price)
+        # --- Replicate base.close_trade PnL math against the reconstructed price ---
+        lr = log_return(entry_price, exit_price)
+        fee_usdc = exit_fee_usdc(db_shares, exit_price, fee_rate)
+        revenue = db_shares * exit_price - fee_usdc
+        entry_fee_usd = _entry_fee_usd_from_position(pos, db_shares)
+        pnl = revenue - size_usdc
+        total_fees = entry_fee_usd + fee_usdc
+        logger.warning(
+            "Reconcile recovery: position %d (%s %s) — chain=0 db=%.4f → exit_price=%.4f (%s), pnl=%+.4f",
+            pos["id"], pos.get("market_id"), pos.get("side"),
+            db_shares, exit_price, recovery_label, pnl,
+        )
+        exit_reason = f"reconcile_recovery_{recovery_label}"
+        # close_position writes trade_history + flips status='closed' atomically.
+        # NO bankroll_delta — set_bankroll(live_balance) ran before reconcile and
+        # already reflects the on-chain truth; adding revenue here would double-count.
+        try:
+            await db.close_position(
+                pos["id"], exit_price=exit_price, log_return=lr,
+                pnl=pnl, fees=total_fees, exit_reason=exit_reason,
+            )
+        except Exception as e:
+            logger.error(
+                "Reconcile recovery: db.close_position failed for position %d: %s — falling back to status-only close",
+                pos["id"], e,
+            )
+            try:
+                await db.conn.execute(
+                    "UPDATE positions SET status='closed', exit_price=?, exit_timestamp=? WHERE id=?",
+                    (exit_price, _dt.now(_tz.utc).isoformat(), pos["id"]),
+                )
+                await db.conn.commit()
+            except Exception as inner:
+                logger.error("Reconcile recovery: even fallback close failed: %s", inner)
+            return
+        # Write the per-trade outcome JSON so the pipeline can see the recovered
+        # row. Best-effort: if outcome_reviewer isn't wired in this restart,
+        # the trade_history row still exists and the pipeline has fallback paths.
+        if outcome_reviewer is None:
+            logger.debug("Reconcile recovery: outcome_reviewer not provided, skipping JSON write")
+            return
+        try:
+            snap = _json.loads(pos.get("indicator_snapshot") or "{}")
+            ctx = snap.get("trade_context", {}) if isinstance(snap, dict) else {}
+            signal_score = float(ctx.get("model_probability") or 0.5)
+            profitable = pnl > 0
+            outcome_reviewer.record_outcome(
+                position_id=pos["id"],
+                market_id=pos.get("market_id", ""),
+                question=pos.get("question", ""),
+                side=pos.get("side", ""),
+                signal_score=signal_score,
+                profitable=profitable,
+                entry_price=entry_price,
+                exit_price=exit_price,
+                log_return=lr,
+                indicator_snapshot=snap,
+                exit_reason=exit_reason,
+                size=size_usdc,
+                pnl=pnl,
+                fees=total_fees,
+                exit_timestamp=_dt.now(_tz.utc).isoformat(),
+                seconds_remaining_at_exit=0.0,
+                edge_decay=None,
+            )
+        except Exception as e:
+            logger.debug("Reconcile recovery: outcome JSON write failed for position %d: %s", pos["id"], e)
+
+    def _infer_recovery_exit_price(self, token_id: str, entry_price: float) -> tuple[float, str]:
+        """Pick a best-effort exit_price for a missed close.
+
+        Returns (price, label). Label is appended to exit_reason so the operator
+        can tell which inference path fired:
+          - "resolution_win"  : CLOB mid > 0.90, position resolved at $1
+          - "resolution_loss" : CLOB mid < 0.10, position resolved at $0
+          - "mid"             : CLOB has a quote in [0.10, 0.90], use mid
+          - "unknown"         : No quote; fall back to entry_price (zero PnL).
+        """
+        if self._clob_ws is None or not hasattr(self._clob_ws, "best_bid_ask"):
+            return entry_price, "unknown"
+        bba = self._clob_ws.best_bid_ask.get(token_id, {}) if hasattr(self._clob_ws, "best_bid_ask") else {}
+        try:
+            bid = float(bba.get("best_bid") or 0)
+            ask = float(bba.get("best_ask") or 0)
+        except (TypeError, ValueError):
+            return entry_price, "unknown"
+        if bid <= 0 or ask <= 0:
+            return entry_price, "unknown"
+        mid = (bid + ask) / 2.0
+        if mid > 0.90:
+            return 1.0, "resolution_win"
+        if mid < 0.10:
+            return 0.0, "resolution_loss"
+        return round(mid, 4), "mid"
 
     # -- FOK order submission with retry ------------------------------------
 
