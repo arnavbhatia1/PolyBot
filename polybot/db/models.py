@@ -111,37 +111,6 @@ class Database:
         if self.conn:
             await self.conn.close()
 
-    async def open_position(
-        self,
-        market_id: str,
-        question: str,
-        side: str,
-        entry_price: float,
-        size: float,
-        signal_score: float,
-        signal_strength: str,
-        ev_at_entry: float,
-        exit_target: float,
-        stop_loss: float,
-        indicator_snapshot: str = "",
-        fee_rate: float | None = None,
-        shares_held: float | None = None,
-    ) -> int:
-        now = datetime.now(timezone.utc).isoformat()
-        cursor = await self.conn.execute(
-            """INSERT INTO positions
-            (market_id, question, side, entry_price, size, signal_score,
-             signal_strength, ev_at_entry, exit_target, stop_loss,
-             entry_timestamp, status, weight_version, indicator_snapshot,
-             fee_rate, shares_held)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
-            (market_id, question, side, entry_price, size, signal_score,
-             signal_strength, ev_at_entry, exit_target, stop_loss,
-             now, "", indicator_snapshot, fee_rate, shares_held),
-        )
-        await self.conn.commit()
-        return cursor.lastrowid
-
     async def open_position_and_debit_bankroll(
         self,
         new_bankroll: float,

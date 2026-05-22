@@ -143,52 +143,6 @@ class BinanceTradeAccumulator:
         self._cache[cache_id] = (key, ratio)
         return ratio
 
-    def get_large_trades(self, window_s: float = 120, min_btc: float = 0.5) -> list[dict[str, Any]]:
-        """Return trades above min_btc threshold within the window.
-
-        Each entry: {price, qty, side ("buy"/"sell"), ts}
-        """
-        trades = self._window(window_s)
-        result = []
-        for t in trades:
-            if t.qty >= min_btc:
-                result.append({
-                    "price": t.price,
-                    "qty": t.qty,
-                    "side": "buy" if not t.is_buyer_maker else "sell",
-                    "ts": t.ts,
-                })
-        return result
-
-    def is_volume_surge(self, threshold: float = 3.0,
-                        recent_s: float = 10, baseline_s: float = 60) -> bool:
-        """True if recent volume rate exceeds baseline rate by threshold multiplier.
-
-        Compares volume-per-second in the recent window vs the baseline window.
-        """
-        now = time.time()
-        recent_cutoff = now - recent_s
-        baseline_cutoff = now - baseline_s
-
-        recent_vol = 0.0
-        baseline_vol = 0.0
-        for t in self._trades:
-            if t.ts >= baseline_cutoff:
-                baseline_vol += t.qty
-                if t.ts >= recent_cutoff:
-                    recent_vol += t.qty
-
-        if baseline_s == 0 or recent_s == 0:
-            return False
-
-        baseline_rate = baseline_vol / baseline_s
-        recent_rate = recent_vol / recent_s
-
-        if baseline_rate == 0:
-            return recent_vol > 0
-
-        return recent_rate > baseline_rate * threshold
-
     @property
     def trade_count(self) -> int:
         """Total trades currently in the buffer."""

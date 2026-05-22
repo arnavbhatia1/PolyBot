@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import socket
 import time
 from dataclasses import dataclass
@@ -25,37 +24,6 @@ logger = logging.getLogger(__name__)
 WS_URL = "wss://stream.bybit.com/v5/public/linear"
 RECONNECT_BASE = 1
 RECONNECT_MAX = 30
-
-
-def compute_perp_lead(perp_price: float, spot_price: float) -> float:
-    """Normalized divergence between perpetual and spot price.
-
-    Returns float in [-1, 1]. Positive = perp leading up (bullish),
-    negative = perp leading down (bearish).
-
-    Uses tanh scaling: $100 divergence on $73000 (~0.14%) maps to ~0.5 signal.
-    """
-    if perp_price <= 0 or spot_price <= 0:
-        return 0.0
-    pct_diff = (perp_price - spot_price) / spot_price
-    return math.tanh(pct_diff * 350)
-
-
-def compute_funding_signal(funding_rate: float) -> float:
-    """Contrarian signal from perpetual funding rate.
-
-    Positive funding (longs crowded, paying shorts) -> negative signal (bearish).
-    Negative funding (shorts crowded) -> positive signal (bullish).
-
-    Baseline 0.0001 subtracted (normal positive funding in crypto).
-    Scaled with tanh: 0.0005 rate -> ~-0.76 signal.
-
-    Returns float in [-1, 1].
-    """
-    baseline = 0.0001
-    adjusted = funding_rate - baseline
-    # Invert: positive funding -> negative signal (contrarian)
-    return math.tanh(-adjusted * 2500)
 
 
 @dataclass
@@ -98,14 +66,6 @@ class BybitState:
         spot_stale = spot_age > 2.0
 
         return price_diverged and perp_fresh and spot_stale
-
-    def get_lead(self, spot_price: float) -> float:
-        """Delegate to compute_perp_lead with current perp price."""
-        return compute_perp_lead(self.perp_price, spot_price)
-
-    def get_funding_signal(self) -> float:
-        """Delegate to compute_funding_signal with current funding rate."""
-        return compute_funding_signal(self.funding_rate)
 
 
 class BybitFeed:

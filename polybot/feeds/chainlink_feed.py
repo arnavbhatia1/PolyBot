@@ -42,10 +42,6 @@ class ChainlinkFeed:
             return float("inf")
         return time.time() - self._last_update
 
-    @property
-    def is_stale(self) -> bool:
-        return self.age_seconds > 30
-
     def get_strike(self, window_ts: int) -> float | None:
         """Get the Chainlink price captured at a 5-min window boundary.
 
