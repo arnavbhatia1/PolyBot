@@ -24,6 +24,11 @@ class PaperTrader(BaseTrader):
         # Defaults tuned to live latency_stats.json (p50≈770ms, p99≈2.3s).
         self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.77)
         self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.40)
+        # Treated as the fallback fail rate when the book is unavailable — and
+        # as the i.i.d. baseline (genuine network/protocol errors) when book
+        # state is readable. Real live FOK rejects cluster around adverse moves
+        # (thin top-of-book, wide spread); _compute_fail_rate adds state-dependent
+        # terms on top of this floor.
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.02)
 
     # Match live's _MAX_RETRIES + _RETRY_BASE_DELAY semantics so paper trades
@@ -43,7 +48,7 @@ class PaperTrader(BaseTrader):
         if self._precheck_rejects(token_id, side="buy", requested_price=price, size_usd=size):
             return FillResult(filled=False, reason="pre-check: book walk would exceed limit (matches live)")
         await self._simulate_latency()
-        if random.random() < self.network_fail_rate:
+        if random.random() < self._compute_fail_rate(token_id, side="buy"):
             return FillResult(filled=False, reason="simulated network error")
         return await self._retry_walk(token_id, side="buy", requested_price=price, size_usd=size)
 
@@ -57,9 +62,54 @@ class PaperTrader(BaseTrader):
         if self._precheck_rejects(token_id, side="sell", requested_price=price, size_usd=size_usd):
             return FillResult(filled=False, reason="pre-check: book walk would exceed limit (matches live)")
         await self._simulate_latency()
-        if random.random() < self.network_fail_rate:
+        if random.random() < self._compute_fail_rate(token_id, side="sell"):
             return FillResult(filled=False, reason="simulated network error")
         return await self._retry_walk(token_id, side="sell", requested_price=price, size_usd=size_usd)
+
+    # State-dependent FOK fail rate. Live FOK rejects cluster around adverse
+    # moves: thin top-of-book + wide spread = match engine more likely to
+    # reject before the limit can clear. Coefficients here are estimates;
+    # refine them once fill_stats.json buckets failures by cause. Until then
+    # the formula must satisfy two safety properties:
+    #   1) Max combined rate must not exceed ~2× the i.i.d. baseline (caps
+    #      regime-specific over-rejection if our state proxies are wrong).
+    #   2) When book is unavailable, fall back to the constant network_fail_rate
+    #      so tests and degraded-feed startup behave deterministically.
+    _STATE_FAIL_RATE_BASE: float = 0.005
+    _STATE_FAIL_RATE_WIDE_SPREAD: float = 0.010   # additive when spread > 5%
+    _STATE_FAIL_RATE_THIN_TOP_DEPTH: float = 0.010  # additive when top-of-book < $50
+    _STATE_FAIL_RATE_CAP: float = 0.030  # absolute ceiling
+
+    def _compute_fail_rate(self, token_id: str, side: str) -> float:
+        if self._clob_ws is None or not hasattr(self._clob_ws, "get_book"):
+            return self.network_fail_rate
+        book = self._clob_ws.get_book(token_id) or {}
+        bids = book.get("bids") or []
+        asks = book.get("asks") or []
+        if not bids or not asks:
+            return self.network_fail_rate
+        try:
+            best_bid = max(float(b["price"]) for b in bids if b.get("price"))
+            best_ask = min(float(a["price"]) for a in asks if a.get("price"))
+        except (TypeError, ValueError, KeyError):
+            return self.network_fail_rate
+        mid = (best_bid + best_ask) / 2.0 if (best_bid > 0 and best_ask > 0) else 0.0
+        if mid <= 0:
+            return self.network_fail_rate
+        spread_pct = (best_ask - best_bid) / mid
+        # Top-of-book depth on the side we're hitting (asks for buy, bids for sell).
+        side_levels = asks if side == "buy" else bids
+        try:
+            top = side_levels[0]
+            top_depth_usd = float(top["price"]) * float(top["size"])
+        except (TypeError, ValueError, KeyError, IndexError):
+            return self.network_fail_rate
+        rate = self._STATE_FAIL_RATE_BASE
+        if spread_pct > 0.05:
+            rate += self._STATE_FAIL_RATE_WIDE_SPREAD
+        if top_depth_usd < 50.0:
+            rate += self._STATE_FAIL_RATE_THIN_TOP_DEPTH
+        return min(rate, self._STATE_FAIL_RATE_CAP)
 
     def _precheck_rejects(self, token_id: str, side: str, requested_price: float,
                           size_usd: float) -> bool:
