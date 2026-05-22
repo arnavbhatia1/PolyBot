@@ -208,9 +208,9 @@ class BinanceTradeAccumulator:
 
 
 class BinanceTradesFeed:
-    """WebSocket consumer for Binance.US aggTrade stream.
+    """WebSocket consumer for Binance aggTrade stream.
 
-    Connects to wss://stream.binance.us:9443/ws/btcusdt@aggTrade and feeds
+    Connects to wss://stream.binance.com:9443/ws/btcusdt@aggTrade and feeds
     parsed trades into a BinanceTradeAccumulator.
 
     aggTrade message format:
