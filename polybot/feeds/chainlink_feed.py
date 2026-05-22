@@ -157,6 +157,8 @@ class ChainlinkFeed:
                         except (json.JSONDecodeError, ValueError, TypeError):
                             pass
             except (websockets.ConnectionClosed, ConnectionError, OSError) as e:
+                if not self._running:
+                    break
                 logger.warning(f"ChainlinkFeed: WS disconnected ({e}), reconnecting in 5s")
                 self._ws = None
                 await asyncio.sleep(5)

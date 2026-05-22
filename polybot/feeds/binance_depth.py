@@ -96,6 +96,8 @@ class BinanceDepthFeed:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                if not self._running:
+                    break
                 logger.warning(f"Depth WS error: {e}, reconnecting in {backoff}s")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)

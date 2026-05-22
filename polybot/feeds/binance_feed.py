@@ -159,6 +159,8 @@ class BinanceFeed:
                             break
                         self._handle_kline(json.loads(msg))
             except Exception as e:
+                if not self._running:
+                    break
                 logger.warning(f"WebSocket error: {e}, reconnecting in {backoff}s")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)

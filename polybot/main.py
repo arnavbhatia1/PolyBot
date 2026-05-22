@@ -95,13 +95,11 @@ _console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datef
 _file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="a", encoding="utf-8")
 _file_handler.setFormatter(_StripAnsiFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
 
-# Async logging: QueueHandler ships records to a background thread that fans out
-# to the real (slow) console + file handlers. This removes the synchronous I/O
-# of every logger.info/warning from the hot trading path — file flushes alone
-# cost 1-5ms on disk and matter when scalp decisions chain 5-10 log lines.
+# Async logging: ost 1-5ms on disk and matter when scalp decisions chain 5-10 log lines.
 import queue as _queue
 _log_queue: _queue.Queue = _queue.Queue(-1)  # unbounded so logging never blocks
 _queue_handler = logging.handlers.QueueHandler(_log_queue)
+_queue_handler.setFormatter(logging.Formatter("%(message)s"))
 _queue_listener = logging.handlers.QueueListener(
     _log_queue, _console_handler, _file_handler, respect_handler_level=True
 )

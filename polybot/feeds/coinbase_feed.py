@@ -132,6 +132,8 @@ class CoinbaseFeed:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                if not self._running:
+                    break
                 logger.warning("Coinbase WebSocket error: %s, reconnecting in %ds", e, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX)

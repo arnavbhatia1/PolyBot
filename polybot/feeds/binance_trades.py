@@ -222,6 +222,8 @@ class BinanceTradesFeed:
                             break
                         self._handle_message(json.loads(msg))
             except Exception as e:
+                if not self._running:
+                    break
                 logger.warning(f"aggTrade WebSocket error: {e}, reconnecting in {backoff}s")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)

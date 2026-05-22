@@ -136,6 +136,8 @@ class BybitFeed:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                if not self._running:
+                    break
                 logger.warning(f"Bybit WebSocket error: {e}, reconnecting in {backoff}s")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX)
