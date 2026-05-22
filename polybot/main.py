@@ -2500,9 +2500,15 @@ async def main() -> None:
         losses_to_reduce=cb_cfg.get("losses_to_reduce", 3),
         wins_to_restore=cb_cfg.get("wins_to_restore", 2),
     )
-    # Restore locked_tier from persisted peak so floor survives restarts
+    # Restore locked_tier from persisted peak so floor survives restarts.
+    # Compare against breaker.peak_bankroll (which CircuitBreaker.__init__ seeds
+    # from initial_bankroll), not init_bankroll directly — otherwise restarting
+    # with a healthy live_balance that's below the historical peak silently
+    # drops the floor protection. e.g. peak=$1000, drawdown to $700, restart
+    # with live_balance=$700: old condition `persisted_peak > init_bankroll`
+    # → False → floor reset to $700. New condition keeps the $1000 floor.
     persisted_peak = await db.get_peak_bankroll()
-    if persisted_peak is not None and persisted_peak > init_bankroll:
+    if persisted_peak is not None and persisted_peak > breaker.peak_bankroll:
         breaker.peak_bankroll = persisted_peak
         breaker.update_bankroll(persisted_peak)
         breaker.current_bankroll = init_bankroll
