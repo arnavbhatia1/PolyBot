@@ -130,29 +130,6 @@ class ClobWebSocket:
             return []
         return [t for t in buf if t.get("timestamp", 0.0) >= since_ts]
 
-    def get_price_velocity(self, token_id: str, window_s: float = 5.0) -> float:
-        """Price velocity: cents per second over the last window_s seconds.
-
-        Positive = price moving up rapidly. Negative = price dropping.
-        Returns 0.0 if insufficient data.
-
-        A velocity of +0.10 means the contract price is rising 10 cents/sec —
-        informed flow is pushing the price ahead of BTC movement.
-        """
-        samples = self._price_samples.get(token_id)
-        if not samples or len(samples) < 2:
-            return 0.0
-        now = time.time()
-        cutoff = now - window_s
-        recent = [(t, p) for t, p in samples if t >= cutoff]
-        if len(recent) < 2:
-            return 0.0
-        dt = recent[-1][0] - recent[0][0]
-        if dt < 0.1:  # need at least 100ms of data
-            return 0.0
-        dp = recent[-1][1] - recent[0][1]
-        return dp / dt
-
     # --- Internal ---
 
     async def _run_forever(self) -> None:

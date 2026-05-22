@@ -80,8 +80,6 @@ class CandleBuffer:
     def get_volumes(self) -> np.ndarray:
         return np.array([c.volume for c in self._candles], dtype=np.float64)
 
-    def get_opens(self) -> np.ndarray:
-        return np.array([c.open for c in self._candles], dtype=np.float64)
 
 class BinanceFeed:
     def __init__(self, symbol: str = "btcusdt", buffer_size: int = 200,

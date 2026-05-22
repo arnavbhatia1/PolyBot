@@ -165,15 +165,6 @@ def test_snap_to_tick_clamps_max():
     assert BTCMarketScanner.snap_to_tick(0.999, "0.01") == 0.99
 
 
-# --- book_min_order_size ---
-
-def test_book_min_order_size_present():
-    assert BTCMarketScanner.book_min_order_size({"min_order_size": "10"}) == 10.0
-
-def test_book_min_order_size_default():
-    assert BTCMarketScanner.book_min_order_size({}) == 5.0
-
-
 # --- clob_ask_depth / clob_bid_depth ---
 
 def test_clob_ask_depth():

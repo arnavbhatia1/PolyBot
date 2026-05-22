@@ -261,11 +261,6 @@ class BTCMarketScanner:
         return max(min_price, min(snapped, max_price))
 
     @staticmethod
-    def book_min_order_size(book: dict[str, Any]) -> float:
-        """Extract min_order_size from a CLOB book response. Default 5."""
-        return float(book.get("min_order_size", "5"))
-
-    @staticmethod
     def clob_best_ask(book: dict[str, Any]) -> tuple[float, float]:
         """Return (best_ask_price, total_ask_depth) from a CLOB book dict.
 
