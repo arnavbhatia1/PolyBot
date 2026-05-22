@@ -20,7 +20,7 @@ L3+L3b combined capped at ±`flow_combined_cap` (default 0.35) logits. Final log
 
 ## Entry Gates
 
-`prob ≥ 0.56`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_at_30s ≤ adverse_selection_threshold` (30s post-fill checkpoint over a 30-min lookback, Bayesian-shrunk to a neutral prior so the gate stays active in low-volume hours), `mean_decay_15s ≥ edge_decay_threshold` (signed mean 15s post-fill drift over a 30-min lookback; default −0.05, inactive until ≥15 resolved fills in the lookback). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP, low-confidence after 2+ obs, or favored-side mismatch (SPRT's accumulated favored side differs from current proposal when confidence > 60% with ≥6 obs). ATR gate: lower-bound only (`atr < 5th pctile`).
+`prob ≥ 0.56`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_at_30s ≤ adverse_selection_threshold` (30s post-fill checkpoint over a 30-min lookback, Bayesian-shrunk to a neutral prior so the gate stays active in low-volume hours), `mean_decay_15s ≥ edge_decay_threshold` (signed mean 15s post-fill drift over a 30-min lookback; default −0.05, inactive until ≥15 resolved fills in the lookback). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP (sequential evidence rejects the side), or favored-side mismatch (SPRT's accumulated favored side differs from current proposal when confidence > 60% with ≥6 obs). ATR gate: lower-bound only (`atr < 5th pctile`).
 
 ## Sizing & Exit
 
@@ -40,7 +40,7 @@ L3+L3b combined capped at ±`flow_combined_cap` (default 0.35) logits. Final log
 
 ## Live Execution & Safety
 
-- FOK-only via py-clob-client-v2; 3 retries w/ jittered exp backoff; HTTP/2 keepalive 30s.
+- FOK-only via py-clob-client-v2; 3 retries w/ jittered exp backoff; HTTP/2 keepalive ping every 10s.
 - `verify_auth`: `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER`, USDC balance + allowance ≥ `max_single × max_concurrent × 10`. Allowance re-checked every 10 fills mid-session.
 - `open_position_and_debit_bankroll` / `close_position(... bankroll_delta=... | new_bankroll=...)`: atomic SQLite tx (single close path; pass `bankroll_delta` for relative credit, `new_bankroll` to set absolute on resolution).
 - Auth errors → `AuthError` → clean exit; `run_polybot.ps1` won't auto-restart on auth.
@@ -134,6 +134,6 @@ Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older 
 - Don't delete `polybot/db/polybot_*.db`.
 - Regime direction = sign of last 1-min return, not `sign(prob−0.5)`.
 - Layer adjustments in logit space, not probability space.
-- Binance.us, polymarket.com.
+- Binance.com, polymarket.com.
 
 Update this file with every behavioral change.
