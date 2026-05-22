@@ -16,6 +16,12 @@ from typing import Any
 
 import websockets
 
+try:
+    import orjson as _orjson
+    _loads = _orjson.loads
+except ImportError:
+    _loads = json.loads
+
 logger = logging.getLogger(__name__)
 
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -220,14 +226,16 @@ class ClobWebSocket:
             return
 
         try:
-            msg = json.loads(raw)
+            msg = _loads(raw)
             # Polymarket can send arrays (e.g., batch book snapshots) — handle each element
             if isinstance(msg, list):
                 for item in msg:
                     if isinstance(item, dict):
                         self._dispatch(item)
                 return
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
+            # orjson raises orjson.JSONDecodeError (subclass of ValueError); stdlib
+            # json raises json.JSONDecodeError — catch both.
             return
 
         if isinstance(msg, dict):
