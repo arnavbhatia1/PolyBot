@@ -339,3 +339,97 @@ async def test_resolve_position_loser(trader):
     assert result.success is True
     bankroll = await trader.db.get_bankroll()
     assert bankroll == pytest.approx(50.0, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Orphan position detection (S1) — verifies the startup safety gate
+# ---------------------------------------------------------------------------
+
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+    def json(self):
+        return self._payload
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class _FakeAsyncClient:
+    """Async context manager mimicking httpx.AsyncClient.get's contract."""
+    def __init__(self, payload=None, raise_exc=None):
+        self._payload = payload if payload is not None else []
+        self._raise_exc = raise_exc
+    async def __aenter__(self):
+        return self
+    async def __aexit__(self, *a):
+        return False
+    async def get(self, url, params=None):
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return _FakeResponse(self._payload)
+
+
+@pytest.mark.asyncio
+async def test_detect_orphan_positions_no_orphans(trader):
+    """Chain shows positions but all known to DB → returns 0, does not raise."""
+    # DB knows tokens via an open position's indicator_snapshot
+    import json as _j
+    snap = _j.dumps({"trade_context": {"token_id_up": "tok-A", "token_id_down": "tok-B"}})
+    await trader.db.open_position_and_debit_bankroll(
+        new_bankroll=90.0,
+        market_id="m1", question="?", side="Up", entry_price=0.5, size=10.0,
+        signal_score=0.6, signal_strength="med", ev_at_entry=0.1,
+        exit_target=1.0, stop_loss=0.0, indicator_snapshot=snap,
+        fee_rate=0.018, shares_held=20.0,
+    )
+    chain = [{"asset": "tok-A", "size": 20.0, "outcome": "Yes", "title": "BTC up 5min"}]
+    with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(payload=chain)):
+        count = await trader.detect_orphan_positions(trader.db, allow_orphans=False)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_detect_orphan_positions_strict_raises(trader):
+    """Chain has a token DB doesn't know about → strict mode raises."""
+    from polybot.execution.live_trader import OrphanPositionError
+    chain = [{"asset": "tok-UNKNOWN", "size": 50.0, "outcome": "Yes", "title": "Other market"}]
+    with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(payload=chain)):
+        with pytest.raises(OrphanPositionError):
+            await trader.detect_orphan_positions(trader.db, allow_orphans=False)
+
+
+@pytest.mark.asyncio
+async def test_detect_orphan_positions_lenient_proceeds(trader):
+    """Same orphan but allow_orphans=True → returns count, does not raise."""
+    chain = [{"asset": "tok-UNKNOWN", "size": 50.0, "outcome": "Yes", "title": "x"}]
+    with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(payload=chain)):
+        count = await trader.detect_orphan_positions(trader.db, allow_orphans=True)
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_detect_orphan_positions_api_failure_fails_closed(trader):
+    """Data API failure + strict mode → raise (fail-closed)."""
+    from polybot.execution.live_trader import OrphanPositionError
+    with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(raise_exc=RuntimeError("timeout"))):
+        with pytest.raises(OrphanPositionError):
+            await trader.detect_orphan_positions(trader.db, allow_orphans=False)
+
+
+@pytest.mark.asyncio
+async def test_detect_orphan_positions_api_failure_lenient_proceeds(trader):
+    """Data API failure + --allow-orphans → returns 0, logs warning."""
+    with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(raise_exc=RuntimeError("timeout"))):
+        count = await trader.detect_orphan_positions(trader.db, allow_orphans=True)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_detect_orphan_positions_dust_ignored(trader):
+    """Chain dust below _ORPHAN_MIN_SHARES is not flagged as orphan."""
+    chain = [{"asset": "tok-DUST", "size": 0.3, "outcome": "Yes", "title": "x"}]
+    with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(payload=chain)):
+        count = await trader.detect_orphan_positions(trader.db, allow_orphans=False)
+    assert count == 0

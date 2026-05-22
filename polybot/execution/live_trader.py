@@ -28,6 +28,20 @@ from polybot.execution.base import (
 )
 from polybot.core.returns import log_return
 
+
+class OrphanPositionError(Exception):
+    """Raised at startup when on-chain positions exist that the DB doesn't know about.
+
+    A FOK fill that acked but failed to write the DB row leaves shares on chain
+    with no local record. The trading loop can never manage them and `reconcile_open`
+    only reconciles DB-known rows — so without this gate the orphan would resolve
+    silently and the gain/loss would just appear in the next bankroll sync.
+
+    `run_polybot.ps1` does not auto-restart on this exception; the operator is
+    expected to inspect `memory/orphan_positions.json`, reconcile manually, then
+    re-run with `--allow-orphans` to acknowledge the residual shares.
+    """
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -924,6 +938,157 @@ class LiveTrader(BaseTrader):
         else:
             logger.info("Dust reconciliation: no residuals found in last %dh", max_age_hours)
         return swept
+
+    _POSITIONS_API_URL = "https://data-api.polymarket.com/positions"
+    _ORPHAN_MIN_SHARES = 1.0    # ignore < $0.50 dust (avoids flagging old swept-but-not-zeroed positions)
+    _ORPHAN_LOOKBACK_HOURS = 2  # how far back to scan closed positions for known token_ids
+
+    async def detect_orphan_positions(self, db: Database,
+                                      allow_orphans: bool = False) -> int:
+        """Query Polymarket data API for all on-chain positions and refuse to
+        start if any chain position is not referenced by an open / recently-
+        closed DB row.
+
+        Strict mode (allow_orphans=False) raises ``OrphanPositionError`` on:
+          - any non-dust chain position not referenced by an open/pending DB row
+            (or a row closed in the last _ORPHAN_LOOKBACK_HOURS — sweep may
+            not have completed before restart)
+          - DB read failure (can't determine known token_ids → fail closed)
+          - data-API failure (can't enumerate chain → fail closed)
+
+        Lenient mode (--allow-orphans) logs CRITICAL but proceeds. Detected
+        orphan details are persisted to ``memory/orphan_positions.json`` for
+        operator review either way.
+
+        Returns the count of orphans detected.
+        """
+        funder = os.environ.get("POLYMARKET_FUNDER", "").strip()
+        if not funder:
+            msg = "Orphan detection: POLYMARKET_FUNDER env var not set — cannot enumerate chain positions"
+            if allow_orphans:
+                logger.warning("%s (continuing due to --allow-orphans)", msg)
+                return 0
+            raise OrphanPositionError(msg)
+
+        # 1) Collect DB-known token_ids: open + pending + recently closed
+        # (recently-closed catches the case where the close JUST happened but
+        # the operator restarted before the bankroll/dust sweep ran).
+        known_tokens: set[str] = set()
+        try:
+            cursor = await db.conn.execute(
+                "SELECT indicator_snapshot FROM positions "
+                "WHERE status IN ('open', 'pending_resolution') "
+                "OR (status='closed' AND exit_timestamp >= datetime('now', ?))",
+                (f"-{self._ORPHAN_LOOKBACK_HOURS} hours",),
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                try:
+                    snap = _json.loads(row[0] or "{}")
+                    ctx = snap.get("trade_context", {}) if isinstance(snap, dict) else {}
+                    for key in ("token_id_up", "token_id_down"):
+                        tok = ctx.get(key)
+                        if tok:
+                            known_tokens.add(str(tok))
+                except Exception:
+                    continue
+        except Exception as e:
+            msg = f"Orphan detection: DB read failed: {e}"
+            if allow_orphans:
+                logger.warning("%s (continuing due to --allow-orphans)", msg)
+                return 0
+            raise OrphanPositionError(msg) from e
+
+        # 2) Fetch chain positions from Polymarket's public data API
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                resp = await http.get(self._POSITIONS_API_URL, params={"user": funder})
+                resp.raise_for_status()
+                chain_positions = resp.json()
+        except Exception as e:
+            msg = f"Orphan detection: Polymarket positions API failed: {e}"
+            if allow_orphans:
+                logger.warning("%s (continuing due to --allow-orphans)", msg)
+                return 0
+            raise OrphanPositionError(
+                f"{msg} — cannot verify chain state. Pass --allow-orphans to bypass."
+            ) from e
+
+        if not isinstance(chain_positions, list):
+            msg = f"Orphan detection: unexpected positions API response type {type(chain_positions).__name__}"
+            if allow_orphans:
+                logger.warning("%s (continuing due to --allow-orphans)", msg)
+                return 0
+            raise OrphanPositionError(msg)
+
+        # 3) Compare
+        non_dust_chain = 0
+        orphans: list[dict[str, Any]] = []
+        for pos in chain_positions:
+            if not isinstance(pos, dict):
+                continue
+            try:
+                tok = str(pos.get("asset") or pos.get("token_id") or "")
+                shares = float(pos.get("size") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if not tok or shares < self._ORPHAN_MIN_SHARES:
+                continue
+            non_dust_chain += 1
+            if tok not in known_tokens:
+                orphans.append({
+                    "token_id": tok,
+                    "shares": round(shares, 4),
+                    "outcome": str(pos.get("outcome") or ""),
+                    "title": str(pos.get("title") or "")[:80],
+                    "conditionId": str(pos.get("conditionId") or ""),
+                })
+
+        # 4) Persist details for operator review
+        try:
+            orphan_path = _Path("polybot/memory/orphan_positions.json")
+            orphan_path.parent.mkdir(parents=True, exist_ok=True)
+            orphan_path.write_text(_json.dumps({
+                "checked_at": _dt.now(_tz.utc).isoformat(),
+                "funder": funder,
+                "non_dust_chain_positions": non_dust_chain,
+                "db_known_tokens": len(known_tokens),
+                "orphans_detected": len(orphans),
+                "orphans": orphans,
+                "allow_orphans_flag": allow_orphans,
+            }, indent=2))
+        except Exception as e:
+            logger.debug("Could not persist orphan_positions.json: %s", e)
+
+        if not orphans:
+            logger.info(
+                "Orphan detection: %d non-dust chain position(s), all known to DB",
+                non_dust_chain,
+            )
+            return 0
+
+        # 5) Surface details and decide
+        for o in orphans:
+            logger.critical(
+                "ORPHAN POSITION DETECTED: token=%s shares=%.2f outcome=%s title=%s",
+                o["token_id"], o["shares"], o["outcome"], o["title"],
+            )
+
+        if allow_orphans:
+            logger.critical(
+                "ORPHAN DETECTION: %d orphan(s) — continuing due to --allow-orphans. "
+                "These shares are NOT managed by the trading loop and will not appear "
+                "in the pipeline pool. Sweep / resolve manually if needed.",
+                len(orphans),
+            )
+            return len(orphans)
+
+        raise OrphanPositionError(
+            f"{len(orphans)} on-chain position(s) not known to DB. "
+            "See memory/orphan_positions.json for details. "
+            "After manual review, re-run with --allow-orphans to proceed."
+        )
 
     async def reconcile_open(self, db: Database,
                              outcome_reviewer: Any = None,

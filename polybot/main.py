@@ -44,7 +44,7 @@ from polybot.core.signal_engine import SignalEngine
 from polybot.core.order_flow import compute_flow_signal
 from polybot.agents.claude_client import ClaudeClient
 from polybot.execution.paper_trader import PaperTrader
-from polybot.execution.live_trader import AuthError, LiveTrader, verify_auth
+from polybot.execution.live_trader import AuthError, LiveTrader, OrphanPositionError, verify_auth
 from polybot.agents.outcome_reviewer import OutcomeReviewer
 from polybot.agents.bias_detector import BiasDetector
 from polybot.agents.ta_evolver import TAEvolver
@@ -2247,6 +2247,9 @@ def parse_args() -> argparse.Namespace:
                         help="Exit after daily pipeline for wrapper script to git commit/push and restart")
     parser.add_argument("--run-pipeline", action="store_true",
                         help="Run the daily learning pipeline once and exit (no trading)")
+    parser.add_argument("--allow-orphans", action="store_true",
+                        help="LIVE ONLY: proceed even if on-chain positions exist that the DB doesn't know about. "
+                             "Use only after manual review of memory/orphan_positions.json — these shares will not be managed.")
     return parser.parse_args()
 
 
@@ -2563,6 +2566,18 @@ async def main() -> None:
         # Sync DB bankroll with real Polymarket balance (fetched during preflight)
         await db.set_bankroll(live_balance)
 
+        # Orphan-position gate runs BEFORE reconcile so the operator sees orphans
+        # before any DB mutations happen. OrphanPositionError propagates to the
+        # outer handler — it intentionally aborts startup so the operator can
+        # inspect memory/orphan_positions.json. Pass --allow-orphans after review.
+        if hasattr(trader, "detect_orphan_positions"):
+            try:
+                await trader.detect_orphan_positions(db, allow_orphans=args.allow_orphans)
+            except OrphanPositionError:
+                raise  # bubble up to the AuthError-style clean-exit handler
+            except Exception as e:
+                logger.warning(f"Orphan detection failed unexpectedly (non-blocking): {e}")
+
         try:
             if hasattr(trader, "reconcile_open"):
                 # Pass outcome_reviewer + signal_engine so the missed-close recovery
@@ -2745,3 +2760,20 @@ if __name__ == "__main__":
             asyncio.run(main())
     except KeyboardInterrupt:
         pass
+    except OrphanPositionError as e:
+        # Print to stderr with a clear remediation hint — no stack trace, since
+        # the situation is operator-actionable, not a code bug. run_polybot.ps1
+        # treats a non-zero exit as do-not-restart, which is what we want here.
+        import sys as _sys
+        _sys.stderr.write(
+            "\n" + "=" * 70 + "\n"
+            "ORPHAN POSITION GATE TRIPPED\n"
+            "=" * 70 + "\n"
+            f"{e}\n\n"
+            "Next steps:\n"
+            "  1) cat polybot/memory/orphan_positions.json\n"
+            "  2) Manually sweep or resolve any genuine orphan shares on Polymarket\n"
+            "  3) Re-run with --allow-orphans to acknowledge known leftover shares\n"
+            + "=" * 70 + "\n"
+        )
+        _sys.exit(2)
