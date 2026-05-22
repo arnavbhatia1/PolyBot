@@ -21,7 +21,7 @@ from py_clob_client_v2.clob_types import (
 from py_clob_client_v2.order_builder.constants import BUY, SELL
 from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV2
 from polybot.db.models import Database
-from polybot.execution.base import BaseTrader, DEFAULT_FEE_RATE, FillResult
+from polybot.execution.base import BaseTrader, DEFAULT_FEE_RATE, FillResult, record_warmup_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -787,20 +787,27 @@ class LiveTrader(BaseTrader):
         Returns the signed-order dict or None if no usable warmup exists.
         Always drops the cache entry to prevent stale reuse — _submit_fok_order
         will re-issue via warm_sell_signature on the next tick if needed.
+        Every call records an outcome bucket to warmup_stats.json so the
+        operator can audit paper-vs-live realization parity over time.
         """
         entry = self._sell_warmups.pop(token_id, None)
         if entry is None:
+            record_warmup_outcome("live", "none_armed")
             return None
         age = time.time() - entry["ts"]
         if age > self._SELL_WARMUP_TTL_S:
+            record_warmup_outcome("live", "ttl_expired")
             return None
         # Parameters must match closely. Price drift > 1 cent or size drift >
         # 5% means the SELL conditions changed enough that the signature
         # references the wrong amount — re-sign rather than risk a bad fill.
         if abs(entry["price"] - expected_price) > 0.01:
+            record_warmup_outcome("live", "price_drift_reject")
             return None
         if abs(entry["amount"] - shares) / max(shares, 1e-6) > 0.05:
+            record_warmup_outcome("live", "size_drift_reject")
             return None
+        record_warmup_outcome("live", "consumed")
         return entry["order"]
 
     async def _sweep_residual(self, token_id: str, ref_price: float) -> None:

@@ -123,6 +123,59 @@ def compute_buy_vwap(book: dict[str, Any] | None, size_usd: float) -> float | No
     return spent / consumed
 
 
+# ---------------------------------------------------------------------------
+# Warm-SELL warmup hit-rate telemetry
+# ---------------------------------------------------------------------------
+# Lets us cross-check that paper realizes the SELL signature speedup on the
+# same fraction of trades live does. Same conditions (TTL + drift checks) →
+# same outcome bucket. Drift = paper-live parity broken; investigate.
+import json as _ws_json
+from pathlib import Path as _ws_Path
+from datetime import datetime as _ws_dt, timezone as _ws_tz
+
+_WARMUP_STATS_PATH = _ws_Path("polybot/memory/warmup_stats.json")
+_WARMUP_OUTCOMES: tuple[str, ...] = (
+    "consumed", "none_armed", "ttl_expired", "price_drift_reject", "size_drift_reject",
+)
+
+
+def _empty_warmup_bucket() -> dict[str, int]:
+    return {"attempts": 0, **{k: 0 for k in _WARMUP_OUTCOMES}}
+
+
+def record_warmup_outcome(mode: str, outcome: str) -> None:
+    """Persist a single SELL-warmup attempt outcome under ``mode`` ∈ {live, paper}.
+
+    Outcome must be one of _WARMUP_OUTCOMES. Silent on I/O errors — telemetry
+    only, never affects trading. Bucketed counters let the operator compute
+    consumed-rate per mode and verify paper/live parity over time.
+    """
+    if mode not in ("live", "paper") or outcome not in _WARMUP_OUTCOMES:
+        return
+    try:
+        stats: dict[str, Any] = {"live": _empty_warmup_bucket(), "paper": _empty_warmup_bucket()}
+        if _WARMUP_STATS_PATH.exists():
+            try:
+                loaded = _ws_json.loads(_WARMUP_STATS_PATH.read_text())
+                if isinstance(loaded, dict):
+                    for m in ("live", "paper"):
+                        if isinstance(loaded.get(m), dict):
+                            stats[m].update(loaded[m])
+                            # Backfill any missing keys from older schema.
+                            for k in _empty_warmup_bucket():
+                                stats[m].setdefault(k, 0)
+            except Exception:
+                pass
+        bucket = stats[mode]
+        bucket["attempts"] = bucket.get("attempts", 0) + 1
+        bucket[outcome] = bucket.get(outcome, 0) + 1
+        stats["last_updated"] = _ws_dt.now(_ws_tz.utc).isoformat()
+        _WARMUP_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _WARMUP_STATS_PATH.write_text(_ws_json.dumps(stats, indent=2))
+    except Exception:
+        pass
+
+
 def _entry_fee_usd_from_position(position: dict[str, Any], shares_held: float) -> float:
     """Reconstruct the USD value of the entry fee (which was paid in shares).
 

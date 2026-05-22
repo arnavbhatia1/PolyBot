@@ -7,7 +7,7 @@ import random
 import time
 from typing import Any
 
-from polybot.execution.base import BaseTrader, FillResult, DEFAULT_FEE_RATE, exit_fee_usdc
+from polybot.execution.base import BaseTrader, FillResult, DEFAULT_FEE_RATE, exit_fee_usdc, record_warmup_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -122,17 +122,24 @@ class PaperTrader(BaseTrader):
         Mirrors LiveTrader._take_sell_warmup acceptance criteria: TTL <= 5s,
         price drift < 1¢, size drift < 5%. Always pops the entry to prevent
         stale reuse — main.py will re-arm on the next hold tick if needed.
+        Every call records an outcome bucket to warmup_stats.json so the
+        operator can audit paper-vs-live realization parity.
         """
         entry = self._sell_warmups.pop(token_id, None)
         if entry is None:
+            record_warmup_outcome("paper", "none_armed")
             return False
         age = time.time() - entry["ts"]
         if age > self._SELL_WARMUP_TTL_S:
+            record_warmup_outcome("paper", "ttl_expired")
             return False
         if abs(entry["price"] - expected_price) > 0.01:
+            record_warmup_outcome("paper", "price_drift_reject")
             return False
         if abs(entry["amount"] - shares) / max(shares, 1e-6) > 0.05:
+            record_warmup_outcome("paper", "size_drift_reject")
             return False
+        record_warmup_outcome("paper", "consumed")
         return True
 
     # State-dependent FOK fail rate. Live FOK rejects cluster around adverse
