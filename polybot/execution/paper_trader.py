@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from typing import Any
 
 from polybot.execution.base import BaseTrader, FillResult, DEFAULT_FEE_RATE, exit_fee_usdc
@@ -30,6 +31,13 @@ class PaperTrader(BaseTrader):
         # (thin top-of-book, wide spread); _compute_fail_rate adds state-dependent
         # terms on top of this floor.
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.02)
+        # Warm-SELL bookkeeping — mirrors LiveTrader's _sell_warmups dict. Lets paper
+        # see the same ~150ms ECDSA-sign saving live realizes during the scalp danger
+        # zone (main.py calls warm_sell_signature on every hold tick where
+        # -0.05 < holding_edge < -0.005). Same TTL and drift thresholds as live, so
+        # the realization rate emerges from identical conditions rather than a
+        # hardcoded probability — paper saves the speedup iff live would have.
+        self._sell_warmups: dict[str, dict[str, float]] = {}
 
     # Match live's _MAX_RETRIES + _RETRY_BASE_DELAY semantics so paper trades
     # the same FOK behaviour the live bot does (one shot per attempt with a
@@ -38,6 +46,12 @@ class PaperTrader(BaseTrader):
     # 2nd attempt fills — paper used to give up immediately and skip those.
     _PAPER_MAX_RETRIES: int = 3
     _PAPER_RETRY_BASE_DELAY: float = 0.03
+
+    # Warm-SELL parameters mirror LiveTrader exactly so paper and live realize
+    # the speedup on the same set of trades. Speedup ~150ms = the ECDSA-sign
+    # cost live skips when a valid pre-signed order exists.
+    _SELL_WARMUP_TTL_S: float = 5.0
+    _SELL_WARMUP_SPEEDUP_S: float = 0.15
 
     async def _execute_buy(
         self, token_id: str, price: float, size: float,
@@ -61,10 +75,65 @@ class PaperTrader(BaseTrader):
         size_usd = shares * price
         if self._precheck_rejects(token_id, side="sell", requested_price=price, size_usd=size_usd):
             return FillResult(filled=False, reason="pre-check: book walk would exceed limit (matches live)")
-        await self._simulate_latency()
+        # Consume a warm-SELL signature if one is valid for these params — the
+        # speedup matches the ~150ms ECDSA-sign cost live skips. If no valid
+        # warmup, pay full simulated latency just as live would.
+        warmup_speedup = self._SELL_WARMUP_SPEEDUP_S if self._take_sell_warmup(
+            token_id, shares, price
+        ) else 0.0
+        await self._simulate_latency(speedup_s=warmup_speedup)
         if random.random() < self._compute_fail_rate(token_id, side="sell"):
             return FillResult(filled=False, reason="simulated network error")
         return await self._retry_walk(token_id, side="sell", requested_price=price, size_usd=size_usd)
+
+    async def warm_sell_signature(self, token_id: str, shares: float,
+                                  expected_price: float,
+                                  fee_rate: float = DEFAULT_FEE_RATE) -> None:
+        """Paper analogue of LiveTrader.warm_sell_signature — bookkeeping only.
+
+        Records (shares, expected_price, ts) so a subsequent _execute_sell can
+        check whether the warmup is still valid (within TTL and parameter drift
+        thresholds identical to live). When valid, _execute_sell skips ~150ms of
+        simulated latency to mirror the ECDSA-sign work live actually saves.
+
+        Idempotent within TTL when params haven't drifted — matches live's
+        early-return at ``live_trader.py:715-721``.
+        """
+        del fee_rate  # paper has no signing work; param kept for API parity
+        if not token_id or shares <= 0 or expected_price <= 0:
+            return
+        existing = self._sell_warmups.get(token_id)
+        if existing is not None:
+            age = time.time() - existing["ts"]
+            price_drift = abs(existing["price"] - expected_price)
+            size_drift = abs(existing["amount"] - shares) / max(shares, 1e-6)
+            if age < 1.5 and price_drift < 0.005 and size_drift < 0.02:
+                return  # still good — don't reset the clock
+        self._sell_warmups[token_id] = {
+            "amount": shares,
+            "price": expected_price,
+            "ts": time.time(),
+        }
+
+    def _take_sell_warmup(self, token_id: str, shares: float,
+                          expected_price: float) -> bool:
+        """Return True iff a valid warmup exists for these SELL params.
+
+        Mirrors LiveTrader._take_sell_warmup acceptance criteria: TTL <= 5s,
+        price drift < 1¢, size drift < 5%. Always pops the entry to prevent
+        stale reuse — main.py will re-arm on the next hold tick if needed.
+        """
+        entry = self._sell_warmups.pop(token_id, None)
+        if entry is None:
+            return False
+        age = time.time() - entry["ts"]
+        if age > self._SELL_WARMUP_TTL_S:
+            return False
+        if abs(entry["price"] - expected_price) > 0.01:
+            return False
+        if abs(entry["amount"] - shares) / max(shares, 1e-6) > 0.05:
+            return False
+        return True
 
     # State-dependent FOK fail rate. Live FOK rejects cluster around adverse
     # moves: thin top-of-book + wide spread = match engine more likely to
@@ -199,15 +268,22 @@ class PaperTrader(BaseTrader):
     # Internals
     # ------------------------------------------------------------------
 
-    async def _simulate_latency(self) -> None:
+    async def _simulate_latency(self, speedup_s: float = 0.0) -> None:
         """Gaussian-jittered sleep, plus a 4% chance of a heavy-tail spike to mirror
         live's p99/max (2.3-4.8s outliers from network jitter or REST congestion).
-        Floor at 0.35s — live's fastest observed sign+post."""
+        Floor at 0.35s — live's fastest observed sign+post.
+
+        ``speedup_s`` subtracts from the sampled latency to mirror cases where live
+        skips work (e.g. warm-SELL signature). Floor is preserved so even a saved
+        sign-cost still respects live's fastest observed round-trip.
+        """
         if random.random() < 0.04:
             # Heavy tail: uniform [2.0s, 4.0s] roughly matches p95-p99 from live.
             latency = random.uniform(2.0, 4.0)
         else:
             latency = max(0.35, random.gauss(self.latency_mean_s, self.latency_jitter_s))
+        if speedup_s > 0:
+            latency = max(0.35, latency - speedup_s)
         await asyncio.sleep(latency)
 
     def _walk_book(self, token_id: str, side: str, requested_price: float,
