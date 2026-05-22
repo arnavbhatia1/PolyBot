@@ -2399,6 +2399,7 @@ async def main() -> None:
         min_time_remaining=market_cfg.get("min_time_remaining_seconds", 20),
         cache_seconds=market_cfg.get("scan_cache_seconds", 5),
         min_book_depth_usd=market_cfg.get("min_book_depth_usd", 50.0),
+        clob_url=market_cfg.get("clob_url"),
     )
 
     # Indicator engine

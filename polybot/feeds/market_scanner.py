@@ -41,12 +41,17 @@ class BTCMarketScanner:
 
     def __init__(self, entry_window_seconds: int = 120, min_time_remaining: int = 30,
                  cache_seconds: int = 5, symbol: str = "btc",
-                 min_book_depth_usd: float = 50.0) -> None:
+                 min_book_depth_usd: float = 50.0,
+                 clob_url: str | None = None) -> None:
         self.entry_window_seconds: int = entry_window_seconds
         self.min_time_remaining: int = min_time_remaining
         self.cache_seconds: int = cache_seconds
         self.symbol: str = symbol
         self.min_book_depth_usd: float = min_book_depth_usd
+        # Override the class-level CLOB_API only when caller passed a truthy URL; empty
+        # string / None / missing config falls back to the hardcoded constant.
+        if clob_url:
+            self.CLOB_API = clob_url
         self._cached_contract: dict[str, Any] | None = None
         self._cache_time: float = 0
         self._book_cache: dict[str, tuple[float, dict[str, Any]]] = {}  # token_id -> (timestamp, book)
