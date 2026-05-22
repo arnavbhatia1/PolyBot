@@ -109,20 +109,62 @@ def _record_submit_latency(seconds: float) -> None:
         pass
 
 
-def _update_fill_stats(filled: bool, side: str) -> None:
-    """Atomically update FOK fill rate stats. Silent on I/O errors."""
+# Failure-cause buckets — lets pipeline distinguish "price moved" rejects (a feature)
+# from "network error" or "depth" rejects (a defect). Empty/unmatched reasons go to
+# `other` so future failure modes show up rather than getting silently lumped in.
+_FAILURE_BUCKETS: tuple[str, ...] = (
+    "price_moved", "non_retryable", "precheck_depth",
+    "below_min", "network_error", "auth", "other",
+)
+
+
+def _categorize_failure(reason: str) -> str:
+    """Map a FillResult.reason or last_error string to a failure-cause bucket."""
+    r = (reason or "").lower()
+    if "price moved" in r:
+        return "price_moved"
+    if "pre-check" in r or "book walk" in r:
+        return "precheck_depth"
+    if "below" in r and ("minimum" in r or "clob minimum" in r):
+        return "below_min"
+    if any(kw in r for kw in ("timeout", "network", "connection refused", "rpc")):
+        return "network_error"
+    if "auth" in r:
+        return "auth"
+    if "non-retryable" in r or "not retryable" in r:
+        return "non_retryable"
+    return "other"
+
+
+def _update_fill_stats(filled: bool, side: str, reason: str = "") -> None:
+    """Atomically update FOK fill rate stats. Silent on I/O errors.
+
+    `reason` is bucketed into _FAILURE_BUCKETS when filled=False so the pipeline
+    can stratify retryable rejects (price_moved — a feature) from network/depth
+    errors (a defect). New fields are additive; scheduler.py reads fill_rate and
+    buy/sell counts the same way.
+    """
     try:
         stats = {"total_attempts": 0, "total_fills": 0,
                  "buy_attempts": 0, "buy_fills": 0,
-                 "sell_attempts": 0, "sell_fills": 0}
+                 "sell_attempts": 0, "sell_fills": 0,
+                 "failure_buckets": {b: 0 for b in _FAILURE_BUCKETS}}
         if _FILL_STATS_PATH.exists():
             try:
                 stats.update(_json.loads(_FILL_STATS_PATH.read_text()))
             except Exception:
                 pass
+        # Backfill the buckets dict if a pre-S7 stats file is loaded.
+        if "failure_buckets" not in stats or not isinstance(stats["failure_buckets"], dict):
+            stats["failure_buckets"] = {b: 0 for b in _FAILURE_BUCKETS}
+        for b in _FAILURE_BUCKETS:
+            stats["failure_buckets"].setdefault(b, 0)
         stats["total_attempts"] += 1
         if filled:
             stats["total_fills"] += 1
+        else:
+            bucket = _categorize_failure(reason)
+            stats["failure_buckets"][bucket] = stats["failure_buckets"].get(bucket, 0) + 1
         if side == BUY:
             stats["buy_attempts"] += 1
             if filled:
@@ -936,10 +978,9 @@ class LiveTrader(BaseTrader):
                 "FOK %s skipped: notional $%.2f below $%.2f minimum",
                 side, notional_usd, _MIN_ORDER_USD,
             )
-            return FillResult(
-                filled=False,
-                reason=f"Order ${notional_usd:.2f} below ${_MIN_ORDER_USD:.2f} CLOB minimum",
-            )
+            reason = f"Order ${notional_usd:.2f} below ${_MIN_ORDER_USD:.2f} CLOB minimum"
+            _update_fill_stats(filled=False, side=side, reason=reason)
+            return FillResult(filled=False, reason=reason)
 
         # Order-book pre-check: simulate FOK walk against the current book.
         # Avoids burning ~770ms × 3 retries on orders that would reject anyway
@@ -952,10 +993,9 @@ class LiveTrader(BaseTrader):
             if book_age <= 5.0:  # only trust very fresh book for pre-check
                 walks = self._estimate_fok_walk(book, side, amount, expected_price)
                 if walks is False:
-                    return FillResult(
-                        filled=False,
-                        reason="pre-check: book walk would exceed limit (would reject in CLOB)",
-                    )
+                    reason = "pre-check: book walk would exceed limit (would reject in CLOB)"
+                    _update_fill_stats(filled=False, side=side, reason=reason)
+                    return FillResult(filled=False, reason=reason)
 
         balance_task: asyncio.Task[float] | None = None
         balance_before: float = -1.0
@@ -1008,6 +1048,7 @@ class LiveTrader(BaseTrader):
                     # Non-retryable errors bail immediately
                     if any(code in error_msg for code in _NON_RETRYABLE_ERRORS):
                         logger.error("Order rejected (non-retryable): %s", error_msg)
+                        _update_fill_stats(filled=False, side=side, reason=f"non-retryable: {error_msg}")
                         return FillResult(filled=False, reason=error_msg)
                     last_error = error_msg
                     logger.debug("FOK %d/%d: price moved before fill", attempt, _MAX_RETRIES)
@@ -1149,7 +1190,10 @@ class LiveTrader(BaseTrader):
         # balance_task so it doesn't leave a dangling reference.
         if balance_task is not None and not balance_task.done():
             balance_task.cancel()
-        _update_fill_stats(filled=False, side=side)
+        # Bucket by what actually happened last — the in-loop catch overwrites
+        # last_error with each attempt's specific failure (price_moved vs
+        # network vs other), so the final value is the truest signal of cause.
+        _update_fill_stats(filled=False, side=side, reason=last_error or "price moved")
         return FillResult(
             filled=False,
             reason=f"price moved before fill after {_MAX_RETRIES} attempts",
