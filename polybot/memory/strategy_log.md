@@ -668,3 +668,25 @@
 - Current regime (last 100 trades WR=70%) diverges sharply from overall 56% — historical parameter fits may not apply; caution on any adoption during this divergence.
 
 **Reasoning:** With 25+ parameter families exhausted and every tested direction producing backtest deltas indistinguishable from noise (all below 0.007 floor), empty changes is the only defensible position this cycle. Win rate and Sharpe are explicitly IMPROVING per trend buckets, meaning any parameter intervention risks disrupting a natural recovery that is already underway. The single highest-confidence actionable lever remains exit_edge_threshold: scalp accuracy at 37% in the <-0.10 bucket (n=1662, ~13× noise) is reproduced consistently across multiple cycles and maps cleanly to the scalping_too_early signal dominating the exit pattern analysis — this is routed to manual_observations as the pipeline cannot backtest it directly.
+
+## 2026-05-22T03:30:47.752050+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - atr_sigma_ratio=1.35 (exploratory up step)
+  - spot_flow_weight=0.09 (exploratory down step)
+  - regime_momentum_threshold=0.17 (exploratory up step)
+  - flow_combined_cap=0.4 (exploratory up step)
+  - final_logit_clamp=3.75 (exploratory down step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender

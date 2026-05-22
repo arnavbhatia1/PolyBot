@@ -1675,5 +1675,77 @@
         ]
       }
     ]
+  },
+  {
+    "date": "2026-05-22T03:30:48.300905+00:00",
+    "source": "local",
+    "baseline_sharpe": 0.225,
+    "changes": [
+      {
+        "param": "atr_sigma_ratio",
+        "old_value": 1.3,
+        "new_value": 1.35,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0004,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "spot_flow_weight",
+        "old_value": 0.1,
+        "new_value": 0.09,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0009,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "regime_momentum_threshold",
+        "old_value": 0.15,
+        "new_value": 0.17,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0014,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "flow_combined_cap",
+        "old_value": 0.35,
+        "new_value": 0.4,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0001,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "final_logit_clamp",
+        "old_value": 4.0,
+        "new_value": 3.75,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0009,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      }
+    ]
   }
 ]
