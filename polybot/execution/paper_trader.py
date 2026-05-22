@@ -356,16 +356,16 @@ class PaperTrader(BaseTrader):
         if remaining > 1e-6:
             return FillResult(
                 filled=False,
-                reason=f"insufficient book depth (remaining={remaining:.2f})",
+                reason=f"Insufficient book depth (remaining={remaining:.2f})",
             )
 
-        # Strict FOK semantics — must match live exactly:
+        # Strict FOK semantics:
         #   BUY: rejects if vwap > requested_price (book ask moved up between calc and fill)
         #   SELL: rejects if vwap < requested_price (book bid moved down between calc and fill)
         if side == "buy":
             if vwap > requested_price:
-                return FillResult(filled=False, reason="price moved before fill (simulated FOK rejection)")
+                return FillResult(filled=False, reason="Price moved before fill (simulated)")
         else:
             if vwap < requested_price:
-                return FillResult(filled=False, reason="price moved before fill (simulated FOK rejection)")
+                return FillResult(filled=False, reason="Price moved before fill (simulated)")
         return FillResult(filled=True, fill_price=vwap, fill_size=spent)

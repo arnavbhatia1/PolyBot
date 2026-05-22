@@ -107,20 +107,15 @@ class CircuitBreaker:
         self.current_bankroll = amount
         if amount > self.peak_bankroll:
             self.peak_bankroll = amount
-            logger.info(f"CIRCUIT BREAKER: new high-water mark ${amount:,.2f}")
+            logger.info(f"New high-water mark ${amount:,.2f}")
 
         new_tier = _locked_tier(amount)
         if new_tier > self.locked_tier:
             self.locked_tier = new_tier
             self.floor = round(new_tier * self.floor_pct, 2)
             logger.info(
-                f"CIRCUIT BREAKER: tier locked ${new_tier:,.0f} -> floor ${self.floor:,.2f}"
+                f"Tier locked ${new_tier:,.0f} -> floor ${self.floor:,.2f}"
             )
-
-        logger.debug(
-            f"CIRCUIT BREAKER: bankroll=${amount:,.2f} tier=${self.locked_tier:,.0f} "
-            f"floor=${self.floor:,.2f} kelly_mult={self.kelly_multiplier:.2f}"
-        )
 
     # ------------------------------------------------------------------
     # Streak tracking (Discord alerts only — no effect on sizing)
@@ -131,8 +126,8 @@ class CircuitBreaker:
         self.consecutive_wins += 1
         if self.consecutive_wins >= self.wins_to_restore:
             logger.info(
-                f"CIRCUIT BREAKER: {self.consecutive_wins} consecutive wins — "
-                f"kelly_mult={self.kelly_multiplier:.2f}"
+                f"{self.consecutive_wins} consecutive Ws — "
+                f"kelly mult={self.kelly_multiplier:.2f}"
             )
             return "streak_wins"
         return None
@@ -142,8 +137,8 @@ class CircuitBreaker:
         self.consecutive_losses += 1
         if self.consecutive_losses >= self.losses_to_reduce:
             logger.info(
-                f"CIRCUIT BREAKER: {self.consecutive_losses} consecutive losses — "
-                f"kelly_mult={self.kelly_multiplier:.2f}"
+                f"{self.consecutive_losses} consecutive Ls — "
+                f"kelly mult={self.kelly_multiplier:.2f}"
             )
             return "streak_losses"
         return None

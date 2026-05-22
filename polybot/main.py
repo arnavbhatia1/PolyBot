@@ -238,8 +238,8 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
     _last_gate_skip_state[key] = now
     _sprt_part = f" | {ctx['sprt']}" if ctx.get("sprt") and not gate_key.startswith("sprt") else ""
     logger.info(
-        f"{_C.DIM}SKIP {ctx['direction']}  {ctx['window_slug']} | "
-        f"prob {ctx['prob']:.0%} BTC {ctx['dist']:+,.0f} | "
+        f"{_C.DIM}SKIP {ctx['direction']} {ctx['window_slug']} | "
+        f"model {ctx['prob']:.0%} {ctx['direction']}, BTC {ctx['dist']:+,.0f} vs strike | "
         f"{reason}{_sprt_part}{_C.RESET}"
     )
 
@@ -634,8 +634,12 @@ async def _evaluate_signal_and_enter(
     _sprt_info = ""
     if _sprt:
         _s, _c, _f, _n = _sprt.get_status(), _sprt.get_confidence(), _sprt.favored_side(), _sprt.observation_count()
-        _side_str = f" ({_f})" if _f and _c >= 0.20 else f" {_n}obs"
-        _sprt_info = f"SPRT {_s} {_c:.0%}{_side_str}"
+        if _s != "ACCUMULATING":
+            _sprt_info = f"SPRT {_s} {_c:.0%}"
+        elif _f and _c >= 0.20:
+            _sprt_info = f"SPRT {_c:.0%} leaning {_f}"
+        else:
+            _sprt_info = f"SPRT {_c:.0%} ({_n} obs)"
     _pending_eval_ctx[cid] = {
         "direction": _direction,
         "prob": signal.prob,
@@ -756,7 +760,7 @@ async def _evaluate_signal_and_enter(
         # Side mismatch: only veto when SPRT has built strong opposite evidence (60%+, 6+ obs)
         if sprt_obs >= 6 and _sprt.get_confidence() > 0.60 and _sprt.favored_side() != side:
             _record_skip("sprt_side_mismatch")
-            _emit_gate_skip(cid, f"sprt_{side}", f"SPRT {_sprt.get_confidence():.0%} and favors ({_sprt.favored_side()})")
+            _emit_gate_skip(cid, f"sprt_{side}", f"SPRT {_sprt.get_confidence():.0%} leaning {_sprt.favored_side()} (opposite side)")
             return None, last_eval_log_window
 
     # --- LAYER DISAGREEMENT GATE ---
@@ -784,7 +788,9 @@ async def _evaluate_signal_and_enter(
     if abs(spot_flow_signal) >= 0.20 and spot_flow_signal * cvd_accel_val < 0:
         _record_skip("cvd_decel")
         _ghost("cvd_decel", signal, {})
-        _emit_gate_skip(cid, f"cvd_decel_{side}", f"CVD fading — spot_flow {spot_flow_signal:+.3f} accel {cvd_accel_val:+.4f}")
+        _flow_label = "sells" if spot_flow_signal < 0 else "buys"
+        _emit_gate_skip(cid, f"cvd_decel_{side}",
+                        f"CVD reversing — {_flow_label} ({spot_flow_signal:+.2f}) decelerating ({cvd_accel_val:+.2f})")
         return None, last_eval_log_window
 
     price = price_up if side == "Up" else price_down
@@ -1042,30 +1048,30 @@ async def _evaluate_signal_and_enter(
         _why_parts = []
         # BTC position vs strike
         if side == "Up":
-            _why_parts.append(f"BTC ${abs(_dist):,.0f} {'above' if _dist > 0 else 'below'} strike — {'favors Up' if _dist > 0 else 'fighting strike'}")
+            _why_parts.append(f"BTC ${abs(_dist):,.0f} {'above' if _dist > 0 else 'below'} strike — {'Favors Up' if _dist > 0 else 'fighting strike'}")
         else:
-            _why_parts.append(f"BTC ${abs(_dist):,.0f} {'below' if _dist < 0 else 'above'} strike — {'favors Down' if _dist < 0 else 'fighting strike'}")
+            _why_parts.append(f"BTC ${abs(_dist):,.0f} {'below' if _dist < 0 else 'above'} strike — {'Favors Down' if _dist < 0 else 'fighting strike'}")
         # Order flow
         if flow_score > 0.1:
-            _why_parts.append(f"strong buy pressure in book (flow {flow_score:+.2f})")
+            _why_parts.append(f"Strong buy pressure in book (flow {flow_score:+.2f})")
         elif flow_score < -0.1:
-            _why_parts.append(f"strong sell pressure in book (flow {flow_score:+.2f})")
+            _why_parts.append(f"Strong sell pressure in book (flow {flow_score:+.2f})")
         else:
             _why_parts.append(f"neutral book flow ({flow_score:+.2f})")
         # CVD / spot flow
         if spot_flow_signal > 0.05:
-            _why_parts.append(f"buyers dominating on Binance (cvd {spot_flow_signal:+.2f})")
+            _why_parts.append(f"Buyers dominating on Binance (cvd {spot_flow_signal:+.2f})")
         elif spot_flow_signal < -0.05:
-            _why_parts.append(f"sellers dominating on Binance (cvd {spot_flow_signal:+.2f})")
+            _why_parts.append(f"Sellers dominating on Binance (cvd {spot_flow_signal:+.2f})")
         else:
-            _why_parts.append(f"neutral CVD ({spot_flow_signal:+.2f})")
+            _why_parts.append(f"Neutral CVD ({spot_flow_signal:+.2f})")
         # Regime
         if regime_state and regime_state.name == "trending":
-            _why_parts.append(f"market trending {side.lower()}")
+            _why_parts.append(f"Market trending {side.lower()}")
         elif regime_state and regime_state.name == "reverting":
-            _why_parts.append("market mean-reverting")
+            _why_parts.append("Market mean-reverting")
         else:
-            _why_parts.append("neutral regime")
+            _why_parts.append("Neutral regime")
         _why = ", ".join(_why_parts)
         logger.info(
             f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
@@ -1112,9 +1118,9 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
     if ptb and window_strikes.get(contract_window_ts) != ptb:
         if contract_window_ts in window_strikes:
-            logger.info(f"STRIKE UPDATE {_slug_to_window(cid)} | ${window_strikes[contract_window_ts]:,.2f} → ${ptb:,.2f} (Polymarket priceToBeat)")
+            logger.info(f"STRIKE UPDATE {_slug_to_window(cid)} | ${window_strikes[contract_window_ts]:,.2f} → ${ptb:,.2f} (Polymarket)")
         else:
-            logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | strike ${ptb:,.2f} (Polymarket){_C.RESET}")
+            logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${ptb:,.2f} (Polymarket){_C.RESET}")
         window_strikes[contract_window_ts] = ptb
 
     if contract_window_ts not in window_strikes:
@@ -1123,23 +1129,27 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             cl_strike = chainlink_feed.get_strike(contract_window_ts)
             if cl_strike:
                 window_strikes[contract_window_ts] = cl_strike
-                logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
+                logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
 
         # Fall back to Binance candle if Chainlink didn't capture it
         if contract_window_ts not in window_strikes:
             target_ms = contract_window_ts * 1000
             candles = binance_feed.buffer.get_last_n(10)
+            _bn_strike = None
             for c in reversed(candles):
                 if c.timestamp == target_ms:
-                    window_strikes[contract_window_ts] = c.open
+                    _bn_strike = c.open
                     break
                 elif c.timestamp < target_ms <= c.timestamp + 60_000:
-                    window_strikes[contract_window_ts] = c.close
+                    _bn_strike = c.close
                     break
             else:
                 latest = binance_feed.buffer.latest()
                 if latest and now_ts - contract_window_ts < 10:
-                    window_strikes[contract_window_ts] = latest.close
+                    _bn_strike = latest.close
+            if _bn_strike is not None:
+                window_strikes[contract_window_ts] = _bn_strike
+                logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${_bn_strike:,.2f} (Binance, fallback){_C.RESET}")
 
     # Clean old strikes
     window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
@@ -1149,7 +1159,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
         buf_len = len(binance_feed.buffer) if binance_feed.buffer else 0
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
-            logger.info(f"EVAL: no strike for window {contract_window_ts} — candle buffer has {buf_len} candles")
+            logger.info(f"EVAL {_slug_to_window(cid)}: No strike yet — buffer has {buf_len} candles")
         return None, None, window_strikes, last_eval_log_window, "none"
 
     # BTC price priority: Coinbase WS > Binance aggTrade > Binance 1-min candle
@@ -1158,13 +1168,13 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     if btc_price <= 0:
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
-            logger.info(f"EVAL: no BTC price — Binance feed not ready")
+            logger.info(f"EVAL {_slug_to_window(cid)}: No BTC price — Binance feed not ready")
         return None, None, window_strikes, last_eval_log_window, "none"
 
     # Skip if candle data is stale (WebSocket may have disconnected)
     latest_candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
     if latest_candle_age > 180:
-        logger.warning(f"Stale candle data: {latest_candle_age:.0f}s old, skipping entry")
+        logger.warning(f"Stale Binance candle ({latest_candle_age:.0f}s old) — skipping entry")
         return None, None, window_strikes, last_eval_log_window, "none"
 
     return strike, btc_price, window_strikes, last_eval_log_window, _price_source
@@ -1240,7 +1250,8 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
             _record_skip("thin_clob_depth")
             if eval_window != last_eval_log_window:
                 last_eval_log_window = eval_window
-                logger.info(f"EVAL: thin CLOB depth Up=${depth_usd_up:.0f} Dn=${depth_usd_down:.0f} — skipping window")
+                _cid = contract.get("slug", contract.get("market_id", ""))
+                logger.info(f"EVAL {_slug_to_window(_cid)}: Thin CLOB depth — Up=${depth_usd_up:.0f} Dn=${depth_usd_down:.0f}, skipping window")
             return None, last_eval_log_window
 
     # Skip if effective execution cost (ask-distance + taker fee) too wide
@@ -1640,7 +1651,7 @@ async def _evaluate_and_exit_position(
                     f"monitoring for recovery"
                 )
                 return day_wins, day_losses, day_fees, traded_market_id
-            logger.warning(f"  SCALP RETRY — close_trade failed (will retry next tick): {result.reason}")
+            logger.warning(f"  SCALP FAILED — Retrying next tick: {result.reason}")
         elif result.success:
             _invalidate_open_positions_cache()
             pnl = result.pnl
@@ -1715,14 +1726,14 @@ async def _resolve_expired_position(
         meta = live["event_metadata"]
         up_won = meta["final_price"] >= meta["price_to_beat"]
         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
-        logger.info(f"RESOLVE via eventMetadata: priceToBeat={meta['price_to_beat']:,.2f} final={meta['final_price']:,.2f} -> {'Up' if up_won else 'Down'}")
+        logger.info(f"RESOLVE {_slug_to_window(pos['market_id'])} | Strike {meta['price_to_beat']:,.2f} → Final {meta['final_price']:,.2f} — {'Up' if up_won else 'Down'} wins")
     else:
         # Gamma hasn't resolved yet — wait for next tick (polls every 2s)
         now_ts = time.time()
         mid = pos["market_id"]
         if mid not in _last_resolve_wait_log:
             _last_resolve_wait_log[mid] = now_ts
-            logger.info(f"WAITING for resolution: {_slug_to_window(mid)}")
+            logger.info(f"Waiting for resolution — {_slug_to_window(mid)}")
         return False, day_wins, day_losses, day_fees, None
 
     result = await trader.resolve_position(pos["id"], exit_price)
@@ -1807,7 +1818,7 @@ async def _manage_orphaned_position(
         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
         resolved_final = meta.get("final_price")
         resolved_strike = meta.get("price_to_beat")
-        logger.info(f"RESOLVE orphan via eventMetadata: priceToBeat={meta['price_to_beat']:,.2f} final={meta['final_price']:,.2f} -> {'Up' if up_won else 'Down'}")
+        logger.info(f"RESOLVE orphan {_slug_to_window(pos['market_id'])} | Strike {meta['price_to_beat']:,.2f} → Final {meta['final_price']:,.2f} — {'Up' if up_won else 'Down'} wins")
     elif direct and direct.get("closed") and (direct["price_up"] >= 0.99 or direct["price_up"] <= 0.01):
         exit_price = direct["price_up"] if pos["side"] == "Up" else direct["price_down"]
     elif age > 1800 and chainlink_feed and chainlink_feed.price > 0:
@@ -1821,16 +1832,16 @@ async def _manage_orphaned_position(
         strike_at_boundary = chainlink_feed.get_strike(window_ts) if window_ts else None
         if strike_at_boundary is None or strike_at_boundary <= 0:
             # No captured strike (feed wasn't running at boundary) — keep waiting
-            logger.info(f"Orphan {pos['market_id']} age={age:.0f}s — Chainlink strike not captured, still waiting")
+            logger.info(f"Orphan {_slug_to_window(pos['market_id'])} (age {age:.0f}s) — Chainlink strike not captured, still waiting")
             return True, day_wins, day_losses, day_fees, None
         up_won = chainlink_feed.price >= strike_at_boundary
         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
         resolved_final = chainlink_feed.price
         resolved_strike = strike_at_boundary
         logger.warning(
-            f"RESOLVE orphan via Chainlink fallback after {age:.0f}s wait: "
-            f"strike=${strike_at_boundary:,.2f} now=${chainlink_feed.price:,.2f} -> "
-            f"{'Up' if up_won else 'Down'} won (exit={exit_price})"
+            f"RESOLVE orphan {_slug_to_window(pos['market_id'])} via Chainlink fallback "
+            f"(Gamma silent {age:.0f}s) | Strike ${strike_at_boundary:,.2f} → ${chainlink_feed.price:,.2f} — "
+            f"{'Up' if up_won else 'Down'} wins (exit={exit_price})"
         )
         if alert_manager:
             try:
@@ -1844,14 +1855,14 @@ async def _manage_orphaned_position(
         # No official resolution data yet — keep waiting (Polymarket auto-credits
         # the Safe regardless, so bankroll is correct on next sync).
         if age > 3600:
-            logger.error(f"ORPHANED >1hr: {pos['market_id']} — no Gamma resolution data. Waiting for Chainlink oracle.")
+            logger.error(f"ORPHANED >1hr: {_slug_to_window(pos['market_id'])} — No Gamma resolution data, waiting for Chainlink oracle")
             if alert_manager:
                 await alert_manager.send_trade_closed(
                     question=pos.get("question", ""), exit_price=0, log_return=0, hold_hours=age / 3600,
                     side=pos["side"], entry_price=pos["entry_price"], pnl=0,
                     gain_pct=0, reason="orphaned — awaiting resolution", fees=0)
         else:
-            logger.info(f"Orphan {pos['market_id']} age={age:.0f}s — waiting for Gamma resolution data")
+            logger.info(f"Orphan {_slug_to_window(pos['market_id'])} (age {age:.0f}s) — Waiting for Gamma resolution")
         return True, day_wins, day_losses, day_fees, None  # still waiting
     result = await trader.resolve_position(pos["id"], exit_price)
     traded_market_id = None
@@ -2064,7 +2075,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     clob_ws.market_resolved.clear()
                     # Invalidate price cache — Gamma should have resolution data now
                     _contract_price_cache.clear()
-                    logger.info("WS market_resolved — cache cleared, checking resolution")
+                    logger.info("Market resolved via WS — cache cleared, checking resolution")
             except asyncio.TimeoutError:
                 pass  # housekeeping tick — contract discovery, day banners
         else:

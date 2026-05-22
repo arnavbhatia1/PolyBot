@@ -248,7 +248,7 @@ class CounterfactualTracker:
             chainlink_fp = meta["final_price"]
             up_won = chainlink_fp >= chainlink_ptb
             btc_at_expiry = chainlink_fp
-            logger.info(f"COUNTERFACTUAL: {market_id} using Chainlink: priceToBeat={chainlink_ptb:,.2f} final={chainlink_fp:,.2f}")
+            logger.info(f"COUNTERFACTUAL: {_slug_to_window(market_id)} | Strike={chainlink_ptb:,.2f} → Final={chainlink_fp:,.2f}")
             side = ctx["side"]
             resolution_price = 1.0 if (side == "Up") == up_won else 0.0
 
