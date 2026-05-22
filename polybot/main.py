@@ -34,7 +34,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 from polybot.config.loader import load_config, get_secret
 from polybot.config.param_registry import default_for as _d
-from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE
+from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE, compute_buy_vwap
 from polybot.db.models import Database
 from polybot.feeds.binance_feed import BinanceFeed
 from polybot.feeds.market_scanner import BTCMarketScanner
@@ -973,12 +973,26 @@ async def _evaluate_signal_and_enter(
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
     }
-    # Pre-submit edge re-check: use fresh_ask already fetched above (zero extra
-    # round trip).
-    if fresh_ask > 0 and fresh_ask != price:
+    # Pre-submit edge re-check.
+    # Prefer walking the current ask ladder for the actual expected FOK VWAP —
+    # the modeled `slip` (slippage_pct) approximates this against `side_depth`,
+    # but the book itself is the ground truth. When the book is unavailable or
+    # too thin to walk (returns None), fall back to the BBA-only fresh_ask gate
+    # so this never tightens-by-skipping a path the old gate would have passed.
+    max_edge_live = config.get("signal", {}).get("max_edge", 0.20)
+    book_for_walk = clob_ws.get_book(token_id) if clob_ws else None
+    fok_vwap = compute_buy_vwap(book_for_walk, size) if book_for_walk else None
+    if fok_vwap is not None:
+        vwap_net_edge = signal.prob - fok_vwap  # VWAP already absorbs book-walk slippage
+        if vwap_net_edge < signal_engine.min_edge or vwap_net_edge > max_edge_live:
+            _record_skip("pre_submit_vwap_drift")
+            _ghost("pre_submit_vwap_drift", signal, snapshot)
+            _emit_gate_skip(cid, "pre_submit_vwap_drift",
+                            f"vwap walk {price:.3f}→{fok_vwap:.3f}, net edge {vwap_net_edge:+.1%}")
+            return None, last_eval_log_window
+    elif fresh_ask > 0 and fresh_ask != price:
         fresh_gross_edge = signal.prob - fresh_ask
         fresh_net_edge = fresh_gross_edge - fresh_ask * slip
-        max_edge_live = config.get("signal", {}).get("max_edge", 0.20)
         if fresh_net_edge < signal_engine.min_edge or fresh_gross_edge > max_edge_live:
             _record_skip("pre_submit_edge_drift")
             _ghost("pre_submit_edge_drift", signal, snapshot)

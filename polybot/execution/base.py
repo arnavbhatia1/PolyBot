@@ -83,6 +83,46 @@ def exit_fee_usdc(shares: float, price: float, fee_rate: float = DEFAULT_FEE_RAT
     return taker_fee(shares, price, fee_rate)
 
 
+def compute_buy_vwap(book: dict[str, Any] | None, size_usd: float) -> float | None:
+    """Expected BUY fill VWAP from walking the asks ladder for ``size_usd`` notional.
+
+    Returns the size-weighted average price the order would pay if FOK'd against
+    the current book snapshot. Returns ``None`` when the book is missing, asks
+    are empty/unparseable, or total ask depth is below the requested size — in
+    which case the caller should fall back to a coarser gate (best-ask only).
+    The walk uses the same math as ``LiveTrader._estimate_fok_walk`` /
+    ``PaperTrader._precheck_rejects`` so the gate and the actual FOK see the
+    same book.
+    """
+    if not book or size_usd <= 0:
+        return None
+    levels_raw = book.get("asks") or []
+    if not levels_raw:
+        return None
+    try:
+        parsed = [(float(l["price"]), float(l["size"])) for l in levels_raw
+                  if l.get("price") and l.get("size")]
+    except (TypeError, ValueError, KeyError):
+        return None
+    if not parsed:
+        return None
+    parsed.sort(key=lambda ps: ps[0])  # asks ascending — best (lowest) first
+    spent = 0.0
+    consumed = 0.0
+    remaining = size_usd
+    for px, sz in parsed:
+        if remaining <= 0:
+            break
+        level_usd = px * sz
+        take_usd = min(remaining, level_usd)
+        spent += take_usd
+        consumed += take_usd / px
+        remaining -= take_usd
+    if remaining > 1e-6 or consumed <= 0:
+        return None
+    return spent / consumed
+
+
 def _entry_fee_usd_from_position(position: dict[str, Any], shares_held: float) -> float:
     """Reconstruct the USD value of the entry fee (which was paid in shares).
 
