@@ -38,7 +38,7 @@ WebSocket feeds + REST polls
   Edge = calibrated_model_prob - market_price (CLOB /price endpoint)
         |
   Entry gates: prob ≥ 0.56, edge ≥ 0.04, Kelly ≥ 0.01, spread ≤ 10%, depth ≥ $50,
-    price_sum ∈ [0.98, 1.02], edge ≤ 0.20, adverse_rate_30s ≤ 0.85, ATR ≥ 5th-pctile,
+    price_sum ∈ [0.98, 1.02], edge ≤ 0.20, adverse_rate_30s ≤ 0.65, ATR ≥ 5th-pctile,
     SPRT not SKIP (and not opposing), pre-submit edge re-check, CVD-deceleration skip
         |
   Sizing: bankroll × Kelly × breaker × time_mult × correlation-aware concurrent_mult,
