@@ -54,13 +54,6 @@ def _jk_se(sharpe: float, n_trades: int, returns: list[float] | None = None) -> 
     return se
 
 
-def _sharpe_z_test(old_sharpe: float, new_sharpe: float, n_trades: int,
-                   returns: list[float] | None = None) -> float:
-    """Z-score for Sharpe improvement (Jobson-Korkie SE, autocorr-inflated)."""
-    se = _jk_se(old_sharpe, n_trades, returns)
-    return (new_sharpe - old_sharpe) / se if se > 0 else 0.0
-
-
 class WeightOptimizer:
     """Adoption gate for pipeline-proposed parameter changes.
 
