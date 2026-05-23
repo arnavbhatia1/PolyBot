@@ -10,6 +10,8 @@ from typing import Any
 
 import websockets
 
+from polybot.feeds._json import loads as _loads
+
 logger = logging.getLogger("polybot")
 
 RTDS_WS_URL = "wss://ws-live-data.polymarket.com"
@@ -146,7 +148,7 @@ class ChainlinkFeed:
                         if raw == "PONG":
                             continue
                         try:
-                            msg = json.loads(raw)
+                            msg = _loads(raw)
                             payload = msg.get("payload", {})
                             symbol = payload.get("symbol", "")
                             value = payload.get("value")
@@ -154,7 +156,7 @@ class ChainlinkFeed:
                                 self._price = float(value)
                                 self._last_update = time.time()
                                 self._check_boundary()
-                        except (json.JSONDecodeError, ValueError, TypeError):
+                        except (ValueError, TypeError):
                             pass
             except (websockets.ConnectionClosed, ConnectionError, OSError) as e:
                 if not self._running:

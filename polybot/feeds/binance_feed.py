@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import socket
 import time
@@ -12,6 +11,8 @@ from typing import Any
 
 import numpy as np
 import httpx
+
+from polybot.feeds._json import loads as _loads
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,11 @@ class BinanceFeed:
                         except asyncio.TimeoutError:
                             logger.warning("kline WS idle >180s, forcing reconnect")
                             break
-                        self._handle_kline(json.loads(msg))
+                        try:
+                            data = _loads(msg)
+                        except ValueError:
+                            continue
+                        self._handle_kline(data)
             except Exception as e:
                 if not self._running:
                     break

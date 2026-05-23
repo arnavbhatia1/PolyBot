@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from polybot.feeds._json import loads as _loads
+
 logger = logging.getLogger(__name__)
 
 WS_URL = "wss://ws-feed.exchange.coinbase.com"
@@ -127,7 +129,11 @@ class CoinbaseFeed:
                         except asyncio.TimeoutError:
                             logger.warning("Coinbase WS idle >90s, forcing reconnect")
                             break
-                        self._handle_message(json.loads(msg))
+                        try:
+                            data = _loads(msg)
+                        except ValueError:
+                            continue
+                        self._handle_message(data)
 
             except asyncio.CancelledError:
                 break

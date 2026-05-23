@@ -10,6 +10,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
+from polybot.feeds._json import loads as _loads
+
 logger = logging.getLogger(__name__)
 
 
@@ -220,7 +222,11 @@ class BinanceTradesFeed:
                         except asyncio.TimeoutError:
                             logger.warning("aggTrade WS idle >180s, forcing reconnect")
                             break
-                        self._handle_message(json.loads(msg))
+                        try:
+                            data = _loads(msg)
+                        except ValueError:
+                            continue
+                        self._handle_message(data)
             except Exception as e:
                 if not self._running:
                     break

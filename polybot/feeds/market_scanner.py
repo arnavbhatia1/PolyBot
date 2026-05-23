@@ -194,34 +194,11 @@ class BTCMarketScanner:
             return {}
 
     async def fetch_fee_rate(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> float:
-        """Fetch taker fee rate from Polymarket CLOB API.
-
-        Returns fee rate as a decimal (e.g., 0.072 for crypto).
-        Caches for 1 hour. Falls back to 0.072 (crypto default) on error.
+        """Polymarket crypto taker rate. Constant — the live per-order fee is
+        ``rate × shares × p × (1-p)`` (see ``taker_fee`` in execution/base.py),
+        so price-dependent variation is already in the formula, not the rate.
         """
-        now = time.time()
-        cached = self._fee_rate_cache.get(token_id)
-        if cached and (now - cached[0]) < self._fee_rate_cache_seconds:
-            return cached[1]
-
-        try:
-            url = f"{self.CLOB_API}/fee-rate"
-            async with _ensure_client(http_client) as client:
-                resp = await client.get(url, params={"token_id": token_id})
-                resp.raise_for_status()
-                data = resp.json()
-            # CLOB base_fee is an internal multiplier, NOT the actual taker fee.
-            # As of March 2026, Polymarket uses Dynamic Taker-Fee Model:
-            #   Crypto: up to 1.8% peak (at p=0.50)
-            #   Fee = rate × shares × p × (1-p)
-            # The base_fee=1000 from the API is the internal scaling factor,
-            # not basis points. Real crypto taker rate is 0.018 (1.8%).
-            rate = 0.018
-            self._fee_rate_cache[token_id] = (now, rate)
-            return rate
-        except Exception as e:
-            logger.debug(f"Fee rate fetch failed for {token_id}: {e}")
-            return 0.018  # Crypto taker fee: 1.8% peak (Dynamic Taker-Fee Model, March 2026)
+        return 0.018
 
     async def fetch_tick_size(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> str:
         """Fetch tick size from Polymarket CLOB API.
@@ -448,11 +425,8 @@ class BTCMarketScanner:
                 self._cache_time = now
                 logger.debug(f"Found active contract: {contract['question']} "
                            f"({contract['seconds_remaining']:.0f}s remaining)")
-                # Pre-warm fee_rate + tick_size caches for both sides on new
-                # contract discovery. First-trade-per-window otherwise pays
-                # 30-100ms RTT on each (in parallel inside _evaluate_signal_and_enter
-                # for ~50ms total) — and that first signal is often the cleanest
-                # entry of the window. Pre-warm makes it 0ms.
+                # Pre-warm tick_size cache for both sides on new contract
+                # discovery. fee_rate is a constant — no RTT to save there.
                 cid = contract.get("condition_id", "")
                 if cid and cid != self._prewarmed_condition_id:
                     self._prewarmed_condition_id = cid
@@ -460,11 +434,9 @@ class BTCMarketScanner:
                                 contract.get("token_id_down", "")):
                         if not tok:
                             continue
-                        for coro in (self.fetch_fee_rate(tok, http_client),
-                                     self.fetch_tick_size(tok, http_client)):
-                            task = asyncio.create_task(coro)
-                            self._prewarm_tasks.add(task)
-                            task.add_done_callback(self._prewarm_tasks.discard)
+                        task = asyncio.create_task(self.fetch_tick_size(tok, http_client))
+                        self._prewarm_tasks.add(task)
+                        task.add_done_callback(self._prewarm_tasks.discard)
                 return contract
 
         return None

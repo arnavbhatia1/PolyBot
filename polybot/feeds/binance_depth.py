@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import socket
 from typing import Any
+
+from polybot.feeds._json import loads as _loads
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,10 @@ class BinanceDepthFeed:
                         except asyncio.TimeoutError:
                             logger.warning("depth WS idle >60s, forcing reconnect")
                             break
-                        data = json.loads(msg)
+                        try:
+                            data = _loads(msg)
+                        except ValueError:
+                            continue
                         bids = data.get("bids")
                         asks = data.get("asks")
                         # Only commit when both sides are present in the same

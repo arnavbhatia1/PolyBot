@@ -174,9 +174,24 @@ _last_logged_action: str = ""  # suppress repeated EVAL blocks when action hasn'
 _last_eval_buy_window: int = 0  # show full BUY block only once per window
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count since last reset
 _GATE_STATS_PATH = Path("polybot/memory/gate_stats.json")
-_pending_eval_ctx: dict[str, dict] = {}
-_last_gate_skip_state: dict[tuple[str, str], float] = {}   # (cid, gate_key) -> logged_at
-_last_skip_log: dict[tuple[str, str], int] = {}
+from collections import OrderedDict as _OrderedDict
+# Bounded LRUs — each entry is keyed by cid (or (cid, gate_key)). Without an
+# eviction bound these grow forever; the bot runs for days at a time so
+# unbounded would slowly leak ~1MB/week across the three dicts.
+_PENDING_CTX_MAX = 32          # ~32 most recent markets — plenty for active windows
+_GATE_STATE_MAX = 1024         # ~32 markets × ~32 gate keys
+_pending_eval_ctx: _OrderedDict[str, dict] = _OrderedDict()
+_last_gate_skip_state: _OrderedDict[tuple[str, str], float] = _OrderedDict()
+_last_skip_log: _OrderedDict[tuple[str, str], int] = _OrderedDict()
+
+
+def _lru_set(d: _OrderedDict, key, value, max_size: int) -> None:
+    """LRU insert with eviction. Touch on overwrite, drop oldest past max_size."""
+    if key in d:
+        d.move_to_end(key)
+    d[key] = value
+    while len(d) > max_size:
+        d.popitem(last=False)
 
 
 def _log_skip_once(cid: str, key: str, msg: str) -> None:
@@ -184,7 +199,7 @@ def _log_skip_once(cid: str, key: str, msg: str) -> None:
     window = int(time.time() // 300) * 300
     k = (cid, key)
     if _last_skip_log.get(k) != window:
-        _last_skip_log[k] = window
+        _lru_set(_last_skip_log, k, window, _GATE_STATE_MAX)
         logger.info(msg)
 
 
@@ -235,7 +250,7 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
     prev_time = _last_gate_skip_state.get(key)
     if prev_time is not None and (now - prev_time) < 30:
         return
-    _last_gate_skip_state[key] = now
+    _lru_set(_last_gate_skip_state, key, now, _GATE_STATE_MAX)
     _sprt_part = f" | {ctx['sprt']}" if ctx.get("sprt") and not gate_key.startswith("sprt") else ""
     logger.info(
         f"{_C.DIM}SKIP {ctx['direction']} {ctx['window_slug']} | "
@@ -652,14 +667,14 @@ async def _evaluate_signal_and_enter(
             _sprt_info = f"SPRT {_c:.0%} leaning {_f}"
         else:
             _sprt_info = f"SPRT {_c:.0%} ({_n} obs)"
-    _pending_eval_ctx[cid] = {
+    _lru_set(_pending_eval_ctx, cid, {
         "direction": _direction,
         "prob": signal.prob,
         "edge": signal.edge,
         "dist": dist,
         "window_slug": _slug_to_window(cid),
         "sprt": _sprt_info,
-    }
+    }, _PENDING_CTX_MAX)
     if _is_buy:
         if action_changed:
             last_eval_log_window = eval_window
@@ -1350,14 +1365,12 @@ async def _discover_contract_and_subscribe(market_scanner: Any, traded_contracts
         await clob_ws.subscribe(new_tokens)
         ws_subscribed_tokens.extend(new_tokens)
 
-    # Pre-warm tick_size AND fee_rate caches for both tokens so the entry path
-    # (main.py: asyncio.gather(fetch_fee_rate, fetch_tick_size)) hits cache and
-    # avoids paying ~30-100ms of HTTP latency right before order submit.
-    # Both have 1-hour TTL — well beyond the 5-minute window lifespan.
+    # Pre-warm tick_size cache for both tokens so the entry path hits cache
+    # and avoids paying ~30-100ms of HTTP latency right before order submit.
+    # 1-hour TTL — well beyond the 5-minute window lifespan.
     if http_client and market_scanner and current_tokens:
         await asyncio.gather(
             *[market_scanner.fetch_tick_size(t, http_client) for t in current_tokens],
-            *[market_scanner.fetch_fee_rate(t, http_client) for t in current_tokens],
             return_exceptions=True,
         )
 

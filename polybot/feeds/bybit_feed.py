@@ -19,6 +19,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from polybot.feeds._json import loads as _loads
+
 logger = logging.getLogger(__name__)
 
 WS_URL = "wss://stream.bybit.com/v5/public/linear"
@@ -132,7 +134,11 @@ class BybitFeed:
                         except asyncio.TimeoutError:
                             logger.warning("Bybit WS idle >120s, forcing reconnect")
                             break
-                        self._handle_message(json.loads(msg))
+                        try:
+                            data = _loads(msg)
+                        except ValueError:
+                            continue
+                        self._handle_message(data)
             except asyncio.CancelledError:
                 break
             except Exception as e:

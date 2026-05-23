@@ -9,6 +9,8 @@ import random
 import time
 from collections import deque
 from typing import Any
+import httpx
+from py_clob_client_v2.http_helpers import helpers as _clob_helpers
 from py_clob_client_v2.client import ClobClient
 from py_clob_client_v2.clob_types import (
     AssetType,
@@ -27,6 +29,20 @@ from polybot.execution.base import (
     record_warmup_outcome, record_dust_sweep_outcome,
 )
 from polybot.core.returns import log_return
+
+# Replace py-clob-client's module-global HTTP/2 singleton with one whose
+# keepalive_expiry outlives our 10s keepalive ping. Default httpx
+# keepalive_expiry is 5.0s, so the connection dies for ~5s out of every
+# 10s window and roughly half of order POSTs pay a fresh TLS handshake.
+_clob_helpers._http_client = httpx.Client(
+    http2=True,
+    timeout=20.0,
+    limits=httpx.Limits(
+        max_connections=10,
+        max_keepalive_connections=5,
+        keepalive_expiry=60.0,
+    ),
+)
 
 
 class OrphanPositionError(Exception):
@@ -104,22 +120,71 @@ from datetime import datetime as _dt, timezone as _tz
 
 _FILL_STATS_PATH = _Path("polybot/memory/fill_stats.json")
 _LATENCY_STATS_PATH = _Path("polybot/memory/latency_stats.json")
-_LATENCY_SAMPLES: deque[float] = deque(maxlen=200)
+_LATENCY_SAMPLES: deque[float] = deque(maxlen=200)        # total = sign + post
+_SIGN_LATENCY_SAMPLES: deque[float] = deque(maxlen=200)   # excludes presigned (sign=0)
+_POST_LATENCY_SAMPLES: deque[float] = deque(maxlen=200)
+# Bimodal-distribution detector for the POST leg. A TLS-handshake-on-half-of-requests
+# pattern shows up as a cluster in the 250–500ms bucket; with a warm connection
+# pool the bulk lands in 50–250ms.
+_POST_BUCKET_EDGES_MS: tuple[float, ...] = (50, 100, 250, 500, 1000)
 
-def _record_submit_latency(seconds: float) -> None:
+
+def _percentile(sorted_samples: list[float], pct: float) -> float:
+    """Nearest-rank percentile on an already-sorted list. ``pct`` is 0–100."""
+    if not sorted_samples:
+        return 0.0
+    idx = max(0, min(len(sorted_samples) - 1, int(len(sorted_samples) * pct / 100) - 1))
+    return sorted_samples[idx]
+
+
+def _bucket_counts(samples_ms: list[float]) -> dict[str, int]:
+    """Histogram counts for the POST-time distribution. Names are bucket upper-bound (ms)."""
+    edges = _POST_BUCKET_EDGES_MS
+    counts = {f"le_{int(e)}ms": 0 for e in edges}
+    counts[f"gt_{int(edges[-1])}ms"] = 0
+    for v_ms in samples_ms:
+        placed = False
+        for e in edges:
+            if v_ms <= e:
+                counts[f"le_{int(e)}ms"] += 1
+                placed = True
+                break
+        if not placed:
+            counts[f"gt_{int(edges[-1])}ms"] += 1
+    return counts
+
+
+def _record_submit_latency(total_secs: float, sign_secs: float, post_secs: float) -> None:
+    """Persist combined + per-leg latencies. ``sign_secs == 0`` for presigned SELL FOKs."""
     try:
-        _LATENCY_SAMPLES.append(seconds)
+        _LATENCY_SAMPLES.append(total_secs)
+        if sign_secs > 0:
+            _SIGN_LATENCY_SAMPLES.append(sign_secs)
+        _POST_LATENCY_SAMPLES.append(post_secs)
         if len(_LATENCY_SAMPLES) < 5:
             return
-        s = sorted(_LATENCY_SAMPLES)
-        n = len(s)
-        p50 = s[n // 2]
-        p99 = s[max(0, int(n * 0.99) - 1)]
+        total_sorted = sorted(_LATENCY_SAMPLES)
+        sign_sorted = sorted(_SIGN_LATENCY_SAMPLES)
+        post_sorted = sorted(_POST_LATENCY_SAMPLES)
+        post_ms = [v * 1000 for v in post_sorted]
         stats = {
-            "n": n,
-            "p50_ms": round(p50 * 1000, 1),
-            "p99_ms": round(p99 * 1000, 1),
-            "max_ms": round(s[-1] * 1000, 1),
+            "n": len(total_sorted),
+            "p50_ms": round(_percentile(total_sorted, 50) * 1000, 1),
+            "p99_ms": round(_percentile(total_sorted, 99) * 1000, 1),
+            "max_ms": round(total_sorted[-1] * 1000, 1),
+            "sign": {
+                "n": len(sign_sorted),
+                "p50_ms": round(_percentile(sign_sorted, 50) * 1000, 1) if sign_sorted else 0.0,
+                "p99_ms": round(_percentile(sign_sorted, 99) * 1000, 1) if sign_sorted else 0.0,
+            },
+            "post": {
+                "n": len(post_sorted),
+                "p25_ms": round(_percentile(post_sorted, 25) * 1000, 1),
+                "p50_ms": round(_percentile(post_sorted, 50) * 1000, 1),
+                "p75_ms": round(_percentile(post_sorted, 75) * 1000, 1),
+                "p99_ms": round(_percentile(post_sorted, 99) * 1000, 1),
+                "buckets": _bucket_counts(post_ms),
+            },
             "last_updated": _dt.now(_tz.utc).isoformat(),
         }
         _LATENCY_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1346,21 +1411,28 @@ class LiveTrader(BaseTrader):
             try:
                 if attempt == 1 and presigned is not None:
                     # POST the pre-signed order directly, skip the sign step.
-                    def _post_presigned() -> dict:
-                        return self.client.post_order(presigned, OrderType.FOK)
+                    def _post_presigned() -> tuple[dict, float, float]:
+                        _p0 = time.perf_counter()
+                        r = self.client.post_order(presigned, OrderType.FOK)
+                        return r, 0.0, time.perf_counter() - _p0
                     _lat_t0 = time.perf_counter()
-                    resp = await loop.run_in_executor(self._sign_executor, _post_presigned)
-                    _record_submit_latency(time.perf_counter() - _lat_t0)
+                    resp, sign_s, post_s = await loop.run_in_executor(
+                        self._sign_executor, _post_presigned)
+                    _record_submit_latency(time.perf_counter() - _lat_t0, sign_s, post_s)
                 else:
                     mo = MarketOrderArgs(token_id=token_id, amount=amount, side=side, price=expected_price)
-                    # Sign and post in one thread dispatch on the dedicated executor.
-                    def _sign_and_post(order_args: MarketOrderArgs) -> dict:
-                        return self.client.post_order(
-                            self.client.create_market_order(order_args), OrderType.FOK
-                        )
+                    # Sign and post in one thread dispatch on the dedicated executor,
+                    # with per-leg timing so the post-distribution shape is observable.
+                    def _sign_and_post(order_args: MarketOrderArgs) -> tuple[dict, float, float]:
+                        _s0 = time.perf_counter()
+                        signed = self.client.create_market_order(order_args)
+                        _s1 = time.perf_counter()
+                        r = self.client.post_order(signed, OrderType.FOK)
+                        return r, _s1 - _s0, time.perf_counter() - _s1
                     _lat_t0 = time.perf_counter()
-                    resp = await loop.run_in_executor(self._sign_executor, _sign_and_post, mo)
-                    _record_submit_latency(time.perf_counter() - _lat_t0)
+                    resp, sign_s, post_s = await loop.run_in_executor(
+                        self._sign_executor, _sign_and_post, mo)
+                    _record_submit_latency(time.perf_counter() - _lat_t0, sign_s, post_s)
 
                 if not resp.get("success"):
                     error_msg = resp.get("errorMsg", "unknown error")
