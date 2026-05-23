@@ -582,10 +582,15 @@ async def _evaluate_signal_and_enter(
         taker_component = (taker - 0.5) * 2 * 0.2 if trade_count >= 5 else 0.0
         spot_flow_signal = max(-1.0, min(1.0, cvd_component + taker_component))
 
-    # CVD acceleration (first derivative of buying pressure)
+    # CVD acceleration (first derivative of buying pressure). Raw value (BTC/sec)
+    # drives the deceleration gate; the normalized [-1, 1] version is what the
+    # consensus check sees, so its dead_zone is comparable to flow / spot_flow.
     cvd_accel_val = 0.0
+    cvd_accel_norm = 0.0
     if trades_feed and trades_feed.accumulator and trades_feed.accumulator.latest_age_s <= 30:
         cvd_accel_val = trades_feed.accumulator.get_cvd_acceleration(recent_s=15, baseline_s=45)
+        if _cvd_normalizer is not None:
+            cvd_accel_norm = math.tanh(_cvd_normalizer.normalize("cvd_accel", cvd_accel_val))
 
     # Liquidation pressure from Bybit OI changes
     liquidation_val = 0.0
@@ -610,9 +615,16 @@ async def _evaluate_signal_and_enter(
         liquidation_pressure=liquidation_val,
     )
 
-    # SPRT: feed the signal into the accumulator (used by SPRT side gate below)
+    # SPRT: feed the signal into the accumulator (used by SPRT side gate below).
+    # signal.prob is the probability of the CHOSEN side, so invert for BUY_NO to
+    # produce the prob_up that SPRT expects.
     if _sprt:
-        _sprt.update(signal.prob if signal.action != "SKIP" else 0.5)
+        if signal.action == "BUY_YES":
+            _sprt.update(signal.prob)
+        elif signal.action == "BUY_NO":
+            _sprt.update(1.0 - signal.prob)
+        else:
+            _sprt.update(0.5)
 
     # Continuous time multiplier: penalizes ATM trades late, barely penalizes high-conviction trades
     timing_cfg = config.get("entry_timing", {})
@@ -665,7 +677,7 @@ async def _evaluate_signal_and_enter(
 
     # --- ADVERSE SELECTION GATE ---
     if _adverse_monitor is not None:
-        adverse_threshold = config.get("signal", {}).get("adverse_selection_threshold", 0.55)
+        adverse_threshold = config["signal"]["adverse_selection_threshold"]
         adverse_rate = _adverse_monitor.get_adverse_rate(30.0)
         if adverse_rate > adverse_threshold:
             _record_skip("adverse_selection")
@@ -747,8 +759,8 @@ async def _evaluate_signal_and_enter(
     # or hasn't yet accumulated enough directional support (low confidence).
     # Placed after side/cid assignment so _log_skip_once and _ghost have proper context.
     if _sprt:
-        sprt_cfg = config.get("sprt", {})
-        min_sprt_conf = sprt_cfg.get("min_confidence", 0.20)
+        sprt_cfg = config["sprt"]
+        min_sprt_conf = sprt_cfg["min_confidence"]
         sprt_status = _sprt.get_status()
         sprt_conf = _sprt.get_confidence()
         sprt_obs = _sprt.observation_count()
@@ -757,10 +769,19 @@ async def _evaluate_signal_and_enter(
             _ghost("sprt_skip", signal, {})
             _emit_gate_skip(cid, f"sprt_skip_{side}", f"SPRT: signal too weak ({sprt_obs} obs)")
             return None, last_eval_log_window
+        # Minimum-evidence floor: after the 6-obs warmup, require at least
+        # `min_confidence` accumulated LLR before allowing entry.
+        if sprt_obs >= 6 and sprt_conf < min_sprt_conf:
+            _record_skip("sprt_low_confidence")
+            _ghost("sprt_low_confidence", signal, {})
+            _emit_gate_skip(cid, f"sprt_low_conf_{side}",
+                            f"SPRT confidence {sprt_conf:.1%} < {min_sprt_conf:.1%}")
+            return None, last_eval_log_window
         # Side mismatch: only veto when SPRT has built strong opposite evidence (60%+, 6+ obs)
-        if sprt_obs >= 6 and _sprt.get_confidence() > 0.60 and _sprt.favored_side() != side:
+        if sprt_obs >= 6 and sprt_conf > 0.60 and _sprt.favored_side() != side:
             _record_skip("sprt_side_mismatch")
-            _emit_gate_skip(cid, f"sprt_{side}", f"SPRT {_sprt.get_confidence():.0%} leaning {_sprt.favored_side()} (opposite side)")
+            _emit_gate_skip(cid, f"sprt_{side}",
+                            f"SPRT {sprt_conf:.0%} leaning {_sprt.favored_side()} (opposite side)")
             return None, last_eval_log_window
 
     # --- LAYER DISAGREEMENT GATE ---
@@ -822,7 +843,7 @@ async def _evaluate_signal_and_enter(
     consensus_signals = {
         "flow": flow_score,
         "spot_flow": spot_flow_signal,
-        "cvd_accel": cvd_accel_val,
+        "cvd_accel": cvd_accel_norm,
     }
     consensus_mult = compute_signal_consensus(
         consensus_signals, side,
@@ -2035,13 +2056,13 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     _sep = "═" * 60
     logger.info(
         f"\n{_sep}\n"
-        f"  PolyBot  [{_mode_label}]  |  Bankroll ${_bankroll:,.2f}\n"
-        f"  Today: {day_wins}W / {day_losses}L  |  Calibration: {_cal_str}\n"
+        f"  PolyBot  [{_mode_label}] | Bankroll ${_bankroll:,.2f}\n"
+        f"  Today: {day_wins}W / {day_losses}L | Calibration: {_cal_str}\n"
         f"  ─────────────────────────────────────────────────────\n"
-        f"  Price feeds:   Coinbase {_f(coinbase_feed)}  Binance {_f(binance_feed)}  Chainlink {_f(chainlink_feed)}\n"
+        f"  Price Feeds:   Coinbase {_f(coinbase_feed)}  Binance {_f(binance_feed)}  Chainlink {_f(chainlink_feed)}\n"
         f"  Signal feeds:  Bybit {_f(bybit_feed)}"
-        f"  CLOB WS {'ready' if clob_ws is not None else 'disconnected'}\n"
-        f"  Discord: {'connected' if alert_manager is not None else 'unavailable'}\n"
+        f"  CLOB WS {'Ready' if clob_ws is not None else 'Disconnected'}\n"
+        f"  Discord: {'Connected' if alert_manager is not None else 'Unavailable'}\n"
         f"{_sep}"
     )
 
@@ -2655,7 +2676,7 @@ async def main() -> None:
     _sprt = SPRTAccumulator(
         alpha=config.get("sprt", {}).get("alpha", 0.05),
         beta=config.get("sprt", {}).get("beta", 0.10),
-        min_interval_s=config.get("sprt", {}).get("observation_interval_s", 10.0),
+        min_interval_s=config.get("sprt", {}).get("observation_interval_s", 5.0),
     )
     regime_cfg = config.get("regime", {})
     _regime_detector = RegimeDetector(

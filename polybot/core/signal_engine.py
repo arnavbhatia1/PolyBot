@@ -345,9 +345,9 @@ class SignalEngine:
                         * (self.prev_margin_weight * self.logit_scale)
                         * l5_damp)
 
-        # L4 — indicator committee (regime-aware polarity per-group, sign-coherent)
+        # L4 — indicator committee (regime-aware polarity per-group, direction-coherent)
         if indicators:
-            self.last_momentum_score = self.compute_momentum(indicators, regime)
+            self.last_momentum_score = self.compute_momentum(indicators, regime, direction)
             logit_p += self.last_momentum_score * logit_momentum_w
         else:
             self.last_momentum_score = 0.0
@@ -375,11 +375,14 @@ class SignalEngine:
             prob_up = self.calibrator.calibrate(prob_up)
         return prob_up
 
-    def compute_momentum(self, indicators: dict[str, dict], regime_autocorr: float = 0.0) -> float:
-        """L4 aggregate. Polarity-split groups + smooth tanh regime conditioning so
-        a tick at autocorr=0.149 vs 0.151 doesn't flip three indicators' signs.
-        Mean-revert group (rsi/stoch/vwap) and trend-confirm group (macd/obv)
-        get separate multipliers from t = tanh(autocorr / threshold).
+    def compute_momentum(self, indicators: dict[str, dict], regime_autocorr: float = 0.0,
+                         direction: float = 0.0) -> float:
+        """L4 aggregate. Smooth tanh regime conditioning + direction-aware polarity.
+        In revert regime the mean-revert group (rsi/stoch/vwap) keeps its contrarian
+        sign; in trend regime its sign is replaced by ``direction`` (sign of last
+        1-min return) so it aligns with the trend rather than carrying a regime-
+        agnostic flip. Trend-confirm group (macd/obv) is dampened in revert regime
+        and full-power in trend regime.
         """
         w = self.weights
         def _s(name: str) -> float:
@@ -397,9 +400,12 @@ class SignalEngine:
         )
 
         t = math.tanh(regime_autocorr / self.regime_momentum_threshold) if self.regime_momentum_threshold > 0 else 0.0
-        mr_mult = -t + (1.0 - abs(t)) * _REGIME_MOMENTUM_DAMPEN
-        tc_mult = _REGIME_MOMENTUM_DAMPEN + (1.0 - _REGIME_MOMENTUM_DAMPEN) * max(0.0, t)
-        score = mr_mult * mean_revert + tc_mult * trend_confirm
+        t_pos = max(0.0, t)
+        contrarian_mult = (1.0 - t) * _REGIME_MOMENTUM_DAMPEN
+        tc_mult = _REGIME_MOMENTUM_DAMPEN + (1.0 - _REGIME_MOMENTUM_DAMPEN) * t_pos
+        score = (mean_revert * contrarian_mult
+                 + abs(mean_revert) * direction * t_pos
+                 + tc_mult * trend_confirm)
 
         return max(-1.0, min(1.0, score))
 

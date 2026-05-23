@@ -20,10 +20,10 @@ class SPRTAccumulator:
         Type II error rate (false negative). Default 0.10.
     min_interval_s : float
         Minimum seconds between observations. BTC ticks are autocorrelated
-        (rho ~0.2-0.4), so feeding every tick inflates evidence. Default 10.0.
+        (rho ~0.2-0.4), so feeding every tick inflates evidence. Default 5.0.
     """
 
-    def __init__(self, alpha: float = 0.05, beta: float = 0.10, min_interval_s: float = 10.0):
+    def __init__(self, alpha: float = 0.05, beta: float = 0.10, min_interval_s: float = 5.0):
         self.alpha = alpha
         self.beta = beta
         self.min_interval_s = min_interval_s
