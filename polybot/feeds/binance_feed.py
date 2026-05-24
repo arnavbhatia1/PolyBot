@@ -68,11 +68,6 @@ class CandleBuffer:
 
     @property
     def latest_age_s(self) -> float:
-        """Seconds since the most recent kline message arrived (partial OR
-        close). Returns +inf until the first message lands, so a never-started
-        feed flunks any threshold. This is what staleness checks should call —
-        see the comment in __init__ for why latest().timestamp is wrong.
-        """
         if self._last_received_at <= 0.0:
             return float("inf")
         return time.time() - self._last_received_at

@@ -142,8 +142,6 @@ _CONTRACT_RESOLUTION_TTL = 2.0  # faster polling when contract might be resolvin
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, hold to resolution
-_scalp_last_state: dict[int, tuple[float, float]] = {}  # position_id -> (last_model_prob, ts)
-_scalp_whipsaw_pending: dict[int, float] = {}  # position_id -> first_swing_ts
 
 # Previous window resolution margin for adjacent window momentum (D2)
 _prev_resolution_margin: float = 0.0
@@ -224,41 +222,21 @@ def _log_hold_heartbeat_stale(pos: dict[str, Any], live: dict[str, Any], reason:
         )
 
 
-def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) -> tuple[float, str]:
-    """Return the freshest available BTC price + its source label.
-
-    Each leg has a hard freshness gate based on local receipt time. The candle
-    leg uses CandleBuffer.latest_age_s — receipt time of the most recent
-    kline message (partial or close), NOT the candle's "t" field. The "t"
-    field only advances on minute boundaries, so the old check (cdl_age based
-    on timestamp < 5s) almost never fired and the candle leg was effectively
-    dead code. With the receipt-time check, the candle leg correctly fires
-    when partial klines have been arriving recently (every ~1s during a
-    normal minute). Returns (0.0, "stale") when every leg is stale — callers
-    must treat that as "skip this decision", not as a zero price.
-
-    Priority order:
-      1. Coinbase WS (<2s) — direct exchange ticker, sub-second tick stream
-      2. Binance aggTrade (<3s) — per-trade WS stream, also sub-second
-      3. Binance 1-min candle (<5s since last kline message) — the buffer's
-         latest.close is updated by every partial kline, so receipt time
-         within 5s means latest.close is current within the minute
-    """
+def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any,
+                       chainlink_feed: Any = None) -> tuple[float, str]:
+    """Freshest BTC/USD price. Strike is USD (Polymarket/Chainlink) so the
+    BTC source must be USD too — Binance is USDT (~0.13% premium) which
+    becomes a fake ~$100 spike on BTC@$76k whenever Coinbase hiccups."""
     if coinbase_feed:
         cb_age = coinbase_feed.state.age_seconds
         cb_price = coinbase_feed.state.price
         if cb_price > 0 and cb_age < 2:
             return cb_price, f"coinbase ({cb_age:.2f}s)"
-    if trades_feed and trades_feed.accumulator:
-        bt_age = trades_feed.accumulator.latest_age_s
-        bt_price = trades_feed.accumulator.latest_price
-        if bt_price > 0 and bt_age < 3:
-            return bt_price, f"binance_trades ({bt_age:.2f}s)"
-    latest_candle = binance_feed.buffer.latest() if binance_feed and binance_feed.buffer else None
-    if latest_candle:
-        cdl_age = binance_feed.buffer.latest_age_s
-        if cdl_age < 5:
-            return latest_candle.close, f"binance_candle ({cdl_age:.1f}s)"
+    if chainlink_feed:
+        cl_age = chainlink_feed.age_seconds
+        cl_price = chainlink_feed.price
+        if cl_price > 0 and cl_age < 30:
+            return cl_price, f"chainlink ({cl_age:.1f}s)"
     return 0.0, "stale"
 
 
@@ -591,18 +569,6 @@ async def _evaluate_signal_and_enter(
         agg_age = trades_feed.accumulator.latest_age_s
         if agg_age > 30:
             stale_feeds.append(f"binance_aggtrade={agg_age:.0f}s")
-    # Binance kline buffer drives L1 (ATR / vol scaling), L2 (regime autocorr),
-    # and L4 (indicator committee). Anything older than ~one missed candle
-    # interval means the WS stalled mid-window; a frozen buffer silently
-    # reuses the previous ATR/regime values until the gross 180s outer skip
-    # eventually fires. latest_age_s is local receipt time of the most recent
-    # kline message (partial OR close) — partials arrive ~once per second
-    # during a normal minute, so 45s of receipt silence already means the WS
-    # is wedged. (The old check used latest().timestamp which is the candle
-    # START time, advancing only at minute boundaries — that produced false
-    # positives at :00:30 / :05:00 when an x=true close event was dropped
-    # around market resolution and the buffer's latest stayed on the prior
-    # minute even though partials of the NEW minute were still arriving.)
     if binance_feed and binance_feed.buffer and len(binance_feed.buffer) > 0:
         kline_age = binance_feed.buffer.latest_age_s
         if kline_age > 45:
@@ -1255,9 +1221,10 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             logger.info(f"EVAL {_slug_to_window(cid)}: No strike yet — buffer has {buf_len} candles")
         return None, None, window_strikes, last_eval_log_window, "none"
 
-    # BTC price priority: Coinbase WS > Binance aggTrade > Binance 1-min candle
+    # BTC price priority: Coinbase WS (USD) → Chainlink (USD). Binance
+    # USDT sources removed from this path — see _fastest_btc_price docstring.
     trades_feed = kwargs.get("trades_feed")
-    btc_price, _price_source = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed)
+    btc_price, _price_source = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed, chainlink_feed)
     if btc_price <= 0:
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
@@ -1492,11 +1459,7 @@ async def _evaluate_and_exit_position(
     # re-attempt if the price recovered above the $1 CLOB minimum. The deferral
     # now happens at the actual scalp step (just before close_trade), so we keep
     # monitoring, keep emitting heartbeats, and resume scalping on recovery.
-    # BTC price priority: Coinbase WS > Binance aggTrade > Binance 1-min candle.
-    # Each leg is hard-gated in _fastest_btc_price; if all three are stale
-    # btc_now is 0 and we HOLD without scalping. Acting on a stale BTC
-    # produced the "moved against us (2%)" pathology mid-window.
-    btc_now, _btc_src = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed)
+    btc_now, _btc_src = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed, chainlink_feed)
     if btc_now <= 0:
         _log_hold_heartbeat_stale(pos, live, "no fresh BTC price")
         return day_wins, day_losses, day_fees, None
@@ -1615,13 +1578,6 @@ async def _evaluate_and_exit_position(
         prev_resolution_margin=_prev_resolution_margin,
         liquidation_pressure=hold_liquidation)
 
-    # Capture the previous tick's prob (used by the anti-whipsaw guard below),
-    # then immediately store this tick's value so the next call has it. Reading
-    # AND overwriting in one place keeps the state machine simple — the guard
-    # itself just compares model_prob to _prior_scalp_state.
-    _prior_scalp_state = _scalp_last_state.get(pos["id"])
-    _scalp_last_state[pos["id"]] = (model_prob, time.time())
-
     mid = pos["market_id"]
 
     if action == "HOLD":
@@ -1686,22 +1642,6 @@ async def _evaluate_and_exit_position(
     traded_market_id = None
     if action == "EXIT":
         sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
-
-        # Anti-whipsaw confirmation
-        if _prior_scalp_state is not None:
-            _prior_prob, _prior_ts = _prior_scalp_state
-            _age = time.time() - _prior_ts
-            _swing = model_prob - _prior_prob
-            if _age < 10.0 and _swing < -0.20 and pos["id"] not in _scalp_whipsaw_pending:
-                _scalp_whipsaw_pending[pos["id"]] = time.time()
-                logger.info(
-                    f"  {_C.YELLOW}SCALP DEFERRED (whipsaw){_C.RESET} {pos['side']}  "
-                    f"{_fmt_secs(live['seconds_remaining'])}  |  "
-                    f"prob {_prior_prob:.0%}→{model_prob:.0%} ({_swing:+.0%}) in "
-                    f"{_age:.1f}s [{_btc_src}] — awaiting confirmation tick"
-                )
-                return day_wins, day_losses, day_fees, None
-        _scalp_whipsaw_pending.pop(pos["id"], None)
 
         # PRICE VERIFICATION: guard against the CLOB WS carrying a phantom best_bid
         # (timestamp refreshed by an unrelated price_change event, stale price value).
