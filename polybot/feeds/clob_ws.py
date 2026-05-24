@@ -188,7 +188,7 @@ class ClobWebSocket:
                 if self._heartbeat_task:
                     self._heartbeat_task.cancel()
                 if not self._closing:
-                    logger.warning(f"CLOB WS disconnected: {e} — reconnecting in {backoff}s")
+                    logger.debug(f"CLOB WS disconnected: {e} — reconnecting in {backoff}s")
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, RECONNECT_MAX)
 

@@ -540,8 +540,8 @@ class SignalEngine:
 
         if holding_edge <= effective_threshold:
             return ("EXIT", model_prob, holding_edge,
-                    f"Market price ({market_price_for_side:.2f}) has moved against us "
-                    f"(model sees {model_prob:.0%})")
+                    f"Market ({market_price_for_side:.2f}) has moved against us "
+                    f"({model_prob:.0%})")
         return ("HOLD", model_prob, holding_edge,
                 f"Hold {side}: model={model_prob:.0%} mkt={market_price_for_side:.0%} "
                 f"edge={holding_edge:+.0%}")
