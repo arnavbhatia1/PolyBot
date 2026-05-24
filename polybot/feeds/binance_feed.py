@@ -37,11 +37,8 @@ class CandleBuffer:
         self._highs_cache: np.ndarray | None = None
         self._lows_cache: np.ndarray | None = None
         self._volumes_cache: np.ndarray | None = None
-        # Monotonic version — bumps on every mutation. Lets downstream caches
-        # (IndicatorEngine.compute_all) invalidate correctly. Keying off
-        # latest.timestamp would miss update_current mutations since the
-        # in-progress candle keeps the same timestamp until it closes.
         self.version: int = 0
+        self._last_received_at: float = 0.0
 
     def __len__(self) -> int:
         return len(self._candles)
@@ -56,6 +53,7 @@ class CandleBuffer:
         self._candles.append(candle)
         self._invalidate_caches()
         self.version += 1
+        self._last_received_at = time.time()
 
     def update_current(self, close: float, high: float, low: float, volume: float) -> None:
         if self._candles:
@@ -66,6 +64,18 @@ class CandleBuffer:
             c.volume = volume
             self._invalidate_caches()
             self.version += 1
+            self._last_received_at = time.time()
+
+    @property
+    def latest_age_s(self) -> float:
+        """Seconds since the most recent kline message arrived (partial OR
+        close). Returns +inf until the first message lands, so a never-started
+        feed flunks any threshold. This is what staleness checks should call —
+        see the comment in __init__ for why latest().timestamp is wrong.
+        """
+        if self._last_received_at <= 0.0:
+            return float("inf")
+        return time.time() - self._last_received_at
 
     def latest(self) -> Candle | None:
         return self._candles[-1] if self._candles else None
@@ -181,7 +191,8 @@ class BinanceFeed:
             timestamp=int(k["t"]), open=float(k["o"]), high=float(k["h"]),
             low=float(k["l"]), close=float(k["c"]), volume=float(k["v"]),
         )
-        if k.get("x", False):
+        latest = self.buffer.latest()
+        if latest is None or latest.timestamp != candle.timestamp:
             self.buffer.add(candle)
         else:
             self.buffer.update_current(close=candle.close, high=candle.high,

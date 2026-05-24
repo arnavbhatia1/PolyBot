@@ -142,6 +142,8 @@ _CONTRACT_RESOLUTION_TTL = 2.0  # faster polling when contract might be resolvin
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, hold to resolution
+_scalp_last_state: dict[int, tuple[float, float]] = {}  # position_id -> (last_model_prob, ts)
+_scalp_whipsaw_pending: dict[int, float] = {}  # position_id -> first_swing_ts
 
 # Previous window resolution margin for adjacent window momentum (D2)
 _prev_resolution_margin: float = 0.0
@@ -225,19 +227,22 @@ def _log_hold_heartbeat_stale(pos: dict[str, Any], live: dict[str, Any], reason:
 def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) -> tuple[float, str]:
     """Return the freshest available BTC price + its source label.
 
-    Each leg has a hard freshness gate; the 1-min candle is rejected unless
-    its close timestamp is within 5s of now. Previously the candle leg had no
-    age check at all and could return a 60s-stale close as if it were fresh,
-    which drove the "moved against us (2%)" pathology where model_prob
-    collapsed to its logit floor mid-window. Returns (0.0, "stale") when
-    every leg is stale — callers must treat that as "skip this decision",
-    not as a zero price.
+    Each leg has a hard freshness gate based on local receipt time. The candle
+    leg uses CandleBuffer.latest_age_s — receipt time of the most recent
+    kline message (partial or close), NOT the candle's "t" field. The "t"
+    field only advances on minute boundaries, so the old check (cdl_age based
+    on timestamp < 5s) almost never fired and the candle leg was effectively
+    dead code. With the receipt-time check, the candle leg correctly fires
+    when partial klines have been arriving recently (every ~1s during a
+    normal minute). Returns (0.0, "stale") when every leg is stale — callers
+    must treat that as "skip this decision", not as a zero price.
 
     Priority order:
       1. Coinbase WS (<2s) — direct exchange ticker, sub-second tick stream
       2. Binance aggTrade (<3s) — per-trade WS stream, also sub-second
-      3. Binance 1-min candle close (<5s since close ts) — only the candle
-         that just closed; rejects anything that's already mid-window-stale
+      3. Binance 1-min candle (<5s since last kline message) — the buffer's
+         latest.close is updated by every partial kline, so receipt time
+         within 5s means latest.close is current within the minute
     """
     if coinbase_feed:
         cb_age = coinbase_feed.state.age_seconds
@@ -251,7 +256,7 @@ def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) 
             return bt_price, f"binance_trades ({bt_age:.2f}s)"
     latest_candle = binance_feed.buffer.latest() if binance_feed and binance_feed.buffer else None
     if latest_candle:
-        cdl_age = (time.time() * 1000 - latest_candle.timestamp) / 1000
+        cdl_age = binance_feed.buffer.latest_age_s
         if cdl_age < 5:
             return latest_candle.close, f"binance_candle ({cdl_age:.1f}s)"
     return 0.0, "stale"
@@ -590,13 +595,18 @@ async def _evaluate_signal_and_enter(
     # and L4 (indicator committee). Anything older than ~one missed candle
     # interval means the WS stalled mid-window; a frozen buffer silently
     # reuses the previous ATR/regime values until the gross 180s outer skip
-    # eventually fires. 90s catches it ~one full candle earlier.
-    if binance_feed and binance_feed.buffer:
-        _latest = binance_feed.buffer.latest()
-        if _latest is not None:
-            kline_age = (time.time() * 1000 - _latest.timestamp) / 1000
-            if kline_age > 90:
-                stale_feeds.append(f"binance_kline={kline_age:.0f}s")
+    # eventually fires. latest_age_s is local receipt time of the most recent
+    # kline message (partial OR close) — partials arrive ~once per second
+    # during a normal minute, so 45s of receipt silence already means the WS
+    # is wedged. (The old check used latest().timestamp which is the candle
+    # START time, advancing only at minute boundaries — that produced false
+    # positives at :00:30 / :05:00 when an x=true close event was dropped
+    # around market resolution and the buffer's latest stayed on the prior
+    # minute even though partials of the NEW minute were still arriving.)
+    if binance_feed and binance_feed.buffer and len(binance_feed.buffer) > 0:
+        kline_age = binance_feed.buffer.latest_age_s
+        if kline_age > 45:
+            stale_feeds.append(f"binance_kline={kline_age:.0f}s")
     if stale_feeds:
         _record_skip("stale_feed")
         _log_skip_once(cid, f"stale_{cid}", f"SKIP: stale feeds — {', '.join(stale_feeds)}")
@@ -1255,7 +1265,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
         return None, None, window_strikes, last_eval_log_window, "none"
 
     # Skip if candle data is stale (WebSocket may have disconnected)
-    latest_candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
+    latest_candle_age = binance_feed.buffer.latest_age_s if binance_feed and binance_feed.buffer else float("inf")
     if latest_candle_age > 180:
         logger.warning(f"Stale Binance candle ({latest_candle_age:.0f}s old) — skipping entry")
         return None, None, window_strikes, last_eval_log_window, "none"
@@ -1511,8 +1521,8 @@ async def _evaluate_and_exit_position(
         _agg_age = trades_feed.accumulator.latest_age_s
         if _agg_age > 30:
             _stale.append(f"binance_aggtrade={_agg_age:.0f}s")
-    _candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
-    if _candle_age > 90:
+    _candle_age = binance_feed.buffer.latest_age_s if binance_feed and binance_feed.buffer else float("inf")
+    if _candle_age > 45:
         _stale.append(f"binance_kline={_candle_age:.0f}s")
     if _stale:
         _log_hold_heartbeat_stale(pos, live, "stale feeds — " + ", ".join(_stale))
@@ -1545,7 +1555,7 @@ async def _evaluate_and_exit_position(
             cl_str = f"  cl ${chainlink_feed.price:,.0f}" if chainlink_feed and chainlink_feed.price > 0 else ""
             logger.info(
                 f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
-                f"BTC ${btc_now:,.0f}{cl_str}  (no fresh bid)"
+                f"BTC ${btc_now:,.0f} [{_btc_src}]{cl_str}  (no fresh bid)"
             )
         return day_wins, day_losses, day_fees, None
 
@@ -1605,6 +1615,13 @@ async def _evaluate_and_exit_position(
         prev_resolution_margin=_prev_resolution_margin,
         liquidation_pressure=hold_liquidation)
 
+    # Capture the previous tick's prob (used by the anti-whipsaw guard below),
+    # then immediately store this tick's value so the next call has it. Reading
+    # AND overwriting in one place keeps the state machine simple — the guard
+    # itself just compares model_prob to _prior_scalp_state.
+    _prior_scalp_state = _scalp_last_state.get(pos["id"])
+    _scalp_last_state[pos["id"]] = (model_prob, time.time())
+
     mid = pos["market_id"]
 
     if action == "HOLD":
@@ -1632,7 +1649,7 @@ async def _evaluate_and_exit_position(
             logger.info(
                 f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
                 f"prob {model_prob:.0%}  {edge_color}edge {edge_str}{_C.RESET}  |  "
-                f"BTC ${btc_now:,.0f}{cl_str}  mkt {market_price:.2f}")
+                f"BTC ${btc_now:,.0f} [{_btc_src}]{cl_str}  mkt {market_price:.2f}")
         if counterfactual_tracker:
             _cf_atr = indicators.get("atr", {}).get("atr", 1.0) or 1.0
             counterfactual_tracker.track_hold_moment(pos["market_id"], pos, {
@@ -1669,6 +1686,22 @@ async def _evaluate_and_exit_position(
     traded_market_id = None
     if action == "EXIT":
         sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
+
+        # Anti-whipsaw confirmation
+        if _prior_scalp_state is not None:
+            _prior_prob, _prior_ts = _prior_scalp_state
+            _age = time.time() - _prior_ts
+            _swing = model_prob - _prior_prob
+            if _age < 10.0 and _swing < -0.20 and pos["id"] not in _scalp_whipsaw_pending:
+                _scalp_whipsaw_pending[pos["id"]] = time.time()
+                logger.info(
+                    f"  {_C.YELLOW}SCALP DEFERRED (whipsaw){_C.RESET} {pos['side']}  "
+                    f"{_fmt_secs(live['seconds_remaining'])}  |  "
+                    f"prob {_prior_prob:.0%}→{model_prob:.0%} ({_swing:+.0%}) in "
+                    f"{_age:.1f}s [{_btc_src}] — awaiting confirmation tick"
+                )
+                return day_wins, day_losses, day_fees, None
+        _scalp_whipsaw_pending.pop(pos["id"], None)
 
         # PRICE VERIFICATION: guard against the CLOB WS carrying a phantom best_bid
         # (timestamp refreshed by an unrelated price_change event, stale price value).
@@ -1750,7 +1783,7 @@ async def _evaluate_and_exit_position(
         logger.info(
             f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
             f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
-            f"BTC ${btc_now:,.0f}  mkt {market_price:.2f}"
+            f"BTC ${btc_now:,.0f} [{_btc_src}]  mkt {market_price:.2f}"
         )
 
         result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token, position=pos)

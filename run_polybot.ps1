@@ -11,7 +11,6 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  PolyBot Auto-Restart Loop" -ForegroundColor Cyan
 Write-Host "  Trading: 12:01 AM - 11:30 PM ET" -ForegroundColor Cyan
 Write-Host "  Pipeline: 11:45 PM ET" -ForegroundColor Cyan
-Write-Host "  Bot exits after pipeline, commits, pushes, restarts" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 while ($true) {
