@@ -712,3 +712,25 @@
 - None
 
 **Reasoning:** Local recommender
+
+## 2026-05-24T03:49:10.823143+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - logit_scale=4.25 (exploratory up step)
+  - min_model_probability=0.55 (exploratory down step)
+  - min_edge=0.045 (exploratory up step)
+  - min_kelly=0.008 (exploratory down step)
+  - l5_regime_damp_cap=0.75 (exploratory up step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
