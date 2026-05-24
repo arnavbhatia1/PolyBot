@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     """Human-readable nightly pipeline result — logged and sent to Discord."""
+    from polybot.agents.weight_optimizer import ADOPTION_Z_FLOOR
     wi: dict[str, Any] = pipeline_info.get("weights", {}) or {}
     calibration: dict[str, Any] = pipeline_info.get("calibration", {}) or {}
     source = pipeline_info.get("source", "?")
@@ -29,12 +30,13 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
 
     baseline = wi.get("old_sharpe", 0.0) or 0.0
     n_baseline = wi.get("n_baseline_trades", 0) or 0
-    abs_floor = 0.010
     per_change = wi.get("per_change", []) or []
+    # Mirror the actual gate (z=ADOPTION_Z_FLOOR × JK_SE) — no static abs floor,
+    # matching weight_optimizer.should_adopt.
     se_val: float | None = None
     if n_baseline >= 2:
         se_val = math.sqrt((1.0 + 0.5 * baseline * baseline) / n_baseline)
-    dyn_floor = max(abs_floor, 0.25 * se_val) if se_val is not None else abs_floor
+    dyn_floor = ADOPTION_Z_FLOOR * se_val if se_val is not None else 0.0
 
     manual_obs: list[dict[str, Any]] = pipeline_info.get("manual_observations", []) or []
     adopted = [c for c in per_change if c.get("decision") == "adopted"]
@@ -179,8 +181,15 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     lines.append(SEP_HEAVY)
     return "\n".join(lines)
 
-RECENCY_DECAY_PER_DAY = 0.94
-HOLDOUT_DAYS = 3
+from polybot.agents.pipeline_analytics import (
+    RECENCY_DECAY_PER_DAY,
+    weighted_sharpe_from_returns as _weighted_sharpe,
+)
+# 7-day holdout matches the calibrator's 7-day fit pool — cal_train sits inside
+# the holdout window. The walk-forward folds operate on days -60..-7, fully
+# separated from the calibrator's training data so the candidate's last-fold
+# Sharpe is not inflated by a calibrator that already saw those trades.
+HOLDOUT_DAYS = 7
 HOLDOUT_MIN_TRADES = 30
 
 class AgentScheduler:
@@ -222,6 +231,18 @@ class AgentScheduler:
         # Inject claude_client into ta_evolver if not already set
         if claude_client and not getattr(self.ta_evolver, 'claude_client', None):
             self.ta_evolver.claude_client = claude_client
+
+    def _invalidate_baseline_cache(self) -> None:
+        """Drop the cached baseline Sharpe / JK_SE / N. Call after anything that
+        invalidates the baseline backtest — currently only a calibrator swap,
+        since fold backtests use ``self.signal_engine.calibrator`` and a new
+        calibrator changes every fold's per-trade prob. The optimizer-stage
+        cache check (``_run_weight_optimizer``) sees the None and recomputes
+        before the per-change z-tests.
+        """
+        self._baseline_kelly_sharpe = None
+        self._baseline_n_trades = None
+        self._baseline_jk_se = None
 
     async def _run_bias_detector(self, outcomes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         if outcomes is None:
@@ -284,7 +305,16 @@ class AgentScheduler:
             except Exception as e:
                 logger.debug(f"Ghost load failed (non-critical): {e}")
         combined = real + ghost_outcomes
-        combined.sort(key=lambda x: str(x.get("exit_timestamp") or x.get("timestamp") or ""))
+        def _sort_key(o: dict) -> float:
+            # Parse to a float timestamp so mixed ISO-8601 formats (e.g., one
+            # record missing a trailing Z) still sort chronologically. Failed
+            # parses sort to the front (treated as oldest).
+            s = str(o.get("exit_timestamp") or o.get("timestamp") or "")
+            try:
+                return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+            except (ValueError, TypeError):
+                return 0.0
+        combined.sort(key=_sort_key)
         return combined
 
     @staticmethod
@@ -311,24 +341,30 @@ class AgentScheduler:
         because the values are only set inside `_run_weight_optimizer` which runs AFTER
         the TA evolver (and thus after context is built). Called once per pipeline cycle.
         """
-        from polybot.agents.weight_optimizer import _sharpe as _s, _lag1_autocorr as _ac
+        from polybot.agents.weight_optimizer import _lag1_autocorr as _ac
         if not all_outcomes or len(all_outcomes) < 10:
             return
         n = len(all_outcomes)
         fold_boundaries = [0.60, 0.70, 0.80, 0.90, 1.0]
         all_returns: list[float] = []
+        all_weights: list[float] = []
         for i in range(len(fold_boundaries) - 1):
             start_idx = int(n * fold_boundaries[i])
             end_idx = int(n * fold_boundaries[i + 1])
             fold_test = all_outcomes[start_idx:end_idx]
             if len(fold_test) < 3:
                 continue
-            all_returns.extend(self._backtest_recommendations({}, fold_test))
+            r, w = self._backtest_recommendations({}, fold_test)
+            all_returns.extend(r)
+            all_weights.extend(w)
         if not all_returns:
             return
-        current_sharpe = _s(all_returns)
+        current_sharpe = _weighted_sharpe(all_returns, all_weights)
         self._baseline_kelly_sharpe = round(current_sharpe, 4)
         n_base = len(all_returns)
+        # JK_SE uses the weighted Sharpe; autocorr factor operates on the
+        # unweighted realized returns (autocorr is what we're correcting for,
+        # not the recency weighting).
         base_se = math.sqrt((1.0 + 0.5 * current_sharpe ** 2) / n_base)
         if n_base >= 3:
             rho = _ac(all_returns)
@@ -592,10 +628,13 @@ class AgentScheduler:
         realism_factor = 1.0
         if self._config:
             realism_factor = float(self._config.get("execution", {}).get("backtest_realism_factor", 1.0))
-        # Recency: RECENCY_DECAY_PER_DAY per day. Applied symmetrically to
-        # baseline and candidate, so relative Sharpe comparisons remain valid.
+        # Recency weights are returned alongside returns so downstream code can
+        # compute a proper weighted Sharpe (mean and variance both weighted),
+        # rather than multiplying the weight into each return and biasing
+        # variance with the weights' own dispersion.
         now_ts = datetime.now(timezone.utc).timestamp()
         returns: list[float] = []
+        sample_weights: list[float] = []
 
         for o in outcomes:
             snap = o.get("indicator_snapshot", {})
@@ -806,7 +845,7 @@ class AgentScheduler:
             if kelly_frac < min_kelly:
                 continue
 
-            # Recency weight: recent trades count more.
+            # Recency weight: parallel to returns, applied by weighted_sharpe.
             ts_str = o.get("exit_timestamp", o.get("timestamp", ""))
             try:
                 trade_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp() if ts_str else now_ts
@@ -814,9 +853,10 @@ class AgentScheduler:
             except Exception:
                 days_ago = 0.0
             recency_w = RECENCY_DECAY_PER_DAY ** days_ago
-            returns.append(kelly_frac * o.get("gain_pct", 0.0) * realism_factor * recency_w)
+            returns.append(kelly_frac * o.get("gain_pct", 0.0) * realism_factor)
+            sample_weights.append(recency_w)
 
-        return returns
+        return returns, sample_weights
 
     def _config_for_helper(self, recommendations: dict[str, Any] | None = None) -> dict[str, Any]:
         """Resolve config for `_kelly_bankroll_returns` — recommendation first, live engine fallback.
@@ -852,10 +892,12 @@ class AgentScheduler:
         return cfg
 
     def _backtest_recommendations(self, recommendations: dict[str, Any],
-                                    outcomes: list[dict[str, Any]]) -> list[float]:
-        """Kelly-sized portfolio returns under candidate recommendations.
+                                    outcomes: list[dict[str, Any]]) -> tuple[list[float], list[float]]:
+        """Kelly-sized portfolio returns + parallel recency weights.
 
-        Uses ``self.signal_engine.calibrator`` — which is the *just-adopted* Isotonic for
+        Returns ``(returns, sample_weights)`` — callers compute weighted Sharpe via
+        ``weighted_sharpe_from_returns(returns, weights)``. Uses
+        ``self.signal_engine.calibrator`` — which is the *just-adopted* Isotonic for
         this cycle, since Isotonic fitting + adoption runs earlier in the pipeline (see
         `run_daily_pipeline`). So calibration is part of the optimization loop: every
         cycle, isotonic is re-fit on the train split and adopted if it improves
@@ -899,11 +941,10 @@ class AgentScheduler:
 
         Builds a synthetic recommendations dict that only contains the single change,
         so _config_for_helper applies that change while all other params remain at
-        their live engine values. Returns {"returns": [...], "sharpe": float,
-        "candidate_trades": int}.
+        their live engine values. Returns {"returns": [...], "weights": [...],
+        "sharpe": float, "candidate_trades": int}. Sharpe is the proper weighted
+        Sharpe from ``weighted_sharpe_from_returns``.
         """
-        from polybot.agents.weight_optimizer import _sharpe as _s
-
         param = change.get("param", "")
         value = change.get("value")
 
@@ -917,16 +958,17 @@ class AgentScheduler:
                 except (TypeError, ValueError):
                     pass
 
-        # Build a thin recommendations dict for _config_for_helper
+        # Build a thin recommendations dict for _config_for_helper. Empty
+        # ``change`` (no param) is the explicit baseline-backtest path used by
+        # _check_regime_adoption — silent fall-through, no warning.
         single_rec: dict[str, Any] = {}
         from polybot.config.param_registry import TUNABLE_NAMES
         if param == "weights":
             single_rec["recommended_weights"] = value
         elif param in TUNABLE_NAMES:
             single_rec[f"recommended_{param}"] = value
-        else:
-            # Param not plumbed through _config_for_helper — backtest runs with
-            # baseline config unchanged and cannot show improvement.
+        elif param:
+            # Non-empty unknown param — real misconfiguration worth warning about.
             logger.warning(
                 f"Backtest for '{param}' falls back to baseline config (param not in TUNABLE_NAMES). "
                 f"It cannot show improvement and will always be rejected by the z-test."
@@ -935,7 +977,7 @@ class AgentScheduler:
         cfg = self._config_for_helper(single_rec)
         calibrator = self.signal_engine.calibrator if self.signal_engine else None
 
-        returns = self._kelly_bankroll_returns(
+        returns, weights = self._kelly_bankroll_returns(
             outcomes=outcomes,
             recommended_weights=cfg["weights"],
             momentum_weight=cfg["momentum_weight"],
@@ -960,7 +1002,12 @@ class AgentScheduler:
             atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],
             derived_weights=cfg["derived_weights"],
         )
-        return {"returns": returns, "sharpe": _s(returns), "candidate_trades": len(returns)}
+        return {
+            "returns": returns,
+            "weights": weights,
+            "sharpe": _weighted_sharpe(returns, weights),
+            "candidate_trades": len(returns),
+        }
 
     def _check_regime_adoption(
         self,
@@ -977,8 +1024,6 @@ class AgentScheduler:
 
         Skipped (returns True) when fewer than 2 regimes have ≥ 20 qualifying trades.
         """
-        from polybot.agents.weight_optimizer import _sharpe as _s
-
         # Segment outcomes by regime
         regime_buckets: dict[str, list] = {"trending": [], "reverting": [], "neutral": []}
         for o in all_outcomes:
@@ -1040,8 +1085,6 @@ class AgentScheduler:
 
         Returns info dict with per-change decision details.
         """
-        from polybot.agents.weight_optimizer import _sharpe
-
         info: dict[str, Any] = {"decision": "skipped", "reason": "", "per_change": []}
         if all_outcomes is None:
             all_outcomes = self.outcome_reviewer.load_all_outcomes()
@@ -1079,6 +1122,7 @@ class AgentScheduler:
             # win-rate per candidate is captured per-change below.
         else:
             all_current_returns: list[float] = []
+            all_current_weights: list[float] = []
             baseline_request: dict[str, Any] = {}
             for i in range(len(fold_boundaries) - 1):
                 start_idx = int(n * fold_boundaries[i])
@@ -1086,9 +1130,10 @@ class AgentScheduler:
                 fold_test = all_outcomes[start_idx:end_idx]
                 if len(fold_test) < 3:
                     continue
-                current_fold_returns = self._backtest_recommendations(baseline_request, fold_test)
-                all_current_returns.extend(current_fold_returns)
-            current_sharpe = _sharpe(all_current_returns) if all_current_returns else 0.0
+                fr, fw = self._backtest_recommendations(baseline_request, fold_test)
+                all_current_returns.extend(fr)
+                all_current_weights.extend(fw)
+            current_sharpe = _weighted_sharpe(all_current_returns, all_current_weights) if all_current_returns else 0.0
             info["old_sharpe"] = round(current_sharpe, 4)
             info["n_baseline_trades"] = len(all_current_returns)
 
@@ -1127,6 +1172,7 @@ class AgentScheduler:
 
             fold_sharpes: list[float] = []
             all_candidate_returns: list[float] = []
+            all_candidate_weights: list[float] = []
 
             for i in range(len(fold_boundaries) - 1):
                 start_idx = int(n * fold_boundaries[i])
@@ -1136,10 +1182,12 @@ class AgentScheduler:
                     continue
                 fold_result = self._backtest_single_change(change, fold_test)
                 fold_returns = fold_result["returns"]
+                fold_weights = fold_result["weights"]
                 if len(fold_returns) < 3:
                     continue
-                fold_sharpes.append(_sharpe(fold_returns))
+                fold_sharpes.append(_weighted_sharpe(fold_returns, fold_weights))
                 all_candidate_returns.extend(fold_returns)
+                all_candidate_weights.extend(fold_weights)
 
             if len(all_candidate_returns) < 10:
                 msg = f"only {len(all_candidate_returns)} hypothetical trades (need 10)"
@@ -1148,7 +1196,7 @@ class AgentScheduler:
                 info["per_change"].append(change_info)
                 continue
 
-            candidate_sharpe = _sharpe(all_candidate_returns)
+            candidate_sharpe = _weighted_sharpe(all_candidate_returns, all_candidate_weights)
 
             # Fold consistency: reject if the worst fold collapses below -0.10 Sharpe.
             worst_fold = min(fold_sharpes) if fold_sharpes else 0.0
@@ -1188,20 +1236,26 @@ class AgentScheduler:
                     adopt_reason += f" | {regime_reason}"
 
             # Holdout confirmation: the last HOLDOUT_DAYS of trades were excluded from
-            # all folds above. Reject if the candidate underperforms baseline there.
+            # all folds above. Requires candidate to beat baseline by at least
+            # HOLDOUT_ADOPTION_MARGIN — direction-only would pass ~50% of noise
+            # candidates on the small n; the small margin filters the worst.
+            HOLDOUT_ADOPTION_MARGIN = 0.02
             if adopt and holdout_outcomes and len(holdout_outcomes) >= HOLDOUT_MIN_TRADES:
-                base_h = self._backtest_recommendations({}, holdout_outcomes)
-                cand_h = self._backtest_single_change(change, holdout_outcomes)["returns"]
-                base_sh = _sharpe(base_h) if base_h else 0.0
-                cand_sh = _sharpe(cand_h) if cand_h else 0.0
+                base_h, base_h_w = self._backtest_recommendations({}, holdout_outcomes)
+                cand_result_h = self._backtest_single_change(change, holdout_outcomes)
+                cand_h = cand_result_h["returns"]
+                cand_h_w = cand_result_h["weights"]
+                base_sh = _weighted_sharpe(base_h, base_h_w) if base_h else 0.0
+                cand_sh = _weighted_sharpe(cand_h, cand_h_w) if cand_h else 0.0
                 change_info["holdout_baseline_sharpe"] = round(base_sh, 4)
                 change_info["holdout_candidate_sharpe"] = round(cand_sh, 4)
-                if cand_sh < base_sh:
+                if cand_sh < base_sh + HOLDOUT_ADOPTION_MARGIN:
                     adopt = False
                     adopt_reason = (f"holdout gate: candidate {cand_sh:+.3f} < baseline "
-                                    f"{base_sh:+.3f} on last {HOLDOUT_DAYS}d (n={len(cand_h)})")
+                                    f"{base_sh:+.3f} + {HOLDOUT_ADOPTION_MARGIN:.2f} "
+                                    f"on last {HOLDOUT_DAYS}d (n={len(cand_h)})")
                 else:
-                    adopt_reason += f" | holdout {cand_sh:+.3f} ≥ {base_sh:+.3f}"
+                    adopt_reason += f" | holdout {cand_sh:+.3f} ≥ {base_sh + HOLDOUT_ADOPTION_MARGIN:+.3f}"
 
             if adopt:
                 change_info.update({"decision": "adopted", "reason": adopt_reason})
@@ -1288,7 +1342,7 @@ class AgentScheduler:
                     # Using all_outcomes here inflated combined Sharpe (includes training data)
                     # making the 0.7 threshold almost never trigger.
                     _val_fold = all_outcomes[int(len(all_outcomes) * 0.60):]
-                    combined_returns = self._kelly_bankroll_returns(
+                    combined_returns, combined_weights = self._kelly_bankroll_returns(
                         outcomes=_val_fold,
                         recommended_weights=cfg_combined["weights"],
                         momentum_weight=cfg_combined["momentum_weight"],
@@ -1313,17 +1367,26 @@ class AgentScheduler:
                         atr_regime_shift_threshold=cfg_combined["atr_regime_shift_threshold"],
                         derived_weights=cfg_combined["derived_weights"],
                     )
-                    combined_sharpe = _sharpe(combined_returns) if combined_returns else 0.0
+                    combined_sharpe = _weighted_sharpe(combined_returns, combined_weights) if combined_returns else 0.0
                     combined_delta = combined_sharpe - current_sharpe
+
+                    # Interaction coefficient scales with the adopted-set size.
+                    # 0.7 is right for pairs (3-way interactions rare with 2
+                    # changes); 4-5 changes compound interactions and need a
+                    # tighter floor or the back-out misses real degradation.
+                    # Ramp +0.05 per change above 2, capped at 0.9 so a perfectly
+                    # additive set with measurement noise can still survive.
+                    _backout_coef = min(0.9, 0.7 + 0.05 * max(0, len(adopted_changes) - 2))
 
                     if not info.get("combined_sharpe"):
                         info["combined_sharpe"] = round(combined_sharpe, 4)
                         info["combined_delta"] = round(combined_delta, 4)
                         info["sum_individual_delta"] = round(sum_individual_delta, 4)
+                        info["backout_coef"] = round(_backout_coef, 3)
 
                     # Stop if no interaction OR only one change left to keep.
                     if not (sum_individual_delta > 0
-                            and combined_delta < sum_individual_delta * 0.7
+                            and combined_delta < sum_individual_delta * _backout_coef
                             and len(adopted_changes) >= 2):
                         break
 
@@ -1346,7 +1409,7 @@ class AgentScheduler:
                             c["reason"] = (
                                 f"interaction back-out pass {iteration + 1}: "
                                 f"combined d={combined_delta:+.3f} < "
-                                f"sum_individual d={sum_individual_delta:+.3f} * 0.7 — "
+                                f"sum_individual d={sum_individual_delta:+.3f} * {_backout_coef:.2f} — "
                                 f"weakest remaining change (z={z_scores[weakest_param]:.2f}) removed"
                             )
                     logger.info(
@@ -1617,9 +1680,18 @@ class AgentScheduler:
 
         # Walk-forward validation: train on first 60%, validate across 4 expanding
         # folds of the remaining 40% (each fold is genuinely out-of-sample).
-        rolled = self.outcome_reviewer.rollup_old_outcomes()
-        ghost_rolled = self.ghost_tracker.rollup_old_ghosts() if self.ghost_tracker else 0
-        cf_rolled = self.counterfactual_tracker.rollup_old_counterfactuals() if self.counterfactual_tracker else 0
+        # Rollups are best-effort — a disk/permission error must not crash the
+        # whole pipeline, but it MUST surface so the operator can fix the cause.
+        def _safe_rollup(name: str, fn):
+            try:
+                return fn()
+            except Exception as e:
+                logger.error(f"Rollup '{name}' failed: {e}")
+                pipeline_info.setdefault("rollup_errors", []).append(f"{name}: {e}")
+                return 0
+        rolled = _safe_rollup("outcomes", self.outcome_reviewer.rollup_old_outcomes)
+        ghost_rolled = _safe_rollup("ghosts", self.ghost_tracker.rollup_old_ghosts) if self.ghost_tracker else 0
+        cf_rolled = _safe_rollup("counterfactuals", self.counterfactual_tracker.rollup_old_counterfactuals) if self.counterfactual_tracker else 0
 
         _raw_outcomes = self._load_combined_outcomes()
         # Bound active dataset to the last PIPELINE_WINDOW_DAYS so weight
@@ -1659,13 +1731,30 @@ class AgentScheduler:
 
         # Review past pipeline adoptions (fill in actual 7d/30d Sharpe),
         # then auto-revert any that tanked within 1d or 7d.
+        # Uses all_outcomes (including holdout) because review is the intended
+        # consumer of the freshest data — the holdout is for *evolver-context*
+        # exclusion, not for review-purpose exclusion.
         if self.pipeline_tracker:
             self.pipeline_tracker.review_past_adoptions(all_outcomes)
             self._apply_revert_adoptions()
 
-        # Bias detector uses all_outcomes so it sees current regime (including recent
-        # test-split data), not just the older 60% training window.
-        analysis = await self._run_bias_detector(all_outcomes)
+        # Holdout split for the evolver context. Everything that feeds the
+        # TA evolver's `analysis` dict from this point on must use `opt_outcomes`
+        # so the last HOLDOUT_DAYS of trades remain genuinely out-of-sample for
+        # adoption confirmation. The crisis check below intentionally stays on
+        # all_outcomes (safety override needs the freshest signal). With
+        # HOLDOUT_DAYS=7 the holdout window also contains the calibrator's fit
+        # pool, so the optimizer's walk-forward folds (which run on opt_outcomes)
+        # never overlap with the calibrator's training data.
+        opt_outcomes, holdout_outcomes = self._split_holdout(all_outcomes)
+        if len(holdout_outcomes) < HOLDOUT_MIN_TRADES:
+            # Holdout too small to be useful — fall back to using everything.
+            # Same threshold the weight optimizer uses below.
+            opt_outcomes, holdout_outcomes = all_outcomes, []
+
+        # Bias detector runs on opt_outcomes (excludes holdout) so the analysis
+        # dict the evolver sees has no leakage from the last HOLDOUT_DAYS.
+        analysis = await self._run_bias_detector(opt_outcomes)
 
         # Gate skip stats: how often did each entry gate fire?
         # Tells Claude which gates are over-filtering and whether adverse selection /
@@ -1685,9 +1774,10 @@ class AgentScheduler:
             except Exception:
                 pass
 
-        # Realized edge, fill slippage, and live fill rate stats
-        realized_edges = [o.get("realized_edge", 0) for o in all_outcomes if o.get("realized_edge") is not None]
-        fill_slippages = [o.get("fill_slippage", 0) for o in all_outcomes if o.get("fill_slippage") is not None]
+        # Realized edge, fill slippage, and live fill rate stats — all aggregates
+        # that feed the evolver context, so use opt_outcomes (no holdout leak).
+        realized_edges = [o.get("realized_edge", 0) for o in opt_outcomes if o.get("realized_edge") is not None]
+        fill_slippages = [o.get("fill_slippage", 0) for o in opt_outcomes if o.get("fill_slippage") is not None]
         exec_quality: dict[str, Any] = {}
         if realized_edges:
             exec_quality.update({
@@ -1708,7 +1798,7 @@ class AgentScheduler:
                 pass
         # Slippage breakdown by spread and time-in-window (actionable for max_edge, logit_scale, kelly_fraction)
         try:
-            exec_detail = self.bias_detector.analyze_execution_quality_detailed(all_outcomes)
+            exec_detail = self.bias_detector.analyze_execution_quality_detailed(opt_outcomes)
             if exec_detail:
                 exec_quality.update(exec_detail)
         except Exception as e:
@@ -1741,10 +1831,10 @@ class AgentScheduler:
                 pass  # rolled into [2/4] summary below
 
         # Isotonic re-fit. Gate: new fit must beat current on log-loss (full 7d pool) by ≥0.010
-        # AND not hurt Kelly-Sharpe vs identity on holdout.
+        # AND not hurt Kelly-Sharpe vs identity on holdout. Log-loss is recency-weighted,
+        # matching the calibrator's own internal bootstrap CI (also weighted).
         cal_info: dict[str, Any] = {"decision": "skipped"}
-        from polybot.agents.weight_optimizer import _sharpe
-        from polybot.core.calibrator import IsotonicCalibrator, compute_log_loss
+        from polybot.core.calibrator import IsotonicCalibrator, _weighted_log_loss as _wll
         MIN_CAL_VALIDATION_TRADES = 50
         _pending_cal_save: IsotonicCalibrator | None = None
         _CAL_WINDOW_DAYS = 7
@@ -1802,19 +1892,34 @@ class AgentScheduler:
                     # Log-loss on full 7-day pool (more data = more reliable calibration signal).
                     # Hierarchy: identity (no-cal) → current (live) → new (today's fit).
                     # Each tier should beat the one below it.
-                    all_pool_probs, all_pool_outs = [], []
+                    # Recency-weighted, matching the calibrator-internal bootstrap CI weighting.
+                    import numpy as _np
+                    all_pool_probs, all_pool_outs, all_pool_w = [], [], []
                     for o in _cal_pool:
                         ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
                         mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
                         if mp > 0:
                             all_pool_probs.append(mp)
                             all_pool_outs.append(1 if o.get("correct", False) else 0)
+                            ts3 = o.get("exit_timestamp", o.get("timestamp", ""))
+                            try:
+                                t3 = datetime.fromisoformat(ts3.replace("Z", "+00:00")).timestamp() if ts3 else cal_now_ts
+                                all_pool_w.append(RECENCY_DECAY_PER_DAY ** max(0.0, (cal_now_ts - t3) / 86400.0))
+                            except Exception:
+                                all_pool_w.append(1.0)
 
-                    identity_loss = compute_log_loss(all_pool_probs, all_pool_outs) if all_pool_probs else float("nan")
-                    new_loss_full = compute_log_loss([cal.calibrate(p) for p in all_pool_probs], all_pool_outs) if all_pool_probs else float("nan")
+                    if all_pool_probs:
+                        _p = _np.asarray(all_pool_probs, dtype=float)
+                        _o = _np.asarray(all_pool_outs, dtype=float)
+                        _w = _np.asarray(all_pool_w, dtype=float)
+                        identity_loss = _wll(_p, _o, _w)
+                        new_loss_full = _wll(_np.asarray([cal.calibrate(p) for p in all_pool_probs]), _o, _w)
+                    else:
+                        identity_loss = float("nan")
+                        new_loss_full = float("nan")
                     cur_cal = self.signal_engine.calibrator
-                    if cur_cal and not getattr(cur_cal, 'is_identity', False):
-                        current_loss = compute_log_loss([cur_cal.calibrate(p) for p in all_pool_probs], all_pool_outs) if all_pool_probs else float("nan")
+                    if cur_cal and not getattr(cur_cal, 'is_identity', False) and all_pool_probs:
+                        current_loss = _wll(_np.asarray([cur_cal.calibrate(p) for p in all_pool_probs]), _o, _w)
                     else:
                         current_loss = identity_loss
 
@@ -1844,12 +1949,12 @@ class AgentScheduler:
                         atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],
                         derived_weights=cfg["derived_weights"],
                     )
-                    identity_returns = self._kelly_bankroll_returns(calibrator=None, **helper_kwargs)
-                    new_returns = self._kelly_bankroll_returns(calibrator=cal, **helper_kwargs)
-                    current_returns = self._kelly_bankroll_returns(calibrator=cur_cal, **helper_kwargs)
-                    identity_sharpe = _sharpe(identity_returns)
-                    new_sharpe = _sharpe(new_returns)
-                    current_sharpe = _sharpe(current_returns)
+                    identity_returns, identity_weights = self._kelly_bankroll_returns(calibrator=None, **helper_kwargs)
+                    new_returns, new_weights = self._kelly_bankroll_returns(calibrator=cal, **helper_kwargs)
+                    current_returns, current_weights = self._kelly_bankroll_returns(calibrator=cur_cal, **helper_kwargs)
+                    identity_sharpe = _weighted_sharpe(identity_returns, identity_weights)
+                    new_sharpe = _weighted_sharpe(new_returns, new_weights)
+                    current_sharpe = _weighted_sharpe(current_returns, current_weights)
 
                     LOG_LOSS_FLOOR = 0.010
                     cal_info = {
@@ -1896,9 +2001,7 @@ class AgentScheduler:
                                                     f"(loss={identity_loss:.3f}); new fit beats identity — upgrading directly")
                             _pending_cal_save = cal
                             self.signal_engine.calibrator = cal
-                            self._baseline_kelly_sharpe = None
-                            self._baseline_n_trades = None
-                            self._baseline_jk_se = None
+                            self._invalidate_baseline_cache()
                             logger.info(f"Isotonic adopted (bypassing bad current): loss {identity_loss:.4f} → {new_loss_full:.4f}, "
                                         f"sharpe {identity_sharpe:.4f} → {new_sharpe:.4f}")
                         else:
@@ -1914,9 +2017,7 @@ class AgentScheduler:
                         cal_info["decision"] = "adopted"
                         _pending_cal_save = cal
                         self.signal_engine.calibrator = cal
-                        self._baseline_kelly_sharpe = None
-                        self._baseline_n_trades = None
-                        self._baseline_jk_se = None
+                        self._invalidate_baseline_cache()
                         logger.debug(f"Isotonic adopted: loss {current_loss:.4f} → {new_loss_full:.4f} "
                                      f"(identity {identity_loss:.4f}), sharpe {identity_sharpe:.4f} → {new_sharpe:.4f}")
                     elif new_beats_current and not sizing_ok:
@@ -1948,22 +2049,38 @@ class AgentScheduler:
         if cal_info.get("meta_warning"):
             analysis["cal_meta_warning"] = cal_info["meta_warning"]
 
-        # SPRT aggregate evidence
-        from polybot.agents.pipeline_analytics import aggregate_sprt_evidence, format_trends
-        sprt_agg = aggregate_sprt_evidence(all_outcomes, recent_n=50)
+        # KS-shift detection between the optimizer's train (first 60%) and test
+        # (last 40%) slices of opt_outcomes. Surfaced into the evolver context
+        # so Claude can see when the test window's feature distribution looks
+        # different from the train window's. Informational only — no veto/gate.
+        from polybot.agents.pipeline_analytics import (
+            aggregate_sprt_evidence, detect_distribution_shifts, format_trends,
+        )
+        _ks_split = max(1, int(len(opt_outcomes) * 0.60))
+        _ks_train = opt_outcomes[:_ks_split]
+        _ks_test = opt_outcomes[_ks_split:]
+        try:
+            distribution_shifts = detect_distribution_shifts(_ks_train, _ks_test)
+        except Exception as _e:
+            logger.debug(f"distribution_shifts skipped: {_e}")
+            distribution_shifts = {}
+        if distribution_shifts:
+            analysis["distribution_shifts"] = distribution_shifts
+            pipeline_info["distribution_shifts"] = distribution_shifts
+
+        # SPRT aggregate evidence — feeds evolver analysis, so opt_outcomes only.
+        sprt_agg = aggregate_sprt_evidence(opt_outcomes, recent_n=50)
         analysis["sprt_aggregate"] = sprt_agg
         pipeline_info["sprt"] = sprt_agg
 
-        # Trends across the last ~5 buckets of recent trades — let Claude see whether
-        # a metric is self-resolving (so it doesn't propose fixes for IMPROVING trends)
-        trends_str = format_trends(all_outcomes, n_buckets=5, min_per_bucket=50)
+        # Trend buckets feed evolver analysis — opt_outcomes only.
+        trends_str = format_trends(opt_outcomes, n_buckets=5, min_per_bucket=50)
         if trends_str:
             analysis["trends"] = trends_str
 
-        # Current-regime snapshot: most recent 100 trades regardless of train/test split.
-        # Claude only receives train_outcomes as its trade sample (first 60%), so without
-        # this it can't see a regime shift that happened in the last few days.
-        recent_window = all_outcomes[-100:] if len(all_outcomes) >= 100 else all_outcomes
+        # Current-regime snapshot for the evolver: most recent 100 trades from
+        # opt_outcomes (NOT all_outcomes — holdout must remain out-of-sample).
+        recent_window = opt_outcomes[-100:] if len(opt_outcomes) >= 100 else opt_outcomes
         if recent_window:
             rw_gains = [o.get("gain_pct", 0) for o in recent_window]
             rw_wr = sum(1 for o in recent_window if o.get("correct", False)) / len(recent_window)
@@ -1995,6 +2112,9 @@ class AgentScheduler:
         logger.info(f"  [2/4] Analysis done" + (f"  |  {' | '.join(_analysis_parts)}" if _analysis_parts else ""))
 
         # Gate: need at least 200 trades before running TAEvolver and WeightOptimizer.
+        # opt_outcomes/holdout_outcomes were already split at the top of this
+        # method so bias_detector + SPRT + execution_quality all saw a clean
+        # opt pool. Here we just consume that split.
         MIN_TRADES_FOR_LEARNING = 200
         weight_info: dict[str, Any] = {"decision": "skipped"}
         if len(all_outcomes) < MIN_TRADES_FOR_LEARNING:
@@ -2002,14 +2122,11 @@ class AgentScheduler:
             recommendations = {}
             weight_info["reason"] = f"only {len(all_outcomes)} trades (need {MIN_TRADES_FOR_LEARNING})"
         else:
-            # Hold out the last HOLDOUT_DAYS of trades from the optimizer pool so the
-            # adoption gate has one window the walk-forward folds never touched.
-            opt_outcomes, holdout_outcomes = self._split_holdout(all_outcomes)
-            if len(holdout_outcomes) >= HOLDOUT_MIN_TRADES and len(opt_outcomes) >= MIN_TRADES_FOR_LEARNING:
+            if holdout_outcomes and len(opt_outcomes) >= MIN_TRADES_FOR_LEARNING:
                 logger.info(f"Holdout split: opt={len(opt_outcomes)} trades, holdout={len(holdout_outcomes)} (last {HOLDOUT_DAYS}d)")
-                pipeline_info["holdout_n_trades"] = len(holdout_outcomes)
-            else:
-                pipeline_info["holdout_n_trades"] = len(holdout_outcomes)
+            pipeline_info["holdout_n_trades"] = len(holdout_outcomes)
+            if len(opt_outcomes) < MIN_TRADES_FOR_LEARNING:
+                # Holdout would leave opt below the optimizer's floor — fall back.
                 opt_outcomes, holdout_outcomes = all_outcomes, []
 
             # Precompute baseline Sharpe/SE/N so Claude's context shows real numbers
@@ -2033,7 +2150,11 @@ class AgentScheduler:
             pipeline_info["manual_observations"] = recommendations.get("manual_observations", []) or []
 
             # Crisis mode: baseline Sharpe < 0.10 AND (recent WR < 48% OR loss/win ratio > 2.0).
-            _recent_50 = all_outcomes[-50:] if len(all_outcomes) >= 50 else all_outcomes
+            # Ghosts (rejected at downstream gates) never moved bankroll — they're
+            # model-accuracy proxies, not PnL outcomes. Excluding them keeps the
+            # crisis signal a clean read on whether the bot is actually bleeding.
+            _recent_real = [o for o in all_outcomes if not o.get("is_ghost")]
+            _recent_50 = _recent_real[-50:] if len(_recent_real) >= 50 else _recent_real
             _recent_wr = sum(1 for o in _recent_50 if o.get("correct", False)) / max(len(_recent_50), 1)
             _recent_gains = [o.get("gain_pct", 0) for o in _recent_50]
             _wins = [g for g in _recent_gains if g > 0]

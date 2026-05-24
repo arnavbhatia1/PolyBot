@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
+# For the recency decay used across backtest, calibratorfit, and rollback Sharpe.
+RECENCY_DECAY_PER_DAY: float = 0.94
+
 
 def sharpe(returns: list[float]) -> float:
     """Per-trade unannualized Sharpe from a list of gain_pct values.
@@ -26,6 +29,26 @@ def sharpe(returns: list[float]) -> float:
     return avg / std if std > 0 else 0.0
 
 
+def weighted_sharpe_from_returns(returns: list[float], weights: list[float]) -> float:
+    """Per-trade Sharpe on a precomputed returns list with parallel sample weights.
+
+    Equivalent to ``weighted_sharpe(outcomes, weights)`` but operates on a list of
+    returns (e.g., Kelly-sized backtest outputs) rather than outcome dicts. Mean
+    and variance both use the weights, so this is a proper weighted Sharpe — NOT
+    Sharpe of (return × weight), which would inflate the variance with the
+    weights' own dispersion.
+    """
+    if len(returns) < 2 or len(returns) != len(weights):
+        return 0.0
+    w_sum = sum(weights)
+    if w_sum <= 0:
+        return 0.0
+    mean = sum(r * w for r, w in zip(returns, weights)) / w_sum
+    var = sum(w * (r - mean) ** 2 for r, w in zip(returns, weights)) / w_sum
+    std = math.sqrt(var) if var > 0 else 0.0
+    return mean / std if std > 0 else 0.0
+
+
 def utc_ts_to_et_date(ts: str) -> str:
     """Convert a UTC ISO timestamp string to an ET date string YYYY-MM-DD.
 
@@ -39,13 +62,12 @@ def utc_ts_to_et_date(ts: str) -> str:
         return ts[:10] if ts else ""
 
 
-def compute_sample_weights(outcomes: list[dict[str, Any]], half_life_days: float = 14.0) -> list[float]:
-    """Exponential time-decay weights. Yesterday = 2x weight of 14 days ago.
-
-    Uses outcome['timestamp'] (UTC ISO string). Returns normalized weights summing to 1.0.
+def compute_sample_weights(outcomes: list[dict[str, Any]]) -> list[float]:
+    """Recency weights using the canonical RECENCY_DECAY_PER_DAY (0.94/day,
+    ~11-day half-life). Single source of truth shared with the backtest and
+    calibrator-fit weighting. Returns normalized weights summing to 1.0.
     """
     now = datetime.now(timezone.utc).timestamp()
-    decay = math.log(2) / max(half_life_days, 0.1)
     raw = []
     for o in outcomes:
         ts = o.get("timestamp", "")
@@ -54,8 +76,8 @@ def compute_sample_weights(outcomes: list[dict[str, Any]], half_life_days: float
             continue
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            age_days = (now - dt.timestamp()) / 86400
-            raw.append(math.exp(-age_days * decay))
+            age_days = max(0.0, (now - dt.timestamp()) / 86400)
+            raw.append(RECENCY_DECAY_PER_DAY ** age_days)
         except (ValueError, OSError):
             raw.append(1.0)
     total = sum(raw) or 1.0
@@ -86,6 +108,51 @@ def weighted_sharpe(outcomes: list[dict[str, Any]], weights: list[float]) -> flo
     var = sum(w * (g - mean) ** 2 for g, w in zip(gains, ws)) / w_sum
     std = math.sqrt(var) if var > 0 else 0.0
     return mean / std if std > 0 else 0.0
+
+
+def detect_distribution_shifts(train: list[dict[str, Any]],
+                                test: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Two-sample Kolmogorov-Smirnov test on key feature distributions between
+    train and test slices of the optimizer pool. Surfaced into the evolver's
+    analysis dict so Claude sees whether the optimizer's test window looks like
+    a different regime — purely informational, no veto. Noisy on small samples
+    is acceptable; the signal stabilizes as the windows fill in.
+
+    Returns ``{feature_name: {statistic, p_value, n_train, n_test}}``. Features
+    with fewer than 30 non-null values in either side are skipped.
+    """
+    try:
+        from scipy.stats import ks_2samp
+    except ImportError:
+        return {}
+
+    def _ctx(o: dict[str, Any]) -> dict[str, Any]:
+        return o.get("indicator_snapshot", {}).get("trade_context", {}) or {}
+
+    features: list[tuple[str, Any]] = [
+        ("model_probability_raw", lambda o: _ctx(o).get("model_probability_raw")),
+        ("atr",                   lambda o: _ctx(o).get("atr")),
+        ("regime_autocorr",       lambda o: _ctx(o).get("regime_autocorr")),
+        ("market_price_up",       lambda o: _ctx(o).get("market_price_up")),
+    ]
+
+    out: dict[str, dict[str, Any]] = {}
+    for name, getter in features:
+        a = [v for v in (getter(o) for o in train) if v is not None]
+        b = [v for v in (getter(o) for o in test) if v is not None]
+        if len(a) < 30 or len(b) < 30:
+            continue
+        try:
+            stat, p = ks_2samp(a, b)
+        except Exception:
+            continue
+        out[name] = {
+            "statistic": round(float(stat), 4),
+            "p_value": round(float(p), 4),
+            "n_train": len(a),
+            "n_test": len(b),
+        }
+    return out
 
 
 def aggregate_sprt_evidence(outcomes: list[dict[str, Any]], recent_n: int = 50) -> dict[str, Any]:

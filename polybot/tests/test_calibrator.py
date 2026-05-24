@@ -31,10 +31,17 @@ def test_state_hash_identity_then_fit():
     cal = IsotonicCalibrator()
     assert cal.state_hash == "identity"
 
-    rng = np.random.default_rng(0)
-    probs = list(rng.uniform(0.3, 0.7, 250))
-    outcomes = [1 if p + rng.normal(0, 0.2) > 0.5 else 0 for p in probs]
+    # Strong, clearly-miscalibrated signal: raw probs span a range but the true
+    # win rate is a near-step function of the raw — exactly the case isotonic
+    # should fit and the OOB bootstrap should confirm generalizes.
+    def _gen_clean_miscal(seed: int, cutoff: float = 0.5, n: int = 400):
+        rng_ = np.random.default_rng(seed)
+        ps = list(rng_.uniform(0.2, 0.8, n))
+        # 5% / 95% outcome flip at cutoff — strong, fittable signal.
+        os = [1 if rng_.uniform() < (0.05 + 0.9 * (p > cutoff)) else 0 for p in ps]
+        return ps, os
 
+    probs, outcomes = _gen_clean_miscal(seed=0, cutoff=0.5)
     a = IsotonicCalibrator()
     a.fit(probs, outcomes, min_samples=150)
     b = IsotonicCalibrator()
@@ -42,9 +49,7 @@ def test_state_hash_identity_then_fit():
     assert a.state_hash != "identity"
     assert a.state_hash == b.state_hash  # determinism
 
-    rng2 = np.random.default_rng(7)
-    probs2 = list(rng2.uniform(0.2, 0.8, 250))
-    outcomes2 = [1 if p > 0.55 else 0 for p in probs2]
+    probs2, outcomes2 = _gen_clean_miscal(seed=7, cutoff=0.55)
     c = IsotonicCalibrator()
     c.fit(probs2, outcomes2, min_samples=150)
     assert c.state_hash != a.state_hash  # different fit -> different hash
@@ -138,16 +143,12 @@ def test_fit_monotonic_across_probability_levels():
     """For binary outcomes that genuinely increase with raw prob, isotonic
     output must also increase monotonically across the input range."""
     cal = IsotonicCalibrator()
-    np.random.seed(2)
-    n_per_bucket = 50
-    probs: list[float] = []
-    outcomes: list[int] = []
-    # Synthetic: low-prob bucket wins 20%, mid 50%, high 80%.
-    for p_in, win_rate in [(0.30, 0.20), (0.50, 0.50), (0.70, 0.80)]:
-        probs.extend([p_in] * n_per_bucket)
-        wins = int(n_per_bucket * win_rate)
-        outcomes.extend([1] * wins + [0] * (n_per_bucket - wins))
-    assert cal.fit(probs, outcomes, min_samples=75) is True
+    rng = np.random.default_rng(2)
+    # 400 samples, step-function miscalibration (low/high outcomes split at 0.5).
+    # Strong enough that the OOB bootstrap's lower-80% CI clearly clears zero.
+    probs = list(rng.uniform(0.15, 0.85, 400))
+    outcomes = [1 if rng.uniform() < (0.05 + 0.9 * (p > 0.5)) else 0 for p in probs]
+    assert cal.fit(probs, outcomes, min_samples=150) is True
     assert cal.calibrate(0.30) <= cal.calibrate(0.50) <= cal.calibrate(0.70)
 
 
@@ -217,7 +218,12 @@ def test_save_and_load_isotonic_roundtrip_exact(tmp_path):
     save/load. This is the contract that protects against calibration drift
     across restarts."""
     cal = IsotonicCalibrator()
-    cal.fit([0.30] * 60 + [0.70] * 60, [1] * 12 + [0] * 48 + [1] * 48 + [0] * 12, min_samples=75)
+    # Step-function miscalibration on a continuous prob range: clean signal,
+    # OOB bootstrap clears the lower-80% CI gate reliably.
+    rng = np.random.default_rng(4)
+    probs = list(rng.uniform(0.15, 0.85, 400))
+    outcomes = [1 if rng.uniform() < (0.05 + 0.9 * (p > 0.5)) else 0 for p in probs]
+    cal.fit(probs, outcomes, min_samples=150)
     assert not cal.is_identity
 
     path = tmp_path / "cal.json"

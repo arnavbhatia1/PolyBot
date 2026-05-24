@@ -334,13 +334,14 @@ class BiasDetector:
         return quartiles
 
     def _analyze_time_weighted(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
-        """Time-weighted overall stats using exponential decay (14-day half-life)."""
+        """Time-weighted overall stats using the canonical RECENCY_DECAY_PER_DAY
+        (0.94/day, ~11-day half-life) shared with the backtest and calibrator."""
         try:
             from polybot.agents.pipeline_analytics import compute_sample_weights, weighted_win_rate, weighted_sharpe
         except ImportError:
             return {}
 
-        weights = compute_sample_weights(outcomes, half_life_days=14.0)
+        weights = compute_sample_weights(outcomes)
         return {
             "win_rate": round(weighted_win_rate(outcomes, weights), 4),
             "sharpe": round(weighted_sharpe(outcomes, weights), 4),

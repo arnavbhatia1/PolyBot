@@ -17,7 +17,10 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from polybot.agents.pipeline_analytics import sharpe as _sharpe
+from polybot.agents.pipeline_analytics import (
+    RECENCY_DECAY_PER_DAY,
+    weighted_sharpe_from_returns as _weighted_sharpe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,12 +107,14 @@ class PipelineTracker:
             for key, days, min_trades, check_prediction in WINDOWS:
                 if rec.get(key) is not None or age_days < days:
                     continue
-                rets = self._returns_in_window(outcomes, version, adopt_dt,
-                                               adopt_dt + timedelta(days=days))
+                rets, weights = self._returns_in_window(outcomes, version, adopt_dt,
+                                                        adopt_dt + timedelta(days=days))
                 if len(rets) < min_trades:
                     continue
 
-                actual_sharpe = round(_sharpe(rets), 4)
+                # Weighted Sharpe on the post-adoption window, matching the
+                # methodology of the stored baseline_sharpe (also weighted).
+                actual_sharpe = round(_weighted_sharpe(rets, weights), 4)
                 actual_delta = round(actual_sharpe - baseline, 4)
                 review: dict[str, Any] = {
                     "sharpe": actual_sharpe,
@@ -172,8 +177,17 @@ class PipelineTracker:
 
     @staticmethod
     def _returns_in_window(outcomes: list[dict[str, Any]], version: str,
-                           start: datetime, end: datetime) -> list[float]:
-        rets = []
+                           start: datetime, end: datetime
+                           ) -> tuple[list[float], list[float]]:
+        """Return ``(returns, recency_weights)`` for trades inside the window.
+
+        Recency weights match the optimizer's convention (RECENCY_DECAY_PER_DAY
+        per day, keyed off review time) so the rollback comparison runs on the
+        same weighted-Sharpe scale as ``baseline_sharpe`` stored at adoption.
+        """
+        now_ts = datetime.now(timezone.utc).timestamp()
+        rets: list[float] = []
+        weights: list[float] = []
         for o in outcomes:
             ts = o.get("timestamp", "")
             if not ts:
@@ -184,7 +198,9 @@ class PipelineTracker:
                 continue
             if start <= dt < end:
                 rets.append(o.get("gain_pct", 0))
-        return rets
+                days_ago = max(0.0, (now_ts - dt.timestamp()) / 86400.0)
+                weights.append(RECENCY_DECAY_PER_DAY ** days_ago)
+        return rets, weights
 
     def get_track_record(self) -> list[dict[str, Any]]:
         """Return adoption history for Claude context."""

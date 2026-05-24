@@ -17,9 +17,9 @@ DEFAULT_PARAMS_PATH = Path("polybot/memory/calibration/isotonic_params.json")
 _EPS = 1e-6  # canonical clip — keep all clipping sites consistent
 
 # Bootstrap CI gate: how many resamples to draw, and the lower-percentile bound
-# the improvement-over-identity must clear. 100 resamples / lower-80% bound > 0
-# replaces a static 1e-4 floor that was within sampling noise on a 7-day window.
-_BOOTSTRAP_N = 100
+# the improvement-over-identity must clear. With OOB scoring, the lower
+# percentile estimate is noisier than the in-sample version was.
+_BOOTSTRAP_N = 300
 _BOOTSTRAP_LOWER_PCT = 20
 
 # Minimum samples for a stable isotonic fit. Isotonic has many degrees of
@@ -140,20 +140,30 @@ class IsotonicCalibrator:
         improvement = (_weighted_log_loss(probs_arr, outcomes_arr, w_arr)
                        - _weighted_log_loss(iso_predictions, outcomes_arr, w_arr))
 
+        # Out-of-bag bootstrap
         rng = np.random.default_rng(42)
         n = len(probs_arr)
+        all_idx = np.arange(n)
         boot_improvements: list[float] = []
         for _ in range(_BOOTSTRAP_N):
             idx = rng.integers(0, n, n)
+            in_bag = np.zeros(n, dtype=bool)
+            in_bag[idx] = True
+            oob_idx = all_idx[~in_bag]
+            if len(oob_idx) < 5:
+                continue
             p_b, o_b, w_b = probs_arr[idx], outcomes_arr[idx], w_arr[idx]
             if w_b.sum() <= 0 or len(np.unique(o_b)) < 2:
+                continue
+            p_oob, o_oob, w_oob = probs_arr[oob_idx], outcomes_arr[oob_idx], w_arr[oob_idx]
+            if w_oob.sum() <= 0:
                 continue
             try:
                 iso_b = IsotonicRegression(out_of_bounds="clip", y_min=_EPS, y_max=1.0 - _EPS)
                 iso_b.fit(p_b, o_b, sample_weight=w_b)
                 boot_improvements.append(
-                    _weighted_log_loss(p_b, o_b, w_b)
-                    - _weighted_log_loss(iso_b.predict(p_b), o_b, w_b)
+                    _weighted_log_loss(p_oob, o_oob, w_oob)
+                    - _weighted_log_loss(iso_b.predict(p_oob), o_oob, w_oob)
                 )
             except Exception:
                 continue

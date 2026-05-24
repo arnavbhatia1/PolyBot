@@ -30,12 +30,19 @@ def _lag1_autocorr(values: list[float]) -> float:
     return _lag_autocorr(values, 1)
 
 
-def _newey_west_factor(returns: list[float], max_lag: int = 5) -> float:
-    """sqrt(1 + 2·Σ wₖ·ρₖ) with Bartlett weights wₖ = 1 − k/(L+1). Floors at 1 (IID baseline)."""
+def _newey_west_factor(returns: list[float]) -> float:
+    """sqrt(1 + 2·Σ wₖ·ρₖ) with Bartlett weights wₖ = 1 − k/(L+1). Floors at 1 (IID baseline).
+
+    Data-adaptive lag selection per Newey & West (1994): L = floor(4·(n/100)^(2/9)).
+    Scales naturally with sample size — small N gets short lag (low variance on
+    the autocorr estimate); large N gets longer lag (catches slow-decaying
+    autocorrelation in regime-clustered trade returns).
+    """
     n = len(returns)
     if n < 4:
         return 1.0
-    eff_lag = max(1, min(max_lag, n - 2))
+    nw_lag = max(1, int(4 * (n / 100.0) ** (2.0 / 9.0)))
+    eff_lag = max(1, min(nw_lag, n - 2))
     weighted_sum = 0.0
     for k in range(1, eff_lag + 1):
         rho = _lag_autocorr(returns, k)

@@ -63,15 +63,21 @@ class TestConvexSlippage:
 # ---------------------------------------------------------------------------
 
 class TestHoldoutSplit:
-    """run_daily_pipeline should split outcomes 60/40 chronologically.
+    """run_daily_pipeline must exclude the last HOLDOUT_DAYS from the evolver
+    context (BiasDetector + TAEvolver) and the walk-forward optimizer, leaving
+    a true OOS window for the holdout confirmation gate.
 
-    Uses 250 outcomes to exceed the 200-trade pipeline minimum.
+    Uses 400 recent outcomes so the holdout (~3 days near today) is large
+    enough to engage AND the remaining opt pool clears MIN_TRADES_FOR_LEARNING.
     """
 
     @staticmethod
-    def _make_outcomes(n):
+    def _make_outcomes(n, days_span=30):
+        """n outcomes spread across the last `days_span` days ending today."""
+        from datetime import datetime, timezone, timedelta
+        end = datetime.now(timezone.utc)
         return [
-            {"timestamp": f"2026-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}T12:00:00Z",
+            {"timestamp": (end - timedelta(days=days_span * (n - 1 - i) / max(n - 1, 1))).isoformat().replace("+00:00", "Z"),
              "correct": True, "gain_pct": 0.1, "log_return": 0.1,
              "weight_version": "v1", "indicator_snapshot": {}}
             for i in range(n)
@@ -79,7 +85,8 @@ class TestHoldoutSplit:
 
     @pytest.mark.asyncio
     async def test_split_passes_train_to_bias_and_evolver(self):
-        """BiasDetector and TAEvolver receive first 60%; optimizer gets ALL (walk-forward splits internally)."""
+        """BiasDetector and TAEvolver receive opt_outcomes (holdout excluded);
+        the optimizer also gets opt_outcomes and holdout_outcomes separately."""
         received = {}
 
         async def mock_bias(outcomes=None):
@@ -92,9 +99,11 @@ class TestHoldoutSplit:
 
         async def mock_wo(recs, outcomes=None, **kwargs):
             received["wo_count"] = len(outcomes) if outcomes else 0
+            received["wo_holdout"] = len(kwargs.get("holdout_outcomes") or [])
             return {"decision": "skipped"}
 
-        outcomes = self._make_outcomes(250)
+        # 400 outcomes spanning the last 30 days → ~40 in the trailing 3-day holdout.
+        outcomes = self._make_outcomes(400, days_span=30)
 
         reviewer = MagicMock()
         reviewer.load_all_outcomes.return_value = outcomes
@@ -108,16 +117,18 @@ class TestHoldoutSplit:
 
         await scheduler.run_daily_pipeline()
 
-        # Bias / TA / WeightOptimizer all receive ALL outcomes — analysis must see
-        # the current regime, and the walk-forward backtest is purely mathematical
-        # so passing recent outcomes does not create lookahead at the adoption gate.
-        assert received["bias_count"] == 250
-        assert received["ta_count"] == 250
-        assert received["wo_count"] == 250
+        # Holdout must engage: bias / TA receive opt_outcomes (< 400), and the
+        # optimizer sees opt + a non-empty holdout pool.
+        assert received["bias_count"] < 400
+        assert received["bias_count"] == received["ta_count"]
+        assert received["wo_count"] == received["bias_count"]
+        assert received["wo_holdout"] > 0
+        assert received["wo_holdout"] + received["wo_count"] == 400
 
     @pytest.mark.asyncio
     async def test_split_is_chronological(self):
-        """Train set should contain the oldest outcomes; optimizer gets all for walk-forward."""
+        """opt_outcomes (passed to BiasDetector + TAEvolver) must be the
+        chronologically-older portion; holdout is the newest."""
         received = {}
 
         async def mock_bias(outcomes=None):
@@ -129,10 +140,11 @@ class TestHoldoutSplit:
             return {}
 
         async def mock_wo(recs, outcomes=None, **kwargs):
-            received["wo_count"] = len(outcomes) if outcomes else 0
+            received["wo_timestamps"] = [o["timestamp"] for o in (outcomes or [])]
+            received["holdout_timestamps"] = [o["timestamp"] for o in (kwargs.get("holdout_outcomes") or [])]
             return {"decision": "skipped"}
 
-        outcomes = self._make_outcomes(250)
+        outcomes = self._make_outcomes(400, days_span=30)
 
         reviewer = MagicMock()
         reviewer.load_all_outcomes.return_value = outcomes
@@ -146,11 +158,12 @@ class TestHoldoutSplit:
 
         await scheduler.run_daily_pipeline()
 
-        assert len(received["bias_timestamps"]) == 250
-        assert len(received["ta_timestamps"]) == 250
-        assert received["wo_count"] == 250
-        # Outcomes must reach the analysis layers in chronological order
+        # Each layer receives chronologically-sorted opt_outcomes.
         assert received["bias_timestamps"] == sorted(received["bias_timestamps"])
+        assert received["ta_timestamps"] == received["bias_timestamps"]
+        # Holdout entries are strictly newer than every opt entry.
+        assert received["holdout_timestamps"]
+        assert min(received["holdout_timestamps"]) >= max(received["bias_timestamps"])
 
     @pytest.mark.asyncio
     async def test_small_dataset_still_works(self):
