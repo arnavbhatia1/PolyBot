@@ -79,7 +79,7 @@ class TestHoldoutSplit:
         return [
             {"timestamp": (end - timedelta(days=days_span * (n - 1 - i) / max(n - 1, 1))).isoformat().replace("+00:00", "Z"),
              "correct": True, "gain_pct": 0.1, "log_return": 0.1,
-             "weight_version": "v1", "indicator_snapshot": {}}
+             "indicator_snapshot": {}}
             for i in range(n)
         ]
 
@@ -183,7 +183,7 @@ class TestHoldoutSplit:
 
         outcomes = [
             {"timestamp": "2026-04-01T12:00:00Z", "correct": True,
-             "gain_pct": 0.1, "log_return": 0.1, "weight_version": "v1",
+             "gain_pct": 0.1, "log_return": 0.1,
              "indicator_snapshot": {}}
         ]
 

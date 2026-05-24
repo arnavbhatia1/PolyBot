@@ -5,7 +5,6 @@ lower bound of weighted log-loss improvement vs identity > 0; else stays identit
 from __future__ import annotations
 
 import json
-import math
 import logging
 from pathlib import Path
 import numpy as np
@@ -25,15 +24,6 @@ _BOOTSTRAP_LOWER_PCT = 20
 # Minimum samples for a stable isotonic fit. Isotonic has many degrees of
 # freedom and overfits readily on small data — keep this generous.
 _DEFAULT_MIN_SAMPLES = 150
-
-
-def compute_log_loss(probs: list[float], outcomes: list[int]) -> float:
-    """Binary cross-entropy loss."""
-    total = 0.0
-    for p, y in zip(probs, outcomes):
-        p = max(_EPS, min(1 - _EPS, p))
-        total += -(y * math.log(p) + (1 - y) * math.log(1 - p))
-    return total / len(probs) if probs else float("inf")
 
 
 def _weighted_log_loss(probs: np.ndarray, outcomes: np.ndarray, weights: np.ndarray) -> float:

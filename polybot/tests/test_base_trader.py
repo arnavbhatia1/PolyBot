@@ -76,10 +76,6 @@ def _trade_params(**overrides):
         size=10.0,
         signal_score=0.72,
         signal_strength="high",
-        ev_at_entry=0.17,
-        exit_target=0.68,
-        stop_loss=0.40,
-        
     )
     defaults.update(overrides)
     return defaults

@@ -1,9 +1,8 @@
 """Bybit BTC perpetual futures feed.
 
-Provides three signals from the leveraged futures market:
+Provides two signals from the leveraged futures market:
 1. Price lead — perp vs spot divergence (leveraged traders react first)
-2. Funding rate — contrarian crowding indicator
-3. Open interest changes — liquidation pressure for L3e
+2. Open interest changes — liquidation pressure for L3e
 
 All data arrives via the public WebSocket (no geo-block for US IPs).
 The REST endpoint is geo-blocked for US; all required fields are in the
@@ -34,9 +33,6 @@ class BybitState:
 
     perp_price: float = 0.0
     perp_updated: float = 0.0
-    funding_rate: float = 0.0
-    funding_updated: float = 0.0
-    next_funding_time: float = 0.0
     open_interest: float = 0.0
     open_interest_prev: float = 0.0
     price_at_oi: float = 0.0
@@ -167,21 +163,6 @@ class BybitFeed:
             try:
                 self.state.perp_price = float(last_price)
                 self.state.perp_updated = now
-            except (ValueError, TypeError):
-                pass
-
-        funding_rate = ticker.get("fundingRate")
-        if funding_rate is not None:
-            try:
-                self.state.funding_rate = float(funding_rate)
-                self.state.funding_updated = now
-            except (ValueError, TypeError):
-                pass
-
-        next_funding = ticker.get("nextFundingTime")
-        if next_funding is not None:
-            try:
-                self.state.next_funding_time = float(next_funding) / 1000.0
             except (ValueError, TypeError):
                 pass
 

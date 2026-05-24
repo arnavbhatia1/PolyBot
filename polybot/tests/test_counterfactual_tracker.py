@@ -19,7 +19,7 @@ def _make_pos(market_id="btc-updown-5m-1000000", side="Up", entry_price=0.45, si
         "id": 1, "market_id": market_id, "side": side,
         "entry_price": entry_price, "size": size,
         "shares_held": size / entry_price,
-        "fee_rate": 0.018, "weight_version": "v1", "indicator_snapshot": "{}",
+        "fee_rate": 0.018, "indicator_snapshot": "{}",
     }
 
 

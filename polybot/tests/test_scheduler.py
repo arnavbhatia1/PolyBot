@@ -7,7 +7,7 @@ def _make_outcomes(n):
     """Helper: generate n fake outcome dicts with sequential timestamps."""
     return [
         {"timestamp": f"2026-04-{(i % 28) + 1:02d}T12:00:00Z", "correct": True, "gain_pct": 0.1,
-         "log_return": 0.1, "weight_version": "weights_v001", "indicator_snapshot": {}}
+         "log_return": 0.1, "indicator_snapshot": {}}
         for i in range(n)
     ]
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from polybot.core.calibrator import IsotonicCalibrator, compute_log_loss
+from polybot.core.calibrator import IsotonicCalibrator
 
 
 # ---------------------------------------------------------------------------
@@ -266,23 +266,3 @@ def test_load_missing_file_is_noop(tmp_path):
     cal = IsotonicCalibrator()
     cal.load(path)
     assert cal.is_identity
-
-
-# ---------------------------------------------------------------------------
-# compute_log_loss helper (used by scheduler)
-# ---------------------------------------------------------------------------
-
-def test_compute_log_loss_perfect_predictions():
-    probs = [0.99, 0.99, 0.01, 0.01]
-    outcomes = [1, 1, 0, 0]
-    assert compute_log_loss(probs, outcomes) < 0.05
-
-
-def test_compute_log_loss_inverse_predictions():
-    probs = [0.01, 0.01, 0.99, 0.99]
-    outcomes = [1, 1, 0, 0]
-    assert compute_log_loss(probs, outcomes) > 3.0
-
-
-def test_compute_log_loss_empty_returns_inf():
-    assert compute_log_loss([], []) == float("inf")

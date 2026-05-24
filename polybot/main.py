@@ -1057,9 +1057,6 @@ async def _evaluate_signal_and_enter(
         size=size,
         signal_score=signal.prob,
         signal_strength=f"edge={signal.edge:.0%}",
-        ev_at_entry=signal.edge,
-        exit_target=1.0,
-        stop_loss=0.0,
         indicator_snapshot=snapshot,
         token_id=token_id,
         fee_rate=fee_rate,
@@ -1133,7 +1130,7 @@ async def _evaluate_signal_and_enter(
             mkt_price = price_up if side == "Up" else price_down
             await alert_manager.send_trade_opened(
                 question=contract["question"], side=side, size=size,
-                entry_price=fill_price, ev=signal.edge, exit_target=1.0,
+                entry_price=fill_price, ev=signal.edge,
                 model_prob=signal.prob, market_price=mkt_price,
                 fee=fee_usd, flow=flow_score, bankroll=bankroll_now)
         return cid, last_eval_log_window

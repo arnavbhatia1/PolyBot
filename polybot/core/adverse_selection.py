@@ -23,7 +23,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _DEFAULT_STATE_PATH = Path("polybot/memory/adverse_state.json")
-
+_MAX_LOOKBACK_S = 1800.0
 
 @dataclass
 class FillEvent:
@@ -56,13 +56,18 @@ class AdverseSelectionMonitor:
         if rate > threshold: # being picked off (threshold = signal.adverse_selection_threshold)
     """
 
-    def __init__(self, max_fills: int = 20, check_windows: tuple[float, ...] = (10.0, 30.0, 60.0),
+    def __init__(self, max_fills: int = 200, check_windows: tuple[float, ...] = (10.0, 30.0, 60.0),
                  state_path: Path | None = None) -> None:
         self.max_fills = max_fills
         self.check_windows = check_windows
         self._fills: deque[FillEvent] = deque(maxlen=max_fills)
         self._state_path: Path = state_path or _DEFAULT_STATE_PATH
         self._load()
+
+    def _prune_stale(self) -> None:
+        cutoff = time.time() - _MAX_LOOKBACK_S
+        while self._fills and self._fills[0].timestamp < cutoff:
+            self._fills.popleft()
 
     def record_fill(self, side: str, fill_price: float, token_id: str, midprice: float,
                     position_id: int | None = None) -> None:
@@ -74,6 +79,7 @@ class AdverseSelectionMonitor:
         don't supply it lose the per-trade lookup but the adverse-rate gate still
         works.
         """
+        self._prune_stale()
         self._fills.append(FillEvent(
             timestamp=time.time(),
             side=side,
@@ -139,6 +145,7 @@ class AdverseSelectionMonitor:
                     position_id=fd.get("position_id"),
                 ))
                 loaded += 1
+            self._prune_stale()
             logger.info(f"AdverseSelectionMonitor: restored {loaded} fills from disk")
         except Exception as e:
             logger.warning(f"AdverseSelectionMonitor load failed: {e} — starting fresh")

@@ -34,15 +34,11 @@ class Database:
                 size REAL NOT NULL,
                 signal_score REAL NOT NULL,
                 signal_strength TEXT NOT NULL,
-                ev_at_entry REAL NOT NULL,
-                exit_target REAL NOT NULL,
-                stop_loss REAL NOT NULL,
                 entry_timestamp TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'open',
                 exit_price REAL,
                 exit_timestamp TEXT,
                 log_return REAL,
-                weight_version TEXT NOT NULL,
                 indicator_snapshot TEXT,
                 fee_rate REAL,
                 shares_held REAL
@@ -59,9 +55,7 @@ class Database:
                 size REAL NOT NULL,
                 signal_score REAL NOT NULL,
                 signal_strength TEXT NOT NULL,
-                ev_at_entry REAL NOT NULL,
                 log_return REAL NOT NULL,
-                weight_version TEXT NOT NULL,
                 entry_timestamp TEXT NOT NULL,
                 exit_timestamp TEXT NOT NULL,
                 exit_reason TEXT NOT NULL DEFAULT 'resolution'
@@ -84,6 +78,9 @@ class Database:
             await self.conn.execute("ALTER TABLE positions ADD COLUMN fee_rate REAL")
         if "shares_held" not in cols:
             await self.conn.execute("ALTER TABLE positions ADD COLUMN shares_held REAL")
+        for dead in ("ev_at_entry", "exit_target", "stop_loss", "weight_version"):
+            if dead in cols:
+                await self.conn.execute(f"ALTER TABLE positions DROP COLUMN {dead}")
         cursor = await self.conn.execute("PRAGMA table_info(trade_history)")
         th_cols = {row[1] for row in await cursor.fetchall()}
         if "pnl" not in th_cols:
@@ -92,6 +89,9 @@ class Database:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0")
         if "exit_reason" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN exit_reason TEXT NOT NULL DEFAULT 'resolution'")
+        for dead in ("ev_at_entry", "weight_version"):
+            if dead in th_cols:
+                await self.conn.execute(f"ALTER TABLE trade_history DROP COLUMN {dead}")
 
         # Hot-path indexes — get_open_positions / has_position_for_market run every tick.
         await self.conn.execute(
@@ -128,16 +128,13 @@ class Database:
             cursor = await self.conn.execute(
                 """INSERT INTO positions
                 (market_id, question, side, entry_price, size, signal_score,
-                 signal_strength, ev_at_entry, exit_target, stop_loss,
-                 entry_timestamp, status, weight_version, indicator_snapshot,
+                 signal_strength, entry_timestamp, status, indicator_snapshot,
                  fee_rate, shares_held)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
                 (position_kwargs["market_id"], position_kwargs["question"],
                  position_kwargs["side"], position_kwargs["entry_price"],
                  position_kwargs["size"], position_kwargs["signal_score"],
-                 position_kwargs["signal_strength"], position_kwargs["ev_at_entry"],
-                 position_kwargs["exit_target"], position_kwargs["stop_loss"],
-                 now, "",
+                 position_kwargs["signal_strength"], now,
                  position_kwargs.get("indicator_snapshot", ""),
                  position_kwargs.get("fee_rate"), position_kwargs.get("shares_held")),
             )
@@ -190,13 +187,13 @@ class Database:
         await self.conn.execute(
             """INSERT INTO trade_history
             (position_id, market_id, question, side, entry_price, exit_price, size,
-             signal_score, signal_strength, ev_at_entry, log_return,
-             weight_version, entry_timestamp, exit_timestamp, pnl, fees, exit_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             signal_score, signal_strength, log_return,
+             entry_timestamp, exit_timestamp, pnl, fees, exit_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (pos["id"], pos["market_id"], pos["question"], pos["side"],
              pos["entry_price"], exit_price, pos["size"],
-             pos["signal_score"], pos["signal_strength"], pos["ev_at_entry"],
-             log_return, pos["weight_version"], pos["entry_timestamp"], now, pnl, fees, exit_reason),
+             pos["signal_score"], pos["signal_strength"],
+             log_return, pos["entry_timestamp"], now, pnl, fees, exit_reason),
         )
 
     async def close_position(

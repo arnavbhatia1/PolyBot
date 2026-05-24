@@ -46,7 +46,7 @@ class AlertManager:
                 await self._safe_send(channel, msg)
 
     async def send_trade_opened(self, question: str, side: str, size: float, entry_price: float,
-                                ev: float, exit_target: float,
+                                ev: float,
                                 model_prob: float = 0.0, market_price: float = 0.0,
                                 fee: float = 0.0, flow: float = 0.0,
                                 bankroll: float = 0.0) -> None:
