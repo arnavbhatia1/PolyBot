@@ -1,0 +1,19 @@
+{
+  "live": {
+    "attempts": 18,
+    "consumed": 0,
+    "none_armed": 18,
+    "ttl_expired": 0,
+    "price_drift_reject": 0,
+    "size_drift_reject": 0
+  },
+  "paper": {
+    "attempts": 800,
+    "consumed": 305,
+    "none_armed": 341,
+    "ttl_expired": 65,
+    "price_drift_reject": 89,
+    "size_drift_reject": 0
+  },
+  "last_updated": "2026-05-24T03:25:13.315553+00:00"
+}

@@ -1,0 +1,9 @@
+{
+  "checked_at": "2026-05-24T01:31:47.375336+00:00",
+  "funder": "0xdeadbeef",
+  "non_dust_chain_positions": 0,
+  "db_known_tokens": 0,
+  "orphans_detected": 0,
+  "orphans": [],
+  "allow_orphans_flag": false
+}

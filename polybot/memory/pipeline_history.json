@@ -40,7 +40,12 @@
       "trades": 3011,
       "win_rate": 0.5417
     },
-    "review_30d": null,
+    "review_30d": {
+      "sharpe": 0.156,
+      "delta_sharpe": -0.1643,
+      "trades": 6230,
+      "win_rate": 0.5807
+    },
     "rollback_recommended": true,
     "rollback_reason": "1d Sharpe 0.112 trails baseline 0.231 by >0.10 (n=320)",
     "decay_status": "REVERSED",
