@@ -28,8 +28,7 @@ async def test_run_daily_pipeline_calls_agents_in_order():
     outcome_reviewer.load_all_outcomes.return_value = _make_outcomes(250)
     scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=MagicMock(),
         ta_evolver=MagicMock(), weight_optimizer=MagicMock(),
-        outcome_interval_seconds=3600, daily_pipeline_hour=2,
-        math_config={"ev_threshold": 0.05, "exit_target": 0.90, "stop_loss_pct": 0.15, "time_stop_hours": 24})
+        outcome_interval_seconds=3600, daily_pipeline_hour=2)
     scheduler._run_bias_detector = mock_bias
     scheduler._run_ta_evolver = mock_ta_evolver
     scheduler._run_weight_optimizer = mock_weight_optimizer
@@ -53,8 +52,7 @@ async def test_pipeline_skips_learning_below_200_trades():
     outcome_reviewer.load_all_outcomes.return_value = _make_outcomes(30)
     scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=MagicMock(),
         ta_evolver=MagicMock(), weight_optimizer=MagicMock(),
-        outcome_interval_seconds=3600, daily_pipeline_hour=2,
-        math_config={})
+        outcome_interval_seconds=3600, daily_pipeline_hour=2)
     scheduler._run_bias_detector = mock_bias
     scheduler._run_ta_evolver = mock_ta_evolver
     scheduler._run_weight_optimizer = mock_weight_optimizer
@@ -80,8 +78,7 @@ async def test_pipeline_runs_learning_at_exactly_200_trades():
     outcome_reviewer.load_all_outcomes.return_value = _make_outcomes(200)
     scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=MagicMock(),
         ta_evolver=MagicMock(), weight_optimizer=MagicMock(),
-        outcome_interval_seconds=3600, daily_pipeline_hour=2,
-        math_config={})
+        outcome_interval_seconds=3600, daily_pipeline_hour=2)
     scheduler._run_bias_detector = mock_bias
     scheduler._run_ta_evolver = mock_ta_evolver
     scheduler._run_weight_optimizer = mock_weight_optimizer
