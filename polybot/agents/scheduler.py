@@ -196,7 +196,7 @@ class AgentScheduler:
     def __init__(self, outcome_reviewer: Any, bias_detector: Any, ta_evolver: Any, weight_optimizer: Any,
                  indicator_engine: Any = None, signal_engine: Any = None, alert_manager: Any = None,
                  outcome_interval_seconds: int = 3600, daily_pipeline_hour: int = 2,
-                 daily_pipeline_minute: int = 0, math_config: dict[str, Any] | None = None,
+                 daily_pipeline_minute: int = 0,
                  claude_client: Any = None, market_scanner: Any = None,
                  config: dict[str, Any] | None = None, counterfactual_tracker: Any = None,
                  pipeline_tracker: Any = None) -> None:
@@ -210,7 +210,6 @@ class AgentScheduler:
         self.outcome_interval_seconds: int = outcome_interval_seconds
         self.daily_pipeline_hour: int = daily_pipeline_hour
         self.daily_pipeline_minute: int = daily_pipeline_minute
-        self.math_config: dict[str, Any] = math_config or {}
         self.claude_client: Any = claude_client  # stored for future use + passed to ta_evolver
         self.market_scanner: Any = market_scanner
         self._config: dict[str, Any] | None = config  # Full config dict — written back to settings.yaml after pipeline adoption

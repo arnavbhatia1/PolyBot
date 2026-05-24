@@ -14,7 +14,7 @@ All layers compose in logit space (except L1's CDF), then sigmoid + isotonic cal
 - **L4** — RSI/MACD/Stoch/OBV/VWAP. Polarity-split: mean-revert group (RSI/Stoch/VWAP) vs trend-confirm group (MACD/OBV). Smooth `tanh(autocorr / regime_momentum_threshold)` curve gates each group — no cliff at the threshold. In revert regime, mean-revert keeps its contrarian sign at full power and trend-confirm is dampened. In trend regime, mean-revert's sign is replaced by `sign(last_1min_return)` so polarity tracks the trend direction (continuation expectation, not a direction-agnostic flip) and trend-confirm runs at full power. Magnitude scaler from `effective_momentum_weight` is unsigned, also smoothed via tanh between DAMPEN (0.5×) and AMPLIFY (1.5×), clamped ±0.10.
 - **L5** — `tanh(prev_margin/atr) · prev_margin_weight · logit_scale · (1 − min(l5_regime_damp_cap, |regime|))`. Dampened by regime strength to orthogonalize with L2 early in the window. `l5_regime_damp_cap` default 0.7, pipeline-tunable.
 - **L6 — derived feature library.** Closed library of bounded transforms of already-tracked state (see `polybot/core/derived_features.py`). Every weight defaults to 0.0; the layer is dead until the pipeline raises one off zero. Combined L6 contribution hard-capped at ±0.25 logits regardless of individual weights — and `claude_client` validator drops any L6 weight change set whose `sum(|w|) · logit_scale` would push past that cap, so the optimizer can't search above adoptable space.
-- **Calibration (isotonic) — `IsotonicCalibrator`** — sole overconfidence correction. Fit on last 7d of trades (not the global walk-forward split; needs ≥125 trades in window or skips entirely; train split ≥75 to fit). Identity by default. Adoption requires the bootstrap-CI lower bound (100 resamples, lower 80%) of weighted log-loss improvement vs identity to exceed 0 — accounts for the step-function variance of isotonic on thin pools.
+- **Calibration (isotonic) — `IsotonicCalibrator`** — sole overconfidence correction. Fit on last 7d of trades (not the global walk-forward split; needs ≥125 trades in window or skips entirely; train split ≥75 to fit). Identity by default. Adoption requires the bootstrap-CI lower bound (300 resamples, lower 80%) of weighted log-loss improvement vs identity to exceed 0 — accounts for the step-function variance of isotonic on thin pools.
 
 L3+L3b combined capped at ±`flow_combined_cap` (default 0.35) logits. Final logit clamped ±`final_logit_clamp` (default 4.0) → prob ∈ [0.018, 0.982]. Both caps pipeline-tunable.
 
@@ -59,12 +59,12 @@ polybot/
   config/                {settings.yaml, loader.py, param_registry.py}
   core/                  signal_engine, calibrator, order_flow, returns,
                          regime, liquidation, exit_boundary, sprt, adverse_selection, derived_features
-  feeds/                 coinbase, binance(+depth+trades), bybit, chainlink, clob_ws, market_scanner
-  indicators/            rsi/macd/stoch/obv/vwap/ema/atr + engine
+  feeds/                 coinbase_feed, binance_feed(+depth+trades), bybit_feed, chainlink_feed, clob_ws, market_scanner
+  indicators/            rsi/macd/stochastic/obv/vwap/ema/atr + engine
   execution/             base, paper_trader, live_trader, circuit_breaker, correlation
   agents/                scheduler, outcome_reviewer, counterfactual_tracker, ghost_tracker,
                          bias_detector, ta_evolver, weight_optimizer, pipeline_tracker,
-                         pipeline_analytics, claude_client, local_recommender
+                         pipeline_analytics, claude_client, claude_recommender, recommender_base, local_recommender
   memory/                calibration, outcomes, ghost_outcomes, counterfactuals, pipeline_*
   discord_bot/           !status !history !pause !resume !clear !session !commands
   db/models.py           SQLite (positions, trade_history, bankroll, peak_bankroll)
@@ -91,15 +91,15 @@ python -m polybot.main --run-pipeline     # Pipeline once, no trading
 python -m pytest polybot/tests/
 ```
 
-`run_polybot.ps1` starts at 12:01 AM ET, stops trading at 11:15 PM ET, runs the pipeline at 11:30 PM ET, commits, restarts.
+`run_polybot.ps1` starts at 12:01 AM ET, stops trading at 11:30 PM ET, runs the pipeline at 11:45 PM ET, commits, restarts.
 
 ## Learning Pipeline
 
-Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older trades came from probability machines that no longer exist). Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][90:100] applied inside that window. **Backtest Sharpe uses realized fills** — `gain_pct = pnl/size` from closed-trade outcomes, where `pnl` already nets actual fee and actual fill price (see `pipeline_analytics.py:77`, `scheduler.py:780`). No mid-price replay, no assumed-fill correction needed; candidate strategies inherit the same slippage cost any live trade would pay.
+Daily 23:45 ET. Dataset bounded to the **last 60 days** before splitting (older trades came from probability machines that no longer exist). Walk-forward 60% train / 40% across folds [60:70][70:80][80:90][90:100] applied inside that window. **Backtest Sharpe uses realized fills** — `gain_pct = pnl/size` from closed-trade outcomes, where `pnl` already nets actual fee and actual fill price (see `pipeline_analytics.py:77`, `scheduler.py:780`). No mid-price replay, no assumed-fill correction needed; candidate strategies inherit the same slippage cost any live trade would pay.
 
 **Calibration** (isotonic) has its own 7-day window (needs ≥125 trades in pool; ≥75 in train split; skips entirely if below either threshold) — calibration must reflect the *current* model, not last month's.
 
-**Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Fold-consistency: worst-fold floor `min(fold_sharpes) ≥ -0.10` (magnitude-aware — a single tiny dip is fine, a deep collapse rejects). Regime-stratified veto activates per regime bucket once that bucket has ≥20 trades: dominant regime must improve AND no other regime may degrade >0.10 Sharpe. **Holdout confirmation:** the last 3 days are excluded from all folds and the evolver context; after a candidate clears the gates above, candidate-vs-baseline backtests run on the holdout pool (when ≥30 trades) and adoption is blocked if the candidate underperforms baseline there.
+**Adoption gate:** `candidate_sharpe > 0`, `n ≥ 100`, `z = Δ_sharpe / JK_SE ≥ 0.3` (Newey-West multi-lag autocorr-adjusted). Fold-consistency: worst-fold floor `min(fold_sharpes) ≥ -0.10` (magnitude-aware — a single tiny dip is fine, a deep collapse rejects). Regime-stratified veto activates per regime bucket once that bucket has ≥20 trades: dominant regime must improve AND no other regime may degrade >0.10 Sharpe. **Holdout confirmation:** the last 7 days are excluded from all folds and the evolver context (matches the calibrator's 7-day fit window — the candidate's last fold is never scored against trades the live calibrator already saw); after a candidate clears the gates above, candidate-vs-baseline backtests run on the holdout pool (when ≥30 trades) and adoption is blocked if the candidate underperforms baseline there.
 
 **Interaction back-out:** if combined Δ_sharpe < 0.7 × sum(individual deltas), iteratively remove the weakest-z change until either the bound clears or ≤1 change remains.
 
@@ -128,7 +128,7 @@ Daily 23:30 ET. Dataset bounded to the **last 60 days** before splitting (older 
 - `momentum_weight` magnitude ≤ 0.10.
 - Never `log_return` for Sharpe.
 - Pricing from `GET /price?side=BUY|SELL`, not raw CLOB book.
-- Fee from `GET /fee-rate`, not hardcoded.
+- Fee uses Polymarket's binary-payoff formula `rate × shares × p × (1-p)` (zero at $0/$1 extremes, max at $0.50). The `rate` is a constant `0.018` for crypto markets — lives in `base.DEFAULT_FEE_RATE` and is what `market_scanner.fetch_fee_rate` returns. Price-dependent variation is in the formula, not the rate, so no per-token `GET /fee-rate` call is needed. If Polymarket ever changes the rate or makes it token-variable, restore the live API call and cache it.
 - Resolution from Gamma/Chainlink, not Binance.
 - Don't bypass circuit breaker.
 - Don't delete `polybot/db/polybot_*.db`.

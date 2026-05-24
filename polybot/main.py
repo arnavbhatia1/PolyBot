@@ -2384,7 +2384,6 @@ async def run_pipeline() -> None:
         outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
         daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
         daily_pipeline_minute=agents_cfg.get("daily_pipeline_minute", 0),
-        math_config=config["math"],
         config=config,
         counterfactual_tracker=counterfactual_tracker,
         pipeline_tracker=pipeline_tracker,
@@ -2445,9 +2444,6 @@ async def main() -> None:
     logger.debug(f"Database: {db_path} (mode: {mode})")
     if await db.get_bankroll() == 0:
         await db.set_bankroll(config["execution"]["initial_bankroll"])
-
-    # Math config
-    math_cfg = config["math"]
 
     # Binance feed
     binance_cfg = config.get("binance", {})
@@ -2600,7 +2596,6 @@ async def main() -> None:
         outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
         daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
         daily_pipeline_minute=agents_cfg.get("daily_pipeline_minute", 0),
-        math_config=math_cfg,
         market_scanner=market_scanner,
         config=config,
         counterfactual_tracker=counterfactual_tracker,
