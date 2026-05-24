@@ -40,31 +40,6 @@ class BybitState:
     oi_updated: float = 0.0
     oi_updated_prev: float = 0.0
 
-    def is_stale(self, spot_price: float, spot_updated: float,
-                 threshold_usd: float = 20.0) -> bool:
-        """Detect if spot is stale relative to fresh perp data.
-
-        Returns True when:
-        - |perp - spot| > threshold_usd (prices diverged)
-        - perp data is fresh (< 3 seconds old)
-        - spot data is stale (> 2 seconds old)
-
-        This indicates a latency arbitrage window where perp has moved
-        but spot hasn't caught up yet.
-        """
-        if self.perp_price <= 0 or spot_price <= 0:
-            return False
-
-        now = time.time()
-        perp_age = now - self.perp_updated
-        spot_age = now - spot_updated
-
-        price_diverged = abs(self.perp_price - spot_price) > threshold_usd
-        perp_fresh = perp_age < 3.0
-        spot_stale = spot_age > 2.0
-
-        return price_diverged and perp_fresh and spot_stale
-
 
 class BybitFeed:
     """WebSocket consumer for Bybit BTC perpetual futures.
@@ -104,9 +79,10 @@ class BybitFeed:
         import websockets
 
         backoff = RECONNECT_BASE
-        # OI updates ~every 5s; >60s idle is the established staleness gate for L3e,
-        # but a 30s recv timeout catches dead streams sooner so reconnect runs before
-        # the gate even fires.
+        # OI updates ~every 5s; >60s idle is the established staleness gate for L3e.
+        # The recv timeout must fire BEFORE that gate so reconnect runs before the
+        # bot is gated off the market — 55s gives just enough margin without
+        # falsely tripping on a normal 5-10s OI tick cadence.
         while self._running:
             try:
                 async with websockets.connect(self.ws_url, ping_interval=20, ping_timeout=30, compression=None) as ws:
@@ -126,9 +102,9 @@ class BybitFeed:
 
                     while self._running:
                         try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=120.0)
+                            msg = await asyncio.wait_for(ws.recv(), timeout=55.0)
                         except asyncio.TimeoutError:
-                            logger.warning("Bybit WS idle >120s, forcing reconnect")
+                            logger.warning("Bybit WS idle >55s, forcing reconnect")
                             break
                         try:
                             data = _loads(msg)

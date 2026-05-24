@@ -122,12 +122,15 @@ class CoinbaseFeed:
                                  self.product_id)
 
                     # BTC-USD ticker fires on every trade — many per second.
-                    # 30s of no data = unambiguously dead; force reconnect.
+                    # Reconnect must run BEFORE the 30s signal-engine staleness
+                    # skip fires, otherwise the bot sits gated off the market
+                    # for the full skip window before the WS even tries to
+                    # recover. 25s catches the dead-socket case in time.
                     while self._running:
                         try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=90.0)
+                            msg = await asyncio.wait_for(ws.recv(), timeout=25.0)
                         except asyncio.TimeoutError:
-                            logger.warning("Coinbase WS idle >90s, forcing reconnect")
+                            logger.warning("Coinbase WS idle >25s, forcing reconnect")
                             break
                         try:
                             data = _loads(msg)

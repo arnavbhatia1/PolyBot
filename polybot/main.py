@@ -203,13 +203,41 @@ def _log_skip_once(cid: str, key: str, msg: str) -> None:
         logger.info(msg)
 
 
+def _log_hold_heartbeat_stale(pos: dict[str, Any], live: dict[str, Any], reason: str) -> None:
+    """30s-throttled HOLD heartbeat for the exit-path stale-feed branch.
+
+    Shares the _last_hold_log throttle with the normal HOLD log so the
+    operator sees a steady pulse confirming the position is being monitored
+    and *why* the bot won't act. Surfacing the reason is the whole point —
+    silent fallbacks are what produced the "moved against us (2%)" pathology.
+    """
+    now_ts = time.time()
+    mid = pos.get("market_id", "")
+    if now_ts - _last_hold_log.get(mid, 0) >= 30:
+        _last_hold_log[mid] = now_ts
+        logger.info(
+            f"  {_C.DIM}HOLD {pos.get('side', '?')}{_C.RESET}  "
+            f"{_fmt_secs(live.get('seconds_remaining', 0))}  |  "
+            f"deferring decision — {reason}"
+        )
+
+
 def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) -> tuple[float, str]:
     """Return the freshest available BTC price + its source label.
 
+    Each leg has a hard freshness gate; the 1-min candle is rejected unless
+    its close timestamp is within 5s of now. Previously the candle leg had no
+    age check at all and could return a 60s-stale close as if it were fresh,
+    which drove the "moved against us (2%)" pathology where model_prob
+    collapsed to its logit floor mid-window. Returns (0.0, "stale") when
+    every leg is stale — callers must treat that as "skip this decision",
+    not as a zero price.
+
     Priority order:
-      1. Coinbase WS (<2s) — direct exchange feed, sub-second tick stream
+      1. Coinbase WS (<2s) — direct exchange ticker, sub-second tick stream
       2. Binance aggTrade (<3s) — per-trade WS stream, also sub-second
-      3. Binance 1-min candle close — coarse fallback, may be up to 60s old
+      3. Binance 1-min candle close (<5s since close ts) — only the candle
+         that just closed; rejects anything that's already mid-window-stale
     """
     if coinbase_feed:
         cb_age = coinbase_feed.state.age_seconds
@@ -223,8 +251,10 @@ def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) 
             return bt_price, f"binance_trades ({bt_age:.2f}s)"
     latest_candle = binance_feed.buffer.latest() if binance_feed and binance_feed.buffer else None
     if latest_candle:
-        return latest_candle.close, "binance_candle"
-    return 0.0, "none"
+        cdl_age = (time.time() * 1000 - latest_candle.timestamp) / 1000
+        if cdl_age < 5:
+            return latest_candle.close, f"binance_candle ({cdl_age:.1f}s)"
+    return 0.0, "stale"
 
 
 def _fmt_secs(s: float) -> str:
@@ -556,6 +586,17 @@ async def _evaluate_signal_and_enter(
         agg_age = trades_feed.accumulator.latest_age_s
         if agg_age > 30:
             stale_feeds.append(f"binance_aggtrade={agg_age:.0f}s")
+    # Binance kline buffer drives L1 (ATR / vol scaling), L2 (regime autocorr),
+    # and L4 (indicator committee). Anything older than ~one missed candle
+    # interval means the WS stalled mid-window; a frozen buffer silently
+    # reuses the previous ATR/regime values until the gross 180s outer skip
+    # eventually fires. 90s catches it ~one full candle earlier.
+    if binance_feed and binance_feed.buffer:
+        _latest = binance_feed.buffer.latest()
+        if _latest is not None:
+            kline_age = (time.time() * 1000 - _latest.timestamp) / 1000
+            if kline_age > 90:
+                stale_feeds.append(f"binance_kline={kline_age:.0f}s")
     if stale_feeds:
         _record_skip("stale_feed")
         _log_skip_once(cid, f"stale_{cid}", f"SKIP: stale feeds — {', '.join(stale_feeds)}")
@@ -1441,14 +1482,40 @@ async def _evaluate_and_exit_position(
     # re-attempt if the price recovered above the $1 CLOB minimum. The deferral
     # now happens at the actual scalp step (just before close_trade), so we keep
     # monitoring, keep emitting heartbeats, and resume scalping on recovery.
-    # BTC price priority: Coinbase WS > Binance aggTrade > Binance 1-min candle
-    btc_now, _ = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed)
+    # BTC price priority: Coinbase WS > Binance aggTrade > Binance 1-min candle.
+    # Each leg is hard-gated in _fastest_btc_price; if all three are stale
+    # btc_now is 0 and we HOLD without scalping. Acting on a stale BTC
+    # produced the "moved against us (2%)" pathology mid-window.
+    btc_now, _btc_src = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed)
     if btc_now <= 0:
+        _log_hold_heartbeat_stale(pos, live, "no fresh BTC price")
         return day_wins, day_losses, day_fees, None
 
-    # Don't make exit decisions on stale data — hold until fresh
-    candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
-    if candle_age > 180:
+    # Mirror the entry-path staleness gate (main.py ~540-562). Every
+    # signal-input feed must be fresh, or we defer the decision. Previously
+    # the exit path checked only candle_age>180; if Coinbase / aggTrade /
+    # Bybit / Chainlink went stale the bot would still scalp on degraded
+    # state. CLAUDE.md spec: Coinbase >30s, Chainlink >60s,
+    # aggTrade >30s (L3b CVD/taker), Bybit OI >60s (L3e liquidation).
+    # kline >90s catches a frozen indicator/ATR buffer.
+    _stale: list[str] = []
+    if coinbase_feed and coinbase_feed.state.age_seconds > 30:
+        _stale.append(f"coinbase={coinbase_feed.state.age_seconds:.0f}s")
+    if chainlink_feed and chainlink_feed.age_seconds > 60:
+        _stale.append(f"chainlink={chainlink_feed.age_seconds:.0f}s")
+    if bybit_feed is not None and bybit_feed.state.oi_updated > 0:
+        _bybit_age = time.time() - bybit_feed.state.oi_updated
+        if _bybit_age > 60:
+            _stale.append(f"bybit_oi={_bybit_age:.0f}s")
+    if trades_feed is not None and trades_feed.accumulator is not None:
+        _agg_age = trades_feed.accumulator.latest_age_s
+        if _agg_age > 30:
+            _stale.append(f"binance_aggtrade={_agg_age:.0f}s")
+    _candle_age = (time.time() * 1000 - binance_feed.buffer.latest().timestamp) / 1000
+    if _candle_age > 90:
+        _stale.append(f"binance_kline={_candle_age:.0f}s")
+    if _stale:
+        _log_hold_heartbeat_stale(pos, live, "stale feeds — " + ", ".join(_stale))
         return day_wins, day_losses, day_fees, None
 
     # Get strike from the position's stored trade_context (correct for this contract)
@@ -1497,10 +1564,14 @@ async def _evaluate_and_exit_position(
         hold_trades_up, hold_trades_down,
     )
 
-    # New signals for hold evaluation
+    # New signals for hold evaluation. Per-layer age guards mirror the entry
+    # path (main.py:587, 605, 612): contribution is 0 when the source is
+    # stale, never the cached last-fresh value. The top-level gate above
+    # already short-circuits stale states, but these belt-and-suspenders
+    # guards keep the layers correct if that gate is ever bypassed.
     hold_spot_flow = 0.0
 
-    if trades_feed and trades_feed.accumulator:
+    if trades_feed and trades_feed.accumulator and trades_feed.accumulator.latest_age_s <= 30:
         acc = trades_feed.accumulator
         cvd = acc.get_cvd(window_s=120)
         taker = acc.get_taker_ratio(window_s=60)
@@ -1514,7 +1585,10 @@ async def _evaluate_and_exit_position(
     # elapsed_seconds normalization, otherwise the hold path applies the new
     # per-minute formula with raw-second inputs and over-saturates at 5-10×.
     hold_liquidation = 0.0
-    if bybit_feed and bybit_feed.state.open_interest > 0 and bybit_feed.state.open_interest_prev > 0:
+    if (bybit_feed and bybit_feed.state.open_interest > 0
+            and bybit_feed.state.open_interest_prev > 0
+            and bybit_feed.state.oi_updated > 0
+            and (time.time() - bybit_feed.state.oi_updated) <= 60):
         _hold_oi_elapsed = bybit_feed.state.oi_updated - bybit_feed.state.oi_updated_prev
         hold_liquidation = compute_liquidation_pressure(
             bybit_feed.state.open_interest, bybit_feed.state.open_interest_prev,

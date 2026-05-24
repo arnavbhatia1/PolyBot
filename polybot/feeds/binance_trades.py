@@ -34,10 +34,20 @@ class BinanceTradeAccumulator:
         self.max_age_s = max_age_s
         self._trades: deque[AggTrade] = deque()
         self._cache: dict[tuple, tuple[tuple, float]] = {}
+        # Local receipt timestamp of the most recent trade. The AggTrade.ts
+        # field stays as exchange event time (Binance T) for accurate
+        # windowed analytics; latest_age_s reads this local-receipt value
+        # so staleness semantics match the other feeds (Coinbase, Bybit,
+        # Chainlink, CLOB all use local time). Without this, aggTrade
+        # ages were inflated by ~100-300ms of network latency + clock
+        # skew vs the other feeds — meaning a 30s threshold actually
+        # fired at ~29.7-29.95s of wall-clock since last message.
+        self._last_received_at: float = 0.0
 
     def add_trade(self, price: float, qty: float, is_buyer_maker: bool, ts: float) -> None:
         """Append a trade and prune expired entries."""
         self._trades.append(AggTrade(price=price, qty=qty, is_buyer_maker=is_buyer_maker, ts=ts))
+        self._last_received_at = time.time()
         self._prune()
 
     def _prune(self) -> None:
@@ -157,10 +167,13 @@ class BinanceTradeAccumulator:
 
     @property
     def latest_age_s(self) -> float:
-        """Age of the most recent trade in seconds (inf if no trades)."""
-        if not self._trades:
+        """Age of the most recent trade in seconds, measured against local
+        receipt time so staleness semantics match the other WS feeds.
+        Returns inf if no trade has ever been received.
+        """
+        if self._last_received_at <= 0:
             return float("inf")
-        return time.time() - self._trades[-1].ts
+        return time.time() - self._last_received_at
 
 
 class BinanceTradesFeed:
@@ -218,9 +231,15 @@ class BinanceTradesFeed:
                     logger.debug(f"Binance aggTrade WebSocket connected: {stream}")
                     while self._running:
                         try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=180.0)
+                            # Reconnect before the 30s L3b staleness skip fires
+                            # — aggTrade feeds CVD/taker and the CVD-decel gate,
+                            # and a silent stall would gate the bot off the
+                            # market for the entire skip window. 25s is the
+                            # tightest value that doesn't trip on Binance.US's
+                            # natural low-volume quiet periods.
+                            msg = await asyncio.wait_for(ws.recv(), timeout=25.0)
                         except asyncio.TimeoutError:
-                            logger.warning("aggTrade WS idle >180s, forcing reconnect")
+                            logger.warning("aggTrade WS idle >25s, forcing reconnect")
                             break
                         try:
                             data = _loads(msg)
