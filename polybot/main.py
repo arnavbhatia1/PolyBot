@@ -964,6 +964,14 @@ async def _evaluate_signal_and_enter(
     price = market_scanner.snap_to_tick(price * (1 + slip), tick_size)
 
     snapshot = indicator_engine.get_snapshot(indicators)
+    # Last two closes are stored so the L6 backtest can reconstruct `last_return`
+    # for the autocorr_signed_mag feature — without them that feature is dormant
+    # in replay and the pipeline can't adopt it even if it would help live.
+    _closes_buf = binance_feed.buffer.get_closes()
+    _closes_tail = (
+        [float(_closes_buf[-2]), float(_closes_buf[-1])]
+        if len(_closes_buf) >= 2 else None
+    )
     snapshot["trade_context"] = {
         # Entry-time facts — needed by backtest replay
         "btc_price": btc_price,
@@ -971,6 +979,7 @@ async def _evaluate_signal_and_enter(
         "seconds_remaining": contract["seconds_remaining"],
         "market_price_up": price_up,
         "market_price_down": price_down,
+        "closes_tail": _closes_tail,
         "model_probability": signal.prob,
         # Pre-calibrator P(side). Stored separately from `model_probability` so the
         # next pipeline cycle's isotonic re-fit sees raw probabilities, not calibrate(calibrate(...)).

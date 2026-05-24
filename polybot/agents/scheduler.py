@@ -607,6 +607,9 @@ class AgentScheduler:
             _ATR_HISTORY_MIN_SAMPLES as _ATR_MIN_SHORT,
             _ATR_LONG_TERM_MIN_SAMPLES as _ATR_MIN_LONG,
             _ATR_FLOOR_FRACTION as _ATR_FLOOR_FRAC,
+            _REGIME_MOMENTUM_DAMPEN as _L4_DAMPEN,
+            _REGIME_MOMENTUM_AMPLIFY as _L4_AMPLIFY,
+            _MOMENTUM_WEIGHT_CLAMP as _L4_MW_CLAMP,
         )
         _dw_in = derived_weights or {}
         l6_weights: dict[str, float] = {
@@ -753,12 +756,10 @@ class AgentScheduler:
                 l5_damp = 1.0 - min(l5_regime_damp_cap, abs(regime_factor))
                 logit_p += math.tanh(normalized) * (prev_margin_weight * logit_scale) * l5_damp
 
-            # L4 — indicator committee. Must mirror live `compute_momentum`:
-            # split fade-aligned (RSI/Stoch/VWAP) from trend-aligned (MACD/OBV),
-            # apply regime-conditional polarity per group, then magnitude-amplify
-            # by |momentum_weight| × (1.5 if |regime|>threshold else 0.5), clamped at 0.10.
-            # The sign of momentum_weight is dead in live; backtest must use abs()
-            # too so adoption decisions reflect live behavior, not stale physics.
+            # L4 — indicator committee. Mirrors live `compute_momentum` +
+            # `effective_momentum_weight` exactly: smooth tanh(autocorr/threshold)
+            # regime conditioning, direction-aware mean-revert flip in trend regime,
+            # and smooth magnitude scaling between DAMPEN (0.5×) and AMPLIFY (1.5×).
             def _ind_score(name: str) -> float:
                 ind = snap.get(name, {})
                 return ind.get("norm_score", ind.get("score", 0))
@@ -771,17 +772,17 @@ class AgentScheduler:
                 _ind_score("macd") * recommended_weights.get("macd", 0)
                 + _ind_score("obv") * recommended_weights.get("obv", 0)
             )
-            if regime_factor > regime_momentum_threshold:
-                momentum_score = -mean_revert_score + trend_confirm_score
-            elif regime_factor < -regime_momentum_threshold:
-                momentum_score = mean_revert_score + 0.5 * trend_confirm_score
-            else:
-                momentum_score = 0.5 * (mean_revert_score + trend_confirm_score)
+            _t = math.tanh(regime_factor / regime_momentum_threshold) if regime_momentum_threshold > 0 else 0.0
+            _t_pos = max(0.0, _t)
+            _contrarian_mult = (1.0 - _t) * _L4_DAMPEN
+            _tc_mult = _L4_DAMPEN + (1.0 - _L4_DAMPEN) * _t_pos
+            momentum_score = (mean_revert_score * _contrarian_mult
+                              + abs(mean_revert_score) * direction * _t_pos
+                              + _tc_mult * trend_confirm_score)
             momentum_score = max(-1.0, min(1.0, momentum_score))
-            if abs(regime_factor) > regime_momentum_threshold:
-                eff_mw = min(0.10, abs(momentum_weight) * 1.5)
-            else:
-                eff_mw = min(0.10, abs(momentum_weight) * 0.5)
+            _t_abs = abs(_t)
+            eff_mw = min(_L4_MW_CLAMP,
+                         abs(momentum_weight) * (_L4_DAMPEN + (_L4_AMPLIFY - _L4_DAMPEN) * _t_abs))
             logit_p += momentum_score * eff_mw * logit_scale
 
             # L6 — derived features. ATR rolling state was updated at L1 above,
@@ -2096,7 +2097,14 @@ class AgentScheduler:
         # Emit [2/4] analysis summary now that bias/calibration/shifts are all done
         _cf_acc = cf_info.get("accuracy", 0) if cf_info else None
         _cf_total = cf_info.get("total", 0) if cf_info else 0
-        _shifts = pipeline_info.get("distribution_shifts", [])
+        _shifts_dict = pipeline_info.get("distribution_shifts", {}) or {}
+        # Filter to features where the KS test rejects identical-distribution at
+        # p<0.05 — otherwise the display would list every feature with ≥30
+        # samples per side every night, drowning the actual regime-break signal.
+        _shifts = [
+            name for name, info in _shifts_dict.items()
+            if isinstance(info, dict) and info.get("p_value", 1.0) < 0.05
+        ]
         _gate_skips = pipeline_info.get("gate_total_skips", 0)
         _real_trades = [o for o in all_outcomes if not o.get("is_ghost")]
         _res_acc = (sum(1 for o in _real_trades if o.get("correct")) / len(_real_trades)) if _real_trades else None
