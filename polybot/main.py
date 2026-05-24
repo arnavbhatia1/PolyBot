@@ -2072,17 +2072,15 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     else:
         _cal_str = f"isotonic knots={_cal.n_knots} Δll={_cal.log_loss_improvement:+.4f}"
     def _f(feed: Any) -> str: return "OK" if feed is not None else "--"
-    _sep = "═" * 60
     logger.info(
-        f"\n{_sep}\n"
-        f"  PolyBot  [{_mode_label}] | Bankroll ${_bankroll:,.2f}\n"
-        f"  Today: {day_wins}W / {day_losses}L | Calibration: {_cal_str}\n"
-        f"  ─────────────────────────────────────────────────────\n"
-        f"  Price Feeds:   Coinbase {_f(coinbase_feed)}  Binance {_f(binance_feed)}  Chainlink {_f(chainlink_feed)}\n"
-        f"  Signal feeds:  Bybit {_f(bybit_feed)}"
-        f"  CLOB WS {'Ready' if clob_ws is not None else 'Disconnected'}\n"
-        f"  Discord: {'Connected' if alert_manager is not None else 'Unavailable'}\n"
-        f"{_sep}"
+        f"PolyBot [{_mode_label}] ready  |  Bankroll ${_bankroll:,.2f}  |  "
+        f"Today: {day_wins}W/{day_losses}L  |  Calibration: {_cal_str}"
+    )
+    logger.info(
+        f"Feeds: Coinbase {_f(coinbase_feed)} · Binance {_f(binance_feed)} · "
+        f"Chainlink {_f(chainlink_feed)} · Bybit {_f(bybit_feed)} · "
+        f"CLOB WS {'Ready' if clob_ws is not None else 'Disconnected'} · "
+        f"Discord {'Connected' if alert_manager is not None else 'Unavailable'}"
     )
 
     # Closure captures clob_ws once — reused across all book-update ticks instead
@@ -2092,7 +2090,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     while True:
         # Check if scheduler requested shutdown (auto-restart cycle after pipeline)
         if scheduler and getattr(scheduler, '_shutdown_requested', False):
-            logger.info("Scheduler requested shutdown — exiting trading loop")
             break
 
         # Event-driven: react instantly to WebSocket book/resolution updates, timeout 1s for housekeeping
@@ -2786,12 +2783,7 @@ async def main() -> None:
         await _stop(chainlink_feed.stop())
         bankroll = await db.get_bankroll()
         await db.close()
-        logger.info(
-            f"{'=' * 60}\n"
-            f"  PolyBot stopped  |  Bankroll ${bankroll:.2f}\n"
-            f"  Feeds stopped  |  WS closed  |  DB closed\n"
-            f"{'=' * 60}"
-        )
+        logger.info(f"PolyBot stopped — Bankroll ${bankroll:.2f} · Feeds/WS/DB closed")
         await discord_bot.close()
 
 

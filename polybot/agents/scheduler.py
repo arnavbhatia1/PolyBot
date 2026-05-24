@@ -31,8 +31,7 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     baseline = wi.get("old_sharpe", 0.0) or 0.0
     n_baseline = wi.get("n_baseline_trades", 0) or 0
     per_change = wi.get("per_change", []) or []
-    # Mirror the actual gate (z=ADOPTION_Z_FLOOR × JK_SE) — no static abs floor,
-    # matching weight_optimizer.should_adopt.
+    # Mirror the actual gate (z=ADOPTION_Z_FLOOR × JK_SE)
     se_val: float | None = None
     if n_baseline >= 2:
         se_val = math.sqrt((1.0 + 0.5 * baseline * baseline) / n_baseline)
@@ -42,12 +41,9 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     adopted = [c for c in per_change if c.get("decision") == "adopted"]
     rejected = [c for c in per_change if c.get("decision") != "adopted"]
 
-    SEP_HEAVY = "═" * 56
     SEP_LIGHT = "─" * 56
     lines: list[str] = []
-    lines.append(SEP_HEAVY)
-    lines.append(f"  PIPELINE  {ts}  (Source: {str(source).upper()})")
-    lines.append(SEP_HEAVY)
+    lines.append(f"─── Pipeline result — {ts}  (Source: {str(source).upper()}) ───")
     lines.append("")
 
     # Outcome headline
@@ -64,7 +60,7 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
 
     # Baseline explanation — one line
     if n_baseline > 0:
-        lines.append(f"  Baseline: Sharpe {baseline:+.3f} on {n_baseline:,} trades (60-days with recent 3-day holdout)")
+        lines.append(f"  Baseline: Sharpe {baseline:+.3f} on {n_baseline:,} trades (60-days with recent 7-day holdout)")
     else:
         lines.append(f"  Baseline: not enough trades yet")
     lines.append(f"  Bar: Must beat baseline by ≥ {dyn_floor:+.3f} Sharpe")
@@ -126,9 +122,9 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
         lines.append(f"  Calibration: identity (no transform)")
         lines.append(f"               new fit rejected: {reason}")
     else:
-        lines.append(f"  Calibration: identity (no transform applied to model probabilities)")
+        lines.append(f"  Calibration: identity")
 
-    # Holdout line — last 3 days held out from the optimizer as a fresh-data sanity check
+    # Holdout line — last 7 days held out from the optimizer as a fresh-data sanity check
     holdout_changes = [c for c in per_change if "holdout_candidate_sharpe" in c]
     holdout_n = pipeline_info.get("holdout_n_trades")
     holdout_active = isinstance(holdout_n, int) and holdout_n >= 30
@@ -140,16 +136,15 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
         adopted_after_holdout = sum(1 for c in holdout_changes if c.get("decision") == "adopted")
         n_pool = holdout_n if isinstance(holdout_n, int) else "?"
         lines.append(f"  Holdout:     {passed}/{len(holdout_changes)} candidates cleared the "
-                     f"last-3-day fresh-data check")
+                     f"last-7-day fresh-data check")
         tail = f"({adopted_after_holdout} adopted)" if adopted_after_holdout else "(none adopted)"
         lines.append(f"               pool: {n_pool} trades, baseline Sharpe {h_base:+.3f}  {tail}")
     elif holdout_active and rejected:
-        lines.append(f"  Holdout:     not run — all candidates rejected before reaching this gate")
-        lines.append(f"               ({holdout_n} trades available in the last-3-day pool)")
+        lines.append(f"  Holdout:     skipped — all candidates rejected upstream (pool: {holdout_n} trades in last 7d)")
     elif holdout_active:
         lines.append(f"  Holdout:     ready ({holdout_n} trades) — no proposals tested tonight")
     elif holdout_n is not None:
-        lines.append(f"  Holdout:     inactive — only {holdout_n} trades in last 3 days (need ≥30)")
+        lines.append(f"  Holdout:     inactive — only {holdout_n} trades in last 7 days (need ≥30)")
     else:
         lines.append(f"  Holdout:     inactive (insufficient recent trades)")
 
@@ -157,7 +152,7 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     if manual_obs:
         lines.append("")
         lines.append(f"  {'─' * 56}")
-        lines.append(f"  ACTION NEEDED — edit settings.yaml manually:")
+        lines.append(f"  OPERATOR ACTION SUGGESTIONS:")
         for ob in manual_obs:
             p = ob.get("param", "?")
             cur = ob.get("current", "?")
@@ -178,7 +173,6 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
                     wrapped.append("    " + " ".join(line_buf))
                 lines.extend(wrapped)
 
-    lines.append(SEP_HEAVY)
     return "\n".join(lines)
 
 from polybot.agents.pipeline_analytics import (
@@ -1658,7 +1652,7 @@ class AgentScheduler:
     async def run_daily_pipeline(self) -> None:
         _now_utc = datetime.now(timezone.utc)
         now_et_str = f"{_now_utc.strftime('%b')} {_now_utc.day}, {_now_utc.strftime('%Y  %I:%M %p UTC')}"
-        logger.info(f"\n{'═' * 60}\n  Nightly pipeline starting — {now_et_str}\n{'═' * 60}")
+        logger.info(f"─── Pipeline starting — {now_et_str} ───")
 
         pipeline_info: dict[str, Any] = {}
 
@@ -1719,7 +1713,7 @@ class AgentScheduler:
         validation_outcomes = all_outcomes[split_idx:]
 
         logger.info(
-            f"  [1/4] Data loaded  |  {len(all_outcomes):,} trades "
+            f"  Data loaded  |  {len(all_outcomes):,} trades "
             f"({len(train_outcomes):,} train / {len(validation_outcomes):,} val)"
             + _window_note
             + (f"  |  rolled up: {rolled} outcomes, {cf_rolled} scalps, {ghost_rolled} ghosts"
@@ -1818,7 +1812,7 @@ class AgentScheduler:
                     "total": cf_analysis.get("total_scalps_tracked", 0),
                     "accuracy": cf_analysis.get("scalp_accuracy", 0),
                 }
-                pass  # rolled into [2/4] summary below
+                pass  # rolled into Analysis summary below
         pipeline_info["counterfactual"] = cf_info
 
         # Ghost trade analysis: which downstream gates are blocking profitable trades?
@@ -1828,7 +1822,7 @@ class AgentScheduler:
             resolved_ghosts = [g for g in ghosts if g.get("resolved", False)]
             if resolved_ghosts:
                 analysis["ghost_analysis"] = self.bias_detector.analyze_ghosts(resolved_ghosts)
-                pass  # rolled into [2/4] summary below
+                pass  # rolled into Analysis summary below
 
         # Isotonic re-fit. Gate: new fit must beat current on log-loss (full 7d pool) by ≥0.010
         # AND not hurt Kelly-Sharpe vs identity on holdout. Log-loss is recency-weighted,
@@ -2093,7 +2087,7 @@ class AgentScheduler:
                 "note": "Most recent 100 trades (all_outcomes tail) — use to detect active regime shifts",
             }
 
-        # Emit [2/4] analysis summary now that bias/calibration/shifts are all done
+        # Emit analysis summary now that bias/calibration/shifts are all done
         _cf_acc = cf_info.get("accuracy", 0) if cf_info else None
         _cf_total = cf_info.get("total", 0) if cf_info else 0
         _shifts_dict = pipeline_info.get("distribution_shifts", {}) or {}
@@ -2116,7 +2110,7 @@ class AgentScheduler:
             _analysis_parts.append(f"market shifts: {', '.join(_shifts)}")
         if _gate_skips:
             _analysis_parts.append(f"{_gate_skips:,} gate skips")
-        logger.info(f"  [2/4] Analysis done" + (f"  |  {' | '.join(_analysis_parts)}" if _analysis_parts else ""))
+        logger.info(f"  Analysis done" + (f"  |  {' | '.join(_analysis_parts)}" if _analysis_parts else ""))
 
         # Gate: need at least 200 trades before running TAEvolver and WeightOptimizer.
         # opt_outcomes/holdout_outcomes were already split at the top of this
@@ -2129,8 +2123,6 @@ class AgentScheduler:
             recommendations = {}
             weight_info["reason"] = f"only {len(all_outcomes)} trades (need {MIN_TRADES_FOR_LEARNING})"
         else:
-            if holdout_outcomes and len(opt_outcomes) >= MIN_TRADES_FOR_LEARNING:
-                logger.info(f"Holdout split: opt={len(opt_outcomes)} trades, holdout={len(holdout_outcomes)} (last {HOLDOUT_DAYS}d)")
             pipeline_info["holdout_n_trades"] = len(holdout_outcomes)
             if len(opt_outcomes) < MIN_TRADES_FOR_LEARNING:
                 # Holdout would leave opt below the optimizer's floor — fall back.
@@ -2327,8 +2319,6 @@ class AgentScheduler:
             except Exception as e:
                 logger.error(f"Failed to send daily report: {e}")
 
-        logger.info("Daily learning pipeline complete")
-
     async def run_outcome_loop(self) -> None:
         """Periodic outcome review — outcomes are recorded inline by the trading loop.
         This loop exists for future periodic analysis tasks."""
@@ -2348,7 +2338,7 @@ class AgentScheduler:
                     if self.alert_manager:
                         await self.alert_manager.send_error(f"Daily pipeline failed: {e}")
                 if self._auto_shutdown:
-                    logger.info("PIPELINE COMPLETE — auto-shutdown enabled, exiting for restart cycle")
+                    logger.info("Pipeline complete")
                     self._shutdown_requested = True
                     return
                 await asyncio.sleep(3600)

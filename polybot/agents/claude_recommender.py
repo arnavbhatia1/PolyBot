@@ -39,7 +39,7 @@ class ClaudeRecommender(BaseRecommender):
         try:
             resp = await self.claude_client.analyze_strategy(context)
         except Exception as e:
-            logger.warning(f"Claude API failed: {e}")
+            logger.debug(f"Claude API failed: {e}")
             raise  # caller falls back to LocalRecommender
 
         # Merge Claude's validated changes into self.proposals.

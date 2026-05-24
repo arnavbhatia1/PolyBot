@@ -146,7 +146,7 @@ class AdverseSelectionMonitor:
                 ))
                 loaded += 1
             self._prune_stale()
-            logger.info(f"AdverseSelectionMonitor: restored {loaded} fills from disk")
+            logger.debug(f"AdverseSelectionMonitor: restored {loaded} fills from disk")
         except Exception as e:
             logger.warning(f"AdverseSelectionMonitor load failed: {e} — starting fresh")
 

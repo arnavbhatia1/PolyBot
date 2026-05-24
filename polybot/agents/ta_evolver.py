@@ -49,12 +49,13 @@ class TAEvolver:
                 recommendations["_pipeline_source"] = "claude"
                 self._save_log(recommendations, source=f"Claude ({recommendations.get('confidence', '?')})")
                 logger.info(
-                    f"  [3/4] Claude done  |  confidence: {recommendations.get('confidence', '?')}  |  "
+                    f"  Claude done  |  confidence: {recommendations.get('confidence', '?')}  |  "
                     f"{len(recommendations.get('changes', []))} changes proposed"
                 )
                 return recommendations
             except Exception as e:
-                logger.warning(f"Claude unavailable, using local recommender: {e}")
+                reason = "auth failure" if "401" in str(e) else (str(e).split("\n")[0][:80] or "error")
+                logger.warning(f"Claude unavailable ({reason}) — using LocalRecommender")
 
         recs = LocalRecommender(analysis, current_config).recommend()
         recs["_pipeline_source"] = "local"

@@ -119,7 +119,7 @@ class IsotonicCalibrator:
         if y_min > 0.2 or y_max < 0.8:
             logger.info(
                 f"Isotonic fit rejected: output range [{y_min:.3f}, {y_max:.3f}] "
-                f"does not span [0.2, 0.8] — directionally asymmetric"
+                f"does not span [0.2, 0.8] (asymmetric)"
             )
             return False
 
