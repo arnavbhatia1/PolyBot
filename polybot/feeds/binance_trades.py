@@ -20,7 +20,7 @@ class AggTrade:
     price: float
     qty: float
     is_buyer_maker: bool  # True = seller aggressor (bearish), False = buyer aggressor (bullish)
-    ts: float  # Unix seconds
+    ts: float  # Local receipt time (Unix seconds) — matches the other feeds' staleness semantics
 
 
 class BinanceTradeAccumulator:
@@ -34,18 +34,17 @@ class BinanceTradeAccumulator:
         self.max_age_s = max_age_s
         self._trades: deque[AggTrade] = deque()
         self._cache: dict[tuple, tuple[tuple, float]] = {}
-        # Local receipt timestamp of the most recent trade. The AggTrade.ts
-        # field stays as exchange event time (Binance T) for accurate
-        # windowed analytics; latest_age_s reads this local-receipt value
-        # so staleness semantics match the other feeds (Coinbase, Bybit,
-        # Chainlink, CLOB all use local time). Without this, aggTrade
-        # ages were inflated by ~100-300ms of network latency + clock
-        # skew vs the other feeds — meaning a 30s threshold actually
-        # fired at ~29.7-29.95s of wall-clock since last message.
+        # Local receipt time of the most recent trade. Mirrors the per-trade
+        # ts field so windowing and staleness queries share one clock.
         self._last_received_at: float = 0.0
 
     def add_trade(self, price: float, qty: float, is_buyer_maker: bool, ts: float) -> None:
-        """Append a trade and prune expired entries."""
+        """Append a trade and prune expired entries.
+
+        Callers should pass local receipt time so windowing and staleness
+        share one clock. Tests may pass synthetic ts values to control
+        pruning behavior.
+        """
         self._trades.append(AggTrade(price=price, qty=qty, is_buyer_maker=is_buyer_maker, ts=ts))
         self._last_received_at = time.time()
         self._prune()
@@ -208,8 +207,11 @@ class BinanceTradesFeed:
             price = float(data["p"])
             qty = float(data["q"])
             is_buyer_maker = bool(data["m"])
-            ts = float(data["T"]) / 1000.0  # ms -> s
-            self.accumulator.add_trade(price, qty, is_buyer_maker, ts)
+            # Stamp with local receipt time so windowed analytics (CVD,
+            # CVD-accel, taker ratio) share one clock with latest_age_s and
+            # the rest of the staleness machinery. Exchange T is discarded —
+            # the WS stream is already ordered by arrival.
+            self.accumulator.add_trade(price, qty, is_buyer_maker, time.time())
         except (KeyError, ValueError, TypeError) as e:
             logger.warning(f"Failed to parse aggTrade: {e}")
 
