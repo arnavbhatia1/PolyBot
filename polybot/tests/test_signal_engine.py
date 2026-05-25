@@ -140,16 +140,26 @@ def test_deep_loss_holds_to_resolution_when_model_still_gives_chance(engine):
     assert "deeply underwater" in reason
 
 
-def test_deep_loss_exits_when_model_says_side_is_dead(engine):
-    """Edge < -0.10 AND model_prob < 0.05 → EXIT (no binary residual to ride out).
+def test_deep_loss_exits_when_model_says_side_is_dead():
+    """Edge < -0.10 AND calibrated prob ≤ calibrator's lowest learned knot → EXIT.
 
-    After isotonic calibration corrected the model's overconfidence, a near-zero
-    model_prob is a credible "the side really will pay zero" signal; selling at
-    market beats holding for ~$0 expected. Mirrors the user's 10:00 scenario
+    With a fitted isotonic calibrator, a calibrated probability at or below the
+    lowest learned knot is a credible "the side really will pay zero" signal;
+    selling at market beats holding for ~$0 expected. Mirrors the 10:00 scenario
     where BTC moved decisively below strike with low ATR and the deep-loss-hold
-    rule would have otherwise trapped the position to expiry.
+    rule would have otherwise trapped the position to expiry. Uses a stub
+    calibrator so the test is independent of fit-data shape.
     """
-    action, _prob, _edge, _ = engine.evaluate_hold(
+    class _StubCal:
+        is_identity = False
+        lowest_learned_prob = 0.05
+        def calibrate(self, p):
+            # Isotonic clips below-floor inputs to the lowest learned y_threshold.
+            return max(0.05, p)
+
+    se = SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08,
+                     calibrator=_StubCal())
+    action, _prob, _edge, _ = se.evaluate_hold(
         _make_indicators(atr_value=30), btc_price=66200, strike_price=66400,
         seconds_remaining=120, market_price_for_side=0.30, side="Up", exit_threshold=-0.05)
     assert action == "EXIT"

@@ -52,7 +52,10 @@ def _newey_west_factor(returns: list[float]) -> float:
 
 
 def _jk_se(sharpe: float, n_trades: int, returns: list[float] | None = None) -> float:
-    """Jobson-Korkie SE for per-trade Sharpe, Newey-West autocorr-adjusted (up to 5 lags)."""
+    """Jobson-Korkie SE for per-trade Sharpe, Newey-West autocorr-adjusted with
+    data-adaptive lag (L = floor(4·(n/100)^(2/9)), per Newey & West 1994).
+    See `_newey_west_factor` for the lag-selection rationale.
+    """
     if n_trades < 2:
         return 0.0
     se = math.sqrt((1.0 + 0.5 * sharpe ** 2) / max(n_trades, 1))
