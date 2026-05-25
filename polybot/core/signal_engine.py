@@ -417,7 +417,8 @@ class SignalEngine:
                  flow_signal: float = 0.0,
                  spot_flow_signal: float = 0.0,
                  prev_resolution_margin: float = 0.0,
-                 liquidation_pressure: float = 0.0) -> TradeSignal:
+                 liquidation_pressure: float = 0.0,
+                 fee_rate: float = 0.018) -> TradeSignal:
         if not in_entry_window:
             return TradeSignal("SKIP", 0.5, 0, 0, "Outside entry window")
         if has_position:
@@ -458,7 +459,7 @@ class SignalEngine:
             return TradeSignal("SKIP", best_prob, best_edge, 0,
                                f"No edge: best={best_edge:+.1%} < floor={self.min_edge:.1%}")
 
-        kelly = self._kelly(best_prob, best_mkt)
+        kelly = self._kelly(best_prob, best_mkt, fee_rate=fee_rate)
         if kelly < self.min_kelly:
             return TradeSignal("SKIP", best_prob, best_edge, 0,
                                f"Kelly too small: {kelly:.1%} < {self.min_kelly:.1%}")

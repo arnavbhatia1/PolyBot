@@ -137,6 +137,7 @@ logging.getLogger("polybot.discord_bot.bot").setLevel(logging.INFO)
 _contract_price_cache: dict[str, tuple[float, dict[str, Any]]] = {}  # market_id -> (timestamp, contract)
 _CONTRACT_CACHE_TTL = 5.0  # seconds — re-fetch at most every 5s per contract
 _CONTRACT_RESOLUTION_TTL = 2.0  # faster polling when contract might be resolving
+_WS_STALE_S = 10.0  # max age for CLOB WS BBA/book before treating as stale
 
 # Throttled logging for hold evaluations and resolution waiting
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
@@ -464,6 +465,9 @@ def _get_token_midprice(clob_ws: Any):
     def _mid(token_id: str) -> float:
         bba = clob_ws.best_bid_ask.get(token_id, {}) if clob_ws else {}
         try:
+            ts = float(bba.get("ts", 0) or 0)
+            if ts <= 0 or (time.time() - ts) > _WS_STALE_S:
+                return 0.0
             bid = float(bba.get("best_bid", 0))
             ask = float(bba.get("best_ask", 0))
         except (TypeError, ValueError):
@@ -656,6 +660,11 @@ async def _evaluate_signal_and_enter(
     # Get closes array for regime detection
     closes = binance_feed.buffer.get_closes()
 
+    # Fetch the live fee rate so Kelly sizes against the cost the trader will
+    # actually pay, not the hardcoded default. Constant today (no HTTP call),
+    # but plumbing it through means a future per-token rate Just Works.
+    fee_rate = await market_scanner.fetch_fee_rate(token_up, http_client)
+
     signal = signal_engine.evaluate(
         indicators, has_position=False, in_entry_window=in_window,
         btc_price=btc_price, strike_price=strike,
@@ -665,6 +674,7 @@ async def _evaluate_signal_and_enter(
         spot_flow_signal=spot_flow_signal,
         prev_resolution_margin=_prev_resolution_margin,
         liquidation_pressure=liquidation_val,
+        fee_rate=fee_rate,
     )
 
     # SPRT: feed the signal into the accumulator (used by SPRT side gate below).
@@ -976,14 +986,14 @@ async def _evaluate_signal_and_enter(
         _emit_gate_skip(cid, "min_size", f"size ${size:.2f} < $1 min")
         return None, last_eval_log_window
 
-    # Fetch fee rate and tick size in parallel. Fresh ask comes from the direct
-    # CLOB WS best_ask (live, no HTTP call), NOT the /price cross-matched API.
-    fee_rate, tick_size = await asyncio.gather(
-        market_scanner.fetch_fee_rate(token_id, http_client),
-        market_scanner.fetch_tick_size(token_id, http_client),
-    )
+    # fee_rate already fetched before signal eval (used by Kelly). tick_size
+    # is per-chosen-side so fetched here.
+    tick_size = await market_scanner.fetch_tick_size(token_id, http_client)
     fresh_bba = clob_ws.best_bid_ask.get(token_id, {}) if clob_ws else {}
-    fresh_ask = float(fresh_bba.get("best_ask", 0) or 0)
+    _fresh_bba_ts = float(fresh_bba.get("ts", 0) or 0)
+    fresh_ask = (float(fresh_bba.get("best_ask", 0) or 0)
+                 if _fresh_bba_ts > 0 and (time.time() - _fresh_bba_ts) <= _WS_STALE_S
+                 else 0.0)
     # Maker/FOK blend simulation in paper mode: ~65% maker (0% fee), ~35% taker FOK.
     if config.get("execution", {}).get("use_maker_orders", False):
         import random
@@ -1067,6 +1077,10 @@ async def _evaluate_signal_and_enter(
     # so this never tightens-by-skipping a path the old gate would have passed.
     max_edge_live = config.get("signal", {}).get("max_edge", 0.20)
     book_for_walk = clob_ws.get_book(token_id) if clob_ws else None
+    if book_for_walk:
+        _book_ts = float(book_for_walk.get("ts", 0) or 0)
+        if _book_ts <= 0 or (time.time() - _book_ts) > _WS_STALE_S:
+            book_for_walk = None
     fok_vwap = compute_buy_vwap(book_for_walk, size) if book_for_walk else None
     if fok_vwap is not None:
         vwap_net_edge = signal.prob - fok_vwap  # VWAP already absorbs book-walk slippage
@@ -1272,7 +1286,9 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
 
     async def _get_book(ws_book: Any, token: str) -> dict:
         if ws_book and ws_book.get("asks"):
-            return ws_book
+            ws_ts = float(ws_book.get("ts", 0) or 0)
+            if ws_ts > 0 and (time.time() - ws_ts) <= _WS_STALE_S:
+                return ws_book
         return await market_scanner.fetch_clob_book(token, http_client)
 
     # Fetch both books in parallel. We derive entry prices from the direct CLOB
@@ -1285,10 +1301,17 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
     )
 
     # Direct best_ask from the CLOB book — what FOK buys would actually pay.
+    # Treat stale BBA entries (no recent WS update) as missing so we fall
+    # through to the freshly-fetched book or Gamma fallback.
     bba_up = clob_ws.best_bid_ask.get(token_up, {}) if clob_ws else {}
     bba_down = clob_ws.best_bid_ask.get(token_down, {}) if clob_ws else {}
-    ws_ask_up = float(bba_up.get("best_ask", 0) or 0)
-    ws_ask_down = float(bba_down.get("best_ask", 0) or 0)
+    def _bba_fresh(bba: dict) -> bool:
+        ts = float(bba.get("ts", 0) or 0)
+        return ts > 0 and (now_ts - ts) <= _WS_STALE_S
+    bba_up_fresh = _bba_fresh(bba_up)
+    bba_down_fresh = _bba_fresh(bba_down)
+    ws_ask_up = float(bba_up.get("best_ask", 0) or 0) if bba_up_fresh else 0.0
+    ws_ask_down = float(bba_down.get("best_ask", 0) or 0) if bba_down_fresh else 0.0
 
     # Raw book depth — computed here so we can use book best_ask as WS fallback.
     ask_up, depth_up = market_scanner.clob_best_ask(book_up)
@@ -1333,15 +1356,27 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
                 logger.info(f"EVAL {_slug_to_window(_cid)}: Thin CLOB depth — Up=${depth_usd_up:.0f} Dn=${depth_usd_down:.0f}, skipping window")
             return None, last_eval_log_window
 
-    # Skip if effective execution cost (ask-distance + taker fee) too wide
+    # Skip if effective execution cost (ask-distance + taker fee) too wide on
+    # either side — the side we end up trading governs the cost, and we don't
+    # know it yet.
     if price_source == "clob":
-        spread_val = -1.0
-        if clob_ws:
-            bba_up = clob_ws.best_bid_ask.get(token_up, {})
-            if bba_up.get("spread"):
-                spread_val = float(bba_up["spread"])
-        if spread_val < 0:
-            spread_val = await market_scanner.get_spread(token_up, http_client)
+        def _ws_spread(bba: dict, fresh: bool) -> float:
+            if not fresh:
+                return -1.0
+            s = bba.get("spread")
+            if s is None:
+                return -1.0
+            try:
+                return float(s)
+            except (TypeError, ValueError):
+                return -1.0
+        spread_up = _ws_spread(bba_up, bba_up_fresh)
+        spread_down = _ws_spread(bba_down, bba_down_fresh)
+        if spread_up < 0:
+            spread_up = await market_scanner.get_spread(token_up, http_client)
+        if spread_down < 0:
+            spread_down = await market_scanner.get_spread(token_down, http_client)
+        spread_val = max(spread_up, spread_down)
         if spread_val >= 0:
             # Paying the ask = roughly half-spread above mid; add the default taker
             # fee as a proxy for full execution cost. Gate is still max_spread so
@@ -1604,17 +1639,6 @@ async def _evaluate_and_exit_position(
     mid = pos["market_id"]
 
     if action == "HOLD":
-        # If the position was previously deferred (too small to scalp) and the
-        # model has now decided to hold, clear the flag and surface the recovery
-        # once so the operator sees the state transition. Subsequent ticks just
-        # emit the normal HOLD heartbeat — no "SCALP RESUMED" later because the
-        # position isn't being scalped at all.
-        if pos["id"] in _abandoned_scalp_positions:
-            _abandoned_scalp_positions.discard(pos["id"])
-            logger.info(
-                f"  POSITION RECOVERED — model now favors holding "
-                f"(prob {model_prob:.0%}, edge {holding_edge:+.0%}); deferred scalp cleared"
-            )
         # Log hold status every 30s so the operator knows the bot is alive
         now_ts = time.time()
         if now_ts - _last_hold_log.get(mid, 0) >= 30:
@@ -2174,10 +2198,13 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     t.cancel()
                 if clob_ws.book_updated.is_set():
                     clob_ws.book_updated.clear()
-                    # Resolve pending adverse-selection checkpoints against the fresh book
-                    # so the adverse-rate gate has actual data to act on.
-                    if _adverse_monitor is not None and _midprice_fn is not None:
-                        _adverse_monitor.update_prices(_midprice_fn)
+                # Resolve pending adverse-selection checkpoints every loop tick,
+                # not only on book_updated — otherwise a WS-quiet token leaves
+                # multiple post-fill checkpoints collapsing onto the next event.
+                # _get_token_midprice already returns 0 for stale BBAs, so this
+                # never records a stale mid as a fresh checkpoint.
+                if _adverse_monitor is not None and _midprice_fn is not None:
+                    _adverse_monitor.update_prices(_midprice_fn)
                 if clob_ws.market_resolved.is_set():
                     clob_ws.market_resolved.clear()
                     # Invalidate price cache — Gamma should have resolution data now
