@@ -120,7 +120,7 @@ All parameters in `polybot/config/settings.yaml`. Key knobs:
 - Circuit breaker: tiered floor at $100/$150/$200/... locks at 85% of crossed tier; Kelly 1.0→0.40 between tier and floor
 - SPRT: alpha 0.05, beta 0.10, observation_interval 10s, min_confidence 0.20 (gates entries)
 - Entry timing: `normal_fraction` 0.60, `late_max_penalty` 0.35
-- Flip trading: `flip_enabled` true, `flip_edge_premium` 0.015 (no cap on flips per window; one position at a time)
+- Flip trading: `flip_edge_premium` 0.015 (no cap on flips per window; one position at a time)
 
 ## Learning Pipeline
 

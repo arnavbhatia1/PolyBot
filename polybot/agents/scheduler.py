@@ -1955,7 +1955,8 @@ class AgentScheduler:
                     new_sharpe = _weighted_sharpe(new_returns, new_weights)
                     current_sharpe = _weighted_sharpe(current_returns, current_weights)
 
-                    LOG_LOSS_FLOOR = 0.010
+                    # Lowered 2026-05-25 from 0.010 to unblock isotonic adoption
+                    LOG_LOSS_FLOOR = 0.005
                     cal_info = {
                         "identity_loss": round(identity_loss, 4) if all_pool_probs else None,
                         "current_loss": round(current_loss, 4) if all_pool_probs else None,
