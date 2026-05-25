@@ -55,6 +55,18 @@ class IsotonicCalibrator:
         return int(len(getattr(self._iso, "X_thresholds_", [])))
 
     @property
+    def lowest_learned_prob(self) -> float:
+        """Lowest output the calibrator can return. When fitted, this is
+        y_thresholds_[0] — raw inputs at or below the lowest x_threshold are
+        clipped to this value, so the calibrated probability cannot fall below
+        it. When identity (no fit), returns 0.0 so any "model says dead" override
+        is inactive — no fit means no learned floor.
+        """
+        if self._iso is None:
+            return 0.0
+        return float(self._iso.y_thresholds_[0])
+
+    @property
     def log_loss_improvement(self) -> float:
         """Last adopted fit's weighted log-loss gain vs identity (in nats).
         0.0 when at identity."""

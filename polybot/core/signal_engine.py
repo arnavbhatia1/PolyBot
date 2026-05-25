@@ -527,13 +527,15 @@ class SignalEngine:
                     f"BTC {btc_dist:.0f} from strike (>0.5×ATR={0.5*atr_for_cut:.0f})")
 
         # Past self.deep_loss_hold_threshold the binary residual beats scalping the loss —
-        # UNLESS the (calibrated) model thinks the side is effectively dead. With the
-        # isotonic calibrator, model_prob ≈ 0 is a credible "the binary really will pay
-        # zero" signal, not noise to ride out; selling at market beats holding for
-        # ~$0 expected. 0.05 matches the calibrator's lowest learned knot — below it,
-        # the training data showed the side won essentially never.
+        # UNLESS the (calibrated) model thinks the side is effectively dead. When
+        # model_prob is at the calibrator's lowest learned knot, the calibrator is
+        # saying "the training data showed the side won essentially never at this
+        # raw prob"; selling at market beats holding for ~$0 expected. Threshold is
+        # read dynamically from the calibrator so re-fits track automatically
+        # (identity returns 0.0, disabling the override).
+        dead_side_floor = self.calibrator.lowest_learned_prob if self.calibrator else 0.0
         if (holding_edge < self.deep_loss_hold_threshold
-                and model_prob >= 0.05
+                and model_prob > dead_side_floor
                 and (entry_price <= 0 or market_price_for_side < entry_price)):
             return ("HOLD", model_prob, holding_edge,
                     f"holding to resolution — deeply underwater but better odds holding than selling now")
