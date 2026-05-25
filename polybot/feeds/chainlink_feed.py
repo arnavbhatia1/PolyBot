@@ -65,7 +65,8 @@ class ChainlinkFeed:
             logger.debug(
                 f"ChainlinkFeed: boundary crossed, next strike ${self._boundary_prices.get(next_boundary_ts, 0):,.2f}"
             )
-            cutoff = now_ts - 600
+            # Keep 2 hours of boundary prices so the orphan-resolution fallback
+            cutoff = now_ts - 7200
             self._boundary_prices = {
                 k: v for k, v in self._boundary_prices.items() if k > cutoff
             }

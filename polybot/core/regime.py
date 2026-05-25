@@ -91,7 +91,7 @@ class RegimeDetector:
         if vol_pct < self.vol_low_pct:
             return _REGIMES["quiet"]
 
-        # 2. Volatile: ATR well above historical norms -- widen edge requirement.
+        # 2. Volatile: ATR well above historical norms
         if vol_pct > self.vol_high_pct:
             return _REGIMES["volatile"]
 

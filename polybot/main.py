@@ -1733,11 +1733,12 @@ async def _evaluate_and_exit_position(
         if verified_price > 0 and verified_price < ws_bid * 0.70:
             # Dramatic mismatch — ws_bid is phantom. Re-evaluate with the real price.
             real_edge = model_prob - verified_price
-            logger.info(
-                f"  SCALP VERIFY {pos['side']}  {_fmt_secs(live['seconds_remaining'])}  |  "
-                f"ws_bid={ws_bid:.3f} vs /price={verified_price:.3f} — using real price  "
-                f"real_edge={real_edge:+.0%} thresh={exit_threshold:+.0%}"
-            )
+            if pos["id"] not in _abandoned_scalp_positions:
+                logger.info(
+                    f"  SCALP VERIFY {pos['side']}  {_fmt_secs(live['seconds_remaining'])}  |  "
+                    f"ws_bid={ws_bid:.3f} vs /price={verified_price:.3f} — using real price  "
+                    f"real_edge={real_edge:+.0%} thresh={exit_threshold:+.0%}"
+                )
             if real_edge > exit_threshold:
                 # Real market not bad enough to scalp — hold
                 return day_wins, day_losses, day_fees, None
@@ -1997,20 +1998,31 @@ async def _manage_orphaned_position(
             # No captured strike (feed wasn't running at boundary) — keep waiting
             logger.info(f"Orphan {_slug_to_window(pos['market_id'])} (age {age:.0f}s) — Chainlink strike not captured, still waiting")
             return True, day_wins, day_losses, day_fees, None
-        up_won = chainlink_feed.price >= strike_at_boundary
+        # Compare strike (Chainlink at window_ts) vs final (Chainlink at window_ts+300),
+        # matching Polymarket's own resolution rule. Falling back to the current price
+        # would mis-classify when BTC has moved since expiry; the 2hr eviction window
+        # in chainlink_feed keeps the expiry capture available for orphan fallback.
+        final_at_expiry = chainlink_feed.get_strike(window_ts + 300) if window_ts else None
+        if final_at_expiry is not None and final_at_expiry > 0:
+            final_price = final_at_expiry
+            final_source = "expiry boundary"
+        else:
+            final_price = chainlink_feed.price
+            final_source = "current (expiry capture missing)"
+        up_won = final_price >= strike_at_boundary
         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
-        resolved_final = chainlink_feed.price
+        resolved_final = final_price
         resolved_strike = strike_at_boundary
         logger.warning(
             f"RESOLVE orphan {_slug_to_window(pos['market_id'])} via Chainlink fallback "
-            f"(Gamma silent {age:.0f}s) | Strike ${strike_at_boundary:,.2f} → ${chainlink_feed.price:,.2f} — "
-            f"{'Up' if up_won else 'Down'} wins (exit={exit_price})"
+            f"(Gamma silent {age:.0f}s) | Strike ${strike_at_boundary:,.2f} → ${final_price:,.2f} "
+            f"[{final_source}] — {'Up' if up_won else 'Down'} wins (exit={exit_price})"
         )
         if alert_manager:
             try:
                 await alert_manager.send_error(
                     f"Resolved orphaned {pos['market_id']} via Chainlink fallback "
-                    f"(Gamma silent for {age:.0f}s). exit_price={exit_price}"
+                    f"(Gamma silent for {age:.0f}s, price={final_source}). exit_price={exit_price}"
                 )
             except Exception:
                 pass
