@@ -1011,10 +1011,10 @@ class AgentScheduler:
     ) -> tuple[bool, str]:
         """Regime-stratified adoption gate.
 
-        Segments outcomes into trending / reverting / neutral buckets.
-        The change must either:
-          a) improve Sharpe in ≥2 of the 3 populated regimes, OR
-          b) improve the dominant regime AND not degrade any other regime by >0.10 Sharpe
+        Segments outcomes into trending / reverting / neutral buckets. Accepts
+        when either (a) ≥2 of populated regimes improved, OR (b) the dominant
+        regime improved — both branches require no regime to degrade by >0.10
+        Sharpe.
 
         Skipped (returns True) when fewer than 2 regimes have ≥ 20 qualifying trades.
         """
@@ -1049,17 +1049,22 @@ class AgentScheduler:
             r for r in populated
             if baseline_by_regime[r] - candidate_by_regime[r] > 0.10
         ]
-        # Gate: dominant regime must improve AND no regime may degrade >0.10 Sharpe.
+        # Acceptance: (a) ≥2 of populated regimes improved, OR (b) dominant regime improved.
+        # Both branches share the "no regime degrades >0.10 Sharpe" floor.
         dom_improved = candidate_by_regime[dominant] > baseline_by_regime[dominant]
+        n_improved = sum(1 for r in populated
+                         if candidate_by_regime[r] > baseline_by_regime[r])
         detail = " | ".join(
             f"{r}: {baseline_by_regime[r]:+.3f}->{candidate_by_regime[r]:+.3f}"
             for r in sorted(populated)
         )
-        if dom_improved and not regressed_hard:
-            return True, f"regime check passed (dominant {dominant} improved, no hard regression) [{detail}]"
         if regressed_hard:
             return False, f"regime check failed: {regressed_hard} regressed >0.10 Sharpe [{detail}]"
-        return False, f"regime check failed: dominant {dominant} did not improve [{detail}]"
+        if dom_improved:
+            return True, f"regime check passed (branch b: dominant {dominant} improved) [{detail}]"
+        if n_improved >= 2:
+            return True, f"regime check passed (branch a: {n_improved}/{len(populated)} regimes improved) [{detail}]"
+        return False, f"regime check failed: dominant {dominant} flat AND only {n_improved}/{len(populated)} regime(s) improved [{detail}]"
 
     async def _run_weight_optimizer(self, recommendations: dict[str, Any],
                                     all_outcomes: list[dict[str, Any]] | None = None,
