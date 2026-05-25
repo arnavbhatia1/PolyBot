@@ -80,7 +80,7 @@ polybot/
 - **L6 derived feature weights (Investment 3 — added 2026-05-19, default 0.0):** `derived_log_atr_ratio_weight`, `derived_autocorr_signed_mag_weight`, `derived_vol_regime_shift_weight`, `derived_flow_disagreement_weight`, `derived_distance_atr_ratio_weight`, `derived_time_remaining_logit_weight`, `derived_liq_signed_sqrt_weight`, `derived_prev_margin_sq_weight`. Each 0.0–0.05; combined L6 contribution hard-capped at ±0.25 logits. Library is closed — see `polybot/core/derived_features.py`.
 
 **Manual-only** (claude_client validator reroutes `changes` → `manual_observations`):
-`loss_cut_*`, `max_edge`, `adverse_selection_threshold`, `edge_decay_threshold`, `flip_enabled`, `trading_*`, `max_concurrent_positions`, `max_bankroll_deployed`, `circuit_breaker.*`, `indicators.*`, `sprt.*`.
+`loss_cut_*`, `max_edge`, `adverse_selection_threshold`, `edge_decay_threshold`, `trading_*`, `max_concurrent_positions`, `max_bankroll_deployed`, `circuit_breaker.*`, `indicators.*`, `sprt.*`.
 
 ## Running
 

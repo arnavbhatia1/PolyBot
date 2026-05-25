@@ -71,12 +71,16 @@ class GhostTracker:
     def check_resolutions(
         self,
         event_metadata: dict[str, dict[str, Any]] | None = None,
-        btc_at_expiry_fn: Any = None,
-        binance_feed: Any = None,
     ) -> list[dict[str, Any]]:
-        """Resolve pending ghost trades against Gamma/Chainlink data.
+        """Resolve pending ghost trades against Chainlink eventMetadata only.
 
         Called from the main resolution loop alongside CounterfactualTracker.
+        Matches CounterfactualTracker's policy: no Binance fallback. Binance
+        candle close ≠ Polymarket resolution price, and ghost outcomes feed
+        the pipeline's bias/ghost analysis — using Binance would mislabel
+        ghost win/loss near the strike and bias the "which gate over-filters"
+        signal. Waits up to 20 min for Chainlink/Gamma to post final_price
+        before giving up.
         """
         if not self._pending:
             return []
@@ -98,26 +102,18 @@ class GhostTracker:
             expiry_ts = window_ts + 300
             if now < expiry_ts + 30:
                 continue  # window hasn't settled yet
-            if now > expiry_ts + 600:
-                to_remove.append(market_id)  # stale — candle gone
+            # Give Chainlink/Gamma up to 20 min to post final_price before
+            # dropping. Matches CounterfactualTracker's 1200s window.
+            if now > expiry_ts + 1200:
+                to_remove.append(market_id)
                 continue
 
-            # Resolve: prefer Chainlink eventMetadata (matches Polymarket)
+            # Resolve only via Chainlink eventMetadata (matches Polymarket
+            # settlement). No Binance fallback — see method docstring.
             meta = event_metadata.get(market_id)
-            if meta and meta.get("final_price") is not None and meta.get("price_to_beat") is not None:
-                up_won = meta["final_price"] >= meta["price_to_beat"]
-            elif btc_at_expiry_fn and binance_feed:
-                btc = btc_at_expiry_fn(binance_feed, market_id)
-                if btc <= 0:
-                    continue
-                ctx_snap = ctx.get("indicator_snapshot", {}).get("trade_context", {})
-                strike = ctx_snap.get("strike_price", 0)
-                if strike <= 0:
-                    to_remove.append(market_id)
-                    continue
-                up_won = btc >= strike
-            else:
-                continue
+            if not meta or meta.get("final_price") is None or meta.get("price_to_beat") is None:
+                continue  # keep waiting — Chainlink final_price not posted yet
+            up_won = meta["final_price"] >= meta["price_to_beat"]
 
             side = ctx["side"].lower()
             ghost_correct = (side == "up") == up_won

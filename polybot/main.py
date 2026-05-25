@@ -478,28 +478,6 @@ def _get_token_midprice(clob_ws: Any):
     return _mid
 
 
-def _btc_at_expiry(binance_feed: Any, market_id: str) -> float:
-    """Get BTC price at contract expiry from candle buffer.
-
-    Parses window_ts from the slug (btc-updown-5m-{window_ts}),
-    computes expiry = window_ts + 300, finds the 1-min candle
-    covering that moment. Falls back to latest price if not in buffer.
-    """
-    try:
-        window_ts = int(market_id.rsplit("-", 1)[-1])
-    except (ValueError, IndexError):
-        latest = binance_feed.buffer.latest()
-        return latest.close if latest else 0
-
-    expiry_ms = (window_ts + 300) * 1000
-    for c in reversed(binance_feed.buffer.get_last_n(30)):
-        if c.timestamp <= expiry_ms < c.timestamp + 60_000:
-            return c.close
-
-    latest = binance_feed.buffer.latest()
-    return latest.close if latest else 0
-
-
 async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price: float,
                           log_return: float, gain_pct: float,
                           exit_reason: str = "resolution", pnl: float = 0.0,
@@ -1500,11 +1478,7 @@ async def _check_counterfactuals(counterfactual_tracker: Any, ghost_tracker: Any
     counterfactual_tracker.check_resolutions(event_metadata=cf_event_metadata)
 
     if ghost_tracker is not None:
-        ghost_tracker.check_resolutions(
-            event_metadata=cf_event_metadata,
-            btc_at_expiry_fn=_btc_at_expiry,
-            binance_feed=binance_feed,
-        )
+        ghost_tracker.check_resolutions(event_metadata=cf_event_metadata)
 
 
 async def _evaluate_and_exit_position(
