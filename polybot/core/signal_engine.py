@@ -482,9 +482,15 @@ class SignalEngine:
                       flow_signal: float = 0.0,
                       spot_flow_signal: float = 0.0,
                       prev_resolution_margin: float = 0.0,
-                      liquidation_pressure: float = 0.0) -> tuple[str, float, float, str]:
+                      liquidation_pressure: float = 0.0,
+                      market_mid_for_side: float | None = None) -> tuple[str, float, float, str]:
         """Decide HOLD vs EXIT each tick using the same model as entry.
         Returns (action, model_prob, holding_edge, reason).
+
+        ``market_price_for_side`` is the bid the bot would actually scalp into;
+        ``market_mid_for_side`` (when supplied) is the (bid+ask)/2 used only for
+        the itm_depth patience calculation so wide spreads don't make the bot
+        less patient on positions the market still thinks are ITM.
         """
         atr = indicators.get("atr", {}).get("atr", 0)
         prob_up = self.compute_probability(btc_price, strike_price,
@@ -497,7 +503,8 @@ class SignalEngine:
         model_prob = prob_up if side == "Up" else 1.0 - prob_up
         holding_edge = model_prob - market_price_for_side
 
-        itm_depth = max(0.0, (market_price_for_side - 0.5) / 0.5)
+        itm_ref = market_mid_for_side if market_mid_for_side and market_mid_for_side > 0 else market_price_for_side
+        itm_depth = max(0.0, (itm_ref - 0.5) / 0.5)
         deep_loss_floor = exit_threshold * (1.0 + 0.5 * itm_depth)
 
         optimal_threshold = self._exit_boundary.compute_exit_threshold(

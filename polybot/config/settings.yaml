@@ -118,7 +118,6 @@ signal:
 entry_timing:
   normal_fraction: 0.6        # First 60% of window (0-180s): full Kelly, no penalty.
   late_max_penalty: 0.30      # Last 40%: ATM trades penalized up to x%.
-  flip_enabled: true          # Allow re-entry after a scalp.
   flip_edge_premium: 0.015    # Re-entry costs extra 1.5% edge on top of min_edge.
 
 # =============================================================================

@@ -113,7 +113,7 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
 ## Manual-Only Params (route to `manual_observations`, never `changes`)
 - max_edge, adverse_selection_threshold
 - loss_cut_fraction, loss_cut_time_s (stop-loss level and time gate — risk policy)
-- trading_start/end_hour_et/minute, flip_enabled
+- trading_start/end_hour_et/minute
 - max_concurrent_positions, max_bankroll_deployed
 - circuit_breaker.floor_pct, circuit_breaker.min_multiplier
 - Indicator periods: indicators.{rsi,macd,stochastic,ema,obv,atr}.{period,...}
@@ -546,7 +546,7 @@ def _section_config(cfg: dict[str, Any]) -> str:
         f"trading_start_hour_et: {cfg.get('trading_start_hour_et', 0)}, trading_start_minute: {cfg.get('trading_start_minute', 1)}\n"
         f"trading_end_hour_et: {cfg.get('trading_end_hour_et', 22)}, trading_end_minute: {cfg.get('trading_end_minute', 30)}\n"
         f"# Flip behavior\n"
-        f"flip_enabled: {cfg.get('flip_enabled', _d('flip_enabled'))}, flip_edge_premium: {cfg.get('flip_edge_premium', _d('flip_edge_premium'))}\n"
+        f"flip_edge_premium: {cfg.get('flip_edge_premium', _d('flip_edge_premium'))}\n"
         f"# Risk caps (operator-owned policy)\n"
         f"max_concurrent_positions: {cfg.get('max_concurrent_positions', _d('max_concurrent_positions'))}, max_bankroll_deployed: {cfg.get('max_bankroll_deployed', _d('max_bankroll_deployed'))}\n"
         f"# Circuit breaker\n"
@@ -806,7 +806,7 @@ def _section_entry_phase(ana: dict[str, Any]) -> str:
 
 
 def _section_flip(ana: dict[str, Any]) -> str:
-    # Flip-trade breakdown — DIAGNOSTIC for manual-only flip_enabled / flip_edge_premium.
+    # Flip-trade breakdown — DIAGNOSTIC for manual-only flip_edge_premium.
     flip_data = ana.get("flip_analysis", {})
     if not flip_data:
         return ""
@@ -814,8 +814,8 @@ def _section_flip(ana: dict[str, Any]) -> str:
     flip = flip_data.get("flip", {})
     if base.get("n", 0) == 0 and flip.get("n", 0) == 0:
         return ""
-    lines = ["## Flip-Trade Analysis (DIAGNOSTIC — manual-only triggers)",
-             "Maps to manual levers: flip_enabled (boolean kill switch), flip_edge_premium "
+    lines = ["## Flip-Trade Analysis (DIAGNOSTIC — manual-only trigger)",
+             "Maps to manual lever: flip_edge_premium "
              "(extra edge required for re-entry). DO NOT propose in `changes`."]
     for label, stats in [("base (no flip)", base), ("flip", flip)]:
         n = stats.get("n", 0)

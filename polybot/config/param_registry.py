@@ -98,8 +98,6 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     "loss_cut_time_s": 90.0,
     "adverse_selection_threshold": 0.65,
     "edge_decay_threshold": -0.05,
-    # Flip trading
-    "flip_enabled": True,
     # Risk caps
     "max_concurrent_positions": 2,
     "max_bankroll_deployed": 0.80,
@@ -141,8 +139,6 @@ MANUAL_ONLY_PARAMS: frozenset[str] = frozenset({
     "trading_start_minute",
     "trading_end_hour_et",
     "trading_end_minute",
-    # Flip-trade switch (premium is pipeline-tunable, on/off is not)
-    "flip_enabled",
     # Risk caps (operator-owned policy)
     "max_concurrent_positions",
     "max_bankroll_deployed",

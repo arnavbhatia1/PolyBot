@@ -84,10 +84,11 @@ class LocalRecommender(BaseRecommender):
             return
         bs, fs = float(base.get("sharpe", 0)), float(flip.get("sharpe", 0))
         gap = bs - fs
-        if gap > 0.05 and fs < 0:
-            self._emit_manual("flip_enabled", self.cfg.get("flip_enabled", True), False,
-                              f"flip Sharpe {fs:+.3f} trails base by {gap:.3f} and negative — kill flips", nf)
-        elif gap > 0.05:
+        if gap > 0.05:
             cur = float(self.cfg.get("flip_edge_premium", _d("flip_edge_premium")))
-            self._emit_manual("flip_edge_premium", cur, round(min(0.05, cur + 0.01), 4),
-                              f"flip Sharpe {fs:+.3f} trails base by {gap:.3f} — raise premium", nf)
+            note = (f"flip Sharpe {fs:+.3f} trails base by {gap:.3f}"
+                    + (" and negative — raise premium aggressively" if fs < 0
+                       else " — raise premium"))
+            bump = 0.02 if fs < 0 else 0.01
+            self._emit_manual("flip_edge_premium", cur, round(min(0.05, cur + bump), 4),
+                              note, nf)

@@ -791,14 +791,25 @@ async def _evaluate_signal_and_enter(
     })
     flip_count = flip_state["flip_count"]
     if flip_count >= 1:
+        # Opposite-side flip needs a meaningful model shift past 0.5 — without
+        # this, the bot whipsaws on 1-2pp model noise after every scalp.
+        if flip_state["last_side"] is not None and side != flip_state["last_side"]:
+            if signal.prob < 0.53:
+                _record_skip("opposite_flip_weak_prob")
+                _emit_gate_skip(cid, f"opposite_flip_{side}",
+                                f"opposite-side flip needs prob ≥ 53%, got {signal.prob:.0%}")
+                return None, last_eval_log_window
+
         flip_premium = config.get("entry_timing", {}).get("flip_edge_premium", _d("flip_edge_premium"))
         spread_est = -1.0
         if clob_ws:
             bba = clob_ws.best_bid_ask.get(token_id, {})
-            try:
-                spread_est = float(bba.get("spread", -1)) if bba.get("spread") else -1.0
-            except (TypeError, ValueError):
-                spread_est = -1.0
+            bba_ts = float(bba.get("ts", 0) or 0)
+            if bba_ts > 0 and (time.time() - bba_ts) <= _WS_STALE_S:
+                try:
+                    spread_est = float(bba.get("spread", -1)) if bba.get("spread") else -1.0
+                except (TypeError, ValueError):
+                    spread_est = -1.0
         # Real round-trip cost in price units: enter at ask (cross half-spread),
         # exit at bid (cross half-spread) = full `spread` plus fee impact on both
         # legs. Polymarket fee impact = fee_rate × p × (1-p), max ~0.45% at ATM.
@@ -1545,9 +1556,17 @@ async def _evaluate_and_exit_position(
     _candle_age = binance_feed.buffer.latest_age_s if binance_feed and binance_feed.buffer else float("inf")
     if _candle_age > 45:
         _stale.append(f"binance_kline={_candle_age:.0f}s")
+    # Safer staleness policy: loss-cut math (BTC vs strike + ATR) is independent
+    # of the L3b/L3e/Chainlink signals. Only candle staleness corrupts ATR; the
+    # other stale feeds degrade the scalp signals but can't fake a loss-cut.
+    # Allow evaluate_hold to fire under non-critical staleness so loss-cut can
+    # still protect the position; revert any non-loss-cut EXIT below.
+    scalp_gated_by_stale = False
     if _stale:
-        _log_hold_heartbeat_stale(pos, live, "stale feeds — " + ", ".join(_stale))
-        return day_wins, day_losses, day_fees, None
+        if any("kline" in s for s in _stale):
+            _log_hold_heartbeat_stale(pos, live, "stale feeds — " + ", ".join(_stale))
+            return day_wins, day_losses, day_fees, None
+        scalp_gated_by_stale = True
 
     # Get strike from the position's stored trade_context (correct for this contract)
     pos_ctx = json.loads(pos.get("indicator_snapshot", "{}")).get("trade_context", {})
@@ -1565,6 +1584,8 @@ async def _evaluate_and_exit_position(
     other_token = live.get("token_id_down", "") if pos["side"] == "Up" else live.get("token_id_up", "")
     bba = clob_ws.best_bid_ask.get(hold_token, {}) if clob_ws else {}
     ws_bid = float(bba.get("best_bid", 0) or 0)
+    ws_ask = float(bba.get("best_ask", 0) or 0)
+    market_mid = (ws_bid + ws_ask) / 2.0 if (ws_bid > 0 and ws_ask > 0) else 0.0
     bid_age = time.time() - float(bba.get("ts", 0) or 0)
     if not (ws_bid > 0 and bid_age <= 10):
         # No fresh bid — can't make exit decisions, but still emit the HOLD heartbeat
@@ -1634,7 +1655,15 @@ async def _evaluate_and_exit_position(
         closes=closes, flow_signal=hold_flow["flow_score"],
         spot_flow_signal=hold_spot_flow,
         prev_resolution_margin=_prev_resolution_margin,
-        liquidation_pressure=hold_liquidation)
+        liquidation_pressure=hold_liquidation,
+        market_mid_for_side=market_mid)
+
+    # Under non-critical staleness, only loss-cut is safe — the scalp-band signals
+    # were computed against degraded layers. Demote any other EXIT to HOLD so a
+    # stale-driven scalp can't slip through.
+    if scalp_gated_by_stale and action == "EXIT" and not reason.startswith("cutting loss"):
+        _log_hold_heartbeat_stale(pos, live, "stale feeds — scalp gated, loss-cut only: " + ", ".join(_stale))
+        return day_wins, day_losses, day_fees, None
 
     mid = pos["market_id"]
 

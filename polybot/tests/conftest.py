@@ -76,7 +76,6 @@ SAMPLE_CONFIG = {
     "entry_timing": {
         "normal_fraction": 0.6,
         "late_max_penalty": 0.30,
-        "flip_enabled": True,
         "flip_edge_premium": 0.015,
     },
     "market": {
