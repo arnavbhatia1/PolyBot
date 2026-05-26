@@ -1,13 +1,19 @@
-"""Ghost trade tracker: log and resolve downstream-gate rejections.
+"""Ghost trade tracker: log and resolve unrealized-signal rejections.
 
-When the signal fires BUY_YES/BUY_NO but a downstream gate (adverse selection,
-edge cap, late-window underdog, pre-submit drift, spread, etc.) blocks the entry,
-we record the signal context as a "ghost trade" and track the window to resolution.
+Two ghost sources:
+- Downstream gate veto: signal fired BUY_YES/BUY_NO but a gate in
+  _evaluate_signal_and_enter blocked entry (adverse selection, edge cap,
+  late-window underdog, pre-submit drift, spread, etc.).
+- Sub-threshold-prob SKIP: signal's favored side was below
+  min_model_probability — recorded so the pipeline has resolution data on
+  the low-confidence region the entry gate filters out.
 
-Ghost trades give the pipeline 5-10x more training data per day. They're used by
-the BiasDetector and TA Evolver (to see which gates block profitable trades) but
-NOT by isotonic calibration (ghost trades were never filled, so probability → outcome
-pairing is noisy).
+Ghosts give the pipeline 5–10× more training data per day. Records whose
+indicator_snapshot carries market_price_<side> + model_probability_raw are
+normalized into outcomes by AgentScheduler._ghost_to_outcome and feed both
+the backtest population and the isotonic calibration train pool. Ghosts
+with empty snapshots inform gate-blocking diagnostics (BiasDetector / TA
+Evolver) only.
 """
 from __future__ import annotations
 
@@ -43,11 +49,13 @@ class GhostTracker:
         seconds_remaining: float,
         indicator_snapshot: dict[str, Any],
     ) -> None:
-        """Log a ghost trade at the moment a downstream gate fires.
+        """Log a ghost trade at the moment a rejection fires.
 
-        Downstream = signal returned BUY_YES/BUY_NO but was vetoed by a gate in
-        _evaluate_signal_and_enter. Model-level SKIPs (low confidence, ATR gate)
-        are NOT recorded — those signals weren't actionable to begin with.
+        Sources: (a) downstream-gate vetoes of BUY_YES/BUY_NO signals in
+        _evaluate_signal_and_enter, and (b) sub-threshold-prob SKIPs where
+        the favored side fell below min_model_probability. Other model-level
+        SKIPs (ATR gate, etc.) are NOT recorded — those signals weren't
+        actionable to begin with.
         """
         if not market_id:
             return

@@ -265,7 +265,11 @@ class AgentScheduler:
         side = (g.get("side") or "").lower()
         if side not in ("up", "down"):
             return None
-        ctx = g.get("indicator_snapshot", {}).get("trade_context", {}) or {}
+        snap = dict(g.get("indicator_snapshot", {}) or {})
+        ctx = dict(snap.get("trade_context", {}) or {})
+        if "model_probability_raw" not in ctx and g.get("signal_prob"):
+            ctx["model_probability_raw"] = float(g["signal_prob"])
+        snap["trade_context"] = ctx
         mp = ctx.get("market_price_up", 0) if side == "up" else ctx.get("market_price_down", 0)
         if not mp or mp <= 0 or mp >= 1:
             return None
@@ -275,7 +279,7 @@ class AgentScheduler:
             "side": side,
             "correct": correct,
             "gain_pct": round(gain_pct, 4),
-            "indicator_snapshot": g.get("indicator_snapshot", {}),
+            "indicator_snapshot": snap,
             "entry_price": mp,
             "exit_price": 1.0 if correct else 0.0,
             "exit_timestamp": str(g.get("resolved_at") or g.get("timestamp") or ""),

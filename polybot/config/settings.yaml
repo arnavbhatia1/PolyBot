@@ -99,7 +99,7 @@ signal:
     distance_atr_ratio: 0.0
     time_remaining_logit: 0.0
     liq_signed_sqrt: 0.0
-    prev_margin_sq: 0.0
+    prev_margin_sq: 0.005
 
   # Consensus sizing: how much to scale bet when all flow signals agree
   consensus_dead_zone: 0.05

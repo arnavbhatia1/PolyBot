@@ -1,0 +1,57 @@
+[
+  {
+    "date": "2026-04-22T05:12:50.338730+00:00",
+    "source": "claude",
+    "version": "weights_v001+params",
+    "baseline_sharpe": 0.2306,
+    "predicted_sharpe": 0.26,
+    "changes": {
+      "spot_flow_weight": [
+        0.1,
+        0.1
+      ],
+      "atr_sigma_ratio": [
+        1.3,
+        1.3
+      ]
+    },
+    "reason": "2 change(s) adopted",
+    "review_1d": {
+      "sharpe": 0.1121,
+      "delta_sharpe": -0.1185,
+      "trades": 320,
+      "win_rate": 0.5781
+    },
+    "review_3d": {
+      "sharpe": 0.1084,
+      "delta_sharpe": -0.1222,
+      "trades": 887,
+      "win_rate": 0.5524
+    },
+    "review_7d": {
+      "sharpe": 0.0638,
+      "delta_sharpe": -0.1668,
+      "trades": 1797,
+      "win_rate": 0.5281
+    },
+    "review_14d": {
+      "sharpe": 0.0895,
+      "delta_sharpe": -0.1411,
+      "trades": 3011,
+      "win_rate": 0.5417
+    },
+    "review_30d": {
+      "sharpe": 0.156,
+      "delta_sharpe": -0.1643,
+      "trades": 6230,
+      "win_rate": 0.5807
+    },
+    "rollback_recommended": true,
+    "rollback_reason": "1d Sharpe 0.112 trails baseline 0.231 by >0.10 (n=320)",
+    "decay_status": "REVERSED",
+    "decay_retention_14d": null,
+    "decay_computed": true,
+    "reverted": true,
+    "reverted_at": "2026-05-09T03:50:16.387441+00:00"
+  }
+]

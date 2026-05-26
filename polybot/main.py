@@ -713,6 +713,27 @@ async def _evaluate_signal_and_enter(
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         _record_skip(f"model:{signal.reason[:30]}")
+        if ghost_tracker is not None and "below min prob" in signal.reason:
+            prob_up = signal_engine.last_raw_prob_up
+            if prob_up >= 0.5:
+                side, signal_prob = "Up", prob_up
+                mkt_price = price_up
+            else:
+                side, signal_prob = "Down", 1.0 - prob_up
+                mkt_price = price_down
+            ghost_tracker.record_rejection(
+                gate_name="sub_threshold_prob",
+                side=side,
+                signal_prob=signal_prob,
+                signal_edge=signal_prob - mkt_price,
+                market_id=cid,
+                seconds_remaining=float(contract.get("seconds_remaining", 0)),
+                indicator_snapshot={"trade_context": {
+                    "model_probability_raw": signal_prob,
+                    "market_price_up": price_up,
+                    "market_price_down": price_down,
+                }},
+            )
         return None, last_eval_log_window
 
     # --- ADVERSE SELECTION GATE ---

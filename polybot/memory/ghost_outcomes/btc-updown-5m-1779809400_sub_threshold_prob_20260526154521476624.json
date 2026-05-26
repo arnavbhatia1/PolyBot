@@ -1,0 +1,21 @@
+{
+  "market_id": "btc-updown-5m-1779809400",
+  "side": "Up",
+  "gate_name": "sub_threshold_prob",
+  "signal_prob": 0.5571,
+  "signal_edge": 0.0171,
+  "seconds_remaining": 298.4,
+  "indicator_snapshot": {
+    "trade_context": {
+      "model_probability_raw": 0.5571414885274325,
+      "market_price_up": 0.54,
+      "market_price_down": 0.48
+    }
+  },
+  "recorded_at": 1779809401.869082,
+  "resolved": true,
+  "ghost_correct": false,
+  "ghost_gain_pct": -1.0,
+  "resolved_at": 1779810321.4765887,
+  "timestamp": "2026-05-26T15:45:21.476610+00:00"
+}

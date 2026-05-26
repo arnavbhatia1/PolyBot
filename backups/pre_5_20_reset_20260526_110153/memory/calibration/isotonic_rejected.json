@@ -1,0 +1,17 @@
+[
+  {
+    "n_knots": 15,
+    "log_loss_improvement": 0.1172,
+    "reason": "new fit doesn't beat current by enough (loss gap +0.0031, need -0.01)"
+  },
+  {
+    "n_knots": 15,
+    "log_loss_improvement": 0.1172,
+    "reason": "new fit doesn't beat current by enough (loss gap +0.0031, need -0.01)"
+  },
+  {
+    "n_knots": 10,
+    "log_loss_improvement": 0.1723,
+    "reason": "only 48 validation trades (need 50)"
+  }
+]

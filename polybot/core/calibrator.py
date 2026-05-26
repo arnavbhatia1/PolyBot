@@ -125,13 +125,12 @@ class IsotonicCalibrator:
             logger.warning(f"Isotonic fit failed: {e}")
             return False
 
-        # Healthy fit must be able to output across at least [0.2, 0.8].
         y_min = float(iso.y_thresholds_[0])
         y_max = float(iso.y_thresholds_[-1])
-        if y_min > 0.2 or y_max < 0.8:
+        if y_min > 0.50 or y_max < 0.55:
             logger.info(
                 f"Isotonic fit rejected: output range [{y_min:.3f}, {y_max:.3f}] "
-                f"does not span [0.2, 0.8] (asymmetric)"
+                f"does not span [0.50, 0.55]"
             )
             return False
 

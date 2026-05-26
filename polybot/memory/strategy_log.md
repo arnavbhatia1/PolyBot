@@ -778,3 +778,69 @@
 - Current regime (last 100 trades WR=57%) is consistent with overall 56% — no regime divergence risk this cycle, but distribution shift detected in model_probability_raw and ATR warrants monitoring.
 
 **Reasoning:** Every backtestable parameter family has been exhaustively tested across directions and values with no candidate clearing the statistical adoption floor, and the sole live adoption decayed -0.167 Sharpe — the correct response is zero changes this cycle. Win rate and Sharpe are explicitly labeled IMPROVING in the trend data, meaning parameter intervention now risks disrupting a self-resolving recovery. The only actionable finding remains exit_edge_threshold at 37% scalp accuracy in the <-0.10 bucket across n=2345 trades (~13x noise), reproduced consistently for 10+ cycles, which is correctly routed to manual_observations as it cannot be backtested directly.
+
+## 2026-05-26T14:50:11.628662+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - liquidation_weight=0.04 (exploratory up step)
+  - prev_margin_weight=0.015 (exploratory down step)
+  - min_atr=13.0 (exploratory up step)
+  - kelly_fraction=0.07 (exploratory down step)
+  - deep_loss_hold_threshold=-0.08 (exploratory up step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
+
+## 2026-05-26T14:57:21.710707+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - logit_scale=4.25 (exploratory up step)
+  - min_model_probability=0.55 (exploratory down step)
+  - min_edge=0.045 (exploratory up step)
+  - min_kelly=0.008 (exploratory down step)
+  - l5_regime_damp_cap=0.75 (exploratory up step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
+
+## 2026-05-26T15:15:00.000000+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - derived_prev_margin_sq_weight=0.005 (exploratory up step)
+  - derived_log_atr_ratio_weight=0.005 (exploratory up step)
+  - derived_autocorr_signed_mag_weight=0.005 (exploratory up step)
+  - derived_flow_disagreement_weight=0.005 (exploratory up step)
+  - atr_regime_shift_threshold=0.65 (exploratory up step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
