@@ -1,19 +1,19 @@
 {
   "live": {
-    "attempts": 26,
+    "attempts": 29,
     "consumed": 0,
-    "none_armed": 26,
+    "none_armed": 29,
     "ttl_expired": 0,
     "price_drift_reject": 0,
     "size_drift_reject": 0
   },
   "paper": {
-    "attempts": 1310,
-    "consumed": 545,
-    "none_armed": 502,
-    "ttl_expired": 110,
-    "price_drift_reject": 153,
+    "attempts": 1879,
+    "consumed": 793,
+    "none_armed": 706,
+    "ttl_expired": 163,
+    "price_drift_reject": 217,
     "size_drift_reject": 0
   },
-  "last_updated": "2026-05-25T03:23:16.836550+00:00"
+  "last_updated": "2026-05-26T03:24:08.625865+00:00"
 }
