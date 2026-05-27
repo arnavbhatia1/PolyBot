@@ -532,12 +532,50 @@ async def _evaluate_signal_and_enter(
     """Compute indicators/flow/signal, check for entry, size the trade, execute."""
 
     def _ghost(gate: str, signal: Any, snap: dict) -> None:
-        """Record a ghost trade when a downstream gate rejects a real BUY signal."""
+        """Record a ghost trade when a downstream gate rejects a real BUY signal.
+
+        Builds a base trade_context from closure vars at gate-fire time
+        (model_probability_raw + market prices + L1–L5 layer inputs) so the
+        ghost survives AgentScheduler._ghost_to_outcome's market-price gate
+        and reaches the calibration + KS-shift + backtest pools. A
+        caller-supplied snap (e.g. pre-submit ghosts pass the full live
+        indicator snapshot) merges on top — caller values win for overlapping
+        keys.
+        """
         if ghost_tracker is None or signal is None:
             return
         if signal.action not in ("BUY_YES", "BUY_NO"):
             return  # model-level skip — not a valid ghost
         side = "Up" if signal.action == "BUY_YES" else "Down"
+        raw_prob_side = (
+            signal_engine.last_raw_prob_up if side == "Up"
+            else 1.0 - signal_engine.last_raw_prob_up
+        )
+        _closes_tail = (
+            [float(closes[-2]), float(closes[-1])]
+            if len(closes) >= 2 else None
+        )
+        base_ctx: dict[str, Any] = {
+            "model_probability_raw": raw_prob_side,
+            "market_price_up": price_up,
+            "market_price_down": price_down,
+            "btc_price": btc_price,
+            "strike_price": strike,
+            "seconds_remaining": contract.get("seconds_remaining", 0),
+            "atr": indicators.get("atr", {}).get("atr", 0),
+            "flow_score": flow_score,
+            "spot_flow_signal": spot_flow_signal,
+            "liquidation_pressure": liquidation_val,
+            "prev_resolution_margin": _prev_resolution_margin,
+            "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
+            "regime_direction": round(signal_engine.last_regime_direction, 4),
+            "closes_tail": _closes_tail,
+        }
+        merged_snap = dict(snap or {})
+        caller_ctx = merged_snap.get("trade_context", {}) or {}
+        merged_ctx = dict(base_ctx)
+        merged_ctx.update(caller_ctx)
+        merged_snap["trade_context"] = merged_ctx
         ghost_tracker.record_rejection(
             gate_name=gate,
             side=side,
@@ -545,7 +583,7 @@ async def _evaluate_signal_and_enter(
             signal_edge=signal.edge,
             market_id=cid,
             seconds_remaining=float(contract.get("seconds_remaining", 0)),
-            indicator_snapshot=snap,
+            indicator_snapshot=merged_snap,
         )
 
     # Feed freshness gate: skip entries when any critical price/strike feed has
@@ -721,6 +759,10 @@ async def _evaluate_signal_and_enter(
             else:
                 side, signal_prob = "Down", 1.0 - prob_up
                 mkt_price = price_down
+            _closes_tail = (
+                [float(closes[-2]), float(closes[-1])]
+                if len(closes) >= 2 else None
+            )
             ghost_tracker.record_rejection(
                 gate_name="sub_threshold_prob",
                 side=side,
@@ -732,6 +774,17 @@ async def _evaluate_signal_and_enter(
                     "model_probability_raw": signal_prob,
                     "market_price_up": price_up,
                     "market_price_down": price_down,
+                    "btc_price": btc_price,
+                    "strike_price": strike,
+                    "seconds_remaining": contract.get("seconds_remaining", 0),
+                    "atr": indicators.get("atr", {}).get("atr", 0),
+                    "flow_score": flow_score,
+                    "spot_flow_signal": spot_flow_signal,
+                    "liquidation_pressure": liquidation_val,
+                    "prev_resolution_margin": _prev_resolution_margin,
+                    "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
+                    "regime_direction": round(signal_engine.last_regime_direction, 4),
+                    "closes_tail": _closes_tail,
                 }},
             )
         return None, last_eval_log_window

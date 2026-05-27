@@ -8,12 +8,12 @@
     "size_drift_reject": 0
   },
   "paper": {
-    "attempts": 53,
-    "consumed": 31,
-    "none_armed": 14,
-    "ttl_expired": 0,
-    "price_drift_reject": 8,
+    "attempts": 364,
+    "consumed": 187,
+    "none_armed": 118,
+    "ttl_expired": 22,
+    "price_drift_reject": 37,
     "size_drift_reject": 0
   },
-  "last_updated": "2026-05-26T16:06:53.426202+00:00"
+  "last_updated": "2026-05-27T15:12:45.670655+00:00"
 }

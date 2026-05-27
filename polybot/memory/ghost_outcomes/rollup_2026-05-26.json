@@ -994,5 +994,638 @@
     "ghost_gain_pct": 0.608,
     "resolved_at": 1779806414.7546349,
     "timestamp": "2026-05-26T14:40:14.754642+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779808200",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5002,
+    "signal_edge": -0.0198,
+    "seconds_remaining": 299.8,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5001907119987212,
+        "market_price_up": 0.52,
+        "market_price_down": 0.5
+      }
+    },
+    "recorded_at": 1779808200.6327765,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.9992,
+    "resolved_at": 1779809088.4776056,
+    "timestamp": "2026-05-26T15:24:48.477627+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779808500",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.539,
+    "signal_edge": -0.001,
+    "seconds_remaining": 299.6,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5390025707449385,
+        "market_price_up": 0.54,
+        "market_price_down": 0.47
+      }
+    },
+    "recorded_at": 1779808501.0365043,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779809389.818286,
+    "timestamp": "2026-05-26T15:29:49.818311+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779809400",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5571,
+    "signal_edge": 0.0171,
+    "seconds_remaining": 298.4,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5571414885274325,
+        "market_price_up": 0.54,
+        "market_price_down": 0.48
+      }
+    },
+    "recorded_at": 1779809401.869082,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779810321.4765887,
+    "timestamp": "2026-05-26T15:45:21.476610+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779809700",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.553,
+    "signal_edge": 0.003,
+    "seconds_remaining": 299.9,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.552993965149466,
+        "market_price_up": 0.55,
+        "market_price_down": 0.46
+      }
+    },
+    "recorded_at": 1779809700.7960553,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.8083,
+    "resolved_at": 1779810321.4765887,
+    "timestamp": "2026-05-26T15:45:21.481668+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779810000",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5006,
+    "signal_edge": -0.0294,
+    "seconds_remaining": 299.6,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5006437120646747,
+        "market_price_up": 0.53,
+        "market_price_down": 0.48
+      }
+    },
+    "recorded_at": 1779810001.0853908,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.9976,
+    "resolved_at": 1779810923.3441997,
+    "timestamp": "2026-05-26T15:55:23.344216+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779810300",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5396,
+    "signal_edge": 0.0096,
+    "seconds_remaining": 299.3,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5396357884995913,
+        "market_price_up": 0.53,
+        "market_price_down": 0.48
+      }
+    },
+    "recorded_at": 1779810301.0094404,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779811224.3467884,
+    "timestamp": "2026-05-26T16:00:24.346804+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779810600",
+    "side": "Down",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5569,
+    "signal_edge": 0.0569,
+    "seconds_remaining": 299.5,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5568854960960448,
+        "market_price_up": 0.52,
+        "market_price_down": 0.5
+      }
+    },
+    "recorded_at": 1779810601.1175442,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.7957,
+    "resolved_at": 1779811434.4251542,
+    "timestamp": "2026-05-26T16:03:54.425180+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779810900",
+    "side": "Down",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5413,
+    "signal_edge": -0.0087,
+    "seconds_remaining": 283.2,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5413365902057299,
+        "market_price_up": 0.46,
+        "market_price_down": 0.55
+      }
+    },
+    "recorded_at": 1779810917.114981,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779811525.7812552,
+    "timestamp": "2026-05-26T16:05:25.781274+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779811200",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5526,
+    "signal_edge": 0.0426,
+    "seconds_remaining": 128.9,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5526306702744573,
+        "market_price_up": 0.51,
+        "market_price_down": 0.5
+      }
+    },
+    "recorded_at": 1779811371.5216498,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779811947.0902426,
+    "timestamp": "2026-05-26T16:12:27.090258+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779811500",
+    "side": "Down",
+    "gate_name": "edge_decay",
+    "signal_prob": 0.8522,
+    "signal_edge": 0.1722,
+    "seconds_remaining": 183.5,
+    "indicator_snapshot": {},
+    "recorded_at": 1779811616.907454,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.1734,
+    "resolved_at": 1779812277.6633348,
+    "timestamp": "2026-05-26T16:17:57.663343+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779812100",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.6295,
+    "signal_edge": -0.1105,
+    "seconds_remaining": 232.6,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.6294613766391213,
+        "market_price_up": 0.74,
+        "market_price_down": 0.27
+      }
+    },
+    "recorded_at": 1779812167.8357704,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.5886,
+    "resolved_at": 1779812940.26133,
+    "timestamp": "2026-05-26T16:29:00.261353+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779812400",
+    "side": "Down",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5255,
+    "signal_edge": 0.0255,
+    "seconds_remaining": 299.9,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5255280117261665,
+        "market_price_up": 0.51,
+        "market_price_down": 0.5
+      }
+    },
+    "recorded_at": 1779812400.8238068,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779813242.1884727,
+    "timestamp": "2026-05-26T16:34:02.188494+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779817200",
+    "side": "Down",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5584,
+    "signal_edge": 0.0484,
+    "seconds_remaining": 299.8,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.55838583878857,
+        "market_price_up": 0.5,
+        "market_price_down": 0.51
+      }
+    },
+    "recorded_at": 1779817200.7889361,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779817909.9327147,
+    "timestamp": "2026-05-26T17:51:49.932733+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779817500",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5079,
+    "signal_edge": -0.0121,
+    "seconds_remaining": 299.8,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.507890437338799,
+        "market_price_up": 0.52,
+        "market_price_down": 0.49
+      }
+    },
+    "recorded_at": 1779817500.937057,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.9689,
+    "resolved_at": 1779818150.1006062,
+    "timestamp": "2026-05-26T17:55:50.100628+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779818100",
+    "side": "Down",
+    "gate_name": "cvd_decel",
+    "signal_prob": 0.6744,
+    "signal_edge": 0.1644,
+    "seconds_remaining": 297.5,
+    "indicator_snapshot": {},
+    "recorded_at": 1779818102.7965498,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.4828,
+    "resolved_at": 1779818751.2052672,
+    "timestamp": "2026-05-26T18:05:51.205286+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779818400",
+    "side": "Down",
+    "gate_name": "cvd_decel",
+    "signal_prob": 0.6663,
+    "signal_edge": 0.1563,
+    "seconds_remaining": 299.9,
+    "indicator_snapshot": {},
+    "recorded_at": 1779818400.6733115,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779819051.4916527,
+    "timestamp": "2026-05-26T18:10:51.491670+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779818700",
+    "side": "Down",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5335,
+    "signal_edge": 0.0335,
+    "seconds_remaining": 297.9,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5334919180999587,
+        "market_price_up": 0.51,
+        "market_price_down": 0.5
+      }
+    },
+    "recorded_at": 1779818702.5018513,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779819412.339169,
+    "timestamp": "2026-05-26T18:16:52.339184+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779819000",
+    "side": "Down",
+    "gate_name": "cvd_decel",
+    "signal_prob": 0.6239,
+    "signal_edge": 0.1339,
+    "seconds_remaining": 299.7,
+    "indicator_snapshot": {},
+    "recorded_at": 1779819000.9199867,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779819713.9197264,
+    "timestamp": "2026-05-26T18:21:53.919742+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779819300",
+    "side": "Down",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5003,
+    "signal_edge": 0.0003,
+    "seconds_remaining": 299.9,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5003017019211256,
+        "market_price_up": 0.51,
+        "market_price_down": 0.5
+      }
+    },
+    "recorded_at": 1779819302.7641356,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779820045.632991,
+    "timestamp": "2026-05-26T18:27:25.633009+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779820200",
+    "side": "Down",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5087,
+    "signal_edge": -0.0013,
+    "seconds_remaining": 299.7,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5086598793502625,
+        "market_price_up": 0.5,
+        "market_price_down": 0.51
+      }
+    },
+    "recorded_at": 1779820200.9276545,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779820947.1325147,
+    "timestamp": "2026-05-26T18:42:27.132531+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779820500",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5109,
+    "signal_edge": -0.0091,
+    "seconds_remaining": 299.9,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5108690851426546,
+        "market_price_up": 0.52,
+        "market_price_down": 0.49
+      }
+    },
+    "recorded_at": 1779820500.6262271,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779821337.9445806,
+    "timestamp": "2026-05-26T18:48:57.944597+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779820800",
+    "side": "Down",
+    "gate_name": "cvd_decel",
+    "signal_prob": 0.9807,
+    "signal_edge": 0.0607,
+    "seconds_remaining": 222.7,
+    "indicator_snapshot": {},
+    "recorded_at": 1779820877.5602803,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.0197,
+    "resolved_at": 1779821639.0386002,
+    "timestamp": "2026-05-26T18:53:59.038619+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779821100",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.9045,
+    "signal_edge": -0.0055,
+    "seconds_remaining": 153.0,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.9044640455215098,
+        "market_price_up": 0.91,
+        "market_price_down": 0.1
+      }
+    },
+    "recorded_at": 1779821247.2407565,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.1056,
+    "resolved_at": 1779821939.9672592,
+    "timestamp": "2026-05-26T18:58:59.967278+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779822000",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5247,
+    "signal_edge": 0.0147,
+    "seconds_remaining": 299.7,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5246821394389577,
+        "market_price_up": 0.51,
+        "market_price_down": 0.5
+      }
+    },
+    "recorded_at": 1779822000.8988993,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.9059,
+    "resolved_at": 1779822783.6610322,
+    "timestamp": "2026-05-26T19:13:03.661051+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779822300",
+    "side": "Down",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5429,
+    "signal_edge": 0.0729,
+    "seconds_remaining": 299.8,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5428922737782078,
+        "market_price_up": 0.54,
+        "market_price_down": 0.47
+      }
+    },
+    "recorded_at": 1779822300.784277,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779823054.34664,
+    "timestamp": "2026-05-26T19:17:34.346662+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779822600",
+    "side": "Up",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5201,
+    "signal_edge": -0.0099,
+    "seconds_remaining": 299.9,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.520094418542887,
+        "market_price_up": 0.53,
+        "market_price_down": 0.48
+      }
+    },
+    "recorded_at": 1779822600.7530744,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779823355.2376463,
+    "timestamp": "2026-05-26T19:22:35.237663+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779822900",
+    "side": "Down",
+    "gate_name": "cvd_decel",
+    "signal_prob": 0.5685,
+    "signal_edge": 0.0685,
+    "seconds_remaining": 299.9,
+    "indicator_snapshot": {},
+    "recorded_at": 1779822900.7820153,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779823686.2861297,
+    "timestamp": "2026-05-26T19:28:06.286149+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779824700",
+    "side": "Down",
+    "gate_name": "cvd_decel",
+    "signal_prob": 0.7041,
+    "signal_edge": 0.1941,
+    "seconds_remaining": 299.9,
+    "indicator_snapshot": {},
+    "recorded_at": 1779824700.7113507,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.4203,
+    "resolved_at": 1779825552.947407,
+    "timestamp": "2026-05-26T19:59:12.947428+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779825600",
+    "side": "Up",
+    "gate_name": "sprt_low_confidence",
+    "signal_prob": 0.8047,
+    "signal_edge": 0.1447,
+    "seconds_remaining": 270.9,
+    "indicator_snapshot": {},
+    "recorded_at": 1779825629.350078,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.2427,
+    "resolved_at": 1779826244.7145734,
+    "timestamp": "2026-05-26T20:10:44.714590+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779825900",
+    "side": "Down",
+    "gate_name": "cvd_decel",
+    "signal_prob": 0.6279,
+    "signal_edge": 0.1579,
+    "seconds_remaining": 299.9,
+    "indicator_snapshot": {},
+    "recorded_at": 1779825900.6371999,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.5926,
+    "resolved_at": 1779826546.334831,
+    "timestamp": "2026-05-26T20:15:46.334859+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779826800",
+    "side": "Down",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5164,
+    "signal_edge": 0.0164,
+    "seconds_remaining": 299.7,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.5163982350559392,
+        "market_price_up": 0.51,
+        "market_price_down": 0.5
+      }
+    },
+    "recorded_at": 1779826800.9399326,
+    "resolved": true,
+    "ghost_correct": true,
+    "ghost_gain_pct": 0.9365,
+    "resolved_at": 1779827448.605379,
+    "timestamp": "2026-05-26T20:30:48.605398+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779827400",
+    "side": "Up",
+    "gate_name": "edge_cap",
+    "signal_prob": 0.6908,
+    "signal_edge": 0.2208,
+    "seconds_remaining": 299.9,
+    "indicator_snapshot": {},
+    "recorded_at": 1779827401.0412316,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779828113.7701902,
+    "timestamp": "2026-05-26T20:41:53.770205+00:00"
+  },
+  {
+    "market_id": "btc-updown-5m-1779827700",
+    "side": "Down",
+    "gate_name": "sub_threshold_prob",
+    "signal_prob": 0.5378,
+    "signal_edge": 0.0278,
+    "seconds_remaining": 299.5,
+    "indicator_snapshot": {
+      "trade_context": {
+        "model_probability_raw": 0.537827332653299,
+        "market_price_up": 0.5,
+        "market_price_down": 0.51
+      }
+    },
+    "recorded_at": 1779827701.1439738,
+    "resolved": true,
+    "ghost_correct": false,
+    "ghost_gain_pct": -1.0,
+    "resolved_at": 1779828385.3748147,
+    "timestamp": "2026-05-26T20:46:25.374824+00:00"
   }
 ]

@@ -844,3 +844,25 @@
 - None
 
 **Reasoning:** Local recommender
+
+## 2026-05-27T13:54:57.208791+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - atr_sigma_ratio=1.4 (exploratory up step)
+  - student_t_df=4 (exploratory down step)
+  - derived_prev_margin_sq_weight=0.01 (exploratory up step)
+  - momentum_weight=0.08 (exploratory up step)
+  - regime_weight=0.02 (exploratory down step)
+
+**Manual Suggestions (1) [operator-only]:**
+  - exit_edge_threshold: -0.07 -> -0.05 [?]
+    scalps beat holds — relax scalp threshold
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender

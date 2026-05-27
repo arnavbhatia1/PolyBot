@@ -1,1 +1,7 @@
-[]
+[
+  {
+    "n_knots": 12,
+    "log_loss_improvement": 0.1635,
+    "reason": "only 44 validation trades (need 50)"
+  }
+]
