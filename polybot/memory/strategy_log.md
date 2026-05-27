@@ -129,7 +129,6 @@
     Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
 
 **Findings:**
-- Platt meta: raw_sharpe 0.1517 >= 0.95 x current_platt 0.1517 — calibrator may not be earning its keep
 - Top gate: sprt_skip blocks 3550/19226 skips (18%) — consider loosening
 
 **Warnings:**
@@ -148,7 +147,7 @@
     Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
 
 **Findings:**
-- Platt meta: raw_sharpe 0.1468 >= 0.95 x current_platt 0.1468 — calibrator may not be earning its keep
+- None
 
 **Warnings:**
 - None
@@ -202,7 +201,6 @@
     Counterfactual: scalps beat holds — relax scalp threshold (easier to scalp)
 
 **Findings:**
-- Platt meta: raw_sharpe 0.1584 >= 0.95 x current_platt 0.1584 — reverting to identity
 - Top gate: sprt_skip blocks 1156/3366 skips (34%) — consider loosening
 
 **Warnings:**
@@ -285,12 +283,10 @@
 - Scalp exits below -0.10 edge correct only 38% of time (n=1106, ~9× noise) — primary value leak.
 - 15+ parameter families exhausted; every tested direction failed adoption floor or live validation.
 - Both adoptions decayed live (spot_flow_weight, atr_sigma_ratio each -0.167) — overfitting risk is high.
-- Platt calibration near identity (raw ≥ 0.95× platt) — calibrator adding no lift this cycle.
 
 **Warnings:**
 - 0/1 adoption success with -0.167 live delta on the sole attempt — any change carries elevated overfitting risk until regime stabilizes.
 - Mean gain DEGRADING (-0.0238 trend delta) while WR is IMPROVING suggests position sizing or exit quality is the drag, not entry selection.
-- With Platt near identity and all major parameter families exhausted, further tuning risks fitting noise; a structural model review may be warranted.
 
 **Reasoning:** Every backtestable parameter family has now been tested across multiple values and directions, with no candidate clearing the 0.016 safety-margin delta needed for meaningful confidence — empty changes is the only defensible call. The sole adoption produced -0.167 live Sharpe decay, reinforcing that backtest deltas near the noise floor are not translating to live edge in the current regime. The manual observation on exit_edge_threshold remains the highest-confidence actionable lever, backed by n=1106 at 38% accuracy in the destructive <-0.10 bucket, consistently reproduced across multiple cycles at 9× the noise floor.
 
@@ -306,7 +302,6 @@
 
 **Findings:**
 - Recent 100 trades improving: WR 62% vs overall 55%
-- Platt meta: raw_sharpe 0.2677 >= 0.95 x current_platt 0.2590 — reverting to identity
 - Top gate: stale_prices blocks 11631/34477 skips (34%) — consider loosening
 
 **Warnings:**
@@ -345,7 +340,6 @@
 
 **Findings:**
 - Recent 100 trades improving: WR 62% vs overall 55%
-- Platt meta: raw_sharpe 0.3852 >= 0.95 x current_platt 0.3404 — reverting to identity
 - Top gate: stale_prices blocks 11631/34477 skips (34%) — consider loosening
 
 **Warnings:**

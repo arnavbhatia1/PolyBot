@@ -71,7 +71,7 @@ WebSocket feeds + REST polls
 | `core/returns.py` | `log_return` + shared `lag1_autocorr` (used by L2 and RegimeDetector) |
 | `feeds/coinbase_feed.py` | Primary BTC price (WS) |
 | `feeds/kraken_feed.py` | Secondary BTC price (WS, Chainlink-aligned) |
-| `feeds/binance_feed.py` | 1-min candles, ATR, fallback BTC price |
+| `feeds/binance_feed.py` | 1-min candles, ATR |
 | `feeds/binance_depth.py` | L2 book depth |
 | `feeds/binance_trades.py` | aggTrades → CVD, taker ratio |
 | `feeds/bybit_feed.py` | OI + funding (WS only — REST is US geo-blocked) |
