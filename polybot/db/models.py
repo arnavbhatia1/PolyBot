@@ -33,12 +33,10 @@ class Database:
                 entry_price REAL NOT NULL,
                 size REAL NOT NULL,
                 signal_score REAL NOT NULL,
-                signal_strength TEXT NOT NULL,
                 entry_timestamp TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'open',
                 exit_price REAL,
                 exit_timestamp TEXT,
-                log_return REAL,
                 indicator_snapshot TEXT,
                 fee_rate REAL,
                 shares_held REAL
@@ -46,17 +44,10 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS trade_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                position_id INTEGER NOT NULL,
-                market_id TEXT NOT NULL,
-                question TEXT NOT NULL,
                 side TEXT NOT NULL,
                 entry_price REAL NOT NULL,
                 exit_price REAL NOT NULL,
                 size REAL NOT NULL,
-                signal_score REAL NOT NULL,
-                signal_strength TEXT NOT NULL,
-                log_return REAL NOT NULL,
-                entry_timestamp TEXT NOT NULL,
                 exit_timestamp TEXT NOT NULL,
                 exit_reason TEXT NOT NULL DEFAULT 'resolution'
             );
@@ -78,7 +69,8 @@ class Database:
             await self.conn.execute("ALTER TABLE positions ADD COLUMN fee_rate REAL")
         if "shares_held" not in cols:
             await self.conn.execute("ALTER TABLE positions ADD COLUMN shares_held REAL")
-        for dead in ("ev_at_entry", "exit_target", "stop_loss", "weight_version"):
+        for dead in ("ev_at_entry", "exit_target", "stop_loss", "weight_version",
+                     "signal_strength", "log_return"):
             if dead in cols:
                 await self.conn.execute(f"ALTER TABLE positions DROP COLUMN {dead}")
         cursor = await self.conn.execute("PRAGMA table_info(trade_history)")
@@ -89,7 +81,9 @@ class Database:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0")
         if "exit_reason" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN exit_reason TEXT NOT NULL DEFAULT 'resolution'")
-        for dead in ("ev_at_entry", "weight_version"):
+        for dead in ("ev_at_entry", "weight_version",
+                     "signal_score", "signal_strength", "log_return",
+                     "position_id", "market_id", "question", "entry_timestamp"):
             if dead in th_cols:
                 await self.conn.execute(f"ALTER TABLE trade_history DROP COLUMN {dead}")
 
@@ -128,13 +122,13 @@ class Database:
             cursor = await self.conn.execute(
                 """INSERT INTO positions
                 (market_id, question, side, entry_price, size, signal_score,
-                 signal_strength, entry_timestamp, status, indicator_snapshot,
+                 entry_timestamp, status, indicator_snapshot,
                  fee_rate, shares_held)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
                 (position_kwargs["market_id"], position_kwargs["question"],
                  position_kwargs["side"], position_kwargs["entry_price"],
                  position_kwargs["size"], position_kwargs["signal_score"],
-                 position_kwargs["signal_strength"], now,
+                 now,
                  position_kwargs.get("indicator_snapshot", ""),
                  position_kwargs.get("fee_rate"), position_kwargs.get("shares_held")),
             )
@@ -167,7 +161,7 @@ class Database:
         await self.conn.commit()
 
     async def _close_position_and_history(
-        self, position_id: int, exit_price: float, log_return: float,
+        self, position_id: int, exit_price: float,
         pnl: float, fees: float, exit_reason: str,
     ) -> None:
         """Mark position closed and write the trade_history row.
@@ -177,8 +171,8 @@ class Database:
         """
         now = datetime.now(timezone.utc).isoformat()
         await self.conn.execute(
-            "UPDATE positions SET status='closed', exit_price=?, exit_timestamp=?, log_return=? WHERE id=?",
-            (exit_price, now, log_return, position_id),
+            "UPDATE positions SET status='closed', exit_price=?, exit_timestamp=? WHERE id=?",
+            (exit_price, now, position_id),
         )
         cursor = await self.conn.execute(
             "SELECT * FROM positions WHERE id=?", (position_id,)
@@ -186,18 +180,15 @@ class Database:
         pos = dict(await cursor.fetchone())
         await self.conn.execute(
             """INSERT INTO trade_history
-            (position_id, market_id, question, side, entry_price, exit_price, size,
-             signal_score, signal_strength, log_return,
-             entry_timestamp, exit_timestamp, pnl, fees, exit_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (pos["id"], pos["market_id"], pos["question"], pos["side"],
-             pos["entry_price"], exit_price, pos["size"],
-             pos["signal_score"], pos["signal_strength"],
-             log_return, pos["entry_timestamp"], now, pnl, fees, exit_reason),
+            (side, entry_price, exit_price, size,
+             exit_timestamp, pnl, fees, exit_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (pos["side"], pos["entry_price"], exit_price, pos["size"],
+             now, pnl, fees, exit_reason),
         )
 
     async def close_position(
-        self, position_id: int, exit_price: float, log_return: float,
+        self, position_id: int, exit_price: float,
         pnl: float = 0.0, fees: float = 0.0, exit_reason: str = "resolution",
         new_bankroll: float | None = None, bankroll_delta: float | None = None,
     ) -> None:
@@ -215,7 +206,7 @@ class Database:
             raise ValueError("Pass at most one of new_bankroll / bankroll_delta")
         try:
             await self._close_position_and_history(
-                position_id, exit_price, log_return, pnl, fees, exit_reason,
+                position_id, exit_price, pnl, fees, exit_reason,
             )
             if new_bankroll is not None:
                 await self.conn.execute(

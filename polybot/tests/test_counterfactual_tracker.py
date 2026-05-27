@@ -147,7 +147,7 @@ def test_load_all_skips_malformed(tracker, memory_dir):
 
 def test_bias_detector_counterfactual_analysis():
     from polybot.agents.bias_detector import BiasDetector
-    detector = BiasDetector(biases_path="/tmp/fake_biases.json")
+    detector = BiasDetector()
     counterfactuals = [
         {"scalp_was_optimal": True,  "delta_pnl": 0,    "actual": {"gain_pct": 0.05},
          "counterfactual": {"gain_pct": -1.0}, "context_at_scalp": {"holding_edge": -0.15, "seconds_remaining": 20}},

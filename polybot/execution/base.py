@@ -123,124 +123,6 @@ def compute_buy_vwap(book: dict[str, Any] | None, size_usd: float) -> float | No
     return spent / consumed
 
 
-# ---------------------------------------------------------------------------
-# Warm-SELL warmup hit-rate telemetry
-# ---------------------------------------------------------------------------
-# Lets us cross-check that paper realizes the SELL signature speedup on the
-# same fraction of trades live does. Same conditions (TTL + drift checks) →
-# same outcome bucket. Drift = paper-live parity broken; investigate.
-import json as _ws_json
-from pathlib import Path as _ws_Path
-from datetime import datetime as _ws_dt, timezone as _ws_tz
-
-_WARMUP_STATS_PATH = _ws_Path("polybot/memory/warmup_stats.json")
-_WARMUP_OUTCOMES: tuple[str, ...] = (
-    "consumed", "none_armed", "ttl_expired", "price_drift_reject", "size_drift_reject",
-)
-
-
-def _empty_warmup_bucket() -> dict[str, int]:
-    return {"attempts": 0, **{k: 0 for k in _WARMUP_OUTCOMES}}
-
-
-def record_warmup_outcome(mode: str, outcome: str) -> None:
-    """Persist a single SELL-warmup attempt outcome under ``mode`` ∈ {live, paper}.
-
-    Outcome must be one of _WARMUP_OUTCOMES. Silent on I/O errors — telemetry
-    only, never affects trading. Bucketed counters let the operator compute
-    consumed-rate per mode and verify paper/live parity over time.
-    """
-    if mode not in ("live", "paper") or outcome not in _WARMUP_OUTCOMES:
-        return
-    try:
-        stats: dict[str, Any] = {"live": _empty_warmup_bucket(), "paper": _empty_warmup_bucket()}
-        if _WARMUP_STATS_PATH.exists():
-            try:
-                loaded = _ws_json.loads(_WARMUP_STATS_PATH.read_text())
-                if isinstance(loaded, dict):
-                    for m in ("live", "paper"):
-                        if isinstance(loaded.get(m), dict):
-                            stats[m].update(loaded[m])
-                            # Backfill any missing keys from older schema.
-                            for k in _empty_warmup_bucket():
-                                stats[m].setdefault(k, 0)
-            except Exception:
-                pass
-        bucket = stats[mode]
-        bucket["attempts"] = bucket.get("attempts", 0) + 1
-        bucket[outcome] = bucket.get(outcome, 0) + 1
-        stats["last_updated"] = _ws_dt.now(_ws_tz.utc).isoformat()
-        _WARMUP_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _WARMUP_STATS_PATH.write_text(_ws_json.dumps(stats, indent=2))
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
-# Dust sweep observability
-# ---------------------------------------------------------------------------
-# `_sweep_residual` runs as fire-and-forget after every SELL to recover the
-# small share remainder the sell-fee headroom leaves on chain. The audit found
-# the failure path silently swallowed exceptions — so a sweep that fails
-# (network error, balance/allowance mismatch, no-match) leaks the dust value
-# with zero operator visibility. Persist outcomes so the daily pipeline review
-# can surface the leak rate.
-_DUST_SWEEP_STATS_PATH = _ws_Path("polybot/memory/dust_sweep_stats.json")
-_DUST_SWEEP_OUTCOMES: tuple[str, ...] = (
-    "swept", "below_threshold", "match_failed", "exception",
-)
-
-
-def _empty_dust_sweep_stats() -> dict[str, Any]:
-    return {
-        **{k: 0 for k in _DUST_SWEEP_OUTCOMES},
-        "abandoned_shares_total": 0.0,    # cumulative shares written off (match_failed + exception)
-        "abandoned_value_usd_total": 0.0,  # approximate USD value of the above
-        "last_failure": None,             # most recent {outcome, ts, shares, approx_val} dict
-    }
-
-
-def record_dust_sweep_outcome(outcome: str, shares: float = 0.0,
-                              approx_val_usd: float = 0.0,
-                              note: str = "") -> None:
-    """Persist a single dust-sweep attempt outcome. Silent on I/O errors.
-
-    Failed sweeps (`match_failed`, `exception`) accumulate into the
-    abandoned-shares totals so the operator can quantify the bankroll leak.
-    Successful sweeps just increment the counter — no PnL adjustment needed
-    because the recovered USDC arrives via the SELL fill.
-    """
-    if outcome not in _DUST_SWEEP_OUTCOMES:
-        return
-    try:
-        stats = _empty_dust_sweep_stats()
-        if _DUST_SWEEP_STATS_PATH.exists():
-            try:
-                loaded = _ws_json.loads(_DUST_SWEEP_STATS_PATH.read_text())
-                if isinstance(loaded, dict):
-                    stats.update(loaded)
-                    for k in _empty_dust_sweep_stats():
-                        stats.setdefault(k, _empty_dust_sweep_stats()[k])
-            except Exception:
-                pass
-        stats[outcome] = stats.get(outcome, 0) + 1
-        if outcome in ("match_failed", "exception"):
-            stats["abandoned_shares_total"] = round(
-                stats.get("abandoned_shares_total", 0.0) + max(0.0, shares), 6)
-            stats["abandoned_value_usd_total"] = round(
-                stats.get("abandoned_value_usd_total", 0.0) + max(0.0, approx_val_usd), 4)
-            stats["last_failure"] = {
-                "outcome": outcome,
-                "ts": _ws_dt.now(_ws_tz.utc).isoformat(),
-                "shares": round(shares, 4),
-                "approx_val_usd": round(approx_val_usd, 4),
-                "note": note[:120],
-            }
-        stats["last_updated"] = _ws_dt.now(_ws_tz.utc).isoformat()
-        _DUST_SWEEP_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _DUST_SWEEP_STATS_PATH.write_text(_ws_json.dumps(stats, indent=2))
-    except Exception:
-        pass
 
 
 def _entry_fee_usd_from_position(position: dict[str, Any], shares_held: float) -> float:
@@ -345,7 +227,6 @@ class BaseTrader(ABC):
         price: float,
         size: float,
         signal_score: float,
-        signal_strength: str,
         indicator_snapshot: str | dict[str, Any] = "",
         token_id: str = "",
         fee_rate: float = DEFAULT_FEE_RATE,
@@ -395,7 +276,6 @@ class BaseTrader(ABC):
                 entry_price=fill.fill_price,
                 size=fill.fill_size,
                 signal_score=signal_score,
-                signal_strength=signal_strength,
                 indicator_snapshot=indicator_snapshot,
                 fee_rate=fee_rate,
                 shares_held=shares_received,
@@ -464,7 +344,7 @@ class BaseTrader(ABC):
         # --- Persist to DB (atomic: close + bankroll credit in one transaction) ---
         total_fees = entry_fee_usd + fee_usdc
         await self.db.close_position(
-            position_id, exit_price=fill.fill_price, log_return=lr,
+            position_id, exit_price=fill.fill_price,
             bankroll_delta=revenue, pnl=pnl, fees=total_fees, exit_reason=exit_reason,
         )
 
@@ -503,7 +383,7 @@ class BaseTrader(ABC):
         total_fees = entry_fee_usd + exit_fee_usd_val
         new_bankroll = await self._resolve_bankroll(position, exit_price)
         await self.db.close_position(
-            position_id, exit_price=exit_price, log_return=lr,
+            position_id, exit_price=exit_price,
             new_bankroll=new_bankroll, pnl=pnl, fees=total_fees, exit_reason="resolution",
         )
 

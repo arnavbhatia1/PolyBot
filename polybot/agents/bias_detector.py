@@ -6,11 +6,9 @@ ghost trade gate analysis, cross-window correlation, and time-to-resolution dist
 """
 from __future__ import annotations
 
-import json
 import math
 import logging
 from collections import defaultdict
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -37,9 +35,6 @@ def _get_regime(o: dict[str, Any]) -> str:
 
 
 class BiasDetector:
-    def __init__(self, biases_path: str) -> None:
-        self.biases_path: Path = Path(biases_path)
-
     def detect(self, outcomes: list[dict[str, Any]], min_samples: int = 3) -> dict[str, Any]:
         """Produce a rich multi-dimensional analysis of trade outcomes.
 
@@ -814,7 +809,3 @@ class BiasDetector:
             "slippage_by_time": slippage_by_time,
             "sharpe_impact_from_slippage": sharpe_impact,
         }
-
-    def save(self, analysis: dict[str, Any]) -> None:
-        self.biases_path.parent.mkdir(parents=True, exist_ok=True)
-        self.biases_path.write_text(json.dumps(analysis, indent=2))

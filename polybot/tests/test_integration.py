@@ -44,8 +44,7 @@ async def test_full_trade_flow(db):
     size = max(size, 1.0)
     result = await trader.open_trade(
         market_id="0xabc", question="BTC 5min Up?", side="Up",
-        price=0.55, size=size, signal_score=signal.prob,
-        signal_strength=f"edge={signal.edge:.0%}")
+        price=0.55, size=size, signal_score=signal.prob)
     assert result.success is True
 
     # Evaluate hold: model still confident, market at 70% — hold
@@ -79,8 +78,7 @@ async def test_scalp_exit_flow(db):
                          paper_network_fail_rate=0.0)
     result = await trader.open_trade(
         market_id="0xdef", question="BTC 5min Up?", side="Up",
-        price=0.55, size=50.0, signal_score=signal.prob,
-        signal_strength=f"edge={signal.edge:.0%}")
+        price=0.55, size=50.0, signal_score=signal.prob)
     assert result.success is True
 
     # Market drift inside the scalp zone: edge in (-0.10, deep_loss_floor] → EXIT.

@@ -118,9 +118,7 @@ Daily 23:45 ET. Dataset bounded to the **last 60 days** before splitting (older 
 - **UTC everywhere**; ET only for date-bucketing and trading-window logic.
 - **Daily rollup** at 12:05 AM bundles per-trade JSON into `rollup_YYYY-MM-DD.json`.
 - **L6 derived feature library is closed.** New entries require a code change in `polybot/core/derived_features.py` plus a ParamSpec; never generated at runtime.
-- **Per-trade telemetry stamped at open, persisted at close:**
-  - `trade_context.calibrator_hash` — 12-char digest (or `"identity"`) of the calibration curve live at fill time. Logged for audit only; no current consumer stratifies by it.
-  - `edge_decay.deltas` — side-signed post-fill mid drift at 5/10/15/30/60s (positive = market moved in our favor). Captured by `AdverseSelectionMonitor` keyed by `position_id` and merged into the outcome JSON at close. The 15s mean over a 30-min lookback drives the live `edge_decay_threshold` entry gate. Null windows = trade closed before that checkpoint resolved.
+- **`edge_decay.deltas` stamped at open, persisted at close:** side-signed post-fill mid drift at 5/10/15/30/60s (positive = market moved in our favor). Captured by `AdverseSelectionMonitor` keyed by `position_id` and merged into the outcome JSON at close. The 15s mean over a 30-min lookback drives the live `edge_decay_threshold` entry gate. Null windows = trade closed before that checkpoint resolved.
 
 ## What NOT to Change
 

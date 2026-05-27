@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 from polybot.config.loader import save_config
 from polybot.config.param_registry import default_for as _d
+from polybot.paths import MEMORY_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,6 @@ class AgentScheduler:
             logger.info("No outcomes to analyze for biases")
             return {}
         analysis = self.bias_detector.detect(outcomes)
-        self.bias_detector.save(analysis)
         return analysis
 
     def _ghost_to_outcome(self, g: dict[str, Any]) -> dict[str, Any] | None:
@@ -1762,9 +1762,8 @@ class AgentScheduler:
         # Gate skip stats: how often did each entry gate fire?
         # Tells Claude which gates are over-filtering and whether adverse selection /
         # pre-submit drift / late-window guards are actually affecting trade count.
-        from pathlib import Path as _Path
         import json as _json
-        _gate_stats_path = _Path("polybot/memory/gate_stats.json")
+        _gate_stats_path = MEMORY_DIR / "gate_stats.json"
         if _gate_stats_path.exists():
             try:
                 gate_stats = _json.loads(_gate_stats_path.read_text())
@@ -1789,7 +1788,7 @@ class AgentScheduler:
                 "n_trades_with_data": len(realized_edges),
                 "pct_positive_slippage": round(sum(1 for s in fill_slippages if s > 0.001) / len(fill_slippages), 3) if fill_slippages else 0,
             })
-        _fill_stats_path = _Path("polybot/memory/fill_stats.json")
+        _fill_stats_path = MEMORY_DIR / "fill_stats.json"
         if _fill_stats_path.exists():
             try:
                 fill_stats = _json.loads(_fill_stats_path.read_text())
@@ -2033,21 +2032,6 @@ class AgentScheduler:
                         gap = current_loss - new_loss_full if not math.isnan(new_loss_full) else 0
                         cal_info["reason"] = (f"new fit doesn't beat current by enough "
                                                 f"(loss gap {gap:+.4f}, need -{LOG_LOSS_FLOOR})")
-        # Diagnostic log of rejected isotonic fits (kept for telemetry; no
-        # de-dup logic any more since each isotonic fit is fully data-driven).
-        if cal_info.get("decision") == "rejected" and "n_knots" in cal_info:
-            _pr_path = _Path("polybot/memory/calibration/isotonic_rejected.json")
-            try:
-                _pr = _json.loads(_pr_path.read_text()) if _pr_path.exists() else []
-                _pr.append({
-                    "n_knots": cal_info["n_knots"],
-                    "log_loss_improvement": cal_info["log_loss_improvement"],
-                    "reason": cal_info.get("reason", ""),
-                })
-                _pr_path.write_text(_json.dumps(_pr[-30:], indent=2))  # keep last 30
-            except Exception:
-                pass
-
         pipeline_info["calibration"] = cal_info
         # Expose Platt meta-check (raw-vs-calibrated) so Claude sees the diagnostic
         if cal_info.get("meta_warning"):
@@ -2174,9 +2158,8 @@ class AgentScheduler:
             _in_crisis = (self._baseline_kelly_sharpe or 0.0) < 0.10 and (_recent_wr < 0.48 or _loss_ratio > 2.0)
 
             # Sustained crisis (≥3 cycles) → halve kelly_fraction, restore on first non-crisis.
-            from pathlib import Path as _Path
             import json as _json
-            _crisis_state_path = _Path("polybot/memory/crisis_state.json")
+            _crisis_state_path = MEMORY_DIR / "crisis_state.json"
             _crisis_state = {"streak": 0, "kelly_reduced": False, "original_kelly": None}
             try:
                 if _crisis_state_path.exists():

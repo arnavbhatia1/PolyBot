@@ -7,7 +7,7 @@ import random
 import time
 from typing import Any
 
-from polybot.execution.base import BaseTrader, FillResult, DEFAULT_FEE_RATE, exit_fee_usdc, record_warmup_outcome
+from polybot.execution.base import BaseTrader, FillResult, DEFAULT_FEE_RATE, exit_fee_usdc
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class PaperTrader(BaseTrader):
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
         # Realism knobs (all overridable via settings.yaml -> execution.*)
-        # Defaults tuned to live latency_stats.json (p50≈770ms, p99≈2.3s).
+        # Defaults tuned to live latency_stats.json p50≈770ms, p99≈2.3s.
         self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.77)
         self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.40)
         # Treated as the fallback fail rate when the book is unavailable — and
@@ -122,24 +122,17 @@ class PaperTrader(BaseTrader):
         Mirrors LiveTrader._take_sell_warmup acceptance criteria: TTL <= 5s,
         price drift < 1¢, size drift < 5%. Always pops the entry to prevent
         stale reuse — main.py will re-arm on the next hold tick if needed.
-        Every call records an outcome bucket to warmup_stats.json so the
-        operator can audit paper-vs-live realization parity.
         """
         entry = self._sell_warmups.pop(token_id, None)
         if entry is None:
-            record_warmup_outcome("paper", "none_armed")
             return False
         age = time.time() - entry["ts"]
         if age > self._SELL_WARMUP_TTL_S:
-            record_warmup_outcome("paper", "ttl_expired")
             return False
         if abs(entry["price"] - expected_price) > 0.01:
-            record_warmup_outcome("paper", "price_drift_reject")
             return False
         if abs(entry["amount"] - shares) / max(shares, 1e-6) > 0.05:
-            record_warmup_outcome("paper", "size_drift_reject")
             return False
-        record_warmup_outcome("paper", "consumed")
         return True
 
     # State-dependent FOK fail rate. Live FOK rejects cluster around adverse

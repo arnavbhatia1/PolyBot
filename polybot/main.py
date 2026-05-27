@@ -34,6 +34,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 from polybot.config.loader import load_config, get_secret
 from polybot.config.param_registry import default_for as _d
+from polybot.paths import MEMORY_DIR
 from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE, compute_buy_vwap
 from polybot.db.models import Database
 from polybot.feeds.binance_feed import BinanceFeed
@@ -146,7 +147,7 @@ _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, 
 
 # Previous window resolution margin for adjacent window momentum (D2)
 _prev_resolution_margin: float = 0.0
-_PREV_MARGIN_PATH = Path("polybot/memory/prev_resolution_margin.json")
+_PREV_MARGIN_PATH = MEMORY_DIR / "prev_resolution_margin.json"
 
 def _load_prev_resolution_margin() -> float:
     """Restore margin from last session so L5 signal isn't zeroed out on restart."""
@@ -174,7 +175,7 @@ _last_adverse_skip_log_window: int = 0  # throttle adverse-skip logs to once per
 _last_logged_action: str = ""  # suppress repeated EVAL blocks when action hasn't changed
 _last_eval_buy_window: int = 0  # show full BUY block only once per window
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count since last reset
-_GATE_STATS_PATH = Path("polybot/memory/gate_stats.json")
+_GATE_STATS_PATH = MEMORY_DIR / "gate_stats.json"
 from collections import OrderedDict as _OrderedDict
 # Bounded LRUs — each entry is keyed by cid (or (cid, gate_key)). Without an
 # eviction bound these grow forever; the bot runs for days at a time so
@@ -1122,12 +1123,6 @@ async def _evaluate_signal_and_enter(
         # "fraction of fills that moved against us measured AT 30s post-fill" over
         # the monitor's 30-minute lookback — 30s is the checkpoint, not the lookback.
         "adverse_rate_at_30s": _adverse_monitor.get_adverse_rate(30.0) if _adverse_monitor else 0.5,
-        # Which calibrator was live at fill time — lets the pipeline stratify
-        # outcomes by calibrator-in-effect so the 7d calibration window and
-        # 60d backtest window don't blend trades decided under different curves.
-        "calibrator_hash": (
-            signal_engine.calibrator.state_hash if signal_engine.calibrator else "identity"
-        ),
         # Token IDs for both outcomes — required for startup reconciliation and dust sweeping.
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
@@ -1170,7 +1165,6 @@ async def _evaluate_signal_and_enter(
         price=price,
         size=size,
         signal_score=signal.prob,
-        signal_strength=f"edge={signal.edge:.0%}",
         indicator_snapshot=snapshot,
         token_id=token_id,
         fee_rate=fee_rate,
@@ -1886,7 +1880,7 @@ async def _evaluate_and_exit_position(
                 f"{color}{'=' * 60}{_C.RESET}")
             if alert_manager:
                 await alert_manager.send_trade_closed(
-                    question=pos.get("question", ""), exit_price=exit_fill, log_return=0, hold_hours=0,
+                    question=pos.get("question", ""), exit_price=exit_fill,
                     side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
                     gain_pct=gain_pct, reason=f"scalp {won.lower()}", fees=total_fees,
                     bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
@@ -1969,7 +1963,7 @@ async def _resolve_expired_position(
             f"{color}{'=' * 60}{_C.RESET}")
         if alert_manager:
             await alert_manager.send_trade_closed(
-                question=pos.get("question", ""), exit_price=exit_price, log_return=0, hold_hours=0,
+                question=pos.get("question", ""), exit_price=exit_price,
                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
                 gain_pct=gain_pct, reason=won.lower(), fees=total_fees,
                 bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
@@ -2081,7 +2075,7 @@ async def _manage_orphaned_position(
             logger.error(f"ORPHANED >1hr: {_slug_to_window(pos['market_id'])} — No Gamma resolution data, waiting for Chainlink oracle")
             if alert_manager:
                 await alert_manager.send_trade_closed(
-                    question=pos.get("question", ""), exit_price=0, log_return=0, hold_hours=age / 3600,
+                    question=pos.get("question", ""), exit_price=0,
                     side=pos["side"], entry_price=pos["entry_price"], pnl=0,
                     gain_pct=0, reason="orphaned — awaiting resolution", fees=0)
         else:
@@ -2108,7 +2102,7 @@ async def _manage_orphaned_position(
             f"{color}{'=' * 60}{_C.RESET}")
         if alert_manager:
             await alert_manager.send_trade_closed(
-                question=pos.get("question", ""), exit_price=exit_price, log_return=0, hold_hours=0,
+                question=pos.get("question", ""), exit_price=exit_price,
                 side=pos["side"], entry_price=pos["entry_price"], pnl=pnl,
                 gain_pct=gain_pct, reason=won.lower(), fees=total_fees,
                 bankroll=bankroll_after, day_wins=day_wins, day_losses=day_losses)
@@ -2533,7 +2527,7 @@ async def run_pipeline() -> None:
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
     counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
     ghost_tracker = GhostTracker(memory_dir=str(base_dir / "memory"))
-    bias_detector = BiasDetector(biases_path=str(base_dir / "memory" / "biases.json"))
+    bias_detector = BiasDetector()
     ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"),
                           claude_client=claude)
     weight_optimizer = WeightOptimizer()
@@ -2752,7 +2746,7 @@ async def main() -> None:
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
     counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
     ghost_tracker = GhostTracker(memory_dir=str(base_dir / "memory"))
-    bias_detector = BiasDetector(biases_path=str(base_dir / "memory" / "biases.json"))
+    bias_detector = BiasDetector()
     ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"),
                           claude_client=claude)
     weight_optimizer = WeightOptimizer()

@@ -26,7 +26,6 @@ from polybot.db.models import Database
 from polybot.execution.base import (
     BaseTrader, DEFAULT_FEE_RATE, FillResult,
     exit_fee_usdc, _entry_fee_usd_from_position,
-    record_warmup_outcome, record_dust_sweep_outcome,
 )
 from polybot.core.returns import log_return
 
@@ -115,11 +114,12 @@ def _looks_like_auth_error(err: object) -> bool:
 # Fill rate tracking (live mode only)
 # ---------------------------------------------------------------------------
 import json as _json
-from pathlib import Path as _Path
 from datetime import datetime as _dt, timezone as _tz
 
-_FILL_STATS_PATH = _Path("polybot/memory/fill_stats.json")
-_LATENCY_STATS_PATH = _Path("polybot/memory/latency_stats.json")
+from polybot.paths import MEMORY_DIR
+
+_FILL_STATS_PATH = MEMORY_DIR / "fill_stats.json"
+_LATENCY_STATS_PATH = MEMORY_DIR / "latency_stats.json"
 _LATENCY_SAMPLES: deque[float] = deque(maxlen=200)        # total = sign + post
 _SIGN_LATENCY_SAMPLES: deque[float] = deque(maxlen=200)   # excludes presigned (sign=0)
 _POST_LATENCY_SAMPLES: deque[float] = deque(maxlen=200)
@@ -871,27 +871,20 @@ class LiveTrader(BaseTrader):
         Returns the signed-order dict or None if no usable warmup exists.
         Always drops the cache entry to prevent stale reuse — _submit_fok_order
         will re-issue via warm_sell_signature on the next tick if needed.
-        Every call records an outcome bucket to warmup_stats.json so the
-        operator can audit paper-vs-live realization parity over time.
         """
         entry = self._sell_warmups.pop(token_id, None)
         if entry is None:
-            record_warmup_outcome("live", "none_armed")
             return None
         age = time.time() - entry["ts"]
         if age > self._SELL_WARMUP_TTL_S:
-            record_warmup_outcome("live", "ttl_expired")
             return None
         # Parameters must match closely. Price drift > 1 cent or size drift >
         # 5% means the SELL conditions changed enough that the signature
         # references the wrong amount — re-sign rather than risk a bad fill.
         if abs(entry["price"] - expected_price) > 0.01:
-            record_warmup_outcome("live", "price_drift_reject")
             return None
         if abs(entry["amount"] - shares) / max(shares, 1e-6) > 0.05:
-            record_warmup_outcome("live", "size_drift_reject")
             return None
-        record_warmup_outcome("live", "consumed")
         return entry["order"]
 
     async def _sweep_residual(self, token_id: str, ref_price: float) -> None:
@@ -906,7 +899,6 @@ class LiveTrader(BaseTrader):
             await asyncio.sleep(_BALANCE_SETTLE_DELAY)
             residual = await self._get_token_balance(token_id)
             if residual <= _DUST_THRESHOLD_SHARES:
-                record_dust_sweep_outcome("below_threshold")
                 return
             approx_val = residual * (float(ref_price) if ref_price else 0.5)
             logger.warning(
@@ -926,15 +918,10 @@ class LiveTrader(BaseTrader):
             resp = await asyncio.to_thread(_sweep_sign_and_post)
             if resp.get("success") and resp.get("status") == "matched":
                 logger.info("Dust swept: %.2f shares @ $%.2f", residual, safe_price)
-                record_dust_sweep_outcome("swept", shares=residual, approx_val_usd=approx_val)
             else:
                 logger.warning(
                     "Dust sweep didn't match (status=%s) — shares left to resolve at expiry",
                     resp.get("status"),
-                )
-                record_dust_sweep_outcome(
-                    "match_failed", shares=residual, approx_val_usd=approx_val,
-                    note=f"status={resp.get('status')}",
                 )
         except Exception as e:
             msg = str(e)
@@ -943,17 +930,6 @@ class LiveTrader(BaseTrader):
             else:
                 short = msg.split("\n")[0][:80]
             logger.warning("Dust sweep failed: %s — leaving as orphaned dust", short)
-            # Best-effort: shares/value were captured before the exception path.
-            # If `residual` never got assigned (rare — _get_token_balance failed),
-            # NameError is caught by the outer except and we record zeros.
-            try:
-                _r = float(residual)  # type: ignore[name-defined]
-                _v = float(approx_val)  # type: ignore[name-defined]
-            except (NameError, ValueError, TypeError):
-                _r, _v = 0.0, 0.0
-            record_dust_sweep_outcome(
-                "exception", shares=_r, approx_val_usd=_v, note=short,
-            )
 
     async def reconcile_dust(self, db: Database, max_age_hours: int = 24) -> int:
         """Scan recently-closed positions for residual on-chain shares and sweep them.
@@ -1112,7 +1088,7 @@ class LiveTrader(BaseTrader):
 
         # 4) Persist details for operator review
         try:
-            orphan_path = _Path("polybot/memory/orphan_positions.json")
+            orphan_path = MEMORY_DIR / "orphan_positions.json"
             orphan_path.parent.mkdir(parents=True, exist_ok=True)
             orphan_path.write_text(_json.dumps({
                 "checked_at": _dt.now(_tz.utc).isoformat(),
@@ -1253,7 +1229,7 @@ class LiveTrader(BaseTrader):
         # already reflects the on-chain truth; adding revenue here would double-count.
         try:
             await db.close_position(
-                pos["id"], exit_price=exit_price, log_return=lr,
+                pos["id"], exit_price=exit_price,
                 pnl=pnl, fees=total_fees, exit_reason=exit_reason,
             )
         except Exception as e:

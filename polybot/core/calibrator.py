@@ -9,9 +9,11 @@ import logging
 from pathlib import Path
 import numpy as np
 
+from polybot.paths import MEMORY_DIR
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_PARAMS_PATH = Path("polybot/memory/calibration/isotonic_params.json")
+DEFAULT_PARAMS_PATH = MEMORY_DIR / "calibration" / "isotonic_params.json"
 
 _EPS = 1e-6  # canonical clip — keep all clipping sites consistent
 
@@ -71,18 +73,6 @@ class IsotonicCalibrator:
         """Last adopted fit's weighted log-loss gain vs identity (in nats).
         0.0 when at identity."""
         return self._log_loss_improvement
-
-    @property
-    def state_hash(self) -> str:
-        """12-char digest of fitted thresholds (or "identity"). Lets backtests
-        stratify by calibrator-in-effect at fill time.
-        """
-        if self._iso is None:
-            return "identity"
-        import hashlib
-        x = np.round(self._iso.X_thresholds_, 6).tobytes()
-        y = np.round(self._iso.y_thresholds_, 6).tobytes()
-        return hashlib.blake2b(x + y, digest_size=6).hexdigest()
 
     # ---- application ----
 

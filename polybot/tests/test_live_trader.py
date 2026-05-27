@@ -101,7 +101,6 @@ _TRADE_KWARGS = dict(
     price=0.55,
     size=10.0,
     signal_score=0.70,
-    signal_strength="strong",
     indicator_snapshot="{}",
     token_id="tok-up-123",
     fee_rate=0.018,
@@ -376,7 +375,7 @@ async def test_detect_orphan_positions_no_orphans(trader):
     await trader.db.open_position_and_debit_bankroll(
         new_bankroll=90.0,
         market_id="m1", question="?", side="Up", entry_price=0.5, size=10.0,
-        signal_score=0.6, signal_strength="med", indicator_snapshot=snap,
+        signal_score=0.6, indicator_snapshot=snap,
         fee_rate=0.018, shares_held=20.0,
     )
     chain = [{"asset": "tok-A", "size": 20.0, "outcome": "Yes", "title": "BTC up 5min"}]

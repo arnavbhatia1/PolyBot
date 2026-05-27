@@ -24,37 +24,6 @@ def test_default_is_identity():
         assert abs(cal.calibrate(p) - p) < 1e-9
 
 
-def test_state_hash_identity_then_fit():
-    """state_hash distinguishes identity from fitted, and matches across instances
-    fitted on the same data — so per-trade stratification can group trades by the
-    calibration curve that was live at fill time."""
-    cal = IsotonicCalibrator()
-    assert cal.state_hash == "identity"
-
-    # Strong, clearly-miscalibrated signal: raw probs span a range but the true
-    # win rate is a near-step function of the raw — exactly the case isotonic
-    # should fit and the OOB bootstrap should confirm generalizes.
-    def _gen_clean_miscal(seed: int, cutoff: float = 0.5, n: int = 400):
-        rng_ = np.random.default_rng(seed)
-        ps = list(rng_.uniform(0.2, 0.8, n))
-        # 5% / 95% outcome flip at cutoff — strong, fittable signal.
-        os = [1 if rng_.uniform() < (0.05 + 0.9 * (p > cutoff)) else 0 for p in ps]
-        return ps, os
-
-    probs, outcomes = _gen_clean_miscal(seed=0, cutoff=0.5)
-    a = IsotonicCalibrator()
-    a.fit(probs, outcomes, min_samples=150)
-    b = IsotonicCalibrator()
-    b.fit(probs, outcomes, min_samples=150)
-    assert a.state_hash != "identity"
-    assert a.state_hash == b.state_hash  # determinism
-
-    probs2, outcomes2 = _gen_clean_miscal(seed=7, cutoff=0.55)
-    c = IsotonicCalibrator()
-    c.fit(probs2, outcomes2, min_samples=150)
-    assert c.state_hash != a.state_hash  # different fit -> different hash
-
-
 def test_calibrate_clips_inputs():
     """Inputs outside (eps, 1-eps) get clipped but never raise."""
     cal = IsotonicCalibrator()

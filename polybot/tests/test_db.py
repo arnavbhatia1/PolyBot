@@ -10,7 +10,6 @@ _POS_KWARGS = dict(
     entry_price=0.55,
     size=10.0,
     signal_score=0.72,
-    signal_strength="high",
 )
 
 
@@ -52,7 +51,7 @@ async def test_get_open_positions(db):
 async def test_close_position(db):
     await db.set_bankroll(100.0)
     pos_id = await db.open_position_and_debit_bankroll(new_bankroll=90.0, **_POS_KWARGS)
-    await db.close_position(pos_id, exit_price=0.68, log_return=0.212)
+    await db.close_position(pos_id, exit_price=0.68)
     positions = await db.get_open_positions()
     assert len(positions) == 0
     history = await db.get_trade_history(limit=10)

@@ -1,15 +1,9 @@
-import json
 import pytest
-from pathlib import Path
 from polybot.agents.bias_detector import BiasDetector
 
 @pytest.fixture
-def biases_path(tmp_path):
-    return tmp_path / "biases.json"
-
-@pytest.fixture
-def detector(biases_path):
-    return BiasDetector(biases_path=str(biases_path))
+def detector():
+    return BiasDetector()
 
 def _make_outcome(ind_scores, correct, trade_context=None):
     snap = {
@@ -59,12 +53,6 @@ def test_skips_with_few_samples(detector):
     outcomes = [_make_outcome({"rsi": 0.5}, correct=True)]
     result = detector.detect(outcomes, min_samples=3)
     assert result["per_indicator"] == {}
-
-def test_save_writes_file(detector, biases_path):
-    detector.save({"per_indicator": {"rsi": {"accuracy": 0.65}}, "overall": {}})
-    assert biases_path.exists()
-    saved = json.loads(biases_path.read_text())
-    assert saved["per_indicator"]["rsi"]["accuracy"] == 0.65
 
 def test_overall_stats(detector):
     outcomes = [

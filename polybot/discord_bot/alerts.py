@@ -63,8 +63,7 @@ class AlertManager:
             f"  Fee       ${fee:.2f}\n"
             f"{bankroll_str}```")
 
-    async def send_trade_closed(self, question: str, exit_price: float, log_return: float,
-                                hold_hours: float,
+    async def send_trade_closed(self, question: str, exit_price: float,
                                 side: str = "", entry_price: float = 0.0, pnl: float = 0.0,
                                 gain_pct: float = 0.0, reason: str = "",
                                 fees: float = 0.0, bankroll: float = 0.0,
