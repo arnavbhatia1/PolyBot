@@ -119,11 +119,10 @@ def test_signal_engine_l6_contribution_capped():
 
 
 def test_signal_engine_promoted_constants_resolve_from_registry():
-    """Default-constructed engine matches param_registry defaults for the 6 promoted constants."""
+    """Default-constructed engine matches param_registry defaults for the promoted constants."""
     from polybot.config.param_registry import default_for
     eng = SignalEngine()
     assert eng.regime_momentum_threshold == default_for("regime_momentum_threshold")
-    assert eng.flow_combined_cap == default_for("flow_combined_cap")
     assert eng.final_logit_clamp == default_for("final_logit_clamp")
     assert eng.deep_loss_hold_threshold == default_for("deep_loss_hold_threshold")
     assert eng.l5_regime_damp_cap == default_for("l5_regime_damp_cap")

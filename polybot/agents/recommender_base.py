@@ -30,7 +30,6 @@ EXPLORE_STEPS: dict[str, float] = {
     "min_edge":              0.01,
     "min_kelly":             0.004,
     "regime_momentum_threshold":  0.04,
-    "flow_combined_cap":          0.10,
     "final_logit_clamp":          0.50,
     "deep_loss_hold_threshold":   0.04,
     "l5_regime_damp_cap":         0.10,
@@ -47,6 +46,15 @@ EXPLORE_STEPS: dict[str, float] = {
 
 _CAP = 5         # max changes adopted per cycle
 _MIN_N = 50      # min trades before any proposal
+
+# Adaptive step ramping. When a param's recent probes return |Δ Sharpe| under the
+# adoption noise floor, EXPLORE_STEPS at the base size will never adopt — the delta
+# is statistically indistinguishable from baseline. Ramp the step up so the pipeline
+# can escape the soft-local bowl. Reset to base on any adoption (handled implicitly
+# by directional_table evidence becoming a non-trivial bt_delta).
+_RAMP_NOISE_FLOOR = 0.003      # ≈ ADOPTION_Z_FLOOR × typical JK_SE at n~9k
+_RAMP_PER_DEAD_DIRECTION = 0.5 # +50% per stuck direction
+_RAMP_MAX = 3.0                # cap — too-large steps get clamped to bounds anyway
 
 
 def _clamp(value: Any, param: str) -> Any:
@@ -203,10 +211,32 @@ class BaseRecommender:
 
     # ---- the core rule ---- #
 
+    def _step_ramp(self, up: dict | None, dn: dict | None) -> float:
+        """Adaptive multiplier on EXPLORE_STEPS.
+
+        Counts directions where past probes returned a |bt_delta| under the noise
+        floor — each such "dead direction" adds RAMP_PER_DEAD_DIRECTION to the
+        multiplier. Adoptions break the loop because the directional table starts
+        showing meaningful bt_delta on the next cycle.
+        """
+        dead = 0
+        for entry in (up, dn):
+            if entry is None:
+                continue
+            bt = entry.get("bt_delta")
+            n = entry.get("n", 0) or 0
+            if bt is None or n < 1:
+                continue
+            if abs(float(bt)) < _RAMP_NOISE_FLOOR:
+                dead += 1
+        if dead == 0:
+            return 1.0
+        return min(_RAMP_MAX, 1.0 + _RAMP_PER_DEAD_DIRECTION * dead)
+
     def _rule_exploratory(self) -> None:
         """Probe every tunable param. Direction = empirical best, or rotate if no history."""
         cycle = datetime.now(timezone.utc).timetuple().tm_yday
-        for param, step in EXPLORE_STEPS.items():
+        for param, base_step in EXPLORE_STEPS.items():
             up = self._dir_table.get((param, "up"))
             dn = self._dir_table.get((param, "down"))
             up_bt = up["bt_delta"] if up and up.get("bt_delta") is not None and not up.get("decays") else None
@@ -226,6 +256,7 @@ class BaseRecommender:
                 if not self._direction_ok(param, direction):
                     continue
 
+            step = base_step * self._step_ramp(up, dn)
             cur = float(self.cfg.get(param, _d(param)))
             new_val: Any = cur + (step if direction == "up" else -step)
             if param == "student_t_df":
@@ -236,6 +267,7 @@ class BaseRecommender:
             evidence = up_bt if direction == "up" else dn_bt
             predicted = max(0.005, abs(evidence) * 0.5) if evidence is not None else 0.005
             self._propose(param, new_val,
-                          f"exploratory {direction} step",
+                          f"exploratory {direction} step (×{step/base_step:.1f})" if step != base_step
+                          else f"exploratory {direction} step",
                           predicted_delta=predicted,
                           ci=(-0.012, max(0.020, predicted * 2)))

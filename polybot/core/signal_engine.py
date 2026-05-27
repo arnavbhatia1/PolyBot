@@ -43,16 +43,6 @@ _MIN_STUDENT_T_DF = 3
 
 logger = logging.getLogger(__name__)
 
-# Default Kelly multiplier ladder by fraction of signals that agree with the
-# chosen side. Both compute_signal_consensus and SignalEngine.__init__ read this
-# when no `consensus_config` is supplied, so the shape can't drift.
-_DEFAULT_CONSENSUS_CONFIG: dict[str, float] = {
-    "very_high_pct": 0.80, "very_high_mult": 1.3,
-    "high_pct": 0.60, "high_mult": 1.0,
-    "medium_pct": 0.40, "medium_mult": 0.8,
-    "low_mult": 0.6,
-}
-
 @dataclass
 class TradeSignal:
     action: str          # "BUY_YES", "BUY_NO", "SKIP"
@@ -63,7 +53,7 @@ class TradeSignal:
 
 def compute_signal_consensus(signals: dict[str, float], side: str, dead_zone: float = 0.05, consensus_config: dict | None = None) -> float:
     """Kelly multiplier from how many signals agree with the chosen side."""
-    cc = consensus_config or _DEFAULT_CONSENSUS_CONFIG
+    cc = consensus_config or _d("consensus_config")
     if not signals:
         return 1.0
     agree = 0
@@ -108,7 +98,6 @@ class SignalEngine:
                  consensus_dead_zone: float | None = None,
                  consensus_config: dict | None = None,
                  regime_momentum_threshold: float | None = None,
-                 flow_combined_cap: float | None = None,
                  final_logit_clamp: float | None = None,
                  deep_loss_hold_threshold: float | None = None,
                  l5_regime_damp_cap: float | None = None,
@@ -135,7 +124,6 @@ class SignalEngine:
         if loss_cut_time_s is None: loss_cut_time_s = _d("loss_cut_time_s")
         if consensus_dead_zone is None: consensus_dead_zone = _d("consensus_dead_zone")
         if regime_momentum_threshold is None: regime_momentum_threshold = _d("regime_momentum_threshold")
-        if flow_combined_cap is None: flow_combined_cap = _d("flow_combined_cap")
         if final_logit_clamp is None: final_logit_clamp = _d("final_logit_clamp")
         if deep_loss_hold_threshold is None: deep_loss_hold_threshold = _d("deep_loss_hold_threshold")
         if l5_regime_damp_cap is None: l5_regime_damp_cap = _d("l5_regime_damp_cap")
@@ -161,7 +149,6 @@ class SignalEngine:
         self.loss_cut_time_s: float = loss_cut_time_s
         self.consensus_dead_zone: float = consensus_dead_zone
         self.regime_momentum_threshold: float = regime_momentum_threshold
-        self.flow_combined_cap: float = flow_combined_cap
         self.final_logit_clamp: float = final_logit_clamp
         self.deep_loss_hold_threshold: float = deep_loss_hold_threshold
         self.l5_regime_damp_cap: float = l5_regime_damp_cap
@@ -171,7 +158,7 @@ class SignalEngine:
             name: float(_dw.get(name, _d(f"derived_{name}_weight")))
             for name in DERIVED_FEATURES.keys()
         }
-        self.consensus_config: dict = consensus_config or dict(_DEFAULT_CONSENSUS_CONFIG)
+        self.consensus_config: dict = consensus_config or dict(_d("consensus_config"))
         self._exit_boundary = ExitBoundary(df=self.student_t_df)
         self._atr_history: deque[float] = deque(maxlen=_ATR_HISTORY_SIZE)
         self._atr_long_term: deque[float] = deque(maxlen=_ATR_LONG_TERM_SIZE)
@@ -181,6 +168,7 @@ class SignalEngine:
         self.last_regime_direction: float = 0.0
         self.last_raw_prob_up: float = 0.5
         self.last_momentum_score: float = 0.0
+        self.last_loss_cut_event: str = ""
         # Memoize compute_regime_factor by (closes-array-identity, regime_lookback).
         # CandleBuffer.get_closes() returns a read-only ndarray whose id is stable
         # until the buffer mutates (add/update_current both invalidate the cache,
@@ -324,13 +312,9 @@ class SignalEngine:
         self.last_regime_direction = direction
         logit_p += regime * direction * logit_regime_w
 
-        # L3 + L3b: CLOB flow + spot flow, capped collectively to prevent triple-counting
-        logit_before_flow = logit_p
+        # L3 + L3b: CLOB flow + spot flow.
         logit_p += flow_signal * logit_flow_w
         logit_p += spot_flow_signal * (self.spot_flow_weight * self.logit_scale)
-        flow_total = logit_p - logit_before_flow
-        if abs(flow_total) > self.flow_combined_cap:
-            logit_p = logit_before_flow + self.flow_combined_cap * (1.0 if flow_total > 0 else -1.0)
 
         # L3e — liquidation pressure
         if liquidation_pressure != 0.0:
@@ -527,14 +511,26 @@ class SignalEngine:
             or (side == "Down" and btc_price > strike_price)
         )
         whip_saw_safe = wrong_side and (atr_for_cut <= 0 or btc_dist > 0.5 * atr_for_cut)
-        if (entry_price > 0
-                and market_price_for_side < entry_price * self.loss_cut_fraction
-                and seconds_remaining < self.loss_cut_time_s
-                and whip_saw_safe):
+        loss_cut_would_fire = (
+            entry_price > 0
+            and market_price_for_side < entry_price * self.loss_cut_fraction
+            and seconds_remaining < self.loss_cut_time_s
+        )
+        if loss_cut_would_fire and whip_saw_safe:
+            self.last_loss_cut_event = "fired"
             return ("EXIT", model_prob, holding_edge,
                     f"cutting loss — market dropped to {market_price_for_side:.2f} "
                     f"(entered at {entry_price:.2f}) with only {seconds_remaining:.0f}s left, "
                     f"BTC {btc_dist:.0f} from strike (>0.5×ATR={0.5*atr_for_cut:.0f})")
+        if loss_cut_would_fire and not whip_saw_safe:
+            self.last_loss_cut_event = "whipsaw_blocked"
+            logger.debug(
+                f"loss_cut blocked by whipsaw guard — market {market_price_for_side:.2f} < "
+                f"{entry_price * self.loss_cut_fraction:.2f}, secs {seconds_remaining:.0f}, "
+                f"BTC dist {btc_dist:.0f} vs 0.5×ATR={0.5*atr_for_cut:.0f}"
+            )
+        else:
+            self.last_loss_cut_event = ""
 
         # Past self.deep_loss_hold_threshold the binary residual beats scalping the loss —
         # UNLESS the (calibrated) model thinks the side is effectively dead. When

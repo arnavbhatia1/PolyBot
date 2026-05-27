@@ -18,6 +18,7 @@ import time
 import logging
 from collections import deque
 from dataclasses import dataclass, asdict
+from pathlib import Path
 
 from polybot.paths import MEMORY_DIR
 

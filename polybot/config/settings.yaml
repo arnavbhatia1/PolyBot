@@ -30,45 +30,58 @@ execution:
 
 # =============================================================================
 #  SECTION 2: ENTRY GATES - when to enter a trade
+#
+#  Ownership convention used throughout this section:
+#    [M]  = MANUAL-ONLY        operator changes only; never touched by pipeline
+#                              (claude_client validator reroutes proposals into
+#                              manual_observations rather than `changes`)
+#    [P]  = PIPELINE-TUNABLE   walk-forward + z-test adopts changes nightly
+#                              (param_registry.PIPELINE_PARAMS, settings.yaml is
+#                              just the current runtime value)
+#  Source of truth for bounds: polybot/config/param_registry.py.
 # =============================================================================
 signal:
   # --- Edge gates (most important) ---
-  min_edge: 0.04              # Minimum model-vs-market gap to enter
-  max_edge: 0.2               # Reject if edge > 20% — likely a stale/phantom price, not real opportunity.
-  min_model_probability: 0.56 # Model must be x% confident in chosen direction
-  min_kelly: 0.01            # Kelly fraction must be at least x% (filters near-worthless bets)
+  min_edge: 0.04              # [P] Minimum model-vs-market gap to enter
+  max_edge: 0.2               # [M] Reject if edge > 20% — likely a stale/phantom price, not real opportunity.
+  min_model_probability: 0.56 # [P] Model must be x% confident in chosen direction
+  min_kelly: 0.01             # [P] Kelly fraction must be at least x% (filters near-worthless bets)
 
   # --- Exit / loss-cut ---
-  exit_edge_threshold: -0.07  # Scalp when holding_edge drops below x%.
-  loss_cut_fraction: 0.65     # Force exit if market < entry × 65% with < loss_cut_time_s remaining.
-  loss_cut_time_s: 90.0      # Last X seconds: if position is deeply underwater, cut it.
+  exit_edge_threshold: -0.10  # [P] Scalp when holding_edge drops below x%. Backtest replays
+                              #     counterfactual resolution data when probing this param.
+  loss_cut_fraction: 0.65     # [M] Force exit if market < entry × 65% with < loss_cut_time_s remaining.
+  loss_cut_time_s: 90.0       # [M] Last X seconds: if position is deeply underwater, cut it.
 
-  # --- Adverse selection ---
-  adverse_selection_threshold: 0.65  # Skip entry if 65%+ of recent fills reversed within 30s.
-  edge_decay_threshold: -0.05        # Skip entry when mean 15s post-fill drift is worse than -5¢.
-                                     # Inactive until ≥15 resolved fills in the 30-min lookback.
+  # --- Adverse selection (sizing penalty, not entry gate) ---
+  # `adverse_rate_at_30s` shrinks Kelly through `1 − adverse_penalty_slope × max(0, adverse_rate − adverse_penalty_floor)`
+  # capped to [adverse_penalty_min, 1.0]. Hard-skip only if adverse_rate ≥ adverse_selection_threshold.
+  adverse_penalty_floor: 0.45 # [M] Below this, no penalty.
+  adverse_penalty_slope: 1.5  # [M] Penalty steepness; at slope=1.5, adverse=0.85 → kelly_mult=0.40.
+  adverse_penalty_min: 0.30   # [M] Floor so the trade can still happen with reduced size.
+  adverse_selection_threshold: 0.80  # [M] Hard-skip when fade rate ≥ 80% (kept as emergency cutoff).
+  edge_decay_threshold: -0.05 # [M] Skip entry when mean 15s post-fill drift is worse than -5¢.
+                              # Inactive until ≥15 resolved fills in the 30-min lookback.
 
   # --- Volatility filter ---
-  min_atr: 12.0               # Skip entries when the market is too quiet.
-
-  # --- Late window ---
-  late_window_min_prob: 0.4   # In last 2 mins: model must be at least x% to enter (filters deep underdogs).
+  min_atr: 12.0               # [P] Skip entries when the market is too quiet.
 
   # =============================================================================
-  #  PIPELINE TUNABLE MODEL WEIGHTS
+  #  MODEL WEIGHTS — [P] all pipeline-tunable except `regime_lookback` ([M]).
   # =============================================================================
-  atr_sigma_ratio: 1.3        # L1: lower = sharper/more confident probabilities from BTC distance
-  student_t_df: 5             # L1: tail fatness (5 = BTC-appropriate fat tails, don't change)
-  logit_scale: 4.0            # Amplifier on all signal layers (L2-L5). Higher = signals matter more.
-  momentum_weight: 0.04       # L4 magnitude (unsigned).
-  regime_weight: 0.03         # L2: how much trending/reverting autocorrelation affects the bet.
-  flow_weight: 0.04           # L3: CLOB order book imbalance signal strength.
-  spot_flow_weight: 0.1       # L3b: Binance CVD (buy/sell pressure) signal strength.
-  liquidation_weight: 0.03    # L3e: Bybit liquidation cascade signal strength.
-  prev_margin_weight: 0.02    # L5: carry from last window's resolution (momentum).
-  regime_lookback: 50         # How many 1-min candles to measure trend/mean-reversion over.
+  atr_sigma_ratio: 1.3        # [P] L1: lower = sharper/more confident probabilities from BTC distance
+  student_t_df: 5             # [P] L1: tail fatness (5 = BTC-appropriate fat tails, don't change without evidence)
+  logit_scale: 4.0            # [P] Amplifier on all signal layers (L2-L5). Higher = signals matter more.
+  momentum_weight: 0.04       # [P] L4 magnitude (unsigned).
+  regime_weight: 0.03         # [P] L2: how much trending/reverting autocorrelation affects the bet.
+  flow_weight: 0.04           # [P] L3: CLOB order book imbalance signal strength.
+  spot_flow_weight: 0.1       # [P] L3b: Binance CVD (buy/sell pressure) signal strength.
+  liquidation_weight: 0.03    # [P] L3e: Bybit liquidation cascade signal strength.
+  prev_margin_weight: 0.02    # [P] L5: carry from last window's resolution (momentum).
+  regime_lookback: 50         # [M] How many 1-min candles to measure trend/mean-reversion over.
 
-  # L4 indicator mix
+  # [M] L4 indicator mix (validator has a dedicated branch — pipeline can propose changes
+  # to this dict, but probe step sizes and bounds live in claude_client/local_recommender).
   weights:
     rsi: 0.2
     macd: 0.3
@@ -77,33 +90,32 @@ signal:
     vwap: 0.2
 
   # =============================================================================
-  #  STRUCTURAL CONSTANTS - shape params, pipeline-tunable
+  #  STRUCTURAL CONSTANTS — [P] pipeline-tunable shape parameters
   # =============================================================================
-  regime_momentum_threshold: 0.15   # |autocorr| above this → real regime (L2/L4)
-  flow_combined_cap: 0.35           # max combined L3+L3b logit per tick
-  final_logit_clamp: 4.0            # ±N clamp on stacked logit before sigmoid
-  deep_loss_hold_threshold: -0.10   # below this holding_edge → hold to resolution
-  l5_regime_damp_cap: 0.7           # max regime damp on L5
-  atr_regime_shift_threshold: 0.60  # ATR_short/ATR_long below this widens floor
+  regime_momentum_threshold: 0.15   # [P] |autocorr| above this → real regime (L2/L4)
+  final_logit_clamp: 4.0            # [P] ±N clamp on stacked logit before sigmoid
+  deep_loss_hold_threshold: -0.10   # [P] below this holding_edge → hold to resolution
+  l5_regime_damp_cap: 0.7           # [P] max regime damp on L5
+  atr_regime_shift_threshold: 0.60  # [P] ATR_short/ATR_long below this widens floor
 
   # =============================================================================
-  #  DERIVED FEATURES (L6) - default 0.0 = layer is dead
+  #  DERIVED FEATURES (L6) — [P] each weight pipeline-tunable; total L6 capped at ±0.25 logits
   # =============================================================================
-  # Pipeline raises any of these off zero to switch the corresponding L6
-  # feature on. Each contribution is bounded; total L6 capped at ±0.25 logits.
+  # Pipeline raises any of these off zero to switch the corresponding L6 feature on.
   derived:
     log_atr_ratio: 0.0
     autocorr_signed_mag: 0.0
     vol_regime_shift: 0.0
-    flow_disagreement: 0.0
+    flow_disagreement: 0.005      # L3 vs L3b interaction term
     distance_atr_ratio: 0.0
     time_remaining_logit: 0.0
     liq_signed_sqrt: 0.0
     prev_margin_sq: 0.005
 
-  # Consensus sizing: how much to scale bet when all flow signals agree
-  consensus_dead_zone: 0.05
-  consensus:
+  # Consensus sizing: how much to scale bet when flow signals agree
+  consensus_dead_zone: 0.05  # [M]
+  consensus:                  # [M] full ladder
+
     very_high_pct: 0.8        # 80%+ signals agree → 1.3× size
     very_high_mult: 1.3
     high_pct: 0.6             # 60%+ agree → 1.0×
@@ -116,9 +128,10 @@ signal:
 #  SECTION 3: ENTRY TIMING
 # =============================================================================
 entry_timing:
-  normal_fraction: 0.6        # First 60% of window (0-180s): full Kelly, no penalty.
-  late_max_penalty: 0.30      # Last 40%: ATM trades penalized up to x%.
-  flip_edge_premium: 0.015    # Re-entry costs extra 1.5% edge on top of min_edge.
+  normal_fraction: 0.6        # [P] First 60% of window (0-180s): full Kelly, no penalty.
+  late_max_penalty: 0.30      # [P] Last 40%: ATM trades penalized up to x%.
+  flip_edge_premium: 0.015    # [P] Base re-entry edge premium. Scaled by flip count at runtime:
+                              #     effective premium = base + 0.005 × max(0, flip_count − 2).
 
 # =============================================================================
 #  SECTION 4: SPRT GATE - sequential evidence test before entering

@@ -174,8 +174,11 @@ _adverse_monitor: AdverseSelectionMonitor | None = None
 _last_adverse_skip_log_window: int = 0  # throttle adverse-skip logs to once per 5-min window
 _last_logged_action: str = ""  # suppress repeated EVAL blocks when action hasn't changed
 _last_eval_buy_window: int = 0  # show full BUY block only once per window
-_gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count since last reset
-_GATE_STATS_PATH = MEMORY_DIR / "gate_stats.json"
+_gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count for the current ET day
+_gate_stats_day_key: str = ""           # ET date string keyed to _gate_skip_counts
+# Per-day cumulative file. The current ET day is also mirrored to `gate_stats.json`
+# (legacy single-file path) so external consumers reading the old name keep working.
+_GATE_STATS_LEGACY_PATH = MEMORY_DIR / "gate_stats.json"
 from collections import OrderedDict as _OrderedDict
 # Bounded LRUs — each entry is keyed by cid (or (cid, gate_key)). Without an
 # eviction bound these grow forever; the bot runs for days at a time so
@@ -297,21 +300,72 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
 _startup_banner_logged: bool = False
 
 
+def _et_date_key() -> str:
+    """Current ET calendar date as 'YYYYMMDD' — the rollover key for daily gate stats."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d")
+
+
+def _gate_stats_path_for(et_date_key: str) -> "Path":
+    return MEMORY_DIR / f"gate_stats_{et_date_key}.json"
+
+
+def _ensure_gate_stats_day_loaded() -> None:
+    """Rollover guard. On the first call of a new ET day, persist anything still
+    in memory under the previous day's key, then load the new day's file (if it
+    exists — e.g., a mid-day crash restart) so counts continue accumulating
+    rather than resetting to zero.
+    """
+    global _gate_skip_counts, _gate_stats_day_key
+    today = _et_date_key()
+    if _gate_stats_day_key == today:
+        return
+    if _gate_stats_day_key:  # crossed midnight ET — flush old, rotate
+        try:
+            flush_gate_stats()
+        except Exception:
+            pass
+    path = _gate_stats_path_for(today)
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text())
+            counts = loaded.get("counts", {}) if isinstance(loaded, dict) else {}
+            if isinstance(counts, dict):
+                _gate_skip_counts = {str(k): int(v) for k, v in counts.items()}
+            else:
+                _gate_skip_counts = {}
+        except Exception:
+            _gate_skip_counts = {}
+    else:
+        _gate_skip_counts = {}
+    _gate_stats_day_key = today
+
+
 def _record_skip(gate: str) -> None:
     """Increment the per-gate skip counter. Called at every entry skip point."""
+    _ensure_gate_stats_day_loaded()
     _gate_skip_counts[gate] = _gate_skip_counts.get(gate, 0) + 1
 
 
 def flush_gate_stats() -> None:
-    """Write accumulated skip counts to disk for the pipeline to read."""
+    """Persist accumulated skip counts for the active ET day. Also mirrors to the
+    legacy single-file path so consumers reading `gate_stats.json` keep working.
+    """
     from datetime import datetime, timezone
+    _ensure_gate_stats_day_loaded()
     try:
-        _GATE_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _GATE_STATS_PATH.write_text(json.dumps({
+        payload = json.dumps({
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "et_date": _gate_stats_day_key,
             "counts": dict(_gate_skip_counts),
             "total_skips": sum(_gate_skip_counts.values()),
-        }, indent=2))
+        }, indent=2)
+        path = _gate_stats_path_for(_gate_stats_day_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload)
+        # Mirror to legacy path — pipeline + operator scripts read this name.
+        _GATE_STATS_LEGACY_PATH.write_text(payload)
     except Exception:
         pass
 # Per-window flip state: tracks flip count and last side
@@ -369,7 +423,6 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
         consensus_dead_zone=signal_cfg.get("consensus_dead_zone", _d("consensus_dead_zone")),
         consensus_config=signal_cfg.get("consensus"),
         regime_momentum_threshold=signal_cfg.get("regime_momentum_threshold", _d("regime_momentum_threshold")),
-        flow_combined_cap=signal_cfg.get("flow_combined_cap", _d("flow_combined_cap")),
         final_logit_clamp=signal_cfg.get("final_logit_clamp", _d("final_logit_clamp")),
         deep_loss_hold_threshold=signal_cfg.get("deep_loss_hold_threshold", _d("deep_loss_hold_threshold")),
         l5_regime_damp_cap=signal_cfg.get("l5_regime_damp_cap", _d("l5_regime_damp_cap")),
@@ -790,24 +843,32 @@ async def _evaluate_signal_and_enter(
             )
         return None, last_eval_log_window
 
-    # --- ADVERSE SELECTION GATE ---
+    # --- ADVERSE SELECTION (sizing penalty + emergency hard-skip) ---
+    adverse_kelly_mult = 1.0
+    adverse_rate_at_30s = -1.0
     if _adverse_monitor is not None:
-        adverse_threshold = config["signal"]["adverse_selection_threshold"]
-        adverse_rate = _adverse_monitor.get_adverse_rate(30.0)
-        if adverse_rate > adverse_threshold:
+        adverse_rate_at_30s = _adverse_monitor.get_adverse_rate(30.0)
+        sig_cfg = config.get("signal", {})
+        hard_skip_at = float(sig_cfg.get("adverse_selection_threshold", _d("adverse_selection_threshold")))
+        penalty_floor = float(sig_cfg.get("adverse_penalty_floor", 0.45))
+        penalty_slope = float(sig_cfg.get("adverse_penalty_slope", 1.5))
+        penalty_min = float(sig_cfg.get("adverse_penalty_min", 0.30))
+        if adverse_rate_at_30s >= hard_skip_at:
             _record_skip("adverse_selection")
             _ghost("adverse_selection", signal, {})
             global _last_adverse_skip_log_window
             if eval_window != _last_adverse_skip_log_window:
                 _last_adverse_skip_log_window = eval_window
                 logger.info(
-                    f"{_C.DIM}SKIP adverse selection — fade rate {adverse_rate:.0%} > {adverse_threshold:.0%}{_C.RESET}"
-                )
-            else:
-                logger.debug(
-                    f"SKIP adverse selection — fade rate {adverse_rate:.0%} > {adverse_threshold:.0%}"
+                    f"{_C.DIM}SKIP adverse selection (hard) — fade rate "
+                    f"{adverse_rate_at_30s:.0%} ≥ emergency floor {hard_skip_at:.0%}{_C.RESET}"
                 )
             return None, last_eval_log_window
+        if adverse_rate_at_30s > penalty_floor:
+            adverse_kelly_mult = max(
+                penalty_min,
+                1.0 - penalty_slope * (adverse_rate_at_30s - penalty_floor),
+            )
 
     # --- EDGE DECAY GATE ---
     # Mean side-signed mid drift in the 15s window after recent fills. The
@@ -844,16 +905,11 @@ async def _evaluate_signal_and_enter(
     })
     flip_count = flip_state["flip_count"]
     if flip_count >= 1:
-        # Opposite-side flip needs a meaningful model shift past 0.5 — without
-        # this, the bot whipsaws on 1-2pp model noise after every scalp.
-        if flip_state["last_side"] is not None and side != flip_state["last_side"]:
-            if signal.prob < 0.53:
-                _record_skip("opposite_flip_weak_prob")
-                _emit_gate_skip(cid, f"opposite_flip_{side}",
-                                f"opposite-side flip needs prob ≥ 53%, got {signal.prob:.0%}")
-                return None, last_eval_log_window
-
-        flip_premium = config.get("entry_timing", {}).get("flip_edge_premium", _d("flip_edge_premium"))
+        # Per-flip premium: base + 0.005 × max(0, flip_count − 2). Flip 1–2 pay the
+        # base premium; flip 3 pays +0.5pp, flip 4 pays +1.0pp, etc. Caps at the
+        # registry's flip_edge_premium upper bound to keep within pipeline range.
+        flip_premium_base = config.get("entry_timing", {}).get("flip_edge_premium", _d("flip_edge_premium"))
+        flip_premium = flip_premium_base + 0.005 * max(0, flip_count - 2)
         spread_est = -1.0
         if clob_ws:
             bba = clob_ws.best_bid_ask.get(token_id, {})
@@ -975,24 +1031,12 @@ async def _evaluate_signal_and_enter(
         consensus_signals, side,
         dead_zone=signal_engine.consensus_dead_zone,
         consensus_config=signal_engine.consensus_config)
-    size = round(size * consensus_mult, 2)
+    size = round(size * consensus_mult * adverse_kelly_mult, 2)
 
     logger.debug(
         f"  REGIME {regime_state.name if regime_state else 'N/A'}  |  "
         f"SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%})  |  "
         f"consensus {consensus_mult:.1f}x")
-
-    # Late-window underdog gate
-    if contract.get("seconds_remaining", 300) < 120:
-        late_underdog_floor = config.get("signal", {}).get("late_window_min_prob", _d("late_window_min_prob"))
-        if signal.prob < late_underdog_floor:
-            _record_skip("late_window_underdog")
-            _ghost("late_window_underdog", signal, {})
-            logger.debug(
-                f"SKIP: late window underdog — chosen side prob {signal.prob:.0%} < "
-                f"{late_underdog_floor:.0%} with {contract.get('seconds_remaining', 0):.0f}s left"
-            )
-            return None, last_eval_log_window
 
     open_positions = await _get_open_positions_cached(db)
     active_positions = [p for p in open_positions if p.get("status") == "open"]
@@ -1122,7 +1166,8 @@ async def _evaluate_signal_and_enter(
         # Adverse-selection rolling state (gate diagnostic). Field name reads as
         # "fraction of fills that moved against us measured AT 30s post-fill" over
         # the monitor's 30-minute lookback — 30s is the checkpoint, not the lookback.
-        "adverse_rate_at_30s": _adverse_monitor.get_adverse_rate(30.0) if _adverse_monitor else 0.5,
+        "adverse_rate_at_30s": adverse_rate_at_30s if adverse_rate_at_30s >= 0 else 0.5,
+        "adverse_kelly_mult": round(adverse_kelly_mult, 3),
         # Token IDs for both outcomes — required for startup reconciliation and dust sweeping.
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
@@ -1699,6 +1744,11 @@ async def _evaluate_and_exit_position(
         prev_resolution_margin=_prev_resolution_margin,
         liquidation_pressure=hold_liquidation,
         market_mid_for_side=market_mid)
+    _lc_evt = getattr(signal_engine, "last_loss_cut_event", "")
+    if _lc_evt == "fired":
+        _record_skip("loss_cut_fired")
+    elif _lc_evt == "whipsaw_blocked":
+        _record_skip("loss_cut_whipsaw_blocked")
 
     # Under non-critical staleness, only loss-cut is safe — the scalp-band signals
     # were computed against degraded layers. Demote any other EXIT to HOLD so a
@@ -2857,10 +2907,13 @@ async def main() -> None:
     if _prev_resolution_margin != 0.0:
         logger.debug(f"Restored prev_resolution_margin: {_prev_resolution_margin:+.2f}")
 
-    # Reset skip counter for this session — pipeline reads the persisted stats before reset.
-    global _gate_skip_counts
-    _gate_skip_counts = {}
-    flush_gate_stats()  # write empty baseline so pipeline always has a fresh file to read
+    # Gate stats now persist per ET calendar day (gate_stats_YYYYMMDD.json) and
+    # legacy gate_stats.json mirrors the current day. _ensure_gate_stats_day_loaded
+    # loads today's accumulator from disk on first record so mid-day restarts no
+    # longer wipe the day's data — that loader runs lazily from _record_skip /
+    # flush_gate_stats, so no eager work is needed here.
+    _ensure_gate_stats_day_loaded()
+    flush_gate_stats()  # sync the legacy mirror to whatever's already on disk
 
     # SPRT + regime detector — module-level state for trading loop
     global _sprt, _regime_detector

@@ -21,7 +21,18 @@ _EPS = 1e-6  # canonical clip — keep all clipping sites consistent
 # the improvement-over-identity must clear. With OOB scoring, the lower
 # percentile estimate is noisier than the in-sample version was.
 _BOOTSTRAP_N = 300
-_BOOTSTRAP_LOWER_PCT = 20
+_BOOTSTRAP_LOWER_PCT = 20  # strict gate: lower-80% CI must be positive
+
+# Cheap-acceptance branch. When the strict gate rejects but the data still
+# indicates an improvement that's "more likely than not" real, adopt anyway.
+# Two conditions must BOTH hold:
+#   (1) realized improvement on the full fit (`improvement`) exceeds a minimum
+#       practical floor — the calibrator must do *something*, not just round-trip;
+#   (2) the median bootstrap improvement is positive — the typical resample
+#       agrees the candidate beats identity ("more likely than not" direction).
+# The strict gate still takes precedence; this only fires when strict rejected.
+_CHEAP_ACCEPT_MIN_IMPROVEMENT = 0.001   # nats — ≈0.1% absolute log-loss reduction
+_BOOTSTRAP_MEDIAN_PCT = 50
 
 # Minimum samples for a stable isotonic fit. Isotonic has many degrees of
 # freedom and overfits readily on small data — keep this generous.
@@ -160,18 +171,31 @@ class IsotonicCalibrator:
                 continue
 
         ci_lower = float(np.percentile(boot_improvements, _BOOTSTRAP_LOWER_PCT)) if boot_improvements else 0.0
+        ci_median = float(np.percentile(boot_improvements, _BOOTSTRAP_MEDIAN_PCT)) if boot_improvements else 0.0
+        gate = "strict"
         if ci_lower <= 0:
-            logger.info(
-                f"Isotonic fit not significant (Δlog-loss={improvement:+.5f}, "
-                f"bootstrap lower-{100-_BOOTSTRAP_LOWER_PCT}% CI={ci_lower:+.5f}); keeping previous state"
-            )
-            return False
+            # Strict gate rejected — try the cheap-acceptance branch.
+            if improvement > _CHEAP_ACCEPT_MIN_IMPROVEMENT and ci_median > 0:
+                gate = "cheap"
+                logger.info(
+                    f"Isotonic fit adopted via cheap branch "
+                    f"(Δlog-loss={improvement:+.5f} > {_CHEAP_ACCEPT_MIN_IMPROVEMENT}, "
+                    f"median bootstrap={ci_median:+.5f}>0, "
+                    f"lower-{100-_BOOTSTRAP_LOWER_PCT}% CI={ci_lower:+.5f})"
+                )
+            else:
+                logger.info(
+                    f"Isotonic fit not significant (Δlog-loss={improvement:+.5f}, "
+                    f"bootstrap lower-{100-_BOOTSTRAP_LOWER_PCT}% CI={ci_lower:+.5f}, "
+                    f"median={ci_median:+.5f}); keeping previous state"
+                )
+                return False
 
         self._iso = iso
         self._n_samples = int(len(probs))
         self._log_loss_improvement = float(improvement)
         logger.debug(
-            f"Isotonic adopted: n={self._n_samples}, "
+            f"Isotonic adopted ({gate}): n={self._n_samples}, "
             f"Δlog-loss={improvement:+.4f}, knots={self.n_knots}"
         )
         return True

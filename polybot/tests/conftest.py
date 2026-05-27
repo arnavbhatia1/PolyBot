@@ -49,7 +49,6 @@ SAMPLE_CONFIG = {
         "liquidation_weight": 0.03,
         "prev_margin_weight": 0.02,
         "regime_momentum_threshold": 0.15,
-        "flow_combined_cap": 0.35,
         "final_logit_clamp": 4.0,
         "deep_loss_hold_threshold": -0.10,
         "l5_regime_damp_cap": 0.7,

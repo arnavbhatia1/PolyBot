@@ -10,6 +10,7 @@ if combined Δ < 0.7 × sum of individual Δ).
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import logging
 from datetime import datetime, timezone
@@ -571,12 +572,16 @@ class AgentScheduler:
         min_atr: float | None = None,
         # Promoted structural constants — mirror live so baseline/candidate Sharpe stays aligned.
         regime_momentum_threshold: float | None = None,
-        flow_combined_cap: float | None = None,
         final_logit_clamp: float | None = None,
         l5_regime_damp_cap: float | None = None,
         atr_regime_shift_threshold: float | None = None,
         # L6 weights — default 0.0 keeps backtest inert until pipeline raises one (matches live).
         derived_weights: dict[str, float] | None = None,
+        # When set, scalped trades whose recorded `holding_edge_at_scalp > exit_threshold_override`
+        # are repriced using the matched counterfactual hold-to-resolution outcome from `counterfactuals/`,
+        # so the pipeline can score candidate `exit_edge_threshold` values against the alternate-timeline PnL.
+        exit_threshold_override: float | None = None,
+        counterfactual_index: dict[int, dict[str, Any]] | None = None,
     ) -> list[float]:
         """Replay the full logit composition used in production for a candidate
         config and return the Kelly-sized per-trade returns. Sharpe of the result
@@ -592,7 +597,6 @@ class AgentScheduler:
         if logit_scale is None: logit_scale = _d("logit_scale")
         if min_atr is None: min_atr = _d("min_atr")
         if regime_momentum_threshold is None: regime_momentum_threshold = _d("regime_momentum_threshold")
-        if flow_combined_cap is None: flow_combined_cap = _d("flow_combined_cap")
         if final_logit_clamp is None: final_logit_clamp = _d("final_logit_clamp")
         if l5_regime_damp_cap is None: l5_regime_damp_cap = _d("l5_regime_damp_cap")
         if atr_regime_shift_threshold is None: atr_regime_shift_threshold = _d("atr_regime_shift_threshold")
@@ -729,15 +733,11 @@ class AgentScheduler:
                 direction = 1.0 if prev_margin > 0 else (-1.0 if prev_margin < 0 else 0.0)
             logit_p += regime_factor * direction * (regime_weight * logit_scale)
 
-            # L3 + L3b — CLOB flow + spot flow, capped to prevent triple-counting
-            logit_before_flow = logit_p
+            # L3 + L3b — CLOB flow + spot flow.
             flow_signal = ctx.get("flow_score", 0.0)
             logit_p += flow_signal * (flow_weight * logit_scale)
             spot_flow = ctx.get("spot_flow_signal", 0.0)
             logit_p += spot_flow * (spot_flow_weight * logit_scale)
-            flow_total = logit_p - logit_before_flow
-            if abs(flow_total) > flow_combined_cap:
-                logit_p = logit_before_flow + flow_combined_cap * (1.0 if flow_total > 0 else -1.0)
 
             # L3e — liquidation pressure
             liq = ctx.get("liquidation_pressure", 0.0)
@@ -851,10 +851,63 @@ class AgentScheduler:
             except Exception:
                 days_ago = 0.0
             recency_w = RECENCY_DECAY_PER_DAY ** days_ago
-            returns.append(kelly_frac * o.get("gain_pct", 0.0) * realism_factor)
+
+            # Counterfactual-aware gain_pct for exit_edge_threshold candidates.
+            # If `exit_threshold_override` is set AND this outcome was a scalp with a
+            # recorded counterfactual AND the candidate threshold would NOT have triggered
+            # the scalp (i.e., holding_edge_at_scalp > candidate threshold), substitute
+            # the counterfactual hold-to-resolution gain. Otherwise leave actual gain.
+            outcome_gain_pct = o.get("gain_pct", 0.0)
+            if (exit_threshold_override is not None
+                    and counterfactual_index
+                    and o.get("exit_reason") == "scalp"):
+                pid = o.get("position_id")
+                cf = counterfactual_index.get(pid) if pid is not None else None
+                if cf:
+                    he_at_scalp = cf.get("context_at_scalp", {}).get("holding_edge")
+                    cf_gain = cf.get("counterfactual", {}).get("gain_pct")
+                    if (he_at_scalp is not None
+                            and cf_gain is not None
+                            and float(he_at_scalp) > float(exit_threshold_override)):
+                        outcome_gain_pct = float(cf_gain)
+            returns.append(kelly_frac * outcome_gain_pct * realism_factor)
             sample_weights.append(recency_w)
 
         return returns, sample_weights
+
+    def _load_counterfactual_index(self) -> dict[int, dict[str, Any]]:
+        """{position_id: counterfactual_dict} for scalp outcomes that resolved.
+
+        Cached on the scheduler instance so a multi-fold backtest run pays the
+        I/O cost once. The counterfactual JSON shape is documented in
+        polybot/agents/counterfactual_tracker.py — keys consumed here:
+        `context_at_scalp.holding_edge`, `counterfactual.gain_pct`.
+        """
+        cached = getattr(self, "_counterfactual_index_cached", None)
+        if cached is not None:
+            return cached
+        import glob
+        import os
+        idx: dict[int, dict[str, Any]] = {}
+        try:
+            files = glob.glob(str(MEMORY_DIR / "counterfactuals" / "*.json"))
+        except Exception:
+            files = []
+        for f in files:
+            try:
+                with open(f, "r") as fh:
+                    d = json.load(fh)
+                if not isinstance(d, dict):
+                    continue
+                pid = d.get("position_id")
+                cf = d.get("counterfactual", {})
+                if pid is None or not isinstance(cf, dict) or cf.get("gain_pct") is None:
+                    continue
+                idx[int(pid)] = d
+            except Exception:
+                continue
+        self._counterfactual_index_cached = idx
+        return idx
 
     def _config_for_helper(self, recommendations: dict[str, Any] | None = None) -> dict[str, Any]:
         """Resolve config for `_kelly_bankroll_returns` — recommendation first, live engine fallback.
@@ -926,7 +979,6 @@ class AgentScheduler:
             logit_scale=cfg["logit_scale"],
             min_atr=cfg["min_atr"],
             regime_momentum_threshold=cfg["regime_momentum_threshold"],
-            flow_combined_cap=cfg["flow_combined_cap"],
             final_logit_clamp=cfg["final_logit_clamp"],
             l5_regime_damp_cap=cfg["l5_regime_damp_cap"],
             atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],
@@ -975,6 +1027,15 @@ class AgentScheduler:
         cfg = self._config_for_helper(single_rec)
         calibrator = self.signal_engine.calibrator if self.signal_engine else None
 
+        # Counterfactual-aware replay only when the candidate is exit_edge_threshold —
+        # recorded fill history can't tell us "what if we held instead?", the counterfactual
+        # tracker does. Other params see the same data either way.
+        _exit_thr_override = None
+        _cf_index: dict[int, dict[str, Any]] | None = None
+        if param == "exit_edge_threshold" and value is not None:
+            _exit_thr_override = float(value)
+            _cf_index = self._load_counterfactual_index()
+
         returns, weights = self._kelly_bankroll_returns(
             outcomes=outcomes,
             recommended_weights=cfg["weights"],
@@ -994,11 +1055,12 @@ class AgentScheduler:
             logit_scale=cfg["logit_scale"],
             min_atr=cfg["min_atr"],
             regime_momentum_threshold=cfg["regime_momentum_threshold"],
-            flow_combined_cap=cfg["flow_combined_cap"],
             final_logit_clamp=cfg["final_logit_clamp"],
             l5_regime_damp_cap=cfg["l5_regime_damp_cap"],
             atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],
             derived_weights=cfg["derived_weights"],
+            exit_threshold_override=_exit_thr_override,
+            counterfactual_index=_cf_index,
         )
         return {
             "returns": returns,
@@ -1364,7 +1426,6 @@ class AgentScheduler:
                         logit_scale=cfg_combined["logit_scale"],
                         min_atr=cfg_combined["min_atr"],
                         regime_momentum_threshold=cfg_combined["regime_momentum_threshold"],
-                        flow_combined_cap=cfg_combined["flow_combined_cap"],
                         final_logit_clamp=cfg_combined["final_logit_clamp"],
                         l5_regime_damp_cap=cfg_combined["l5_regime_damp_cap"],
                         atr_regime_shift_threshold=cfg_combined["atr_regime_shift_threshold"],
@@ -1945,7 +2006,6 @@ class AgentScheduler:
                         logit_scale=cfg["logit_scale"],
                         min_atr=cfg["min_atr"],
                         regime_momentum_threshold=cfg["regime_momentum_threshold"],
-                        flow_combined_cap=cfg["flow_combined_cap"],
                         final_logit_clamp=cfg["final_logit_clamp"],
                         l5_regime_damp_cap=cfg["l5_regime_damp_cap"],
                         atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],

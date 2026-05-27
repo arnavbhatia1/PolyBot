@@ -160,7 +160,7 @@ pipeline-tunable — propose them in `changes` with predicted_delta_sharpe_7d, b
 counterfactual_analysis / time_patterns / flip outcomes as you would any other tunable.
 
 ## Newly pipeline-tunable structural constants
-regime_momentum_threshold, flow_combined_cap, final_logit_clamp, deep_loss_hold_threshold,
+regime_momentum_threshold, final_logit_clamp, deep_loss_hold_threshold,
 l5_regime_damp_cap, atr_regime_shift_threshold. These shape the signal stack; small
 steps only. Each has a tight range — see CLAMP_RANGES in context.
 
