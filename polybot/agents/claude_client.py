@@ -100,7 +100,7 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
 - min_atr (8.0-25.0, ATR floor)
 - flow_weight (0.02-0.12), spot_flow_weight (0.01-0.15), liquidation_weight (0.01-0.10)
 - regime_weight (0.02-0.10), prev_margin_weight (0.01-0.05)
-- momentum_weight (-0.10 to +0.10; NEGATIVE = fade indicators)
+- momentum_weight (0.0 to 0.10; magnitude only — polarity is regime-conditional in compute_momentum)
 - kelly_fraction (0.05-0.18; leave unchanged unless strong risk evidence)
 - min_edge (0.02-0.10), min_kelly (0.005-0.04), min_model_probability (0.52-0.70)
 - weights (RSI/MACD/Stoch/OBV/VWAP dict, sum=1.0, each ≥0.05)
@@ -376,12 +376,13 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
                 clamped = cast(max(lo, min(hi, raw_value)))
             except (TypeError, ValueError):
                 continue
-            # Extra: momentum magnitude must stay below min_edge
+            # Extra: momentum magnitude must stay below min_edge (registry clamps
+            # momentum_weight to [0.0, 0.10] so clamped is always non-negative here).
             momentum_floor_applied = False
             if param == "momentum_weight":
                 min_edge_live = cfg.get("min_edge", _d("min_edge"))
-                if abs(clamped) >= min_edge_live:
-                    clamped = float((min_edge_live - 0.001) * (1.0 if clamped >= 0 else -1.0))
+                if clamped >= min_edge_live:
+                    clamped = float(min_edge_live - 0.001)
                     momentum_floor_applied = True
             entry: dict[str, Any] = {"param": param, "value": clamped, "reason": reason}
             # Surface clamps so the directional table attributes results to the actual tested value.

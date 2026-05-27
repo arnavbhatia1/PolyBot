@@ -98,14 +98,16 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     "loss_cut_time_s": 90.0,
     "adverse_selection_threshold": 0.65,
     "edge_decay_threshold": -0.05,
+    # Entry-gate floor for late-window underdogs (signal.late_window_min_prob)
+    "late_window_min_prob": 0.40,
     # Risk caps
     "max_concurrent_positions": 2,
     "max_bankroll_deployed": 0.80,
     # Signal/regime knobs (not pipeline-tunable)
     "regime_lookback": 50,
     "consensus_dead_zone": 0.05,
-    # Indicator weight dict (shape only — runtime should always supply this from YAML)
-    "weights": {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20},
+    # Indicator weight dict — mirrors settings.yaml runtime values.
+    "weights": {"rsi": 0.20, "macd": 0.30, "stochastic": 0.15, "obv": 0.15, "vwap": 0.20},
     # Circuit breaker (dotted access)
     "circuit_breaker.floor_pct": 0.85,
     "circuit_breaker.min_multiplier": 0.40,
@@ -130,9 +132,10 @@ MANUAL_ONLY_PARAMS: frozenset[str] = frozenset({
     # magnitudes around it stay operator-owned because they're outside the curve.
     "loss_cut_fraction",
     "loss_cut_time_s",
-    # Entry-time filters (informed flow, stale price)
+    # Entry-time filters (informed flow, stale price, late-window underdog)
     "adverse_selection_threshold",
     "edge_decay_threshold",
+    "late_window_min_prob",
     "max_edge",
     # Schedule
     "trading_start_hour_et",

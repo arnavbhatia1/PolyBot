@@ -983,7 +983,7 @@ async def _evaluate_signal_and_enter(
 
     # Late-window underdog gate
     if contract.get("seconds_remaining", 300) < 120:
-        late_underdog_floor = config.get("signal", {}).get("late_window_min_prob", 0.40)
+        late_underdog_floor = config.get("signal", {}).get("late_window_min_prob", _d("late_window_min_prob"))
         if signal.prob < late_underdog_floor:
             _record_skip("late_window_underdog")
             _ghost("late_window_underdog", signal, {})
@@ -2694,7 +2694,7 @@ async def main() -> None:
         # Allowance floor: cover at least 10 rounds of max-sized concurrent positions so a
         # revoked or run-down allowance is caught before it silently kills order fills.
         _preflight_bankroll = await db.get_bankroll()
-        _kelly_fraction = config.get("signal", {}).get("kelly_fraction", 0.15)
+        _kelly_fraction = config.get("math", {}).get("kelly_fraction", _d("kelly_fraction"))
         _max_single = _preflight_bankroll * _kelly_fraction
         _max_concurrent = exec_cfg.get("max_concurrent_positions", _d("max_concurrent_positions"))
         _min_allowance = _max_single * _max_concurrent * 10.0

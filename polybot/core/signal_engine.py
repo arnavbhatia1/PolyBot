@@ -389,13 +389,15 @@ class SignalEngine:
             ind = indicators.get(name, {})
             return ind.get("norm_score", ind.get("score", 0))
 
+        # Inline fallbacks mirror the registry default in _MANUAL_DEFAULTS["weights"]
+        # — only fire when callers pass an incomplete weights dict (e.g. tests).
         mean_revert = (
             _s("rsi") * w.get("rsi", 0.20)
-            + _s("stochastic") * w.get("stochastic", 0.20)
+            + _s("stochastic") * w.get("stochastic", 0.15)
             + _s("vwap") * w.get("vwap", 0.20)
         )
         trend_confirm = (
-            _s("macd") * w.get("macd", 0.25)
+            _s("macd") * w.get("macd", 0.30)
             + _s("obv") * w.get("obv", 0.15)
         )
 

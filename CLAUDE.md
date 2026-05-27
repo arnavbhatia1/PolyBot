@@ -20,7 +20,7 @@ L3+L3b combined capped at ±`flow_combined_cap` (default 0.35) logits. Final log
 
 ## Entry Gates
 
-`prob ≥ 0.56`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_at_30s ≤ adverse_selection_threshold` (30s post-fill checkpoint over a 30-min lookback, Bayesian-shrunk to a neutral prior so the gate stays active in low-volume hours), `mean_decay_15s ≥ edge_decay_threshold` (signed mean 15s post-fill drift over a 30-min lookback; default −0.05, inactive until ≥15 resolved fills in the lookback). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP (sequential evidence rejects the side), or favored-side mismatch (SPRT's accumulated favored side differs from current proposal when confidence > 60% with ≥6 obs). ATR gate: lower-bound only (`atr < 5th pctile`).
+`prob ≥ 0.56`, `edge ≥ 0.04` (+1.5% per flip), `Kelly ≥ 0.01` (fee-aware: `b_eff = b × (1 − fee_rate)`), `spread ≤ 10%`, `depth ≥ $50`, `price_sum ∈ [0.98, 1.02]`, `edge ≤ max_edge`, `adverse_rate_at_30s ≤ adverse_selection_threshold` (30s post-fill checkpoint over a 30-min lookback, Bayesian-shrunk to a neutral prior so the gate stays active in low-volume hours), `mean_decay_15s ≥ edge_decay_threshold` (signed mean 15s post-fill drift over a 30-min lookback; default −0.05, inactive until ≥15 resolved fills in the lookback). Pre-submit edge re-check uses fresh ask AND slippage (matches the entry-gate net_edge math). CVD deceleration: skip if `|spot_flow| ≥ 0.20` AND `spot_flow × cvd_accel < 0`. SPRT: blocks SKIP (sequential evidence rejects the side), or favored-side mismatch (SPRT's accumulated favored side differs from current proposal when confidence > 60% with ≥6 obs). ATR gate: lower-bound only (`atr < 5th pctile`). Late-window underdog: in the last 2 minutes, skip if chosen-side model prob < `late_window_min_prob` (default 0.40, manual-only).
 
 ## Sizing & Exit
 
@@ -80,7 +80,7 @@ polybot/
 - **L6 derived feature weights (Investment 3 — added 2026-05-19, default 0.0):** `derived_log_atr_ratio_weight`, `derived_autocorr_signed_mag_weight`, `derived_vol_regime_shift_weight`, `derived_flow_disagreement_weight`, `derived_distance_atr_ratio_weight`, `derived_time_remaining_logit_weight`, `derived_liq_signed_sqrt_weight`, `derived_prev_margin_sq_weight`. Each 0.0–0.05; combined L6 contribution hard-capped at ±0.25 logits. Library is closed — see `polybot/core/derived_features.py`.
 
 **Manual-only** (claude_client validator reroutes `changes` → `manual_observations`):
-`loss_cut_*`, `max_edge`, `adverse_selection_threshold`, `edge_decay_threshold`, `trading_*`, `max_concurrent_positions`, `max_bankroll_deployed`, `circuit_breaker.*`, `indicators.*`, `sprt.*`.
+`loss_cut_*`, `max_edge`, `adverse_selection_threshold`, `edge_decay_threshold`, `late_window_min_prob`, `trading_*`, `max_concurrent_positions`, `max_bankroll_deployed`, `circuit_breaker.*`, `indicators.*`, `sprt.*`.
 
 ## Running
 
