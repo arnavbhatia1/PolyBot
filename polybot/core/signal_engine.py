@@ -9,6 +9,7 @@ import numpy as np
 from scipy.special import stdtr as _stdtr
 from polybot.core.exit_boundary import ExitBoundary
 from polybot.core.returns import lag1_autocorr
+from polybot.core.aux_layers import autocorr_vol_scale, combine_flow_family
 from polybot.core.derived_features import DERIVED_FEATURES, FeatureContext, L6_LOGIT_CAP
 from polybot.config.param_registry import default_for as _d
 
@@ -271,9 +272,14 @@ class SignalEngine:
         distance = btc_price - strike_price
         minutes_remaining = max(seconds_remaining / 60.0, 0.01)
 
+        # Regime (lag-1 autocorr) feeds L1 vol scaling below + L2/L4/L5.
+        regime = self.compute_regime_factor(closes) if closes is not None else 0.0
+        self.last_regime_autocorr = regime
+
         self._record_atr(atr)
         atr_effective = max(atr, self._effective_atr_floor())
-        vol_scaled = (atr_effective / self.atr_sigma_ratio) * math.sqrt(minutes_remaining)
+        vol_scaled = ((atr_effective / self.atr_sigma_ratio) * math.sqrt(minutes_remaining)
+                      * autocorr_vol_scale(regime))
         if vol_scaled <= 0:
             return _calibrated(0.5)
 
@@ -292,9 +298,6 @@ class SignalEngine:
         logit_regime_w = self.regime_weight * self.logit_scale
         logit_flow_w = self.flow_weight * self.logit_scale
 
-        # L2 — regime autocorr × direction of last 1-min return
-        regime = self.compute_regime_factor(closes) if closes is not None else 0.0
-        self.last_regime_autocorr = regime
         # L4 magnitude is regime-amplified; polarity is handled per-group inside compute_momentum.
         logit_momentum_w = self.effective_momentum_weight(regime) * self.logit_scale
         # L2 uses the live `btc_price` (Coinbase WS, sub-second) vs the previous fully-closed
@@ -308,16 +311,13 @@ class SignalEngine:
         self.last_regime_direction = direction
         logit_p += regime * direction * logit_regime_w
 
-        # L3 + L3b: CLOB flow + spot flow. Combined contribution clamped at ±0.50
-        # logits so a flow / spot_flow disagreement amplified by a weight asymmetry
-        # can never dominate L1.
-        flow_contribution = (flow_signal * logit_flow_w
-                             + spot_flow_signal * (self.spot_flow_weight * self.logit_scale))
-        logit_p += max(-0.50, min(0.50, flow_contribution))
-
-        # L3e — liquidation pressure
-        if liquidation_pressure != 0.0:
-            logit_p += liquidation_pressure * (self.liquidation_weight * self.logit_scale)
+        # L3 + L3b + L3e — three venues watching the same BTC move; redundancy-
+        # discounted combine + joint clamp (shared with replay via aux_layers).
+        logit_p += combine_flow_family(
+            flow_signal * logit_flow_w,
+            spot_flow_signal * (self.spot_flow_weight * self.logit_scale),
+            liquidation_pressure * (self.liquidation_weight * self.logit_scale),
+        )
 
         # L5 — previous-window margin carry, tanh-normalized by ATR. Dampened by
         # regime strength: |regime| ~1 means L2 already encodes the same drift,
@@ -540,7 +540,13 @@ class SignalEngine:
             return ("HOLD", model_prob, holding_edge,
                     f"holding to resolution — deeply underwater but better odds holding than selling now")
 
-        if holding_edge <= effective_threshold:
+        # Whipsaw cushion (mirrors the loss-cut guard): when BTC sits within
+        # 0.5×ATR of the strike on the wrong side, P(side) can flip hard on a
+        # borderline print, so hold the binary residual rather than scalp out on
+        # a noisy strike-side call.
+        near_strike_whipsaw = (wrong_side and atr_for_cut > 0
+                               and btc_dist <= 0.5 * atr_for_cut)
+        if holding_edge <= effective_threshold and not near_strike_whipsaw:
             return ("EXIT", model_prob, holding_edge,
                     f"Market ({market_price_for_side:.2f}) has moved against us "
                     f"({model_prob:.0%})")

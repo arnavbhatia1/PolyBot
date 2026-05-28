@@ -30,9 +30,9 @@ from polybot.execution.base import (
 from polybot.core.returns import log_return
 
 # Replace py-clob-client's module-global HTTP/2 singleton with one whose
-# keepalive_expiry outlives our 10s keepalive ping. Default httpx
-# keepalive_expiry is 5.0s, so the connection dies for ~5s out of every
-# 10s window and roughly half of order POSTs pay a fresh TLS handshake.
+# keepalive_expiry (60s) comfortably outlives our 5s keepalive ping. The default
+# httpx keepalive_expiry of 5.0s would let the connection lapse between pings and
+# make roughly half of order POSTs pay a fresh TLS handshake.
 _clob_helpers._http_client = httpx.Client(
     http2=True,
     timeout=20.0,
@@ -42,7 +42,6 @@ _clob_helpers._http_client = httpx.Client(
         keepalive_expiry=60.0,
     ),
 )
-
 
 class OrphanPositionError(Exception):
     """Raised at startup when on-chain positions exist that the DB doesn't know about.

@@ -18,7 +18,8 @@ from datetime import datetime, timezone
 from typing import Any
 from polybot.config.loader import save_config
 from polybot.config.param_registry import default_for as _d
-from polybot.core.aux_layers import compute_spot_flow_signal, compute_liquidation_signal
+from polybot.core.aux_layers import (compute_spot_flow_signal, compute_liquidation_signal,
+                                      regime_vol_factor, autocorr_vol_scale, combine_flow_family)
 from polybot.paths import MEMORY_DIR
 
 logger = logging.getLogger(__name__)
@@ -704,18 +705,8 @@ class AgentScheduler:
             atr = atr_effective
 
 
-            raw_prob_up = stored_raw
-            if btc > 0 and strike > 0 and secs > 0 and student_t_df > 2:
-                minutes = secs / 60.0
-                vol = (atr / atr_sigma_ratio) * math.sqrt(minutes)
-                if vol > 0:
-                    z = ((btc - strike) / vol) * math.sqrt(student_t_df / (student_t_df - 2))
-                    raw_prob_up = float(t_dist.cdf(z, student_t_df))
-            raw_prob_up = max(1e-6, min(1 - 1e-6, raw_prob_up))
-            logit_p = math.log(raw_prob_up / (1.0 - raw_prob_up))
-
-            # L2 — regime × direction. Use stored autocorr float when available (exact),
-            # fall back to the regime_state string approximation for old outcomes.
+            # Regime (lag-1 autocorr) feeds L1 vol scaling + L2/L4/L5. Stored float
+            # when available (exact); regime_state string approximation for old rows.
             stored_autocorr = ctx.get("regime_autocorr")
             if stored_autocorr is not None:
                 regime_factor = float(stored_autocorr)
@@ -727,6 +718,18 @@ class AgentScheduler:
                     regime_factor = -0.20
                 else:
                     regime_factor = 0.0
+
+            raw_prob_up = stored_raw
+            if btc > 0 and strike > 0 and secs > 0 and student_t_df > 2:
+                minutes = secs / 60.0
+                vol = (atr / atr_sigma_ratio) * math.sqrt(minutes) * autocorr_vol_scale(regime_factor)
+                if vol > 0:
+                    z = ((btc - strike) / vol) * math.sqrt(student_t_df / (student_t_df - 2))
+                    raw_prob_up = float(t_dist.cdf(z, student_t_df))
+            raw_prob_up = max(1e-6, min(1 - 1e-6, raw_prob_up))
+            logit_p = math.log(raw_prob_up / (1.0 - raw_prob_up))
+
+            # L2 — regime × direction (regime_factor computed above for L1 vol scaling).
             prev_margin = ctx.get("prev_resolution_margin", 0.0)
             # Direction: prefer the actual last-1min-return sign captured at signal time
             # (stored from signal_engine.last_regime_direction). Fall back to
@@ -739,37 +742,36 @@ class AgentScheduler:
                 direction = 1.0 if prev_margin > 0 else (-1.0 if prev_margin < 0 else 0.0)
             logit_p += regime_factor * direction * (regime_weight * logit_scale)
 
-            # L3 + L3b — CLOB flow + spot flow. Recompute L3b from stamped aux
-            # signals so historical outcomes use the same Coinbase math live
-            # uses today; fall back to the stored value for pre-Pillar-1 records
-            # that don't carry `coinbase_cvd_60s`. Joint contribution clamped at
-            # ±0.50 to mirror signal_engine — without this the optimizer scores
-            # candidates against an un-bounded sum live never realizes.
+            # L3 + L3b + L3e — recompute from stamped aux signals with the same
+            # vol/price-relative normalization + redundancy combine live uses (shared
+            # via aux_layers); fall back to stored values for rows lacking raw aux.
+            _vol_factor = regime_vol_factor(atr_raw, ctx.get("atr_long_term_mean"))
             flow_signal = ctx.get("flow_score", 0.0)
             if ctx.get("coinbase_cvd_60s") is not None:
                 spot_flow = compute_spot_flow_signal(
                     ctx.get("coinbase_cvd_60s"),
                     ctx.get("coinbase_taker_60s"),
                     ctx.get("coinbase_taker_n", 0),
+                    vol_factor=_vol_factor,
                 )
             else:
                 spot_flow = ctx.get("spot_flow_signal", 0.0)
-            flow_contribution = (flow_signal * (flow_weight * logit_scale)
-                                 + spot_flow * (spot_flow_weight * logit_scale))
-            logit_p += max(-0.50, min(0.50, flow_contribution))
-
-            # L3e — direct-stream liquidation when stamped, else legacy stored value.
             if any(ctx.get(k) is not None for k in (
                 "binance_liq_long_usd_min", "binance_liq_short_usd_min",
             )):
                 liq = compute_liquidation_signal(
                     ctx.get("binance_liq_long_usd_min"),
                     ctx.get("binance_liq_short_usd_min"),
+                    btc_price=btc,
+                    vol_factor=_vol_factor,
                 )
             else:
                 liq = ctx.get("liquidation_pressure", 0.0)
-            if liq != 0.0:
-                logit_p += liq * (liquidation_weight * logit_scale)
+            logit_p += combine_flow_family(
+                flow_signal * (flow_weight * logit_scale),
+                spot_flow * (spot_flow_weight * logit_scale),
+                liq * (liquidation_weight * logit_scale),
+            )
 
             # L5 — previous-window margin carry (tanh-normalized by ATR).
             # Live applies a (1 - min(l5_regime_damp_cap, |regime|)) dampener to

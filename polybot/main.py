@@ -43,7 +43,7 @@ from polybot.feeds.clob_ws import ClobWebSocket
 from polybot.indicators.engine import IndicatorEngine
 from polybot.core.signal_engine import SignalEngine
 from polybot.core.order_flow import compute_flow_signal
-from polybot.core.aux_layers import compute_spot_flow_signal, compute_liquidation_signal
+from polybot.core.aux_layers import compute_spot_flow_signal, compute_liquidation_signal, regime_vol_factor
 from polybot.agents.claude_client import ClaudeClient
 from polybot.execution.paper_trader import PaperTrader
 from polybot.execution.live_trader import AuthError, LiveTrader, OrphanPositionError, verify_auth
@@ -286,24 +286,15 @@ def _log_hold_heartbeat_stale(pos: dict[str, Any], live: dict[str, Any], reason:
 
 
 def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) -> tuple[float, str]:
-    """Return the freshest available BTC price + its source label.
+    """Return the Coinbase BTC price + source label, or (0.0, "stale").
 
-    Each leg has a hard freshness gate based on local receipt time. The candle
-    leg uses CandleBuffer.latest_age_s — receipt time of the most recent
-    kline message (partial or close), NOT the candle's "t" field. The "t"
-    field only advances on minute boundaries, so the old check (cdl_age based
-    on timestamp < 5s) almost never fired and the candle leg was effectively
-    dead code. With the receipt-time check, the candle leg correctly fires
-    when partial klines have been arriving recently (every ~1s during a
-    normal minute). Returns (0.0, "stale") when every leg is stale — callers
-    must treat that as "skip this decision", not as a zero price.
-
-    Priority order:
-      1. Coinbase WS (<2s) — direct exchange ticker, sub-second tick stream
-      2. Binance aggTrade (<3s) — per-trade WS stream, also sub-second
-      3. Binance 1-min candle (<5s since last kline message) — the buffer's
-         latest.close is updated by every partial kline, so receipt time
-         within 5s means latest.close is current within the minute
+    Coinbase is the lowest-latency feed here and the venue Chainlink resolves
+    against, so it is the sole price source for decisions. When Coinbase isn't
+    fresh (<2s) the decision is SKIPPED — callers must treat (0.0, "stale") as
+    "skip this decision", not a zero price. Sourcing from Binance on a Coinbase
+    gap would trust a venue that can diverge across the strike on a transient
+    print, flipping P(side) on a tick the resolver never sees; skipping is safer.
+    Binance is read only to log the cross-venue gap for monitoring.
     """
     cb_price = cb_age = bt_price = bt_age = 0.0
     if coinbase_feed:
@@ -318,13 +309,6 @@ def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) 
         logger.debug("cross_venue_gap coinbase=%.2f binance=%.2f delta=%+.2f", cb_price, bt_price, cb_price - bt_price)
     if cb_price > 0 and cb_age < 2:
         return cb_price, f"coinbase ({cb_age:.2f}s)"
-    if bt_price > 0 and bt_age < 3:
-        return bt_price, f"binance_trades ({bt_age:.2f}s)"
-    latest_candle = binance_feed.buffer.latest() if binance_feed and binance_feed.buffer else None
-    if latest_candle:
-        cdl_age = binance_feed.buffer.latest_age_s
-        if cdl_age < 5:
-            return latest_candle.close, f"binance_candle ({cdl_age:.1f}s)"
     return 0.0, "stale"
 
 
@@ -498,13 +482,17 @@ def compute_time_multiplier(prob: float, seconds_remaining: float,
                             window_seconds: float = 300.0,
                             normal_fraction: float = 0.60,
                             late_max_penalty: float = 0.30) -> tuple[float, str]:
-    """Returns (kelly_multiplier, phase). High-conviction entries barely penalized late."""
-    time_fraction = seconds_remaining / window_seconds
+    """Returns (kelly_multiplier, phase). High-conviction entries barely penalized late.
+
+    Full Kelly for the first ``normal_fraction`` of the window (by elapsed time);
+    past that the penalty ramps across the remaining ``(1 - normal_fraction)``.
+    """
+    elapsed_fraction = max(0.0, 1.0 - seconds_remaining / window_seconds)
     conviction = 2.0 * abs(prob - 0.5)
-    if time_fraction >= normal_fraction:
+    if elapsed_fraction <= normal_fraction:
         return 1.0, "normal"
     phase = "late" if seconds_remaining >= 30 else "final"
-    late_depth = (normal_fraction - time_fraction) / normal_fraction
+    late_depth = (elapsed_fraction - normal_fraction) / max(1e-9, 1.0 - normal_fraction)
     penalty = late_depth * (1.0 - conviction) * late_max_penalty
     return max(0.40, 1.0 - penalty), phase
 
@@ -770,10 +758,13 @@ async def _evaluate_signal_and_enter(
 
     # L3b + L3e — shared helpers in `polybot/core/aux_layers.py`. Live and
     # backtest replay both call these so the model math is identical.
+    _vol_factor = regime_vol_factor(
+        indicators.get("atr", {}).get("atr", 0.0), signal_engine.last_atr_long_term_mean)
     spot_flow_signal = compute_spot_flow_signal(
         aux_signals.get("coinbase_cvd_60s"),
         aux_signals.get("coinbase_taker_60s"),
         aux_signals.get("coinbase_taker_n", 0),
+        vol_factor=_vol_factor,
     )
     cvd_accel_val = 0.0
     cvd_accel_norm = 0.0
@@ -784,6 +775,8 @@ async def _evaluate_signal_and_enter(
     liquidation_val = compute_liquidation_signal(
         aux_signals.get("binance_liq_long_usd_min"),
         aux_signals.get("binance_liq_short_usd_min"),
+        btc_price=btc_price,
+        vol_factor=_vol_factor,
     )
 
     # Get closes array for regime detection
@@ -1766,14 +1759,19 @@ async def _evaluate_and_exit_position(
     _hold_aux_local = _build_aux_signals(
         coinbase_feed, trades_feed, depth_feed, forceorder_feed, binance_feed,
     )
+    _hold_vol_factor = regime_vol_factor(
+        indicators.get("atr", {}).get("atr", 0.0), signal_engine.last_atr_long_term_mean)
     hold_spot_flow = compute_spot_flow_signal(
         _hold_aux_local.get("coinbase_cvd_60s"),
         _hold_aux_local.get("coinbase_taker_60s"),
         _hold_aux_local.get("coinbase_taker_n", 0),
+        vol_factor=_hold_vol_factor,
     )
     hold_liquidation = compute_liquidation_signal(
         _hold_aux_local.get("binance_liq_long_usd_min"),
         _hold_aux_local.get("binance_liq_short_usd_min"),
+        btc_price=btc_now,
+        vol_factor=_hold_vol_factor,
     )
 
     action, model_prob, holding_edge, reason = signal_engine.evaluate_hold(

@@ -4,7 +4,7 @@
 
 **This file is the single source of truth.** Update it with every behavioral change.
 
-**Sections 1–9 below are FROZEN.** They describe the trading logic itself — model, gates, sizing, ordering, exits, flips, resolution, loss handling. This logic has been hand-tuned to its current shape and is not subject to further optimization. The nightly pipeline (§11) only tunes the numeric knobs declared in §12 — it does not restructure these sections. Code changes touching §1–9 require an explicit operator decision, not a pipeline adoption.
+**Sections 1–9 below are PERMANENTLY FROZEN — final, locked, and closed to all further changes.** They describe the trading logic itself — model, gates, sizing, ordering, exits, flips, resolution, loss handling. The code and this spec have been reconciled and verified, and §1–9 is now immutable: no structural change and no hand-edit to these sections or to the code implementing them — ever. The ONLY thing that still moves is the set of numeric knobs declared in §12, which the nightly pipeline (§11) tunes *inside* these fixed structures; the pipeline can never restructure §1–9. This freeze is final.
 
 ## Quick Start
 
@@ -37,7 +37,7 @@ Binance.com, Polymarket, Coinbase: free.
 
 # Part A — Frozen Trading Logic (§1–9)
 
-The sections in Part A describe the trading mechanism. They are intentionally locked: the structural decisions (Student-t over Gaussian, polarity-split L4, regime-damped L5, closed L6 library, joint L3+L3b clamp, isotonic-only calibration, the entry-gate set, the sizing pipeline, the exit-branch order, the flip-premium formula, Chainlink-only resolution, the loss-handling stack) have been deliberately chosen and will not be optimized further. The nightly pipeline tunes the **numeric values** within these structures (§12) — it cannot change the structure itself.
+The sections in Part A describe the trading mechanism. They are intentionally locked: the structural decisions (Student-t over Gaussian, polarity-split L4, regime-damped L5, closed L6 library, the redundancy-discounted L3+L3b+L3e flow combine, isotonic-only calibration, the entry-gate set, the sizing pipeline, the exit-branch order, the flip-premium formula, Chainlink-only resolution, the loss-handling stack) have been deliberately chosen and will not be optimized further. The nightly pipeline tunes the **numeric values** within these structures (§12) — it cannot change the structure itself.
 
 ## 1. What you're betting on
 
@@ -61,7 +61,8 @@ For each window, the bot computes **P(Up)** by stacking evidence in logit space,
 "How far is BTC from the strike vs. how much it typically moves in the time remaining?"
 
 ```
-vol_scaled = (max(atr, atr_floor) / atr_sigma_ratio) × sqrt(minutes_remaining)
+ac         = clamp(regime, ±0.5)                 # regime = lag-1 autocorr (shared with L2)
+vol_scaled = (max(atr, atr_floor) / atr_sigma_ratio) × sqrt(minutes_remaining) × sqrt((1 + ac) / (1 − ac))
 z          = (btc_price − strike) / vol_scaled
 t_scale    = sqrt(df / (df − 2))
 prob_up    = StudentT_CDF(df, z × t_scale)
@@ -69,9 +70,10 @@ prob_up    = StudentT_CDF(df, z × t_scale)
 
 - **`student_t_df`** — default 5, clamped ≥3 (df ≤ 2 has undefined variance and the t_scale fallback discontinuity would inject a 1.0 → 1.73 jump). Gaussian undersizes BTC's fat tails (kurtosis 6–8).
 - **`atr_sigma_ratio`** — default 1.3, pipeline-tunable 1.2–2.5. The single highest-leverage knob in the model.
-- **ATR floor**, dynamic: `max(min_atr, 0.30 × rolling_20)`. When `rolling_20 / long_term_200 < atr_regime_shift_threshold` (default 0.60), widens to `max(base_floor, long_term_mean × threshold × 0.30)` so the model doesn't get overconfident when vol collapses.
+- **Autocorrelation-scaled vol** — BTC 1-min returns aren't i.i.d., so plain `sqrt(minutes_remaining)` misstates the terminal spread. `vol_scaled` is multiplied by the AR(1) terminal-SD ratio `sqrt((1 + ac) / (1 − ac))`, where `ac` is the same lag-1 autocorrelation L2 consumes (clamped ±0.5 so a noisy estimate can't dominate the core probability). Positive autocorr (trend) widens the spread → P(Up) pulled toward 0.5; negative (mean-reversion) tightens it → pushed away. `regime` is computed once and shared by L1, L2, L4, and L5.
+- **ATR floor**, dynamic: `max(min_atr, 0.30 × rolling_20)`. When `rolling_20 / long_term_200 < atr_regime_shift_threshold` (default 0.60), widens to `max(base_floor, long_term_mean × threshold × 0.30)` so the model doesn't get overconfident when vol collapses. `rolling_20` / `long_term_200` are rolling buffers of the last 20 / 200 ATR **samples**, where one sample is appended per `compute_probability` call (i.e. per decision tick — entry *and* hold evals) — **not** per 1-min candle. Their effective horizon therefore tracks decision cadence, not wall-clock minutes.
 - **L1 clip** at `1e-6` → logit ±13.8, well past the final ±4 clamp. The clamp is the precision floor, not the clip.
-- `btc_price` comes from `_fastest_btc_price`: **Coinbase WS (<2s) → Binance aggTrade (<3s) → Binance kline receipt (<5s)**. All three stale → the decision is skipped, not zeroed.
+- `btc_price` comes from `_fastest_btc_price`: **Coinbase WS only (<2s)** — the lowest-latency feed and the venue Chainlink resolves against. There is no Binance fallback: sourcing a price from a venue that can diverge across the strike on a transient print would flip P(side) on a tick the resolver never sees. Coinbase stale (≥2s) → the decision is skipped, not zeroed (Binance spot is still read, but only to log the cross-venue gap — see §9).
 
 ### L2 — Regime
 
@@ -90,7 +92,7 @@ Single `lag1_autocorr` helper in `polybot/core/returns.py` — `SignalEngine.com
 book_imbalance = (top-5 bid_up + top-5 ask_down − top-5 bid_down − top-5 ask_up) / total
 trade_flow     = recency_weighted_net_flow (120s window, 30s half-life decay)
 flow_score     = 0.6 × book_imbalance + 0.4 × trade_flow
-logit += flow_score × flow_weight × logit_scale     # combined with L3b
+logit += flow_score × flow_weight × logit_scale     # combined with L3b + L3e (redundancy-discounted)
 ```
 
 Top-5 levels each side by best price. Trade flow is recency-weighted exponential decay with a 30s half-life inside the 120s window.
@@ -101,17 +103,18 @@ Coinbase is the largest US-volume BTC venue and is the venue Chainlink resolves 
 
 ```
 cvd_60s    = signed Coinbase BTC volume over 60s
-cvd_comp   = tanh(cvd_60s / 30) × 0.8           # cascade scale = 30 BTC
+vol_factor = clamp(atr / atr_long_term_mean, 0.5, 3.0)   # current volatility regime
+cvd_comp   = tanh(cvd_60s / (30 × vol_factor)) × 0.8     # saturation scale tracks regime
 taker_comp = (taker_60s − 0.5) × 0.4            # only when ≥20 trades in window
 spot_flow  = clamp(cvd_comp + taker_comp, ±1)
-logit += spot_flow × spot_flow_weight × logit_scale     # combined with L3
+logit += spot_flow × spot_flow_weight × logit_scale     # combined with L3 + L3e (redundancy-discounted)
 ```
 
-`compute_spot_flow_signal` lives in `polybot/core/aux_layers.py` so live and replay can never drift.
+`compute_spot_flow_signal` lives in `polybot/core/aux_layers.py` so live and replay can never drift. A fixed scale would saturate `tanh` in high-volume regimes (losing resolution exactly when flow is most informative); `vol_factor` scales the saturation point to the current volatility regime using vol the model already measures.
 
 **CVD-acceleration gate** (sizing-time guard, not L3b magnitude): `coinbase_feed.get_cvd_acceleration(recent_s=15, baseline_s=45)` requires ≥10 recent trades. Skips the entry when `|spot_flow| ≥ 0.20` **and** `spot_flow × cvd_accel < 0` — buying signal has already peaked.
 
-**Joint L3 + L3b clamp.** The sum `flow_signal × flow_w + spot_flow_signal × spot_flow_w`, both already amplified by `logit_scale`, is clamped to **±0.50 logits**. A weight asymmetry between book flow and CVD can't let one leg dominate L1 during a CLOB↔CVD disagreement.
+**Flow-family combine (L3 + L3b + L3e).** Book flow, spot CVD, and liquidations are three venues watching the *same* BTC move, so summing them additively double-counts the shared signal whenever they agree — the exact high-conviction case that drives the largest sizing. Instead they're combined per direction: on each side the strongest contribution enters at full weight and same-direction corroborators are discounted by `_FLOW_REDUNDANCY` (0.5); opposing signals offset naturally (no discount — disagreement is information). The combined result — all three legs including liquidations — is clamped to **±0.50 logits**, so no flow leg or correlated cluster can dominate L1.
 
 ### L3e — Direct futures liquidations (Binance)
 
@@ -120,11 +123,12 @@ Per-event `btcusdt@forceOrder` from Binance futures. Each liquidation message is
 ```
 long_usd  = sum of price × qty for order.side == SELL (closing longs → price-down event)
 short_usd = sum of price × qty for order.side == BUY  (closing shorts → price-up event)
-liq       = tanh((short_usd − long_usd) / 50_000)   # USD/minute, cascade scale
-logit += liq × liquidation_weight × logit_scale
+vol_factor = clamp(atr / atr_long_term_mean, 0.5, 3.0)
+liq        = tanh((short_usd − long_usd) / (50_000 × (btc_price / 65_000) × vol_factor))   # scale tracks price + vol
+liq × liquidation_weight × logit_scale     # enters the L3+L3b+L3e flow combine (see L3b), not added separately
 ```
 
-Sign convention: **short liquidation → price-up (+)**, **long liquidation → price-down (−)**. Helper `compute_liquidation_signal` in `aux_layers.py` is shared with replay.
+Sign convention: **short liquidation → price-up (+)**, **long liquidation → price-down (−)**. Helper `compute_liquidation_signal` in `aux_layers.py` is shared with replay. A fixed USD threshold would silently recalibrate as BTC's price level drifts; the cascade scale tracks `btc_price` (relative to a $65k reference) and the current volatility regime.
 
 ### L4 — Indicator committee (polarity-split, regime-conditional)
 
@@ -282,12 +286,12 @@ if size < 1.0: skip                                              # CLOB floor
 
 ## 5. Placing the order
 
-FOK ("Fill-or-Kill") via `py-clob-client-v2`. 3 retries with jittered exponential backoff. HTTP/2 keepalive ping every 10s.
+FOK ("Fill-or-Kill") via `py-clob-client-v2`. 3 retries with jittered exponential backoff. HTTP/2 keepalive ping every 5s (against a 60s `keepalive_expiry` pool, so the connection never lapses between pings).
 
 Live mode boot:
 1. `verify_auth` checks `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER` are set and the Safe is reachable.
 2. USDC balance fetched. Allowance fetched as `min(allowances[spender] for all spenders) / 1e6`.
-3. Required allowance: `max_single × max_concurrent_positions × 10` (10× safety multiplier). If allowance < required → `AuthError`, clean exit, **no retry that day** (`run_polybot.ps1`'s outer `while ($true)` loop will restart the bot the next midnight ET; fix the allowance before then).
+3. Required allowance: `max_single × max_concurrent_positions × 10` (10× safety multiplier), where `max_single = bankroll × kelly_fraction` (a max Kelly-sized single bet — **not** the `bankroll × max_bankroll_deployed` hard cap). If allowance < required → `AuthError`, clean exit, **no retry that day** (`run_polybot.ps1`'s outer `while ($true)` loop will restart the bot the next midnight ET; fix the allowance before then).
 4. **Mid-session allowance recheck** — every `_ALLOWANCE_RECHECK_EVERY = 10` submits, re-fetch allowance and warn (or fail) if it's been revoked or run down.
 
 Paper mode boot: skips auth entirely, uses the same `BaseTrader` open/close path but `PaperTrader` simulates the book-walk fill + latency + occasional FOK rejection.
@@ -331,7 +335,7 @@ The OTM urgency can push the threshold **positive**, forcing exit even when the 
    - The binary residual ($1 if we win) beats locking in the loss at a depressed price.
    - **Override:** when `model_prob ≤ calibrator.lowest_learned_prob`, the calibrator is saying "the training data showed this side won essentially never at this raw prob" — selling at market beats holding for ~$0 expected. Identity calibrator returns `0.0` for the floor, disabling the override; refits update it dynamically.
 
-3. **Scalp** — `holding_edge ≤ effective_threshold` (and not in the deep-loss hold zone).
+3. **Scalp** — `holding_edge ≤ effective_threshold` (and not in the deep-loss hold zone), **unless BTC is within 0.5×ATR of the strike on the wrong side** — the same whipsaw cushion as loss-cut (branch 1), so a borderline strike-side flip can't scalp out a position whose binary residual is still ~coin-flip.
 
 4. **Hold** — otherwise.
 
@@ -356,7 +360,7 @@ Flips 1–2 pay only the base `flip_edge_premium` (default 0.015); flip 3 pays +
 - **Early scalp** — sold before expiry into the book. The bot keeps the difference; counterfactual tracker logs what hold-to-resolution would have paid.
 - **Resolution** — window closes; Chainlink decides; winning side pays $1/share, losing side $0. PnL credited atomically to bankroll.
 - **Never resolves from Binance** — can diverge from Chainlink by $20–$200 at the close (the period right before Chainlink's snapshot is the worst time to trust spot).
-- **Chainlink orphan fallback** — if Gamma is silent 30+ minutes past expiry, the bot reads Chainlink directly via `chainlink_feed` and resolves the position locally. Orphan state persists in `memory/orphan_positions.json` for restart safety.
+- **Chainlink orphan fallback** — if Gamma is silent 30+ minutes past expiry, the bot reads Chainlink directly via `chainlink_feed` and resolves the position locally. Restart safety comes from the position staying `open`/`pending_resolution` in the DB until resolved (re-evaluated on the next boot) — not from a file. `memory/orphan_positions.json` is written by a *separate* startup check (`LiveTrader.detect_orphan_positions`) that flags on-chain positions the DB doesn't know about.
 
 ## 9. Built-in loss handling
 
@@ -364,9 +368,9 @@ Flips 1–2 pay only the base `flip_edge_premium` (default 0.015); flip 3 pays +
 - **Adverse-selection monitor** — Bayesian-shrunk fade-rate gate; sizing penalty + emergency hard-skip. State persisted to `memory/adverse_state.json` on every fill so restarts inherit the rolling window.
 - **Edge-decay monitor** — same `AdverseSelectionMonitor` but watches signed 15s post-fill drift; gate activates after ≥15 resolved fills in the 30-min lookback.
 - **Regime skip** — `quiet` (ATR below `vol_low_percentile`) skips entry entirely; `volatile` is allowed but tracked.
-- **Feed staleness skip** — Coinbase >30s, Chainlink >60s, Binance aggTrade >30s, Binance kline >45s → skip the cycle. All-stale BTC price → skip the decision (not zero).
+- **Feed staleness skip** — Coinbase >30s, Chainlink >60s, Binance aggTrade >30s, Binance kline >45s → skip the cycle. The L1 BTC price is Coinbase-only: a Coinbase gap ≥2s → skip the decision (not zero), with no Binance price fallback (skip = hold an open position, no entry when flat).
 - **CLOB WS heartbeat** — PING every 10s, force-reconnect if no PONG within 25s.
-- **Cross-venue gap** — Coinbase vs Binance BTC spot delta logged on every decision; if a hostile drift opens up, the size cap on the chosen side absorbs the leg-mismatch risk.
+- **Cross-venue gap** — Coinbase vs Binance BTC spot delta logged on every decision for monitoring; the L1 price is Coinbase-only, so a Binance divergence can't move P(side).
 
 ---
 
@@ -602,6 +606,7 @@ python -m pytest polybot/tests/           # full suite
 - **`edge_decay.deltas` stamped at open, persisted at close:** side-signed post-fill mid drift at 5/10/15/30/60s. Captured by `AdverseSelectionMonitor` keyed by `position_id`. Null windows = trade closed before that checkpoint resolved.
 - **`adverse_kelly_mult`** stamped per-trade in `trade_context`: the actual Kelly multiplier applied at sizing (1.0 = no penalty, `adverse_penalty_min = 0.30` floor). Enables per-bucket retrospective Sharpe analysis.
 - **Aux fields are `None` when stale**, never `0.0` — Pillar 2 layers distinguish "feed cold" from "real zero."
+- **Shared model math** — the L1 vol-autocorrelation scale (`autocorr_vol_scale`), the L3+L3b+L3e flow combine (`combine_flow_family`), and the L3b/L3e regime-relative normalization (`regime_vol_factor` + `compute_spot_flow_signal`/`compute_liquidation_signal`) all live in `aux_layers.py` and are called by `signal_engine` (live) and `scheduler` (backtest replay) alike, so the optimizer can never tune against a model production doesn't run.
 - **Atomic open/close** — single SQLite transaction; `bankroll_delta` for relative, `new_bankroll` for absolute.
 - **Per-mode DB** (`polybot_paper.db` / `polybot_live.db`); `memory/` shared so the pipeline sees the union.
 
