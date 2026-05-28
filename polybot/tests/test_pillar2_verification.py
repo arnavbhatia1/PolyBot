@@ -36,24 +36,20 @@ def test_compute_spot_flow_signal_taker_gated_by_min_n():
 
 
 def test_compute_liquidation_signal_cold_feed_is_zero():
-    assert compute_liquidation_signal(None, None, None, None) == 0.0
-    assert compute_liquidation_signal(0, 0, 0, 0) == 0.0
+    assert compute_liquidation_signal(None, None) == 0.0
+    assert compute_liquidation_signal(0, 0) == 0.0
 
 
 def test_compute_liquidation_signal_short_dominant_is_positive():
     # Short liquidations (price-up event) → positive
-    assert compute_liquidation_signal(0, 100_000, 0, 0) > 0
+    assert compute_liquidation_signal(0, 100_000) > 0
     # Long liquidations (price-down event) → negative
-    assert compute_liquidation_signal(100_000, 0, 0, 0) < 0
+    assert compute_liquidation_signal(100_000, 0) < 0
 
 
-def test_compute_liquidation_signal_sums_across_venues():
-    # Bybit and Binance combine additively
-    bybit_only = compute_liquidation_signal(0, 25_000, 0, 0)
-    binance_only = compute_liquidation_signal(0, 0, 0, 25_000)
-    both = compute_liquidation_signal(0, 25_000, 0, 25_000)
-    assert both == pytest.approx(math.tanh((25_000 + 25_000) / 50_000.0), abs=1e-6)
-    assert both > bybit_only and both > binance_only
+def test_compute_liquidation_signal_returns_zero_when_both_empty():
+    assert compute_liquidation_signal(None, None) == 0.0
+    assert compute_liquidation_signal(0, 0) == 0.0
 
 
 # ---- LEAK-CRIT-2 — scheduler joint clamp at ±0.50 ----

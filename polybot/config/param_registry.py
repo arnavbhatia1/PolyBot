@@ -30,7 +30,7 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec("regime_weight",           "signal.regime_weight",           0.02,  0.10,  float, 0.03,  "L2 regime autocorr × direction"),
     ParamSpec("flow_weight",             "signal.flow_weight",             0.02,  0.12,  float, 0.04,  "L3 CLOB book imbalance + trade flow"),
     ParamSpec("spot_flow_weight",        "signal.spot_flow_weight",        0.01,  0.15,  float, 0.10,  "L3b Coinbase CVD + taker ratio"),
-    ParamSpec("liquidation_weight",      "signal.liquidation_weight",      0.01,  0.10,  float, 0.03,  "L3e direct liquidation streams (Bybit + Binance forceOrder)"),
+    ParamSpec("liquidation_weight",      "signal.liquidation_weight",      0.01,  0.10,  float, 0.03,  "L3e Binance forceOrder direct liquidation stream"),
     ParamSpec("prev_margin_weight",      "signal.prev_margin_weight",      0.01,  0.05,  float, 0.02,  "L5 prev-window resolution margin carry"),
     ParamSpec("momentum_weight",         "signal.momentum_weight",         0.0,   0.10,  float, 0.04,  "L4 indicator magnitude"),
     # ── Sizing ──────────────────────────────────────────────────────────────

@@ -32,18 +32,16 @@ def compute_spot_flow_signal(cvd_60s: float | None,
     return max(-1.0, min(1.0, cvd_comp + taker_comp))
 
 
-def compute_liquidation_signal(bybit_long_usd_min: float | None,
-                                bybit_short_usd_min: float | None,
-                                binance_long_usd_min: float | None,
-                                binance_short_usd_min: float | None) -> float:
+def compute_liquidation_signal(long_usd_min: float | None,
+                                short_usd_min: float | None) -> float:
     """L3e direct-stream liquidation pressure ∈ [-1, 1].
 
     Net (short_liq − long_liq) USD/min, tanh-saturated at the cascade scale.
     Sign: short liquidation → price-up event (+); long liquidation → price-down (−).
-    Returns 0 when no streams have emitted (all inputs None or zero).
+    Returns 0 when the stream has not emitted (both inputs None or zero).
     """
-    long_usd = (bybit_long_usd_min or 0.0) + (binance_long_usd_min or 0.0)
-    short_usd = (bybit_short_usd_min or 0.0) + (binance_short_usd_min or 0.0)
+    long_usd = long_usd_min or 0.0
+    short_usd = short_usd_min or 0.0
     if long_usd == 0.0 and short_usd == 0.0:
         return 0.0
     return math.tanh((short_usd - long_usd) / _LIQ_USD_SCALE)

@@ -1,7 +1,7 @@
 """Binance futures liquidation stream (btcusdt@forceOrder).
 
 Direct measurement of cascade events: each message is one liquidation order with
-side, qty, and price. Sister signal to Bybit liquidation.BTCUSDT.
+side, qty, and price. Sole source for L3e.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class BinanceForceOrderFeed:
         self._window_s = window_s
         # (ts, signed_usd). Binance order.side == "SELL" → liquidating sells closed longs → long liquidation (price-down).
         # order.side == "BUY"  → liquidating buys closed shorts → short liquidation (price-up).
-        # Signed convention: long_liq = +usd, short_liq = −usd (matches BybitFeed.)
+        # Signed convention: long_liq = +usd, short_liq = −usd.
         self._events: deque[tuple[float, float]] = deque()
         self.staleness = StalenessTracker("binance_forceorder")
         self._running = False

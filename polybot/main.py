@@ -62,7 +62,6 @@ import math
 from polybot.feeds.binance_depth import BinanceDepthFeed
 from polybot.feeds.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
 from polybot.feeds.binance_forceorder import BinanceForceOrderFeed
-from polybot.feeds.bybit_feed import BybitFeed
 from polybot.feeds.coinbase_feed import CoinbaseFeed
 from polybot.feeds._staleness import persist as _persist_staleness
 from polybot.core.sprt import SPRTAccumulator
@@ -148,7 +147,6 @@ _WS_STALE_S = 10.0  # max age for CLOB WS BBA/book before treating as stale
 _AUX_FRESH_S_COINBASE = 10.0
 _AUX_FRESH_S_TRADES = 10.0
 _AUX_FRESH_S_DEPTH = 5.0
-_AUX_FRESH_S_BYBIT = 30.0
 
 # Sub-second CVD-acceleration scale — local to the deceleration gate. L3b and
 # L3e use the canonical helpers in `polybot/core/aux_layers.py`.
@@ -156,7 +154,7 @@ _COINBASE_CVD_ACCEL_SCALE = 5.0
 
 
 def _build_aux_signals(coinbase_feed: Any, trades_feed: Any, depth_feed: Any,
-                       bybit_feed: Any, forceorder_feed: Any,
+                       forceorder_feed: Any,
                        binance_feed: Any) -> dict[str, Any]:
     """Auxiliary microstructure signals shared between trade_context and ghost replay.
 
@@ -167,8 +165,6 @@ def _build_aux_signals(coinbase_feed: Any, trades_feed: Any, depth_feed: Any,
     bt_acc = trades_feed.accumulator if trades_feed else None
     bt_fresh = bt_acc is not None and bt_acc.latest_age_s < _AUX_FRESH_S_TRADES
     dp_fresh = depth_feed is not None and depth_feed.age_s < _AUX_FRESH_S_DEPTH
-    bb_state = bybit_feed.state if bybit_feed else None
-    bb_fresh = bb_state is not None and bb_state.perp_age_s < _AUX_FRESH_S_BYBIT
 
     cb_price = coinbase_feed.state.price if cb_fresh else None
     bn_price = bt_acc.latest_price if bt_fresh else None
@@ -189,17 +185,9 @@ def _build_aux_signals(coinbase_feed: Any, trades_feed: Any, depth_feed: Any,
 
     imbalance = depth_feed.get_imbalance(5) if dp_fresh else None
 
-    bybit_funding = bb_state.funding_rate if bb_fresh and bb_state.index_price > 0 else None
-    bybit_basis = bb_state.basis if bb_fresh and bb_state.index_price > 0 else None
-    bybit_mark = bb_state.mark_price if bb_fresh and bb_state.mark_price > 0 else None
-
-    # Liquidation feeds emit only when a liquidation happens — a quiet feed is
+    # Liquidation feed emits only when a liquidation happens — a quiet feed is
     # legitimately silent. Use feed-warm (any message ever observed) as the
     # readiness signal rather than per-event recency.
-    if bybit_feed is not None and bybit_feed.staleness._last_ts > 0:
-        bb_liq_long, bb_liq_short = bybit_feed.liquidation_usd_per_min()
-    else:
-        bb_liq_long, bb_liq_short = None, None
     if forceorder_feed is not None and forceorder_feed.staleness._last_ts > 0:
         bn_liq_long, bn_liq_short = forceorder_feed.liquidation_usd_per_min()
     else:
@@ -215,11 +203,6 @@ def _build_aux_signals(coinbase_feed: Any, trades_feed: Any, depth_feed: Any,
         "coinbase_taker_60s": _r(cb_taker, 4),
         "coinbase_taker_n": cb_taker_n,
         "fast_realized_vol_60s": _r(fast_rv, 6),
-        "bybit_funding_rate": _r(bybit_funding, 6),
-        "bybit_basis": _r(bybit_basis, 2),
-        "bybit_mark_price": _r(bybit_mark, 2),
-        "bybit_liq_long_usd_min": _r(bb_liq_long, 0),
-        "bybit_liq_short_usd_min": _r(bb_liq_short, 0),
         "binance_liq_long_usd_min": _r(bn_liq_long, 0),
         "binance_liq_short_usd_min": _r(bn_liq_short, 0),
     }
@@ -680,7 +663,6 @@ async def _evaluate_signal_and_enter(
         depth_feed: Any = None,
         trades_feed: Any = None,
         forceorder_feed: Any = None,
-        bybit_feed: Any = None,
         coinbase_feed: Any = None,
         chainlink_feed: Any = None,
         ghost_tracker: Any = None) -> tuple[str | None, int]:
@@ -688,9 +670,9 @@ async def _evaluate_signal_and_enter(
 
     # Aux signals are stamped once per evaluation so every ghost rejection and
     # every filled outcome share the same schema. Pillar 2 layers can rely on
-    # the 13 new fields being either a real value or None — never a 0.0 stand-in.
+    # the aux fields being either a real value or None — never a 0.0 stand-in.
     aux_signals = _build_aux_signals(
-        coinbase_feed, trades_feed, depth_feed, bybit_feed, forceorder_feed, binance_feed,
+        coinbase_feed, trades_feed, depth_feed, forceorder_feed, binance_feed,
     )
 
     def _ghost(gate: str, signal: Any, snap: dict) -> None:
@@ -757,13 +739,6 @@ async def _evaluate_signal_and_enter(
         stale_feeds.append(f"coinbase={coinbase_feed.state.age_seconds:.0f}s")
     if chainlink_feed and chainlink_feed.age_seconds > 60:
         stale_feeds.append(f"chainlink={chainlink_feed.age_seconds:.0f}s")
-    # Bybit ticker stream underpins funding/mark/basis aux signals and freshness
-    # of the liquidation.BTCUSDT subscription. Use perp_age_s (every tick) rather
-    # than oi_updated (only fires when the OI value changes).
-    if bybit_feed is not None and bybit_feed.state.perp_updated > 0:
-        bybit_age = bybit_feed.state.perp_age_s
-        if bybit_age > 60:
-            stale_feeds.append(f"bybit={bybit_age:.0f}s")
     # Binance aggTrade underpins L3b (CVD/taker) and the CVD-deceleration gate.
     # Previously the staleness check lived inside the spot_flow computation and
     # silently zeroed L3b on stale data; now we skip entirely (matches CLAUDE.md's
@@ -816,8 +791,6 @@ async def _evaluate_signal_and_enter(
         cvd_accel_norm = math.tanh(cvd_accel_val / _COINBASE_CVD_ACCEL_SCALE)
 
     liquidation_val = compute_liquidation_signal(
-        aux_signals.get("bybit_liq_long_usd_min"),
-        aux_signals.get("bybit_liq_short_usd_min"),
         aux_signals.get("binance_liq_long_usd_min"),
         aux_signals.get("binance_liq_short_usd_min"),
     )
@@ -1717,7 +1690,6 @@ async def _evaluate_and_exit_position(
         day_wins: int, day_losses: int, day_fees: float,
         depth_feed: Any = None, trades_feed: Any = None,
         forceorder_feed: Any = None,
-        bybit_feed: Any = None,
         coinbase_feed: Any = None,
         chainlink_feed: Any = None) -> tuple[int, int, float, str | None]:
     """Re-evaluate an active position and exit (scalp) if holding edge is gone."""
@@ -1735,22 +1707,15 @@ async def _evaluate_and_exit_position(
         _log_hold_heartbeat_stale(pos, live, "no fresh BTC price")
         return day_wins, day_losses, day_fees, None
 
-    # Mirror the entry-path staleness gate (main.py ~540-562). Every
-    # signal-input feed must be fresh, or we defer the decision. Previously
-    # the exit path checked only candle_age>180; if Coinbase / aggTrade /
-    # Bybit / Chainlink went stale the bot would still scalp on degraded
-    # state. CLAUDE.md spec: Coinbase >30s, Chainlink >60s,
-    # aggTrade >30s (L3b CVD/taker), Bybit OI >60s (L3e liquidation).
-    # kline >90s catches a frozen indicator/ATR buffer.
+    # Mirror the entry-path staleness gate. Every signal-input feed must be
+    # fresh, or we defer the decision. CLAUDE.md spec: Coinbase >30s,
+    # Chainlink >60s, aggTrade >30s (L3b CVD/taker). kline >45s catches a
+    # frozen indicator/ATR buffer.
     _stale: list[str] = []
     if coinbase_feed and coinbase_feed.state.age_seconds > 30:
         _stale.append(f"coinbase={coinbase_feed.state.age_seconds:.0f}s")
     if chainlink_feed and chainlink_feed.age_seconds > 60:
         _stale.append(f"chainlink={chainlink_feed.age_seconds:.0f}s")
-    if bybit_feed is not None and bybit_feed.state.perp_updated > 0:
-        _bybit_age = bybit_feed.state.perp_age_s
-        if _bybit_age > 60:
-            _stale.append(f"bybit={_bybit_age:.0f}s")
     if trades_feed is not None and trades_feed.accumulator is not None:
         _agg_age = trades_feed.accumulator.latest_age_s
         if _agg_age > 30:
@@ -1820,7 +1785,7 @@ async def _evaluate_and_exit_position(
 
     # Same L3b + L3e helpers used at entry — identical math via aux_layers.
     _hold_aux_local = _build_aux_signals(
-        coinbase_feed, trades_feed, depth_feed, bybit_feed, forceorder_feed, binance_feed,
+        coinbase_feed, trades_feed, depth_feed, forceorder_feed, binance_feed,
     )
     hold_spot_flow = compute_spot_flow_signal(
         _hold_aux_local.get("coinbase_cvd_60s"),
@@ -1828,8 +1793,6 @@ async def _evaluate_and_exit_position(
         _hold_aux_local.get("coinbase_taker_n", 0),
     )
     hold_liquidation = compute_liquidation_signal(
-        _hold_aux_local.get("bybit_liq_long_usd_min"),
-        _hold_aux_local.get("bybit_liq_short_usd_min"),
         _hold_aux_local.get("binance_liq_long_usd_min"),
         _hold_aux_local.get("binance_liq_short_usd_min"),
     )
@@ -1877,7 +1840,7 @@ async def _evaluate_and_exit_position(
         if counterfactual_tracker:
             _cf_atr = indicators.get("atr", {}).get("atr", 1.0) or 1.0
             _hold_aux = _build_aux_signals(
-                coinbase_feed, trades_feed, depth_feed, bybit_feed, forceorder_feed, binance_feed,
+                coinbase_feed, trades_feed, depth_feed, forceorder_feed, binance_feed,
             )
             counterfactual_tracker.track_hold_moment(pos["market_id"], pos, {
                 "holding_edge": holding_edge, "model_prob": model_prob,
@@ -2056,7 +2019,7 @@ async def _evaluate_and_exit_position(
             if counterfactual_tracker:
                 _cf_atr2 = indicators.get("atr", {}).get("atr", 1.0) or 1.0
                 _cf_aux = _build_aux_signals(
-                    coinbase_feed, trades_feed, depth_feed, bybit_feed, forceorder_feed, binance_feed,
+                    coinbase_feed, trades_feed, depth_feed, forceorder_feed, binance_feed,
                 )
                 counterfactual_tracker.watch(pos, {
                     "exit_fill": exit_fill, "pnl": pnl, "gain_pct": gain_pct,
@@ -2335,7 +2298,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                        depth_feed: Any = None,
                        trades_feed: Any = None,
                        forceorder_feed: Any = None,
-                       bybit_feed: Any = None,
                        chainlink_feed: Any = None,
                        coinbase_feed: Any = None) -> None:
     import httpx
@@ -2410,7 +2372,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     )
     logger.info(
         f"Feeds: Coinbase {_f(coinbase_feed)} · Binance {_f(binance_feed)} · "
-        f"Chainlink {_f(chainlink_feed)} · Bybit {_f(bybit_feed)} · "
+        f"Chainlink {_f(chainlink_feed)} · "
         f"CLOB WS {'Ready' if clob_ws is not None else 'Disconnected'} · "
         f"Discord {'Connected' if alert_manager is not None else 'Unavailable'}"
     )
@@ -2512,7 +2474,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                             day_wins, day_losses, day_fees,
                             depth_feed=depth_feed, trades_feed=trades_feed,
                             forceorder_feed=forceorder_feed,
-                            bybit_feed=bybit_feed,
                             coinbase_feed=coinbase_feed,
                             chainlink_feed=chainlink_feed)
                     if traded_mid:
@@ -2595,7 +2556,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 now_ts, bankroll=current_bankroll,
                 depth_feed=depth_feed, trades_feed=trades_feed,
                 forceorder_feed=forceorder_feed,
-                bybit_feed=bybit_feed,
                 coinbase_feed=coinbase_feed,
                 chainlink_feed=chainlink_feed,
                 ghost_tracker=ghost_tracker)
@@ -2993,10 +2953,6 @@ async def main() -> None:
         ws_url=trades_cfg.get("ws_url", "wss://stream.binance.com:9443/ws"),
     )
     forceorder_feed = BinanceForceOrderFeed()
-    bybit_cfg = config.get("bybit", {})
-    bybit_feed_inst = BybitFeed(
-        ws_url=bybit_cfg.get("ws_url", "wss://stream.bybit.com/v5/public/linear"),
-    )
     coinbase_cfg = config.get("coinbase", {})
     coinbase_feed = CoinbaseFeed(
         ws_url=coinbase_cfg.get("ws_url", "wss://ws-feed.exchange.coinbase.com"),
@@ -3042,7 +2998,6 @@ async def main() -> None:
     await depth_feed.start()
     await trades_feed.start()
     await forceorder_feed.start()
-    await bybit_feed_inst.start()
     await coinbase_feed.start()
     from polybot.feeds.chainlink_feed import ChainlinkFeed
     chainlink_feed = ChainlinkFeed()
@@ -3055,7 +3010,6 @@ async def main() -> None:
         depth_feed.staleness,
         trades_feed.staleness,
         forceorder_feed.staleness,
-        bybit_feed_inst.staleness,
         coinbase_feed.staleness,
         chainlink_feed.staleness,
         clob_ws.staleness,
@@ -3110,7 +3064,6 @@ async def main() -> None:
         http_client=http_client,
         depth_feed=depth_feed, trades_feed=trades_feed,
         forceorder_feed=forceorder_feed,
-        bybit_feed=bybit_feed_inst,
         chainlink_feed=chainlink_feed, coinbase_feed=coinbase_feed))
     background_tasks = [
         asyncio.create_task(scheduler.run_outcome_loop()),
@@ -3141,7 +3094,6 @@ async def main() -> None:
         await _stop(depth_feed.stop())
         await _stop(trades_feed.stop())
         await _stop(forceorder_feed.stop())
-        await _stop(bybit_feed_inst.stop())
         await _stop(coinbase_feed.stop())
         await _stop(chainlink_feed.stop())
         bankroll = await db.get_bankroll()

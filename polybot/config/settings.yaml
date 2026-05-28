@@ -76,7 +76,7 @@ signal:
   regime_weight: 0.03         # [P] L2: how much trending/reverting autocorrelation affects the bet.
   flow_weight: 0.04           # [P] L3: CLOB order book imbalance signal strength.
   spot_flow_weight: 0.1       # [P] L3b: Binance CVD (buy/sell pressure) signal strength.
-  liquidation_weight: 0.03    # [P] L3e: Bybit liquidation cascade signal strength.
+  liquidation_weight: 0.03    # [P] L3e: Binance forceOrder liquidation cascade signal strength.
   prev_margin_weight: 0.02    # [P] L5: carry from last window's resolution (momentum).
   regime_lookback: 50         # [M] How many 1-min candles to measure trend/mean-reversion over.
 
@@ -199,10 +199,6 @@ binance_trades:
 coinbase:
   ws_url: wss://ws-feed.exchange.coinbase.com
   product_id: BTC-USD
-
-bybit:
-  ws_url: wss://stream.bybit.com/v5/public/linear
-  rest_url: https://api.bybit.com
 
 indicators:
   rsi:

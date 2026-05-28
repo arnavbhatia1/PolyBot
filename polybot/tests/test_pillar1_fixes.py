@@ -17,7 +17,6 @@ from polybot.feeds.binance_trades import BinanceTradeAccumulator
 from polybot.feeds.binance_depth import BinanceDepthFeed
 from polybot.feeds.binance_feed import BinanceFeed
 from polybot.feeds.binance_forceorder import BinanceForceOrderFeed
-from polybot.feeds.bybit_feed import BybitFeed
 from polybot.feeds.clob_ws import ClobWebSocket, TRADE_BUFFER_MAXLEN
 from polybot.feeds.coinbase_feed import CoinbaseFeed
 from polybot.core.returns import lag1_autocorr
@@ -46,16 +45,6 @@ def test_binance_trade_accumulator_clear_on_reconnect():
     assert acc.trade_count == 0
     assert acc.get_cvd(window_s=120) == 0
     assert acc.latest_age_s == float("inf")
-
-
-def test_bybit_liquidations_clear_on_reconnect():
-    feed = BybitFeed()
-    now = time.time()
-    feed._liquidations.append((now, 5000.0))
-    feed._liquidations.append((now, -3000.0))
-    feed._liquidations.clear()  # simulates what _connect_ws does
-    long_usd, short_usd = feed.liquidation_usd_per_min()
-    assert long_usd == 0.0 and short_usd == 0.0
 
 
 def test_binance_forceorder_events_clear_on_reconnect():
@@ -163,35 +152,18 @@ def test_binance_depth_get_imbalance_empty():
     assert feed.get_imbalance(levels=5) == 0.0
 
 
-# ---- Bybit liquidation USD/min ----
-
-def test_bybit_liquidation_signed_long_short():
-    feed = BybitFeed()
-    feed._handle_liquidation({"size": "1", "price": "70000", "side": "Sell"})  # long-liq → +usd
-    feed._handle_liquidation({"size": "0.5", "price": "70000", "side": "Buy"})  # short-liq → -usd
-    long_usd, short_usd = feed.liquidation_usd_per_min()
-    # window_s=60 default; per-event sum scaled to /min ≡ same numbers at window=60
-    assert long_usd == pytest.approx(70000.0, abs=1.0)
-    assert short_usd == pytest.approx(35000.0, abs=1.0)
-
-
 # ---- LEAK-CRIT-2 — schema parity via _build_aux_signals ----
 
 def test_build_aux_signals_returns_none_when_feeds_missing():
     from polybot.main import _build_aux_signals
-    out = _build_aux_signals(None, None, None, None, None, None)
-    # 13 fields total; every field except coinbase_taker_n must be None.
+    out = _build_aux_signals(None, None, None, None, None)
+    # Every field except coinbase_taker_n must be None when feeds are absent.
     assert out["binance_book_imbalance_5"] is None
     assert out["cross_venue_gap"] is None
     assert out["coinbase_cvd_60s"] is None
     assert out["coinbase_taker_60s"] is None
     assert out["coinbase_taker_n"] == 0
     assert out["fast_realized_vol_60s"] is None
-    assert out["bybit_funding_rate"] is None
-    assert out["bybit_basis"] is None
-    assert out["bybit_mark_price"] is None
-    assert out["bybit_liq_long_usd_min"] is None
-    assert out["bybit_liq_short_usd_min"] is None
     assert out["binance_liq_long_usd_min"] is None
     assert out["binance_liq_short_usd_min"] is None
 

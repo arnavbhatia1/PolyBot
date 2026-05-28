@@ -83,24 +83,30 @@ def test_resolution_paths_no_longer_double_flush():
     assert count == 1, f"expected single background flush call, found {count}"
 
 
-# ---- Cross-cutting — Bybit staleness uses perp_age_s, not oi_updated ----
+# ---- Bybit fully removed ----
 
-def test_bybit_staleness_uses_perp_age():
-    src = Path("polybot/main.py").read_text(encoding="utf-8")
-    # Old gate used bybit_feed.state.oi_updated (signal-conditional updates only
-    # when the OI value changes). New gate reads perp_age_s (every ticker tick).
-    assert "bybit_feed.state.perp_updated" in src
-    assert "bybit_feed.state.perp_age_s" in src
-    # The misleading oi_updated reference is gone from the staleness gates.
-    assert "bybit_feed.state.oi_updated" not in src
+def test_bybit_completely_removed():
+    for path in (
+        "polybot/main.py",
+        "polybot/core/aux_layers.py",
+        "polybot/agents/scheduler.py",
+        "polybot/agents/claude_client.py",
+        "polybot/config/settings.yaml",
+        "polybot/config/param_registry.py",
+    ):
+        src = Path(path).read_text(encoding="utf-8")
+        assert "bybit" not in src.lower(), f"{path} still references bybit"
 
 
-# ---- Param registry — L3b/L3e descriptions reflect Pillar-2 source swap ----
+def test_bybit_feed_module_deleted():
+    assert not Path("polybot/feeds/bybit_feed.py").exists()
+
+
+# ---- Param registry — L3b/L3e descriptions reflect current sources ----
 
 def test_param_registry_l3b_l3e_descriptions_current():
     src = Path("polybot/config/param_registry.py").read_text(encoding="utf-8")
     assert "L3b Coinbase CVD" in src
-    assert "L3e direct liquidation streams" in src
-    # Stale "L3b Binance" / "L3e Bybit OI" labels must be gone.
+    assert "L3e Binance forceOrder" in src
     assert "L3b Binance" not in src
-    assert "L3e Bybit OI" not in src
+    assert "Bybit" not in src

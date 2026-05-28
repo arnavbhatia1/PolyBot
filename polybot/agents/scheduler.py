@@ -759,12 +759,9 @@ class AgentScheduler:
 
             # L3e — direct-stream liquidation when stamped, else legacy stored value.
             if any(ctx.get(k) is not None for k in (
-                "bybit_liq_long_usd_min", "bybit_liq_short_usd_min",
                 "binance_liq_long_usd_min", "binance_liq_short_usd_min",
             )):
                 liq = compute_liquidation_signal(
-                    ctx.get("bybit_liq_long_usd_min"),
-                    ctx.get("bybit_liq_short_usd_min"),
                     ctx.get("binance_liq_long_usd_min"),
                     ctx.get("binance_liq_short_usd_min"),
                 )

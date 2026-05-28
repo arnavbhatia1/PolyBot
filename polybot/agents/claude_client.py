@@ -83,8 +83,8 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
   L2-L5 are additive in log-odds, scaled by `logit_scale`:
     L2 regime — 1-lag autocorr × sign(last_return)
     L3  CLOB flow (book imbalance + trade flow)
-    L3b spot flow (Binance CVD + taker ratio)
-    L3e liquidation pressure (Bybit OI drop × direction)
+    L3b spot flow (Coinbase CVD + taker ratio)
+    L3e liquidation pressure (Binance forceOrder direct-stream events)
     L5  prev-window margin (tanh-normalized by ATR)
     L4  indicator momentum (RSI/MACD/Stoch/OBV/VWAP — weakest signal)
   Then isotonic calibration (re-fit each cycle on the train split) is the sole
