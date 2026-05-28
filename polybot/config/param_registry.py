@@ -86,7 +86,7 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     "max_edge": 0.20,
     "loss_cut_fraction": 0.65,
     "loss_cut_time_s": 90.0,
-    "adverse_selection_threshold": 0.65,
+    "adverse_selection_threshold": 0.80,
     "edge_decay_threshold": -0.05,
     # Risk caps
     "max_concurrent_positions": 2,
