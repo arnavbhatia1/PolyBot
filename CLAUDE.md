@@ -381,7 +381,7 @@ Everything below is the surrounding scaffolding — telemetry, the nightly pipel
 - Entry-time facts: `btc_price`, `strike_price`, `seconds_remaining`, `market_price_up`, `market_price_down`, `closes_tail` (last 2 closes, so the L6 backtest can reconstruct `last_return`).
 - Probabilities: `model_probability` (post-calibrator), `model_probability_raw` (pre-calibrator — stored separately so re-fits don't compound).
 - Composite signals: `flow_score`, `spot_flow_signal`, `liquidation_pressure`, `regime_autocorr`, `regime_direction`, `prev_resolution_margin`.
-- Microstructure aux: `binance_book_imbalance_5`, `cross_venue_gap`, `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`, `fast_realized_vol_60s`, `binance_liq_long_usd_min`, `binance_liq_short_usd_min`. **Every field is `None` when the source feed is missing/stale**, never `0.0` — so the pipeline can distinguish "feed cold" from "real zero."
+- Microstructure aux: `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`, `binance_liq_long_usd_min`, `binance_liq_short_usd_min`. **Every field is `None` when the source feed is missing/stale**, never `0.0` — so the pipeline can distinguish "feed cold" from "real zero."
 - SPRT state: `sprt_confidence`, `sprt_status`.
 - Sizing audit: `adverse_rate_at_30s`, **`adverse_kelly_mult`** (the actual Kelly multiplier applied at sizing — enables per-bucket retrospective Sharpe analysis), `entry_phase`, `flip_count`, `is_flip`.
 
@@ -419,14 +419,12 @@ Runs at 23:45 ET (via `run_polybot.ps1`). Five steps; calibrator save is deferre
 
 ### Stages (in order)
 
-1. **PipelineTracker** — review of prior adoptions (7d/14d/30d realized Sharpe per adopted version); auto-revert anything that materially underperformed since adoption.
+1. **PipelineTracker** — review of prior adoptions (7d/14d/30d realized Sharpe per adopted version); auto-revert anything that materially underperformed since adoption. Revert criterion is **symmetric with the adoption gate**: `actual_sharpe < baseline − ADOPTION_Z_FLOOR × JK_SE` on the same `_jk_se` formula, so adopt and revert use the same z-floor and n-aware SE. Prevents the adopt → noise-dip → revert → re-propose oscillation that a fixed absolute floor would invite.
 2. **BiasDetector** — per-indicator/side/edge-bucket/regime/time-of-window/phase/flip stats + edge-realization quartiles + execution quality. Runs on `opt_outcomes` only (excludes holdout) so the analysis dict fed to the evolver has no leakage from the last 7 days.
 3. **Calibrator (isotonic)** — see §2. Fit attempted every cycle; adopted only if bootstrap CI clears 0.
-4. **KS shift detection** — two-sample Kolmogorov-Smirnov between train (first 60%) and test (last 40%) on key features. Informational only — no veto, but Claude/local sees it in the analysis card.
-5. **SPRT aggregate** — diagnostic only ("is the live model still discriminating?"); not an adoption gate.
-6. **TAEvolver** — either `ClaudeRecommender` (calls Anthropic with the full analysis + directional table + structural-probe targets) or `LocalRecommender` (rule-based fallback) returns `{changes, manual_observations}`. The `claude_client` validator drops/reroutes manual-only params from `changes` → `manual_observations`. **Combined L6 weight changes are dropped if `Σ|w| × logit_scale` would breach the ±0.25 cap.**
-7. **WeightOptimizer** — per-param walk-forward backtest; gate decisions live here.
-8. **Deferred calibrator save** — happens only after `WeightOptimizer.save_config` commits. A crash before this line leaves new weights paired with the previous-session calibrator on disk: slightly mismatched but each is a valid, coherent artifact. Saving the calibrator first risked a brand-new calibrator paired with stale weights, which is the worse half.
+4. **TAEvolver** — either `ClaudeRecommender` (calls Anthropic with the full analysis + directional table + structural-probe targets) or `LocalRecommender` (rule-based fallback) returns `{changes, manual_observations}`. The `claude_client` validator drops/reroutes manual-only params from `changes` → `manual_observations`. **Combined L6 weight changes are dropped if `Σ|w| × logit_scale` would breach the ±0.25 cap.**
+5. **WeightOptimizer** — per-param walk-forward backtest; gate decisions live here.
+6. **Deferred calibrator save** — happens only after `WeightOptimizer.save_config` commits. A crash before this line leaves new weights paired with the previous-session calibrator on disk: slightly mismatched but each is a valid, coherent artifact. Saving the calibrator first risked a brand-new calibrator paired with stale weights, which is the worse half.
 
 ### Adoption gate (WeightOptimizer)
 
@@ -434,10 +432,14 @@ For each candidate change tested on the 4-fold walk-forward:
 
 ```
 n_candidate_trades ≥ MIN_CANDIDATE_TRADES (100)
-z = Δ_sharpe / JK_SE ≥ ADOPTION_Z_FLOOR (0.3)        # Newey-West autocorr-adjusted, data-adaptive lag
+z = Δ_sharpe / JK_SE ≥ ADOPTION_Z_FLOOR (0.3)        # lag-1 autocorr-adjusted
 ```
 
-`JK_SE = sqrt((1 + 0.5 × sharpe²) / n) × NW_factor`, with `NW_factor = sqrt(1 + 2 × Σ wₖ·ρₖ)` and Bartlett weights `wₖ = 1 − k/(L+1)`. Lag `L = max(1, floor(4 × (n/100)^(2/9)))` per Newey & West (1994) — scales naturally with sample size.
+`JK_SE = sqrt((1 + 0.5 × sharpe²) / n) × sqrt(max(1, 1 + 2·ρ₁))`. An earlier
+data-adaptive Newey-West correction over L≈4-5 lags was collapsed to lag-1
+only after the production gain_pct autocorrelogram showed lags 2–5 sitting
+inside the ±2/√n noise band at every meaningful sample size — summing them
+added estimator variance without removing bias.
 
 - **Soft abs floor.** `candidate_sharpe < min(0, baseline) − 0.05` is blocked — the loop can adopt a less-negative candidate during a regime shift (the recovery path), but not an outright collapse.
 - **Fold-consistency floor** — `min(fold_sharpes) ≥ −0.10`. Magnitude-aware: a single tiny dip is fine, a deep collapse rejects.
@@ -450,17 +452,17 @@ z = Δ_sharpe / JK_SE ≥ ADOPTION_Z_FLOOR (0.3)        # Newey-West autocorr-ad
   ```
   Candidate must clear `baseline_h + HOLDOUT_ADOPTION_MARGIN`. `pipeline_info["holdout_active"]` is stamped explicitly each cycle.
 
-### Interaction back-out
+### Combined-holdout interaction check
 
-When `≥2` changes adopt: run **one combined backtest** on the validation fold. Each individual change reaching this stage has already cleared per-change z-test, fold-consistency, soft-abs floor, regime-stratified veto, and holdout confirmation — every adoption rests on evidence the pipeline collected. The back-out therefore only fires when the **combined set is net-harmful vs baseline**, not when it is merely sub-additive:
+When `≥2` changes adopt: run **one combined backtest on the holdout pool** (same data the per-change holdout confirmation used; requires `≥ HOLDOUT_MIN_TRADES`). Each individual change reaching this stage has already cleared per-change z-test, fold-consistency, soft-abs floor, regime-stratified veto, and per-change holdout confirmation — but two changes that each pass alone can still interfere when combined (shared logit budget, joint clamps).
 
 ```
-harm_floor = -baseline_jk_se
-if combined_Δ < harm_floor and len(adopted_changes) ≥ 2:
-    drop weakest-z change, re-test
+margin = max(0.02, ADOPTION_Z_FLOOR × holdout_jk_se)
+if combined_holdout_sharpe < baseline_holdout_sharpe + margin:
+    back out the WHOLE batch
 ```
 
-A combined set with `combined_Δ ≥ harm_floor` keeps all changes. Sub-additivity is information for the next cycle's directional table, not a reason to discard individually-validated claims.
+No iteration. The per-change adoption gates have already done the directional filtering; the question here is purely "does the joint set survive on fresh data at the same z-floor used for per-change adoption?" If not, drop everything and let the next cycle re-propose individually with the directional table now reflecting this evidence.
 
 ### Crisis mode
 

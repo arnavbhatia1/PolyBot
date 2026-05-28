@@ -21,6 +21,11 @@ from polybot.agents.pipeline_analytics import (
     RECENCY_DECAY_PER_DAY,
     weighted_sharpe_from_returns as _weighted_sharpe,
 )
+from polybot.agents.weight_optimizer import (
+    ADOPTION_Z_FLOOR as _ADOPTION_Z_FLOOR,
+    MIN_CANDIDATE_TRADES as _MIN_REVERT_TRADES,
+    _jk_se as _jk_se_revert,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,18 +150,26 @@ class PipelineTracker:
                         review["prediction_hit"] = directional_hit
                         review["prediction_error"] = round(abs(actual_delta - float(run_pred)), 4)
                         review["predicted_delta"] = round(float(run_pred), 4)
-                    if len(rets) >= 100 and actual_sharpe < effective_baseline - 0.05:
-                        if not rec.get("rollback_recommended"):
-                            rec["rollback_recommended"] = True
-                            rec["rollback_reason"] = (
-                                f"7d Sharpe {actual_sharpe:.3f} trails baseline "
-                                f"{effective_baseline:.3f} (n={len(rets)})"
+                    # Symmetric with adoption: revert when actual_sharpe falls below
+                    # baseline by ≥ ADOPTION_Z_FLOOR × JK_SE on the same n. The fixed
+                    # -0.05 floor used previously could fire on a one-SE noise dip at
+                    # large n, creating adopt→noise→revert→re-propose oscillation.
+                    if len(rets) >= _MIN_REVERT_TRADES:
+                        _revert_se = _jk_se_revert(actual_sharpe, len(rets), rets)
+                        _revert_margin = _ADOPTION_Z_FLOOR * _revert_se
+                        if actual_sharpe < effective_baseline - _revert_margin:
+                            if not rec.get("rollback_recommended"):
+                                rec["rollback_recommended"] = True
+                                rec["rollback_reason"] = (
+                                    f"7d Sharpe {actual_sharpe:.3f} trails baseline "
+                                    f"{effective_baseline:.3f} by ≥ z={_ADOPTION_Z_FLOOR} × "
+                                    f"SE={_revert_se:.4f} (n={len(rets)})"
+                                )
+                            logger.warning(
+                                f"[ROLLBACK RECOMMENDED — 7d] {version}: Sharpe "
+                                f"{actual_sharpe:.3f} trails baseline {effective_baseline:.3f} "
+                                f"by ≥ {_revert_margin:.4f} (n={len(rets)}, SE={_revert_se:.4f})"
                             )
-                        logger.warning(
-                            f"[ROLLBACK RECOMMENDED — 7d] {version}: Sharpe "
-                            f"{actual_sharpe:.3f} trails baseline {effective_baseline:.3f} "
-                            f"(n={len(rets)})"
-                        )
 
                 rec[key] = review
                 changed = True

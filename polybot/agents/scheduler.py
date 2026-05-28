@@ -1,11 +1,12 @@
 """Orchestrates the nightly learning pipeline.
 
-Runs BiasDetector, Isotonic calibration (with recency-weighted MLE), distribution shift
-detection, SPRT aggregation, TA Evolver (Claude), and WeightOptimizer in sequence.
-Adopts parameter changes only when they pass: z = Δ_sharpe / JK_SE >= 0.3 (autocorr
-adjusted, no static abs floor), n >= 100 candidate trades, regime-stratified Sharpe
-check. After ≥2 adoptions: combined backtest interaction check (backs out weakest
-if combined Δ < 0.7 × sum of individual Δ).
+Runs BiasDetector, Isotonic calibration (with recency-weighted MLE), TA Evolver,
+and WeightOptimizer in sequence. Adopts parameter changes only when they pass:
+z = Δ_sharpe / JK_SE >= 0.3 (autocorr adjusted), n >= 100 candidate trades,
+fold-consistency floor, regime-stratified Sharpe check, and last-7-day holdout
+confirmation. After ≥2 adoptions: one combined backtest on the holdout pool —
+if the joint set fails baseline + z-floor × holdout_SE, the whole batch is
+backed out (re-evaluated individually next cycle).
 """
 from __future__ import annotations
 
@@ -1437,125 +1438,93 @@ class AgentScheduler:
             info["reason"] = "no changes passed adoption gates"
             return info
 
-        # --- Pairwise interaction check ---
-        # If ≥2 changes were adopted, run ONE combined backtest on the validation fold.
-        # If combined Δ < sum(individual Δ) × 0.7, the changes interact and one is riding
-        # on the other's signal. Back out the lowest-conviction change (smallest z-score).
-        if len(adopted_changes) >= 2:
+        # --- Combined holdout interaction check ---
+        # When ≥2 changes were independently adopted, each cleared its per-change
+        # holdout confirmation against the last HOLDOUT_DAYS. But two changes that
+        # each look good in isolation can interfere when applied together (shared
+        # logit budget, joint clamps, ratchet effects). Run ONE combined backtest
+        # against the holdout pool: if the joint set fails to clear baseline by
+        # the same z-floor margin used for per-change adoption, back out the
+        # whole batch and let the next cycle re-propose individually with the
+        # directional table updated. No iteration — the per-change adoption gates
+        # have already done the per-direction filtering; the question here is
+        # purely "does the combined set survive on fresh data?"
+        if len(adopted_changes) >= 2 and holdout_outcomes and len(holdout_outcomes) >= HOLDOUT_MIN_TRADES:
             try:
-                # Iterative interaction back-out: keep removing the weakest
-                # adopted change until the combined Sharpe delta clears 70% of
-                # the sum of remaining individual deltas. The original logic
-                # backed out only the single weakest change once, which left
-                # multi-way interactions among the survivors untreated and
-                # silently degraded combined performance.
-                MAX_BACKOUT_ITERATIONS = len(adopted_changes)  # at most n-1 useful passes
-                backed_out_params: list[str] = []
-                combined_sharpe = current_sharpe
-                combined_delta = 0.0
-                sum_individual_delta = 0.0
+                from polybot.config.param_registry import TUNABLE_NAMES as _TN
+                from polybot.agents.weight_optimizer import _jk_se as _h_jk_se, ADOPTION_Z_FLOOR as _ZF
 
-                for iteration in range(MAX_BACKOUT_ITERATIONS):
-                    combined_rec: dict[str, Any] = {}
-                    sum_individual_delta = 0.0
-                    from polybot.config.param_registry import TUNABLE_NAMES as _TN
-                    for c in adopted_changes:
-                        param = c["param"]
-                        value = c["value"]
-                        if param == "weights":
-                            combined_rec["recommended_weights"] = value
-                        elif param in _TN:
-                            combined_rec[f"recommended_{param}"] = value
-                        ci = next((x for x in info["per_change"]
-                                   if x.get("param") == param and x.get("decision") == "adopted"), {})
-                        sum_individual_delta += (ci.get("candidate_sharpe", current_sharpe) - current_sharpe)
+                combined_rec: dict[str, Any] = {}
+                for c in adopted_changes:
+                    param = c["param"]
+                    value = c["value"]
+                    if param == "weights":
+                        combined_rec["recommended_weights"] = value
+                    elif param in _TN:
+                        combined_rec[f"recommended_{param}"] = value
 
-                    cfg_combined = self._config_for_helper(combined_rec)
-                    calibrator = self.signal_engine.calibrator if self.signal_engine else None
-                    # Use validation fold only — same data the per-change z-tests used.
-                    # Using all_outcomes here inflated combined Sharpe (includes training data)
-                    # making the 0.7 threshold almost never trigger.
-                    _val_fold = all_outcomes[int(len(all_outcomes) * 0.60):]
-                    combined_returns, combined_weights = self._kelly_bankroll_returns(
-                        outcomes=_val_fold,
-                        recommended_weights=cfg_combined["weights"],
-                        momentum_weight=cfg_combined["momentum_weight"],
-                        atr_sigma_ratio=cfg_combined["atr_sigma_ratio"],
-                        student_t_df=cfg_combined["student_t_df"],
-                        min_edge=cfg_combined["min_edge"],
-                        calibrator=calibrator,
-                        kelly_fraction=cfg_combined["kelly_fraction"],
-                        min_kelly=cfg_combined["min_kelly"],
-                        min_prob=cfg_combined["min_model_probability"],
-                        regime_weight=cfg_combined["regime_weight"],
-                        flow_weight=cfg_combined["flow_weight"],
-                        spot_flow_weight=cfg_combined["spot_flow_weight"],
-                        liquidation_weight=cfg_combined["liquidation_weight"],
-                        prev_margin_weight=cfg_combined["prev_margin_weight"],
-                        logit_scale=cfg_combined["logit_scale"],
-                        min_atr=cfg_combined["min_atr"],
-                        regime_momentum_threshold=cfg_combined["regime_momentum_threshold"],
-                        final_logit_clamp=cfg_combined["final_logit_clamp"],
-                        l5_regime_damp_cap=cfg_combined["l5_regime_damp_cap"],
-                        atr_regime_shift_threshold=cfg_combined["atr_regime_shift_threshold"],
-                        derived_weights=cfg_combined["derived_weights"],
-                    )
-                    combined_sharpe = _weighted_sharpe(combined_returns, combined_weights) if combined_returns else 0.0
-                    combined_delta = combined_sharpe - current_sharpe
+                cfg_combined = self._config_for_helper(combined_rec)
+                calibrator = self.signal_engine.calibrator if self.signal_engine else None
+                base_h_rets, base_h_w = self._backtest_recommendations({}, holdout_outcomes)
+                combined_rets, combined_w = self._kelly_bankroll_returns(
+                    outcomes=holdout_outcomes,
+                    recommended_weights=cfg_combined["weights"],
+                    momentum_weight=cfg_combined["momentum_weight"],
+                    atr_sigma_ratio=cfg_combined["atr_sigma_ratio"],
+                    student_t_df=cfg_combined["student_t_df"],
+                    min_edge=cfg_combined["min_edge"],
+                    calibrator=calibrator,
+                    kelly_fraction=cfg_combined["kelly_fraction"],
+                    min_kelly=cfg_combined["min_kelly"],
+                    min_prob=cfg_combined["min_model_probability"],
+                    regime_weight=cfg_combined["regime_weight"],
+                    flow_weight=cfg_combined["flow_weight"],
+                    spot_flow_weight=cfg_combined["spot_flow_weight"],
+                    liquidation_weight=cfg_combined["liquidation_weight"],
+                    prev_margin_weight=cfg_combined["prev_margin_weight"],
+                    logit_scale=cfg_combined["logit_scale"],
+                    min_atr=cfg_combined["min_atr"],
+                    regime_momentum_threshold=cfg_combined["regime_momentum_threshold"],
+                    final_logit_clamp=cfg_combined["final_logit_clamp"],
+                    l5_regime_damp_cap=cfg_combined["l5_regime_damp_cap"],
+                    atr_regime_shift_threshold=cfg_combined["atr_regime_shift_threshold"],
+                    derived_weights=cfg_combined["derived_weights"],
+                )
+                base_h_sharpe = _weighted_sharpe(base_h_rets, base_h_w) if base_h_rets else 0.0
+                combined_h_sharpe = _weighted_sharpe(combined_rets, combined_w) if combined_rets else 0.0
+                combined_delta = combined_h_sharpe - base_h_sharpe
+                holdout_se = _h_jk_se(base_h_sharpe, len(base_h_rets), base_h_rets) if base_h_rets else 0.0
+                combined_margin = max(0.02, _ZF * holdout_se)
 
-                    # Back out only when the combined set is net-harmful vs baseline.
-                    # Every individual change here already cleared its z-test, fold-
-                    # consistency, soft-abs floor, regime veto, and holdout
-                    # confirmation — dropping such a claim on sub-additivity alone
-                    # rejects evidence the pipeline collected to use. A combined
-                    # set that is still net-positive (even if sub-additive) is kept.
-                    _harm_floor = -float(self._baseline_jk_se or 0.0)
+                info["combined_holdout_baseline_sharpe"] = round(base_h_sharpe, 4)
+                info["combined_holdout_candidate_sharpe"] = round(combined_h_sharpe, 4)
+                info["combined_holdout_delta"] = round(combined_delta, 4)
+                info["combined_holdout_margin"] = round(combined_margin, 4)
 
-                    if not info.get("combined_sharpe"):
-                        info["combined_sharpe"] = round(combined_sharpe, 4)
-                        info["combined_delta"] = round(combined_delta, 4)
-                        info["sum_individual_delta"] = round(sum_individual_delta, 4)
-                        info["backout_harm_floor"] = round(_harm_floor, 4)
-
-                    if not (combined_delta < _harm_floor and len(adopted_changes) >= 2):
-                        break
-
-                    z_scores = {
-                        c["param"]: float(c.get("z_score", 0.0))
-                        for c in info["per_change"]
-                        if c.get("decision") == "adopted" and c["param"] in {
-                            cc["param"] for cc in adopted_changes
-                        }
-                    }
-                    weakest_param = min(z_scores, key=z_scores.get) if z_scores else None
-                    if not weakest_param:
-                        break
-
-                    adopted_changes = [c for c in adopted_changes if c["param"] != weakest_param]
-                    backed_out_params.append(weakest_param)
+                if combined_h_sharpe < base_h_sharpe + combined_margin:
+                    # Whole-batch back-out. Each per-change gate cleared on its own
+                    # data; the combined set failed on the same holdout. Re-evaluate
+                    # next cycle once the directional table reflects this evidence.
+                    backed_out_params = [c["param"] for c in adopted_changes]
                     for c in info["per_change"]:
-                        if c.get("param") == weakest_param and c.get("decision") == "adopted":
+                        if c.get("decision") == "adopted":
                             c["decision"] = "backed_out"
                             c["reason"] = (
-                                f"interaction back-out pass {iteration + 1}: "
-                                f"combined d={combined_delta:+.3f} < harm floor {_harm_floor:+.3f} — "
-                                f"weakest remaining change (z={z_scores[weakest_param]:.2f}) removed"
+                                f"combined-holdout back-out: joint set Sharpe "
+                                f"{combined_h_sharpe:+.3f} < baseline {base_h_sharpe:+.3f} + "
+                                f"margin {combined_margin:.3f} on {len(combined_rets)} holdout trades"
                             )
-                    logger.info(
-                        f"Interaction back-out pass {iteration + 1}: combined d={combined_delta:+.3f} "
-                        f"vs sum_individual d={sum_individual_delta:+.3f}. "
-                        f"Removing {weakest_param} (z={z_scores.get(weakest_param, 0):.2f})"
-                    )
-
-                if backed_out_params:
+                    adopted_changes = []
                     info["interaction_detected"] = True
                     info["backed_out_params"] = backed_out_params
-                    info["backed_out_param"] = backed_out_params[0]
-                    info["final_combined_sharpe"] = round(combined_sharpe, 4)
-                    info["final_combined_delta"] = round(combined_delta, 4)
+                    logger.info(
+                        f"Combined-holdout back-out: combined {combined_h_sharpe:+.3f} < "
+                        f"baseline {base_h_sharpe:+.3f} + {combined_margin:.3f}. "
+                        f"Dropped: {backed_out_params}"
+                    )
 
             except Exception as e:
-                logger.debug(f"Combined backtest failed (non-critical): {e}")
+                logger.debug(f"Combined holdout backtest failed (non-critical): {e}")
 
         if not adopted_changes:
             info["decision"] = "no_change"
@@ -2174,31 +2143,8 @@ class AgentScheduler:
         if cal_info.get("meta_warning"):
             analysis["cal_meta_warning"] = cal_info["meta_warning"]
 
-        # KS-shift detection between the optimizer's train (first 60%) and test
-        # (last 40%) slices of opt_outcomes. Surfaced into the evolver context
-        # so Claude can see when the test window's feature distribution looks
-        # different from the train window's. Informational only — no veto/gate.
-        from polybot.agents.pipeline_analytics import (
-            aggregate_sprt_evidence, detect_distribution_shifts, format_trends,
-        )
-        _ks_split = max(1, int(len(opt_outcomes) * 0.60))
-        _ks_train = opt_outcomes[:_ks_split]
-        _ks_test = opt_outcomes[_ks_split:]
-        try:
-            distribution_shifts = detect_distribution_shifts(_ks_train, _ks_test)
-        except Exception as _e:
-            logger.debug(f"distribution_shifts skipped: {_e}")
-            distribution_shifts = {}
-        if distribution_shifts:
-            analysis["distribution_shifts"] = distribution_shifts
-            pipeline_info["distribution_shifts"] = distribution_shifts
-
-        # SPRT aggregate evidence — feeds evolver analysis, so opt_outcomes only.
-        sprt_agg = aggregate_sprt_evidence(opt_outcomes, recent_n=50)
-        analysis["sprt_aggregate"] = sprt_agg
-        pipeline_info["sprt"] = sprt_agg
-
         # Trend buckets feed evolver analysis — opt_outcomes only.
+        from polybot.agents.pipeline_analytics import format_trends
         trends_str = format_trends(opt_outcomes, n_buckets=5, min_per_bucket=50)
         if trends_str:
             analysis["trends"] = trends_str
@@ -2218,17 +2164,9 @@ class AgentScheduler:
                 "note": "Most recent 100 trades (all_outcomes tail) — use to detect active regime shifts",
             }
 
-        # Emit analysis summary now that bias/calibration/shifts are all done
+        # Emit analysis summary now that bias/calibration are done
         _cf_acc = cf_info.get("accuracy", 0) if cf_info else None
         _cf_total = cf_info.get("total", 0) if cf_info else 0
-        _shifts_dict = pipeline_info.get("distribution_shifts", {}) or {}
-        # Filter to features where the KS test rejects identical-distribution at
-        # p<0.05 — otherwise the display would list every feature with ≥30
-        # samples per side every night, drowning the actual regime-break signal.
-        _shifts = [
-            name for name, info in _shifts_dict.items()
-            if isinstance(info, dict) and info.get("p_value", 1.0) < 0.05
-        ]
         _gate_skips = pipeline_info.get("gate_total_skips", 0)
         _real_trades = [o for o in all_outcomes if not o.get("is_ghost")]
         _res_acc = (sum(1 for o in _real_trades if o.get("correct")) / len(_real_trades)) if _real_trades else None
@@ -2237,16 +2175,14 @@ class AgentScheduler:
             _analysis_parts.append(f"resolution accuracy {_res_acc:.0%}")
         if _cf_total:
             _analysis_parts.append(f"scalp accuracy {_cf_acc:.0%} on {_cf_total:,}" if _cf_acc is not None else f"{_cf_total:,} scalps tracked")
-        if _shifts:
-            _analysis_parts.append(f"market shifts: {', '.join(_shifts)}")
         if _gate_skips:
             _analysis_parts.append(f"{_gate_skips:,} gate skips")
         logger.info(f"  Analysis done" + (f"  |  {' | '.join(_analysis_parts)}" if _analysis_parts else ""))
 
         # Gate: need at least 200 trades before running TAEvolver and WeightOptimizer.
         # opt_outcomes/holdout_outcomes were already split at the top of this
-        # method so bias_detector + SPRT + execution_quality all saw a clean
-        # opt pool. Here we just consume that split.
+        # method so bias_detector + execution_quality all saw a clean opt pool.
+        # Here we just consume that split.
         MIN_TRADES_FOR_LEARNING = 200
         weight_info: dict[str, Any] = {"decision": "skipped"}
         if len(all_outcomes) < MIN_TRADES_FOR_LEARNING:

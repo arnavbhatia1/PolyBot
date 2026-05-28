@@ -162,28 +162,12 @@ def _build_aux_signals(coinbase_feed: Any, trades_feed: Any, depth_feed: Any,
     never 0.0, which would collide with a legitimate zero reading.
     """
     cb_fresh = coinbase_feed is not None and coinbase_feed.state.age_seconds < _AUX_FRESH_S_COINBASE
-    bt_acc = trades_feed.accumulator if trades_feed else None
-    bt_fresh = bt_acc is not None and bt_acc.latest_age_s < _AUX_FRESH_S_TRADES
-    dp_fresh = depth_feed is not None and depth_feed.age_s < _AUX_FRESH_S_DEPTH
-
-    cb_price = coinbase_feed.state.price if cb_fresh else None
-    bn_price = bt_acc.latest_price if bt_fresh else None
-    gap = (cb_price - bn_price) if (cb_price and bn_price) else None
 
     cb_cvd = coinbase_feed.get_cvd(60.0) if cb_fresh else None
     if cb_fresh:
         cb_taker, cb_taker_n = coinbase_feed.get_taker_ratio(60.0)
     else:
         cb_taker, cb_taker_n = None, 0
-
-    # fast_realized_vol needs at least one 1s sample to be meaningful.
-    fast_rv = (
-        binance_feed.fast_realized_vol(60.0)
-        if binance_feed is not None and len(binance_feed.fast_closes) >= 3
-        else None
-    )
-
-    imbalance = depth_feed.get_imbalance(5) if dp_fresh else None
 
     # Warm (WS connected ≥60s) → emit observed zeros; cold → None.
     _fo_warm = (
@@ -200,12 +184,9 @@ def _build_aux_signals(coinbase_feed: Any, trades_feed: Any, depth_feed: Any,
         return None if v is None else round(v, ndigits)
 
     return {
-        "binance_book_imbalance_5": _r(imbalance, 4),
-        "cross_venue_gap": _r(gap, 2),
         "coinbase_cvd_60s": _r(cb_cvd, 4),
         "coinbase_taker_60s": _r(cb_taker, 4),
         "coinbase_taker_n": cb_taker_n,
-        "fast_realized_vol_60s": _r(fast_rv, 6),
         "binance_liq_long_usd_min": _r(bn_liq_long, 0),
         "binance_liq_short_usd_min": _r(bn_liq_short, 0),
     }
@@ -1255,7 +1236,7 @@ async def _evaluate_signal_and_enter(
         # "feed cold / stale", never 0.0.
         "depth_usd_top20": depth_feed.get_depth_usd() if depth_feed else 0,
         **aux_signals,
-        # SPRT diagnostic state (consumed by pipeline_analytics.aggregate_sprt_evidence)
+        # SPRT diagnostic state (consumed by BiasDetector's by_sprt_confidence bucket).
         "sprt_confidence": _sprt.get_confidence() if _sprt else 0,
         "sprt_status": _sprt.get_status() if _sprt else "N/A",
         # Adverse-selection rolling state (gate diagnostic). Field name reads as

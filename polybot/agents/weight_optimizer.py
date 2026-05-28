@@ -15,52 +15,39 @@ MIN_CANDIDATE_TRADES = 100
 ADOPTION_Z_FLOOR = 0.3
 
 
-def _lag_autocorr(values: list[float], lag: int) -> float:
-    """k-lag autocorrelation of a returns series. Returns 0 when undefined."""
-    if len(values) <= lag + 1:
-        return 0.0
+def _lag1_autocorr(values: list[float]) -> float:
+    """Lag-1 autocorrelation of a returns series. Returns 0 when undefined."""
     n = len(values)
+    if n < 3:
+        return 0.0
     mean = sum(values) / n
-    num = sum((values[i] - mean) * (values[i - lag] - mean) for i in range(lag, n))
+    num = sum((values[i] - mean) * (values[i - 1] - mean) for i in range(1, n))
     den = sum((v - mean) ** 2 for v in values)
     return num / den if den > 0 else 0.0
 
 
-def _lag1_autocorr(values: list[float]) -> float:
-    return _lag_autocorr(values, 1)
-
-
-def _newey_west_factor(returns: list[float]) -> float:
-    """sqrt(1 + 2·Σ wₖ·ρₖ) with Bartlett weights wₖ = 1 − k/(L+1). Floors at 1 (IID baseline).
-
-    Data-adaptive lag selection per Newey & West (1994): L = floor(4·(n/100)^(2/9)).
-    Scales naturally with sample size — small N gets short lag (low variance on
-    the autocorr estimate); large N gets longer lag (catches slow-decaying
-    autocorrelation in regime-clustered trade returns).
-    """
-    n = len(returns)
-    if n < 4:
-        return 1.0
-    nw_lag = max(1, int(4 * (n / 100.0) ** (2.0 / 9.0)))
-    eff_lag = max(1, min(nw_lag, n - 2))
-    weighted_sum = 0.0
-    for k in range(1, eff_lag + 1):
-        rho = _lag_autocorr(returns, k)
-        bartlett = 1.0 - k / (eff_lag + 1.0)
-        weighted_sum += bartlett * rho
-    return math.sqrt(max(1.0, 1.0 + 2.0 * weighted_sum))
-
-
 def _jk_se(sharpe: float, n_trades: int, returns: list[float] | None = None) -> float:
-    """Jobson-Korkie SE for per-trade Sharpe, Newey-West autocorr-adjusted with
-    data-adaptive lag (L = floor(4·(n/100)^(2/9)), per Newey & West 1994).
-    See `_newey_west_factor` for the lag-selection rationale.
+    """Jobson-Korkie SE for per-trade Sharpe, inflated by the lag-1
+    autocorrelation of realized returns when available.
+
+    Earlier versions ran a data-adaptive Newey-West correction with Bartlett
+    weights over L≈4-5 lags. Empirically the higher-order lags (k≥2) sat inside
+    the ±2/√n noise band at production sample sizes, so summing them added
+    estimator variance without removing bias. Collapsed to lag-1 only:
+    `se × sqrt(max(1, 1 + 2·ρ₁))`. Floor at 1 keeps the correction from
+    shrinking SE when ρ₁ < 0 (an artifact of the underlying short-window
+    estimator, not a real anti-autocorrelation signal we'd want to credit).
+
+    Two scheduler-internal sites (`_precompute_baseline`, `_run_weight_optimizer`)
+    compute the same SE inline using `_lag1_autocorr` directly — three call
+    sites, one mathematical regime.
     """
     if n_trades < 2:
         return 0.0
     se = math.sqrt((1.0 + 0.5 * sharpe ** 2) / max(n_trades, 1))
     if returns and len(returns) >= 3:
-        se *= _newey_west_factor(returns)
+        rho1 = _lag1_autocorr(returns)
+        se *= math.sqrt(max(1.0, 1.0 + 2.0 * rho1))
     return se
 
 

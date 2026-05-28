@@ -854,18 +854,6 @@ def _section_time_weighted(ana: dict[str, Any]) -> str:
     )
 
 
-def _section_distribution_shifts(ana: dict[str, Any]) -> str:
-    # Distribution shift warnings
-    shifts = ana.get("distribution_shifts", {})
-    if not shifts:
-        return ""
-    lines = ["## Distribution Shift Detected (recent vs historical)"]
-    for feat, info in shifts.items():
-        lines.append(f"- **{feat}**: KS={info['statistic']:.3f} p={info['p_value']:.3f} "
-                    f"(mean {info.get('hist_mean', 0):.3f} -> {info.get('recent_mean', 0):.3f})")
-    return "\n".join(lines)
-
-
 def _section_execution_quality(ana: dict[str, Any]) -> str:
     # Execution quality (fill slippage, realized edge, breakdown by spread/time)
     eq = ana.get("execution_quality", {})
@@ -977,23 +965,18 @@ def _section_current_regime(ana: dict[str, Any]) -> str:
 
 
 def _section_sprt(ana: dict[str, Any]) -> str:
-    sprt_agg = ana.get("sprt_aggregate", {})
     by_conf = ana.get("by_sprt_confidence", {})
-    if not sprt_agg and not by_conf:
+    if not by_conf:
         return ""
     lines = [
-        f"## SPRT Entry Gate (last 50 trades)",
-        f"State: {sprt_agg.get('state', '?')} | "
-        f"ENTER fraction: {sprt_agg.get('enter_pct', 0):.0%} | "
-        f"Avg confidence: {sprt_agg.get('avg_confidence', 0):.2f}",
+        "## SPRT Entry Gate",
         "SPRT gates entries: SKIP blocks; confidence < min_confidence blocks after 2+ obs.",
+        "WR by SPRT confidence at entry (does high-confidence predict wins?):",
     ]
-    if by_conf:
-        lines.append("WR by SPRT confidence at entry (does high-confidence predict wins?):")
-        for bucket, stats in sorted(by_conf.items()):
-            lines.append(
-                f"  {bucket:>8}: n={stats['n']:>4} WR={stats['win_rate']:.0%} "
-                f"Sharpe={stats['sharpe']:+.3f}")
+    for bucket, stats in sorted(by_conf.items()):
+        lines.append(
+            f"  {bucket:>8}: n={stats['n']:>4} WR={stats['win_rate']:.0%} "
+            f"Sharpe={stats['sharpe']:+.3f}")
     return "\n".join(lines)
 
 
@@ -1219,7 +1202,6 @@ def _format_strategy_context(context: dict[str, Any]) -> str:
         _section_flip(ana),
         _section_edge_realization(ana),
         _section_time_weighted(ana),
-        _section_distribution_shifts(ana),
         _section_execution_quality(ana),
         _section_gate_stats(ana),
         _section_ghost(ana),
