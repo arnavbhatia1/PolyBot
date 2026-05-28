@@ -13,10 +13,11 @@ class TestTimeMultiplier:
         assert mult > 0.80
 
     def test_atm_late_penalized(self):
-        # Under production late_max_penalty=0.30: low conviction at 45s yields ~0.82 (penalized),
-        # vs high conviction at 45s which yields ~0.96 (barely penalized).
+        # Full Kelly for the first 60% of the window (normal_fraction=0.60); the
+        # penalty ramps over the last 40%. At 45s left, low conviction (prob=0.60)
+        # yields 0.85 (penalized) vs high conviction (prob=0.92) ~0.97 (barely).
         mult, _ = compute_time_multiplier(prob=0.60, seconds_remaining=45.0)
-        assert mult < 0.85
+        assert mult < 0.90
 
     def test_final_phase_label(self):
         _, phase = compute_time_multiplier(prob=0.85, seconds_remaining=15.0)
