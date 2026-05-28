@@ -106,13 +106,13 @@ binary contracts on Polymarket. Contracts resolve to $1 / $0 based on Chainlink 
 - weights (RSI/MACD/Stoch/OBV/VWAP dict, sum=1.0, each ≥0.05)
 - exit_edge_threshold (-0.10 to -0.03; TIGHT range — directly changes realized P&L,
   more negative = hold longer, less negative = exit faster)
-- normal_fraction (0.40-0.80, fraction of window with full Kelly)
-- late_max_penalty (0.10-0.60, max Kelly cut at end of window)
-- flip_edge_premium (0.005-0.05, extra edge required to re-enter after a scalp)
 
 ## Manual-Only Params (route to `manual_observations`, never `changes`)
 - max_edge, adverse_selection_threshold
 - loss_cut_fraction, loss_cut_time_s (stop-loss level and time gate — risk policy)
+- deep_loss_hold_threshold (hold-vs-scalp branch — backtest can't re-simulate the hold branch)
+- normal_fraction, late_max_penalty (entry-timing Kelly envelope — no backtestable proxy)
+- flip_edge_premium (flip re-entry hurdle — no backtestable proxy)
 - trading_start/end_hour_et/minute
 - max_concurrent_positions, max_bankroll_deployed
 - circuit_breaker.floor_pct, circuit_breaker.min_multiplier
@@ -155,13 +155,16 @@ Trigger mappings (manual-only — route to `manual_observations`):
 - ghost_analysis.adverse_rate_30s with high pct_profitable + positive sim_pnl →
   adverse_selection_threshold HIGHER (gate over-filters). Negative sim_pnl → keep tight.
 
-Note: exit_edge_threshold, normal_fraction, late_max_penalty, flip_edge_premium are now
-pipeline-tunable — propose them in `changes` with predicted_delta_sharpe_7d, backed by
-counterfactual_analysis / time_patterns / flip outcomes as you would any other tunable.
+Note: exit_edge_threshold is the only exit/timing knob that is pipeline-tunable — it has a
+counterfactual backtest path, so propose it in `changes` with predicted_delta_sharpe_7d backed
+by counterfactual_analysis. normal_fraction, late_max_penalty, flip_edge_premium, and
+deep_loss_hold_threshold are MANUAL-ONLY — the backtest applies raw Kelly sizing + entry gates
+only and models none of the time-of-window multiplier, the flip hurdle, or the hold branch, so
+a change would never move it. Route them to `manual_observations`.
 
 ## Newly pipeline-tunable structural constants
-regime_momentum_threshold, final_logit_clamp, deep_loss_hold_threshold,
-l5_regime_damp_cap, atr_regime_shift_threshold. These shape the signal stack; small
+regime_momentum_threshold, final_logit_clamp, l5_regime_damp_cap,
+atr_regime_shift_threshold. These shape the signal stack; small
 steps only. Each has a tight range — see CLAMP_RANGES in context.
 
 ## Derived feature weights (L6)
@@ -540,13 +543,13 @@ def _section_config(cfg: dict[str, Any]) -> str:
         f"# Entry filters (informed flow / stale price)\n"
         f"adverse_selection_threshold: {cfg.get('adverse_selection_threshold', _d('adverse_selection_threshold'))}\n"
         f"max_edge: {cfg.get('max_edge', _d('max_edge'))}\n"
-        f"# Entry-timing Kelly envelope\n"
+        f"# Entry-timing Kelly envelope (manual-only)\n"
         f"normal_fraction: {cfg.get('normal_fraction', _d('normal_fraction'))}\n"
         f"late_max_penalty: {cfg.get('late_max_penalty', _d('late_max_penalty'))}\n"
         f"# Schedule\n"
         f"trading_start_hour_et: {cfg.get('trading_start_hour_et', 0)}, trading_start_minute: {cfg.get('trading_start_minute', 1)}\n"
         f"trading_end_hour_et: {cfg.get('trading_end_hour_et', 22)}, trading_end_minute: {cfg.get('trading_end_minute', 30)}\n"
-        f"# Flip behavior\n"
+        f"# Flip behavior (manual-only)\n"
         f"flip_edge_premium: {cfg.get('flip_edge_premium', _d('flip_edge_premium'))}\n"
         f"# Risk caps (operator-owned policy)\n"
         f"max_concurrent_positions: {cfg.get('max_concurrent_positions', _d('max_concurrent_positions'))}, max_bankroll_deployed: {cfg.get('max_bankroll_deployed', _d('max_bankroll_deployed'))}\n"

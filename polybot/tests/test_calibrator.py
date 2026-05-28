@@ -32,6 +32,30 @@ def test_calibrate_clips_inputs():
     assert 0.0 <= cal.calibrate(1.0) <= 1.0
 
 
+def test_calibrate_np_interp_matches_sklearn_predict(tmp_path):
+    """C1: the np.interp fast path is numerically identical to sklearn's
+    IsotonicRegression.predict across the full input range — including the
+    out-of-knot extremes and the EPS-clipped endpoints. Guards the latency
+    refactor from ever drifting the calibrated probability (frozen-spec behavior).
+    """
+    cal = IsotonicCalibrator()
+    p = tmp_path / "iso.json"
+    p.write_text(json.dumps({
+        "type": "isotonic",
+        "x_thresholds": [0.1, 0.3, 0.5, 0.7, 0.9],
+        "y_thresholds": [0.02, 0.25, 0.55, 0.80, 0.98],
+        "n_samples": 300,
+    }))
+    cal.load(p)
+    assert not cal.is_identity
+    eps = 1e-6
+    for raw in np.linspace(0.0, 1.0, 201):
+        clipped = max(eps, min(1.0 - eps, float(raw)))
+        got = cal.calibrate(float(raw))
+        ref = float(cal._iso.predict(np.array([clipped]))[0])
+        assert abs(got - ref) < 1e-12, f"raw={raw}: np.interp={got} != sklearn={ref}"
+
+
 # ---------------------------------------------------------------------------
 # Min-samples gate
 # ---------------------------------------------------------------------------

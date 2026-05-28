@@ -385,7 +385,7 @@ Everything below is the surrounding scaffolding — telemetry, the nightly pipel
 - Entry-time facts: `btc_price`, `strike_price`, `seconds_remaining`, `market_price_up`, `market_price_down`, `closes_tail` (last 2 closes, so the L6 backtest can reconstruct `last_return`).
 - Probabilities: `model_probability` (post-calibrator), `model_probability_raw` (pre-calibrator — stored separately so re-fits don't compound).
 - Composite signals: `flow_score`, `spot_flow_signal`, `liquidation_pressure`, `regime_autocorr`, `regime_direction`, `prev_resolution_margin`.
-- Microstructure aux: `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`, `binance_liq_long_usd_min`, `binance_liq_short_usd_min`. **Every field is `None` when the source feed is missing/stale**, never `0.0` — so the pipeline can distinguish "feed cold" from "real zero."
+- Microstructure aux: `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`, `binance_liq_long_usd_min`, `binance_liq_short_usd_min`. **Every signal field (`coinbase_cvd_60s`, `coinbase_taker_60s`, `binance_liq_long_usd_min`, `binance_liq_short_usd_min`) is `None` when the source feed is missing/stale**, never `0.0` — so the pipeline can distinguish "feed cold" from "real zero." `coinbase_taker_n` is an observation **count**, not a signal: it is `0` (not `None`) when the feed is cold, while its paired `coinbase_taker_60s` is `None`, so the sole consumer (which requires `n ≥ 20`) contributes nothing either way.
 - SPRT state: `sprt_confidence`, `sprt_status`.
 - Sizing audit: `adverse_rate_at_30s`, **`adverse_kelly_mult`** (the actual Kelly multiplier applied at sizing — enables per-bucket retrospective Sharpe analysis), `entry_phase`, `flip_count`, `is_flip`.
 
@@ -416,16 +416,17 @@ Runs at 23:45 ET (via `run_polybot.ps1`). Five steps; calibrator save is deferre
 - **7-day holdout** — the last 7 days are excluded from all folds AND from the evolver's context. The calibrator's fit pool sits in a **separate** 7-day window immediately before the holdout (days `[HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS]` back), so the optimizer's holdout-confirmation gate evaluates candidates on trades the calibrator has never seen.
 - **Realized fills only** — `gain_pct = pnl / size` from closed-trade outcomes, where `pnl` already nets actual fee and actual fill price. No mid-price replay; candidate strategies inherit the same slippage cost any live trade paid.
 - **Recency weighting** — `0.94^days_ago` (~11-day half-life) applied inside the window cutoff. Microstructure-trade edge decays in days, not weeks.
+- **Backtest L1 ATR-floor fidelity (approximate).** Live advances the rolling-20 / long-term-200 ATR buffers **per decision tick** (entry + every hold eval); the backtest holds one stored snapshot per trade, so `_kelly_bankroll_returns` advances a local ATR buffer **once per stored trade** (entry-only) when recomputing the dynamic L1 floor. `min_atr` and `atr_regime_shift_threshold` stay backtest-evaluable, and the approximation largely cancels in the baseline-vs-candidate delta (both use the same buffer; the dynamic floor rarely binds vs the static `min_atr`) — but absolute floor fidelity drifts during vol-regime transitions and on regime-bucketed subsets. (L6 features and the L3b/L3e `regime_vol_factor` instead read the faithfully-stamped `atr_rolling_20` / `atr_long_term_mean` from `trade_context`.)
 
 ### Calibration window
 
-`IsotonicCalibrator.fit` operates on its own 7-day pool sitting immediately before the holdout (days `[HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS]` back; default `min_samples=150`; train split must be ≥75 to fit). Disjoint from the holdout window so the optimizer's holdout-confirmation gate is genuinely OOS for the calibrator. See §2 for the bootstrap-CI gate.
+`IsotonicCalibrator.fit` operates on its own 7-day pool sitting immediately before the holdout (days `[HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS]` back), disjoint from the holdout window so the optimizer's holdout-confirmation gate is genuinely OOS for the calibrator. The pool must hold **≥125 trades**; it splits 60/40 into `cal_train` / `cal_val`. `fit` is called with **`min_samples=75`** (overriding the calibrator class default of 150), so `cal_train` must be **≥75** to fit, and the Kelly-Sharpe sizing gate ((iii) in stage 3) needs **≥50** `cal_val` trades. See §2 for the per-fit bootstrap-CI gate and stage 3 for the production-adoption gates layered on top.
 
 ### Stages (in order)
 
-1. **PipelineTracker** — review of prior adoptions (7d/14d/30d realized Sharpe per adopted version); auto-revert anything that materially underperformed since adoption. Revert criterion is **symmetric with the adoption gate**: `actual_sharpe < baseline − ADOPTION_Z_FLOOR × JK_SE` on the same `_jk_se` formula, so adopt and revert use the same z-floor and n-aware SE. Prevents the adopt → noise-dip → revert → re-propose oscillation that a fixed absolute floor would invite.
+1. **PipelineTracker** — review of prior adoptions (7d/14d/30d realized Sharpe per adopted version); auto-revert anything that materially underperformed since adoption. Revert criterion is **symmetric with the adoption gate**: `actual_sharpe < baseline − ADOPTION_Z_FLOOR × JK_SE`, using the **identical `_jk_se` function and `ADOPTION_Z_FLOOR`** — evaluated on the post-adoption *realized* Sharpe and its trade count (the live analogue of the candidate Sharpe adoption tested). Adopt and revert thus share the same z-floor and n-aware SE. Prevents the adopt → noise-dip → revert → re-propose oscillation that a fixed absolute floor would invite.
 2. **BiasDetector** — per-indicator/side/edge-bucket/regime/time-of-window/phase/flip stats + edge-realization quartiles + execution quality. Runs on `opt_outcomes` only (excludes holdout) so the analysis dict fed to the evolver has no leakage from the last 7 days.
-3. **Calibrator (isotonic)** — see §2. Fit attempted every cycle; adopted only if bootstrap CI clears 0.
+3. **Calibrator (isotonic)** — fit attempted every cycle. A new fit is **adopted into production only when it clears all three gates**: (i) the per-fit **bootstrap-CI** lower bound > 0 (§2); (ii) it beats the *current* calibrator's recency-weighted log-loss on the full cal pool by ≥ `LOG_LOSS_FLOOR` (0.005 nats); and (iii) it does not reduce Kelly-Sharpe vs the *current* calibrator on `cal_val`. If the current calibrator has itself drifted worse than identity it is reverted to identity (or replaced directly when the new fit beats identity on both log-loss and sizing). The §2 CI gate is necessary but **not sufficient** — gates (ii)/(iii) run on top of it. Adoption applies the calibrator in-memory immediately (so this cycle's weight backtests use it); only the on-disk save is deferred to step 6.
 4. **TAEvolver** — either `ClaudeRecommender` (calls Anthropic with the full analysis + directional table + structural-probe targets) or `LocalRecommender` (rule-based fallback) returns `{changes, manual_observations}`. The `claude_client` validator drops/reroutes manual-only params from `changes` → `manual_observations`. **Combined L6 weight changes are dropped if `Σ|w| × logit_scale` would breach the ±0.25 cap.**
 5. **WeightOptimizer** — per-param walk-forward backtest; gate decisions live here.
 6. **Deferred calibrator save** — happens only after `WeightOptimizer.save_config` commits. A crash before this line leaves new weights paired with the previous-session calibrator on disk: slightly mismatched but each is a valid, coherent artifact. Saving the calibrator first risked a brand-new calibrator paired with stale weights, which is the worse half.
@@ -506,16 +507,17 @@ The optimizer captures `old_value` from `signal_engine.derived_weights[fname]` f
 | **Logit amplifier** | `logit_scale` | 2.0–5.0 |
 | **L2-L5 weights** | `regime_weight` (0.01–0.15), `flow_weight` (0.02–0.12), `spot_flow_weight` (0.01–0.15), `liquidation_weight` (0.01–0.10), `prev_margin_weight` (0.01–0.05) | per-param |
 | | `momentum_weight` | 0.0–0.10 (magnitude only — sign is dead at L4 level) |
+| **Indicator committee (L4)** | `weights` (RSI/MACD/Stochastic/OBV/VWAP dict) | each ≥ 0.05, renormalized to sum 1.0; adopted via the L4 backtest (validator renormalizes). Not a scalar `ParamSpec` — handled as a dict by the optimizer and `claude_client`. |
 | **Sizing** | `kelly_fraction` | 0.05–0.18 |
 | **Entry gates** | `min_edge`, `min_kelly`, `min_model_probability` | tight bands |
-| **Entry timing** | `normal_fraction` (0.40–0.80), `late_max_penalty` (0.10–0.60), `flip_edge_premium` (0.005–0.05) | |
 | **Exit** | `exit_edge_threshold` | −0.10..−0.03 |
-| **Structural constants** | `regime_momentum_threshold` (0.08–0.25), `final_logit_clamp` (3.0–5.0), `deep_loss_hold_threshold` (−0.20..−0.05), `l5_regime_damp_cap` (0.4–0.9), `atr_regime_shift_threshold` (0.40–0.80) | |
+| **Structural constants** | `regime_momentum_threshold` (0.08–0.25), `final_logit_clamp` (3.0–5.0), `l5_regime_damp_cap` (0.4–0.9), `atr_regime_shift_threshold` (0.40–0.80) | |
 | **L6 derived weights** | `derived_log_atr_ratio_weight`, `derived_autocorr_signed_mag_weight`, `derived_flow_disagreement_weight`, `derived_liq_signed_sqrt_weight` | 0.0–0.05 each; combined L6 hard-capped at ±0.25 logits |
 
 ### Manual-only (`MANUAL_ONLY_PARAMS`, validator reroutes `changes` → `manual_observations`)
 
-- **Exit / hold magnitudes outside the curve:** `loss_cut_fraction`, `loss_cut_time_s`.
+- **Exit / hold magnitudes outside the curve:** `loss_cut_fraction`, `loss_cut_time_s`, `deep_loss_hold_threshold` — the backtest replays a single stored fill and can't re-simulate the hold/exit branches these control; only `exit_edge_threshold` has a counterfactual backtest path (§6).
+- **Entry-timing envelope + flip hurdle:** `normal_fraction`, `late_max_penalty`, `flip_edge_premium` — the backtest applies raw Kelly sizing + entry gates only; it models neither the time-of-window multiplier nor the flip hurdle, so a change yields zero backtest delta (never adoptable).
 - **Entry-time filters operator owns:** `max_edge`, `adverse_selection_threshold`, `edge_decay_threshold`.
 - **Risk caps:** `max_concurrent_positions`, `max_bankroll_deployed`.
 - **Circuit breaker:** `circuit_breaker.floor_pct`, `circuit_breaker.min_multiplier`.
@@ -605,7 +607,7 @@ python -m pytest polybot/tests/           # full suite
 - **L6 library is closed.** New entries require code in `derived_features.py` plus a `ParamSpec`; never generated at runtime.
 - **`edge_decay.deltas` stamped at open, persisted at close:** side-signed post-fill mid drift at 5/10/15/30/60s. Captured by `AdverseSelectionMonitor` keyed by `position_id`. Null windows = trade closed before that checkpoint resolved.
 - **`adverse_kelly_mult`** stamped per-trade in `trade_context`: the actual Kelly multiplier applied at sizing (1.0 = no penalty, `adverse_penalty_min = 0.30` floor). Enables per-bucket retrospective Sharpe analysis.
-- **Aux fields are `None` when stale**, never `0.0` — Pillar 2 layers distinguish "feed cold" from "real zero."
+- **Aux signal fields are `None` when stale**, never `0.0` — Pillar 2 layers distinguish "feed cold" from "real zero." (`coinbase_taker_n` is the lone exception: a count, `0` when cold; see §10.)
 - **Shared model math** — the L1 vol-autocorrelation scale (`autocorr_vol_scale`), the L3+L3b+L3e flow combine (`combine_flow_family`), and the L3b/L3e regime-relative normalization (`regime_vol_factor` + `compute_spot_flow_signal`/`compute_liquidation_signal`) all live in `aux_layers.py` and are called by `signal_engine` (live) and `scheduler` (backtest replay) alike, so the optimizer can never tune against a model production doesn't run.
 - **Atomic open/close** — single SQLite transaction; `bankroll_delta` for relative, `new_bankroll` for absolute.
 - **Per-mode DB** (`polybot_paper.db` / `polybot_live.db`); `memory/` shared so the pipeline sees the union.

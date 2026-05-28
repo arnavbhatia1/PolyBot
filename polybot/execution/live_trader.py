@@ -407,6 +407,9 @@ class LiveTrader(BaseTrader):
         self._SELL_WARMUP_TTL_S: float = 5.0
         self._buy_warmups: dict[str, dict] = {}
         self._BUY_WARMUP_TTL_S: float = 5.0
+        # Last condition_id whose market-info (tick/neg-risk/fee) we warmed into the
+        # py-clob client cache at discovery — dedups prewarm_market_info per window.
+        self._prewarmed_condition_id: str = ""
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
     async def prewarm_http(self) -> None:
@@ -418,6 +421,26 @@ class LiveTrader(BaseTrader):
                     "AUTH FAILURE during HTTP prewarm: %s — latching for fail-fast on next FOK submit", e,
                 )
                 self._latched_auth_error = str(e)
+
+    async def prewarm_market_info(self, condition_id: str) -> None:
+        """Warm the py-clob client's tick-size / neg-risk / fee caches for a
+        market's tokens at window discovery, off the hot path.
+
+        Without this, the first FOK of each new 5-min window pays ~2 sequential
+        REST round-trips *inside* create_market_order (resolve condition_id +
+        get_clob_market_info) before it can sign. A single get_clob_market_info
+        call populates tick_size + neg_risk + fee + condition map for BOTH tokens,
+        so the entry order signs with zero network. Best-effort and idempotent per
+        condition_id; on failure the order just falls back to the per-order fetch.
+        """
+        if not condition_id or condition_id == self._prewarmed_condition_id:
+            return
+        self._prewarmed_condition_id = condition_id
+        try:
+            await asyncio.to_thread(self.client.get_clob_market_info, condition_id)
+        except Exception as e:
+            self._prewarmed_condition_id = ""  # allow retry on the next discovery tick
+            logger.debug("prewarm_market_info failed for %s: %s", condition_id, e)
 
     async def start_keepalive(self) -> None:
         await self.prewarm_http()

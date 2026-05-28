@@ -2488,6 +2488,13 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             if not contract:
                 continue
 
+            # Warm the py-clob market-info cache (tick-size / neg-risk / fee) for
+            # this window's tokens so the entry FOK's create_market_order signs
+            # without paying ~2 sequential REST round-trips inside it. Off the hot
+            # path; dedups per condition_id. PaperTrader has no such method (no-op).
+            if hasattr(trader, "prewarm_market_info"):
+                asyncio.create_task(trader.prewarm_market_info(contract.get("condition_id", "")))
+
             # Never attempt entry when already holding a position in this window.
             if any(p["market_id"] == cid and p["status"] == "open" for p in positions):
                 continue

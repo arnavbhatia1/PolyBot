@@ -185,10 +185,12 @@ from polybot.agents.pipeline_analytics import (
     weighted_sharpe_from_returns as _weighted_sharpe,
     sharpe as _sharpe,
 )
-# 7-day holdout matches the calibrator's 7-day fit pool — cal_train sits inside
-# the holdout window. The walk-forward folds operate on days -60..-7, fully
-# separated from the calibrator's training data so the candidate's last-fold
-# Sharpe is not inflated by a calibrator that already saw those trades.
+# Holdout = last HOLDOUT_DAYS. The calibrator's fit pool is the SEPARATE window
+# [HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS) back — disjoint from the holdout —
+# so the holdout-confirmation gate is OOS for the calibrator. Walk-forward folds run
+# on opt_outcomes (days [HOLDOUT_DAYS, PIPELINE_WINDOW_DAYS) back), which overlap the
+# calibrator's training window; that's fine because the calibrator is held fixed across
+# baseline and candidate within each fold, so the adoption delta stays unbiased.
 HOLDOUT_DAYS = 7
 HOLDOUT_MIN_TRADES = 30
 
@@ -1913,10 +1915,31 @@ class AgentScheduler:
         if exec_quality:
             analysis["execution_quality"] = exec_quality
 
+        # Counterfactual + ghost analysis feed the evolver context. When the holdout
+        # is active, exclude the last HOLDOUT_DAYS from these aggregates: they inform
+        # exit_edge_threshold / entry-gate proposals that the holdout-confirmation gate
+        # later re-prices, so leaking holdout-period records here would make that
+        # confirmation partially in-sample. (No filter when holdout is inactive — there
+        # is no separate confirmation pool to protect.)
+        _evo_cutoff = datetime.now(timezone.utc).timestamp() - HOLDOUT_DAYS * 86400.0
+        _holdout_on = bool(pipeline_info.get("holdout_active"))
+        def _before_holdout(rec: dict[str, Any], *ts_keys: str) -> bool:
+            if not _holdout_on:
+                return True
+            for _k in ts_keys:
+                _s = rec.get(_k)
+                if _s:
+                    try:
+                        return datetime.fromisoformat(str(_s).replace("Z", "+00:00")).timestamp() < _evo_cutoff
+                    except Exception:
+                        return True  # unparseable ts → keep (matches load_all's lenient sort)
+            return True  # no ts field → keep
+
         # Counterfactual analysis: how accurate are our scalp exits?
         cf_info: dict[str, Any] = {}
         if self.counterfactual_tracker:
-            counterfactuals = self.counterfactual_tracker.load_all()
+            counterfactuals = [c for c in self.counterfactual_tracker.load_all()
+                               if _before_holdout(c, "timestamp")]
             if counterfactuals:
                 cf_analysis = self.bias_detector.analyze_counterfactuals(counterfactuals)
                 analysis["counterfactual_analysis"] = cf_analysis
@@ -1924,23 +1947,24 @@ class AgentScheduler:
                     "total": cf_analysis.get("total_scalps_tracked", 0),
                     "accuracy": cf_analysis.get("scalp_accuracy", 0),
                 }
-                pass  # rolled into Analysis summary below
         pipeline_info["counterfactual"] = cf_info
 
         # Ghost trade analysis: which downstream gates are blocking profitable trades?
         ghost_tracker = getattr(self, 'ghost_tracker', None)
         if ghost_tracker:
             ghosts = ghost_tracker.load_all()
-            resolved_ghosts = [g for g in ghosts if g.get("resolved", False)]
+            resolved_ghosts = [g for g in ghosts
+                               if g.get("resolved", False)
+                               and _before_holdout(g, "resolved_at", "timestamp")]
             if resolved_ghosts:
                 analysis["ghost_analysis"] = self.bias_detector.analyze_ghosts(resolved_ghosts)
-                pass  # rolled into Analysis summary below
 
         # Isotonic re-fit. Calibrator pool sits in the 7-day window that ends where
         # the holdout begins (days [HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS] back),
         # so the optimizer's holdout-confirmation gate evaluates candidates on trades
-        # the calibrator has never seen. Gate: new fit must beat current on log-loss
-        # (full pool) by ≥0.010 AND not hurt Kelly-Sharpe vs identity on cal_val.
+        # the calibrator has never seen. Adoption gate (on top of fit()'s bootstrap CI):
+        # the new fit must beat the CURRENT calibrator on full-pool weighted log-loss by
+        # ≥ LOG_LOSS_FLOOR AND not reduce Kelly-Sharpe vs the current calibrator on cal_val.
         cal_info: dict[str, Any] = {"decision": "skipped"}
         from polybot.core.calibrator import IsotonicCalibrator, _weighted_log_loss as _wll
         MIN_CAL_VALIDATION_TRADES = 50
@@ -2066,7 +2090,8 @@ class AgentScheduler:
                     new_sharpe = _weighted_sharpe(new_returns, new_weights)
                     current_sharpe = _weighted_sharpe(current_returns, current_weights)
 
-                    # Lowered 2026-05-25 from 0.010 to unblock isotonic adoption
+                    # Min nats the new fit must beat the current calibrator by, on the
+                    # full cal pool's recency-weighted log-loss, before adoption.
                     LOG_LOSS_FLOOR = 0.005
                     cal_info = {
                         "identity_loss": round(identity_loss, 4) if all_pool_probs else None,

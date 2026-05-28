@@ -39,11 +39,6 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec("min_edge",                "signal.min_edge",                0.02,  0.10,  float, 0.04,  "minimum model–market edge to enter"),
     ParamSpec("min_kelly",               "signal.min_kelly",               0.005, 0.04,  float, 0.01,  "minimum Kelly fraction to enter"),
     ParamSpec("min_model_probability",   "signal.min_model_probability",   0.52,  0.70,  float, 0.56,  "minimum model probability to enter"),
-    # ── Entry timing envelope ───────────────────────────────────────────────
-    ParamSpec("normal_fraction",         "entry_timing.normal_fraction",   0.40,  0.80,  float, 0.60,  "fraction of window with full Kelly (no late-window penalty)"),
-    ParamSpec("late_max_penalty",        "entry_timing.late_max_penalty",  0.10,  0.60,  float, 0.30,  "max Kelly penalty at the very end of the window (ATM trades)"),
-    # ── Flip-trade behavior ─────────────────────────────────────────────────
-    ParamSpec("flip_edge_premium",       "entry_timing.flip_edge_premium", 0.005, 0.05,  float, 0.015, "extra edge required to re-enter same window after a scalp"),
     # ── Exit / scalp threshold ──────────────────────────────────────────────
     # TIGHT bound — directly changes realized P&L. Lower (more negative) = hold
     # longer through noise; upper (less negative) = exit faster on any tick against.
@@ -53,8 +48,6 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
               "|autocorr| threshold separating noise band from real regime (L2/L4)"),
     ParamSpec("final_logit_clamp",       "signal.final_logit_clamp",       3.0,   5.0,   float, 4.0,
               "absolute clamp on stacked logit before sigmoid (precision floor on extreme probs)"),
-    ParamSpec("deep_loss_hold_threshold","signal.deep_loss_hold_threshold",-0.20, -0.05, float, -0.10,
-              "below this holding_edge, hold to resolution rather than scalp the loss"),
     ParamSpec("l5_regime_damp_cap",      "signal.l5_regime_damp_cap",      0.4,   0.9,   float, 0.7,
               "max damp applied to L5 by |regime| (L5 retains 1 − min(cap, |regime|) of its weight)"),
     ParamSpec("atr_regime_shift_threshold","signal.atr_regime_shift_threshold",0.40,0.80,float,0.60,
@@ -88,6 +81,13 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     "loss_cut_time_s": 90.0,
     "adverse_selection_threshold": 0.80,
     "edge_decay_threshold": -0.05,
+    # Exit/hold magnitude outside the exit-boundary curve, plus the entry-timing
+    # envelope and flip hurdle: the backtest can't re-simulate the hold branch, the
+    # time-of-window multiplier, or the flip hurdle, so these are operator-owned.
+    "deep_loss_hold_threshold": -0.10,
+    "normal_fraction": 0.60,
+    "late_max_penalty": 0.30,
+    "flip_edge_premium": 0.015,
     # Risk caps
     "max_concurrent_positions": 2,
     "max_bankroll_deployed": 0.80,
@@ -123,11 +123,19 @@ def default_for(name: str) -> Any:
 # backtest can't simulate exit/timing/schedule changes, so adopting them would
 # bypass the adoption gate. Single source of truth — claude_client imports this.
 MANUAL_ONLY_PARAMS: frozenset[str] = frozenset({
-    # Exit / hold policy (backtest replays stored fills — can't re-simulate exits).
-    # exit_edge_threshold is pipeline-tunable (see PIPELINE_PARAMS) — the loss-cut
-    # magnitudes around it stay operator-owned because they're outside the curve.
+    # Exit / hold policy. exit_edge_threshold is the ONLY pipeline-tunable exit knob
+    # (it has a counterfactual backtest path; see PIPELINE_PARAMS + §6). The loss-cut
+    # magnitudes and the deep-loss-hold threshold stay operator-owned: the backtest
+    # replays a single stored fill and cannot re-simulate the hold/exit branches.
     "loss_cut_fraction",
     "loss_cut_time_s",
+    "deep_loss_hold_threshold",
+    # Entry-timing envelope + flip hurdle. The backtest applies raw Kelly sizing and
+    # entry gates only — it models neither the time-of-window multiplier nor the flip
+    # hurdle, so a change to these yields zero backtest delta (never adoptable).
+    "normal_fraction",
+    "late_max_penalty",
+    "flip_edge_premium",
     # Entry-time filters (informed flow, stale price, late-window underdog)
     "adverse_selection_threshold",
     "edge_decay_threshold",

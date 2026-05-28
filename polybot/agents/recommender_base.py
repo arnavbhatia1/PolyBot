@@ -31,7 +31,6 @@ EXPLORE_STEPS: dict[str, float] = {
     "min_kelly":             0.004,
     "regime_momentum_threshold":  0.04,
     "final_logit_clamp":          0.50,
-    "deep_loss_hold_threshold":   0.04,
     "l5_regime_damp_cap":         0.10,
     "atr_regime_shift_threshold": 0.10,
     "exit_edge_threshold":        0.02,
