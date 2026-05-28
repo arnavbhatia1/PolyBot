@@ -576,7 +576,6 @@
   - atr_sigma_ratio=1.35 (exploratory up step)
   - spot_flow_weight=0.09 (exploratory down step)
   - regime_momentum_threshold=0.17 (exploratory up step)
-  - flow_combined_cap=0.4 (exploratory up step)
   - final_logit_clamp=3.75 (exploratory down step)
 
 **Manual Suggestions (1) [operator-only]:**
@@ -670,7 +669,6 @@
   - atr_sigma_ratio=1.35 (exploratory up step)
   - spot_flow_weight=0.09 (exploratory down step)
   - regime_momentum_threshold=0.17 (exploratory up step)
-  - flow_combined_cap=0.4 (exploratory up step)
   - final_logit_clamp=3.75 (exploratory down step)
 
 **Manual Suggestions (1) [operator-only]:**
@@ -758,7 +756,6 @@
   - atr_sigma_ratio=1.25 (exploratory down step)
   - spot_flow_weight=0.09 (exploratory down step)
   - regime_momentum_threshold=0.17 (exploratory up step)
-  - flow_combined_cap=0.4 (exploratory up step)
   - final_logit_clamp=3.75 (exploratory down step)
 
 **Manual Suggestions (0) [operator-only]:**
@@ -860,3 +857,26 @@
 - None
 
 **Reasoning:** Local recommender
+
+## 2026-05-28T03:45:49.154953+00:00
+
+**Source:** Claude (high)
+**Proposed Changes (5):**
+  - flow_weight=0.02 (exploratory down step (×1.5))
+  - spot_flow_weight=0.07 (exploratory down step (×1.5))
+  - derived_prev_margin_sq_weight=0.01 (exploratory up step)
+  - liquidation_weight=0.06 (exploratory up step (×1.5))
+  - prev_margin_weight=0.01 (exploratory down step (×1.5))
+
+**Manual Suggestions (0) [operator-only]:**
+  - none
+
+**Findings:**
+- None
+
+**Warnings:**
+- Backtest noise at N=23 (±0.2425 Sharpe) means virtually no individual parameter change is distinguishable from noise — adoption bar is essentially unreachable at current sample size
+- Rolled-back derived_prev_margin_sq_weight confirms live decay pattern — further adoptions before N grows risk compounding losses
+- Q4 edge realization recovering (0.07→1.33 IMPROVING) — any change targeting high-edge overconfidence now risks reversing this natural correction
+
+**Reasoning:** Every backtestable parameter family has been tested in both directions with no candidate clearing the 0.073 Sharpe delta adoption floor, and the sole live adoption (derived_prev_margin_sq_weight) was rolled back. Win rate, Sharpe, and Q4 edge realization are all explicitly IMPROVING across the last five buckets, making parameter changes counterproductive. The only persistent high-confidence signal — scalping_too_early across n=2758 scalps at 41% accuracy — maps exclusively to exit_edge_threshold which is manual-only and has been correctly routed to the operator across 10+ cycles; no new evidence changes that routing.

@@ -105,12 +105,8 @@ signal:
   derived:
     log_atr_ratio: 0.0
     autocorr_signed_mag: 0.0
-    vol_regime_shift: 0.0
     flow_disagreement: 0.005      # L3 vs L3b interaction term
-    distance_atr_ratio: 0.0
-    time_remaining_logit: 0.0
     liq_signed_sqrt: 0.0
-    prev_margin_sq: 0.005
 
   # Consensus sizing: how much to scale bet when flow signals agree
   consensus_dead_zone: 0.05  # [M]
@@ -194,11 +190,11 @@ binance:
   candle_buffer_size: 200
 
 binance_depth:
-  ws_url: wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms
+  ws_url: wss://stream.binance.com:9443/ws
   rest_url: https://api.binance.com/api/v3
 
 binance_trades:
-  ws_url: wss://stream.binance.com:9443/ws/btcusdt@aggTrade
+  ws_url: wss://stream.binance.com:9443/ws
 
 coinbase:
   ws_url: wss://ws-feed.exchange.coinbase.com
