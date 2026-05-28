@@ -51,6 +51,7 @@ STRUCTURAL_PROBES: list[tuple[str, float, str]] = [
     ("exit_edge_threshold", -0.03, "structural probe — counterfactual hold-better at edge ≈ -0.03"),
     ("derived_log_atr_ratio_weight",       0.005, "structural probe — L6 feature never raised off zero"),
     ("derived_autocorr_signed_mag_weight", 0.005, "structural probe — L6 feature never raised off zero"),
+    ("derived_flow_disagreement_weight",   0.005, "structural probe — L6 feature never raised off zero"),
     ("derived_liq_signed_sqrt_weight",     0.005, "structural probe — L6 feature never raised off zero"),
 ]
 

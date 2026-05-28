@@ -27,7 +27,7 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     # ── Logit amplifier ─────────────────────────────────────────────────────
     ParamSpec("logit_scale",             "signal.logit_scale",             2.0,   5.0,   float, 4.0,   "master amplifier on all L2–L5 weights"),
     # ── Layer 2–5 weights ───────────────────────────────────────────────────
-    ParamSpec("regime_weight",           "signal.regime_weight",           0.02,  0.10,  float, 0.03,  "L2 regime autocorr × direction"),
+    ParamSpec("regime_weight",           "signal.regime_weight",           0.01,  0.15,  float, 0.03,  "L2 regime autocorr × direction"),
     ParamSpec("flow_weight",             "signal.flow_weight",             0.02,  0.12,  float, 0.04,  "L3 CLOB book imbalance + trade flow"),
     ParamSpec("spot_flow_weight",        "signal.spot_flow_weight",        0.01,  0.15,  float, 0.10,  "L3b Coinbase CVD + taker ratio"),
     ParamSpec("liquidation_weight",      "signal.liquidation_weight",      0.01,  0.10,  float, 0.03,  "L3e Binance forceOrder direct liquidation stream"),

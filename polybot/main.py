@@ -702,6 +702,8 @@ async def _evaluate_signal_and_enter(
             [float(closes[-2]), float(closes[-1])]
             if len(closes) >= 2 else None
         )
+        _ghost_cid = contract.get("slug", contract.get("market_id", ""))
+        _ghost_flip_count = int(_window_flip_state.get(_ghost_cid, {}).get("flip_count", 0))
         base_ctx: dict[str, Any] = {
             "model_probability_raw": raw_prob_side,
             "market_price_up": price_up,
@@ -719,6 +721,9 @@ async def _evaluate_signal_and_enter(
             "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
             "regime_direction": round(signal_engine.last_regime_direction, 4),
             "closes_tail": _closes_tail,
+            "entry_phase": phase,
+            "flip_count": _ghost_flip_count,
+            "is_flip": _ghost_flip_count > 0,
             **aux_signals,
         }
         merged_snap = dict(snap or {})

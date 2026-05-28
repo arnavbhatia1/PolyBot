@@ -1193,6 +1193,16 @@ class AgentScheduler:
             info["reason"] = f"only {len(all_outcomes) if all_outcomes else 0} outcomes (need 10)"
             return info
 
+        _crisis_kelly_locked: bool = False
+        try:
+            import json as _json_cm
+            _cs_path = MEMORY_DIR / "crisis_state.json"
+            if _cs_path.exists():
+                _cs = _json_cm.loads(_cs_path.read_text())
+                _crisis_kelly_locked = bool(_cs.get("kelly_reduced"))
+        except Exception:
+            _crisis_kelly_locked = False
+
         # Get the changes list (new format) or fall back to checking for recommended_weights
         changes_list: list[dict[str, Any]] = recommendations.get("changes", [])
 
@@ -1259,6 +1269,16 @@ class AgentScheduler:
             value = change.get("value")
             reason_str = change.get("reason", "")
             change_info: dict[str, Any] = {"param": param, "value": value}
+
+            if _crisis_kelly_locked and param == "kelly_fraction":
+                msg = (
+                    "deferred: crisis-mode kelly halving is active. The optimizer's "
+                    "claim is valid but cannot override the safety floor mid-crisis. "
+                    "Will re-evaluate on the first non-crisis cycle."
+                )
+                change_info.update({"decision": "deferred_crisis", "reason": msg})
+                info["per_change"].append(change_info)
+                continue
 
             # Capture old value for directional tracking. L6 weights live in
             # `signal_engine.derived_weights[fname]`, not as `derived_*_weight`
@@ -1483,24 +1503,21 @@ class AgentScheduler:
                     combined_sharpe = _weighted_sharpe(combined_returns, combined_weights) if combined_returns else 0.0
                     combined_delta = combined_sharpe - current_sharpe
 
-                    # Interaction coefficient scales with the adopted-set size.
-                    # 0.7 is right for pairs (3-way interactions rare with 2
-                    # changes); 4-5 changes compound interactions and need a
-                    # tighter floor or the back-out misses real degradation.
-                    # Ramp +0.05 per change above 2, capped at 0.9 so a perfectly
-                    # additive set with measurement noise can still survive.
-                    _backout_coef = min(0.9, 0.7 + 0.05 * max(0, len(adopted_changes) - 2))
+                    # Back out only when the combined set is net-harmful vs baseline.
+                    # Every individual change here already cleared its z-test, fold-
+                    # consistency, soft-abs floor, regime veto, and holdout
+                    # confirmation — dropping such a claim on sub-additivity alone
+                    # rejects evidence the pipeline collected to use. A combined
+                    # set that is still net-positive (even if sub-additive) is kept.
+                    _harm_floor = -float(self._baseline_jk_se or 0.0)
 
                     if not info.get("combined_sharpe"):
                         info["combined_sharpe"] = round(combined_sharpe, 4)
                         info["combined_delta"] = round(combined_delta, 4)
                         info["sum_individual_delta"] = round(sum_individual_delta, 4)
-                        info["backout_coef"] = round(_backout_coef, 3)
+                        info["backout_harm_floor"] = round(_harm_floor, 4)
 
-                    # Stop if no interaction OR only one change left to keep.
-                    if not (sum_individual_delta > 0
-                            and combined_delta < sum_individual_delta * _backout_coef
-                            and len(adopted_changes) >= 2):
+                    if not (combined_delta < _harm_floor and len(adopted_changes) >= 2):
                         break
 
                     z_scores = {
@@ -1521,8 +1538,7 @@ class AgentScheduler:
                             c["decision"] = "backed_out"
                             c["reason"] = (
                                 f"interaction back-out pass {iteration + 1}: "
-                                f"combined d={combined_delta:+.3f} < "
-                                f"sum_individual d={sum_individual_delta:+.3f} * {_backout_coef:.2f} — "
+                                f"combined d={combined_delta:+.3f} < harm floor {_harm_floor:+.3f} — "
                                 f"weakest remaining change (z={z_scores[weakest_param]:.2f}) removed"
                             )
                     logger.info(
@@ -1949,38 +1965,43 @@ class AgentScheduler:
                 analysis["ghost_analysis"] = self.bias_detector.analyze_ghosts(resolved_ghosts)
                 pass  # rolled into Analysis summary below
 
-        # Isotonic re-fit. Gate: new fit must beat current on log-loss (full 7d pool) by ≥0.010
-        # AND not hurt Kelly-Sharpe vs identity on holdout. Log-loss is recency-weighted,
-        # matching the calibrator's own internal bootstrap CI (also weighted).
+        # Isotonic re-fit. Calibrator pool sits in the 7-day window that ends where
+        # the holdout begins (days [HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS] back),
+        # so the optimizer's holdout-confirmation gate evaluates candidates on trades
+        # the calibrator has never seen. Gate: new fit must beat current on log-loss
+        # (full pool) by ≥0.010 AND not hurt Kelly-Sharpe vs identity on cal_val.
         cal_info: dict[str, Any] = {"decision": "skipped"}
         from polybot.core.calibrator import IsotonicCalibrator, _weighted_log_loss as _wll
         MIN_CAL_VALIDATION_TRADES = 50
         _pending_cal_save: IsotonicCalibrator | None = None
         _CAL_WINDOW_DAYS = 7
-        _cal_cutoff = datetime.now(timezone.utc).timestamp() - _CAL_WINDOW_DAYS * 86400.0
+        _now_ts = datetime.now(timezone.utc).timestamp()
+        _cal_cutoff_new = _now_ts - HOLDOUT_DAYS * 86400.0
+        _cal_cutoff_old = _now_ts - (HOLDOUT_DAYS + _CAL_WINDOW_DAYS) * 86400.0
         def _ts(o: dict) -> float:
             s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
             try:
                 return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
             except Exception:
                 return 0.0
-        _cal_pool = [o for o in all_outcomes if _ts(o) >= _cal_cutoff]
+        _cal_pool = [o for o in all_outcomes if _cal_cutoff_old <= _ts(o) < _cal_cutoff_new]
         if len(_cal_pool) >= 125:
             _split = max(1, int(len(_cal_pool) * 0.6))
             cal_train = _cal_pool[:_split]
             cal_val = _cal_pool[_split:]
             logger.info(
-                f"  Isotonic window: last {_CAL_WINDOW_DAYS}d "
-                f"({len(cal_train)} train / {len(cal_val)} val)"
+                f"  Isotonic window: days {HOLDOUT_DAYS}-{HOLDOUT_DAYS + _CAL_WINDOW_DAYS} back "
+                f"({len(cal_train)} train / {len(cal_val)} val) — disjoint from holdout"
             )
         else:
             cal_train = []
             cal_val = []
             cal_info["reason"] = (
-                f"only {len(_cal_pool)} trades in last {_CAL_WINDOW_DAYS}d (need 125) — skipping calibration"
+                f"only {len(_cal_pool)} trades in days {HOLDOUT_DAYS}-{HOLDOUT_DAYS + _CAL_WINDOW_DAYS} back "
+                f"(need 125) — skipping calibration"
             )
             logger.info(
-                f"  Isotonic window: only {len(_cal_pool)} trades in last {_CAL_WINDOW_DAYS}d — skipping calibration"
+                f"  Isotonic window: only {len(_cal_pool)} trades in calibration window — skipping calibration"
             )
 
         if len(cal_train) >= 75 and self.signal_engine:

@@ -385,6 +385,8 @@ Everything below is the surrounding scaffolding — telemetry, the nightly pipel
 - SPRT state: `sprt_confidence`, `sprt_status`.
 - Sizing audit: `adverse_rate_at_30s`, **`adverse_kelly_mult`** (the actual Kelly multiplier applied at sizing — enables per-bucket retrospective Sharpe analysis), `entry_phase`, `flip_count`, `is_flip`.
 
+**Ghost rejections share the same schema**, including `entry_phase`, `flip_count`, and `is_flip` stamped at gate-fire time. The pipeline's by-phase and flip-segmented bias cards therefore see the full ghost population — a candidate that lowers a phase-sensitive or flip-sensitive gate gets evaluated on the correct slice of evidence.
+
 ### `edge_decay.deltas` (merged at close, persisted to outcome JSON)
 
 Side-signed post-fill mid drift at **5/10/15/30/60s**. Captured by `AdverseSelectionMonitor` keyed by `position_id` and merged into the outcome JSON at close. The 15s mean over a 30-min lookback drives the live `edge_decay_threshold` entry gate. Null windows = trade closed before that checkpoint resolved.
@@ -397,6 +399,8 @@ Persists on every position resolution to a date-keyed file. `gate_stats.json` mi
 
 `polybot/feeds/_staleness.StalenessTracker` persists per-feed P50/P95/P99 inter-arrival gaps to `polybot/memory/feed_staleness.json` every 60s. `polybot/feeds/_socket.enable_nodelay` verifies `TCP_NODELAY` via `getsockopt` on every WS connect.
 
+`BiasDetector` reads `feed_staleness.json` into the nightly analysis card as `feed_health` (per-feed `{n, p50, p95, p99, max}` + a `degraded_p95_ge_10s` list). A feed that creeps from P50≈1s to P95≈25s is then a surfaced fact in the analysis dict the evolver sees, not an invisible distribution shift the optimizer attributes to layer signals like `spot_flow` or `coinbase_cvd_60s`.
+
 ## 11. Nightly learning pipeline
 
 Runs at 23:45 ET (via `run_polybot.ps1`). Five steps; calibrator save is deferred to the end so on-disk state stays coherent across crashes.
@@ -405,13 +409,13 @@ Runs at 23:45 ET (via `run_polybot.ps1`). Five steps; calibrator save is deferre
 
 - Active dataset bounded to the **last 60 days** before any splits (older trades came from probability machines that no longer exist). Falls back to the full history only if the 60-day window has fewer than 500 trades.
 - Walk-forward folds inside that window: train 60% / test split across `[60:70][70:80][80:90][90:100]` (each test fold genuinely OOS).
-- **7-day holdout** — the last 7 days are excluded from all folds AND from the evolver's context. The holdout window also contains the calibrator's fit pool, so the optimizer's walk-forward folds never overlap with the calibrator's training data.
+- **7-day holdout** — the last 7 days are excluded from all folds AND from the evolver's context. The calibrator's fit pool sits in a **separate** 7-day window immediately before the holdout (days `[HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS]` back), so the optimizer's holdout-confirmation gate evaluates candidates on trades the calibrator has never seen.
 - **Realized fills only** — `gain_pct = pnl / size` from closed-trade outcomes, where `pnl` already nets actual fee and actual fill price. No mid-price replay; candidate strategies inherit the same slippage cost any live trade paid.
 - **Recency weighting** — `0.94^days_ago` (~11-day half-life) applied inside the window cutoff. Microstructure-trade edge decays in days, not weeks.
 
 ### Calibration window
 
-`IsotonicCalibrator.fit` operates on its own 7-day pool (default `min_samples=150`; train split must be ≥75 to fit). Calibration must reflect the *current* model, not last month's. See §2 for the bootstrap-CI gate.
+`IsotonicCalibrator.fit` operates on its own 7-day pool sitting immediately before the holdout (days `[HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS]` back; default `min_samples=150`; train split must be ≥75 to fit). Disjoint from the holdout window so the optimizer's holdout-confirmation gate is genuinely OOS for the calibrator. See §2 for the bootstrap-CI gate.
 
 ### Stages (in order)
 
@@ -448,15 +452,15 @@ z = Δ_sharpe / JK_SE ≥ ADOPTION_Z_FLOOR (0.3)        # Newey-West autocorr-ad
 
 ### Interaction back-out
 
-When `≥2` changes adopt: run **one combined backtest** on the validation fold. If `combined_Δ < backout_coef × Σ individual_Δ`, iteratively remove the **weakest-z** adopted change and re-test, until the bound clears or ≤1 change remains.
-
-`backout_coef` ramps with the size of the adopted set (more changes → more chances for interaction):
+When `≥2` changes adopt: run **one combined backtest** on the validation fold. Each individual change reaching this stage has already cleared per-change z-test, fold-consistency, soft-abs floor, regime-stratified veto, and holdout confirmation — every adoption rests on evidence the pipeline collected. The back-out therefore only fires when the **combined set is net-harmful vs baseline**, not when it is merely sub-additive:
 
 ```
-backout_coef = min(0.9, 0.7 + 0.05 × max(0, len(adopted_changes) − 2))
+harm_floor = -baseline_jk_se
+if combined_Δ < harm_floor and len(adopted_changes) ≥ 2:
+    drop weakest-z change, re-test
 ```
 
-So pairs use 0.7; 3-change sets use 0.75; 5-change sets cap at 0.9.
+A combined set with `combined_Δ ≥ harm_floor` keeps all changes. Sub-additivity is information for the next cycle's directional table, not a reason to discard individually-validated claims.
 
 ### Crisis mode
 
@@ -468,6 +472,7 @@ The trailing-3d leg catches sustained multi-day collapses the recent-50 smoothin
 
 - **≥3 consecutive crisis cycles** → halve `kelly_fraction` with floor **0.04** (**intentionally below the 0.05–0.18 pipeline-tunable range**, so crisis can size more defensively than any state the optimizer can adopt; do not "fix" the discrepancy).
 - **Restore on first non-crisis cycle** — the original Kelly is persisted in `crisis_state.json` before the cut, so a crash mid-pipeline can't compound the halving on restart.
+- **Optimizer defers `kelly_fraction` while the halving is active.** `_run_weight_optimizer` reads `crisis_state.json` at entry; if `kelly_reduced=True`, any candidate change targeting `kelly_fraction` is marked `decision="deferred_crisis"` and skipped for the cycle. The claim is preserved — it re-enters the directional table on the first non-crisis cycle — but it cannot override the safety floor while crisis is engaged.
 
 ### Adaptive exploration + structural probes (`recommender_base`)
 
@@ -475,7 +480,7 @@ The trailing-3d leg catches sustained multi-day collapses the recent-50 smoothin
 - **`_rule_exploratory`** ramps step size upward when the directional table shows past probes returned `|bt_delta|` under the noise floor. Noise floor is **empirical per cycle**: `max(0.003, 0.3 × baseline_jk_se)`. Each dead direction adds +50% to the step multiplier (cap 3.0×). Adoptions reset the loop because the directional table sees a non-trivial delta.
 - **`STRUCTURAL_PROBES`** is a small forced-exploration table that fires once per `(param, value)` until evidence appears in the directional table. Currently:
   - `exit_edge_threshold ∈ {−0.08, −0.05, −0.03}` — counterfactual data backs a less-strict exit.
-  - L6 turn-on at `0.005` for `log_atr_ratio`, `autocorr_signed_mag`, `liq_signed_sqrt` (raised from the default 0.0 so the layer can be evaluated for adoption).
+  - L6 turn-on at `0.005` for `log_atr_ratio`, `autocorr_signed_mag`, `flow_disagreement`, `liq_signed_sqrt` (all four L6 weights raised from the default 0.0 so every feature in the closed library gets at least one evaluation cycle).
 
 Both `LocalRecommender` and `ClaudeRecommender` call `_rule_structural_probes()` before the rotational `_rule_exploratory`.
 
@@ -493,7 +498,7 @@ The optimizer captures `old_value` from `signal_engine.derived_weights[fname]` f
 | | `student_t_df` | 3–8 |
 | | `min_atr` | 8.0–25.0 |
 | **Logit amplifier** | `logit_scale` | 2.0–5.0 |
-| **L2-L5 weights** | `regime_weight`, `flow_weight`, `spot_flow_weight`, `liquidation_weight`, `prev_margin_weight` | 0.01–0.15 (each) |
+| **L2-L5 weights** | `regime_weight` (0.01–0.15), `flow_weight` (0.02–0.12), `spot_flow_weight` (0.01–0.15), `liquidation_weight` (0.01–0.10), `prev_margin_weight` (0.01–0.05) | per-param |
 | | `momentum_weight` | 0.0–0.10 (magnitude only — sign is dead at L4 level) |
 | **Sizing** | `kelly_fraction` | 0.05–0.18 |
 | **Entry gates** | `min_edge`, `min_kelly`, `min_model_probability` | tight bands |

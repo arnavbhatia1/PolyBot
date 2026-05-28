@@ -6,15 +6,55 @@ ghost trade gate analysis, cross-window correlation, and time-to-resolution dist
 """
 from __future__ import annotations
 
+import json
 import math
 import logging
 from collections import defaultdict
 from typing import Any
 
+from polybot.paths import MEMORY_DIR
+
 logger = logging.getLogger(__name__)
 
 INDICATOR_NAMES = ["rsi", "macd", "stochastic", "obv", "vwap"]
 REGIME_NAMES = ["trending_up", "trending_down", "reverting", "volatile", "quiet", "neutral"]
+
+
+def _load_feed_health() -> dict[str, Any]:
+    """Read feed_staleness.json so the analysis card surfaces silent feed
+    degradation. Without this, a feed creeping from P50=1s to P95=25s reads
+    as fewer trades and the optimizer attributes the distribution shift to
+    layer signals (e.g. spot_flow) rather than the upstream feed.
+    """
+    path = MEMORY_DIR / "feed_staleness.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except Exception as e:
+        logger.debug(f"feed_staleness.json unreadable: {e}")
+        return {}
+    feeds: dict[str, dict[str, Any]] = {}
+    degraded: list[str] = []
+    for entry in payload.get("feeds", []) or []:
+        name = entry.get("name")
+        if not name:
+            continue
+        feeds[name] = {
+            "n": entry.get("n", 0),
+            "p50": entry.get("p50"),
+            "p95": entry.get("p95"),
+            "p99": entry.get("p99"),
+            "max": entry.get("max"),
+        }
+        p95 = entry.get("p95")
+        if isinstance(p95, (int, float)) and p95 >= 10.0:
+            degraded.append(f"{name}: p95={p95:.1f}s")
+    return {
+        "updated_at": payload.get("updated_at"),
+        "feeds": feeds,
+        "degraded_p95_ge_10s": degraded,
+    }
 
 
 def _get_gain_pct(o: dict[str, Any]) -> float:
@@ -62,6 +102,7 @@ class BiasDetector:
             "time_weighted": self._analyze_time_weighted(outcomes),
             "by_sprt_confidence": self._analyze_by_sprt_confidence(outcomes),
             "by_adverse_selection": self._analyze_by_adverse_selection(outcomes),
+            "feed_health": _load_feed_health(),
         }
 
     def _analyze_by_entry_phase(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
