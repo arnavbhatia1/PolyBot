@@ -183,8 +183,8 @@ class AlertManager:
 
         pipeline_info = pipeline_info or {}
 
-        # Pipeline runs at 12:05 AM ET — the trading day was yesterday ET.
-        # If run manually after noon, use today ET instead.
+        # Pipeline runs at 11:45 PM ET — the trading day is today ET.
+        # If run manually before noon, use yesterday ET instead.
         et_now = datetime.now(ET)
         if et_now.hour < 12:
             trading_et_date = (et_now - timedelta(days=1)).date()

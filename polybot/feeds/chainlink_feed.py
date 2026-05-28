@@ -34,6 +34,7 @@ class ChainlinkFeed:
         self._watchdog_task: asyncio.Task | None = None
         self._running: bool = False
         self._boundary_prices: "OrderedDict[int, float]" = OrderedDict()
+        self._start_window_ts: int = int(time.time() // 300) * 300
         self.staleness = StalenessTracker("chainlink")
 
     @property
@@ -47,7 +48,14 @@ class ChainlinkFeed:
         return time.time() - self._last_update
 
     def get_strike(self, window_ts: int) -> float | None:
-        return self._boundary_prices.get(window_ts)
+        if window_ts == self._start_window_ts:
+            return None
+        captured = self._boundary_prices.get(window_ts)
+        if captured is not None:
+            return captured
+        if self._price > 0 and self.age_seconds < STALE_TIMEOUT_S:
+            return self._price
+        return None
 
     def _record_boundary(self, observed_ts: float) -> None:
         if self._price <= 0:

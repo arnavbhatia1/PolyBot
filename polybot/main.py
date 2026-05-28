@@ -3091,10 +3091,10 @@ async def main() -> None:
         await _stop(forceorder_feed.stop())
         await _stop(coinbase_feed.stop())
         await _stop(chainlink_feed.stop())
+        await _stop(discord_bot.close())
         bankroll = await db.get_bankroll()
         await db.close()
         logger.info(f"PolyBot stopped — Bankroll ${bankroll:.2f} · Feeds/WS/DB closed")
-        await discord_bot.close()
 
 
 if __name__ == "__main__":
