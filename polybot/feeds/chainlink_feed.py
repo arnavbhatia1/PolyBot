@@ -47,12 +47,7 @@ class ChainlinkFeed:
         return time.time() - self._last_update
 
     def get_strike(self, window_ts: int) -> float | None:
-        captured = self._boundary_prices.get(window_ts)
-        if captured is not None:
-            return captured
-        if self._price > 0 and self.age_seconds < STALE_TIMEOUT_S:
-            return self._price
-        return None
+        return self._boundary_prices.get(window_ts)
 
     def _record_boundary(self, observed_ts: float) -> None:
         if self._price <= 0:
