@@ -406,47 +406,38 @@ class LiveTrader(BaseTrader):
         # Entry: token_id → {"order": signed_dict, "amount": shares, "price": p, "ts": time}.
         self._sell_warmups: dict[str, dict] = {}
         self._SELL_WARMUP_TTL_S: float = 5.0
+        self._buy_warmups: dict[str, dict] = {}
+        self._BUY_WARMUP_TTL_S: float = 5.0
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
-    async def start_keepalive(self) -> None:
-        """Ping the CLOB API every 10s to keep the HTTP/2 connection warm.
-
-        py-clob-client uses a persistent httpx.Client(http2=True). If the connection
-        goes idle between trades (>60s), the HTTP/2 stream may close and the next
-        order submission pays a full TLS handshake penalty (~100-200ms). Pinging
-        every 10s gives 3× more retry attempts before that 60s cliff.
-
-        Auth-looking failures during a ping latch `self._latched_auth_error`;
-        the next FOK submit then raises AuthError without making a live order
-        attempt, so the main loop's AuthError handler can shut trading down.
-        """
+    async def prewarm_http(self) -> None:
         try:
             await asyncio.to_thread(self.client.get_sampling_simplified_markets)
         except Exception as e:
             if _looks_like_auth_error(e):
                 logger.error(
-                    "AUTH FAILURE during keepalive pre-warm: %s — "
-                    "latching for fail-fast on next FOK submit", e,
+                    "AUTH FAILURE during HTTP prewarm: %s — latching for fail-fast on next FOK submit", e,
                 )
                 self._latched_auth_error = str(e)
+
+    async def start_keepalive(self) -> None:
+        await self.prewarm_http()
         async def _ping() -> None:
             while True:
                 try:
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(5)
                     await asyncio.to_thread(self.client.get_sampling_simplified_markets)
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
                     if _looks_like_auth_error(e):
                         logger.error(
-                            "AUTH FAILURE during keepalive ping: %s — "
-                            "latching for fail-fast on next FOK submit", e,
+                            "AUTH FAILURE during keepalive ping: %s — latching for fail-fast on next FOK submit", e,
                         )
                         self._latched_auth_error = str(e)
-                        break  # stop pinging; next FOK submit raises AuthError
-                    # other transient errors — best-effort, never crash trading
+                        break
         self._keepalive_task = asyncio.create_task(_ping())
-        logger.info("LiveTrader: HTTP keepalive started (ping every 10s)")
+        logger.info("LiveTrader: HTTP keepalive started (ping every 5s)")
 
     async def stop_keepalive(self) -> None:
         if self._keepalive_task:
@@ -863,6 +854,48 @@ class LiveTrader(BaseTrader):
             # Pre-signing is best-effort: failure just means PRE-SCALP will
             # pay the normal sign cost. Don't propagate.
             logger.debug("warm_sell_signature failed: %s", e)
+
+    async def warm_buy_signature(self, token_id: str, size_usdc: float,
+                                 expected_price: float, fee_rate: float = DEFAULT_FEE_RATE) -> None:
+        if not token_id or size_usdc <= 0 or expected_price <= 0:
+            return
+        existing = self._buy_warmups.get(token_id)
+        if existing is not None:
+            age = time.time() - existing["ts"]
+            price_drift = abs(existing["price"] - expected_price)
+            size_drift = abs(existing["amount"] - size_usdc) / max(size_usdc, 1e-6)
+            if age < 1.5 and price_drift < 0.005 and size_drift < 0.02:
+                return
+        try:
+            mo = MarketOrderArgs(
+                token_id=token_id, amount=size_usdc, side=BUY, price=expected_price,
+            )
+            loop = asyncio.get_running_loop()
+            signed = await loop.run_in_executor(
+                self._sign_executor, self.client.create_market_order, mo
+            )
+            self._buy_warmups[token_id] = {
+                "order": signed,
+                "amount": size_usdc,
+                "price": expected_price,
+                "ts": time.time(),
+            }
+        except Exception as e:
+            logger.debug("warm_buy_signature failed: %s", e)
+
+    def _take_buy_warmup(self, token_id: str, size_usdc: float,
+                         expected_price: float) -> dict | None:
+        entry = self._buy_warmups.pop(token_id, None)
+        if entry is None:
+            return None
+        age = time.time() - entry["ts"]
+        if age > self._BUY_WARMUP_TTL_S:
+            return None
+        if abs(entry["price"] - expected_price) > 0.01:
+            return None
+        if abs(entry["amount"] - size_usdc) / max(size_usdc, 1e-6) > 0.05:
+            return None
+        return entry["order"]
 
     def _take_sell_warmup(self, token_id: str, shares: float,
                           expected_price: float) -> dict | None:
@@ -1379,10 +1412,10 @@ class LiveTrader(BaseTrader):
 
         last_error = ""
         loop = asyncio.get_running_loop()
-        # Try a pre-signed SELL warmup on the first attempt only (subsequent
-        # retries always re-sign since the order has changed by then).
-        presigned = (self._take_sell_warmup(token_id, amount, expected_price)
-                     if side == SELL else None)
+        if side == SELL:
+            presigned = self._take_sell_warmup(token_id, amount, expected_price)
+        else:
+            presigned = self._take_buy_warmup(token_id, amount, expected_price)
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
                 if attempt == 1 and presigned is not None:

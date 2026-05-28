@@ -168,6 +168,8 @@ class SignalEngine:
         self.last_raw_prob_up: float = 0.5
         self.last_momentum_score: float = 0.0
         self.last_loss_cut_event: str = ""
+        self.last_atr_rolling_20: float = 0.0
+        self.last_atr_long_term_mean: float = 0.0
 
     def _record_atr(self, atr: float) -> None:
         if atr <= 0:
@@ -183,6 +185,10 @@ class SignalEngine:
             self._atr_long_term_sum -= lt[0]
         lt.append(v)
         self._atr_long_term_sum += v
+        n_short = len(self._atr_history)
+        self.last_atr_rolling_20 = (self._atr_history_sum / n_short) if n_short > 0 else 0.0
+        n_long = len(self._atr_long_term)
+        self.last_atr_long_term_mean = (self._atr_long_term_sum / n_long) if n_long > 0 else 0.0
 
     def _effective_atr_floor(self) -> float:
         n_short = len(self._atr_history)

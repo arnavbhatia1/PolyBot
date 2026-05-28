@@ -38,6 +38,7 @@ class BinanceForceOrderFeed:
         self._running = False
         self._ws: Any = None
         self._task: asyncio.Task | None = None
+        self._connected_since: float = 0.0
 
     async def start(self) -> None:
         self._running = True
@@ -81,6 +82,7 @@ class BinanceForceOrderFeed:
                     backoff = RECONNECT_BASE
                     self.staleness.reset()
                     self._events.clear()
+                    self._connected_since = time.time()
                     logger.debug("Binance forceOrder WS connected: %s", stream)
                     while self._running:
                         try:
@@ -96,6 +98,7 @@ class BinanceForceOrderFeed:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                self._connected_since = 0.0
                 if not self._running:
                     break
                 logger.warning("forceOrder WS error: %s, reconnecting in %ds", e, backoff)

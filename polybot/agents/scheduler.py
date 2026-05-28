@@ -809,8 +809,12 @@ class AgentScheduler:
             # L6 — derived features. ATR rolling state was updated at L1 above,
             # so short/long means here are causal-through-this-tick (matches live).
             if l6_active and atr_raw > 0:
-                atr_short_mean = _atr_short_sum / len(_atr_short) if _atr_short else 0.0
-                atr_long_mean = _atr_long_sum / len(_atr_long) if _atr_long else 0.0
+                atr_short_mean = ctx.get("atr_rolling_20")
+                if atr_short_mean is None:
+                    atr_short_mean = _atr_short_sum / len(_atr_short) if _atr_short else 0.0
+                atr_long_mean = ctx.get("atr_long_term_mean")
+                if atr_long_mean is None:
+                    atr_long_mean = _atr_long_sum / len(_atr_long) if _atr_long else 0.0
                 # `last_return` matches live: prefer the stamped `btc_price`
                 # (Coinbase WS) over `closes_tail[-1]` (Binance partial kline) so
                 # the L6 autocorr_signed_mag replay mirrors signal_engine exactly.

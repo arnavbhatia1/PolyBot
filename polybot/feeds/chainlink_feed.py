@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import OrderedDict
 from typing import Any
 
 import websockets
@@ -32,10 +33,7 @@ class ChainlinkFeed:
         self._task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
         self._running: bool = False
-        # Strike capture: {next_window_ts: chainlink_price_at_latest_observation}.
-        # The last observation before the boundary defines the strike — mirrors
-        # what Polymarket's on-chain latestRoundData() returns at the boundary block.
-        self._boundary_prices: dict[int, float] = {}
+        self._boundary_prices: "OrderedDict[int, float]" = OrderedDict()
         self.staleness = StalenessTracker("chainlink")
 
     @property
@@ -49,16 +47,24 @@ class ChainlinkFeed:
         return time.time() - self._last_update
 
     def get_strike(self, window_ts: int) -> float | None:
-        return self._boundary_prices.get(window_ts)
+        captured = self._boundary_prices.get(window_ts)
+        if captured is not None:
+            return captured
+        if self._price > 0 and self.age_seconds < STALE_TIMEOUT_S:
+            return self._price
+        return None
 
     def _record_boundary(self, observed_ts: float) -> None:
         if self._price <= 0:
             return
         next_boundary_ts = int(observed_ts // 300) * 300 + 300
         self._boundary_prices[next_boundary_ts] = self._price
-        # Keep 2 h of strikes for the orphan-resolution fallback.
         cutoff = int(observed_ts) - 7200
-        self._boundary_prices = {k: v for k, v in self._boundary_prices.items() if k > cutoff}
+        while self._boundary_prices:
+            k = next(iter(self._boundary_prices))
+            if k > cutoff:
+                break
+            self._boundary_prices.popitem(last=False)
 
     async def start(self) -> None:
         self._running = True

@@ -11,6 +11,7 @@ Data feeds into the daily learning pipeline to tune exit_edge_threshold.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -21,6 +22,8 @@ from zoneinfo import ZoneInfo
 from polybot.agents.pipeline_analytics import utc_ts_to_et_date as _utc_ts_to_et_date
 
 _ET = ZoneInfo("America/New_York")
+
+_WATCHLIST_MAX_AGE_S = 1800.0
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +44,39 @@ class CounterfactualTracker:
     def __init__(self, memory_dir: str) -> None:
         self.memory_dir: Path = Path(memory_dir) / "counterfactuals"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self._watchlist: dict[str, dict[str, Any]] = {}  # market_id -> scalp context
-        self._hold_worst: dict[str, dict[str, Any]] = {}  # market_id -> worst moment during hold
+        self._watchlist: dict[str, dict[str, Any]] = {}
+        self._hold_worst: dict[str, dict[str, Any]] = {}
+        self._watchlist_path: Path = Path(memory_dir) / "cf_watchlist.json"
+        self._load_watchlist()
+
+    def _load_watchlist(self) -> None:
+        if not self._watchlist_path.exists():
+            return
+        try:
+            data = json.loads(self._watchlist_path.read_text())
+        except Exception as e:
+            logger.warning(f"CF watchlist load failed ({e}); starting fresh")
+            return
+        cutoff = time.time() - _WATCHLIST_MAX_AGE_S
+        for entry in data.get("watchlist", []):
+            if entry.get("watched_at", 0) >= cutoff:
+                pid = entry.get("position_id")
+                if pid is not None:
+                    self._watchlist[pid] = entry
+
+    def _save_watchlist(self) -> None:
+        try:
+            self._watchlist_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"saved_at": time.time(), "watchlist": list(self._watchlist.values())}
+            self._watchlist_path.write_text(json.dumps(payload, indent=2))
+        except Exception as e:
+            logger.warning(f"CF watchlist save failed: {e}")
+
+    def _schedule_save_watchlist(self) -> None:
+        try:
+            asyncio.get_running_loop().create_task(asyncio.to_thread(self._save_watchlist))
+        except RuntimeError:
+            self._save_watchlist()
 
     def watch(self, pos: dict[str, Any], scalp_context: dict[str, Any],
               aux_signals: dict[str, Any] | None = None) -> None:
@@ -82,6 +116,7 @@ class CounterfactualTracker:
             "aux_signals": dict(aux_signals or {}),
             "watched_at": time.time(),
         }
+        self._schedule_save_watchlist()
         # Implicit from the preceding SCALP block — move to debug to stop
         # duplicating the just-emitted exit context in the console stream.
         logger.debug(
@@ -318,6 +353,8 @@ class CounterfactualTracker:
 
         for mid in to_remove:
             self._watchlist.pop(mid, None)
+        if to_remove:
+            self._schedule_save_watchlist()
 
         return resolved
 

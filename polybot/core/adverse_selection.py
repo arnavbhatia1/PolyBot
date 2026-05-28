@@ -25,7 +25,7 @@ from polybot.paths import MEMORY_DIR
 logger = logging.getLogger(__name__)
 
 _DEFAULT_STATE_PATH = MEMORY_DIR / "adverse_state.json"
-_MAX_LOOKBACK_S = 1800.0
+_MAX_LOOKBACK_S = 2400.0
 
 @dataclass
 class FillEvent:

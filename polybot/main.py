@@ -185,10 +185,13 @@ def _build_aux_signals(coinbase_feed: Any, trades_feed: Any, depth_feed: Any,
 
     imbalance = depth_feed.get_imbalance(5) if dp_fresh else None
 
-    # Liquidation feed emits only when a liquidation happens — a quiet feed is
-    # legitimately silent. Use feed-warm (any message ever observed) as the
-    # readiness signal rather than per-event recency.
-    if forceorder_feed is not None and forceorder_feed.staleness._last_ts > 0:
+    # Warm (WS connected ≥60s) → emit observed zeros; cold → None.
+    _fo_warm = (
+        forceorder_feed is not None
+        and forceorder_feed._connected_since > 0
+        and (time.time() - forceorder_feed._connected_since) >= 60.0
+    )
+    if _fo_warm:
         bn_liq_long, bn_liq_short = forceorder_feed.liquidation_usd_per_min()
     else:
         bn_liq_long, bn_liq_short = None, None
@@ -707,6 +710,8 @@ async def _evaluate_signal_and_enter(
             "strike_price": strike,
             "seconds_remaining": contract.get("seconds_remaining", 0),
             "atr": indicators.get("atr", {}).get("atr", 0),
+            "atr_rolling_20": round(signal_engine.last_atr_rolling_20, 6),
+            "atr_long_term_mean": round(signal_engine.last_atr_long_term_mean, 6),
             "flow_score": flow_score,
             "spot_flow_signal": spot_flow_signal,
             "liquidation_pressure": liquidation_val,
@@ -900,6 +905,8 @@ async def _evaluate_signal_and_enter(
                     "strike_price": strike,
                     "seconds_remaining": contract.get("seconds_remaining", 0),
                     "atr": indicators.get("atr", {}).get("atr", 0),
+                    "atr_rolling_20": round(signal_engine.last_atr_rolling_20, 6),
+                    "atr_long_term_mean": round(signal_engine.last_atr_long_term_mean, 6),
                     "flow_score": flow_score,
                     "spot_flow_signal": spot_flow_signal,
                     "liquidation_pressure": liquidation_val,
@@ -1189,6 +1196,11 @@ async def _evaluate_signal_and_enter(
     slip = slippage_pct(size, side_depth, impact)
     price = market_scanner.snap_to_tick(price * (1 + slip), tick_size)
 
+    if hasattr(trader, "warm_buy_signature"):
+        asyncio.create_task(trader.warm_buy_signature(
+            token_id, size, price, fee_rate=fee_rate,
+        ))
+
     snapshot = indicator_engine.get_snapshot(indicators)
     # Last two closes are stored so the L6 backtest can reconstruct `last_return`
     # for the autocorr_signed_mag feature — without them that feature is dormant
@@ -1216,6 +1228,8 @@ async def _evaluate_signal_and_enter(
         ),
         "edge": signal.edge,
         "atr": indicators.get("atr", {}).get("atr", 0),
+        "atr_rolling_20": round(signal_engine.last_atr_rolling_20, 6),
+        "atr_long_term_mean": round(signal_engine.last_atr_long_term_mean, 6),
         "size": size,
         "prev_resolution_margin": _prev_resolution_margin,
         # Composite signals used by the model — pipeline replays L1-L5 from these
@@ -1395,32 +1409,11 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
         window_strikes[contract_window_ts] = ptb
 
     if contract_window_ts not in window_strikes:
-        # Chainlink boundary capture (fallback when Gamma hasn't sent priceToBeat yet)
         if chainlink_feed:
             cl_strike = chainlink_feed.get_strike(contract_window_ts)
             if cl_strike:
                 window_strikes[contract_window_ts] = cl_strike
                 logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
-
-        # Fall back to Binance candle if Chainlink didn't capture it
-        if contract_window_ts not in window_strikes:
-            target_ms = contract_window_ts * 1000
-            candles = binance_feed.buffer.get_last_n(10)
-            _bn_strike = None
-            for c in reversed(candles):
-                if c.timestamp == target_ms:
-                    _bn_strike = c.open
-                    break
-                elif c.timestamp < target_ms <= c.timestamp + 60_000:
-                    _bn_strike = c.close
-                    break
-            else:
-                latest = binance_feed.buffer.latest()
-                if latest and now_ts - contract_window_ts < 10:
-                    _bn_strike = latest.close
-            if _bn_strike is not None:
-                window_strikes[contract_window_ts] = _bn_strike
-                logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${_bn_strike:,.2f} (Binance, fallback){_C.RESET}")
 
     # Clean old strikes
     window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
@@ -2939,6 +2932,8 @@ async def main() -> None:
     # Give LiveTrader access to CLOB WS for fast maker fill detection
     if hasattr(trader, "set_clob_ws"):
         trader.set_clob_ws(clob_ws)
+    if hasattr(trader, "prewarm_http"):
+        await trader.prewarm_http()
     if hasattr(trader, "start_keepalive"):
         await trader.start_keepalive()
 
