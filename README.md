@@ -28,11 +28,11 @@ WebSocket feeds + REST polls
     L1  Student-t CDF (df=5, fat tails)
     L2  Regime: 1-lag autocorr × sign(last 1-min return)
     L3  CLOB flow: book imbalance + trade flow
-    L3b Spot CVD: Binance aggTrades CVD + taker ratio
-    L3e Liquidation: Bybit OI drop × price direction
+    L3b Spot CVD: Coinbase trades CVD + taker ratio
+    L3e Liquidation: Binance forceOrder direct-stream events
     L4  Indicator momentum: RSI/MACD/Stoch/OBV/VWAP (polarity-split, regime-conditional)
     L5  Previous-window margin carry (regime-damped)
-    L6  Derived feature library (closed; 8 bounded transforms; default-off, hard-capped ±0.25)
+    L6  Derived feature library (closed; 4 bounded transforms; default-off, hard-capped ±0.25)
     +   Isotonic calibration (sole overconfidence correction; re-fit each pipeline cycle)
         |
   Edge = calibrated_model_prob - market_price (CLOB /price endpoint)
@@ -74,7 +74,7 @@ WebSocket feeds + REST polls
 | `feeds/binance_feed.py` | 1-min candles, ATR |
 | `feeds/binance_depth.py` | L2 book depth |
 | `feeds/binance_trades.py` | aggTrades → CVD, taker ratio |
-| `feeds/bybit_feed.py` | OI + funding (WS only — REST is US geo-blocked) |
+| `feeds/binance_forceorder.py` | Per-event futures liquidations (L3e) |
 | `feeds/chainlink_feed.py` | BTC/USD oracle (strike + resolution) |
 | `feeds/clob_ws.py` | Polymarket CLOB stream |
 | `feeds/market_scanner.py` | Gamma contract discovery + CLOB helpers |
@@ -93,10 +93,9 @@ WebSocket feeds + REST polls
 |---|---|---|
 | Coinbase | `ticker` WS (BTC-USD) | Primary BTC price |
 | Kraken | `ticker` WS (XBT/USD) | Secondary / Chainlink-aligned |
-| Binance.US | `kline_1m` / `depth20@100ms` / `aggTrade` WS | Candles, ATR, depth, CVD |
+| Binance.com | `kline_1m` / `depth20@100ms` / `aggTrade` / `forceOrder` WS | Candles, ATR, depth, CVD, liquidations |
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/fee-rate` | Books, fills, fees |
 | Polymarket Gamma | `GET /events?slug=...` | Discovery + resolution |
-| Bybit | `tickers.BTCUSDT` WS | OI + funding |
 | Chainlink | `latestRoundData()` via Eth RPC | Strike + resolution oracle |
 | Anthropic | `claude-sonnet-4-6` SDK | Daily learning pipeline |
 
@@ -149,7 +148,7 @@ Tunes ~15 backtestable params plus the L4 weight vector. Manual-only params (exi
 | `POLYMARKET_PRIVATE_KEY` | Live mode (EIP-712 signing) |
 | `POLYMARKET_FUNDER` | Live mode (USDC funding address) |
 
-Binance.US, Polymarket, Bybit, Deribit, Coinbase: free.
+Binance.com, Polymarket, Coinbase: free.
 
 ## Persistence
 

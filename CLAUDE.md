@@ -10,7 +10,7 @@ All layers compose in logit space (except L1's CDF), then sigmoid + isotonic cal
 - **L2** — 1-lag autocorr × sign(last 1-min return). Single `lag1_autocorr` helper in `returns.py` — signal_engine and `RegimeDetector` both delegate to it.
 - **L3** — CLOB book imbalance (top-5 levels each side, by best price) × 0.6 + trade flow × 0.4. Trade flow recency-weighted, 30s half-life inside the 120s window.
 - **L3b** — Coinbase per-trade CVD + taker ratio via `polybot/core/aux_layers.compute_spot_flow_signal`. Coinbase is the largest US-volume BTC venue and the venue Chainlink resolves against. CVD scaled by `tanh(cvd / 30 BTC) × 0.8`; taker ratio gated on `≥ 20` trades in the 60s window. CVD-acceleration gate (`get_cvd_acceleration`) requires `≥ 10` recent trades for the 15s/45s comparison.
-- **L3e** — Direct per-event futures liquidations from Bybit (`liquidation.BTCUSDT`) and Binance (`btcusdt@forceOrder`). Net `(short_liq − long_liq) USD/min`, tanh-saturated at `50,000` USD/min via `compute_liquidation_signal`. Sign: short liquidation → price-up (+); long liquidation → price-down (−). The OI-inference path (`polybot/core/liquidation.py`) was removed in Pillar 2.
+- **L3e** — Direct per-event futures liquidations from Binance (`btcusdt@forceOrder`). Net `(short_liq − long_liq) USD/min`, tanh-saturated at `50,000` USD/min via `compute_liquidation_signal`. Sign: short liquidation → price-up (+); long liquidation → price-down (−).
 - **L4** — RSI/MACD/Stoch/OBV/VWAP, raw `score` field consumed directly (no adaptive normalizer). Polarity-split: mean-revert group (RSI/Stoch/VWAP) vs trend-confirm group (MACD/OBV). Smooth `tanh(autocorr / regime_momentum_threshold)` curve gates each group — no cliff at the threshold. In revert regime, mean-revert keeps its contrarian sign at full power and trend-confirm is dampened. In trend regime, mean-revert's sign is replaced by `sign(last_1min_return)` so polarity tracks the trend direction (continuation expectation, not a direction-agnostic flip) and trend-confirm runs at full power. Magnitude scaler from `effective_momentum_weight` is unsigned, smoothed via tanh between DAMPEN (0.5×) and AMPLIFY (1.5×) — the pipeline `momentum_weight` range bound is the only ceiling.
 - **L5** — `tanh(prev_margin/atr) · prev_margin_weight · logit_scale · (1 − min(l5_regime_damp_cap, |regime|))`. Dampened by regime strength to orthogonalize with L2 early in the window. `l5_regime_damp_cap` default 0.7, pipeline-tunable. `prev_resolution_margin` is persisted with a `saved_at` timestamp and zeroed on load if older than 30 min.
 - **L6 — derived feature library.** Closed library of 4 bounded, direction-aware transforms of already-tracked state (see `polybot/core/derived_features.py`): `log_atr_ratio` (clipped ±1.5), `autocorr_signed_mag` (regime × signed last_return), `flow_disagreement` (tanh of flow + spot_flow, direction-aware), `liq_signed_sqrt`. Every weight defaults to 0.0; the layer is dead until the pipeline raises one off zero. Combined L6 contribution hard-capped at ±0.25 logits regardless of individual weights — and `claude_client` validator drops any L6 weight change set whose `sum(|w|) · logit_scale` would push past that cap.
@@ -45,12 +45,11 @@ L3 + L3b add in logit space with a **joint ±0.50-logit clamp** so a weight asym
 - `verify_auth`: `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER`, USDC balance + allowance ≥ `max_single × max_concurrent × 10`. Allowance re-checked every 10 fills mid-session.
 - `open_position_and_debit_bankroll` / `close_position(... bankroll_delta=... | new_bankroll=...)`: atomic SQLite tx (single close path; pass `bankroll_delta` for relative credit, `new_bankroll` to set absolute on resolution).
 - Auth errors → `AuthError` → clean exit; `run_polybot.ps1` won't restart same-day, but its outer `while ($true)` loop restarts the bot at the next 12:01 AM ET — fix auth before then.
-- Feed staleness skip: Coinbase >30s (L3b CVD source + fast price), Chainlink >60s (resolution oracle), Binance aggTrade >30s (CVD-accel + 2nd-fastest price), Bybit ticker >60s (funding/mark/basis aux signals + liquidation-stream liveness). L3b reads Coinbase, L3e reads direct per-event liquidation streams from Bybit + Binance forceOrder.
+- Feed staleness skip: Coinbase >30s (L3b CVD source + fast price), Chainlink >60s (resolution oracle), Binance aggTrade >30s (CVD-accel + 2nd-fastest price). L3b reads Coinbase, L3e reads the direct Binance forceOrder per-event liquidation stream.
 - Chainlink orphan fallback: Gamma silent 30+ min past expiry.
 - CLOB WS heartbeat: PING every 10s, force reconnect if no PONG within 25s.
 - `fill.fill_size` is always USDC notional (BUY: requested; SELL: shares × fill_price).
 - Per-mode DB (`polybot_paper.db` / `polybot_live.db`); `memory/` shared.
-- Bybit ticker stream supplies funding/mark/index/basis aux signals (OI is captured but no longer fed to any layer).
 - `polybot/feeds/_socket.enable_nodelay(ws, name)` verifies `TCP_NODELAY` via `getsockopt` on every WS connect; `polybot/feeds/_staleness.StalenessTracker` persists per-feed P50/P95/P99 inter-arrival gaps to `polybot/memory/feed_staleness.json` every 60s.
 
 ## Project Structure
@@ -61,7 +60,7 @@ polybot/
   config/                {settings.yaml, loader.py, param_registry.py}
   core/                  signal_engine, calibrator, order_flow, returns,
                          regime, liquidation, exit_boundary, sprt, adverse_selection, derived_features
-  feeds/                 coinbase_feed, binance_feed(+depth+trades), bybit_feed, chainlink_feed, clob_ws, market_scanner
+  feeds/                 coinbase_feed, binance_feed(+depth+trades+forceorder), chainlink_feed, clob_ws, market_scanner
   indicators/            rsi/macd/stochastic/obv/vwap/ema/atr + engine
   execution/             base, paper_trader, live_trader, circuit_breaker, correlation
   agents/                scheduler, outcome_reviewer, counterfactual_tracker, ghost_tracker,
