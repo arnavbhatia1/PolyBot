@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 from polybot.config.loader import save_config
 from polybot.config.param_registry import default_for as _d
+from polybot.core.aux_layers import compute_spot_flow_signal, compute_liquidation_signal
 from polybot.paths import MEMORY_DIR
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,7 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
 from polybot.agents.pipeline_analytics import (
     RECENCY_DECAY_PER_DAY,
     weighted_sharpe_from_returns as _weighted_sharpe,
+    sharpe as _sharpe,
 )
 # 7-day holdout matches the calibrator's 7-day fit pool — cal_train sits inside
 # the holdout window. The walk-forward folds operate on days -60..-7, fully
@@ -273,6 +275,10 @@ class AgentScheduler:
         snap["trade_context"] = ctx
         mp = ctx.get("market_price_up", 0) if side == "up" else ctx.get("market_price_down", 0)
         if not mp or mp <= 0 or mp >= 1:
+            logger.debug(
+                "ghost dropped: market_id=%s gate=%s mp=%r (pre-Pillar-1 schema)",
+                g.get("market_id"), g.get("gate_name"), mp,
+            )
             return None
         correct = bool(g.get("ghost_correct"))
         gain_pct = ((1.0 - mp) / mp) if correct else -1.0
@@ -610,7 +616,6 @@ class AgentScheduler:
             _ATR_FLOOR_FRACTION as _ATR_FLOOR_FRAC,
             _REGIME_MOMENTUM_DAMPEN as _L4_DAMPEN,
             _REGIME_MOMENTUM_AMPLIFY as _L4_AMPLIFY,
-            _MOMENTUM_WEIGHT_CLAMP as _L4_MW_CLAMP,
         )
         _dw_in = derived_weights or {}
         l6_weights: dict[str, float] = {
@@ -733,14 +738,38 @@ class AgentScheduler:
                 direction = 1.0 if prev_margin > 0 else (-1.0 if prev_margin < 0 else 0.0)
             logit_p += regime_factor * direction * (regime_weight * logit_scale)
 
-            # L3 + L3b — CLOB flow + spot flow.
+            # L3 + L3b — CLOB flow + spot flow. Recompute L3b from stamped aux
+            # signals so historical outcomes use the same Coinbase math live
+            # uses today; fall back to the stored value for pre-Pillar-1 records
+            # that don't carry `coinbase_cvd_60s`. Joint contribution clamped at
+            # ±0.50 to mirror signal_engine — without this the optimizer scores
+            # candidates against an un-bounded sum live never realizes.
             flow_signal = ctx.get("flow_score", 0.0)
-            logit_p += flow_signal * (flow_weight * logit_scale)
-            spot_flow = ctx.get("spot_flow_signal", 0.0)
-            logit_p += spot_flow * (spot_flow_weight * logit_scale)
+            if ctx.get("coinbase_cvd_60s") is not None:
+                spot_flow = compute_spot_flow_signal(
+                    ctx.get("coinbase_cvd_60s"),
+                    ctx.get("coinbase_taker_60s"),
+                    ctx.get("coinbase_taker_n", 0),
+                )
+            else:
+                spot_flow = ctx.get("spot_flow_signal", 0.0)
+            flow_contribution = (flow_signal * (flow_weight * logit_scale)
+                                 + spot_flow * (spot_flow_weight * logit_scale))
+            logit_p += max(-0.50, min(0.50, flow_contribution))
 
-            # L3e — liquidation pressure
-            liq = ctx.get("liquidation_pressure", 0.0)
+            # L3e — direct-stream liquidation when stamped, else legacy stored value.
+            if any(ctx.get(k) is not None for k in (
+                "bybit_liq_long_usd_min", "bybit_liq_short_usd_min",
+                "binance_liq_long_usd_min", "binance_liq_short_usd_min",
+            )):
+                liq = compute_liquidation_signal(
+                    ctx.get("bybit_liq_long_usd_min"),
+                    ctx.get("bybit_liq_short_usd_min"),
+                    ctx.get("binance_liq_long_usd_min"),
+                    ctx.get("binance_liq_short_usd_min"),
+                )
+            else:
+                liq = ctx.get("liquidation_pressure", 0.0)
             if liq != 0.0:
                 logit_p += liq * (liquidation_weight * logit_scale)
 
@@ -758,8 +787,7 @@ class AgentScheduler:
             # regime conditioning, direction-aware mean-revert flip in trend regime,
             # and smooth magnitude scaling between DAMPEN (0.5×) and AMPLIFY (1.5×).
             def _ind_score(name: str) -> float:
-                ind = snap.get(name, {})
-                return ind.get("norm_score", ind.get("score", 0))
+                return snap.get(name, {}).get("score", 0)
             mean_revert_score = (
                 _ind_score("rsi") * recommended_weights.get("rsi", 0)
                 + _ind_score("stochastic") * recommended_weights.get("stochastic", 0)
@@ -778,8 +806,7 @@ class AgentScheduler:
                               + _tc_mult * trend_confirm_score)
             momentum_score = max(-1.0, min(1.0, momentum_score))
             _t_abs = abs(_t)
-            eff_mw = min(_L4_MW_CLAMP,
-                         abs(momentum_weight) * (_L4_DAMPEN + (_L4_AMPLIFY - _L4_DAMPEN) * _t_abs))
+            eff_mw = abs(momentum_weight) * (_L4_DAMPEN + (_L4_AMPLIFY - _L4_DAMPEN) * _t_abs)
             logit_p += momentum_score * eff_mw * logit_scale
 
             # L6 — derived features. ATR rolling state was updated at L1 above,
@@ -787,11 +814,15 @@ class AgentScheduler:
             if l6_active and atr_raw > 0:
                 atr_short_mean = _atr_short_sum / len(_atr_short) if _atr_short else 0.0
                 atr_long_mean = _atr_long_sum / len(_atr_long) if _atr_long else 0.0
-                # `last_return` reconstructed from the stored snapshot's closes
-                # tail when present; otherwise zero (feature degrades gracefully).
+                # `last_return` matches live: prefer the stamped `btc_price`
+                # (Coinbase WS) over `closes_tail[-1]` (Binance partial kline) so
+                # the L6 autocorr_signed_mag replay mirrors signal_engine exactly.
                 _closes_tail = snap.get("closes_tail") or ctx.get("closes_tail")
-                if _closes_tail and len(_closes_tail) >= 2 and float(_closes_tail[-2]) != 0.0:
-                    _last_return = float(_closes_tail[-1] - _closes_tail[-2]) / float(_closes_tail[-2])
+                _ref_price = ctx.get("btc_price")
+                if _ref_price is None and _closes_tail:
+                    _ref_price = _closes_tail[-1]
+                if _ref_price is not None and _closes_tail and len(_closes_tail) >= 2 and float(_closes_tail[-2]) != 0.0:
+                    _last_return = (float(_ref_price) - float(_closes_tail[-2])) / float(_closes_tail[-2])
                 else:
                     _last_return = 0.0
                 fctx = FeatureContext(
@@ -1096,7 +1127,11 @@ class AgentScheduler:
             else:
                 regime_buckets["neutral"].append(o)
 
-        MIN_REGIME_N = 20
+        # Lowered from 20 → 8: BTC regime labeling rarely produces a non-neutral
+        # bucket with ≥20 samples in a single validation fold, so the stratified
+        # check was effectively dormant. 8 still requires a meaningful sample but
+        # lets trending / mean-reverting buckets participate when they're real.
+        MIN_REGIME_N = 8
         populated = {k: v for k, v in regime_buckets.items() if len(v) >= MIN_REGIME_N}
         if len(populated) < 2:
             return True, "regime check skipped (insufficient per-regime sample)"
@@ -1224,9 +1259,16 @@ class AgentScheduler:
             reason_str = change.get("reason", "")
             change_info: dict[str, Any] = {"param": param, "value": value}
 
-            # Capture old value for directional tracking (before any adoption mutates the engine)
+            # Capture old value for directional tracking. L6 weights live in
+            # `signal_engine.derived_weights[fname]`, not as `derived_*_weight`
+            # attributes; without this branch every L6 probe records old_value=None
+            # and the directional table is blind to L6 history.
             if self.signal_engine and param != "weights":
-                old_val = getattr(self.signal_engine, param, None)
+                if param.startswith("derived_") and param.endswith("_weight"):
+                    _fname = param[len("derived_"):-len("_weight")]
+                    old_val = self.signal_engine.derived_weights.get(_fname)
+                else:
+                    old_val = getattr(self.signal_engine, param, None)
                 if old_val is not None:
                     change_info["old_value"] = old_val
 
@@ -1254,14 +1296,28 @@ class AgentScheduler:
                 all_candidate_returns.extend(fold_returns)
                 all_candidate_weights.extend(fold_weights)
 
+            # Always record diagnostic fields up front so rejection branches
+            # below preserve enough detail in pipeline_run_log.json to tell
+            # "rejected for being terrible" from "rejected for thin pool".
+            if all_candidate_returns:
+                candidate_sharpe = _weighted_sharpe(all_candidate_returns, all_candidate_weights)
+                candidate_win_rate = sum(1 for r in all_candidate_returns if r > 0) / len(all_candidate_returns)
+            else:
+                candidate_sharpe = 0.0
+                candidate_win_rate = 0.0
+            change_info.update({
+                "candidate_sharpe": round(candidate_sharpe, 4),
+                "candidate_win_rate": round(candidate_win_rate, 4),
+                "fold_sharpes": [round(s, 4) for s in fold_sharpes],
+                "n_candidate_trades": len(all_candidate_returns),
+            })
+
             if len(all_candidate_returns) < 10:
                 msg = f"only {len(all_candidate_returns)} hypothetical trades (need 10)"
                 change_info.update({"decision": "rejected", "reason": msg})
                 logger.debug(f"REJECTED {param}: {msg}")
                 info["per_change"].append(change_info)
                 continue
-
-            candidate_sharpe = _weighted_sharpe(all_candidate_returns, all_candidate_weights)
 
             # Fold consistency: reject if the worst fold collapses below -0.10 Sharpe.
             worst_fold = min(fold_sharpes) if fold_sharpes else 0.0
@@ -1272,14 +1328,6 @@ class AgentScheduler:
                 logger.debug(f"REJECTED {param}: {msg}")
                 info["per_change"].append(change_info)
                 continue
-
-            candidate_win_rate = sum(1 for r in all_candidate_returns if r > 0) / len(all_candidate_returns)
-            change_info.update({
-                "candidate_sharpe": round(candidate_sharpe, 4),
-                "candidate_win_rate": round(candidate_win_rate, 4),
-                "fold_sharpes": [round(s, 4) for s in fold_sharpes],
-                "n_candidate_trades": len(all_candidate_returns),
-            })
 
             adopt, adopt_reason, z_score = self.weight_optimizer.should_adopt(
                 current_sharpe, candidate_sharpe,
@@ -1301,10 +1349,9 @@ class AgentScheduler:
                     adopt_reason += f" | {regime_reason}"
 
             # Holdout confirmation: the last HOLDOUT_DAYS of trades were excluded from
-            # all folds above. Requires candidate to beat baseline by at least
-            # HOLDOUT_ADOPTION_MARGIN — direction-only would pass ~50% of noise
-            # candidates on the small n; the small margin filters the worst.
-            HOLDOUT_ADOPTION_MARGIN = 0.02
+            # all folds above. Margin scales by holdout JK_SE so the gate has the
+            # same z=0.3 confidence regardless of holdout sample size — at n=30 the
+            # margin is ~0.06, at n=300 it shrinks to ~0.02.
             if adopt and holdout_outcomes and len(holdout_outcomes) >= HOLDOUT_MIN_TRADES:
                 base_h, base_h_w = self._backtest_recommendations({}, holdout_outcomes)
                 cand_result_h = self._backtest_single_change(change, holdout_outcomes)
@@ -1312,8 +1359,12 @@ class AgentScheduler:
                 cand_h_w = cand_result_h["weights"]
                 base_sh = _weighted_sharpe(base_h, base_h_w) if base_h else 0.0
                 cand_sh = _weighted_sharpe(cand_h, cand_h_w) if cand_h else 0.0
+                from polybot.agents.weight_optimizer import _jk_se as _h_jk_se, ADOPTION_Z_FLOOR as _ZF
+                _holdout_se = _h_jk_se(base_sh, len(base_h), base_h) if base_h else 0.0
+                HOLDOUT_ADOPTION_MARGIN = max(0.02, _ZF * _holdout_se)
                 change_info["holdout_baseline_sharpe"] = round(base_sh, 4)
                 change_info["holdout_candidate_sharpe"] = round(cand_sh, 4)
+                change_info["holdout_margin"] = round(HOLDOUT_ADOPTION_MARGIN, 4)
                 if cand_sh < base_sh + HOLDOUT_ADOPTION_MARGIN:
                     adopt = False
                     adopt_reason = (f"holdout gate: candidate {cand_sh:+.3f} < baseline "
@@ -1340,9 +1391,6 @@ class AgentScheduler:
                 logger.debug(f"REJECTED {param}: {value} — {adopt_reason} (n={n_trades} candidates, baseline={current_sharpe:.3f}, candidate={candidate_sharpe:.3f})")
 
             info["per_change"].append(change_info)
-
-        # Store baseline sharpe for Claude's context
-        self._baseline_kelly_sharpe = round(current_sharpe, 4)
 
         # Store per-change results for Claude's next cycle
         self._last_per_change_results = [
@@ -1718,6 +1766,7 @@ class AgentScheduler:
 
         if reverted_any:
             self.pipeline_tracker._save(records)
+            self._invalidate_baseline_cache()
 
     async def run_daily_pipeline(self) -> None:
         _now_utc = datetime.now(timezone.utc)
@@ -1812,9 +1861,15 @@ class AgentScheduler:
         # never overlap with the calibrator's training data.
         opt_outcomes, holdout_outcomes = self._split_holdout(all_outcomes)
         if len(holdout_outcomes) < HOLDOUT_MIN_TRADES:
-            # Holdout too small to be useful — fall back to using everything.
-            # Same threshold the weight optimizer uses below.
+            logger.info(
+                f"  Holdout INACTIVE: only {len(holdout_outcomes)} trades in last {HOLDOUT_DAYS}d "
+                f"(need {HOLDOUT_MIN_TRADES}). Falling back to full opt-pool; no post-gate confirmation this cycle."
+            )
+            pipeline_info["holdout_active"] = False
+            pipeline_info["holdout_skipped_reason"] = f"n={len(holdout_outcomes)}<{HOLDOUT_MIN_TRADES}"
             opt_outcomes, holdout_outcomes = all_outcomes, []
+        else:
+            pipeline_info["holdout_active"] = True
 
         # Bias detector runs on opt_outcomes (excludes holdout) so the analysis
         # dict the evolver sees has no leakage from the last HOLDOUT_DAYS.
@@ -1949,9 +2004,9 @@ class AgentScheduler:
 
             if len(cal_probs) >= 75:
                 cal = IsotonicCalibrator()
-                # IsotonicCalibrator: monotone isotonic regression (see calibrator.py).
-                # Isotonic is non-parametric — no warm start from previous fit.
-                if cal.fit(cal_probs, cal_outcomes, min_samples=75, sample_weights=cal_weights):
+                _fit_ok = cal.fit(cal_probs, cal_outcomes, min_samples=75, sample_weights=cal_weights)
+                cal_info["fit_diagnostics"] = dict(cal.last_fit_diagnostics)
+                if _fit_ok:
                     # Log-loss on full 7-day pool (more data = more reliable calibration signal).
                     # Hierarchy: identity (no-cal) → current (live) → new (today's fit).
                     # Each tier should beat the one below it.
@@ -2202,10 +2257,10 @@ class AgentScheduler:
             # Discord alert, and strategy_log.md for the operator to review.
             pipeline_info["manual_observations"] = recommendations.get("manual_observations", []) or []
 
-            # Crisis mode: baseline Sharpe < 0.10 AND (recent WR < 48% OR loss/win ratio > 2.0).
-            # Ghosts (rejected at downstream gates) never moved bankroll — they're
-            # model-accuracy proxies, not PnL outcomes. Excluding them keeps the
-            # crisis signal a clean read on whether the bot is actually bleeding.
+            # Crisis mode: baseline Sharpe < 0.10 AND (recent_50 WR < 48% OR loss/win
+            # ratio > 2.0 OR trailing-3-day Sharpe < 0). The 3-day branch catches
+            # sustained collapses that recent-50 smoothing masks — a multi-day
+            # bleed where the freshest fills are still mixed in the rolling 50.
             _recent_real = [o for o in all_outcomes if not o.get("is_ghost")]
             _recent_50 = _recent_real[-50:] if len(_recent_real) >= 50 else _recent_real
             _recent_wr = sum(1 for o in _recent_50 if o.get("correct", False)) / max(len(_recent_50), 1)
@@ -2215,7 +2270,20 @@ class AgentScheduler:
             _avg_win = (sum(_wins) / len(_wins)) if _wins else 0.0
             _avg_loss = (sum(_losses) / len(_losses)) if _losses else 0.0
             _loss_ratio = (_avg_loss / _avg_win) if _avg_win > 0 else 0.0
-            _in_crisis = (self._baseline_kelly_sharpe or 0.0) < 0.10 and (_recent_wr < 0.48 or _loss_ratio > 2.0)
+            # Trailing 3-day Sharpe — independent multi-day signal.
+            from datetime import timedelta as _td
+            _three_d_cutoff = (datetime.now(timezone.utc) - _td(days=3)).isoformat()
+            _trailing_gains = [
+                float(o.get("gain_pct", 0)) for o in _recent_real
+                if (o.get("exit_timestamp") or o.get("timestamp") or "") >= _three_d_cutoff
+            ]
+            _trailing_3d_sharpe = (
+                _sharpe(_trailing_gains) if len(_trailing_gains) >= 20 else 0.0
+            )
+            _in_crisis = (
+                (self._baseline_kelly_sharpe or 0.0) < 0.10
+                and (_recent_wr < 0.48 or _loss_ratio > 2.0)
+            ) or (len(_trailing_gains) >= 20 and _trailing_3d_sharpe < 0.0)
 
             # Sustained crisis (≥3 cycles) → halve kelly_fraction, restore on first non-crisis.
             import json as _json

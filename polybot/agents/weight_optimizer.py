@@ -81,11 +81,14 @@ class WeightOptimizer:
     def should_adopt(self, current_sharpe: float, candidate_sharpe: float,
                      n_trades: int = 0,
                      candidate_returns: list[float] | None = None) -> tuple[bool, str, float]:
-        """Returns (adopt, reason, z_score). z = delta / JK_SE."""
-        delta = candidate_sharpe - current_sharpe
+        """Returns (adopt, reason, z_score). z = delta / JK_SE.
 
-        if candidate_sharpe <= 0:
-            return False, f"candidate Sharpe {candidate_sharpe:.3f} <= 0", 0.0
+        Soft absolute floor: when baseline Sharpe is already negative, allow
+        adoption of a less-negative candidate that clears z — this is the
+        recovery path during regime shifts. The floor of −0.05 prevents
+        adopting an outright collapse.
+        """
+        delta = candidate_sharpe - current_sharpe
 
         if n_trades < MIN_CANDIDATE_TRADES:
             return False, (
@@ -95,6 +98,13 @@ class WeightOptimizer:
 
         se = _jk_se(current_sharpe, n_trades, candidate_returns)
         z = delta / se if se > 0 else 0.0
+
+        abs_floor = min(0.0, current_sharpe) - 0.05
+        if candidate_sharpe < abs_floor:
+            return False, (
+                f"candidate Sharpe {candidate_sharpe:.3f} below abs floor {abs_floor:.3f} "
+                f"(baseline {current_sharpe:.3f})"
+            ), z
 
         if z < ADOPTION_Z_FLOOR:
             return False, (

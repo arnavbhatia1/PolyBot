@@ -15,7 +15,7 @@ from typing import Any
 from polybot.config.param_registry import CLAMP_RANGES, default_for as _d
 
 EXPLORE_STEPS: dict[str, float] = {
-    "atr_sigma_ratio":       0.10,
+    "atr_sigma_ratio":       0.15,
     "logit_scale":           0.50,
     "student_t_df":          1,
     "momentum_weight":       0.04,
@@ -24,7 +24,7 @@ EXPLORE_STEPS: dict[str, float] = {
     "spot_flow_weight":      0.02,
     "liquidation_weight":    0.02,
     "prev_margin_weight":    0.01,
-    "min_atr":               2.0,
+    "min_atr":               3.0,
     "kelly_fraction":        0.02,
     "min_model_probability": 0.02,
     "min_edge":              0.01,
@@ -34,15 +34,25 @@ EXPLORE_STEPS: dict[str, float] = {
     "deep_loss_hold_threshold":   0.04,
     "l5_regime_damp_cap":         0.10,
     "atr_regime_shift_threshold": 0.10,
+    "exit_edge_threshold":        0.02,
     "derived_log_atr_ratio_weight":        0.01,
     "derived_autocorr_signed_mag_weight":  0.01,
-    "derived_vol_regime_shift_weight":     0.01,
     "derived_flow_disagreement_weight":    0.01,
-    "derived_distance_atr_ratio_weight":   0.01,
-    "derived_time_remaining_logit_weight": 0.01,
     "derived_liq_signed_sqrt_weight":      0.01,
-    "derived_prev_margin_sq_weight":       0.01,
 }
+
+# Forced one-time exploration of audit-identified values. Each (param, value)
+# fires exactly once — when the directional table has no prior record AND the
+# live value isn't already there. Drives 3.4(2) L6 turn-on probes and 3.5
+# `exit_edge_threshold` sweep grounded in counterfactual data.
+STRUCTURAL_PROBES: list[tuple[str, float, str]] = [
+    ("exit_edge_threshold", -0.08, "structural probe — counterfactual hold-better at edge ≈ -0.08"),
+    ("exit_edge_threshold", -0.05, "structural probe — counterfactual hold-better at edge ≈ -0.05"),
+    ("exit_edge_threshold", -0.03, "structural probe — counterfactual hold-better at edge ≈ -0.03"),
+    ("derived_log_atr_ratio_weight",       0.005, "structural probe — L6 feature never raised off zero"),
+    ("derived_autocorr_signed_mag_weight", 0.005, "structural probe — L6 feature never raised off zero"),
+    ("derived_liq_signed_sqrt_weight",     0.005, "structural probe — L6 feature never raised off zero"),
+]
 
 _CAP = 5         # max changes adopted per cycle
 _MIN_N = 50      # min trades before any proposal
@@ -52,9 +62,18 @@ _MIN_N = 50      # min trades before any proposal
 # is statistically indistinguishable from baseline. Ramp the step up so the pipeline
 # can escape the soft-local bowl. Reset to base on any adoption (handled implicitly
 # by directional_table evidence becoming a non-trivial bt_delta).
-_RAMP_NOISE_FLOOR = 0.003      # ≈ ADOPTION_Z_FLOOR × typical JK_SE at n~9k
-_RAMP_PER_DEAD_DIRECTION = 0.5 # +50% per stuck direction
-_RAMP_MAX = 3.0                # cap — too-large steps get clamped to bounds anyway
+_RAMP_NOISE_FLOOR_FALLBACK = 0.003
+_RAMP_PER_DEAD_DIRECTION = 0.5
+_RAMP_MAX = 3.0
+
+
+def empirical_noise_floor(baseline_jk_se: float | None) -> float:
+    """Adoption-z × empirical JK_SE — tracks real sample variance per cycle.
+    Falls back to the legacy 0.003 constant when the scheduler hasn't precomputed
+    baseline JK_SE yet (first cycle after restart)."""
+    if baseline_jk_se is None or baseline_jk_se <= 0:
+        return _RAMP_NOISE_FLOOR_FALLBACK
+    return max(_RAMP_NOISE_FLOOR_FALLBACK, 0.3 * float(baseline_jk_se))
 
 
 def _clamp(value: Any, param: str) -> Any:
@@ -198,6 +217,36 @@ class BaseRecommender:
     def _value_failed(self, param: str, value: float, atol: float = 1e-3) -> bool:
         return any(abs(f - value) < atol for f in self._failed_values.get(param, set()))
 
+    def _value_already_tested(self, param: str, value: float, atol: float = 1e-3) -> bool:
+        """True if (param, value) appears in either the failures list or the
+        directional table — i.e. the pipeline has already evaluated it."""
+        if self._value_failed(param, value, atol):
+            return True
+        for direction in ("up", "down"):
+            entry = self._dir_table.get((param, direction))
+            if entry is None:
+                continue
+            if entry.get("n", 0) >= 1 and entry.get("bt_delta") is not None:
+                return True
+        return False
+
+    def _rule_structural_probes(self) -> None:
+        """Forced one-cycle exploration of audit-identified values. Fires once
+        per (param, value) — when there's no live evidence yet AND the value
+        isn't already the running config. Skips after evidence appears."""
+        for param, value, reason in STRUCTURAL_PROBES:
+            if param not in CLAMP_RANGES:
+                continue
+            cur = self.cfg.get(param)
+            try:
+                if cur is not None and abs(float(cur) - float(value)) < 1e-6:
+                    continue
+            except (TypeError, ValueError):
+                pass
+            if self._value_failed(param, value):
+                continue
+            self._propose(param, value, reason, predicted_delta=0.010, ci=(-0.005, 0.030))
+
     def _dedupe(self, props: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen: dict[str, dict[str, Any]] = {}
         for p in props:
@@ -212,13 +261,9 @@ class BaseRecommender:
     # ---- the core rule ---- #
 
     def _step_ramp(self, up: dict | None, dn: dict | None) -> float:
-        """Adaptive multiplier on EXPLORE_STEPS.
-
-        Counts directions where past probes returned a |bt_delta| under the noise
-        floor — each such "dead direction" adds RAMP_PER_DEAD_DIRECTION to the
-        multiplier. Adoptions break the loop because the directional table starts
-        showing meaningful bt_delta on the next cycle.
-        """
+        """Adaptive multiplier on EXPLORE_STEPS. Noise floor is the empirical
+        cycle-baseline JK_SE × ADOPTION_Z_FLOOR — not a static 0.003."""
+        noise_floor = empirical_noise_floor(self.analysis.get("baseline_jk_se"))
         dead = 0
         for entry in (up, dn):
             if entry is None:
@@ -227,7 +272,7 @@ class BaseRecommender:
             n = entry.get("n", 0) or 0
             if bt is None or n < 1:
                 continue
-            if abs(float(bt)) < _RAMP_NOISE_FLOOR:
+            if abs(float(bt)) < noise_floor:
                 dead += 1
         if dead == 0:
             return 1.0

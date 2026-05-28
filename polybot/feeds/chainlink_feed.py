@@ -1,23 +1,24 @@
-"""Chainlink BTC/USD oracle (Polymarket RTDS WS). The resolution price source + 5-min strike capture."""
+"""Chainlink BTC/USD oracle (via Polymarket RTDS WS). Resolution price source + 5-min strike capture."""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import socket
 import time
 from typing import Any
 
 import websockets
 
 from polybot.feeds._json import loads as _loads
+from polybot.feeds._socket import enable_nodelay
+from polybot.feeds._staleness import StalenessTracker
 
 logger = logging.getLogger("polybot")
 
 RTDS_WS_URL = "wss://ws-live-data.polymarket.com"
-PING_INTERVAL_S = 5         # WebSocket-level ping (library handles)
-APP_PING_INTERVAL_S = 10    # Application-level PING to keep RTDS subscription alive
-STALE_TIMEOUT_S = 20        # Force reconnect if no Chainlink update in this many seconds
+PING_INTERVAL_S = 5            # WebSocket-level ping (library handles)
+APP_PING_INTERVAL_S = 10       # Application-level PING to keep RTDS subscription alive
+STALE_TIMEOUT_S = 60           # Chainlink mainnet can be quiet for >20s in low-vol; 60s is a true dead-feed signal
 
 
 class ChainlinkFeed:
@@ -25,14 +26,17 @@ class ChainlinkFeed:
 
     def __init__(self) -> None:
         self._price: float = 0.0
-        self._last_update: float = 0.0
+        self._last_update: float = 0.0     # local receipt time
+        self._last_payload_ts: float = 0.0 # RTDS-reported ts when present
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
         self._running: bool = False
-        # Strike capture: {window_ts: chainlink_price_at_boundary}
+        # Strike capture: {next_window_ts: chainlink_price_at_latest_observation}.
+        # The last observation before the boundary defines the strike — mirrors
+        # what Polymarket's on-chain latestRoundData() returns at the boundary block.
         self._boundary_prices: dict[int, float] = {}
-        self._last_boundary_ts: int = 0
+        self.staleness = StalenessTracker("chainlink")
 
     @property
     def price(self) -> float:
@@ -45,37 +49,21 @@ class ChainlinkFeed:
         return time.time() - self._last_update
 
     def get_strike(self, window_ts: int) -> float | None:
-        """Get the Chainlink price captured at a 5-min window boundary.
-
-        Returns None if not captured (feed wasn't running at that boundary).
-        """
         return self._boundary_prices.get(window_ts)
 
-    def _check_boundary(self) -> None:
-        """Keep the upcoming window's strike current with the latest Chainlink price."""
+    def _record_boundary(self, observed_ts: float) -> None:
         if self._price <= 0:
             return
-        now_ts = int(time.time())
-        boundary_ts = (now_ts // 300) * 300
-        next_boundary_ts = boundary_ts + 300
+        next_boundary_ts = int(observed_ts // 300) * 300 + 300
         self._boundary_prices[next_boundary_ts] = self._price
-
-        if boundary_ts != self._last_boundary_ts:
-            self._last_boundary_ts = boundary_ts
-            logger.debug(
-                f"ChainlinkFeed: boundary crossed, next strike ${self._boundary_prices.get(next_boundary_ts, 0):,.2f}"
-            )
-            # Keep 2 hours of boundary prices so the orphan-resolution fallback
-            cutoff = now_ts - 7200
-            self._boundary_prices = {
-                k: v for k, v in self._boundary_prices.items() if k > cutoff
-            }
+        # Keep 2 h of strikes for the orphan-resolution fallback.
+        cutoff = int(observed_ts) - 7200
+        self._boundary_prices = {k: v for k, v in self._boundary_prices.items() if k > cutoff}
 
     async def start(self) -> None:
         self._running = True
         self._task = asyncio.create_task(self._run())
         self._watchdog_task = asyncio.create_task(self._watchdog())
-        logger.debug("ChainlinkFeed: starting RTDS WebSocket for btc/usd")
 
     async def stop(self) -> None:
         self._running = False
@@ -88,30 +76,27 @@ class ChainlinkFeed:
                     await t
                 except asyncio.CancelledError:
                     pass
-        logger.debug("ChainlinkFeed: stopped")
 
     async def _watchdog(self) -> None:
-        """Force WS reconnect when no Chainlink updates arrive for STALE_TIMEOUT_S."""
+        """Force WS reconnect when no updates arrive for STALE_TIMEOUT_S."""
         while self._running and self._last_update == 0:
             await asyncio.sleep(2)
         while self._running:
             await asyncio.sleep(10)
             if self._last_update > 0 and (time.time() - self._last_update) > STALE_TIMEOUT_S:
-                age = time.time() - self._last_update
                 if self._ws is not None:
                     logger.warning(
-                        f"ChainlinkFeed: no update in {age:.0f}s — forcing reconnect"
+                        "ChainlinkFeed: no update in %.0fs — forcing reconnect",
+                        time.time() - self._last_update,
                     )
                     try:
                         await self._ws.close()
                     except Exception:
                         pass
                     self._ws = None
-                # After closing, give _run a moment to reconnect before re-checking.
                 await asyncio.sleep(5)
 
     async def _app_ping(self, ws: Any) -> None:
-        """Send application-level PING messages to keep the RTDS subscription active."""
         try:
             while True:
                 await asyncio.sleep(APP_PING_INTERVAL_S)
@@ -128,19 +113,12 @@ class ChainlinkFeed:
             try:
                 async with websockets.connect(RTDS_WS_URL, ping_interval=PING_INTERVAL_S, compression=None) as ws:
                     self._ws = ws
-                    _sock = ws.transport.get_extra_info('socket') if getattr(ws, 'transport', None) else None
-                    if _sock is not None:
-                        try: _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                        except Exception: pass
-                    # Subscribe to Chainlink BTC/USD (resolution oracle)
+                    enable_nodelay(ws, "chainlink")
+                    self.staleness.reset()
                     await ws.send(json.dumps({
                         "action": "subscribe",
-                        "subscriptions": [{
-                            "topic": "crypto_prices_chainlink",
-                            "type": "*",
-                        }],
+                        "subscriptions": [{"topic": "crypto_prices_chainlink", "type": "*"}],
                     }))
-                    logger.debug("ChainlinkFeed: subscribed to crypto_prices_chainlink btc/usd")
                     ping_task = asyncio.create_task(self._app_ping(ws))
 
                     async for raw in ws:
@@ -151,24 +129,34 @@ class ChainlinkFeed:
                         try:
                             msg = _loads(raw)
                             payload = msg.get("payload", {})
-                            symbol = payload.get("symbol", "")
+                            if payload.get("symbol", "") != "btc/usd":
+                                continue
                             value = payload.get("value")
-                            if symbol == "btc/usd" and value is not None:
-                                self._price = float(value)
-                                self._last_update = time.time()
-                                self._check_boundary()
+                            if value is None:
+                                continue
+                            now = time.time()
+                            self._price = float(value)
+                            self._last_update = now
+                            # Prefer the RTDS-reported timestamp when present; falls
+                            # back to wall-clock so the boundary record is robust to
+                            # a missing payload field.
+                            payload_ts = payload.get("timestamp") or payload.get("ts")
+                            observed_ts = float(payload_ts) if payload_ts is not None else now
+                            self._last_payload_ts = observed_ts
+                            self.staleness.observe(now)
+                            self._record_boundary(observed_ts)
                         except (ValueError, TypeError):
                             pass
             except (websockets.ConnectionClosed, ConnectionError, OSError) as e:
                 if not self._running:
                     break
-                logger.warning(f"ChainlinkFeed: WS disconnected ({e}), reconnecting in 5s")
+                logger.warning("ChainlinkFeed: WS disconnected (%s), reconnecting in 5s", e)
                 self._ws = None
                 await asyncio.sleep(5)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"ChainlinkFeed: unexpected error: {e}", exc_info=True)
+                logger.error("ChainlinkFeed: unexpected error: %s", e, exc_info=True)
                 self._ws = None
                 await asyncio.sleep(5)
             finally:

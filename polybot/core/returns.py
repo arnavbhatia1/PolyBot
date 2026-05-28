@@ -13,7 +13,10 @@ def lag1_autocorr(closes: np.ndarray, lookback: int) -> float:
     if len(closes) < lookback + 2:
         return 0.0
     window = closes[-(lookback + 1):]
-    returns = np.diff(window) / window[:-1]
+    denom = window[:-1]
+    if np.any(denom <= 0):
+        return 0.0
+    returns = np.diff(window) / denom
     if len(returns) < 6:
         return 0.0
     r1 = returns[:-1]

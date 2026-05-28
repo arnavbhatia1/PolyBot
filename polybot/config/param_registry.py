@@ -29,8 +29,8 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     # ── Layer 2–5 weights ───────────────────────────────────────────────────
     ParamSpec("regime_weight",           "signal.regime_weight",           0.02,  0.10,  float, 0.03,  "L2 regime autocorr × direction"),
     ParamSpec("flow_weight",             "signal.flow_weight",             0.02,  0.12,  float, 0.04,  "L3 CLOB book imbalance + trade flow"),
-    ParamSpec("spot_flow_weight",        "signal.spot_flow_weight",        0.01,  0.15,  float, 0.10,  "L3b Binance CVD + taker ratio"),
-    ParamSpec("liquidation_weight",      "signal.liquidation_weight",      0.01,  0.10,  float, 0.03,  "L3e Bybit OI liquidation pressure"),
+    ParamSpec("spot_flow_weight",        "signal.spot_flow_weight",        0.01,  0.15,  float, 0.10,  "L3b Coinbase CVD + taker ratio"),
+    ParamSpec("liquidation_weight",      "signal.liquidation_weight",      0.01,  0.10,  float, 0.03,  "L3e direct liquidation streams (Bybit + Binance forceOrder)"),
     ParamSpec("prev_margin_weight",      "signal.prev_margin_weight",      0.01,  0.05,  float, 0.02,  "L5 prev-window resolution margin carry"),
     ParamSpec("momentum_weight",         "signal.momentum_weight",         0.0,   0.10,  float, 0.04,  "L4 indicator magnitude"),
     # ── Sizing ──────────────────────────────────────────────────────────────
@@ -62,21 +62,13 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
     # ── L6 derived feature weights (default 0.0 — layer inert until pipeline raises one) ──
     # Each scaled by logit_scale; combined L6 hard-clamped to ±0.25 logits.
     ParamSpec("derived_log_atr_ratio_weight",         "signal.derived.log_atr_ratio",         0.0, 0.05, float, 0.0,
-              "L6 log(ATR_short/ATR_long) — vol regime indicator"),
+              "L6 log(ATR_short/ATR_long) — vol regime indicator, clipped to ±1.5"),
     ParamSpec("derived_autocorr_signed_mag_weight",   "signal.derived.autocorr_signed_mag",   0.0, 0.05, float, 0.0,
-              "L6 regime × |last_return| — momentum strength conditional on regime"),
-    ParamSpec("derived_vol_regime_shift_weight",      "signal.derived.vol_regime_shift",      0.0, 0.05, float, 0.0,
-              "L6 ATR_short/ATR_long − 1 (linear sibling of log_atr_ratio)"),
+              "L6 regime × tanh(last_return × 100) — direction-aware momentum strength"),
     ParamSpec("derived_flow_disagreement_weight",     "signal.derived.flow_disagreement",     0.0, 0.05, float, 0.0,
-              "L6 flow × spot_flow — positive when CLOB and spot agree, negative when they fight"),
-    ParamSpec("derived_distance_atr_ratio_weight",    "signal.derived.distance_atr_ratio",    0.0, 0.05, float, 0.0,
-              "L6 tanh(distance/ATR) — bounded alternative to L1 z-score"),
-    ParamSpec("derived_time_remaining_logit_weight",  "signal.derived.time_remaining_logit",  0.0, 0.05, float, 0.0,
-              "L6 (seconds_remaining − 150)/150 — late-window asymmetry"),
+              "L6 tanh(flow + spot_flow) — direction-aware flow consensus"),
     ParamSpec("derived_liq_signed_sqrt_weight",       "signal.derived.liq_signed_sqrt",       0.0, 0.05, float, 0.0,
               "L6 sign(liq) × min(√|liq|, 1) — softer-saturation liquidation pressure"),
-    ParamSpec("derived_prev_margin_sq_weight",        "signal.derived.prev_margin_sq",        0.0, 0.05, float, 0.0,
-              "L6 sign(prev_margin) × min((prev_margin/ATR)², 1) — non-linear prev-window carry"),
 )
 
 # ── Derived lookups (everything else imports these, not PIPELINE_PARAMS directly) ──
@@ -151,8 +143,8 @@ MANUAL_ONLY_PARAMS: frozenset[str] = frozenset({
     # Circuit breaker (bankroll protection)
     "circuit_breaker.floor_pct",
     "circuit_breaker.min_multiplier",
-    # Indicator periods — backtest replays stored norm_scores at the active
-    # period; alternate periods would need raw 1-min candles per snapshot.
+    # Indicator periods — backtest replays stored scores at the active period;
+    # alternate periods would need raw 1-min candles per snapshot.
     "indicators.rsi.period",
     "indicators.rsi.overbought",
     "indicators.rsi.oversold",

@@ -696,15 +696,25 @@ class BiasDetector:
         PROTECTIVE_GATES = {"adverse_rate_at_30s", "adverse_rate_30s",
                             "adverse_selection", "adverse_selection_30s"}
 
+        def _market_price_gain(r: dict[str, Any]) -> float:
+            """gain_pct re-derived from market_price_<side> so the bias detector
+            shares units with `_ghost_to_outcome`'s backtest accounting."""
+            side = (r.get("side") or "").lower()
+            ctx = r.get("indicator_snapshot", {}).get("trade_context", {})
+            mp = ctx.get("market_price_up", 0) if side == "up" else ctx.get("market_price_down", 0)
+            if not mp or mp <= 0 or mp >= 1:
+                return float(r.get("ghost_gain_pct", 0))
+            return ((1.0 - mp) / mp) if r.get("ghost_correct") else -1.0
+
         by_gate_result: dict[str, Any] = {}
         for gate, records in by_gate.items():
             wins = sum(1 for r in records if r.get("ghost_correct", False))
-            gain_pcts = [r.get("ghost_gain_pct", 0) for r in records]
+            gain_pcts = [_market_price_gain(r) for r in records]
             avg_gain = sum(gain_pcts) / len(gain_pcts) if gain_pcts else 0.0
             wr = wins / len(records) if records else 0.0
             simulated_pnl = round(sum(
                 r.get("indicator_snapshot", {}).get("trade_context", {}).get("size", 1.0)
-                * r.get("ghost_gain_pct", 0)
+                * _market_price_gain(r)
                 for r in records
             ), 2)
             if gate in PROTECTIVE_GATES:

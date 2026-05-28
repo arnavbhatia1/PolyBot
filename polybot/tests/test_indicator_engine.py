@@ -72,33 +72,5 @@ def test_set_weights_updates_in_place(engine):
     assert w["rsi"] == 0.30 and w["macd"] == 0.30
 
 
-# --- Normalizer tests ---
-
-from polybot.indicators.engine import IndicatorNormalizer
-
-def test_normalizer_warmup_returns_raw():
-    """First 50 calls return 0.0 (neutral) during warmup."""
-    norm = IndicatorNormalizer(warmup=50)
-    for i in range(49):
-        result = norm.normalize("rsi", 0.5)
-        assert result == 0.0
-
-
-def test_normalizer_after_warmup_returns_zscore():
-    """After warmup, scores are zero-mean unit-variance."""
-    norm = IndicatorNormalizer(alpha=0.05, warmup=10)
-    for _ in range(20):
-        norm.normalize("rsi", 0.3)
-    result = norm.normalize("rsi", 2.0)
-    assert abs(result) > 1.0
-
-
-def test_normalizer_clamps_extremes():
-    """Output clamped to [-3, 3]."""
-    norm = IndicatorNormalizer(alpha=0.05, warmup=5)
-    for _ in range(10):
-        norm.normalize("rsi", 0.0)
-    result = norm.normalize("rsi", 100.0)
-    assert result <= 3.0
-    result = norm.normalize("rsi", -100.0)
-    assert result >= -3.0
+# IndicatorNormalizer removed in Pillar 2.3 — indicator scores are already
+# bounded [-1, 1] by their compute_*_signal functions, so L4 reads them raw.

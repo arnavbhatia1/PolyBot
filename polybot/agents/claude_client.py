@@ -165,7 +165,7 @@ l5_regime_damp_cap, atr_regime_shift_threshold. These shape the signal stack; sm
 steps only. Each has a tight range — see CLAMP_RANGES in context.
 
 ## Derived feature weights (L6)
-Eight `derived_<name>_weight` parameters (all default 0.0). Each turns on a feature
+Four `derived_<name>_weight` parameters (all default 0.0). Each turns on a feature
 listed in polybot/core/derived_features.py. Raise off zero ONLY with bias-bucket
 evidence the corresponding feature would have helped — never random walk. Hard
 contribution cap of ±0.25 logits across the combined L6 layer means more than two

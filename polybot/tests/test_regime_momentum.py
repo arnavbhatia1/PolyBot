@@ -4,7 +4,6 @@ from polybot.core.signal_engine import (
     SignalEngine,
     _REGIME_MOMENTUM_AMPLIFY,
     _REGIME_MOMENTUM_DAMPEN,
-    _MOMENTUM_WEIGHT_CLAMP,
     _ATR_HISTORY_MIN_SAMPLES,
     _ATR_FLOOR_FRACTION,
 )
@@ -57,10 +56,13 @@ def test_momentum_magnitude_is_continuous_across_threshold():
     assert abs(just_over - just_under) < 0.0002
 
 
-def test_momentum_magnitude_clamped_to_invariant():
-    eng = _engine(mw=-0.08)  # |mw| × 1.5 = 0.12 > 0.10 clamp.
-    assert eng.effective_momentum_weight(0.50) == _MOMENTUM_WEIGHT_CLAMP
-    assert eng.effective_momentum_weight(-0.50) == _MOMENTUM_WEIGHT_CLAMP
+def test_momentum_magnitude_reaches_full_amplify():
+    """No upstream clamp — saturated regime (|autocorr| ≫ threshold) hits the
+    amplifier anchor cleanly."""
+    eng = _engine(mw=-0.08)
+    expected = 0.08 * _REGIME_MOMENTUM_AMPLIFY
+    assert eng.effective_momentum_weight(5.0) == pytest.approx(expected, rel=1e-3)
+    assert eng.effective_momentum_weight(-5.0) == pytest.approx(expected, rel=1e-3)
 
 
 def test_compute_momentum_flips_mean_revert_in_trending_regime():

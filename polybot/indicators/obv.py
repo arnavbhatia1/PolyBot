@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import numpy as np
 
 
@@ -24,24 +25,26 @@ def compute_obv(closes: np.ndarray, volumes: np.ndarray) -> np.ndarray:
             obv[i] = obv[i - 1]
     return obv
 
+# Typical 1-minute Binance BTC volume scale — tanh saturates around this so OBV
+# slope reads carry graded magnitude information across the practical range.
+_OBV_VOLUME_SCALE = 30.0
+
+
 def compute_obv_signal(closes: np.ndarray, volumes: np.ndarray, slope_period: int = 5) -> dict[str, float]:
     if len(closes) < slope_period + 1:
         return {"obv_slope": 0.0, "price_slope": 0.0, "score": 0.0}
     obv = compute_obv(closes, volumes)
-    obv_slope = float(obv[-1] - obv[-slope_period]) / slope_period
-    price_slope = float(closes[-1] - closes[-slope_period]) / slope_period
+    # Slope = ΔY / ΔX with ΔX = (slope_period − 1) periods between endpoints.
+    span = max(1, slope_period - 1)
+    obv_slope = float(obv[-1] - obv[-slope_period]) / span
+    price_slope = float(closes[-1] - closes[-slope_period]) / span
+    mag = math.tanh(abs(obv_slope) / _OBV_VOLUME_SCALE)
     if obv_slope == 0:
         score = 0.0
-    elif (obv_slope > 0 and price_slope > 0):
-        # Confirmation: OBV and price agree (bullish)
-        score = min(1.0, abs(obv_slope) / (abs(obv_slope) + 1))
-    elif (obv_slope < 0 and price_slope < 0):
-        # Confirmation: OBV and price agree (bearish)
-        score = -min(1.0, abs(obv_slope) / (abs(obv_slope) + 1))
-    elif obv_slope > 0 and price_slope <= 0:
-        # Bullish divergence: volume leads up while price falls (leading signal)
-        score = min(1.0, abs(obv_slope) / (abs(obv_slope) + 1)) * 0.5
+    elif (obv_slope > 0) == (price_slope > 0):
+        # Confirmation: agree direction.
+        score = mag if obv_slope > 0 else -mag
     else:
-        # Bearish divergence: volume leads down while price rises
-        score = -min(1.0, abs(obv_slope) / (abs(obv_slope) + 1)) * 0.5
+        # Divergence — volume leading the opposite direction (leading signal, half weight).
+        score = 0.5 * (mag if obv_slope > 0 else -mag)
     return {"obv_slope": round(obv_slope, 2), "price_slope": round(price_slope, 4), "score": round(score, 4)}

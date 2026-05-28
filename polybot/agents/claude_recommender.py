@@ -64,7 +64,8 @@ class ClaudeRecommender(BaseRecommender):
             if isinstance(w, str):
                 self.warnings.append(w)
 
-        # Always-on exploratory probe — same as LocalRecommender.
+        # Forced structural probes + always-on exploratory probe — same as LocalRecommender.
+        self._rule_structural_probes()
         self._rule_exploratory()
 
         return self._finalize(

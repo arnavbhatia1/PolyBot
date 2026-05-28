@@ -1,24 +1,25 @@
-"""Bybit BTC perpetual futures feed.
+"""Bybit BTC perpetual feed.
 
-Provides two signals from the leveraged futures market:
-1. Price lead — perp vs spot divergence (leveraged traders react first)
-2. Open interest changes — liquidation pressure for L3e
-
-All data arrives via the public WebSocket (no geo-block for US IPs).
-The REST endpoint is geo-blocked for US; all required fields are in the
-v5 tickers.BTCUSDT WS payload so no REST poll is needed.
+Signals from the leveraged futures market over the public v5 linear WS:
+  - perpetual lastPrice (perp price + perp-vs-spot basis)
+  - markPrice + indexPrice (fair value and basis-impl signal)
+  - fundingRate (positioning pressure)
+  - openInterest (drives L3e liquidation pressure)
+  - direct per-liquidation events (size + side) on the same socket
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import socket
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
 from polybot.feeds._json import loads as _loads
+from polybot.feeds._socket import enable_nodelay
+from polybot.feeds._staleness import StalenessTracker
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +30,11 @@ RECONNECT_MAX = 30
 
 @dataclass
 class BybitState:
-    """Live state from Bybit perpetual feed."""
-
     perp_price: float = 0.0
     perp_updated: float = 0.0
+    mark_price: float = 0.0
+    index_price: float = 0.0
+    funding_rate: float = 0.0
     open_interest: float = 0.0
     open_interest_prev: float = 0.0
     price_at_oi: float = 0.0
@@ -40,65 +42,87 @@ class BybitState:
     oi_updated: float = 0.0
     oi_updated_prev: float = 0.0
 
+    @property
+    def perp_age_s(self) -> float:
+        if self.perp_updated <= 0:
+            return float("inf")
+        return time.time() - self.perp_updated
+
+    @property
+    def basis(self) -> float:
+        """perp − index. Positive → perp trading at premium (long demand)."""
+        if self.perp_price > 0 and self.index_price > 0:
+            return self.perp_price - self.index_price
+        return 0.0
+
 
 class BybitFeed:
-    """WebSocket consumer for Bybit BTC perpetual futures.
+    """v5 linear WS — tickers.BTCUSDT + liquidation.BTCUSDT on one connection."""
 
-    Subscribes to tickers.BTCUSDT on the v5 linear perpetual stream.
-    Updates BybitState with lastPrice, fundingRate, and openInterest
-    from WS tick messages — no REST poll needed.
-    """
+    def __init__(self, ws_url: str = WS_URL, liq_window_s: float = 60.0) -> None:
+        self.ws_url = ws_url
+        self.state = BybitState()
+        self.staleness = StalenessTracker("bybit")
 
-    def __init__(self, ws_url: str = WS_URL) -> None:
-        self.ws_url: str = ws_url
-        self.state: BybitState = BybitState()
-        self._running: bool = False
+        # Each entry: (ts, signed_usd_notional). +usd = long liquidation (price down).
+        # − usd = short liquidation (price up). Per Bybit v5: order.side == "Buy" means
+        # the liquidating order was a buy that closed shorts → short liquidation.
+        self._liquidations: deque[tuple[float, float]] = deque()
+        self._liq_window_s = liq_window_s
+
+        self._running = False
         self._ws: Any = None
-        self._tasks: list[asyncio.Task[None]] = []
+        self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
-        """Launch WebSocket connection."""
         self._running = True
-        self._tasks.append(asyncio.create_task(self._connect_ws()))
+        self._task = asyncio.create_task(self._connect_ws())
 
     async def stop(self) -> None:
-        """Cleanly shut down all tasks."""
         self._running = False
         if self._ws:
             await self._ws.close()
-        for task in self._tasks:
-            task.cancel()
+        if self._task:
+            self._task.cancel()
             try:
-                await task
+                await self._task
             except asyncio.CancelledError:
                 pass
-        self._tasks.clear()
+
+    def liquidation_usd_per_min(self) -> tuple[float, float]:
+        """Returns (long_liq_usd_per_min, short_liq_usd_per_min) over liq_window_s."""
+        now = time.time()
+        cutoff = now - self._liq_window_s
+        long_usd = short_usd = 0.0
+        while self._liquidations and self._liquidations[0][0] < cutoff:
+            self._liquidations.popleft()
+        for ts, usd in self._liquidations:
+            if usd >= 0:
+                long_usd += usd
+            else:
+                short_usd += -usd
+        scale = 60.0 / self._liq_window_s
+        return long_usd * scale, short_usd * scale
 
     async def _connect_ws(self) -> None:
-        """Persistent WebSocket connection with exponential backoff."""
         import websockets
 
         backoff = RECONNECT_BASE
-        # OI updates ~every 5s; >60s idle is the established staleness gate for L3e.
-        # The recv timeout must fire BEFORE that gate so reconnect runs before the
-        # bot is gated off the market — 55s gives just enough margin without
-        # falsely tripping on a normal 5-10s OI tick cadence.
         while self._running:
             try:
-                async with websockets.connect(self.ws_url, ping_interval=20, ping_timeout=30, compression=None) as ws:
+                async with websockets.connect(
+                    self.ws_url, ping_interval=20, ping_timeout=30, compression=None,
+                ) as ws:
                     self._ws = ws
-                    _sock = ws.transport.get_extra_info('socket') if getattr(ws, 'transport', None) else None
-                    if _sock is not None:
-                        try: _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                        except Exception: pass
+                    enable_nodelay(ws, "bybit")
                     backoff = RECONNECT_BASE
-                    logger.debug(f"Bybit WebSocket connected: {self.ws_url}")
+                    self.staleness.reset()
+                    self._liquidations.clear()
 
-                    sub_msg = json.dumps({
+                    await ws.send(json.dumps({
                         "op": "subscribe",
-                        "args": ["tickers.BTCUSDT"],
-                    })
-                    await ws.send(sub_msg)
+                        "args": ["tickers.BTCUSDT", "liquidation.BTCUSDT"],
+                    }))
 
                     while self._running:
                         try:
@@ -116,43 +140,70 @@ class BybitFeed:
             except Exception as e:
                 if not self._running:
                     break
-                logger.warning(f"Bybit WebSocket error: {e}, reconnecting in {backoff}s")
+                logger.warning("Bybit WS error: %s, reconnecting in %ds", e, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX)
 
     def _handle_message(self, data: dict[str, Any]) -> None:
-        """Process a Bybit v5 tickers.BTCUSDT message (snapshot or delta).
+        topic = data.get("topic", "")
+        if topic == "tickers.BTCUSDT":
+            self._handle_ticker(data.get("data", {}))
+        elif topic == "liquidation.BTCUSDT":
+            self._handle_liquidation(data.get("data", {}))
 
-        Delta messages only contain changed fields — each field is updated
-        only when present. openInterest is in the same WS payload, eliminating
-        the need for a geo-blocked REST poll.
-        """
-        if data.get("topic") != "tickers.BTCUSDT":
-            return
-        ticker = data.get("data", {})
+    def _handle_ticker(self, ticker: dict[str, Any]) -> None:
         if not ticker:
             return
         now = time.time()
+        self.staleness.observe(now)
 
-        last_price = ticker.get("lastPrice")
-        if last_price is not None:
+        for field, attr in (
+            ("lastPrice", "perp_price"),
+            ("markPrice", "mark_price"),
+            ("indexPrice", "index_price"),
+            ("fundingRate", "funding_rate"),
+        ):
+            val = ticker.get(field)
+            if val is None:
+                continue
             try:
-                self.state.perp_price = float(last_price)
+                setattr(self.state, attr, float(val))
+            except (ValueError, TypeError):
+                continue
+            if field == "lastPrice":
                 self.state.perp_updated = now
-            except (ValueError, TypeError):
-                pass
 
-        # OI arrives in the WS ticker — no REST needed, no geo-block.
         oi = ticker.get("openInterest")
-        if oi is not None:
+        if oi is None:
+            return
+        try:
+            new_oi = float(oi)
+        except (ValueError, TypeError):
+            return
+        if new_oi > 0 and new_oi != self.state.open_interest:
+            self.state.open_interest_prev = self.state.open_interest
+            self.state.price_at_oi_prev = self.state.price_at_oi
+            self.state.oi_updated_prev = self.state.oi_updated
+            self.state.open_interest = new_oi
+            self.state.price_at_oi = self.state.perp_price
+            self.state.oi_updated = now
+
+    def _handle_liquidation(self, payload: dict[str, Any] | list[dict[str, Any]]) -> None:
+        """Bybit emits liquidation as an object (v5) with size, price, side."""
+        entries = payload if isinstance(payload, list) else [payload]
+        now = time.time()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             try:
-                new_oi = float(oi)
-                if new_oi > 0 and new_oi != self.state.open_interest:
-                    self.state.open_interest_prev = self.state.open_interest
-                    self.state.price_at_oi_prev = self.state.price_at_oi
-                    self.state.oi_updated_prev = self.state.oi_updated
-                    self.state.open_interest = new_oi
-                    self.state.price_at_oi = self.state.perp_price
-                    self.state.oi_updated = now
+                size = float(entry.get("size", 0))
+                price = float(entry.get("price", 0))
             except (ValueError, TypeError):
-                pass
+                continue
+            if size <= 0 or price <= 0:
+                continue
+            usd = size * price
+            # side="Buy" → buy-to-close shorts → short liquidation (price-up event).
+            side = str(entry.get("side", "")).lower()
+            signed = -usd if side == "buy" else usd
+            self._liquidations.append((now, signed))

@@ -204,7 +204,7 @@ class PipelineTracker:
         rets: list[float] = []
         weights: list[float] = []
         for o in outcomes:
-            ts = o.get("timestamp", "")
+            ts = o.get("exit_timestamp") or o.get("timestamp", "")
             if not ts:
                 continue
             try:

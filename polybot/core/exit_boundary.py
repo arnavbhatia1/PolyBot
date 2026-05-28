@@ -9,9 +9,6 @@ _PRICE_VOL_PER_MIN = 0.07
 
 
 class ExitBoundary:
-    def __init__(self, df: int = 5) -> None:
-        self.df = df
-
     def compute_exit_threshold(self, seconds_remaining: float, entry_price: float, fee_rate: float = 0.018, market_price: float = 0.5) -> float:
         """Minimum holding_edge to justify holding. More negative = more patient."""
         minutes_remaining = max(seconds_remaining / 60.0, 0.01)

@@ -28,7 +28,15 @@ def test_should_adopt_rejects_low_sample(optimizer):
     assert "need 100" in reason
 
 
-def test_should_adopt_rejects_negative_candidate(optimizer):
-    adopt, _reason, z = optimizer.should_adopt(0.20, -0.10, n_trades=200)
+def test_should_adopt_rejects_below_abs_floor(optimizer):
+    # Healthy baseline + collapsed candidate → blocked by abs floor.
+    adopt, reason, _z = optimizer.should_adopt(0.20, -0.10, n_trades=200)
     assert adopt is False
-    assert z == 0.0  # short-circuit before z is computed
+    assert "abs floor" in reason
+
+
+def test_should_adopt_allows_recovery_from_negative_baseline(optimizer):
+    # Baseline negative, candidate less negative AND clears z — recovery path.
+    adopt, reason, z = optimizer.should_adopt(-0.05, 0.10, n_trades=200)
+    assert adopt is True
+    assert z > 0.3

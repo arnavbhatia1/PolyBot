@@ -64,12 +64,8 @@ SAMPLE_CONFIG = {
         "derived": {
             "log_atr_ratio": 0.0,
             "autocorr_signed_mag": 0.0,
-            "vol_regime_shift": 0.0,
             "flow_disagreement": 0.0,
-            "distance_atr_ratio": 0.0,
-            "time_remaining_logit": 0.0,
             "liq_signed_sqrt": 0.0,
-            "prev_margin_sq": 0.0,
         },
     },
     "entry_timing": {

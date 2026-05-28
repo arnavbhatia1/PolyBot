@@ -17,8 +17,11 @@ def compute_vwap_signal(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
     typical = (highs + lows + closes) / 3.0
     # Volume-weighted std: heavy-volume candles dominate deviation, not outlier thin candles
     total_vol = np.sum(volumes)
-    if len(typical) > 1 and total_vol > 0:
-        std = float(np.sqrt(np.sum(volumes * (typical - vwap) ** 2) / total_vol))
+    # Frequency-weighted sample std with Bessel correction (n_eff − 1 in the denominator).
+    n_eff = max(2, len(typical))
+    bessel = total_vol * (n_eff - 1) / n_eff
+    if len(typical) > 1 and bessel > 0:
+        std = float(np.sqrt(np.sum(volumes * (typical - vwap) ** 2) / bessel))
     else:
         std = 1.0
     if std == 0:

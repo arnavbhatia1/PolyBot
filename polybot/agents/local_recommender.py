@@ -19,6 +19,9 @@ class LocalRecommender(BaseRecommender):
         if n < 50:
             return self._insufficient(n)
 
+        # Forced structural probes (once per audit-identified value)
+        self._rule_structural_probes()
+
         # Always-on exploratory probe (shared base class)
         self._rule_exploratory()
 

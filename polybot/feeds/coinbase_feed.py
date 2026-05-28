@@ -1,29 +1,25 @@
 """Coinbase Exchange real-time BTC price feed.
 
-Provides a faster BTC/USD price than Binance.US by consuming the public
-Coinbase Exchange WebSocket ticker channel. Coinbase is the #1 US exchange
-by volume and typically leads Binance.US by 0.5-2 seconds on price moves.
+Public WebSocket ticker channel (fires on every trade). Provides:
+  - latest BTC-USD trade price (fastest US-venue feed)
+  - best bid / best ask
+  - per-trade CVD + taker ratio (aggressor side × size)
 
-No authentication required for the public feed.
-
-Usage:
-    feed = CoinbaseFeed()
-    await feed.start()
-    # Later:
-    price = feed.state.price       # Latest BTC-USD trade price
-    age = feed.state.age_seconds   # Seconds since last update
+Sub-second realized vol comes from Binance kline_1s — no duplicate computation here.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import socket
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
 from polybot.feeds._json import loads as _loads
+from polybot.feeds._socket import enable_nodelay
+from polybot.feeds._staleness import StalenessTracker
 
 logger = logging.getLogger(__name__)
 
@@ -34,52 +30,41 @@ RECONNECT_MAX = 30
 
 @dataclass
 class CoinbaseState:
-    """Live state from Coinbase Exchange ticker."""
     price: float = 0.0
     updated_at: float = 0.0
     best_bid: float = 0.0
     best_ask: float = 0.0
-    volume_24h: float = 0.0
 
     @property
     def age_seconds(self) -> float:
-        """Seconds since last price update."""
         if self.updated_at == 0:
             return float("inf")
         return time.time() - self.updated_at
 
-    @property
-    def spread(self) -> float:
-        """Current bid-ask spread in USD."""
-        if self.best_bid > 0 and self.best_ask > 0:
-            return self.best_ask - self.best_bid
-        return 0.0
-
 
 class CoinbaseFeed:
-    """WebSocket consumer for Coinbase Exchange BTC-USD ticker.
+    """Streams Coinbase BTC-USD ticker; tracks price + spot-venue CVD/taker."""
 
-    Subscribes to the public ticker channel which fires on every trade.
-    Provides real-time last price, best bid/ask, and 24h volume.
-    Reconnects automatically with exponential backoff.
-    """
-
-    def __init__(self, ws_url: str = WS_URL, product_id: str = "BTC-USD") -> None:
+    def __init__(self, ws_url: str = WS_URL, product_id: str = "BTC-USD",
+                 trade_buffer_s: float = 300.0) -> None:
         self.ws_url = ws_url
         self.product_id = product_id
         self.state = CoinbaseState()
+        self.staleness = StalenessTracker("coinbase")
+
+        # Per-trade flow: (ts, signed_size). +size = buyer aggressor, -size = seller aggressor.
+        self._trade_buffer_s = trade_buffer_s
+        self._trades: deque[tuple[float, float]] = deque()
+
         self._running = False
         self._ws: Any = None
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
-        """Start consuming the Coinbase ticker stream."""
         self._running = True
         self._task = asyncio.create_task(self._connect_ws())
-        logger.debug("CoinbaseFeed starting for %s", self.product_id)
 
     async def stop(self) -> None:
-        """Cleanly shut down."""
         self._running = False
         if self._ws:
             await self._ws.close()
@@ -89,43 +74,89 @@ class CoinbaseFeed:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info("CoinbaseFeed stopped")
+
+    def get_cvd(self, window_s: float = 60.0) -> float:
+        """Signed cumulative volume delta over the last window_s seconds."""
+        cutoff = time.time() - window_s
+        total = 0.0
+        for ts, sz in reversed(self._trades):
+            if ts < cutoff:
+                break
+            total += sz
+        return total
+
+    def get_cvd_acceleration(self, recent_s: float = 15.0, baseline_s: float = 45.0,
+                             min_recent_trades: int = 10) -> float:
+        """First derivative of CVD. Returns 0 when the recent window is too thin
+        to trust — mirrors BinanceTradeAccumulator.get_cvd_acceleration semantics.
+        """
+        now = time.time()
+        recent = baseline = 0.0
+        recent_n = 0
+        for ts, sz in reversed(self._trades):
+            age = now - ts
+            if age <= recent_s:
+                recent += sz
+                recent_n += 1
+            elif age <= recent_s + baseline_s:
+                baseline += sz
+            else:
+                break
+        if recent_n < min_recent_trades:
+            return 0.0
+        return recent / max(recent_s, 1.0) - baseline / max(baseline_s, 1.0)
+
+    def get_taker_ratio(self, window_s: float = 60.0, min_trades: int = 20) -> tuple[float, int]:
+        """(buy_fraction, n) over window. Returns (0.5, n) when n < min_trades."""
+        cutoff = time.time() - window_s
+        buy = total = 0.0
+        n = 0
+        for ts, sz in reversed(self._trades):
+            if ts < cutoff:
+                break
+            n += 1
+            total += abs(sz)
+            if sz > 0:
+                buy += sz
+        if n < min_trades or total <= 0:
+            return 0.5, n
+        return buy / total, n
+
+    def trade_count_in(self, window_s: float) -> int:
+        cutoff = time.time() - window_s
+        n = 0
+        for ts, _ in reversed(self._trades):
+            if ts < cutoff:
+                break
+            n += 1
+        return n
+
+    def _prune_trades(self, now: float) -> None:
+        cutoff = now - self._trade_buffer_s
+        while self._trades and self._trades[0][0] < cutoff:
+            self._trades.popleft()
 
     async def _connect_ws(self) -> None:
-        """Persistent WebSocket connection with exponential backoff."""
         import websockets
 
         backoff = RECONNECT_BASE
         while self._running:
             try:
                 async with websockets.connect(
-                    self.ws_url,
-                    ping_interval=20,
-                    ping_timeout=60,
-                    compression=None,
+                    self.ws_url, ping_interval=20, ping_timeout=60, compression=None,
                 ) as ws:
                     self._ws = ws
-                    _sock = ws.transport.get_extra_info('socket') if getattr(ws, 'transport', None) else None
-                    if _sock is not None:
-                        try: _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                        except Exception: pass
+                    enable_nodelay(ws, "coinbase")
                     backoff = RECONNECT_BASE
+                    self.staleness.reset()
+                    self._trades.clear()
 
-                    # Subscribe to ticker channel (fires on every trade)
-                    sub = json.dumps({
+                    await ws.send(json.dumps({
                         "type": "subscribe",
                         "product_ids": [self.product_id],
-                        "channels": ["ticker"],
-                    })
-                    await ws.send(sub)
-                    logger.debug("Coinbase WebSocket connected, subscribed to %s ticker",
-                                 self.product_id)
+                        "channels": ["ticker", "heartbeat"],
+                    }))
 
-                    # BTC-USD ticker fires on every trade — many per second.
-                    # Reconnect must run BEFORE the 30s signal-engine staleness
-                    # skip fires, otherwise the bot sits gated off the market
-                    # for the full skip window before the WS even tries to
-                    # recover. 25s catches the dead-socket case in time.
                     while self._running:
                         try:
                             msg = await asyncio.wait_for(ws.recv(), timeout=25.0)
@@ -143,59 +174,48 @@ class CoinbaseFeed:
             except Exception as e:
                 if not self._running:
                     break
-                logger.warning("Coinbase WebSocket error: %s, reconnecting in %ds", e, backoff)
+                logger.warning("Coinbase WS error: %s, reconnecting in %ds", e, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX)
 
     def _handle_message(self, data: dict[str, Any]) -> None:
-        """Process a Coinbase ticker message.
-
-        Ticker message format:
-        {
-            "type": "ticker",
-            "product_id": "BTC-USD",
-            "price": "70727.50",
-            "best_bid": "70727.00",
-            "best_ask": "70728.00",
-            "volume_24h": "245532.79",
-            "side": "buy",
-            "time": "2026-04-12T23:57:20.061Z",
-            "trade_id": 370843401,
-            "last_size": "0.0042"
-        }
-        """
-        if data.get("type") != "ticker":
+        kind = data.get("type")
+        if kind == "heartbeat":
+            self.staleness.observe()
             return
-        if data.get("product_id") != self.product_id:
+        if kind != "ticker" or data.get("product_id") != self.product_id:
             return
 
         now = time.time()
+        self.staleness.observe(now)
 
-        price = data.get("price")
-        if price is not None:
-            try:
-                self.state.price = float(price)
-                self.state.updated_at = now
-            except (ValueError, TypeError):
-                pass
+        try:
+            price = float(data["price"])
+        except (KeyError, ValueError, TypeError):
+            return
+
+        self.state.price = price
+        self.state.updated_at = now
 
         bid = data.get("best_bid")
-        if bid is not None:
-            try:
-                self.state.best_bid = float(bid)
-            except (ValueError, TypeError):
-                pass
-
         ask = data.get("best_ask")
-        if ask is not None:
-            try:
+        try:
+            if bid is not None:
+                self.state.best_bid = float(bid)
+            if ask is not None:
                 self.state.best_ask = float(ask)
-            except (ValueError, TypeError):
-                pass
+        except (ValueError, TypeError):
+            pass
 
-        vol = data.get("volume_24h")
-        if vol is not None:
+        # Per-trade flow: ticker.side is the aggressor (taker) side.
+        side = data.get("side")
+        last_size = data.get("last_size")
+        if side and last_size is not None:
             try:
-                self.state.volume_24h = float(vol)
+                sz = float(last_size)
             except (ValueError, TypeError):
-                pass
+                sz = 0.0
+            if sz > 0:
+                signed = sz if side == "buy" else -sz
+                self._trades.append((now, signed))
+                self._prune_trades(now)

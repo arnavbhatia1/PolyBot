@@ -44,11 +44,13 @@ class CounterfactualTracker:
         self._watchlist: dict[str, dict[str, Any]] = {}  # market_id -> scalp context
         self._hold_worst: dict[str, dict[str, Any]] = {}  # market_id -> worst moment during hold
 
-    def watch(self, pos: dict[str, Any], scalp_context: dict[str, Any]) -> None:
+    def watch(self, pos: dict[str, Any], scalp_context: dict[str, Any],
+              aux_signals: dict[str, Any] | None = None) -> None:
         """Add a scalped position to the watch list for post-resolution comparison.
 
-        Called immediately after a scalp exit in main.py. All data needed to
-        compute the counterfactual is captured here — no DB lookups later.
+        ``aux_signals`` is the live ``_build_aux_signals`` output stamped at the
+        scalp moment — preserved verbatim so the resolution record carries the
+        same 13 Pillar-1 microstructure fields the entry trade_context carries.
         """
         position_id = pos.get("id", 0)
         market_id = pos.get("market_id", "")
@@ -77,6 +79,7 @@ class CounterfactualTracker:
             "spot_flow_signal": scalp_context.get("spot_flow_signal", 0.0),
             "regime": scalp_context.get("regime", "unknown"),
             "btc_distance_atr": scalp_context.get("btc_distance_atr", 0.0),
+            "aux_signals": dict(aux_signals or {}),
             "watched_at": time.time(),
         }
         # Implicit from the preceding SCALP block — move to debug to stop
@@ -86,7 +89,8 @@ class CounterfactualTracker:
             f"{scalp_context.get('exit_fill', 0):.3f}, edge={scalp_context.get('holding_edge', 0):+.2f}"
         )
 
-    def track_hold_moment(self, market_id: str, pos: dict[str, Any], hold_context: dict[str, Any]) -> None:
+    def track_hold_moment(self, market_id: str, pos: dict[str, Any], hold_context: dict[str, Any],
+                          aux_signals: dict[str, Any] | None = None) -> None:
         """Track the worst holding moment for a position being held to resolution.
 
         Called on every HOLD tick. Updates only if this tick's holding_edge is
@@ -115,7 +119,7 @@ class CounterfactualTracker:
                 "size": pos.get("size", 0),
                 "shares_held": pos.get("shares_held") or pos.get("size", 0) / max(pos.get("entry_price", 1), 0.001),
                 "fee_rate": pos.get("fee_rate", 0.018),
-                    "worst_holding_edge": holding_edge,
+                "worst_holding_edge": holding_edge,
                 "worst_model_prob": hold_context.get("model_prob", 0),
                 "worst_market_price": hold_context.get("market_price", 0),
                 "worst_seconds_remaining": hold_context.get("seconds_remaining", 0),
@@ -126,6 +130,7 @@ class CounterfactualTracker:
                 "spot_flow_signal": hold_context.get("spot_flow_signal", 0.0),
                 "regime": hold_context.get("regime", "unknown"),
                 "btc_distance_atr": hold_context.get("btc_distance_atr", 0.0),
+                "aux_signals": dict(aux_signals or {}),
                 "worst_at": time.time(),
             }
 
@@ -186,6 +191,7 @@ class CounterfactualTracker:
                 "regime": ctx.get("regime", "unknown"),
                 "btc_distance_atr": ctx.get("btc_distance_atr", 0.0),
                 "worst_at": ctx["worst_at"],
+                **ctx.get("aux_signals", {}),
             },
         }
 
@@ -296,6 +302,7 @@ class CounterfactualTracker:
                     "spot_flow_signal": ctx.get("spot_flow_signal", 0.0),
                     "regime": ctx.get("regime", "unknown"),
                     "btc_distance_atr": ctx.get("btc_distance_atr", 0.0),
+                    **ctx.get("aux_signals", {}),
                 },
             }
 

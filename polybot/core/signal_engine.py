@@ -15,12 +15,11 @@ from polybot.config.param_registry import default_for as _d
 if TYPE_CHECKING:
     from polybot.core.calibrator import IsotonicCalibrator
 
-# Regime-conditional L4 amplifier/dampen factors. The *threshold* separating
-# noise band from real regime is now pipeline-tunable (`regime_momentum_threshold`);
-# these per-side multipliers stay constant — they're design choices, not data-fit.
+# Regime-conditional L4 amplifier/dampen factors. Pipeline tunes the threshold
+# separating noise band from real regime (`regime_momentum_threshold`); the
+# per-side multipliers stay constant — they're design choices, not data-fit.
 _REGIME_MOMENTUM_AMPLIFY = 1.5
 _REGIME_MOMENTUM_DAMPEN = 0.5
-_MOMENTUM_WEIGHT_CLAMP = 0.10
 
 # Dynamic ATR floor: max(static, FRACTION × rolling_mean). When the rolling-20
 # ATR collapses well below the long-term mean (regime shift to low vol), widen
@@ -159,7 +158,7 @@ class SignalEngine:
             for name in DERIVED_FEATURES.keys()
         }
         self.consensus_config: dict = consensus_config or dict(_d("consensus_config"))
-        self._exit_boundary = ExitBoundary(df=self.student_t_df)
+        self._exit_boundary = ExitBoundary()
         self._atr_history: deque[float] = deque(maxlen=_ATR_HISTORY_SIZE)
         self._atr_long_term: deque[float] = deque(maxlen=_ATR_LONG_TERM_SIZE)
         self._atr_history_sum: float = 0.0
@@ -169,14 +168,6 @@ class SignalEngine:
         self.last_raw_prob_up: float = 0.5
         self.last_momentum_score: float = 0.0
         self.last_loss_cut_event: str = ""
-        # Memoize compute_regime_factor by (closes-array-identity, regime_lookback).
-        # CandleBuffer.get_closes() returns a read-only ndarray whose id is stable
-        # until the buffer mutates (add/update_current both invalidate the cache,
-        # which forces a fresh array allocation with a new id). Including
-        # regime_lookback defends against runtime adoption changing the lookback
-        # window mid-session.
-        self._regime_cache_key: tuple[int, int] | None = None
-        self._regime_cache_value: float = 0.0
 
     def _record_atr(self, atr: float) -> None:
         if atr <= 0:
@@ -209,12 +200,11 @@ class SignalEngine:
 
     def effective_momentum_weight(self, regime_autocorr: float) -> float:
         """Regime-amplified L4 magnitude (unsigned). Polarity lives in compute_momentum.
-        |momentum_weight| only — sign is regime-conditional inside the group split.
+        Range: [0.5 × base, 1.5 × base] — pipeline's `momentum_weight` bound caps the top.
         """
         base = abs(self.momentum_weight)
         t_abs = abs(math.tanh(regime_autocorr / self.regime_momentum_threshold)) if self.regime_momentum_threshold > 0 else 0.0
-        magnitude = base * (_REGIME_MOMENTUM_DAMPEN + (_REGIME_MOMENTUM_AMPLIFY - _REGIME_MOMENTUM_DAMPEN) * t_abs)
-        return min(_MOMENTUM_WEIGHT_CLAMP, magnitude)
+        return base * (_REGIME_MOMENTUM_DAMPEN + (_REGIME_MOMENTUM_AMPLIFY - _REGIME_MOMENTUM_DAMPEN) * t_abs)
 
     def _apply_derived_features(self, *, atr: float, regime: float, distance: float,
                                 seconds_remaining: float, flow_signal: float,
@@ -254,13 +244,7 @@ class SignalEngine:
     def compute_regime_factor(self, closes) -> float:
         if closes is None:
             return 0.0
-        key = (id(closes), self.regime_lookback)
-        if key == self._regime_cache_key:
-            return self._regime_cache_value
-        value = lag1_autocorr(closes, self.regime_lookback)
-        self._regime_cache_key = key
-        self._regime_cache_value = value
-        return value
+        return lag1_autocorr(closes, self.regime_lookback)
 
     def compute_probability(self, btc_price: float, strike_price: float,
                             seconds_remaining: float, atr: float,
@@ -271,8 +255,12 @@ class SignalEngine:
                             prev_resolution_margin: float = 0.0,
                             liquidation_pressure: float = 0.0) -> float:
         """P(Up) at expiry — Student-t CDF + logit-space layer adjustments + isotonic."""
+        def _calibrated(p: float) -> float:
+            self.last_raw_prob_up = p
+            return self.calibrator.calibrate(p) if self.calibrator else p
+
         if atr <= 0 or seconds_remaining <= 0:
-            return 0.5
+            return _calibrated(0.5)
 
         distance = btc_price - strike_price
         minutes_remaining = max(seconds_remaining / 60.0, 0.01)
@@ -281,7 +269,7 @@ class SignalEngine:
         atr_effective = max(atr, self._effective_atr_floor())
         vol_scaled = (atr_effective / self.atr_sigma_ratio) * math.sqrt(minutes_remaining)
         if vol_scaled <= 0:
-            return 0.5
+            return _calibrated(0.5)
 
         z = distance / vol_scaled
         # df clamped to ≥3 (pipeline range is 3-8). Removes the t_scale=1.0 fallback
@@ -303,18 +291,23 @@ class SignalEngine:
         self.last_regime_autocorr = regime
         # L4 magnitude is regime-amplified; polarity is handled per-group inside compute_momentum.
         logit_momentum_w = self.effective_momentum_weight(regime) * self.logit_scale
-        # Compute last_return once; reused for L2 direction and L6 FeatureContext.
+        # L2 uses the live `btc_price` (Coinbase WS, sub-second) vs the previous fully-closed
+        # Binance candle — no minute-boundary mismatch between the price L1 reads and the
+        # numerator of L2's "last 1-min return."
         if closes is not None and len(closes) >= 2 and float(closes[-2]) != 0.0:
-            last_return = float(closes[-1] - closes[-2]) / float(closes[-2])
+            last_return = (btc_price - float(closes[-2])) / float(closes[-2])
         else:
             last_return = 0.0
         direction = 1.0 if last_return > 0 else (-1.0 if last_return < 0 else 0.0)
         self.last_regime_direction = direction
         logit_p += regime * direction * logit_regime_w
 
-        # L3 + L3b: CLOB flow + spot flow.
-        logit_p += flow_signal * logit_flow_w
-        logit_p += spot_flow_signal * (self.spot_flow_weight * self.logit_scale)
+        # L3 + L3b: CLOB flow + spot flow. Combined contribution clamped at ±0.50
+        # logits so a flow / spot_flow disagreement amplified by a weight asymmetry
+        # can never dominate L1.
+        flow_contribution = (flow_signal * logit_flow_w
+                             + spot_flow_signal * (self.spot_flow_weight * self.logit_scale))
+        logit_p += max(-0.50, min(0.50, flow_contribution))
 
         # L3e — liquidation pressure
         if liquidation_pressure != 0.0:
@@ -353,11 +346,7 @@ class SignalEngine:
         clamp = self.final_logit_clamp
         logit_p = max(-clamp, min(clamp, logit_p))
 
-        prob_up = 1.0 / (1.0 + math.exp(-logit_p))
-        self.last_raw_prob_up = prob_up
-        if self.calibrator:
-            prob_up = self.calibrator.calibrate(prob_up)
-        return prob_up
+        return _calibrated(1.0 / (1.0 + math.exp(-logit_p)))
 
     def compute_momentum(self, indicators: dict[str, dict], regime_autocorr: float = 0.0,
                          direction: float = 0.0) -> float:
@@ -370,8 +359,7 @@ class SignalEngine:
         """
         w = self.weights
         def _s(name: str) -> float:
-            ind = indicators.get(name, {})
-            return ind.get("norm_score", ind.get("score", 0))
+            return indicators.get(name, {}).get("score", 0)
 
         # Inline fallbacks mirror the registry default in _MANUAL_DEFAULTS["weights"]
         # — only fire when callers pass an incomplete weights dict (e.g. tests).
