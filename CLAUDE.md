@@ -161,7 +161,7 @@ logit += tanh(prev_resolution_margin / max(atr, 1)) × prev_margin_weight × log
        × (1 − min(l5_regime_damp_cap, |regime|))
 ```
 
-The dampener is the orthogonality patch: when `|regime|` is high, L2 already encodes the same drift, so L5 contributes only its orthogonal-info portion. `l5_regime_damp_cap` default 0.7, tunable 0.4–0.9. `prev_resolution_margin` persists with a `saved_at` timestamp in `memory/prev_resolution_margin.json`; older than 30 min on load → carry zeroed (previous window no longer adjacent).
+The dampener is the orthogonality patch: when `|regime|` is high, L2 already encodes the same drift, so L5 contributes only its orthogonal-info portion. `l5_regime_damp_cap` default 0.7, tunable 0.4–0.9. `prev_resolution_margin` persists with a `saved_at` timestamp in `memory/state/prev_resolution_margin.json`; older than 30 min on load → carry zeroed (previous window no longer adjacent).
 
 ### L6 — Derived feature library (closed)
 
@@ -343,13 +343,13 @@ Flips 1–2 pay only the base `flip_edge_premium` (default 0.015); flip 3 pays +
 - **Early scalp** — sold before expiry into the book. The bot keeps the difference; counterfactual tracker logs what hold-to-resolution would have paid.
 - **Resolution** — window closes; Chainlink decides; winning side pays $1/share, losing side $0. PnL credited atomically.
 - **Never resolves from Binance** — it can diverge from Chainlink by $20–$200 at the close (the worst time to trust spot).
-- **Chainlink orphan fallback** — if Gamma is silent 30+ min past expiry, the bot reads Chainlink directly via `chainlink_feed` and resolves locally. Restart safety: the position stays `open`/`pending_resolution` in the DB until resolved (re-evaluated on boot), not a file. `memory/orphan_positions.json` is written by a *separate* startup check (`LiveTrader.detect_orphan_positions`) flagging on-chain positions the DB doesn't know about.
+- **Chainlink orphan fallback** — if Gamma is silent 30+ min past expiry, the bot reads Chainlink directly via `chainlink_feed` and resolves locally. Restart safety: the position stays `open`/`pending_resolution` in the DB until resolved (re-evaluated on boot), not a file. `memory/state/orphan_positions.json` is written by a *separate* startup check (`LiveTrader.detect_orphan_positions`) flagging on-chain positions the DB doesn't know about.
 
 ## 9. Built-in loss handling
 
 The stack: circuit breaker (§4), adverse-selection gate (§3), edge-decay gate (§3), regime quiet-skip (§3), feed-staleness skip (§3 — a Coinbase gap ≥2s skips the L1 decision, no Binance fallback), cross-venue gap logging (§1). Facts not stated above:
 - Circuit-breaker streak counters (3 losses / 2 wins) drive Discord alerts only, never sizing.
-- `AdverseSelectionMonitor` state persisted to `memory/adverse_state.json` on every fill so restarts inherit the rolling window.
+- `AdverseSelectionMonitor` state persisted to `memory/state/adverse_state.json` on every fill so restarts inherit the rolling window.
 - **CLOB WS heartbeat** — PING every 10s, force-reconnect if no PONG within 25s.
 
 ---
@@ -375,13 +375,13 @@ The surrounding scaffolding — telemetry, nightly pipeline, param registry, lay
 
 Side-signed post-fill mid drift at **5/10/15/30/60s**, captured by `AdverseSelectionMonitor` keyed by `position_id`, merged into the outcome JSON at close. The 15s mean over a 30-min lookback drives the live `edge_decay_threshold` gate. Null windows = trade closed before that checkpoint resolved.
 
-### `gate_stats_YYYYMMDD.json` (per ET day, in-process accumulator)
+### Gate-skip stats (`memory/state/gate_stats*.json`)
 
-Persists on every position resolution to a date-keyed file; `gate_stats.json` mirrors the current day. Mid-day restarts preserve counts (the in-process dict reloads on first record). Rollover at midnight ET. Includes `loss_cut_fired` / `loss_cut_whipsaw_blocked` to audit the 0.5×ATR cushion.
+Two files, no per-day pile-up. Today's live counts persist to `state/gate_stats_current.json` on every position resolution (mid-day restarts reload it, so counts keep accumulating); at the first record of a new ET day the finished day folds into the lifetime accumulator `state/gate_stats.json` (`counts` + `days_accumulated` + first/last day) and the current file resets. The nightly pipeline reads the current-day file. Includes `loss_cut_fired` / `loss_cut_whipsaw_blocked` to audit the 0.5×ATR cushion.
 
 ### Feed staleness telemetry
 
-`polybot/feeds/_staleness.StalenessTracker` persists per-feed P50/P95/P99 inter-arrival gaps to `polybot/memory/feed_staleness.json` every 60s. `polybot/feeds/_socket.enable_nodelay` verifies `TCP_NODELAY` via `getsockopt` on every WS connect. `BiasDetector` reads `feed_staleness.json` into the nightly card as `feed_health` (per-feed `{n, p50, p95, p99, max}` + a `degraded_p95_ge_10s` list), so a feed creeping from P50≈1s to P95≈25s is a surfaced fact, not a distribution shift the optimizer misattributes to layer signals.
+`polybot/feeds/_staleness.StalenessTracker` persists per-feed P50/P95/P99 inter-arrival gaps to `polybot/memory/state/feed_staleness.json` every 60s. `polybot/feeds/_socket.enable_nodelay` verifies `TCP_NODELAY` via `getsockopt` on every WS connect. `BiasDetector` reads `feed_staleness.json` into the nightly card as `feed_health` (per-feed `{n, p50, p95, p99, max}` + a `degraded_p95_ge_10s` list), so a feed creeping from P50≈1s to P95≈25s is a surfaced fact, not a distribution shift the optimizer misattributes to layer signals.
 
 ## 11. Nightly learning pipeline
 
@@ -448,8 +448,8 @@ Triggers on **either**:
 - **(b)** trailing-3-day Sharpe < 0 over ≥20 recent trades — catches sustained multi-day collapses the recent-50 smoothing masks.
 
 - **≥3 consecutive crisis cycles** → halve `kelly_fraction`, floor **0.04** (intentionally below the 0.05–0.18 tunable range so crisis sizes more defensively than any optimizer-adoptable state; do not "fix" the discrepancy).
-- **Restore on first non-crisis cycle** — original Kelly persisted in `crisis_state.json` before the cut, so a mid-pipeline crash can't compound the halving.
-- **Optimizer defers `kelly_fraction` while halving is active.** `_run_weight_optimizer` reads `crisis_state.json` at entry; if `kelly_reduced=True`, any `kelly_fraction` candidate is marked `decision="deferred_crisis"` and skipped. The claim re-enters the directional table on the first non-crisis cycle but can't override the safety floor while crisis is engaged.
+- **Restore on first non-crisis cycle** — original Kelly persisted in `state/crisis_state.json` before the cut, so a mid-pipeline crash can't compound the halving.
+- **Optimizer defers `kelly_fraction` while halving is active.** `_run_weight_optimizer` reads `state/crisis_state.json` at entry; if `kelly_reduced=True`, any `kelly_fraction` candidate is marked `decision="deferred_crisis"` and skipped. The claim re-enters the directional table on the first non-crisis cycle but can't override the safety floor while crisis is engaged.
 
 ### Adaptive exploration + structural probes (`recommender_base`)
 
@@ -527,10 +527,15 @@ polybot/
                                claude_client (validator), claude_recommender,
                                recommender_base (EXPLORE_STEPS, STRUCTURAL_PROBES),
                                local_recommender
-  memory/                      calibration/, outcomes/, ghost_outcomes/, counterfactuals/,
-                               pipeline_run_log.json, adverse_state.json, crisis_state.json,
-                               feed_staleness.json, fill_stats.json, gate_stats_*.json,
-                               orphan_positions.json, prev_resolution_margin.json
+  memory/                      records: outcomes/, ghost_outcomes/, counterfactuals/ (+ rollups);
+                               calibration/ (isotonic_params.json);
+                               state/ — rolling single-file state + logs: gate_stats.json
+                               (lifetime accumulator) + gate_stats_current.json, adverse_state,
+                               crisis_state, feed_staleness, fill_stats, latency_stats,
+                               orphan_positions, prev_resolution_margin, cf_watchlist,
+                               pipeline_history, pipeline_run_log, strategy_log.md.
+                               Full layout centralized in paths.py (MEMORY_DIR override:
+                               POLYBOT_MEMORY_DIR).
   discord_bot/                 !status !history !positions !performance !pause !resume
                                !session !agents !lessons !clear !commands
   db/models.py                 SQLite (positions, trade_history, bankroll, peak_bankroll).
@@ -574,4 +579,4 @@ python -m pytest polybot/tests/           # full suite
 
 ## 19. Persistence
 
-`memory/` (outcomes, counterfactuals, ghosts, pipeline_*, calibration), the per-mode SQLite DB, and `settings.yaml` are git-tracked. `run_polybot.ps1` commits + pushes immediately after the pipeline exits (~11:55 PM ET), then sleeps until 12:01 AM ET for the next session.
+`memory/` (records: outcomes, counterfactuals, ghosts; calibration; and `state/`: pipeline history/run-log + rolling state), the per-mode SQLite DB, and `settings.yaml` are git-tracked. `run_polybot.ps1` commits + pushes immediately after the pipeline exits (~11:55 PM ET), then sleeps until 12:01 AM ET for the next session.

@@ -12,7 +12,7 @@ import logging
 from collections import defaultdict
 from typing import Any
 
-from polybot.paths import MEMORY_DIR
+from polybot.paths import FEED_STALENESS_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def _load_feed_health() -> dict[str, Any]:
     as fewer trades and the optimizer attributes the distribution shift to
     layer signals (e.g. spot_flow) rather than the upstream feed.
     """
-    path = MEMORY_DIR / "feed_staleness.json"
+    path = FEED_STALENESS_PATH
     if not path.exists():
         return {}
     try:

@@ -115,10 +115,10 @@ def _looks_like_auth_error(err: object) -> bool:
 import json as _json
 from datetime import datetime as _dt, timezone as _tz
 
-from polybot.paths import MEMORY_DIR
+from polybot.paths import FILL_STATS_PATH, LATENCY_STATS_PATH, ORPHAN_POSITIONS_PATH
 
-_FILL_STATS_PATH = MEMORY_DIR / "fill_stats.json"
-_LATENCY_STATS_PATH = MEMORY_DIR / "latency_stats.json"
+_FILL_STATS_PATH = FILL_STATS_PATH
+_LATENCY_STATS_PATH = LATENCY_STATS_PATH
 _LATENCY_SAMPLES: deque[float] = deque(maxlen=200)        # total = sign + post
 _SIGN_LATENCY_SAMPLES: deque[float] = deque(maxlen=200)   # excludes presigned (sign=0)
 _POST_LATENCY_SAMPLES: deque[float] = deque(maxlen=200)
@@ -1143,7 +1143,7 @@ class LiveTrader(BaseTrader):
 
         # 4) Persist details for operator review
         try:
-            orphan_path = MEMORY_DIR / "orphan_positions.json"
+            orphan_path = ORPHAN_POSITIONS_PATH
             orphan_path.parent.mkdir(parents=True, exist_ok=True)
             orphan_path.write_text(_json.dumps({
                 "checked_at": _dt.now(_tz.utc).isoformat(),

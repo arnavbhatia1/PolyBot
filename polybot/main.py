@@ -34,7 +34,11 @@ for _stream in (sys.stdout, sys.stderr):
 
 from polybot.config.loader import load_config, get_secret
 from polybot.config.param_registry import default_for as _d
-from polybot.paths import MEMORY_DIR
+from polybot.paths import (
+    MEMORY_DIR, PREV_MARGIN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
+    GATE_STATS_CURRENT_PATH, STRATEGY_LOG_PATH, PIPELINE_HISTORY_PATH,
+    CALIBRATION_PARAMS_PATH, fold_gate_day,
+)
 from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE, compute_buy_vwap
 from polybot.db.models import Database
 from polybot.feeds.binance_feed import BinanceFeed
@@ -198,7 +202,7 @@ _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, 
 
 # Previous window resolution margin for adjacent window momentum (D2)
 _prev_resolution_margin: float = 0.0
-_PREV_MARGIN_PATH = MEMORY_DIR / "prev_resolution_margin.json"
+_PREV_MARGIN_PATH = PREV_MARGIN_PATH
 # L5 reads previous-window margin as "momentum carry." Beyond this many seconds
 # the carry is no longer adjacent to the current window and stamps as zero.
 _PREV_MARGIN_STALE_S = 1800  # 30 min ≈ six 5-min windows
@@ -234,9 +238,9 @@ _last_logged_action: str = ""  # suppress repeated EVAL blocks when action hasn'
 _last_eval_buy_window: int = 0  # show full BUY block only once per window
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count for the current ET day
 _gate_stats_day_key: str = ""           # ET date string keyed to _gate_skip_counts
-# Per-day cumulative file. The current ET day is also mirrored to `gate_stats.json`
-# (legacy single-file path) so external consumers reading the old name keep working.
-_GATE_STATS_LEGACY_PATH = MEMORY_DIR / "gate_stats.json"
+# Gate-skip counts: live current-day counts mirror to GATE_STATS_CURRENT_PATH; on the
+# first record of a new ET day the finished day folds into the lifetime accumulator at
+# GATE_STATS_PATH and the current file resets. No more per-day gate_stats_YYYYMMDD pile.
 from collections import OrderedDict as _OrderedDict
 # Bounded LRUs — each entry is keyed by cid (or (cid, gate_key)). Without an
 # eviction bound these grow forever; the bot runs for days at a time so
@@ -354,39 +358,68 @@ def _et_date_key() -> str:
     return datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d")
 
 
-def _gate_stats_path_for(et_date_key: str) -> "Path":
-    return MEMORY_DIR / f"gate_stats_{et_date_key}.json"
+def _read_gate_current() -> "tuple[str, dict]":
+    """Return (et_date, counts) from the current-day gate-stats file, or ("", {})."""
+    try:
+        if GATE_STATS_CURRENT_PATH.exists():
+            d = json.loads(GATE_STATS_CURRENT_PATH.read_text())
+            if isinstance(d, dict) and isinstance(d.get("counts"), dict):
+                return str(d.get("et_date", "")), {str(k): int(v) for k, v in d["counts"].items()}
+    except Exception:
+        pass
+    return "", {}
+
+
+def _write_gate_current(counts: dict) -> None:
+    """Persist today's live counts to GATE_STATS_CURRENT_PATH (restart-safe)."""
+    from datetime import datetime, timezone
+    try:
+        GATE_STATS_CURRENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        GATE_STATS_CURRENT_PATH.write_text(json.dumps({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "et_date": _et_date_key(),
+            "counts": dict(counts),
+            "total_skips": sum(counts.values()),
+        }, indent=2))
+    except Exception:
+        pass
+
+
+def _fold_gate_day_into_accumulator(day_key: str, counts: dict) -> None:
+    """Add one finished ET day's counts into the lifetime accumulator (GATE_STATS_PATH)."""
+    fold_gate_day(GATE_STATS_PATH, counts, day_key)
 
 
 def _ensure_gate_stats_day_loaded() -> None:
-    """Rollover guard. On the first call of a new ET day, persist anything still
-    in memory under the previous day's key, then load the new day's file (if it
-    exists — e.g., a mid-day crash restart) so counts continue accumulating
-    rather than resetting to zero.
+    """Rollover guard for the gate-skip counters.
+
+    On a NEW ET day, fold the just-finished day's counts into the lifetime
+    accumulator (GATE_STATS_PATH) and start the new day empty. On the first call
+    of a process, reload today's live counts from GATE_STATS_CURRENT_PATH so a
+    mid-day restart keeps accumulating; if that file holds a PAST day (a crash
+    left it un-folded), fold it in first so no day is ever lost.
     """
     global _gate_skip_counts, _gate_stats_day_key
     today = _et_date_key()
     if _gate_stats_day_key == today:
         return
-    if _gate_stats_day_key:  # crossed midnight ET — flush old, rotate
-        try:
-            flush_gate_stats()
-        except Exception:
-            pass
-    path = _gate_stats_path_for(today)
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text())
-            counts = loaded.get("counts", {}) if isinstance(loaded, dict) else {}
-            if isinstance(counts, dict):
-                _gate_skip_counts = {str(k): int(v) for k, v in counts.items()}
-            else:
-                _gate_skip_counts = {}
-        except Exception:
-            _gate_skip_counts = {}
-    else:
+    if _gate_stats_day_key:  # crossed midnight ET within this process
+        _fold_gate_day_into_accumulator(_gate_stats_day_key, _gate_skip_counts)
         _gate_skip_counts = {}
-    _gate_stats_day_key = today
+        _gate_stats_day_key = today
+        _write_gate_current({})
+        return
+    # First load this process.
+    loaded_key, loaded_counts = _read_gate_current()
+    if loaded_counts and loaded_key and loaded_key != today:
+        # A previous day's counts were left un-folded (crash) — fold before resetting.
+        _fold_gate_day_into_accumulator(loaded_key, loaded_counts)
+        _gate_skip_counts = {}
+        _gate_stats_day_key = today
+        _write_gate_current({})
+    else:
+        _gate_skip_counts = dict(loaded_counts)
+        _gate_stats_day_key = today
 
 
 def _record_skip(gate: str) -> None:
@@ -396,25 +429,9 @@ def _record_skip(gate: str) -> None:
 
 
 def flush_gate_stats() -> None:
-    """Persist accumulated skip counts for the active ET day. Also mirrors to the
-    legacy single-file path so consumers reading `gate_stats.json` keep working.
-    """
-    from datetime import datetime, timezone
+    """Persist today's live skip counts to GATE_STATS_CURRENT_PATH."""
     _ensure_gate_stats_day_loaded()
-    try:
-        payload = json.dumps({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "et_date": _gate_stats_day_key,
-            "counts": dict(_gate_skip_counts),
-            "total_skips": sum(_gate_skip_counts.values()),
-        }, indent=2)
-        path = _gate_stats_path_for(_gate_stats_day_key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(payload)
-        # Mirror to legacy path — pipeline + operator scripts read this name.
-        _GATE_STATS_LEGACY_PATH.write_text(payload)
-    except Exception:
-        pass
+    _write_gate_current(_gate_skip_counts)
 # Per-window flip state: tracks flip count and last side
 _window_flip_state: dict[str, dict] = {}  # window_id -> {flip_count, last_side}
 
@@ -2619,7 +2636,7 @@ async def run_pipeline() -> None:
 
     from polybot.core.calibrator import IsotonicCalibrator
     calibrator = IsotonicCalibrator()
-    _cal_path = Path(base_dir) / "memory" / "calibration" / "isotonic_params.json"
+    _cal_path = CALIBRATION_PARAMS_PATH
     calibrator.load(_cal_path)
     signal_engine.calibrator = calibrator
 
@@ -2629,11 +2646,11 @@ async def run_pipeline() -> None:
     counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
     ghost_tracker = GhostTracker(memory_dir=str(base_dir / "memory"))
     bias_detector = BiasDetector()
-    ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"),
+    ta_evolver = TAEvolver(strategy_log_path=str(STRATEGY_LOG_PATH),
                           claude_client=claude)
     weight_optimizer = WeightOptimizer()
     from polybot.agents.pipeline_tracker import PipelineTracker
-    pipeline_tracker = PipelineTracker(path=base_dir / "memory" / "pipeline_history.json")
+    pipeline_tracker = PipelineTracker(path=PIPELINE_HISTORY_PATH)
 
     # Discord — connect briefly to send pipeline report
     alert_manager = None
@@ -2776,7 +2793,7 @@ async def main() -> None:
 
     # Load isotonic calibrator (identity if file doesn't exist)
     calibrator = IsotonicCalibrator()
-    _cal_path = Path(base_dir) / "memory" / "calibration" / "isotonic_params.json"
+    _cal_path = CALIBRATION_PARAMS_PATH
     calibrator.load(_cal_path)
     signal_engine.calibrator = calibrator
 
@@ -2848,7 +2865,7 @@ async def main() -> None:
     counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
     ghost_tracker = GhostTracker(memory_dir=str(base_dir / "memory"))
     bias_detector = BiasDetector()
-    ta_evolver = TAEvolver(strategy_log_path=str(base_dir / "memory" / "strategy_log.md"),
+    ta_evolver = TAEvolver(strategy_log_path=str(STRATEGY_LOG_PATH),
                           claude_client=claude)
     weight_optimizer = WeightOptimizer()
 
@@ -2861,7 +2878,7 @@ async def main() -> None:
     discord_bot.alert_manager = alert_manager
 
     from polybot.agents.pipeline_tracker import PipelineTracker
-    pipeline_tracker = PipelineTracker(path=base_dir / "memory" / "pipeline_history.json")
+    pipeline_tracker = PipelineTracker(path=PIPELINE_HISTORY_PATH)
 
     scheduler = AgentScheduler(
         outcome_reviewer=outcome_reviewer,
@@ -2953,13 +2970,12 @@ async def main() -> None:
     if _prev_resolution_margin != 0.0:
         logger.debug(f"Restored prev_resolution_margin: {_prev_resolution_margin:+.2f}")
 
-    # Gate stats now persist per ET calendar day (gate_stats_YYYYMMDD.json) and
-    # legacy gate_stats.json mirrors the current day. _ensure_gate_stats_day_loaded
-    # loads today's accumulator from disk on first record so mid-day restarts no
-    # longer wipe the day's data — that loader runs lazily from _record_skip /
-    # flush_gate_stats, so no eager work is needed here.
+    # Gate-skip stats: today's live counts live in GATE_STATS_CURRENT_PATH; at the
+    # first record of a new ET day the finished day folds into the lifetime
+    # accumulator (GATE_STATS_PATH). The loaders run lazily from _record_skip /
+    # flush_gate_stats; this just syncs the current-day file to what's on disk.
     _ensure_gate_stats_day_loaded()
-    flush_gate_stats()  # sync the legacy mirror to whatever's already on disk
+    flush_gate_stats()
 
     # SPRT + regime detector — module-level state for trading loop
     global _sprt, _regime_detector
@@ -3000,7 +3016,7 @@ async def main() -> None:
         chainlink_feed.staleness,
         clob_ws.staleness,
     ]
-    _staleness_path = MEMORY_DIR / "feed_staleness.json"
+    _staleness_path = FEED_STALENESS_PATH
 
     async def _flush_staleness_loop() -> None:
         try:

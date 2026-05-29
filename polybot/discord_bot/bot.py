@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 import discord
 from discord.ext import commands
 
-from polybot.paths import MEMORY_DIR
+from polybot.paths import MEMORY_DIR, PIPELINE_RUN_LOG_PATH, CALIBRATION_PARAMS_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -235,8 +235,8 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
 
     @bot.command(name="pipeline")
     async def pipeline_status(ctx):
-        run_log_path = MEMORY_DIR / "pipeline_run_log.json"
-        cal_path = MEMORY_DIR / "calibration" / "isotonic_params.json"
+        run_log_path = PIPELINE_RUN_LOG_PATH
+        cal_path = CALIBRATION_PARAMS_PATH
 
         last_run = "no data"
         status_line = "no data"

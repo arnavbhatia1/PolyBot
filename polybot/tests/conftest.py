@@ -4,6 +4,14 @@ from pathlib import Path
 import pytest
 import yaml
 
+# Isolate the whole suite from the real polybot/memory/ tree. paths.py reads
+# POLYBOT_MEMORY_DIR at import, so set it HERE — before any polybot module imports
+# paths — to a throwaway dir. Without this, tests using default state paths
+# (live_trader fill/orphan stats, adverse-selection state, gate stats, …) read and
+# clobber live production state, and re-importing a module would defeat per-attr patches.
+if "POLYBOT_MEMORY_DIR" not in os.environ:
+    os.environ["POLYBOT_MEMORY_DIR"] = tempfile.mkdtemp(prefix="polybot-test-mem-")
+
 SAMPLE_CONFIG = {
     "mode": "paper",
     "math": {

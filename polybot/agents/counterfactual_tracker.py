@@ -46,7 +46,7 @@ class CounterfactualTracker:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self._watchlist: dict[str, dict[str, Any]] = {}
         self._hold_worst: dict[str, dict[str, Any]] = {}
-        self._watchlist_path: Path = Path(memory_dir) / "cf_watchlist.json"
+        self._watchlist_path: Path = Path(memory_dir) / "state" / "cf_watchlist.json"
         self._load_watchlist()
 
     def _load_watchlist(self) -> None:

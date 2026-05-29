@@ -1,6 +1,4 @@
 {
-  "timestamp": "2026-05-29T03:22:37.519460+00:00",
-  "et_date": "20260528",
   "counts": {
     "book_freshness_skew": 4690,
     "stale_prices": 11004,
@@ -78,5 +76,8 @@
     "regime:quiet": 1,
     "model:No edge: best=-0.9% < floor=4.": 2
   },
+  "days_accumulated": 1,
+  "first_day": "20260528",
+  "last_day": "20260528",
   "total_skips": 166048
 }

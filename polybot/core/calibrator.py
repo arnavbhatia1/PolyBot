@@ -12,11 +12,11 @@ import time
 from pathlib import Path
 import numpy as np
 
-from polybot.paths import MEMORY_DIR
+from polybot.paths import CALIBRATION_PARAMS_PATH
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PARAMS_PATH = MEMORY_DIR / "calibration" / "isotonic_params.json"
+DEFAULT_PARAMS_PATH = CALIBRATION_PARAMS_PATH
 
 _EPS = 1e-6                  # canonical clip — keep all clipping sites consistent
 _BOOTSTRAP_N = 300

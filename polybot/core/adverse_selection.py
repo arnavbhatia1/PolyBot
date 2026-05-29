@@ -20,11 +20,11 @@ from collections import deque
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-from polybot.paths import MEMORY_DIR
+from polybot.paths import ADVERSE_STATE_PATH
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_STATE_PATH = MEMORY_DIR / "adverse_state.json"
+_DEFAULT_STATE_PATH = ADVERSE_STATE_PATH
 _MAX_LOOKBACK_S = 2400.0
 
 @dataclass

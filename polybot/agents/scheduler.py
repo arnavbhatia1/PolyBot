@@ -20,7 +20,10 @@ from polybot.config.loader import save_config
 from polybot.config.param_registry import default_for as _d
 from polybot.core.aux_layers import (compute_spot_flow_signal, compute_liquidation_signal,
                                       regime_vol_factor, autocorr_vol_scale, combine_flow_family)
-from polybot.paths import MEMORY_DIR
+from polybot.paths import (
+    MEMORY_DIR, CRISIS_STATE_PATH, GATE_STATS_CURRENT_PATH, FILL_STATS_PATH,
+    COUNTERFACTUALS_DIR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -987,7 +990,7 @@ class AgentScheduler:
         import os
         idx: dict[int, dict[str, Any]] = {}
         try:
-            files = glob.glob(str(MEMORY_DIR / "counterfactuals" / "*.json"))
+            files = glob.glob(str(COUNTERFACTUALS_DIR / "*.json"))
         except Exception:
             files = []
         for f in files:
@@ -1258,7 +1261,7 @@ class AgentScheduler:
         _crisis_kelly_locked: bool = False
         try:
             import json as _json_cm
-            _cs_path = MEMORY_DIR / "crisis_state.json"
+            _cs_path = CRISIS_STATE_PATH
             if _cs_path.exists():
                 _cs = _json_cm.loads(_cs_path.read_text())
                 _crisis_kelly_locked = bool(_cs.get("kelly_reduced"))
@@ -1946,7 +1949,7 @@ class AgentScheduler:
         # Tells Claude which gates are over-filtering and whether adverse selection /
         # pre-submit drift / late-window guards are actually affecting trade count.
         import json as _json
-        _gate_stats_path = MEMORY_DIR / "gate_stats.json"
+        _gate_stats_path = GATE_STATS_CURRENT_PATH
         if _gate_stats_path.exists():
             try:
                 gate_stats = _json.loads(_gate_stats_path.read_text())
@@ -1971,7 +1974,7 @@ class AgentScheduler:
                 "n_trades_with_data": len(realized_edges),
                 "pct_positive_slippage": round(sum(1 for s in fill_slippages if s > 0.001) / len(fill_slippages), 3) if fill_slippages else 0,
             })
-        _fill_stats_path = MEMORY_DIR / "fill_stats.json"
+        _fill_stats_path = FILL_STATS_PATH
         if _fill_stats_path.exists():
             try:
                 fill_stats = _json.loads(_fill_stats_path.read_text())
@@ -2350,7 +2353,7 @@ class AgentScheduler:
 
             # Sustained crisis (≥3 cycles) → halve kelly_fraction, restore on first non-crisis.
             import json as _json
-            _crisis_state_path = MEMORY_DIR / "crisis_state.json"
+            _crisis_state_path = CRISIS_STATE_PATH
             _crisis_state = {"streak": 0, "kelly_reduced": False, "original_kelly": None}
             try:
                 if _crisis_state_path.exists():
