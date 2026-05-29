@@ -1440,8 +1440,9 @@ class AgentScheduler:
                 adopted_changes.append(change)
                 any_adopted = True
                 old_val_str = ""
-                if self.signal_engine and param != "weights":
-                    old_val = getattr(self.signal_engine, param, None)
+                if param != "weights":
+                    # Pre-mutation, L6-aware old value captured above into change_info.
+                    old_val = change_info.get("old_value")
                     if old_val is not None:
                         old_val_str = f"{old_val}->"
                 n_trades = len(all_candidate_returns)
@@ -1656,41 +1657,56 @@ class AgentScheduler:
             except Exception as e:
                 logger.error(f"Failed to persist config: {e}")
 
-        # Track adoption in pipeline_tracker (one record per run, listing all adopted changes)
-        if self.pipeline_tracker and adopted_changes:
-            tracker_changes: dict[str, tuple] = {}
-            for change in adopted_changes:
-                param = change["param"]
-                value = change["value"]
-                if param != "weights" and self.signal_engine:
-                    old_val = getattr(self.signal_engine, param, None)
-                    tracker_changes[param] = (old_val, value)
-                elif param == "weights":
-                    tracker_changes["weights"] = ("(prev)", "(new)")
-
-            best_candidate_sharpe = max(
-                (ci.get("candidate_sharpe", current_sharpe) for ci in info["per_change"]
-                 if ci.get("decision") == "adopted"),
-                default=current_sharpe,
-            )
-            # Sum of Claude's per-change predicted deltas for adopted changes
-            adopted_preds = [
-                c["predicted_delta_sharpe_7d"]
-                for c in info["per_change"]
-                if c.get("decision") == "adopted" and c.get("predicted_delta_sharpe_7d") is not None
-            ]
-            run_predicted_delta = round(sum(adopted_preds), 4) if adopted_preds else None
-            self.pipeline_tracker.record_adoption(
-                source=pipeline_source,
-                version="params",
-                baseline_sharpe=current_sharpe,
-                predicted_sharpe=best_candidate_sharpe,
-                changes=tracker_changes,
-                reason=f"{len(adopted_changes)} change(s) adopted",
-                run_predicted_delta=run_predicted_delta,
-            )
+        # Track adoption in pipeline_tracker (one record per run) for the auto-revert path.
+        self._record_run_adoption(adopted_changes, info, current_sharpe, pipeline_source)
 
         return info
+
+    def _record_run_adoption(self, adopted_changes: list[dict[str, Any]], info: dict[str, Any],
+                             current_sharpe: float, pipeline_source: str) -> None:
+        """Record a run's adopted changes into the PipelineTracker for the auto-revert path.
+
+        Old values come from the pre-mutation `old_value` captured per change in
+        `info["per_change"]` (via `_directional_old_value`, which reads L6 weights from
+        `derived_weights`). This MUST NOT re-read `getattr(signal_engine, param)`: by the
+        time this runs the mutation loop has already applied the new values, so a re-read
+        returns the NEW value for every param (revert → no-op) and `None` for L6 weights
+        (revert silently skipped, since they live in `derived_weights`, not as attributes).
+        """
+        if not (self.pipeline_tracker and adopted_changes):
+            return
+        old_by_param = {ci["param"]: ci.get("old_value")
+                        for ci in info.get("per_change", [])
+                        if ci.get("decision") == "adopted"}
+        tracker_changes: dict[str, tuple] = {}
+        for change in adopted_changes:
+            param = change["param"]
+            if param == "weights":
+                tracker_changes["weights"] = ("(prev)", "(new)")
+            else:
+                tracker_changes[param] = (old_by_param.get(param), change["value"])
+
+        best_candidate_sharpe = max(
+            (ci.get("candidate_sharpe", current_sharpe) for ci in info["per_change"]
+             if ci.get("decision") == "adopted"),
+            default=current_sharpe,
+        )
+        # Sum of Claude's per-change predicted deltas for adopted changes
+        adopted_preds = [
+            c["predicted_delta_sharpe_7d"]
+            for c in info["per_change"]
+            if c.get("decision") == "adopted" and c.get("predicted_delta_sharpe_7d") is not None
+        ]
+        run_predicted_delta = round(sum(adopted_preds), 4) if adopted_preds else None
+        self.pipeline_tracker.record_adoption(
+            source=pipeline_source,
+            version="params",
+            baseline_sharpe=current_sharpe,
+            predicted_sharpe=best_candidate_sharpe,
+            changes=tracker_changes,
+            reason=f"{len(adopted_changes)} change(s) adopted",
+            run_predicted_delta=run_predicted_delta,
+        )
 
     def _apply_revert_adoptions(self) -> None:
         """Auto-revert adoptions flagged as rollback_recommended by pipeline_tracker.
