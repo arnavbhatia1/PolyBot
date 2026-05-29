@@ -95,6 +95,65 @@ def test_validate_drops_manual_only_params():
     assert "loss_cut_fraction" not in params
     assert "atr_sigma_ratio" in params
 
+def test_validate_parses_new_calibration_format():
+    """The calibration-rewrite output format must parse through the frozen validator:
+    evidence-driven changes keep their machine-read fields (predicted_delta_sharpe_7d,
+    confidence_interval), manual-only params reroute, and the new top-level calibration
+    fields pass through untouched. This is the schema-compatibility guarantee for the
+    prompt rewrite — if the rewrite renamed any change field, the asserts below break."""
+    data = {
+        "calibration_self_check": "Last cycle predicted +0.032, realized -0.003; optimistic, shrank.",
+        "changes": [
+            {"param": "atr_sigma_ratio", "value": 1.45,
+             "reason": "N=120; 1.2x floor; 3/4 folds; prior prediction here ran optimistic",
+             "predicted_delta_sharpe_7d": 0.004, "confidence_interval": [-0.010, 0.018]},
+            {"param": "loss_cut_fraction", "value": 0.70, "reason": "manual — should reroute"},
+        ],
+        "exploratory_notes": [
+            {"param": "liquidation_weight", "reason": "no evidence yet; gather — not a prediction"},
+        ],
+        "manual_observations": [],
+        "key_findings": ["thin data; most signals sub-floor"],
+        "risk_warnings": [],
+        "reasoning": "Evidence below the floor; one small calibrated proposal.",
+        "confidence": "low",
+    }
+    result = _validate_strategy_response(data, total_trades=120,
+                                         current_config={"min_edge": 0.04})
+    by_param = {c["param"]: c for c in result["changes"]}
+    # evidence-driven change survives with its machine-read fields intact
+    assert "atr_sigma_ratio" in by_param
+    assert by_param["atr_sigma_ratio"]["predicted_delta_sharpe_7d"] == 0.004
+    assert by_param["atr_sigma_ratio"]["confidence_interval"] == [-0.010, 0.018]
+    # manual-only param rerouted out of `changes` into `manual_observations`
+    assert "loss_cut_fraction" not in by_param
+    assert any(o["param"] == "loss_cut_fraction" for o in result["manual_observations"])
+    # new top-level calibration fields are tolerated + preserved by the validator
+    assert result["calibration_self_check"].startswith("Last cycle")
+    assert result["exploratory_notes"][0]["param"] == "liquidation_weight"
+    # confidence stays machine-readable for the directional logger / ta_evolver log line
+    assert result["confidence"] == "low"
+
+
+def test_validate_accepts_null_recommendation():
+    """An empty `changes` list — the correct output under insufficient evidence — parses
+    cleanly and is not turned into anything else."""
+    data = {
+        "calibration_self_check": "No qualifying signal; nothing to shrink.",
+        "changes": [],
+        "exploratory_notes": [],
+        "manual_observations": [],
+        "key_findings": ["nothing clears the noise floor this cycle"],
+        "risk_warnings": [],
+        "reasoning": "Thin data; no change is the calibrated output.",
+        "confidence": "low",
+    }
+    result = _validate_strategy_response(data, total_trades=300)
+    assert result["changes"] == []
+    assert result["confidence"] == "low"
+    assert result["calibration_self_check"]
+
+
 def test_format_strategy_context_includes_sections():
     context = {
         "current_config": {"weights": {"rsi": 0.20}, "momentum_weight": 0.08, "min_edge": 0.10},
