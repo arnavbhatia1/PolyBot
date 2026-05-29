@@ -1,6 +1,6 @@
 """Discord bot for PolyBot — commands and real-time trade alerts.
 
-Commands: !status, !history, !pause, !resume, !clear, !session, !commands.
+Commands: !status, !history, !pause, !resume, !clear, !session, !pipeline, !commands.
 Alerts fire on trade open/close, circuit breaker events, and daily session banners.
 """
 from __future__ import annotations

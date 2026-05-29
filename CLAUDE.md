@@ -521,8 +521,8 @@ polybot/
                                pipeline_history, pipeline_run_log, strategy_log.md.
                                Full layout centralized in paths.py (MEMORY_DIR override:
                                POLYBOT_MEMORY_DIR).
-  discord_bot/                 !status !history !positions !performance !pause !resume
-                               !session !agents !lessons !clear !commands
+  discord_bot/                 !status !history !pause !resume !clear
+                               !session !pipeline !commands
   db/models.py                 SQLite (positions, trade_history, bankroll, peak_bankroll).
                                Per-mode: polybot_paper.db / polybot_live.db. memory/ shared.
 ```
@@ -560,7 +560,7 @@ python -m pytest polybot/tests/           # full suite
 
 ## 18. Discord
 
-`!status` `!history [n]` `!positions` `!performance` `!pause` `!resume` `!session` `!agents` `!lessons` `!clear [trades|control|all]` `!commands`
+`!status` `!history [n]` `!pause` `!resume` `!clear [trades|control|all]` `!session` `!pipeline` `!commands`
 
 ## 19. Persistence
 
