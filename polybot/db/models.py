@@ -69,10 +69,6 @@ class Database:
             await self.conn.execute("ALTER TABLE positions ADD COLUMN fee_rate REAL")
         if "shares_held" not in cols:
             await self.conn.execute("ALTER TABLE positions ADD COLUMN shares_held REAL")
-        for dead in ("ev_at_entry", "exit_target", "stop_loss", "weight_version",
-                     "signal_strength", "log_return"):
-            if dead in cols:
-                await self.conn.execute(f"ALTER TABLE positions DROP COLUMN {dead}")
         cursor = await self.conn.execute("PRAGMA table_info(trade_history)")
         th_cols = {row[1] for row in await cursor.fetchall()}
         if "pnl" not in th_cols:
@@ -81,11 +77,6 @@ class Database:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0")
         if "exit_reason" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN exit_reason TEXT NOT NULL DEFAULT 'resolution'")
-        for dead in ("ev_at_entry", "weight_version",
-                     "signal_score", "signal_strength", "log_return",
-                     "position_id", "market_id", "question", "entry_timestamp"):
-            if dead in th_cols:
-                await self.conn.execute(f"ALTER TABLE trade_history DROP COLUMN {dead}")
 
         # Hot-path indexes — get_open_positions / has_position_for_market run every tick.
         await self.conn.execute(
