@@ -1993,6 +1993,45 @@ async def _evaluate_and_exit_position(
     return day_wins, day_losses, day_fees, traded_market_id
 
 
+def _resolved_exit_price(live: dict[str, Any], side: str) -> tuple[float | None, str | None]:
+    """Decide a resolved position's binary exit price from current market state.
+
+    Returns ``(exit_price, oracle_log)``:
+      - ``exit_price`` is the binary payoff — ``1.0`` for the winning side, ``0.0``
+        for the loser — or ``None`` when the window has not resolved yet (the caller
+        keeps waiting).
+      - ``oracle_log`` is a human log fragment when the Chainlink oracle decided, else ``None``.
+
+    Source priority matches §8 (Chainlink is the source of truth, never Binance):
+      1. ``event_metadata`` (final_price vs price_to_beat) — the Chainlink oracle.
+      2. A *coherent* resolved CLOB book — ``closed`` with both prices present, summing
+         to ~1, and one side at an extreme. The winner is derived from ``price_up``'s
+         side and paid 1.0/0.0; an incoherent book (one side a stale/phantom print) is
+         rejected so a winning side can't mis-resolve to the wrong value, and the caller
+         falls through to the oracle/orphan path. Paying the binary 1.0/0.0 (rather than
+         the ~0.99 book price) is the exact payoff and incurs zero taker fee at the extreme.
+    """
+    if not live:
+        return None, None
+    meta = live.get("event_metadata") or {}
+    final_price = meta.get("final_price")
+    strike = meta.get("price_to_beat")
+    if final_price is not None and strike is not None:
+        up_won = final_price >= strike
+        exit_price = 1.0 if (side == "Up") == up_won else 0.0
+        return exit_price, (f"Strike {strike:,.2f} → Final {final_price:,.2f} "
+                            f"— {'Up' if up_won else 'Down'} wins")
+    price_up = live.get("price_up")
+    price_down = live.get("price_down")
+    if (live.get("closed") and price_up is not None and price_down is not None
+            and 0.98 <= price_up + price_down <= 1.02
+            and (price_up >= 0.99 or price_up <= 0.01)):
+        up_won = price_up >= 0.5
+        exit_price = 1.0 if (side == "Up") == up_won else 0.0
+        return exit_price, None
+    return None, None
+
+
 async def _resolve_expired_position(
         pos: dict[str, Any], live: dict[str, Any], trader: Any, alert_manager: Any,
         db: Any, outcome_reviewer: Any, breaker: Any, counterfactual_tracker: Any,
@@ -2000,23 +2039,18 @@ async def _resolve_expired_position(
         signal_engine: Any = None) -> tuple[bool, int, int, float, str | None]:
     """Resolve a position whose contract has expired (seconds_remaining <= 0)."""
     global _prev_resolution_margin
-    if live.get("closed") and (live["price_up"] >= 0.99 or live["price_up"] <= 0.01):
-        # Polymarket has resolved: use the actual outcome prices
-        exit_price = live["price_up"] if pos["side"] == "Up" else live["price_down"]
-    elif live.get("event_metadata") and live["event_metadata"].get("final_price") is not None:
-        # Gamma has Chainlink oracle prices but outcome prices not yet clear
-        meta = live["event_metadata"]
-        up_won = meta["final_price"] >= meta["price_to_beat"]
-        exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
-        logger.info(f"RESOLVE {_slug_to_window(pos['market_id'])} | Strike {meta['price_to_beat']:,.2f} → Final {meta['final_price']:,.2f} — {'Up' if up_won else 'Down'} wins")
-    else:
-        # Gamma hasn't resolved yet — wait for next tick (polls every 2s)
+    # Chainlink oracle first (authoritative), then a coherent resolved CLOB book.
+    exit_price, resolve_log = _resolved_exit_price(live, pos["side"])
+    if exit_price is None:
+        # Window hasn't resolved yet — wait for the next tick (polls every 2s).
         now_ts = time.time()
         mid = pos["market_id"]
         if mid not in _last_resolve_wait_log:
             _last_resolve_wait_log[mid] = now_ts
             logger.info(f"Waiting for resolution — {_slug_to_window(mid)}")
         return False, day_wins, day_losses, day_fees, None
+    if resolve_log:
+        logger.info(f"RESOLVE {_slug_to_window(pos['market_id'])} | {resolve_log}")
 
     result = await trader.resolve_position(pos["id"], exit_price)
     traded_market_id = None
@@ -2093,15 +2127,15 @@ async def _manage_orphaned_position(
     resolved_strike: float | None = None
     # Try direct Gamma fetch for eventMetadata (Chainlink oracle)
     direct = await _get_contract_prices(market_scanner, pos["market_id"], http_client)
-    if direct and direct.get("event_metadata") and direct["event_metadata"].get("final_price") is not None:
-        meta = direct["event_metadata"]
-        up_won = meta["final_price"] >= meta["price_to_beat"]
-        exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
-        resolved_final = meta.get("final_price")
-        resolved_strike = meta.get("price_to_beat")
-        logger.info(f"RESOLVE orphan {_slug_to_window(pos['market_id'])} | Strike {meta['price_to_beat']:,.2f} → Final {meta['final_price']:,.2f} — {'Up' if up_won else 'Down'} wins")
-    elif direct and direct.get("closed") and (direct["price_up"] >= 0.99 or direct["price_up"] <= 0.01):
-        exit_price = direct["price_up"] if pos["side"] == "Up" else direct["price_down"]
+    direct_price, direct_log = _resolved_exit_price(direct, pos["side"]) if direct else (None, None)
+    if direct_price is not None:
+        exit_price = direct_price
+        meta = direct.get("event_metadata") or {}
+        if meta.get("final_price") is not None and meta.get("price_to_beat") is not None:
+            resolved_final = meta.get("final_price")
+            resolved_strike = meta.get("price_to_beat")
+        logger.info(f"RESOLVE orphan {_slug_to_window(pos['market_id'])} | "
+                    f"{direct_log or 'coherent CLOB book'}")
     elif age > 1800 and chainlink_feed and chainlink_feed.price > 0:
         # Gamma silent for 30+ min — Polymarket has already auto-credited the Safe
         # via on-chain settlement, so the bankroll is correct. Use the Chainlink

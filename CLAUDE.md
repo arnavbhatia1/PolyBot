@@ -326,7 +326,7 @@ Flips 1–2 pay only the base `flip_edge_premium` (default 0.015); flip 3 pays +
 ## 8. Resolution
 
 - **Early scalp** — sold before expiry into the book. The bot keeps the difference; counterfactual tracker logs what hold-to-resolution would have paid.
-- **Resolution** — window closes; Chainlink decides; winning side pays $1/share, losing side $0. PnL credited atomically.
+- **Resolution** — window closes; Chainlink decides; winning side pays $1/share, losing side $0. PnL credited atomically. The exit price is decided **oracle-first** (`_resolved_exit_price`): Gamma's `event_metadata` (Chainlink `final_price` vs `price_to_beat`) is authoritative; absent that, a *coherent* resolved CLOB book (closed, prices sum ≈ 1, one side at an extreme) is the fallback. Either way the winner is paid the binary **$1** and the loser **$0** — an incoherent book (one side a stale/phantom print) is rejected rather than trusted, so a winning side can't mis-resolve to a wrong price.
 - **Never resolves from Binance** — it can diverge from Chainlink by $20–$200 at the close (the worst time to trust spot).
 - **Chainlink orphan fallback** — if Gamma is silent 30+ min past expiry, the bot reads Chainlink directly via `chainlink_feed` and resolves locally. Restart safety: the position stays `open`/`pending_resolution` in the DB until resolved (re-evaluated on boot), not a file. `memory/state/orphan_positions.json` is written by a *separate* startup check (`LiveTrader.detect_orphan_positions`) flagging on-chain positions the DB doesn't know about.
 
