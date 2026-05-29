@@ -17,7 +17,6 @@ from polybot.paths import FEED_STALENESS_PATH
 logger = logging.getLogger(__name__)
 
 INDICATOR_NAMES = ["rsi", "macd", "stochastic", "obv", "vwap"]
-REGIME_NAMES = ["trending_up", "trending_down", "reverting", "volatile", "quiet", "neutral"]
 
 
 def _load_feed_health() -> dict[str, Any]:
@@ -641,7 +640,6 @@ class BiasDetector:
 
         time_buckets = [("0-30s", 0, 30), ("30-90s", 30, 90), ("90-180s", 90, 180), ("180s+", 180, 9999)]
         edge_buckets = [("near_threshold", -0.08, 0.0), ("moderate", -0.15, -0.08), ("strong", -9.99, -0.15)]
-        regimes = ["trending", "trending_up", "trending_down", "reverting", "volatile", "quiet", "neutral", "unknown"]
 
         def _regime_group(r: str) -> str:
             if r in ("trending", "trending_up", "trending_down"):

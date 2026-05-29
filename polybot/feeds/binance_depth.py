@@ -22,16 +22,6 @@ def compute_depth_usd(bids: list[list[str]], asks: list[list[str]], levels: int 
     return total
 
 
-def _book_side_usd(side: list[list[str]], levels: int) -> float:
-    total = 0.0
-    for level in side[:levels]:
-        try:
-            total += float(level[0]) * float(level[1])
-        except (ValueError, TypeError, IndexError):
-            continue
-    return total
-
-
 class BinanceDepthFeed:
     """Subscribes to btcusdt@depth20@100ms; commits both sides atomically."""
 
@@ -50,21 +40,6 @@ class BinanceDepthFeed:
 
     def get_depth_usd(self, levels: int = 20) -> float:
         return compute_depth_usd(self.top_bids, self.top_asks, levels)
-
-    def get_imbalance(self, levels: int = 5) -> float:
-        """(bid_usd − ask_usd) / total ∈ [-1, 1] over top N levels. 0 if empty."""
-        bid_usd = _book_side_usd(self.top_bids, levels)
-        ask_usd = _book_side_usd(self.top_asks, levels)
-        total = bid_usd + ask_usd
-        if total <= 0:
-            return 0.0
-        return max(-1.0, min(1.0, (bid_usd - ask_usd) / total))
-
-    @property
-    def age_s(self) -> float:
-        if self.updated_at <= 0:
-            return float("inf")
-        return time.time() - self.updated_at
 
     async def start(self) -> None:
         self._running = True

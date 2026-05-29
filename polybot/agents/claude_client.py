@@ -741,11 +741,11 @@ def _section_counterfactual(ana: dict[str, Any]) -> str:
         )
     elif net_dir == "hold_long":
         lines.append(
-            f"→ HOLDING TOO LONG: scalp would have added value. "
-            f"exit_edge_threshold is manual-only — the actionable finding is that "
-            f"the entry-side model is OVERCONFIDENT (positions look good at entry "
-            f"but decay). Raise atr_sigma_ratio (wider L1 sigma) — the isotonic calibrator will then"
-            f"recalibrate next cycle."
+            "→ HOLDING TOO LONG: scalp would have added value. "
+            "exit_edge_threshold is manual-only — the actionable finding is that "
+            "the entry-side model is OVERCONFIDENT (positions look good at entry "
+            "but decay). Raise atr_sigma_ratio (wider L1 sigma) — the isotonic calibrator will then"
+            "recalibrate next cycle."
         )
     else:
         lines.append("→ Exit threshold appears well-calibrated (informational only — manual param).")
@@ -1055,7 +1055,6 @@ def _section_trades(context: dict[str, Any]) -> str:
     lines = [f"## Recent Trades ({len(sampled)} sampled from {len(trades)} total)"]
     for i, t in enumerate(sampled, 1):
         ctx = t.get("indicator_snapshot", {}).get("trade_context", {})
-        snap = t.get("indicator_snapshot", {})
         won = "WIN" if t.get("correct") else "LOSS"
         side = t.get("side", "?")
         entry = t.get("entry_price", 0)
@@ -1136,9 +1135,9 @@ def _section_adoption_target(context: dict[str, Any]) -> str:
             f"Aim for Δ >= {2*dyn_floor:.3f} to have meaningful safety margin."
         )
         lines.append(
-            f"**Also required:** candidate must improve in ≥2 of 4 walk-forward folds "
-            f"AND pass regime-stratified check (≥2 of 3 regimes improve, OR dominant "
-            f"regime improves without any regime degrading >0.10 Sharpe)."
+            "**Also required:** candidate must improve in ≥2 of 4 walk-forward folds "
+            "AND pass regime-stratified check (≥2 of 3 regimes improve, OR dominant "
+            "regime improves without any regime degrading >0.10 Sharpe)."
         )
     else:
         lines.append(f"Target Sharpe: **{adoption_target:.4f}** (baseline + floor)")

@@ -227,12 +227,6 @@ class AlertManager:
             w = sum(1 for t in trades if t.get("correct"))
             return w, len(trades), sum(t.get("pnl", 0) for t in trades)
 
-        def _fmt_side(trades: list) -> str:
-            if not trades:
-                return "—"
-            w, n, p = _side_stats(trades)
-            return f"{w}/{n} {w/n:.0%} ${p:+.0f}"
-
         up_trades = [o for o in todays if o.get("side", "").upper() == "UP"]
         dn_trades = [o for o in todays if o.get("side", "").upper() == "DOWN"]
         scalp_trades = [o for o in todays if o.get("exit_reason") == "scalp"]
@@ -241,24 +235,6 @@ class AlertManager:
                      if o.get("indicator_snapshot", {}).get("trade_context", {}).get("edge", 0) >= 0.08]
         low_edge = [o for o in todays
                     if 0.04 <= o.get("indicator_snapshot", {}).get("trade_context", {}).get("edge", 0) < 0.08]
-
-        def _side_line(label: str, trades: list) -> str:
-            if not trades:
-                return ""
-            w, n, p = _side_stats(trades)
-            return f"  {label:<6} {w:>3}/{n:<3}  {w/n:.0%}  ${p:+.2f}\n"
-
-        def _exit_line(label: str, trades: list) -> str:
-            if not trades:
-                return ""
-            w, n, p = _side_stats(trades)
-            return f"  {label:<12} {w:>3}/{n:<3}  {w/n:.0%}  ${p:+.2f}\n"
-
-        def _edge_line(label: str, trades: list) -> str:
-            if not trades:
-                return ""
-            w, n, _ = _side_stats(trades)
-            return f"  {label:<16} {w:>3}/{n:<3}  {w/n:.0%}\n"
 
         # Build one combined report inside a single code block.
         at = pipeline_info.get("all_time", {})

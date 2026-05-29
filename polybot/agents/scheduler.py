@@ -21,7 +21,7 @@ from polybot.config.param_registry import default_for as _d
 from polybot.core.aux_layers import (compute_spot_flow_signal, regime_vol_factor,
                                       autocorr_vol_scale, combine_flow_family)
 from polybot.paths import (
-    MEMORY_DIR, CRISIS_STATE_PATH, GATE_STATS_CURRENT_PATH, FILL_STATS_PATH,
+    CRISIS_STATE_PATH, GATE_STATS_CURRENT_PATH, FILL_STATS_PATH,
     COUNTERFACTUALS_DIR,
 )
 
@@ -70,13 +70,13 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     if n_baseline > 0:
         lines.append(f"  Baseline: Sharpe {baseline:+.3f} on {n_baseline:,} trades (60-days with recent 7-day holdout)")
     else:
-        lines.append(f"  Baseline: not enough trades yet")
+        lines.append("  Baseline: not enough trades yet")
     lines.append(f"  Bar: Must beat baseline by ≥ {dyn_floor:+.3f} Sharpe")
     lines.append("")
 
     # Proposals
     if per_change:
-        lines.append(f"  Tested proposals:")
+        lines.append("  Tested proposals:")
         param_w = max((len(str(c.get("param", "?"))) for c in per_change), default=20)
         param_w = min(max(param_w, 18), 26)
         for c in per_change:
@@ -119,7 +119,7 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
             cal_state = f"adopted new isotonic fit  ({n_knots} knots)"
         lines.append(f"  Calibration: {cal_state}")
     elif p_dec == "reverted":
-        lines.append(f"  Calibration: reverted to identity")
+        lines.append("  Calibration: reverted to identity")
         if reason:
             lines.append(f"               {reason}")
     elif cur_n_knots > 0:
@@ -127,10 +127,10 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
         if reason:
             lines.append(f"               new fit rejected: {reason}")
     elif reason:
-        lines.append(f"  Calibration: identity (no transform)")
+        lines.append("  Calibration: identity (no transform)")
         lines.append(f"               new fit rejected: {reason}")
     else:
-        lines.append(f"  Calibration: identity")
+        lines.append("  Calibration: identity")
 
     # Holdout line — last 7 days held out from the optimizer as a fresh-data sanity check
     holdout_changes = [c for c in per_change if "holdout_candidate_sharpe" in c]
@@ -154,13 +154,13 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     elif holdout_n is not None:
         lines.append(f"  Holdout:     inactive — only {holdout_n} trades in last 7 days (need ≥30)")
     else:
-        lines.append(f"  Holdout:     inactive (insufficient recent trades)")
+        lines.append("  Holdout:     inactive (insufficient recent trades)")
 
     # Manual-only block (unchanged structure)
     if manual_obs:
         lines.append("")
         lines.append(f"  {'─' * 56}")
-        lines.append(f"  OPERATOR ACTION SUGGESTIONS:")
+        lines.append("  OPERATOR ACTION SUGGESTIONS:")
         for ob in manual_obs:
             p = ob.get("param", "?")
             cur = ob.get("current", "?")
@@ -971,7 +971,6 @@ class AgentScheduler:
         if cached is not None:
             return cached
         import glob
-        import os
         idx: dict[int, dict[str, Any]] = {}
         try:
             files = glob.glob(str(COUNTERFACTUALS_DIR / "*.json"))
@@ -1314,7 +1313,6 @@ class AgentScheduler:
         for change in changes_list[:5]:
             param = change.get("param", "")
             value = change.get("value")
-            reason_str = change.get("reason", "")
             change_info: dict[str, Any] = {"param": param, "value": value}
 
             if _crisis_kelly_locked and param == "kelly_fraction":
@@ -1867,7 +1865,6 @@ class AgentScheduler:
             all_outcomes = _raw_outcomes
             _window_note = (f"  |  window {PIPELINE_WINDOW_DAYS}d had only "
                             f"{len(_windowed)} trades — using full history {len(_raw_outcomes):,}")
-        n_ghosts = sum(1 for o in all_outcomes if o.get("is_ghost"))
         split_idx = max(1, int(len(all_outcomes) * 0.6))
         train_outcomes = all_outcomes[:split_idx]
         validation_outcomes = all_outcomes[split_idx:]
@@ -2281,7 +2278,7 @@ class AgentScheduler:
             _analysis_parts.append(f"scalp accuracy {_cf_acc:.0%} on {_cf_total:,}" if _cf_acc is not None else f"{_cf_total:,} scalps tracked")
         if _gate_skips:
             _analysis_parts.append(f"{_gate_skips:,} gate skips")
-        logger.info(f"  Analysis done" + (f"  |  {' | '.join(_analysis_parts)}" if _analysis_parts else ""))
+        logger.info("  Analysis done" + (f"  |  {' | '.join(_analysis_parts)}" if _analysis_parts else ""))
 
         # Gate: need at least 200 trades before running TAEvolver and WeightOptimizer.
         # opt_outcomes/holdout_outcomes were already split at the top of this

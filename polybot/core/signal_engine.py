@@ -527,7 +527,7 @@ class SignalEngine:
                 and model_prob > dead_side_floor
                 and (entry_price <= 0 or market_price_for_side < entry_price)):
             return ("HOLD", model_prob, holding_edge,
-                    f"holding to resolution — deeply underwater but better odds holding than selling now")
+                    "holding to resolution — deeply underwater but better odds holding than selling now")
 
         # Whipsaw cushion (mirrors the loss-cut guard): when BTC sits within
         # 0.5×ATR of the strike on the wrong side, P(side) can flip hard on a

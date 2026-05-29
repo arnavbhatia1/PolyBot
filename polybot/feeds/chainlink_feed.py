@@ -28,7 +28,6 @@ class ChainlinkFeed:
     def __init__(self) -> None:
         self._price: float = 0.0
         self._last_update: float = 0.0     # local receipt time
-        self._last_payload_ts: float = 0.0 # RTDS-reported ts when present
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
@@ -151,7 +150,6 @@ class ChainlinkFeed:
                             # a missing payload field.
                             payload_ts = payload.get("timestamp") or payload.get("ts")
                             observed_ts = float(payload_ts) if payload_ts is not None else now
-                            self._last_payload_ts = observed_ts
                             self.staleness.observe(now)
                             self._record_boundary(observed_ts)
                         except (ValueError, TypeError):

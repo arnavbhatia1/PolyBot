@@ -9,15 +9,14 @@ import asyncio
 import json
 import logging
 import math
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands
 
-from polybot.paths import MEMORY_DIR, PIPELINE_RUN_LOG_PATH, CALIBRATION_PARAMS_PATH
+from polybot.paths import PIPELINE_RUN_LOG_PATH, CALIBRATION_PARAMS_PATH
 
 logger = logging.getLogger(__name__)
 

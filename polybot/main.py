@@ -15,14 +15,6 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 
-try:
-    import orjson as _orjson
-    def _fast_dumps(obj: Any) -> str:
-        return _orjson.dumps(obj).decode("utf-8")
-except ImportError:
-    def _fast_dumps(obj: Any) -> str:
-        return json.dumps(obj)
-
 # Force UTF-8 on stdout/stderr so Windows cp1252 consoles don't choke on box-drawing
 # chars (═ ─ Δ ± ✓ ✗ ⚠ →) used in pipeline summary output. errors='replace' keeps the
 # process alive if a terminal still can't render a given codepoint.
@@ -35,7 +27,7 @@ for _stream in (sys.stdout, sys.stderr):
 from polybot.config.loader import load_config, get_secret
 from polybot.config.param_registry import default_for as _d
 from polybot.paths import (
-    MEMORY_DIR, PREV_MARGIN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
+    PREV_MARGIN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
     GATE_STATS_CURRENT_PATH, STRATEGY_LOG_PATH, PIPELINE_HISTORY_PATH,
     CALIBRATION_PARAMS_PATH, fold_gate_day,
 )
@@ -80,7 +72,7 @@ def _slug_to_window(slug: str) -> str:
     """Convert btc-updown-5m-1776691500 to '9:25-9:30 ET'."""
     try:
         from zoneinfo import ZoneInfo
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
         ts = int(slug.rsplit("-", 1)[-1])
         ET = ZoneInfo("America/New_York")
         start = datetime.fromtimestamp(ts, tz=ET)
@@ -2291,7 +2283,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                        chainlink_feed: Any = None,
                        coinbase_feed: Any = None) -> None:
     import httpx
-    from datetime import datetime, timezone
+    from datetime import datetime
     from zoneinfo import ZoneInfo
 
     ET = ZoneInfo("America/New_York")
@@ -2322,7 +2314,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     # At scheduled restart (12:15 AM ET), start fresh at 0W/0L.
     # Only restore from DB if it's a mid-day restart (trading already happened today).
     from zoneinfo import ZoneInfo
-    from datetime import datetime
     ET_tz = ZoneInfo("America/New_York")
     _now_et = datetime.now(ET_tz)
     _today_et = _now_et.strftime("%Y-%m-%d")
@@ -2415,7 +2406,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
             # --- POSITION MANAGEMENT: resolution check + active re-evaluation ---
             positions = await db.get_open_positions()
-            has_active_position = False  # Track if any position has a live (non-expired) contract
             live_results = await asyncio.gather(
                 *[_get_contract_prices(market_scanner, pos["market_id"], http_client) for pos in positions],
                 return_exceptions=True,
@@ -2425,7 +2415,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     live = None
 
                 if not live:
-                    handled, day_wins, day_losses, day_fees, traded_mid = \
+                    _, day_wins, day_losses, day_fees, traded_mid = \
                         await _manage_orphaned_position(
                             pos, market_scanner, http_client, trader,
                             alert_manager, db, outcome_reviewer, breaker,
@@ -2453,7 +2443,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                         traded_contracts[traded_mid] = int(time.time())
                 else:
                     # Active position — re-evaluate using probability model
-                    has_active_position = True
                     day_wins, day_losses, day_fees, traded_mid = \
                         await _evaluate_and_exit_position(
                             pos, live, binance_feed, indicator_engine,
@@ -2530,7 +2519,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             depth_usd_down = prices["depth_usd_down"]
             eval_window = prices["eval_window"]
 
-            strike, btc_price, window_strikes, last_eval_log_window, btc_price_source = \
+            strike, btc_price, window_strikes, last_eval_log_window, _ = \
                 _compute_strike_and_btc(cid, binance_feed, window_strikes,
                                         eval_window, last_eval_log_window,
                                         chainlink_feed=chainlink_feed,
@@ -2987,7 +2976,6 @@ async def main() -> None:
     await chainlink_feed.start()
 
     # Periodic feed-staleness telemetry (P50/P95/P99 inter-arrival per feed).
-    from polybot.paths import MEMORY_DIR
     _staleness_trackers = [
         binance_feed.staleness,
         depth_feed.staleness,

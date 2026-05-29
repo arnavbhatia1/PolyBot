@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import logging
-from polybot.agents.pipeline_analytics import sharpe as _sharpe
 
 logger = logging.getLogger(__name__)
 

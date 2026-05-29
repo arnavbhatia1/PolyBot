@@ -28,7 +28,6 @@ class SPRTAccumulator:
         self.beta = beta
         self.min_interval_s = min_interval_s
         self.upper_bound = math.log((1.0 - beta) / alpha)
-        self.lower_bound = math.log(beta / (1.0 - alpha))
         self._up_evidence: float = 0.0
         self._down_evidence: float = 0.0
         self._observation_count: int = 0

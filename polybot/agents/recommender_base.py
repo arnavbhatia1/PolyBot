@@ -214,19 +214,6 @@ class BaseRecommender:
     def _value_failed(self, param: str, value: float, atol: float = 1e-3) -> bool:
         return any(abs(f - value) < atol for f in self._failed_values.get(param, set()))
 
-    def _value_already_tested(self, param: str, value: float, atol: float = 1e-3) -> bool:
-        """True if (param, value) appears in either the failures list or the
-        directional table — i.e. the pipeline has already evaluated it."""
-        if self._value_failed(param, value, atol):
-            return True
-        for direction in ("up", "down"):
-            entry = self._dir_table.get((param, direction))
-            if entry is None:
-                continue
-            if entry.get("n", 0) >= 1 and entry.get("bt_delta") is not None:
-                return True
-        return False
-
     def _rule_structural_probes(self) -> None:
         """Forced one-cycle exploration of audit-identified values. Fires once
         per (param, value) — when there's no live evidence yet AND the value

@@ -355,8 +355,6 @@ class BTCMarketScanner:
 
     # --- Lightweight HTTP helpers (public, no auth) ---
 
-    DATA_API = "https://data-api.polymarket.com"
-
     async def get_spread(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> float:
         """GET /spread — bid-ask spread as a float. Returns -1 on error."""
         try:
