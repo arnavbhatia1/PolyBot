@@ -2303,8 +2303,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
     # Trading schedule in ET (handles EST/EDT automatically)
     sched = config.get("schedule", {})
-    sched_start_et = (sched.get("trading_start_hour_et", 0), sched.get("trading_start_minute", 15))
-    sched_end_et = (sched.get("trading_end_hour_et", 23), sched.get("trading_end_minute", 59))
+    sched_start_et = (sched.get("trading_start_hour_et", _d("trading_start_hour_et")), sched.get("trading_start_minute", _d("trading_start_minute")))
+    sched_end_et = (sched.get("trading_end_hour_et", _d("trading_end_hour_et")), sched.get("trading_end_minute", _d("trading_end_minute")))
 
     traded_contracts: dict[str, int] = {}      # condition_id -> timestamp (one trade per contract)
     window_strikes: dict[int, float] = {}      # window_ts -> BTC price at window open
@@ -2679,8 +2679,8 @@ async def run_pipeline() -> None:
     )
     scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", _d("exit_edge_threshold"))
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
-    scheduler._trading_start = (sched_cfg.get("trading_start_hour_et", 0), sched_cfg.get("trading_start_minute", 15))
-    scheduler._trading_end = (sched_cfg.get("trading_end_hour_et", 23), sched_cfg.get("trading_end_minute", 59))
+    scheduler._trading_start = (sched_cfg.get("trading_start_hour_et", _d("trading_start_hour_et")), sched_cfg.get("trading_start_minute", _d("trading_start_minute")))
+    scheduler._trading_end = (sched_cfg.get("trading_end_hour_et", _d("trading_end_hour_et")), sched_cfg.get("trading_end_minute", _d("trading_end_minute")))
     scheduler.ghost_tracker = ghost_tracker
 
     async def _run_with_discord():

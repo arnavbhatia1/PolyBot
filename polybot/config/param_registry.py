@@ -88,6 +88,11 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     # Risk caps
     "max_concurrent_positions": 2,
     "max_bankroll_deployed": 0.80,
+    # Schedule (operator-owned; mirror settings.yaml so a missing key falls back coherently)
+    "trading_start_hour_et": 0,
+    "trading_start_minute": 1,
+    "trading_end_hour_et": 23,
+    "trading_end_minute": 30,
     # Signal/regime knobs (not pipeline-tunable)
     "regime_lookback": 50,
     "consensus_dead_zone": 0.05,
