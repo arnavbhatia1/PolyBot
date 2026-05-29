@@ -394,15 +394,15 @@ class AgentScheduler:
                     else _d("exit_edge_threshold"))
         return getattr(self.signal_engine, param, None)
 
-    async def _run_ta_evolver(self, analysis: dict[str, Any], outcomes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        if outcomes is None:
-            outcomes = self.outcome_reviewer.load_all_outcomes()
-        if not outcomes:
-            return {}
-
-        # Build current config from live engines
+    def _build_current_config(self) -> dict[str, Any]:
+        """Snapshot live engine/scheduler param values the recommender dedups
+        against. Includes the four L6 derived weights — without them the
+        recommender's cfg lookup returns None for an already-on feature, so it
+        re-proposes a no-op structural probe (e.g. flow_disagreement 0.005->0.005)
+        that wastes a slot under the proposal cap and can crowd out a still-
+        unprobed L6 feature."""
         current_weights = self.indicator_engine.get_weights() if self.indicator_engine else {}
-        current_config = {
+        current_config: dict[str, Any] = {
             "weights": {k: v for k, v in current_weights.items()
                         if k in ["rsi", "macd", "stochastic", "obv", "vwap"]},
             "momentum_weight": getattr(self.signal_engine, 'momentum_weight', _d("momentum_weight")),
@@ -429,6 +429,18 @@ class AgentScheduler:
             "min_atr": getattr(self.signal_engine, 'min_atr', _d("min_atr")),
             "max_edge": getattr(self.signal_engine, 'max_edge', _d("max_edge")),
         }
+        for _name, _w in (getattr(self.signal_engine, "derived_weights", None) or {}).items():
+            current_config[f"derived_{_name}_weight"] = _w
+        return current_config
+
+    async def _run_ta_evolver(self, analysis: dict[str, Any], outcomes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        if outcomes is None:
+            outcomes = self.outcome_reviewer.load_all_outcomes()
+        if not outcomes:
+            return {}
+
+        # Build current config from live engines (see _build_current_config).
+        current_config = self._build_current_config()
 
         if hasattr(self, '_last_per_change_results') and self._last_per_change_results:
             analysis["last_per_change_results"] = self._last_per_change_results

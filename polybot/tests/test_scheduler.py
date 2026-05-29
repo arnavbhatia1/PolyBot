@@ -37,6 +37,26 @@ def test_directional_old_value_resolves_l6_weight_from_dict():
     assert sched._directional_old_value("derived_flow_disagreement_weight") == 0.005
     assert sched._directional_old_value("derived_log_atr_ratio_weight") == 0.0
 
+
+def test_build_current_config_includes_l6_derived_weights():
+    """The recommender dedups proposals against current_config; without the L6
+    weights it can't tell an already-on feature (flow_disagreement seeded at
+    0.005) from one still at zero, so it re-proposes a no-op probe."""
+    sched = _bare_scheduler()
+    sched._config = {}
+    sched.indicator_engine = MagicMock()
+    sched.indicator_engine.get_weights.return_value = {
+        "rsi": 0.2, "macd": 0.2, "stochastic": 0.2, "obv": 0.2, "vwap": 0.2}
+    sched.signal_engine = MagicMock()
+    sched.signal_engine.derived_weights = {
+        "log_atr_ratio": 0.0, "autocorr_signed_mag": 0.0,
+        "flow_disagreement": 0.005, "liq_signed_sqrt": 0.0}
+    cfg = sched._build_current_config()
+    assert cfg["derived_flow_disagreement_weight"] == 0.005
+    assert cfg["derived_log_atr_ratio_weight"] == 0.0
+    assert cfg["derived_autocorr_signed_mag_weight"] == 0.0
+    assert cfg["derived_liq_signed_sqrt_weight"] == 0.0
+
 def _make_outcomes(n):
     """Helper: generate n fake outcome dicts with sequential timestamps."""
     return [
