@@ -533,9 +533,9 @@ polybot/
 |---|---|---|
 | Coinbase | `ticker` WS (BTC-USD) | Primary BTC price + per-trade CVD |
 | Binance.com | `kline_1m` / `depth20@100ms` / `aggTrade` WS | Candles, ATR, depth, CVD-fallback |
-| Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/fee-rate` | Books, fills, fees |
-| Polymarket Gamma | `GET /events?slug=...` | Discovery + resolution |
-| Chainlink | `latestRoundData()` via Eth RPC | Strike + resolution oracle |
+| Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/tick-size` | Books, executable prices, spreads, tick snapping |
+| Polymarket Gamma | `GET /events?slug=...` | Discovery + resolution (`event_metadata`) |
+| Chainlink (via Polymarket RTDS WS) | `wss://ws-live-data.polymarket.com`, topic `crypto_prices_chainlink` | Strike capture + resolution price |
 | Anthropic | `claude-sonnet-4-6` SDK | Daily learning pipeline |
 
 ## 16. Running
