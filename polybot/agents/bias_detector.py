@@ -42,6 +42,8 @@ def _load_feed_health() -> dict[str, Any]:
             continue
         feeds[name] = {
             "n": entry.get("n", 0),
+            "n_total": entry.get("n_total"),
+            "connected": entry.get("connected"),
             "p50": entry.get("p50"),
             "p95": entry.get("p95"),
             "p99": entry.get("p99"),

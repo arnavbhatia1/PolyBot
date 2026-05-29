@@ -81,6 +81,7 @@ class BinanceForceOrderFeed:
                     enable_nodelay(ws, "binance_forceorder")
                     backoff = RECONNECT_BASE
                     self.staleness.reset()
+                    self.staleness.mark_connected()
                     self._events.clear()
                     self._connected_since = time.time()
                     logger.debug("Binance forceOrder WS connected: %s", stream)
@@ -99,6 +100,7 @@ class BinanceForceOrderFeed:
                 break
             except Exception as e:
                 self._connected_since = 0.0
+                self.staleness.mark_disconnected()
                 if not self._running:
                     break
                 logger.warning("forceOrder WS error: %s, reconnecting in %ds", e, backoff)
