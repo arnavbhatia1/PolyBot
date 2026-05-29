@@ -16,12 +16,7 @@ import websockets
 
 from polybot.feeds._socket import enable_nodelay
 from polybot.feeds._staleness import StalenessTracker
-
-try:
-    import orjson as _orjson
-    _loads = _orjson.loads
-except ImportError:
-    _loads = json.loads
+from polybot.feeds._json import loads as _loads
 
 logger = logging.getLogger(__name__)
 
