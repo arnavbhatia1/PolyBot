@@ -1155,7 +1155,7 @@ async def _evaluate_signal_and_enter(
         if random.random() < 0.65:
             fee_rate = 0.0  # maker fill
 
-    # Apply slippage to the price returned by _fetch_market_prices (already from GET /price?side=BUY).
+    # Apply slippage to the price returned by _fetch_market_prices (the executable CLOB book best_ask).
     # Entries deliberately use a tight slip (no FOK-cross floor): we WANT the FOK to
     # reject when prices have moved adversely between signal and fill — that adverse-
     # selection rejection is a feature, it stops us from buying post-reversal tops.

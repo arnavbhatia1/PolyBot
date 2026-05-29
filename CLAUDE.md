@@ -487,7 +487,7 @@ Guardrails (most enforce a decision made above; collected here so a future edit 
 - No pattern-based exit rules ("RSI > 80, sell") and no confidence override of a scalp — exit is pure edge + time-value math (§6).
 - Don't hold a dead side for its binary residual when the calibrator's lowest-learned knot says ~0% — selling at market beats $0 expected (§6).
 - `gain_pct = pnl/size` arithmetic, never `log_return`, single source across live + backtest + isotonic fit.
-- Entry-edge math uses `GET /price?side=BUY` (executable), never raw book prices; books are walked only for FOK VWAP slippage. Never skip the fee (`rate × shares × p × (1 − p)`, `rate = 0.018` in `base.DEFAULT_FEE_RATE`).
+- Entry/exit edge uses the **executable CLOB book BBO** — best_ask to buy, best_bid to sell (the price a FOK actually fills against), from the WS BBO with an HTTP `/book` fallback — never the mid. It deliberately does **not** use `GET /price` as the primary source (its negRisk cross-match can return phantom prices that spike near expiry); `/price?side=SELL` is used only as a sanity cross-check to catch a phantom WS bid on the exit path. The FOK ask-ladder is walked for VWAP slippage. Never skip the fee (`rate × shares × p × (1 − p)`, `rate = 0.018` in `base.DEFAULT_FEE_RATE`).
 - Don't bypass the circuit breaker. Don't delete `polybot/db/polybot_*.db`. Regime direction is `sign(last 1-min return)`, not `sign(prob−0.5)`. Layer adjustments are always logit space, never probability space.
 
 ## 14. Project layout
