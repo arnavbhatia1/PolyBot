@@ -68,6 +68,7 @@ class BinanceDepthFeed:
                     enable_nodelay(ws, "binance_depth")
                     backoff = 1
                     self.staleness.reset()
+                    self.staleness.mark_connected()
                     logger.debug("Binance depth WS connected: %s", stream)
                     while self._running:
                         try:
@@ -91,6 +92,7 @@ class BinanceDepthFeed:
             except Exception as e:
                 if not self._running:
                     break
+                self.staleness.mark_disconnected()
                 logger.warning("Depth WS error: %s, reconnecting in %ds", e, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)

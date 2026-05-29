@@ -138,6 +138,7 @@ class CoinbaseFeed:
                     enable_nodelay(ws, "coinbase")
                     backoff = RECONNECT_BASE
                     self.staleness.reset()
+                    self.staleness.mark_connected()
                     self._trades.clear()
 
                     await ws.send(json.dumps({
@@ -163,6 +164,7 @@ class CoinbaseFeed:
             except Exception as e:
                 if not self._running:
                     break
+                self.staleness.mark_disconnected()
                 logger.warning("Coinbase WS error: %s, reconnecting in %ds", e, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX)

@@ -185,6 +185,7 @@ class BinanceTradesFeed:
                     # Windowed analytics must not bridge the gap.
                     self.accumulator.clear()
                     self.staleness.reset()
+                    self.staleness.mark_connected()
                     logger.debug(f"Binance aggTrade WebSocket connected: {stream}")
                     while self._running:
                         try:
@@ -200,6 +201,7 @@ class BinanceTradesFeed:
             except Exception as e:
                 if not self._running:
                     break
+                self.staleness.mark_disconnected()
                 logger.warning(f"aggTrade WebSocket error: {e}, reconnecting in {backoff}s")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)

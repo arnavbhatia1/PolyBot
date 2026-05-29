@@ -164,6 +164,7 @@ class BinanceFeed:
                     enable_nodelay(ws, "binance_kline")
                     backoff = 1
                     self.staleness.reset()
+                    self.staleness.mark_connected()
                     logger.debug("Binance kline WS connected: %s", stream)
                     while self._running:
                         try:
@@ -183,6 +184,7 @@ class BinanceFeed:
             except Exception as e:
                 if not self._running:
                     break
+                self.staleness.mark_disconnected()
                 logger.warning("WebSocket error: %s, reconnecting in %ds", e, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)

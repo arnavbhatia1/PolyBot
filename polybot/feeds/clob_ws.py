@@ -160,6 +160,7 @@ class ClobWebSocket:
                     self._ws = ws
                     enable_nodelay(ws, "clob_ws")
                     self.connected = True
+                    self.staleness.mark_connected()
                     backoff = RECONNECT_BASE
                     self.staleness.reset()
                     self._reset_per_token_state()
@@ -184,6 +185,7 @@ class ClobWebSocket:
                 break
             except Exception as e:
                 self.connected = False
+                self.staleness.mark_disconnected()
                 self._ws = None
                 if self._heartbeat_task:
                     self._heartbeat_task.cancel()

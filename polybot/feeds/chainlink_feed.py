@@ -123,6 +123,7 @@ class ChainlinkFeed:
                     self._ws = ws
                     enable_nodelay(ws, "chainlink")
                     self.staleness.reset()
+                    self.staleness.mark_connected()
                     await ws.send(json.dumps({
                         "action": "subscribe",
                         "subscriptions": [{"topic": "crypto_prices_chainlink", "type": "*"}],
@@ -167,6 +168,7 @@ class ChainlinkFeed:
                 self._ws = None
                 await asyncio.sleep(5)
             finally:
+                self.staleness.mark_disconnected()
                 if ping_task and not ping_task.done():
                     ping_task.cancel()
                     try:
