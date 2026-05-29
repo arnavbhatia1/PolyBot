@@ -4,7 +4,7 @@
 
 **This file is the single source of truth.** Update it with every behavioral change.
 
-**Frozen: the signal/probability model only.** The one locked thing is the math that turns market state into P(Up) — the L1–L6 layer stack, the logit combine/clamp, and the isotonic calibration *transform* as applied to a live decision (§2; implemented in `signal_engine`, `aux_layers`, `derived_features`, `returns`, and `IsotonicCalibrator.calibrate`). That computation, and how it is applied live, does not change. **Everything else is fair game** — entry gates, sizing, ordering, exits, flips, resolution, loss handling (§3–9), the entire nightly pipeline including how and where the calibrator is *fit* (§11), telemetry, and all numeric knobs (§12). The pipeline tunes §12 inside the model; surrounding mechanics are improvable like any other code.
+**Nothing here is frozen.** The whole system — the signal model included — is open to change while it's still being refined; no section is locked. The pipeline auto-tunes the numeric knobs in §12 against the realized-fill backtest; everything else (the model math, gates, sizing, exits, pipeline mechanics, telemetry) is changed by hand, with care and tests. Keep this file in sync — update it in the same commit as any behavioral change.
 
 ## Quick Start
 
@@ -35,9 +35,9 @@ Binance.com, Polymarket, Coinbase: free.
 
 ---
 
-# Part A — The Signal Model & Trading Mechanism (§1–9)
+# Part A — Trading Logic (§1–9)
 
-**§2 — the model that forms P(Up) — is the frozen core.** Its structural choices (Student-t over Gaussian, polarity-split L4, regime-damped L5, closed L6 library, redundancy-discounted L3+L3b+L3e flow combine, isotonic calibration transform) are locked, as is how the calibrator output is applied to a live decision. §1 is context. §3–9 (entry gates, sizing, ordering, exits, flips, resolution, loss handling) describe current behavior but are **mutable** — improvable like any other non-model code, subject to the same care and tests. The pipeline tunes the numeric knobs in §12.
+Part A is the trading mechanism: how P(Up) is formed (§2 — the L1–L6 stack + the isotonic calibration transform) and how the bot gates, sizes, orders, exits, flips, resolves, and handles losses (§1, §3–9). The structural choices below (Student-t over Gaussian, polarity-split L4, regime-damped L5, closed L6 library, redundancy-discounted L3+L3b+L3e flow combine, isotonic calibration, the entry-gate set, the sizing pipeline, the exit-branch order, the flip-premium formula, Chainlink-only resolution, the loss-handling stack) describe current behavior. The pipeline auto-tunes the numeric knobs in §12; any other change here is made by hand, with care and tests.
 
 ## 1. What you're betting on
 
@@ -165,7 +165,7 @@ The dampener is the orthogonality patch: when `|regime|` is high, L2 already enc
 
 ### L6 — Derived feature library (closed)
 
-A frozen library of **4 bounded transforms** of state already tracked by `compute_probability` (`polybot/core/derived_features.py`). Every weight defaults to **0.0** — the layer is dead until the pipeline raises one off zero with evidence.
+A closed library of **4 bounded transforms** of state already tracked by `compute_probability` (`polybot/core/derived_features.py`). Every weight defaults to **0.0** — the layer is dead until the pipeline raises one off zero with evidence.
 
 | Feature | Formula | Notes |
 |---|---|---|
@@ -354,7 +354,7 @@ The stack: circuit breaker (§4), adverse-selection gate (§3), edge-decay gate 
 
 ---
 
-# Part B — Mutable Operational Layer (§10–19)
+# Part B — Operational Layer (§10–19)
 
 The surrounding scaffolding — telemetry, nightly pipeline, param registry, layout, data sources, run commands, invariants, Discord, persistence. The pipeline tunes numeric values declared in §12 against the realized-fill backtest; structural changes to telemetry or pipeline mechanics are operator decisions.
 

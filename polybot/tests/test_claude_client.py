@@ -96,7 +96,7 @@ def test_validate_drops_manual_only_params():
     assert "atr_sigma_ratio" in params
 
 def test_validate_parses_new_calibration_format():
-    """The calibration-rewrite output format must parse through the frozen validator:
+    """The calibration-rewrite output format must parse through the claude_client validator:
     evidence-driven changes keep their machine-read fields (predicted_delta_sharpe_7d,
     confidence_interval), manual-only params reroute, and the new top-level calibration
     fields pass through untouched. This is the schema-compatibility guarantee for the
