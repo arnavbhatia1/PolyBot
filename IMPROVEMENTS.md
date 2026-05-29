@@ -1,10 +1,19 @@
 # IMPROVEMENTS — proposals, by trade lifecycle stage
 
-**Proposals only — not applied.** Anything that changes trading behavior (a signal, a gate,
-exit math, sizing) must go through the bot's own backtest/adoption pipeline, not a hand-edit.
-Each item: the idea, why it should help, rough effort, whether it needs backtest validation,
-and any new data it would require. Sourced from the §1–§19 audit (`tasks/audit/A1–A8.md`) and
-the dead-code sweep.
+Anything that changes trading behavior (a signal, a gate, exit math, sizing) must go through
+the bot's own backtest/adoption pipeline, not a hand-edit. Each item: the idea, why it should
+help, rough effort, whether it needs backtest validation, and any new data it would require.
+Sourced from the §1–§19 audit (`tasks/audit/A1–A8.md`) and the dead-code sweep.
+
+## ✅ Implemented this pass (safe, non-behavioral subset)
+Applied directly with the suite green; everything else below remains a proposal for the pipeline:
+- **Consistency guard tests** (Stage 6) — `f84b6af`: registry↔settings `[P]/[M]` tag check + Discord
+  command coverage. Immediately caught 3 more mistags (normal_fraction / late_max_penalty / flip_edge_premium were `[P]` but are MANUAL_ONLY).
+- **Feed connection-state telemetry** (Stage 1) — `e05fbdc`: `mark_connected/disconnected` wired into all 6 WS feeds; surfaces in the `feed_health` card.
+- **clob_ws shared JSON loader** (Stage 1) — `8177cef`.
+- **Gamma-vs-Chainlink resolution-disagreement logging** (Stage 5) — `76a721c`.
+- **Crisis trailing-3-day timestamp parse** (Stage 6) — `998f6bd`.
+- (`consensus_dead_zone` single-sourcing was already in place via `default_for` — no change needed.)
 
 ---
 
