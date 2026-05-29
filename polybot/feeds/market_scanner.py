@@ -56,8 +56,6 @@ class BTCMarketScanner:
         self._cache_time: float = 0
         self._book_cache: dict[str, tuple[float, dict[str, Any]]] = {}  # token_id -> (timestamp, book)
         self._book_cache_seconds: int = 2
-        self._fee_rate_cache: dict[str, tuple[float, float]] = {}   # token_id -> (timestamp, rate)
-        self._fee_rate_cache_seconds: int = 3600  # 1 hour — fee rates rarely change
         self._tick_size_cache: dict[str, tuple[float, str]] = {}    # token_id -> (timestamp, tick_size)
         self._tick_size_cache_seconds: int = 3600
         self._last_dns_error_ts: float = 0.0  # throttle DNS-failure log to once per 30s
