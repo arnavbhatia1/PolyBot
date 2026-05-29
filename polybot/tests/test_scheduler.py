@@ -3,6 +3,40 @@ import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock
 from polybot.agents.scheduler import AgentScheduler
 
+
+def _bare_scheduler():
+    return AgentScheduler(
+        outcome_reviewer=MagicMock(), bias_detector=MagicMock(),
+        ta_evolver=MagicMock(), weight_optimizer=MagicMock())
+
+
+def test_directional_old_value_resolves_exit_edge_threshold():
+    """exit_edge_threshold is scheduler-owned (not a signal_engine attr); its
+    directional old_value must come through, not log as null."""
+    sched = _bare_scheduler()
+    sched.signal_engine = MagicMock()
+    sched.signal_engine.derived_weights = {"flow_disagreement": 0.005}
+    sched._exit_edge_threshold = -0.08
+    assert sched._directional_old_value("exit_edge_threshold") == -0.08
+
+
+def test_directional_old_value_exit_edge_falls_back_to_default():
+    """When the scheduler hasn't been handed a live value yet, fall back to the
+    config default rather than None — the directional row still gets an old_value."""
+    sched = _bare_scheduler()
+    sched.signal_engine = MagicMock()
+    sched.signal_engine.derived_weights = {}
+    sched._exit_edge_threshold = None
+    assert sched._directional_old_value("exit_edge_threshold") is not None
+
+
+def test_directional_old_value_resolves_l6_weight_from_dict():
+    sched = _bare_scheduler()
+    sched.signal_engine = MagicMock()
+    sched.signal_engine.derived_weights = {"flow_disagreement": 0.005, "log_atr_ratio": 0.0}
+    assert sched._directional_old_value("derived_flow_disagreement_weight") == 0.005
+    assert sched._directional_old_value("derived_log_atr_ratio_weight") == 0.0
+
 def _make_outcomes(n):
     """Helper: generate n fake outcome dicts with sequential timestamps."""
     return [

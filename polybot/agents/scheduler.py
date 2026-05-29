@@ -380,6 +380,20 @@ class AgentScheduler:
         self._baseline_jk_se = round(base_se, 4)
         self._baseline_n_trades = n_base
 
+    def _directional_old_value(self, param: str) -> Any:
+        """Live value of `param` for the directional log's old_value. L6 weights
+        live in `signal_engine.derived_weights` and `exit_edge_threshold` is
+        scheduler-owned — a plain getattr(signal_engine, param) returns None for
+        both, blanking the directional table's first row for those params."""
+        if not self.signal_engine or param == "weights":
+            return None
+        if param.startswith("derived_") and param.endswith("_weight"):
+            return self.signal_engine.derived_weights.get(param[len("derived_"):-len("_weight")])
+        if param == "exit_edge_threshold":
+            return (self._exit_edge_threshold if self._exit_edge_threshold is not None
+                    else _d("exit_edge_threshold"))
+        return getattr(self.signal_engine, param, None)
+
     async def _run_ta_evolver(self, analysis: dict[str, Any], outcomes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         if outcomes is None:
             outcomes = self.outcome_reviewer.load_all_outcomes()
@@ -1285,18 +1299,12 @@ class AgentScheduler:
                 info["per_change"].append(change_info)
                 continue
 
-            # Capture old value for directional tracking. L6 weights live in
-            # `signal_engine.derived_weights[fname]`, not as `derived_*_weight`
-            # attributes; without this branch every L6 probe records old_value=None
-            # and the directional table is blind to L6 history.
-            if self.signal_engine and param != "weights":
-                if param.startswith("derived_") and param.endswith("_weight"):
-                    _fname = param[len("derived_"):-len("_weight")]
-                    old_val = self.signal_engine.derived_weights.get(_fname)
-                else:
-                    old_val = getattr(self.signal_engine, param, None)
-                if old_val is not None:
-                    change_info["old_value"] = old_val
+            # Capture old value for directional tracking via _directional_old_value
+            # (handles L6 weights + the scheduler-owned exit_edge_threshold, neither
+            # of which is a signal_engine attribute).
+            old_val = self._directional_old_value(param)
+            if old_val is not None:
+                change_info["old_value"] = old_val
 
             # Pass through Claude's per-change predictions
             for pred_key in ("predicted_delta_sharpe_7d", "confidence_interval"):
