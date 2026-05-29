@@ -122,9 +122,9 @@ signal:
 #  SECTION 3: ENTRY TIMING
 # =============================================================================
 entry_timing:
-  normal_fraction: 0.6        # [P] First 60% of window (0-180s): full Kelly, no penalty.
-  late_max_penalty: 0.30      # [P] Last 40%: ATM trades penalized up to x%.
-  flip_edge_premium: 0.015    # [P] Base re-entry edge premium. Scaled by flip count at runtime:
+  normal_fraction: 0.6        # [M] First 60% of window (0-180s): full Kelly, no penalty.
+  late_max_penalty: 0.30      # [M] Last 40%: ATM trades penalized up to x%.
+  flip_edge_premium: 0.015    # [M] Base re-entry edge premium. Scaled by flip count at runtime:
                               #     effective premium = base + 0.005 × max(0, flip_count − 2).
 
 # =============================================================================
