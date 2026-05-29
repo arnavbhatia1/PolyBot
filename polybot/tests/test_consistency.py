@@ -50,10 +50,7 @@ def test_discord_commands_resolve_and_help_text_is_accurate():
     assert custom <= registered, f"documented command(s) with no handler: {sorted(custom - registered)}"
     assert registered - custom <= {"help"}, f"undocumented command(s): {sorted(registered - custom - {'help'})}"
 
-    # The in-bot help text must not advertise a command that has no handler.
-    help_cmd = bot.get_command("commands")
-    src = help_cmd.callback.__doc__ or ""
-    # Pull the help body from the function: re-run is overkill, so scan the module source.
+    # The in-bot help text / docstring must not advertise a command that has no handler.
     bot_src = (POLYBOT_DIR / "discord_bot" / "bot.py").read_text(encoding="utf-8")
     advertised = set(re.findall(r"`!(\w+)", bot_src))
     phantom = advertised - registered

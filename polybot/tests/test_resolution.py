@@ -88,3 +88,14 @@ def test_partial_metadata_falls_through_to_coherent_book():
             "closed": True, "price_up": 0.99, "price_down": 0.02}
     px, log = _resolved_exit_price(live, "Up")
     assert px == 1.0 and log is None  # fell through to book (no oracle log)
+
+
+def test_oracle_book_disagreement_is_logged_but_oracle_decides(caplog):
+    import logging
+    # Oracle says Up wins (final > strike); a clearly-resolved book implies Down (price_up≈0).
+    live = {"event_metadata": {"final_price": 100.5, "price_to_beat": 100.0},
+            "closed": True, "price_up": 0.01, "price_down": 0.99}
+    with caplog.at_level(logging.WARNING):
+        px, log = _resolved_exit_price(live, "Up")
+    assert px == 1.0  # oracle still decides (Up wins)
+    assert any("disagreement" in r.getMessage().lower() for r in caplog.records)

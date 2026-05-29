@@ -2010,6 +2010,17 @@ def _resolved_exit_price(live: dict[str, Any], side: str) -> tuple[float | None,
     strike = meta.get("price_to_beat")
     if final_price is not None and strike is not None:
         up_won = final_price >= strike
+        # Cross-check: if the CLOB book has ALSO clearly resolved, surface any
+        # disagreement with the Chainlink oracle (a feed-health signal). The oracle
+        # still decides — this only logs.
+        pu = live.get("price_up")
+        if pu is not None and (pu >= 0.99 or pu <= 0.01) and (pu >= 0.5) != up_won:
+            logger.warning(
+                "RESOLVE disagreement: oracle says %s (final %.2f vs strike %.2f) but CLOB "
+                "book implies %s (price_up=%.3f) — trusting oracle",
+                "Up" if up_won else "Down", final_price, strike,
+                "Up" if pu >= 0.5 else "Down", pu,
+            )
         exit_price = 1.0 if (side == "Up") == up_won else 0.0
         return exit_price, (f"Strike {strike:,.2f} → Final {final_price:,.2f} "
                             f"— {'Up' if up_won else 'Down'} wins")
