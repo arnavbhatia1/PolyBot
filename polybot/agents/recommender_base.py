@@ -22,7 +22,6 @@ EXPLORE_STEPS: dict[str, float] = {
     "regime_weight":         0.01,
     "flow_weight":           0.02,
     "spot_flow_weight":      0.02,
-    "liquidation_weight":    0.02,
     "prev_margin_weight":    0.01,
     "min_atr":               3.0,
     "kelly_fraction":        0.02,
@@ -37,7 +36,6 @@ EXPLORE_STEPS: dict[str, float] = {
     "derived_log_atr_ratio_weight":        0.01,
     "derived_autocorr_signed_mag_weight":  0.01,
     "derived_flow_disagreement_weight":    0.01,
-    "derived_liq_signed_sqrt_weight":      0.01,
 }
 
 # Forced one-time exploration of audit-identified values. Each (param, value)
@@ -51,7 +49,6 @@ STRUCTURAL_PROBES: list[tuple[str, float, str]] = [
     ("derived_log_atr_ratio_weight",       0.005, "structural probe — L6 feature never raised off zero"),
     ("derived_autocorr_signed_mag_weight", 0.005, "structural probe — L6 feature never raised off zero"),
     ("derived_flow_disagreement_weight",   0.005, "structural probe — L6 feature never raised off zero"),
-    ("derived_liq_signed_sqrt_weight",     0.005, "structural probe — L6 feature never raised off zero"),
 ]
 
 _CAP = 5         # max changes adopted per cycle

@@ -54,7 +54,6 @@ SAMPLE_CONFIG = {
         "min_atr": 8.0,
         "logit_scale": 4.0,
         "spot_flow_weight": 0.04,
-        "liquidation_weight": 0.03,
         "prev_margin_weight": 0.02,
         "regime_momentum_threshold": 0.15,
         "final_logit_clamp": 4.0,
@@ -73,7 +72,6 @@ SAMPLE_CONFIG = {
             "log_atr_ratio": 0.0,
             "autocorr_signed_mag": 0.0,
             "flow_disagreement": 0.0,
-            "liq_signed_sqrt": 0.0,
         },
     },
     "entry_timing": {

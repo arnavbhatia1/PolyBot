@@ -50,12 +50,11 @@ def test_build_current_config_includes_l6_derived_weights():
     sched.signal_engine = MagicMock()
     sched.signal_engine.derived_weights = {
         "log_atr_ratio": 0.0, "autocorr_signed_mag": 0.0,
-        "flow_disagreement": 0.005, "liq_signed_sqrt": 0.0}
+        "flow_disagreement": 0.005}
     cfg = sched._build_current_config()
     assert cfg["derived_flow_disagreement_weight"] == 0.005
     assert cfg["derived_log_atr_ratio_weight"] == 0.0
     assert cfg["derived_autocorr_signed_mag_weight"] == 0.0
-    assert cfg["derived_liq_signed_sqrt_weight"] == 0.0
 
 
 def test_fit_calibrator_on_below_min_returns_none():
@@ -83,7 +82,7 @@ def test_weight_backtest_scores_through_gate_calibrator_not_live():
     sched._kelly_bankroll_returns = _spy
     _keys = ("weights", "momentum_weight", "atr_sigma_ratio", "student_t_df", "min_edge",
              "kelly_fraction", "min_kelly", "min_model_probability", "regime_weight",
-             "flow_weight", "spot_flow_weight", "liquidation_weight", "prev_margin_weight",
+             "flow_weight", "spot_flow_weight", "prev_margin_weight",
              "logit_scale", "min_atr", "regime_momentum_threshold", "final_logit_clamp",
              "l5_regime_damp_cap", "atr_regime_shift_threshold", "derived_weights")
     sched._config_for_helper = lambda *a, **k: {key: 0 for key in _keys}

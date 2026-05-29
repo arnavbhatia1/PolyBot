@@ -2,14 +2,14 @@
 
 Regression guard for the feed_staleness.json observability gap: a persisted
 ``n=0`` snapshot could mean either "feed connected but received no messages"
-(a genuinely quiet stream, e.g. liquidations) or "socket never came up". The
+(a genuinely quiet stream) or "socket never came up". The
 two are operationally very different and were previously indistinguishable.
 """
 from polybot.feeds._staleness import StalenessTracker
 
 
 def test_snapshot_distinguishes_connected_quiet_from_never_connected():
-    connected_quiet = StalenessTracker("binance_forceorder")
+    connected_quiet = StalenessTracker("binance_kline")
     connected_quiet.mark_connected()  # socket up, zero messages observed
 
     never_up = StalenessTracker("some_feed")  # nothing reported
@@ -27,7 +27,7 @@ def test_snapshot_distinguishes_connected_quiet_from_never_connected():
 
 
 def test_disconnect_marks_state_false():
-    t = StalenessTracker("binance_forceorder")
+    t = StalenessTracker("binance_kline")
     t.mark_connected()
     t.mark_disconnected()
     assert t.snapshot()["connected"] is False

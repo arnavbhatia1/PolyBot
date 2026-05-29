@@ -12,7 +12,7 @@ from typing import Callable
 
 @dataclass(frozen=True)
 class FeatureContext:
-    """Frozen per-tick state for derived features."""
+    """Immutable per-tick state for derived features."""
     atr: float
     atr_rolling_20: float
     atr_long_term_mean: float
@@ -20,7 +20,6 @@ class FeatureContext:
     last_return: float
     flow_signal: float
     spot_flow_signal: float
-    liquidation_pressure: float
     prev_resolution_margin: float
     seconds_remaining: float
     distance: float
@@ -47,19 +46,10 @@ def _f_flow_disagreement(ctx: FeatureContext) -> float:
     return math.tanh(ctx.flow_signal + ctx.spot_flow_signal)
 
 
-def _f_liq_signed_sqrt(ctx: FeatureContext) -> float:
-    """Softer saturation than L3e's linear input — catches sustained moderate pressure."""
-    liq = ctx.liquidation_pressure
-    if liq == 0.0:
-        return 0.0
-    return math.copysign(min(math.sqrt(abs(liq)), 1.0), liq)
-
-
 DERIVED_FEATURES: dict[str, Callable[[FeatureContext], float]] = {
     "log_atr_ratio":         _f_log_atr_ratio,
     "autocorr_signed_mag":   _f_autocorr_signed_mag,
     "flow_disagreement":     _f_flow_disagreement,
-    "liq_signed_sqrt":       _f_liq_signed_sqrt,
 }
 
 L6_LOGIT_CAP: float = 0.25

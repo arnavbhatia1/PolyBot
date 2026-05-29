@@ -20,7 +20,7 @@ class StalenessTracker:
     Also tracks a lifetime message count and (for feeds that report it via
     mark_connected/mark_disconnected) live connection state. Without these, a
     persisted ``n=0`` snapshot is ambiguous: a connected feed that received no
-    messages (a genuinely quiet stream, e.g. liquidations) looks identical to a
+    messages (a genuinely quiet stream) looks identical to a
     socket that never came up. ``reset()`` (called on reconnect) clears only the
     inter-arrival anchor, so ``n_total`` survives across reconnects.
     """

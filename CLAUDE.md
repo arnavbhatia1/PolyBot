@@ -4,7 +4,7 @@
 
 **This file is the single source of truth.** Update it with every behavioral change.
 
-**Nothing here is frozen.** The whole system — the signal model included — is open to change while it's still being refined; no section is locked. The pipeline auto-tunes the numeric knobs in §12 against the realized-fill backtest; everything else (the model math, gates, sizing, exits, pipeline mechanics, telemetry) is changed by hand, with care and tests. Keep this file in sync — update it in the same commit as any behavioral change.
+The pipeline auto-tunes the numeric knobs in §12 against the realized-fill backtest; everything else (the model math, gates, sizing, exits, pipeline mechanics, telemetry) is changed by hand, with care and tests. Keep this file in sync — update it in the same commit as any behavioral change.
 
 ## Quick Start
 
@@ -37,7 +37,7 @@ Binance.com, Polymarket, Coinbase: free.
 
 # Part A — Trading Logic (§1–9)
 
-Part A is the trading mechanism: how P(Up) is formed (§2 — the L1–L6 stack + the isotonic calibration transform) and how the bot gates, sizes, orders, exits, flips, resolves, and handles losses (§1, §3–9). The structural choices below (Student-t over Gaussian, polarity-split L4, regime-damped L5, closed L6 library, redundancy-discounted L3+L3b+L3e flow combine, isotonic calibration, the entry-gate set, the sizing pipeline, the exit-branch order, the flip-premium formula, Chainlink-only resolution, the loss-handling stack) describe current behavior. The pipeline auto-tunes the numeric knobs in §12; any other change here is made by hand, with care and tests.
+Part A is the trading mechanism: how P(Up) is formed (§2 — the L1–L6 stack + the isotonic calibration transform) and how the bot gates, sizes, orders, exits, flips, resolves, and handles losses (§1, §3–9). The structural choices below (Student-t over Gaussian, polarity-split L4, regime-damped L5, closed L6 library, redundancy-discounted L3+L3b flow combine, isotonic calibration, the entry-gate set, the sizing pipeline, the exit-branch order, the flip-premium formula, Chainlink-only resolution, the loss-handling stack) describe current behavior. The pipeline auto-tunes the numeric knobs in §12; any other change here is made by hand, with care and tests.
 
 ## 1. What you're betting on
 
@@ -90,7 +90,7 @@ Single `lag1_autocorr` helper in `polybot/core/returns.py` — `SignalEngine.com
 book_imbalance = (top-5 bid_up + top-5 ask_down − top-5 bid_down − top-5 ask_up) / total
 trade_flow     = recency_weighted_net_flow (120s window, 30s half-life decay)
 flow_score     = 0.6 × book_imbalance + 0.4 × trade_flow
-logit += flow_score × flow_weight × logit_scale     # combined with L3b + L3e (redundancy-discounted)
+logit += flow_score × flow_weight × logit_scale     # combined with L3b (redundancy-discounted)
 ```
 
 Top-5 levels each side by best price. Trade flow is exponential decay with a 30s half-life inside the 120s window.
@@ -105,28 +105,14 @@ vol_factor = clamp(atr / atr_long_term_mean, 0.5, 3.0)   # current volatility re
 cvd_comp   = tanh(cvd_60s / (30 × vol_factor)) × 0.8     # saturation scale tracks regime
 taker_comp = (taker_60s − 0.5) × 0.4            # only when ≥20 trades in window
 spot_flow  = clamp(cvd_comp + taker_comp, ±1)
-logit += spot_flow × spot_flow_weight × logit_scale     # combined with L3 + L3e (redundancy-discounted)
+logit += spot_flow × spot_flow_weight × logit_scale     # combined with L3 (redundancy-discounted)
 ```
 
 `compute_spot_flow_signal` in `polybot/core/aux_layers.py` so live and replay can't drift. `vol_factor` scales the `tanh` saturation point to the current regime (a fixed scale would saturate in high-volume regimes, losing resolution when flow is most informative).
 
 **CVD-acceleration gate** (sizing-time guard, not L3b magnitude): `coinbase_feed.get_cvd_acceleration(recent_s=15, baseline_s=45)` requires ≥10 recent trades. Skips entry when `|spot_flow| ≥ 0.20` **and** `spot_flow × cvd_accel < 0` — the signal has already peaked.
 
-**Flow-family combine (L3 + L3b + L3e).** Book flow, spot CVD, and liquidations watch the *same* BTC move, so summing additively double-counts when they agree — the exact high-conviction case that drives the largest sizing. Instead, per direction: the strongest contribution enters at full weight, same-direction corroborators discounted by `_FLOW_REDUNDANCY` (0.5); opposing signals offset naturally (no discount — disagreement is information). Combined result (all three legs) clamped to **±0.50 logits**, so no flow leg or correlated cluster can dominate L1.
-
-### L3e — Direct futures liquidations (Binance)
-
-Per-event `btcusdt@forceOrder` from Binance futures; each message is one order with side, qty, price.
-
-```
-long_usd  = sum of price × qty for order.side == SELL (closing longs → price-down event)
-short_usd = sum of price × qty for order.side == BUY  (closing shorts → price-up event)
-vol_factor = clamp(atr / atr_long_term_mean, 0.5, 3.0)
-liq        = tanh((short_usd − long_usd) / (50_000 × (btc_price / 65_000) × vol_factor))   # scale tracks price + vol
-liq × liquidation_weight × logit_scale     # enters the L3+L3b+L3e flow combine (see L3b), not added separately
-```
-
-Sign: **short liquidation → price-up (+)**, **long liquidation → price-down (−)**. Helper `compute_liquidation_signal` in `aux_layers.py`, shared with replay. Cascade scale tracks `btc_price` (vs a $65k reference) and the current vol regime — a fixed USD threshold would silently recalibrate as BTC's price level drifts.
+**Flow-family combine (L3 + L3b).** Book flow and spot CVD watch the *same* BTC move, so summing additively double-counts when they agree — the exact high-conviction case that drives the largest sizing. Instead, per direction: the strongest contribution enters at full weight, the same-direction corroborator discounted by `_FLOW_REDUNDANCY` (0.5); opposing signals offset naturally (no discount — disagreement is information). Combined result (both legs) clamped to **±0.50 logits**, so neither flow leg can dominate L1.
 
 ### L4 — Indicator committee (polarity-split, regime-conditional)
 
@@ -165,14 +151,13 @@ The dampener is the orthogonality patch: when `|regime|` is high, L2 already enc
 
 ### L6 — Derived feature library (closed)
 
-A closed library of **4 bounded transforms** of state already tracked by `compute_probability` (`polybot/core/derived_features.py`). Every weight defaults to **0.0** — the layer is dead until the pipeline raises one off zero with evidence.
+A closed library of **3 bounded transforms** of state already tracked by `compute_probability` (`polybot/core/derived_features.py`). Every weight defaults to **0.0** — the layer is dead until the pipeline raises one off zero with evidence.
 
 | Feature | Formula | Notes |
 |---|---|---|
 | `log_atr_ratio` | `clip(log(ATR_short / ATR_long), ±1.5)` | Vol regime expansion (+) or collapse (−) |
 | `autocorr_signed_mag` | `regime × tanh(last_return × 100)` | Direction-aware momentum strength |
 | `flow_disagreement` | `tanh(flow + spot_flow)` | Direction-aware flow consensus |
-| `liq_signed_sqrt` | `sign(liq) × min(√\|liq\|, 1)` | Softer saturation than L3e's tanh |
 
 ```
 l6_total = Σ derived_weights[name] × logit_scale × feature(ctx)
@@ -364,8 +349,8 @@ The surrounding scaffolding — telemetry, nightly pipeline, param registry, lay
 
 - **Entry facts:** `btc_price`, `strike_price`, `seconds_remaining`, `market_price_up`, `market_price_down`, `closes_tail` (last 2 closes, so the L6 backtest can reconstruct `last_return`).
 - **Probabilities:** `model_probability` (post-calibrator), `model_probability_raw` (pre-calibrator — stored separately so re-fits don't compound).
-- **Composite signals:** `flow_score`, `spot_flow_signal`, `liquidation_pressure`, `regime_autocorr`, `regime_direction`, `prev_resolution_margin`.
-- **Microstructure aux:** `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`, `binance_liq_long_usd_min`, `binance_liq_short_usd_min`. Each **signal** field is `None` when its feed is missing/stale, never `0.0` — so the pipeline can tell "feed cold" from "real zero." `coinbase_taker_n` is a **count**, not a signal: `0` (not `None`) when cold, while its paired `coinbase_taker_60s` is `None`, so the sole consumer (requires `n ≥ 20`) contributes nothing either way.
+- **Composite signals:** `flow_score`, `spot_flow_signal`, `regime_autocorr`, `regime_direction`, `prev_resolution_margin`.
+- **Microstructure aux:** `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`. Each **signal** field is `None` when its feed is missing/stale, never `0.0` — so the pipeline can tell "feed cold" from "real zero." `coinbase_taker_n` is a **count**, not a signal: `0` (not `None`) when cold, while its paired `coinbase_taker_60s` is `None`, so the sole consumer (requires `n ≥ 20`) contributes nothing either way.
 - **SPRT:** `sprt_confidence`, `sprt_status`.
 - **Sizing audit:** `adverse_rate_at_30s`, `adverse_kelly_mult` (the actual Kelly multiplier applied at sizing — enables per-bucket retrospective Sharpe), `entry_phase`, `flip_count`, `is_flip`.
 
@@ -394,7 +379,7 @@ Runs 23:45 ET (via `run_polybot.ps1`). Five steps; calibrator save deferred to t
 - **7-day holdout** — last 7 days excluded from all folds AND the evolver's context. Two calibrators (see Calibration window): the **live** calibrator fits the freshest `_CAL_WINDOW_DAYS` for production, while a separate **gate-reference** calibrator fits the disjoint window immediately before the holdout (days `[HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS]` back). Weight backtests score candidates through the gate reference, so the holdout-confirmation gate evaluates them on trades that calibrator never saw.
 - **Realized fills only** — `gain_pct = pnl / size` from closed-trade outcomes, `pnl` already netting actual fee + fill price. No mid-price replay; candidates inherit the slippage any live trade paid.
 - **Recency weighting** — `0.94^days_ago` (~11-day half-life) inside the window cutoff. Microstructure edge decays in days, not weeks.
-- **Backtest L1 ATR-floor fidelity (approximate).** Live advances the rolling-20 / long-term-200 ATR buffers per decision tick; the backtest holds one snapshot per trade, so `_kelly_bankroll_returns` advances a local buffer once per stored trade (entry-only). `min_atr` and `atr_regime_shift_threshold` stay backtest-evaluable, and the approximation largely cancels in the baseline-vs-candidate delta — but absolute fidelity drifts during vol-regime transitions and on regime-bucketed subsets. (L6 features and the L3b/L3e `regime_vol_factor` read the faithfully-stamped `atr_rolling_20` / `atr_long_term_mean` from `trade_context`.)
+- **Backtest L1 ATR-floor fidelity (approximate).** Live advances the rolling-20 / long-term-200 ATR buffers per decision tick; the backtest holds one snapshot per trade, so `_kelly_bankroll_returns` advances a local buffer once per stored trade (entry-only). `min_atr` and `atr_regime_shift_threshold` stay backtest-evaluable, and the approximation largely cancels in the baseline-vs-candidate delta — but absolute fidelity drifts during vol-regime transitions and on regime-bucketed subsets. (L6 features and the L3b `regime_vol_factor` read the faithfully-stamped `atr_rolling_20` / `atr_long_term_mean` from `trade_context`.)
 
 ### Calibration window
 
@@ -455,7 +440,7 @@ Triggers on **either**:
 
 - **`EXPLORE_STEPS`** maps each tunable to a base step (e.g., `atr_sigma_ratio = 0.15`, `final_logit_clamp = 0.50`).
 - **`_rule_exploratory`** ramps step size up when the directional table shows past probes returned `|bt_delta|` under the noise floor (empirical per cycle: `max(0.003, 0.3 × baseline_jk_se)`). Each dead direction adds +50% (cap 3.0×). Adoptions reset the loop.
-- **`STRUCTURAL_PROBES`** fires once per `(param, value)` until evidence appears: `exit_edge_threshold ∈ {−0.08, −0.05, −0.03}` (counterfactual data backs a less-strict exit); L6 turn-on at `0.005` for all four weights (`log_atr_ratio`, `autocorr_signed_mag`, `flow_disagreement`, `liq_signed_sqrt`) so every closed-library feature gets ≥1 evaluation cycle.
+- **`STRUCTURAL_PROBES`** fires once per `(param, value)` until evidence appears: `exit_edge_threshold ∈ {−0.08, −0.05, −0.03}` (counterfactual data backs a less-strict exit); L6 turn-on at `0.005` for all three weights (`log_atr_ratio`, `autocorr_signed_mag`, `flow_disagreement`) so every closed-library feature gets ≥1 evaluation cycle.
 
 Both recommenders call `_rule_structural_probes()` before the rotational `_rule_exploratory`.
 
@@ -473,14 +458,14 @@ The optimizer captures `old_value` from `signal_engine.derived_weights[fname]` f
 | | `student_t_df` | 3–8 |
 | | `min_atr` | 8.0–25.0 |
 | **Logit amplifier** | `logit_scale` | 2.0–5.0 |
-| **L2-L5 weights** | `regime_weight` (0.01–0.15), `flow_weight` (0.02–0.12), `spot_flow_weight` (0.01–0.15), `liquidation_weight` (0.01–0.10), `prev_margin_weight` (0.01–0.05) | per-param |
+| **L2-L5 weights** | `regime_weight` (0.01–0.15), `flow_weight` (0.02–0.12), `spot_flow_weight` (0.01–0.15), `prev_margin_weight` (0.01–0.05) | per-param |
 | | `momentum_weight` | 0.0–0.10 (magnitude only — sign is dead at L4) |
 | **Indicator committee (L4)** | `weights` (RSI/MACD/Stochastic/OBV/VWAP dict) | each ≥ 0.05, renormalized to sum 1.0; adopted via the L4 backtest. Handled as a dict by the optimizer and `claude_client`, not a scalar `ParamSpec`. |
 | **Sizing** | `kelly_fraction` | 0.05–0.18 |
 | **Entry gates** | `min_edge`, `min_kelly`, `min_model_probability` | tight bands |
 | **Exit** | `exit_edge_threshold` | −0.10..−0.03 |
 | **Structural constants** | `regime_momentum_threshold` (0.08–0.25), `final_logit_clamp` (3.0–5.0), `l5_regime_damp_cap` (0.4–0.9), `atr_regime_shift_threshold` (0.40–0.80) | |
-| **L6 derived weights** | `derived_log_atr_ratio_weight`, `derived_autocorr_signed_mag_weight`, `derived_flow_disagreement_weight`, `derived_liq_signed_sqrt_weight` | 0.0–0.05 each; combined L6 hard-capped at ±0.25 logits |
+| **L6 derived weights** | `derived_log_atr_ratio_weight`, `derived_autocorr_signed_mag_weight`, `derived_flow_disagreement_weight` | 0.0–0.05 each; combined L6 hard-capped at ±0.25 logits |
 
 ### Manual-only (`MANUAL_ONLY_PARAMS`, validator reroutes `changes` → `manual_observations`)
 
@@ -513,10 +498,10 @@ polybot/
   config/                      settings.yaml, loader.py, param_registry.py (single source of truth)
   core/                        signal_engine, calibrator, order_flow, returns, regime,
                                exit_boundary, sprt, adverse_selection, derived_features,
-                               aux_layers (compute_spot_flow_signal, compute_liquidation_signal)
+                               aux_layers (compute_spot_flow_signal)
   feeds/                       coinbase_feed (primary BTC + CVD),
                                binance_feed (1m candles, ATR), binance_depth, binance_trades,
-                               binance_forceorder (L3e), chainlink_feed (strike + resolution),
+                               chainlink_feed (strike + resolution),
                                clob_ws, market_scanner, _socket, _staleness
   indicators/                  rsi, macd, stochastic, obv, vwap, ema, atr + engine
   execution/                   base (BaseTrader, fee math), paper_trader, live_trader,
@@ -547,7 +532,7 @@ polybot/
 | Source | Feed | What |
 |---|---|---|
 | Coinbase | `ticker` WS (BTC-USD) | Primary BTC price + per-trade CVD |
-| Binance.com | `kline_1m` / `depth20@100ms` / `aggTrade` / `forceOrder` WS | Candles, ATR, depth, CVD-fallback, liquidations |
+| Binance.com | `kline_1m` / `depth20@100ms` / `aggTrade` WS | Candles, ATR, depth, CVD-fallback |
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/fee-rate` | Books, fills, fees |
 | Polymarket Gamma | `GET /events?slug=...` | Discovery + resolution |
 | Chainlink | `latestRoundData()` via Eth RPC | Strike + resolution oracle |
@@ -570,7 +555,7 @@ python -m pytest polybot/tests/           # full suite
 - **Recency weighting** single source `RECENCY_DECAY_PER_DAY` in `pipeline_analytics.py` (`0.94^days_ago`, ~11-day half-life, inside the 60-day cutoff).
 - **UTC everywhere** for storage; ET only for date-bucketing (gate_stats, daily rollup) and trading-window logic.
 - **Daily rollup** runs inside the 11:45 PM ET pipeline (`rollup_old_outcomes` / `rollup_old_ghosts` / `rollup_old_counterfactuals`), bundling per-trade JSON into `rollup_YYYY-MM-DD.json`.
-- **Shared model math** lives in `aux_layers.py` — the L1 vol-autocorrelation scale (`autocorr_vol_scale`), the flow-family combine (`combine_flow_family`), and the L3b/L3e regime normalization (`regime_vol_factor` + `compute_spot_flow_signal`/`compute_liquidation_signal`) — called by `signal_engine` (live) and `scheduler` (replay) alike, so the optimizer can't tune against a model production doesn't run.
+- **Shared model math** lives in `aux_layers.py` — the L1 vol-autocorrelation scale (`autocorr_vol_scale`), the flow-family combine (`combine_flow_family`), and the L3b regime normalization (`regime_vol_factor` + `compute_spot_flow_signal`) — called by `signal_engine` (live) and `scheduler` (replay) alike, so the optimizer can't tune against a model production doesn't run.
 - Also fixed (detailed where cited): `model_probability_raw` (§10), `gain_pct = pnl/size` never `log_return` (§13), L6 library closed (§2/§11), `edge_decay.deltas` + `adverse_kelly_mult` + aux-fields-`None`-when-stale (§10), atomic open/close (§5), per-mode DB with shared `memory/` (§14).
 
 ## 18. Discord

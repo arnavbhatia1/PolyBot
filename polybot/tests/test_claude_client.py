@@ -110,7 +110,7 @@ def test_validate_parses_new_calibration_format():
             {"param": "loss_cut_fraction", "value": 0.70, "reason": "manual — should reroute"},
         ],
         "exploratory_notes": [
-            {"param": "liquidation_weight", "reason": "no evidence yet; gather — not a prediction"},
+            {"param": "prev_margin_weight", "reason": "no evidence yet; gather — not a prediction"},
         ],
         "manual_observations": [],
         "key_findings": ["thin data; most signals sub-floor"],
@@ -130,7 +130,7 @@ def test_validate_parses_new_calibration_format():
     assert any(o["param"] == "loss_cut_fraction" for o in result["manual_observations"])
     # new top-level calibration fields are tolerated + preserved by the validator
     assert result["calibration_self_check"].startswith("Last cycle")
-    assert result["exploratory_notes"][0]["param"] == "liquidation_weight"
+    assert result["exploratory_notes"][0]["param"] == "prev_margin_weight"
     # confidence stays machine-readable for the directional logger / ta_evolver log line
     assert result["confidence"] == "low"
 

@@ -102,11 +102,11 @@ def test_bybit_feed_module_deleted():
     assert not Path("polybot/feeds/bybit_feed.py").exists()
 
 
-# ---- Param registry — L3b/L3e descriptions reflect current sources ----
+# ---- Param registry — L3b description reflects current source; L3e removed ----
 
-def test_param_registry_l3b_l3e_descriptions_current():
+def test_param_registry_l3b_description_current():
     src = Path("polybot/config/param_registry.py").read_text(encoding="utf-8")
     assert "L3b Coinbase CVD" in src
-    assert "L3e Binance forceOrder" in src
     assert "L3b Binance" not in src
+    assert "L3e" not in src
     assert "Bybit" not in src

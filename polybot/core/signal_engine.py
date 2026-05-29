@@ -91,7 +91,6 @@ class SignalEngine:
                  spot_flow_weight: float | None = None,
                  prev_margin_weight: float | None = None,
                  min_atr: float | None = None,
-                 liquidation_weight: float | None = None,
                  logit_scale: float | None = None,
                  loss_cut_fraction: float | None = None,
                  loss_cut_time_s: float | None = None,
@@ -118,7 +117,6 @@ class SignalEngine:
         if spot_flow_weight is None: spot_flow_weight = _d("spot_flow_weight")
         if prev_margin_weight is None: prev_margin_weight = _d("prev_margin_weight")
         if min_atr is None: min_atr = _d("min_atr")
-        if liquidation_weight is None: liquidation_weight = _d("liquidation_weight")
         if logit_scale is None: logit_scale = _d("logit_scale")
         if loss_cut_fraction is None: loss_cut_fraction = _d("loss_cut_fraction")
         if loss_cut_time_s is None: loss_cut_time_s = _d("loss_cut_time_s")
@@ -143,7 +141,6 @@ class SignalEngine:
         self.spot_flow_weight: float = spot_flow_weight
         self.prev_margin_weight: float = prev_margin_weight
         self.min_atr: float = min_atr
-        self.liquidation_weight: float = liquidation_weight
         self.logit_scale: float = logit_scale
         self.loss_cut_fraction: float = loss_cut_fraction
         self.loss_cut_time_s: float = loss_cut_time_s
@@ -215,7 +212,7 @@ class SignalEngine:
 
     def _apply_derived_features(self, *, atr: float, regime: float, distance: float,
                                 seconds_remaining: float, flow_signal: float,
-                                spot_flow_signal: float, liquidation_pressure: float,
+                                spot_flow_signal: float,
                                 prev_resolution_margin: float,
                                 last_return: float) -> float:
         """L6 sum, bounded by L6_LOGIT_CAP. last_return passed in to avoid a second closes walk."""
@@ -231,7 +228,6 @@ class SignalEngine:
             last_return=last_return,
             flow_signal=flow_signal,
             spot_flow_signal=spot_flow_signal,
-            liquidation_pressure=liquidation_pressure,
             prev_resolution_margin=prev_resolution_margin,
             seconds_remaining=seconds_remaining,
             distance=distance,
@@ -259,8 +255,7 @@ class SignalEngine:
                             closes: np.ndarray | None = None,
                             flow_signal: float = 0.0,
                             spot_flow_signal: float = 0.0,
-                            prev_resolution_margin: float = 0.0,
-                            liquidation_pressure: float = 0.0) -> float:
+                            prev_resolution_margin: float = 0.0) -> float:
         """P(Up) at expiry — Student-t CDF + logit-space layer adjustments + isotonic."""
         def _calibrated(p: float) -> float:
             self.last_raw_prob_up = p
@@ -311,12 +306,11 @@ class SignalEngine:
         self.last_regime_direction = direction
         logit_p += regime * direction * logit_regime_w
 
-        # L3 + L3b + L3e — three venues watching the same BTC move; redundancy-
-        # discounted combine + joint clamp (shared with replay via aux_layers).
+        # L3 + L3b — two venues watching the same BTC move; redundancy-discounted
+        # combine + joint clamp (shared with replay via aux_layers).
         logit_p += combine_flow_family(
             flow_signal * logit_flow_w,
             spot_flow_signal * (self.spot_flow_weight * self.logit_scale),
-            liquidation_pressure * (self.liquidation_weight * self.logit_scale),
         )
 
         # L5 — previous-window margin carry, tanh-normalized by ATR. Dampened by
@@ -343,7 +337,6 @@ class SignalEngine:
                 atr=atr, regime=regime, distance=distance,
                 seconds_remaining=seconds_remaining,
                 flow_signal=flow_signal, spot_flow_signal=spot_flow_signal,
-                liquidation_pressure=liquidation_pressure,
                 prev_resolution_margin=prev_resolution_margin,
                 last_return=last_return,
             )
@@ -397,7 +390,6 @@ class SignalEngine:
                  flow_signal: float = 0.0,
                  spot_flow_signal: float = 0.0,
                  prev_resolution_margin: float = 0.0,
-                 liquidation_pressure: float = 0.0,
                  fee_rate: float = 0.018) -> TradeSignal:
         if not in_entry_window:
             return TradeSignal("SKIP", 0.5, 0, 0, "Outside entry window")
@@ -416,8 +408,7 @@ class SignalEngine:
                                            closes=closes,
                                            flow_signal=flow_signal,
                                            spot_flow_signal=spot_flow_signal,
-                                           prev_resolution_margin=prev_resolution_margin,
-                                           liquidation_pressure=liquidation_pressure)
+                                           prev_resolution_margin=prev_resolution_margin)
         prob_down = 1.0 - prob_up
         best_prob = max(prob_up, prob_down)
         if best_prob < self.min_model_probability:
@@ -462,7 +453,6 @@ class SignalEngine:
                       flow_signal: float = 0.0,
                       spot_flow_signal: float = 0.0,
                       prev_resolution_margin: float = 0.0,
-                      liquidation_pressure: float = 0.0,
                       market_mid_for_side: float | None = None) -> tuple[str, float, float, str]:
         """Decide HOLD vs EXIT each tick using the same model as entry.
         Returns (action, model_prob, holding_edge, reason).
@@ -478,8 +468,7 @@ class SignalEngine:
                                            closes=closes,
                                            flow_signal=flow_signal,
                                            spot_flow_signal=spot_flow_signal,
-                                           prev_resolution_margin=prev_resolution_margin,
-                                           liquidation_pressure=liquidation_pressure)
+                                           prev_resolution_margin=prev_resolution_margin)
         model_prob = prob_up if side == "Up" else 1.0 - prob_up
         holding_edge = model_prob - market_price_for_side
 

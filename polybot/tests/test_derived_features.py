@@ -23,7 +23,6 @@ def _neutral_ctx() -> FeatureContext:
         last_return=0.0,
         flow_signal=0.0,
         spot_flow_signal=0.0,
-        liquidation_pressure=0.0,
         prev_resolution_margin=0.0,
         seconds_remaining=150.0,
         distance=0.0,
@@ -48,7 +47,7 @@ def test_all_features_finite_and_bounded_on_extreme_inputs():
         atr=1.0, atr_rolling_20=1e6, atr_long_term_mean=1.0,
         regime=1.0, last_return=10.0,
         flow_signal=1e6, spot_flow_signal=1e6,
-        liquidation_pressure=1e6, prev_resolution_margin=1e6,
+        prev_resolution_margin=1e6,
         seconds_remaining=0.0, distance=1e6,
     )
     for name, fn in DERIVED_FEATURES.items():
@@ -68,7 +67,7 @@ def test_log_atr_ratio_zero_when_atr_history_empty():
     ctx = FeatureContext(
         atr=10.0, atr_rolling_20=0.0, atr_long_term_mean=0.0,
         regime=0.0, last_return=0.0, flow_signal=0.0, spot_flow_signal=0.0,
-        liquidation_pressure=0.0, prev_resolution_margin=0.0,
+        prev_resolution_margin=0.0,
         seconds_remaining=150.0, distance=0.0,
     )
     # Both fall back to `atr`; short==long ⇒ log(1) = 0.
@@ -90,7 +89,7 @@ def test_signal_engine_l6_inert_when_all_weights_zero():
         btc_price=101.0, strike_price=100.0,
         seconds_remaining=200.0, atr=12.0,
         closes=closes, flow_signal=0.3, spot_flow_signal=0.2,
-        liquidation_pressure=0.1, prev_resolution_margin=20.0,
+        prev_resolution_margin=20.0,
     )
     # All weights still 0 → result is identical to a fresh engine probability.
     eng2 = SignalEngine()
@@ -98,7 +97,7 @@ def test_signal_engine_l6_inert_when_all_weights_zero():
         btc_price=101.0, strike_price=100.0,
         seconds_remaining=200.0, atr=12.0,
         closes=closes, flow_signal=0.3, spot_flow_signal=0.2,
-        liquidation_pressure=0.1, prev_resolution_margin=20.0,
+        prev_resolution_margin=20.0,
     )
     assert p_baseline == p_again
 
@@ -112,7 +111,7 @@ def test_signal_engine_l6_contribution_capped():
         atr=10.0, regime=0.5, distance=0.0,
         seconds_remaining=150.0,
         flow_signal=10.0, spot_flow_signal=10.0,
-        liquidation_pressure=0.0, prev_resolution_margin=0.0,
+        prev_resolution_margin=0.0,
         last_return=0.0,
     )
     assert abs(val) <= L6_LOGIT_CAP + 1e-9

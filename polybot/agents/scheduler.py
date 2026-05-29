@@ -18,8 +18,8 @@ from datetime import datetime, timezone
 from typing import Any
 from polybot.config.loader import save_config
 from polybot.config.param_registry import default_for as _d
-from polybot.core.aux_layers import (compute_spot_flow_signal, compute_liquidation_signal,
-                                      regime_vol_factor, autocorr_vol_scale, combine_flow_family)
+from polybot.core.aux_layers import (compute_spot_flow_signal, regime_vol_factor,
+                                      autocorr_vol_scale, combine_flow_family)
 from polybot.paths import (
     MEMORY_DIR, CRISIS_STATE_PATH, GATE_STATS_CURRENT_PATH, FILL_STATS_PATH,
     COUNTERFACTUALS_DIR,
@@ -459,7 +459,6 @@ class AgentScheduler:
             "spot_flow_weight": getattr(self.signal_engine, 'spot_flow_weight', _d("spot_flow_weight")),
             "prev_margin_weight": getattr(self.signal_engine, 'prev_margin_weight', _d("prev_margin_weight")),
             "logit_scale": getattr(self.signal_engine, 'logit_scale', _d("logit_scale")),
-            "liquidation_weight": getattr(self.signal_engine, 'liquidation_weight', _d("liquidation_weight")),
             "adverse_selection_threshold": (self._config or {}).get("signal", {}).get("adverse_selection_threshold", _d("adverse_selection_threshold")),
             "normal_fraction": (self._config or {}).get("entry_timing", {}).get("normal_fraction", _d("normal_fraction")),
             "late_max_penalty": (self._config or {}).get("entry_timing", {}).get("late_max_penalty", _d("late_max_penalty")),
@@ -639,7 +638,6 @@ class AgentScheduler:
         regime_weight: float | None = None,
         flow_weight: float | None = None,
         spot_flow_weight: float | None = None,
-        liquidation_weight: float | None = None,
         prev_margin_weight: float | None = None,
         logit_scale: float | None = None,
         min_atr: float | None = None,
@@ -665,7 +663,6 @@ class AgentScheduler:
         if regime_weight is None: regime_weight = _d("regime_weight")
         if flow_weight is None: flow_weight = _d("flow_weight")
         if spot_flow_weight is None: spot_flow_weight = _d("spot_flow_weight")
-        if liquidation_weight is None: liquidation_weight = _d("liquidation_weight")
         if prev_margin_weight is None: prev_margin_weight = _d("prev_margin_weight")
         if logit_scale is None: logit_scale = _d("logit_scale")
         if min_atr is None: min_atr = _d("min_atr")
@@ -807,7 +804,7 @@ class AgentScheduler:
                 direction = 1.0 if prev_margin > 0 else (-1.0 if prev_margin < 0 else 0.0)
             logit_p += regime_factor * direction * (regime_weight * logit_scale)
 
-            # L3 + L3b + L3e — recompute from stamped aux signals with the same
+            # L3 + L3b — recompute from stamped aux signals with the same
             # vol/price-relative normalization + redundancy combine live uses (shared
             # via aux_layers); fall back to stored values for rows lacking raw aux.
             _vol_factor = regime_vol_factor(atr_raw, ctx.get("atr_long_term_mean"))
@@ -821,21 +818,9 @@ class AgentScheduler:
                 )
             else:
                 spot_flow = ctx.get("spot_flow_signal", 0.0)
-            if any(ctx.get(k) is not None for k in (
-                "binance_liq_long_usd_min", "binance_liq_short_usd_min",
-            )):
-                liq = compute_liquidation_signal(
-                    ctx.get("binance_liq_long_usd_min"),
-                    ctx.get("binance_liq_short_usd_min"),
-                    btc_price=btc,
-                    vol_factor=_vol_factor,
-                )
-            else:
-                liq = ctx.get("liquidation_pressure", 0.0)
             logit_p += combine_flow_family(
                 flow_signal * (flow_weight * logit_scale),
                 spot_flow * (spot_flow_weight * logit_scale),
-                liq * (liquidation_weight * logit_scale),
             )
 
             # L5 — previous-window margin carry (tanh-normalized by ATR).
@@ -902,7 +887,6 @@ class AgentScheduler:
                     last_return=_last_return,
                     flow_signal=flow_signal,
                     spot_flow_signal=spot_flow,
-                    liquidation_pressure=liq,
                     prev_resolution_margin=prev_margin,
                     seconds_remaining=secs,
                     distance=(btc - strike),
@@ -1071,7 +1055,6 @@ class AgentScheduler:
             regime_weight=cfg["regime_weight"],
             flow_weight=cfg["flow_weight"],
             spot_flow_weight=cfg["spot_flow_weight"],
-            liquidation_weight=cfg["liquidation_weight"],
             prev_margin_weight=cfg["prev_margin_weight"],
             logit_scale=cfg["logit_scale"],
             min_atr=cfg["min_atr"],
@@ -1147,7 +1130,6 @@ class AgentScheduler:
             regime_weight=cfg["regime_weight"],
             flow_weight=cfg["flow_weight"],
             spot_flow_weight=cfg["spot_flow_weight"],
-            liquidation_weight=cfg["liquidation_weight"],
             prev_margin_weight=cfg["prev_margin_weight"],
             logit_scale=cfg["logit_scale"],
             min_atr=cfg["min_atr"],
@@ -1538,7 +1520,6 @@ class AgentScheduler:
                     regime_weight=cfg_combined["regime_weight"],
                     flow_weight=cfg_combined["flow_weight"],
                     spot_flow_weight=cfg_combined["spot_flow_weight"],
-                    liquidation_weight=cfg_combined["liquidation_weight"],
                     prev_margin_weight=cfg_combined["prev_margin_weight"],
                     logit_scale=cfg_combined["logit_scale"],
                     min_atr=cfg_combined["min_atr"],
@@ -2154,7 +2135,6 @@ class AgentScheduler:
                         regime_weight=cfg["regime_weight"],
                         flow_weight=cfg["flow_weight"],
                         spot_flow_weight=cfg["spot_flow_weight"],
-                        liquidation_weight=cfg["liquidation_weight"],
                         prev_margin_weight=cfg["prev_margin_weight"],
                         logit_scale=cfg["logit_scale"],
                         min_atr=cfg["min_atr"],

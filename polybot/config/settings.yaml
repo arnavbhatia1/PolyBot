@@ -75,8 +75,7 @@ signal:
   momentum_weight: 0.04       # [P] L4 magnitude (unsigned).
   regime_weight: 0.03         # [P] L2: how much trending/reverting autocorrelation affects the bet.
   flow_weight: 0.04           # [P] L3: CLOB order book imbalance signal strength.
-  spot_flow_weight: 0.1       # [P] L3b: Binance CVD (buy/sell pressure) signal strength.
-  liquidation_weight: 0.03    # [P] L3e: Binance forceOrder liquidation cascade signal strength.
+  spot_flow_weight: 0.1       # [P] L3b: Coinbase CVD (buy/sell pressure) signal strength.
   prev_margin_weight: 0.02    # [P] L5: carry from last window's resolution (momentum).
   regime_lookback: 50         # [M] How many 1-min candles to measure trend/mean-reversion over.
 
@@ -106,7 +105,6 @@ signal:
     log_atr_ratio: 0.0
     autocorr_signed_mag: 0.0
     flow_disagreement: 0.005      # L3 vs L3b interaction term
-    liq_signed_sqrt: 0.0
 
   # Consensus sizing: how much to scale bet when flow signals agree
   consensus_dead_zone: 0.05  # [M]

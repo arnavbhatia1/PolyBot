@@ -91,8 +91,8 @@ point estimate, interval, and confidence all tracking the evidence — is the go
     P(Up) = t.cdf(z, df)
   L2-L5 additive in log-odds, scaled by `logit_scale`:
     L2 regime (1-lag autocorr × sign(last_return)); L3 CLOB flow; L3b spot CVD;
-    L3e liquidation pressure; L5 prev-window margin; L4 indicator momentum (weakest).
-  L3+L3b+L3e are combined as a flow FAMILY clamped to ±0.50 logits (corroborating signals
+    L5 prev-window margin; L4 indicator momentum (weakest).
+  L3+L3b are combined as a flow FAMILY clamped to ±0.50 logits (corroborating signals
   are redundancy-discounted, not summed). L6 derived features are clamped to ±0.25 logits
   combined. Then isotonic calibration is the sole overconfidence correction.
   Edge = model_prob - market_price. Entry needs edge >= min_edge AND Kelly >= min_kelly.
@@ -103,7 +103,7 @@ point estimate, interval, and confidence all tracking the evidence — is the go
 - student_t_df (3-8, lower = fatter tails)
 - min_atr (8.0-25.0, ATR floor)
 - regime_weight (0.01-0.15), flow_weight (0.02-0.12), spot_flow_weight (0.01-0.15),
-  liquidation_weight (0.01-0.10), prev_margin_weight (0.01-0.05)
+  prev_margin_weight (0.01-0.05)
 - momentum_weight (0.0-0.10; magnitude only — polarity is regime-conditional)
 - kelly_fraction (0.05-0.18; leave unchanged unless strong drawdown evidence)
 - min_edge (0.02-0.10), min_kelly (0.005-0.04), min_model_probability (0.52-0.70)
@@ -113,9 +113,9 @@ point estimate, interval, and confidence all tracking the evidence — is the go
 - structural constants, small steps only: regime_momentum_threshold (0.08-0.25),
   final_logit_clamp (3.0-5.0), l5_regime_damp_cap (0.4-0.9), atr_regime_shift_threshold (0.40-0.80)
 - L6 derived weights, each (0.0-0.05), all default 0.0: derived_log_atr_ratio_weight,
-  derived_autocorr_signed_mag_weight, derived_flow_disagreement_weight,
-  derived_liq_signed_sqrt_weight. Combined L6 is hard-capped at ±0.25 logits — >2 active
-  above ~0.02 saturate and get rejected. Raise off zero ONLY with bias-bucket evidence the
+  derived_autocorr_signed_mag_weight, derived_flow_disagreement_weight. Combined L6 is
+  hard-capped at ±0.25 logits — all 3 active above ~0.02 saturate and get rejected. Raise
+  off zero ONLY with bias-bucket evidence the
   feature would have helped.
 A value outside its range is clamped — your prediction would then refer to a value you didn't
 choose, so stay in range.
@@ -211,7 +211,7 @@ nothing.
      "predicted_delta_sharpe_7d": 0.004, "confidence_interval": [-0.010, 0.018]}
   ],
   "exploratory_notes": [
-    {"param": "liquidation_weight", "reason": "no qualifying evidence yet; proposing to gather it — NOT a prediction of improvement"}
+    {"param": "prev_margin_weight", "reason": "no qualifying evidence yet; proposing to gather it — NOT a prediction of improvement"}
   ],
   "manual_observations": [
     {"param": "adverse_selection_threshold", "current": 0.80, "suggested": 0.72,
@@ -562,7 +562,6 @@ def _section_config(cfg: dict[str, Any]) -> str:
         f"regime_weight (Layer 2): {cfg.get('regime_weight', _d('regime_weight'))}\n"
         f"flow_weight (Layer 3): {cfg.get('flow_weight', _d('flow_weight'))}\n"
         f"spot_flow_weight (L3b): {cfg.get('spot_flow_weight', _d('spot_flow_weight'))}\n"
-        f"liquidation_weight (L3e): {cfg.get('liquidation_weight', _d('liquidation_weight'))}\n"
         f"prev_margin_weight (L5): {cfg.get('prev_margin_weight', _d('prev_margin_weight'))}\n"
         f"atr_sigma_ratio: {cfg.get('atr_sigma_ratio', _d('atr_sigma_ratio'))}\n"
         f"student_t_df (Layer 1): {cfg.get('student_t_df', _d('student_t_df'))}\n"
