@@ -185,13 +185,15 @@ from polybot.agents.pipeline_analytics import (
     weighted_sharpe_from_returns as _weighted_sharpe,
     sharpe as _sharpe,
 )
-# Holdout = last HOLDOUT_DAYS. The calibrator's fit pool is the SEPARATE window
-# [HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS) back — disjoint from the holdout —
-# so the holdout-confirmation gate is OOS for the calibrator. Walk-forward folds run
-# on opt_outcomes (days [HOLDOUT_DAYS, PIPELINE_WINDOW_DAYS) back), which overlap the
-# calibrator's training window; that's fine because the calibrator is held fixed across
+# Holdout = last HOLDOUT_DAYS. Two calibrators (see run_daily_pipeline + §11): the LIVE
+# calibrator fits the freshest _CAL_WINDOW_DAYS for production; the GATE-REFERENCE
+# calibrator (self._gate_calibrator) fits the SEPARATE window [HOLDOUT_DAYS,
+# HOLDOUT_DAYS + _CAL_WINDOW_DAYS) back — disjoint from the holdout — and is the one the
+# weight backtests score through, so the holdout-confirmation gate stays OOS even as the
+# live calibrator tracks the freshest data. The gate calibrator is held fixed across
 # baseline and candidate within each fold, so the adoption delta stays unbiased.
 HOLDOUT_DAYS = 7
+_CAL_WINDOW_DAYS = 7
 HOLDOUT_MIN_TRADES = 30
 
 class AgentScheduler:
@@ -226,6 +228,7 @@ class AgentScheduler:
         self._auto_shutdown: bool = False
         self._last_per_change_results: list[str] = []  # per-parameter backtest results for Claude
         self._baseline_kelly_sharpe: float = 0.0  # current baseline Kelly-Sharpe for Claude context
+        self._gate_calibrator: Any = None  # OOS reference calibrator for weight backtests (set per cycle)
         self._last_rerouted_params: list[str] = []  # manual-only params Claude tried to put in `changes` last cycle
         self._shutdown_requested: bool = False
 
@@ -234,12 +237,12 @@ class AgentScheduler:
             self.ta_evolver.claude_client = claude_client
 
     def _invalidate_baseline_cache(self) -> None:
-        """Drop the cached baseline Sharpe / JK_SE / N. Call after anything that
-        invalidates the baseline backtest — currently only a calibrator swap,
-        since fold backtests use ``self.signal_engine.calibrator`` and a new
-        calibrator changes every fold's per-trade prob. The optimizer-stage
-        cache check (``_run_weight_optimizer``) sees the None and recomputes
-        before the per-change z-tests.
+        """Drop the cached baseline Sharpe / JK_SE / N. The baseline + fold
+        backtests now score through ``self._gate_calibrator`` (set once per
+        cycle), so a *live* calibrator swap no longer changes them and the cache
+        is rebuilt each cycle after the gate calibrator is set. The optimizer-stage
+        cache check (``_run_weight_optimizer``) sees the None and recomputes before
+        the per-change z-tests.
         """
         self._baseline_kelly_sharpe = None
         self._baseline_n_trades = None
@@ -341,6 +344,37 @@ class AgentScheduler:
         for o in outcomes:
             (hold if _ts(o) >= cutoff else opt).append(o)
         return opt, hold
+
+    def _fit_calibrator_on(self, pool: list[dict[str, Any]], *, min_samples: int = 75):
+        """Fit an IsotonicCalibrator on a pool of resolved outcomes
+        (``model_probability_raw`` → realized ``correct``), recency-weighted.
+        Returns the fitted calibrator iff ``fit()``'s bootstrap-CI gate passes, else
+        ``None`` (identity). Used to build the gate-reference calibrator, which scores
+        weight candidates on a window disjoint from the holdout while the live
+        calibrator fits the freshest data.
+        """
+        from polybot.core.calibrator import IsotonicCalibrator
+        probs: list[float] = []
+        outs: list[int] = []
+        ws: list[float] = []
+        now_ts = datetime.now(timezone.utc).timestamp()
+        for o in pool:
+            ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
+            mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
+            if mp <= 0:
+                continue
+            probs.append(mp)
+            outs.append(1 if o.get("correct", False) else 0)
+            s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
+            try:
+                t = datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() if s else now_ts
+                ws.append(RECENCY_DECAY_PER_DAY ** max(0.0, (now_ts - t) / 86400.0))
+            except Exception:
+                ws.append(1.0)
+        if len(probs) < min_samples:
+            return None
+        cal = IsotonicCalibrator()
+        return cal if cal.fit(probs, outs, min_samples=min_samples, sample_weights=ws) else None
 
     def _precompute_baseline(self, all_outcomes: list[dict[str, Any]]) -> None:
         """Compute baseline Kelly-Sharpe + JK_SE + N and cache on self BEFORE Claude runs.
@@ -1010,18 +1044,15 @@ class AgentScheduler:
         """Kelly-sized portfolio returns + parallel recency weights.
 
         Returns ``(returns, sample_weights)`` — callers compute weighted Sharpe via
-        ``weighted_sharpe_from_returns(returns, weights)``. Uses
-        ``self.signal_engine.calibrator`` — which is the *just-adopted* Isotonic for
-        this cycle, since Isotonic fitting + adoption runs earlier in the pipeline (see
-        `run_daily_pipeline`). So calibration is part of the optimization loop: every
-        cycle, isotonic is re-fit on the train split and adopted if it improves
-        Kelly-Sharpe on the holdout, then weight backtests run against that fresh
-        calibrator. Within a single weight backtest the calibrator is held fixed
-        (one variable at a time), but across cycles both layers are continually
-        improving in lockstep.
+        ``weighted_sharpe_from_returns(returns, weights)``. Scores through
+        ``self._gate_calibrator`` — the OOS gate-reference calibrator fit on the window
+        disjoint from the holdout (set once per cycle in `run_daily_pipeline`), NOT the
+        live ``signal_engine.calibrator``. Held fixed across baseline and candidate
+        within a backtest (one variable at a time), so its mapping is common-mode and
+        cancels in the adoption delta to first order. ``None`` → identity.
         """
         cfg = self._config_for_helper(recommendations)
-        calibrator = self.signal_engine.calibrator if self.signal_engine else None
+        calibrator = self._gate_calibrator
 
         return self._kelly_bankroll_returns(
             outcomes=outcomes,
@@ -1088,7 +1119,7 @@ class AgentScheduler:
             )
 
         cfg = self._config_for_helper(single_rec)
-        calibrator = self.signal_engine.calibrator if self.signal_engine else None
+        calibrator = self._gate_calibrator
 
         # Counterfactual-aware replay only when the candidate is exit_edge_threshold —
         # recorded fill history can't tell us "what if we held instead?", the counterfactual
@@ -1488,7 +1519,7 @@ class AgentScheduler:
                         combined_rec[f"recommended_{param}"] = value
 
                 cfg_combined = self._config_for_helper(combined_rec)
-                calibrator = self.signal_engine.calibrator if self.signal_engine else None
+                calibrator = self._gate_calibrator
                 base_h_rets, base_h_w = self._backtest_recommendations({}, holdout_outcomes)
                 combined_rets, combined_w = self._kelly_bankroll_returns(
                     outcomes=holdout_outcomes,
@@ -1881,6 +1912,32 @@ class AgentScheduler:
         else:
             pipeline_info["holdout_active"] = True
 
+        # Gate-reference calibrator (two-calibrator split, §11): fit on the window
+        # immediately behind the holdout — days [HOLDOUT_DAYS, HOLDOUT_DAYS +
+        # _CAL_WINDOW_DAYS) back — disjoint from the holdout the adoption gate confirms
+        # on. The weight backtests (baseline, folds, _backtest_recommendations /
+        # _backtest_single_change, holdout confirmation, combined check) score
+        # candidates through THIS calibrator, never the live one, so the gate stays OOS
+        # even though the live calibrator (set later in this method) now fits the
+        # freshest data. None → backtests run at identity (no behavior change from
+        # before the split when this window is empty).
+        def _gcal_ts(o: dict) -> float:
+            s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
+            try:
+                return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                return 0.0
+        _g_now = datetime.now(timezone.utc).timestamp()
+        _g_lo = _g_now - (HOLDOUT_DAYS + _CAL_WINDOW_DAYS) * 86400.0
+        _g_hi = _g_now - HOLDOUT_DAYS * 86400.0
+        _gate_pool = [o for o in all_outcomes if _g_lo <= _gcal_ts(o) < _g_hi]
+        self._gate_calibrator = self._fit_calibrator_on(_gate_pool)
+        logger.info(
+            f"  Gate calibrator: {'fitted' if self._gate_calibrator else 'identity'} "
+            f"on {len(_gate_pool)} trades (days {HOLDOUT_DAYS}-{HOLDOUT_DAYS + _CAL_WINDOW_DAYS} "
+            f"back, disjoint from holdout)"
+        )
+
         # Bias detector runs on opt_outcomes (excludes holdout) so the analysis
         # dict the evolver sees has no leakage from the last HOLDOUT_DAYS.
         analysis = await self._run_bias_detector(opt_outcomes)
@@ -1979,20 +2036,20 @@ class AgentScheduler:
             if resolved_ghosts:
                 analysis["ghost_analysis"] = self.bias_detector.analyze_ghosts(resolved_ghosts)
 
-        # Isotonic re-fit. Calibrator pool sits in the 7-day window that ends where
-        # the holdout begins (days [HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS] back),
-        # so the optimizer's holdout-confirmation gate evaluates candidates on trades
-        # the calibrator has never seen. Adoption gate (on top of fit()'s bootstrap CI):
-        # the new fit must beat the CURRENT calibrator on full-pool weighted log-loss by
-        # ≥ LOG_LOSS_FLOOR AND not reduce Kelly-Sharpe vs the current calibrator on cal_val.
+        # Live/production isotonic re-fit on the FRESHEST _CAL_WINDOW_DAYS so the
+        # calibrator live trading sizes on tracks current microstructure instead of
+        # trailing 7-14 days behind. (The OOS gate-reference calibrator was already fit
+        # on the disjoint pre-holdout window above; weight backtests use that one.)
+        # Adoption gate (on top of fit()'s bootstrap CI): the new fit must beat the
+        # CURRENT calibrator on full-pool weighted log-loss by ≥ LOG_LOSS_FLOOR AND not
+        # reduce Kelly-Sharpe vs the current calibrator on cal_val.
         cal_info: dict[str, Any] = {"decision": "skipped"}
         from polybot.core.calibrator import IsotonicCalibrator, _weighted_log_loss as _wll
         MIN_CAL_VALIDATION_TRADES = 50
         _pending_cal_save: IsotonicCalibrator | None = None
-        _CAL_WINDOW_DAYS = 7
         _now_ts = datetime.now(timezone.utc).timestamp()
-        _cal_cutoff_new = _now_ts - HOLDOUT_DAYS * 86400.0
-        _cal_cutoff_old = _now_ts - (HOLDOUT_DAYS + _CAL_WINDOW_DAYS) * 86400.0
+        _cal_cutoff_new = _now_ts                                  # freshest edge (day 0)
+        _cal_cutoff_old = _now_ts - _CAL_WINDOW_DAYS * 86400.0      # _CAL_WINDOW_DAYS back
         def _ts(o: dict) -> float:
             s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
             try:
@@ -2005,18 +2062,19 @@ class AgentScheduler:
             cal_train = _cal_pool[:_split]
             cal_val = _cal_pool[_split:]
             logger.info(
-                f"  Isotonic window: days {HOLDOUT_DAYS}-{HOLDOUT_DAYS + _CAL_WINDOW_DAYS} back "
-                f"({len(cal_train)} train / {len(cal_val)} val) — disjoint from holdout"
+                f"  Live calibrator window: freshest {_CAL_WINDOW_DAYS}d "
+                f"({len(cal_train)} train / {len(cal_val)} val)"
             )
         else:
             cal_train = []
             cal_val = []
             cal_info["reason"] = (
-                f"only {len(_cal_pool)} trades in days {HOLDOUT_DAYS}-{HOLDOUT_DAYS + _CAL_WINDOW_DAYS} back "
+                f"only {len(_cal_pool)} trades in the freshest {_CAL_WINDOW_DAYS}d "
                 f"(need 125) — skipping calibration"
             )
             logger.info(
-                f"  Isotonic window: only {len(_cal_pool)} trades in calibration window — skipping calibration"
+                f"  Live calibrator window: only {len(_cal_pool)} trades in the freshest "
+                f"{_CAL_WINDOW_DAYS}d — skipping calibration"
             )
 
         if len(cal_train) >= 75 and self.signal_engine:

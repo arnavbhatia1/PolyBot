@@ -57,6 +57,45 @@ def test_build_current_config_includes_l6_derived_weights():
     assert cfg["derived_autocorr_signed_mag_weight"] == 0.0
     assert cfg["derived_liq_signed_sqrt_weight"] == 0.0
 
+
+def test_fit_calibrator_on_below_min_returns_none():
+    """Too-thin pool → identity (None), so the gate falls back to identity."""
+    sched = _bare_scheduler()
+    pool = [{"indicator_snapshot": {"trade_context": {"model_probability_raw": 0.6}},
+             "correct": True} for _ in range(10)]
+    assert sched._fit_calibrator_on(pool, min_samples=75) is None
+
+
+def test_weight_backtest_scores_through_gate_calibrator_not_live():
+    """Two-calibrator split: weight backtests must use the OOS gate-reference
+    calibrator, never the live signal_engine.calibrator (which now fits the
+    freshest data and would leak the holdout into the gate)."""
+    sched = _bare_scheduler()
+    sched.signal_engine = MagicMock()
+    sched.signal_engine.calibrator = "LIVE"   # must NOT reach the backtest
+    sched._gate_calibrator = "GATE"           # must be the one used
+    captured = {}
+
+    def _spy(**kwargs):
+        captured["calibrator"] = kwargs.get("calibrator")
+        return [], []
+
+    sched._kelly_bankroll_returns = _spy
+    _keys = ("weights", "momentum_weight", "atr_sigma_ratio", "student_t_df", "min_edge",
+             "kelly_fraction", "min_kelly", "min_model_probability", "regime_weight",
+             "flow_weight", "spot_flow_weight", "liquidation_weight", "prev_margin_weight",
+             "logit_scale", "min_atr", "regime_momentum_threshold", "final_logit_clamp",
+             "l5_regime_damp_cap", "atr_regime_shift_threshold", "derived_weights")
+    sched._config_for_helper = lambda *a, **k: {key: 0 for key in _keys}
+    sched._backtest_recommendations({}, [{"dummy": 1}])
+    assert captured["calibrator"] == "GATE"
+
+
+def test_gate_calibrator_defaults_to_none():
+    """Before a cycle sets it, the gate calibrator is None (identity) — backtests
+    then run at identity, matching pre-split behavior on an empty window."""
+    assert _bare_scheduler()._gate_calibrator is None
+
 def _make_outcomes(n):
     """Helper: generate n fake outcome dicts with sequential timestamps."""
     return [
