@@ -4,8 +4,6 @@ Public WebSocket ticker channel (fires on every trade). Provides:
   - latest BTC-USD trade price (fastest US-venue feed)
   - best bid / best ask
   - per-trade CVD + taker ratio (aggressor side × size)
-
-Sub-second realized vol comes from Binance kline_1s — no duplicate computation here.
 """
 from __future__ import annotations
 
@@ -121,15 +119,6 @@ class CoinbaseFeed:
         if n < min_trades or total <= 0:
             return 0.5, n
         return buy / total, n
-
-    def trade_count_in(self, window_s: float) -> int:
-        cutoff = time.time() - window_s
-        n = 0
-        for ts, _ in reversed(self._trades):
-            if ts < cutoff:
-                break
-            n += 1
-        return n
 
     def _prune_trades(self, now: float) -> None:
         cutoff = now - self._trade_buffer_s

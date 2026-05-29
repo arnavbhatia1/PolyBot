@@ -23,7 +23,6 @@ class AggTrade:
     qty: float
     is_buyer_maker: bool  # True = seller aggressor (bearish), False = buyer aggressor (bullish)
     ts: float             # local receipt time
-    exch_ts: float        # exchange-side ts (seconds) for latency telemetry
 
 
 class BinanceTradeAccumulator:
@@ -34,8 +33,6 @@ class BinanceTradeAccumulator:
         self._trades: deque[AggTrade] = deque()
         self._cache: dict[tuple, tuple[tuple, float]] = {}
         self._last_received_at: float = 0.0
-        # Rolling sample of (local − exchange) ts gaps for latency observability.
-        self._exch_lag: deque[float] = deque(maxlen=500)
 
     def clear(self) -> None:
         """Wipe rolling state. Call after any WS reconnect so windowed analytics
@@ -43,15 +40,12 @@ class BinanceTradeAccumulator:
         before the disconnect against fresh recent trades)."""
         self._trades.clear()
         self._cache.clear()
-        self._exch_lag.clear()
         self._last_received_at = 0.0
 
     def add_trade(self, price: float, qty: float, is_buyer_maker: bool,
-                  ts: float, exch_ts: float = 0.0) -> None:
-        self._trades.append(AggTrade(price, qty, is_buyer_maker, ts, exch_ts))
+                  ts: float) -> None:
+        self._trades.append(AggTrade(price, qty, is_buyer_maker, ts))
         self._last_received_at = time.time()
-        if exch_ts > 0:
-            self._exch_lag.append(ts - exch_ts)
         self._prune()
 
     def _prune(self) -> None:
@@ -139,23 +133,6 @@ class BinanceTradeAccumulator:
         self._cache_put(key, ratio)
         return ratio
 
-    def exch_lag_snapshot(self) -> dict[str, float]:
-        """P50/P95/P99 of (local_ts − exchange_ts) over recent samples."""
-        if not self._exch_lag:
-            return {"n": 0}
-        s = sorted(self._exch_lag)
-        n = len(s)
-        return {
-            "n": n,
-            "p50": round(s[n // 2], 3),
-            "p95": round(s[min(n - 1, int(n * 0.95))], 3),
-            "p99": round(s[min(n - 1, int(n * 0.99))], 3),
-        }
-
-    @property
-    def trade_count(self) -> int:
-        return len(self._trades)
-
     @property
     def latest_price(self) -> float:
         return self._trades[-1].price if self._trades else 0.0
@@ -188,13 +165,12 @@ class BinanceTradesFeed:
             price = float(data["p"])
             qty = float(data["q"])
             is_buyer_maker = bool(data["m"])
-            exch_ts = float(data["T"]) / 1000.0
         except (KeyError, ValueError, TypeError) as e:
             logger.warning(f"Failed to parse aggTrade: {e}")
             return
         now = time.time()
         self.staleness.observe(now)
-        self.accumulator.add_trade(price, qty, is_buyer_maker, now, exch_ts)
+        self.accumulator.add_trade(price, qty, is_buyer_maker, now)
 
     async def _connect_ws(self) -> None:
         import websockets

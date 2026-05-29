@@ -1,13 +1,11 @@
 """Binance kline feed.
 
 Primary stream: 1m candles → ATR / indicators / L1 vol scaling.
-Optional 1s candle stream → fast realized-vol sampled inside the 5-min option window.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -112,56 +110,20 @@ class CandleBuffer:
         return self._volumes_cache
 
 
-class _FastCloseBuffer:
-    """Ring of (ts, close) from a 1s kline stream — feeds realized_vol_over()."""
-
-    __slots__ = ("_samples",)
-
-    def __init__(self, maxlen: int = 300) -> None:
-        self._samples: deque[tuple[float, float]] = deque(maxlen=maxlen)
-
-    def add(self, close: float) -> None:
-        if close > 0:
-            self._samples.append((time.time(), close))
-
-    def clear(self) -> None:
-        self._samples.clear()
-
-    def __len__(self) -> int:
-        return len(self._samples)
-
-    def realized_vol(self, window_s: float) -> float:
-        cutoff = time.time() - window_s
-        closes = [c for ts, c in self._samples if ts >= cutoff and c > 0]
-        if len(closes) < 3:
-            return 0.0
-        rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
-        m = sum(rets) / len(rets)
-        var = sum((r - m) ** 2 for r in rets) / max(1, len(rets) - 1)
-        return math.sqrt(var)
-
-
 class BinanceFeed:
-    """WS-streamed candles. Subscribes to kline_1m and optionally kline_1s on
-    a single combined-streams connection."""
+    """WS-streamed 1-minute candles on a combined-streams connection."""
 
     def __init__(self, symbol: str = "btcusdt", buffer_size: int = 200,
                  ws_url: str = "wss://stream.binance.com:9443/ws",
-                 rest_url: str = "https://api.binance.com/api/v3",
-                 fast_seconds_buffer: int = 300) -> None:
+                 rest_url: str = "https://api.binance.com/api/v3") -> None:
         self.symbol: str = symbol
         self.ws_url: str = ws_url
         self.rest_url: str = rest_url
         self.buffer: CandleBuffer = CandleBuffer(max_size=buffer_size)
-        self.fast_closes: _FastCloseBuffer = _FastCloseBuffer(maxlen=fast_seconds_buffer)
         self.staleness: StalenessTracker = StalenessTracker("binance_kline")
         self._running: bool = False
         self._ws: Any = None
         self._task: asyncio.Task | None = None
-
-    def fast_realized_vol(self, window_s: float = 60.0) -> float:
-        """Realized vol of log returns from sub-minute closes."""
-        return self.fast_closes.realized_vol(window_s)
 
     async def backfill(self) -> bool:
         """Returns True iff at least one candle was loaded. Non-fatal on failure —
@@ -193,7 +155,7 @@ class BinanceFeed:
 
         if not self.ws_url.endswith("/ws"):
             raise ValueError(f"BinanceFeed.ws_url must end with '/ws' (got: {self.ws_url})")
-        stream = f"{self.ws_url[:-3]}/stream?streams={self.symbol}@kline_1m/{self.symbol}@kline_1s"
+        stream = f"{self.ws_url[:-3]}/stream?streams={self.symbol}@kline_1m"
         backoff = 1
         while self._running:
             try:
@@ -202,7 +164,6 @@ class BinanceFeed:
                     enable_nodelay(ws, "binance_kline")
                     backoff = 1
                     self.staleness.reset()
-                    self.fast_closes.clear()
                     logger.debug("Binance kline WS connected: %s", stream)
                     while self._running:
                         try:
@@ -229,8 +190,6 @@ class BinanceFeed:
     def _route(self, stream: str, data: dict[str, Any]) -> None:
         if stream.endswith("@kline_1m"):
             self._handle_kline_1m(data)
-        elif stream.endswith("@kline_1s"):
-            self._handle_kline_1s(data)
 
     def _handle_kline_1m(self, data: dict[str, Any]) -> None:
         k = data.get("k", {})
@@ -247,15 +206,6 @@ class BinanceFeed:
         else:
             self.buffer.update_current(close=candle.close, high=candle.high,
                                         low=candle.low, volume=candle.volume)
-
-    def _handle_kline_1s(self, data: dict[str, Any]) -> None:
-        k = data.get("k", {})
-        if not k:
-            return
-        try:
-            self.fast_closes.add(float(k["c"]))
-        except (KeyError, ValueError, TypeError):
-            return
 
     async def start(self) -> None:
         self._running = True
