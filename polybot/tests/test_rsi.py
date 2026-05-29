@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 from polybot.indicators.rsi import compute_rsi, compute_rsi_signal
 

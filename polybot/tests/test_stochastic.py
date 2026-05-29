@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 from polybot.indicators.stochastic import compute_stochastic, compute_stochastic_signal
 

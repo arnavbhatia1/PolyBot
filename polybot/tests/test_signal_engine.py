@@ -1,7 +1,7 @@
 import math
 import pytest
 import numpy as np
-from polybot.core.signal_engine import SignalEngine, TradeSignal
+from polybot.core.signal_engine import SignalEngine
 
 def _make_indicators(atr_value=30.0, rsi_score=0.0, macd_score=0.0,
                      stoch_score=0.0, obv_score=0.0, vwap_score=0.0):
@@ -213,7 +213,6 @@ def test_hold_down_side(engine):
 def test_student_t_less_extreme_than_normal():
     """Student-t CDF with variance normalization gives less extreme probs at large z
     (fat tails = more reversal probability in the extremes)."""
-    import math
     from scipy.stats import norm, t as student_t_dist
     # At large z, Student-t tails are fatter → P(Up) is lower than normal
     z = 3.0
@@ -362,7 +361,6 @@ def test_atr_scaling_increases_z():
 
 def test_student_t_scale_normalization():
     """t.cdf(z*scale, df=4) vs t.cdf(z, df=4) for known z."""
-    import math
     from scipy.stats import t as student_t_dist
     z = 1.5
     t_scale = math.sqrt(4 / (4 - 2))

@@ -1,4 +1,3 @@
-import pytest
 import time
 from polybot.feeds.binance_trades import BinanceTradeAccumulator
 

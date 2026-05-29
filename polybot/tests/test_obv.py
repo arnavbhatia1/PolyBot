@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 from polybot.indicators.obv import compute_obv, compute_obv_signal
 

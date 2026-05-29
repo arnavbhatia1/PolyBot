@@ -1,4 +1,3 @@
-import pytest
 import time
 from polybot.feeds.chainlink_feed import ChainlinkFeed
 

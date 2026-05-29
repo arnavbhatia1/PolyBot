@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 from polybot.indicators.macd import compute_macd, compute_macd_signal
 

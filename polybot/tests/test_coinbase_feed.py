@@ -1,4 +1,3 @@
-import pytest
 from polybot.feeds.coinbase_feed import CoinbaseFeed, CoinbaseState
 
 

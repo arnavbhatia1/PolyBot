@@ -3,10 +3,8 @@ biased-data fit shifts in correct direction, save/load round-trips exactly,
 and a corrupt/unknown file falls back to identity.
 """
 import json
-from pathlib import Path
 
 import numpy as np
-import pytest
 
 from polybot.core.calibrator import IsotonicCalibrator
 

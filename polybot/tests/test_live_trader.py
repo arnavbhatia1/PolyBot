@@ -2,7 +2,7 @@ import sys
 import pytest
 import pytest_asyncio
 from unittest.mock import MagicMock, patch
-from polybot.execution.base import TradeResult, entry_fee_shares
+from polybot.execution.base import entry_fee_shares
 from polybot.db.models import Database
 
 

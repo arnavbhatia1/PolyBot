@@ -1,6 +1,5 @@
 import os
 import tempfile
-from pathlib import Path
 import pytest
 import yaml
 
@@ -80,7 +79,6 @@ SAMPLE_CONFIG = {
         "flip_edge_premium": 0.015,
     },
     "market": {
-        "contract_type": "btc_5min",
         "entry_window_seconds": 300,
         "min_time_remaining_seconds": 5,
         "scan_cache_seconds": 5,

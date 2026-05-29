@@ -1,6 +1,5 @@
 import pytest
 import json
-import numpy as np
 from polybot.indicators.engine import IndicatorEngine
 from polybot.feeds.binance_feed import Candle, CandleBuffer
 

@@ -12,7 +12,6 @@ from polybot.execution.base import (
     DEFAULT_FEE_RATE,
     BaseTrader,
     FillResult,
-    TradeResult,
     entry_fee_shares,
     exit_fee_usdc,
     taker_fee,
@@ -315,11 +314,9 @@ class TestCloseTrade:
     async def test_uses_fill_price_for_revenue(self, trader, db):
         """If _execute_sell fills at a different price, revenue uses fill price."""
         open_res = await trader.open_trade(**_trade_params(price=0.50, size=10.0))
-        bankroll_after_open = await db.get_bankroll()
         # Sell fills at 0.60 instead of requested 0.68
         trader.sell_fill = FillResult(filled=True, fill_price=0.60, fill_size=12.0)
         await trader.close_trade(open_res.position_id, exit_price=0.68)
-        bankroll = await db.get_bankroll()
         # Revenue should be based on fill_price=0.60
         positions_data = await db.get_trade_history()
         assert positions_data[0]["exit_price"] == pytest.approx(0.60, abs=0.001)
@@ -337,8 +334,6 @@ class TestCloseTrade:
         # close_trade reserves a small share buffer (max(fee_rate*0.25, 0)+0.002,
         # floored at 0.005) to avoid Polymarket fee-math FOK rejections — so the
         # sold-share count is shaved relative to held shares.
-        positions = await db.get_trade_history()
-        pos = positions[0]
         shares_ordered = 50.0 / 0.50
         fee_sh = entry_fee_shares(shares_ordered, 0.50, 0.072)
         shares_held = shares_ordered - fee_sh

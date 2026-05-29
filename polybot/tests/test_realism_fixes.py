@@ -1,7 +1,6 @@
 """Realism tests: convex slippage and the 60/40 hold-out split."""
 
 import pytest
-import pytest_asyncio
 from unittest.mock import MagicMock
 
 from polybot.execution.base import slippage_pct as _slippage_pct

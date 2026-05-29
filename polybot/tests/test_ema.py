@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 from polybot.indicators.ema import compute_ema, compute_ema_signal
 

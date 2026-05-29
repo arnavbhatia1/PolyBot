@@ -1,4 +1,3 @@
-import asyncio
 import json
 import pytest
 from polybot.feeds.clob_ws import ClobWebSocket

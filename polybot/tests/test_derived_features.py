@@ -4,7 +4,6 @@ combined contribution cap clips correctly when a weight is raised.
 import math
 
 import numpy as np
-import pytest
 
 from polybot.core.derived_features import (
     DERIVED_FEATURES,

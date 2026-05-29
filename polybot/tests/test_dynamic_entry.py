@@ -1,4 +1,3 @@
-import pytest
 from polybot.main import compute_time_multiplier
 
 

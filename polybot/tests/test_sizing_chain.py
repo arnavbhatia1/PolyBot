@@ -1,4 +1,3 @@
-import pytest
 from polybot.core.signal_engine import SignalEngine
 
 

@@ -1,6 +1,5 @@
-import pytest
 import numpy as np
-from polybot.core.regime import RegimeDetector, RegimeState
+from polybot.core.regime import RegimeDetector
 
 
 class TestRegimeDetector:

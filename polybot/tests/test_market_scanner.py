@@ -181,8 +181,6 @@ def test_clob_ask_depth_empty():
 
 # --- Lightweight HTTP helpers (mock responses) ---
 
-import pytest
-import httpx
 from unittest.mock import AsyncMock, MagicMock
 
 @pytest.mark.asyncio

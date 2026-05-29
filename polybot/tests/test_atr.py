@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 from polybot.indicators.atr import compute_atr, compute_atr_gate
 

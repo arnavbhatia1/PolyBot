@@ -1,7 +1,6 @@
 import pytest
 import pytest_asyncio
-from polybot.execution.base import TradeResult
-from polybot.execution.base import taker_fee, entry_fee_shares, exit_fee_usdc, DEFAULT_FEE_RATE
+from polybot.execution.base import taker_fee, entry_fee_shares, exit_fee_usdc
 from polybot.execution.paper_trader import PaperTrader
 from polybot.db.models import Database
 
@@ -128,7 +127,7 @@ def test_exit_fee_in_usdc():
 
 @pytest.mark.asyncio
 async def test_shares_held_stored_correctly(trader, db):
-    result = await trader.open_trade(
+    await trader.open_trade(
         market_id="m_shares", question="Q?", side="YES", price=0.50,
         size=50.0, signal_score=0.72, fee_rate=0.072,
     )
@@ -167,7 +166,7 @@ async def test_pnl_realistic_with_fee_in_shares(trader, db):
 @pytest.mark.asyncio
 async def test_custom_fee_rate_passed_through(trader, db):
     """Sports markets use 0.03 fee rate."""
-    result = await trader.open_trade(
+    await trader.open_trade(
         market_id="m_sports", question="Q?", side="YES", price=0.50,
         size=10.0, signal_score=0.72, fee_rate=0.03,
     )

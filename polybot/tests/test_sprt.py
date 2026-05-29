@@ -1,5 +1,3 @@
-import pytest
-import math
 from polybot.core.sprt import SPRTAccumulator
 
 class TestSPRT:
