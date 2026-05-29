@@ -2247,7 +2247,7 @@ class AgentScheduler:
                         cal_info["reason"] = (f"new fit doesn't beat current by enough "
                                                 f"(loss gap {gap:+.4f}, need -{LOG_LOSS_FLOOR})")
         pipeline_info["calibration"] = cal_info
-        # Expose Platt meta-check (raw-vs-calibrated) so Claude sees the diagnostic
+        # Expose the raw-vs-calibrated meta-check so Claude sees the diagnostic
         if cal_info.get("meta_warning"):
             analysis["cal_meta_warning"] = cal_info["meta_warning"]
 

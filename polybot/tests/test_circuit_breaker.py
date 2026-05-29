@@ -18,8 +18,8 @@ class TestConstruction:
         assert cb.min_multiplier == 0.40
         assert cb.kelly_multiplier == 1.0
 
-    def test_legacy_params_accepted(self):
-        """Old-style params don't crash — just stored for streak alerts."""
+    def test_streak_alert_params_accepted(self):
+        """losses_to_reduce / wins_to_restore are stored for streak alerts (not sizing)."""
         cb = CircuitBreaker(losses_to_reduce=5, wins_to_restore=3)
         assert cb.losses_to_reduce == 5
         assert cb.wins_to_restore == 3

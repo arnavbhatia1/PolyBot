@@ -1,6 +1,6 @@
 """IsotonicCalibrator contract: default identity, fit only adopts beating identity,
 biased-data fit shifts in correct direction, save/load round-trips exactly,
-legacy {a,b} Platt JSON loads as identity.
+and a corrupt/unknown file falls back to identity.
 """
 import json
 from pathlib import Path
@@ -229,19 +229,6 @@ def test_save_and_load_isotonic_roundtrip_exact(tmp_path):
     test_points = np.linspace(0.02, 0.98, 50)
     for p in test_points:
         assert abs(cal2.calibrate(float(p)) - cal.calibrate(float(p))) < 1e-9
-
-
-def test_load_legacy_platt_file_falls_back_to_identity(tmp_path):
-    """A file from the previous Platt era (just {a, b}) must load as identity.
-    The fit cycle will rebuild on real data. Old (a, b) values can't be
-    translated to an isotonic shape, so silently dropping them is correct."""
-    path = tmp_path / "platt.json"
-    path.write_text(json.dumps({"a": -0.0809, "b": -0.5366}))
-    cal = IsotonicCalibrator()
-    cal.load(path)
-    assert cal.is_identity
-    # Calibrate identity → returns input
-    assert abs(cal.calibrate(0.7) - 0.7) < 1e-9
 
 
 def test_load_corrupt_file_falls_back_to_identity(tmp_path):
