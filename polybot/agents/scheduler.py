@@ -2329,12 +2329,22 @@ class AgentScheduler:
             _avg_win = (sum(_wins) / len(_wins)) if _wins else 0.0
             _avg_loss = (sum(_losses) / len(_losses)) if _losses else 0.0
             _loss_ratio = (_avg_loss / _avg_win) if _avg_win > 0 else 0.0
-            # Trailing 3-day Sharpe — independent multi-day signal.
+            # Trailing 3-day Sharpe — independent multi-day signal. Parse timestamps
+            # (not a lexicographic string compare) so a non-UTC/offset-suffixed record
+            # can't silently fall on the wrong side of the cutoff.
             from datetime import timedelta as _td
-            _three_d_cutoff = (datetime.now(timezone.utc) - _td(days=3)).isoformat()
+            _three_d_cutoff = datetime.now(timezone.utc) - _td(days=3)
+            def _after_cutoff(o: dict) -> bool:
+                s = o.get("exit_timestamp") or o.get("timestamp") or ""
+                try:
+                    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                except (ValueError, TypeError, AttributeError):
+                    return False
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt >= _three_d_cutoff
             _trailing_gains = [
-                float(o.get("gain_pct", 0)) for o in _recent_real
-                if (o.get("exit_timestamp") or o.get("timestamp") or "") >= _three_d_cutoff
+                float(o.get("gain_pct", 0)) for o in _recent_real if _after_cutoff(o)
             ]
             _trailing_3d_sharpe = (
                 _sharpe(_trailing_gains) if len(_trailing_gains) >= 20 else 0.0
