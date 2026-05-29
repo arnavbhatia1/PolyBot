@@ -2723,17 +2723,6 @@ async def main() -> None:
     # polybot/memory/ and are shared (calibration + weights transfer across modes).
     db_path = config["database"]["path"].replace(".db", f"_{mode}.db")
 
-    # One-time migration: legacy installs had paper writing to the unsuffixed file.
-    # If the suffixed file doesn't exist yet but the legacy one does, rename it.
-    legacy_path = config["database"]["path"]
-    if mode == "paper" and not Path(db_path).exists() and Path(legacy_path).exists():
-        try:
-            Path(legacy_path).rename(db_path)
-            logger.info(f"DB migration: {legacy_path} -> {db_path}")
-        except OSError as e:
-            logger.warning(f"DB migration failed (non-fatal, will use legacy path): {e}")
-            db_path = legacy_path
-
     db = Database(db_path)
     await db.initialize()
     logger.debug(f"Database: {db_path} (mode: {mode})")

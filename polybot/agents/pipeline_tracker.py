@@ -66,12 +66,6 @@ class PipelineTracker:
             "source": source,
             "version": version,
             "baseline_sharpe": round(baseline_sharpe, 4),
-            # baseline_sharpe_version=2: stored value is a proper weighted Sharpe
-            # (weighted_sharpe_from_returns). v1 records (absent tag) had recency
-            # multiplicatively baked into per-return values, biasing the stored
-            # Sharpe down by ~28%. The rollback comparator scales legacy records
-            # accordingly so its 0.05 buffer compares against true_baseline.
-            "baseline_sharpe_version": 2,
             "predicted_sharpe": round(predicted_sharpe, 4),
             "changes": {k: [old, new] for k, (old, new) in changes.items()},
             "reason": reason,
@@ -113,15 +107,7 @@ class PipelineTracker:
 
             version = rec.get("version", "")
             baseline = float(rec.get("baseline_sharpe", 0.0))
-            # Legacy v1 records (no tag) stored a recency-baked-in Sharpe biased
-            # down by ~28% (E[w]/√E[w²] under 0.94/d × 60d). Scale to the
-            # weighted-Sharpe scale so the 0.05 rollback buffer compares
-            # apples-to-apples with the post-adoption weighted actual.
-            _bs_ver = int(rec.get("baseline_sharpe_version", 1))
-            if _bs_ver >= 2:
-                effective_baseline = baseline
-            else:
-                effective_baseline = baseline / 0.72
+            effective_baseline = baseline
             age_days = (now - adopt_dt).total_seconds() / 86400
 
             for key, days, min_trades, check_prediction in WINDOWS:

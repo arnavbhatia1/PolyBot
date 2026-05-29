@@ -214,12 +214,11 @@ class BinanceFeed:
                             envelope = _loads(msg)
                         except ValueError:
                             continue
-                        # Combined-stream payload: {"stream": "...", "data": {...}}
+                        # Combined-stream payload: {"stream": "...", "data": {...}}.
+                        # The subscription is always a combined stream (see `stream`
+                        # URL above), so non-{stream,data} control frames are skipped.
                         if "stream" in envelope and "data" in envelope:
                             self._route(envelope["stream"], envelope["data"])
-                        else:
-                            # Single-stream fallback: legacy shape.
-                            self._handle_kline_1m(envelope)
             except Exception as e:
                 if not self._running:
                     break
