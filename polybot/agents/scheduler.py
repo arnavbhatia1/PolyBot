@@ -2189,7 +2189,7 @@ class AgentScheduler:
                     }
 
                     insufficient = len(new_returns) < MIN_CAL_VALIDATION_TRADES
-                    # Gate 1: new fit must beat current on log-loss by ≥ 0.010
+                    # Gate 1: new fit must beat current on log-loss by ≥ LOG_LOSS_FLOOR (0.005)
                     new_beats_current = (not (math.isnan(new_loss_full) or math.isnan(current_loss))
                                          and new_loss_full < current_loss - LOG_LOSS_FLOOR)
                     # Gate 2: new fit must not hurt sizing vs current (parallel structure to log-loss gate)

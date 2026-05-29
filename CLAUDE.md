@@ -309,7 +309,7 @@ OTM urgency can push the threshold **positive**, forcing exit even when the mode
 
 No confidence override. Math says exit, it exits.
 
-`exit_edge_threshold` is the only operator-touchable exit knob and the **only exit knob the pipeline can tune** (range −0.10..−0.03). On a proposed change, the backtest replays the **counterfactual tracker**'s recorded scalp outcomes through the new threshold: trades whose recorded `holding_edge_at_scalp` is above the candidate threshold are re-priced using the matched hold-to-resolution PnL.
+`exit_edge_threshold` is the only operator-touchable exit knob and the **only exit knob the pipeline can tune** (range −0.10..−0.03). On a proposed change, the backtest replays the **counterfactual tracker**'s recorded scalp outcomes through the new threshold: trades whose recorded `holding_edge_at_scalp` is above the candidate threshold are re-priced using the matched hold-to-resolution `gain_pct` (`pnl/size`, the single-source metric — §13).
 
 ## 7. Flip trading
 
@@ -328,7 +328,7 @@ Flips 1–2 pay only the base `flip_edge_premium` (default 0.015); flip 3 pays +
 - **Early scalp** — sold before expiry into the book. The bot keeps the difference; counterfactual tracker logs what hold-to-resolution would have paid.
 - **Resolution** — window closes; Chainlink decides; winning side pays $1/share, losing side $0. PnL credited atomically. The exit price is decided **oracle-first** (`_resolved_exit_price`): Gamma's `event_metadata` (Chainlink `final_price` vs `price_to_beat`) is authoritative; absent that, a *coherent* resolved CLOB book (closed, prices sum ≈ 1, one side at an extreme) is the fallback. Either way the winner is paid the binary **$1** and the loser **$0** — an incoherent book (one side a stale/phantom print) is rejected rather than trusted, so a winning side can't mis-resolve to a wrong price.
 - **Never resolves from Binance** — it can diverge from Chainlink by $20–$200 at the close (the worst time to trust spot).
-- **Chainlink orphan fallback** — if Gamma is silent 30+ min past expiry, the bot reads Chainlink directly via `chainlink_feed` and resolves locally. Restart safety: the position stays `open`/`pending_resolution` in the DB until resolved (re-evaluated on boot), not a file. `memory/state/orphan_positions.json` is written by a *separate* startup check (`LiveTrader.detect_orphan_positions`) flagging on-chain positions the DB doesn't know about.
+- **Chainlink orphan fallback** — if Gamma stays silent ~30 min after entry (well past the 5-min window's expiry), the bot reads Chainlink directly via `chainlink_feed` and resolves locally. Restart safety: the position stays `open`/`pending_resolution` in the DB until resolved (re-evaluated on boot), not a file. `memory/state/orphan_positions.json` is written by a *separate* startup check (`LiveTrader.detect_orphan_positions`) flagging on-chain positions the DB doesn't know about.
 
 ## 9. Built-in loss handling
 
@@ -502,7 +502,7 @@ polybot/
   feeds/                       coinbase_feed (primary BTC + CVD),
                                binance_feed (1m candles, ATR), binance_depth, binance_trades,
                                chainlink_feed (strike + resolution),
-                               clob_ws, market_scanner, _socket, _staleness
+                               clob_ws, market_scanner, _socket, _staleness, _json
   indicators/                  rsi, macd, stochastic, obv, vwap, ema, atr + engine
   execution/                   base (BaseTrader, fee math), paper_trader, live_trader,
                                circuit_breaker (tiered floor), correlation

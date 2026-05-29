@@ -888,7 +888,7 @@ def _section_time_weighted(ana: dict[str, Any]) -> str:
     if not tw:
         return ""
     return (
-        f"## Time-Weighted Stats (14-day half-life)\n"
+        f"## Time-Weighted Stats (~11-day half-life)\n"
         f"WR: {tw.get('win_rate', 0):.0%}  |  Sharpe: {tw.get('sharpe', 0):+.3f}"
     )
 
