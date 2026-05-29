@@ -14,6 +14,30 @@ derived features) exists but is switched off.
 turns on **only with evidence**. Nothing here changes live trading until it proves out. Ranked by
 payoff-per-effort.
 
+## The rule for every addition: additive, never destructive
+
+Your accumulated trade history is the bot's most valuable asset. Adding to the model must never put
+it at risk or force a fresh start. **Every** addition — these and any future one — follows these rules:
+
+1. **Default to neutral.** A new feature/term ships at weight 0 (a new knob at its current value), so
+   the day it's added the bot behaves exactly as before. The pipeline raises it off neutral only with
+   backtested evidence.
+2. **Never remove what exists.** The current layers (L1–L6, calibration) and their logic stay. The
+   pipeline may tune a weight up *or* down on evidence — that's the bot learning, not deletion. The
+   mechanisms and your data are never removed.
+3. **Only ADD record fields — never rename or delete them.** A new input adds a new key to each trade's
+   record; old records are always read with a safe default for missing keys, so your full history stays
+   valid and usable forever.
+4. **Never delete the trade records.** `outcomes/` `ghost_outcomes/` `counterfactuals/` are append-only
+   and git-tracked; no addition touches them.
+5. **Weights persist.** `settings.yaml` is never reset by an addition; the pipeline keeps tuning from
+   exactly where it is.
+
+**In practice:** a feature built from data you *already record* can be backtested over your **entire
+existing history the moment it's added — no warm-up.** A feature needing a brand-new input (funding,
+implied vol) keeps all old data intact and just gathers the new input going forward until there's
+enough to judge it. Neither case ever "retrains from scratch."
+
 ---
 
 ## Do first — uses data we already have (cheap, no new feeds)
