@@ -52,6 +52,7 @@ signal:
                               #     counterfactual resolution data when probing this param.
   loss_cut_fraction: 0.65     # [M] Force exit if market < entry × 65% with < loss_cut_time_s remaining.
   loss_cut_time_s: 90.0       # [M] Last X seconds: if position is deeply underwater, cut it.
+  deep_loss_hold_threshold: -0.10  # [M] Below this holding_edge → hold to resolution (backtest can't re-sim the hold branch).
 
   # --- Adverse selection (sizing penalty, not entry gate) ---
   # `adverse_rate_at_30s` shrinks Kelly through `1 − adverse_penalty_slope × max(0, adverse_rate − adverse_penalty_floor)`
@@ -93,7 +94,6 @@ signal:
   # =============================================================================
   regime_momentum_threshold: 0.15   # [P] |autocorr| above this → real regime (L2/L4)
   final_logit_clamp: 4.0            # [P] ±N clamp on stacked logit before sigmoid
-  deep_loss_hold_threshold: -0.10   # [P] below this holding_edge → hold to resolution
   l5_regime_damp_cap: 0.7           # [P] max regime damp on L5
   atr_regime_shift_threshold: 0.60  # [P] ATR_short/ATR_long below this widens floor
 
