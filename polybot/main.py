@@ -2824,7 +2824,7 @@ async def main() -> None:
         floor_pct=cb_cfg.get("floor_pct", _d("circuit_breaker.floor_pct")),
         min_multiplier=cb_cfg.get("min_multiplier", _d("circuit_breaker.min_multiplier")),
         losses_to_reduce=cb_cfg.get("losses_to_reduce", 3),
-        wins_to_restore=cb_cfg.get("wins_to_restore", 2),
+        wins_to_restore=cb_cfg.get("wins_to_restore", 3),
     )
     # Restore locked_tier from persisted peak so floor survives restarts.
     # Compare against breaker.peak_bankroll (which CircuitBreaker.__init__ seeds

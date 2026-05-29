@@ -9,8 +9,8 @@ math:
 circuit_breaker:
   floor_pct: 0.85             # Lock in a floor at 85% of each bankroll milestone ($100/$150/$200/...)
   min_multiplier: 0.4         # Kelly never goes below 40% of normal once floor kicks in
-  losses_to_reduce: 3         # Consecutive losses before Kelly starts scaling down
-  wins_to_restore: 3          # Consecutive wins to restore full Kelly
+  losses_to_reduce: 3         # Consecutive losses before a Discord streak alert (does NOT affect sizing)
+  wins_to_restore: 3          # Consecutive wins before a Discord streak alert (does NOT affect sizing)
 
 execution:
   max_bankroll_deployed: 0.8  # Never deploy more than 80% of bankroll across all positions

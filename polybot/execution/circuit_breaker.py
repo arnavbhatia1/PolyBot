@@ -49,7 +49,7 @@ class CircuitBreaker:
         min_multiplier: float = 0.40,
         # Streak tracking — Discord alerts only, no sizing effect
         losses_to_reduce: int = 3,
-        wins_to_restore: int = 2,
+        wins_to_restore: int = 3,
     ) -> None:
         self.floor_pct: float = floor_pct
         self.min_multiplier: float = min_multiplier

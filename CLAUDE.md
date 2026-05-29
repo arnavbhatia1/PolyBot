@@ -333,7 +333,7 @@ Flips 1–2 pay only the base `flip_edge_premium` (default 0.015); flip 3 pays +
 ## 9. Built-in loss handling
 
 The stack: circuit breaker (§4), adverse-selection gate (§3), edge-decay gate (§3), regime quiet-skip (§3), feed-staleness skip (§3 — a Coinbase gap ≥2s skips the L1 decision, no Binance fallback), cross-venue gap logging (§1). Facts not stated above:
-- Circuit-breaker streak counters (3 losses / 2 wins) drive Discord alerts only, never sizing.
+- Circuit-breaker streak counters (3 losses / 3 wins) drive Discord alerts only, never sizing.
 - `AdverseSelectionMonitor` state persisted to `memory/state/adverse_state.json` on every fill so restarts inherit the rolling window.
 - **CLOB WS heartbeat** — PING every 10s, force-reconnect if no PONG within 25s.
 
