@@ -153,6 +153,27 @@ async def test_pipeline_skips_learning_below_200_trades():
     assert call_order == ["bias"]
 
 
+def test_ghost_resolved_at_epoch_normalizes_to_parseable_iso():
+    """Regression: ghost `resolved_at` is a Unix epoch float, but the pipeline parses
+    exit_timestamp as ISO-8601. If left as a stringified epoch, fromisoformat() raises,
+    the record sorts/windows as 0.0, and the 60-day cutoff drops EVERY resolved ghost —
+    silently killing the entire ghost backtest population (entry-gate tuning signal)."""
+    sched = _bare_scheduler()
+    g = {
+        "resolved": True, "side": "up", "ghost_correct": True,
+        "resolved_at": 1779951671.6652386,                       # epoch float, as stored
+        "timestamp": "2026-05-28T07:01:11.665252+00:00",
+        "indicator_snapshot": {"trade_context": {"market_price_up": 0.5}},
+    }
+    out = sched._ghost_to_outcome(g)
+    assert out is not None
+    # Must parse as ISO-8601 (would raise on the raw epoch string) AND survive a 60-day window.
+    parsed = datetime.fromisoformat(out["exit_timestamp"].replace("Z", "+00:00"))
+    assert (parsed.year, parsed.month, parsed.day) == (2026, 5, 28)
+    cutoff = datetime(2026, 3, 30, tzinfo=timezone.utc)           # 60d before 2026-05-29
+    assert parsed > cutoff, "normalized ghost must not fall outside the 60-day window"
+
+
 @pytest.mark.asyncio
 async def test_pipeline_learns_when_all_data_is_within_holdout_window():
     """Regression: a dataset younger than HOLDOUT_DAYS must still learn.

@@ -275,6 +275,23 @@ class AgentScheduler:
         analysis = self.bias_detector.detect(outcomes)
         return analysis
 
+    @staticmethod
+    def _resolved_at_to_iso(v: Any) -> str:
+        """Ghost ``resolved_at`` is stored as a Unix epoch float, but every consumer
+        parses ``exit_timestamp`` as ISO-8601. Convert it here — otherwise
+        ``datetime.fromisoformat("1779951671.66")`` raises, the record is stamped 0.0,
+        and the 60-day window / recency weighting silently drop the ENTIRE resolved-ghost
+        backtest population (the thing that unlocks entry gates from read-only). Older
+        records may already store an ISO string; pass those through unchanged."""
+        if v is None or v == "":
+            return ""
+        if isinstance(v, (int, float)):
+            try:
+                return datetime.fromtimestamp(float(v), timezone.utc).isoformat()
+            except (ValueError, OSError, OverflowError):
+                return ""
+        return str(v)
+
     def _ghost_to_outcome(self, g: dict[str, Any]) -> dict[str, Any] | None:
         """Normalize a resolved ghost record into the same shape as outcomes/.
 
@@ -314,7 +331,7 @@ class AgentScheduler:
             "indicator_snapshot": snap,
             "entry_price": mp,
             "exit_price": 1.0 if correct else 0.0,
-            "exit_timestamp": str(g.get("resolved_at") or g.get("timestamp") or ""),
+            "exit_timestamp": self._resolved_at_to_iso(g.get("resolved_at")) or str(g.get("timestamp") or ""),
             "timestamp": str(g.get("timestamp") or ""),
             "is_ghost": True,
         }
