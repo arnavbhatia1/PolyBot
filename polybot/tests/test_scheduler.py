@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 from polybot.agents.scheduler import AgentScheduler
 
@@ -150,6 +151,61 @@ async def test_pipeline_skips_learning_below_200_trades():
     await scheduler.run_daily_pipeline()
     # BiasDetector still runs, but TAEvolver and WeightOptimizer are skipped
     assert call_order == ["bias"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_learns_when_all_data_is_within_holdout_window():
+    """Regression: a dataset younger than HOLDOUT_DAYS must still learn.
+
+    The rolling 7-day holdout was swallowing the ENTIRE dataset of a young bot,
+    leaving the pre-holdout (opt) pool empty. The analysis dict was then built on
+    that empty pool, so the recommender read total_trades=0 and proposed nothing —
+    the pipeline silently stopped learning every night despite hundreds of trades.
+    The pre-existing tests all used April timestamps (>7d old → holdout empty →
+    opt got everything), so this exact path was never exercised. Here every trade
+    is timestamped within the last ~2 days, fully inside the holdout window."""
+    seen: dict = {}
+
+    async def mock_bias(outcomes=None):
+        seen["bias_n"] = len(outcomes or [])
+        return {"per_indicator": {}, "overall": {"total_trades": len(outcomes or [])}}
+
+    async def spy_ta_evolver(analysis, outcomes=None):
+        seen["evolver_n"] = len(outcomes or [])
+        seen["analysis_total_trades"] = analysis.get("overall", {}).get("total_trades", 0)
+        return {}
+
+    async def mock_weight_optimizer(recs, outcomes=None, **kwargs):
+        seen["optimizer_ran"] = True
+        return {"decision": "skipped"}
+
+    # 250 trades spaced 15 min apart → spans ~2.6 days, ALL inside the 7-day holdout
+    # (matches a ~2-day-old production bot). Pre-fix this drove the opt pool to exactly 0.
+    now = datetime.now(timezone.utc)
+    recent = [
+        {"timestamp": (now - timedelta(minutes=15 * i)).isoformat(),
+         "exit_timestamp": (now - timedelta(minutes=15 * i)).isoformat(),
+         "correct": True, "gain_pct": 0.1, "log_return": 0.1, "indicator_snapshot": {}}
+        for i in range(250)
+    ]
+    outcome_reviewer = MagicMock()
+    outcome_reviewer.load_all_outcomes.return_value = recent
+    scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=MagicMock(),
+        ta_evolver=MagicMock(), weight_optimizer=MagicMock(),
+        outcome_interval_seconds=3600, daily_pipeline_hour=2)
+    scheduler._run_bias_detector = mock_bias
+    scheduler._run_ta_evolver = spy_ta_evolver
+    scheduler._run_weight_optimizer = mock_weight_optimizer
+    await scheduler.run_daily_pipeline()
+
+    # The whole dataset is inside the holdout window, so the holdout must auto-disable
+    # and the FULL pool must reach both the analysis builder and the evolver. Before the
+    # fix, bias_n / analysis_total_trades / evolver_n were all 0 and the optimizer ran
+    # against an empty proposal set — i.e. no learning.
+    assert seen.get("bias_n") == 250, f"analysis built on empty pool (bias_n={seen.get('bias_n')})"
+    assert seen.get("analysis_total_trades") == 250, "evolver saw a zeroed analysis → would skip learning"
+    assert seen.get("evolver_n") == 250
+    assert seen.get("optimizer_ran") is True
 
 
 @pytest.mark.asyncio

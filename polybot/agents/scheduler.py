@@ -152,7 +152,16 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     elif holdout_active:
         lines.append(f"  Holdout:     ready ({holdout_n} trades) — no proposals tested tonight")
     elif holdout_n is not None:
-        lines.append(f"  Holdout:     inactive — only {holdout_n} trades in last 7 days (need ≥30)")
+        # holdout_n == 0 with a "younger than" reason means the holdout was deliberately
+        # disabled (dataset younger than the window) and ALL trades went to training —
+        # not that recent trades are missing. Surface that so the summary doesn't read
+        # like a data outage when there are hundreds of fresh trades.
+        _skip = pipeline_info.get("holdout_skipped_reason", "")
+        if "younger than" in _skip:
+            lines.append("  Holdout:     inactive — dataset younger than the 7-day window; "
+                         "all trades used for training (no fresh-data check yet)")
+        else:
+            lines.append(f"  Holdout:     inactive — only {holdout_n} trades in last 7 days (need ≥30)")
     else:
         lines.append("  Holdout:     inactive (insufficient recent trades)")
 
@@ -198,6 +207,12 @@ from polybot.agents.pipeline_analytics import (
 HOLDOUT_DAYS = 7
 _CAL_WINDOW_DAYS = 7
 HOLDOUT_MIN_TRADES = 30
+# Minimum trades before the TAEvolver/WeightOptimizer run at all. Also the floor the
+# pre-holdout (opt) pool must clear: if the rolling holdout would leave fewer than this
+# many trades for the evolver to learn from, the holdout is disabled and the full pool is
+# used. Defined at module scope (not inline) because the holdout decision — which must
+# happen BEFORE the analysis dict is built — depends on it.
+MIN_TRADES_FOR_LEARNING = 200
 
 class AgentScheduler:
     def __init__(self, outcome_reviewer: Any, bias_detector: Any, ta_evolver: Any, weight_optimizer: Any,
@@ -1898,13 +1913,32 @@ class AgentScheduler:
         # pool, so the optimizer's walk-forward folds (which run on opt_outcomes)
         # never overlap with the calibrator's training data.
         opt_outcomes, holdout_outcomes = self._split_holdout(all_outcomes)
+        # Disable the holdout (fall back to the full pool) when EITHER the holdout is too
+        # thin to confirm on OR the pre-holdout pool is too thin for the evolver to learn
+        # from. This decision MUST happen here, before the analysis dict is built below:
+        # the recommender keys off analysis["overall"]["total_trades"], so building the
+        # analysis on an empty opt pool silently zeroes ALL learning even when
+        # all_outcomes is large. That is exactly what happens to a dataset younger than
+        # HOLDOUT_DAYS — the rolling holdout swallows every trade, leaving opt empty — so
+        # without the second clause the bot stops learning every night for its first week
+        # of life despite hundreds of trades. The OOS guarantee is already forfeited in
+        # this regime; keeping the analysis consistent with the pool the evolver actually
+        # uses is strictly better than proposing nothing.
         if len(holdout_outcomes) < HOLDOUT_MIN_TRADES:
+            _holdout_off_reason = (f"only {len(holdout_outcomes)} trades in last "
+                                   f"{HOLDOUT_DAYS}d (need {HOLDOUT_MIN_TRADES})")
+        elif len(opt_outcomes) < MIN_TRADES_FOR_LEARNING:
+            _holdout_off_reason = (f"opt-pool {len(opt_outcomes)} < {MIN_TRADES_FOR_LEARNING} "
+                                   f"(dataset younger than the {HOLDOUT_DAYS}d holdout window)")
+        else:
+            _holdout_off_reason = ""
+        if _holdout_off_reason:
             logger.info(
-                f"  Holdout INACTIVE: only {len(holdout_outcomes)} trades in last {HOLDOUT_DAYS}d "
-                f"(need {HOLDOUT_MIN_TRADES}). Falling back to full opt-pool; no post-gate confirmation this cycle."
+                f"  Holdout INACTIVE: {_holdout_off_reason}. Falling back to full pool for "
+                f"analysis + evolver; no post-gate confirmation this cycle."
             )
             pipeline_info["holdout_active"] = False
-            pipeline_info["holdout_skipped_reason"] = f"n={len(holdout_outcomes)}<{HOLDOUT_MIN_TRADES}"
+            pipeline_info["holdout_skipped_reason"] = _holdout_off_reason
             opt_outcomes, holdout_outcomes = all_outcomes, []
         else:
             pipeline_info["holdout_active"] = True
@@ -2280,11 +2314,11 @@ class AgentScheduler:
             _analysis_parts.append(f"{_gate_skips:,} gate skips")
         logger.info("  Analysis done" + (f"  |  {' | '.join(_analysis_parts)}" if _analysis_parts else ""))
 
-        # Gate: need at least 200 trades before running TAEvolver and WeightOptimizer.
-        # opt_outcomes/holdout_outcomes were already split at the top of this
-        # method so bias_detector + execution_quality all saw a clean opt pool.
-        # Here we just consume that split.
-        MIN_TRADES_FOR_LEARNING = 200
+        # Gate: need at least MIN_TRADES_FOR_LEARNING trades before running TAEvolver and
+        # WeightOptimizer. The holdout/opt split at the top of this method already fell
+        # back to the full pool if the holdout would have starved opt below this floor, so
+        # by here opt_outcomes is guaranteed non-empty whenever all_outcomes clears the
+        # floor — bias_detector + execution_quality saw the same pool the evolver will.
         weight_info: dict[str, Any] = {"decision": "skipped"}
         if len(all_outcomes) < MIN_TRADES_FOR_LEARNING:
             logger.info(f"Skipping learning pipeline: only {len(all_outcomes)} trades, need {MIN_TRADES_FOR_LEARNING}")
@@ -2292,9 +2326,6 @@ class AgentScheduler:
             weight_info["reason"] = f"only {len(all_outcomes)} trades (need {MIN_TRADES_FOR_LEARNING})"
         else:
             pipeline_info["holdout_n_trades"] = len(holdout_outcomes)
-            if len(opt_outcomes) < MIN_TRADES_FOR_LEARNING:
-                # Holdout would leave opt below the optimizer's floor — fall back.
-                opt_outcomes, holdout_outcomes = all_outcomes, []
 
             # Precompute baseline Sharpe/SE/N so Claude's context shows real numbers
             # instead of None on the first cycle after restart.
