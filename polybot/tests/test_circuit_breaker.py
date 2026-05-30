@@ -227,6 +227,37 @@ class TestTierRatcheting:
 
 
 # ------------------------------------------------------------------
+# Restart restore (restore_from_peak)
+# ------------------------------------------------------------------
+
+class TestRestoreFromPeak:
+    def test_locks_tier_from_peak_keeps_current_balance(self):
+        """Restart at $700 with a $1000 historical peak: floor stays at the $1000
+        tier ($850) and Kelly reflects the live $700 drawdown, not a reset to 1.0."""
+        cb = CircuitBreaker(initial_bankroll=700.0)
+        # Fresh boot would lock the tier at $700's tier ($600) — too low.
+        assert cb.locked_tier == 600.0
+        cb.restore_from_peak(1000.0, 700.0)
+        assert cb.locked_tier == 1000.0
+        assert cb.floor == pytest.approx(850.0)
+        assert cb.current_bankroll == 700.0
+        assert cb.peak_bankroll == 1000.0
+        # $700 is below the $850 floor → Kelly bottoms at min_multiplier.
+        assert cb.kelly_multiplier == pytest.approx(cb.min_multiplier)
+
+    def test_current_above_floor_uses_concave_scaling(self):
+        import math
+        cb = CircuitBreaker(initial_bankroll=900.0)
+        cb.restore_from_peak(1000.0, 900.0)
+        assert cb.locked_tier == 1000.0
+        assert cb.current_bankroll == 900.0
+        # 900 sits between floor (850) and tier (1000): concave sqrt interpolation.
+        ratio = (900.0 - 850.0) / (1000.0 - 850.0)
+        expected = cb.min_multiplier + (1.0 - cb.min_multiplier) * math.sqrt(ratio)
+        assert cb.kelly_multiplier == pytest.approx(expected)
+
+
+# ------------------------------------------------------------------
 # Streak tracking (logging only, no sizing impact)
 # ------------------------------------------------------------------
 

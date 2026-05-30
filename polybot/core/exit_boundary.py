@@ -5,12 +5,20 @@ exhausted time value (cut losses), ATM has standard sqrt(time) optionality.
 from __future__ import annotations
 
 import math
+
+from polybot.execution.base import DEFAULT_FEE_RATE
+
 _PRICE_VOL_PER_MIN = 0.07
 
 
 class ExitBoundary:
-    def compute_exit_threshold(self, seconds_remaining: float, entry_price: float, fee_rate: float = 0.018, market_price: float = 0.5) -> float:
-        """Minimum holding_edge to justify holding. More negative = more patient."""
+    def compute_exit_threshold(self, seconds_remaining: float, fee_rate: float = DEFAULT_FEE_RATE, market_price: float = 0.5) -> float:
+        """Minimum holding_edge to justify holding. More negative = more patient.
+
+        The boundary is purely a function of time-remaining, the current market
+        price (ITM/ATM/OTM regime), and the fee — entry price does not enter the
+        binary-payoff time-value math, so it is deliberately not a parameter.
+        """
         minutes_remaining = max(seconds_remaining / 60.0, 0.01)
         fee_cost = fee_rate * market_price * (1.0 - market_price)
         base_time_value = _PRICE_VOL_PER_MIN * math.sqrt(minutes_remaining) * 0.4

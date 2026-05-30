@@ -1,11 +1,11 @@
 """Adverse selection monitor: detects if fills are systematically picked off.
 
-After each fill, tracks the midprice 10s, 30s, and 60s later. If the price
+After each fill, tracks the midprice at 5/10/15/30/60s later. If the price
 consistently moves against the bot's position after entry, someone is fading
 the bot with better information.
 
 adverse_selection_rate = P(price moves against you | you just filled).
-Live gate threshold is signal.adverse_selection_threshold (default 0.65). The
+Live gate threshold is signal.adverse_selection_threshold (default 0.80). The
 get_adverse_rate() result is Bayesian-shrunk to a neutral prior so the gate
 stays active in low-volume hours and across restarts (state is also persisted
 to JSON on each fill-record).
@@ -97,18 +97,24 @@ class AdverseSelectionMonitor:
         if the process dies before it completes, the next fill triggers another
         save. Falls back to a sync write when called outside an event loop
         (tests, startup helpers)."""
+        # Snapshot the fill deque ON the event loop. Iterating it inside the
+        # to_thread worker would race the loop's record_fill/_prune_stale
+        # append/popleft and can raise "deque mutated during iteration".
+        fills_snapshot = [asdict(f) for f in self._fills]
         try:
-            asyncio.get_running_loop().create_task(asyncio.to_thread(self._save))
+            asyncio.get_running_loop().create_task(
+                asyncio.to_thread(self._save, fills_snapshot))
         except RuntimeError:
-            self._save()
+            self._save(fills_snapshot)
 
-    def _save(self) -> None:
-        """Persist current fill deque to disk. Silent on I/O errors — don't crash trading."""
+    def _save(self, fills_snapshot: list[dict]) -> None:
+        """Persist a pre-built fill snapshot to disk. Silent on I/O errors —
+        don't crash trading."""
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "saved_at": time.time(),
-                "fills": [asdict(f) for f in self._fills],
+                "fills": fills_snapshot,
             }
             self._state_path.write_text(json.dumps(payload, indent=2))
         except Exception as e:

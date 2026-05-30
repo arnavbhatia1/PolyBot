@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -167,6 +168,11 @@ class BinanceTradesFeed:
             is_buyer_maker = bool(data["m"])
         except (KeyError, ValueError, TypeError) as e:
             logger.warning(f"Failed to parse aggTrade: {e}")
+            return
+        # float() parses "NaN"/"Infinity"; drop non-finite values so they can't
+        # poison the CVD accumulator.
+        if not (math.isfinite(price) and math.isfinite(qty)):
+            logger.warning("Dropping non-finite aggTrade price/qty")
             return
         now = time.time()
         self.staleness.observe(now)

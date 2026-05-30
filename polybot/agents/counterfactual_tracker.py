@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 from polybot.agents.pipeline_analytics import utc_ts_to_et_date as _utc_ts_to_et_date
+from polybot.execution.base import DEFAULT_FEE_RATE
 
 _ET = ZoneInfo("America/New_York")
 
@@ -98,7 +99,7 @@ class CounterfactualTracker:
             "entry_price": pos.get("entry_price", 0),
             "size": pos.get("size", 0),
             "shares_held": pos.get("shares_held") or pos.get("size", 0) / max(pos.get("entry_price", 1), 0.001),
-            "fee_rate": pos.get("fee_rate", 0.018),
+            "fee_rate": pos.get("fee_rate", DEFAULT_FEE_RATE),
             "scalp_exit_price": scalp_context.get("exit_fill", 0),
             "scalp_pnl": scalp_context.get("pnl", 0),
             "scalp_gain_pct": scalp_context.get("gain_pct", 0),
@@ -153,7 +154,7 @@ class CounterfactualTracker:
                 "entry_price": pos.get("entry_price", 0),
                 "size": pos.get("size", 0),
                 "shares_held": pos.get("shares_held") or pos.get("size", 0) / max(pos.get("entry_price", 1), 0.001),
-                "fee_rate": pos.get("fee_rate", 0.018),
+                "fee_rate": pos.get("fee_rate", DEFAULT_FEE_RATE),
                 "worst_holding_edge": holding_edge,
                 "worst_model_prob": hold_context.get("model_prob", 0),
                 "worst_market_price": hold_context.get("market_price", 0),

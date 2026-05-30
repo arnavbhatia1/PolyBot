@@ -199,7 +199,7 @@ kelly_mult = max(adverse_penalty_min,
            = max(0.30, 1 - 1.5 * max(0, adverse_rate - 0.45))
 ```
 
-So at `adverse_rate = 0.85` the multiplier collapses to 0.30 but the trade still fires — only the hard 0.80 threshold blocks entry. The 30-min lookback is **Bayesian-shrunk to a neutral prior** (n=10, rate=0.5).
+So within the firing band the penalty scales down with the fade rate — at `adverse_rate → 0.80⁻` it reaches `1 − 1.5 × 0.35 = 0.475` — and the moment `adverse_rate >= 0.80` (the hard `adverse_selection_threshold`) the trade is blocked entirely, before sizing. (The formula's 0.30 floor is only hit at `adverse_rate ≈ 0.92`, which the 0.80 hard cutoff makes unreachable while trading — it exists as a clamp, not an operating point.) The 30-min lookback is **Bayesian-shrunk to a neutral prior** (n=10, rate=0.5).
 
 Every rejection of a **pipeline-tunable or signal-derived gate** feeds a **ghost** into `GhostTracker` (full L1-L5 inputs + aux microstructure); ghosts resolve at the window's close and feed the backtest pool (raising a gate filters the same ghosts from baseline + candidate equally, lowering includes them). Non-tunable structural gates (`regime` quiet skip, chosen-side `thin_book_depth` vs operator-owned `min_book_depth_usd`, `min_size` $1 floor) reject without ghosting, so the pipeline can't adopt a change that re-includes them.
 
@@ -253,8 +253,8 @@ Every tick while we hold, re-run the full model and decide HOLD vs EXIT. `holdin
 itm_ref            = market_mid_for_side or market_price_for_side
 itm_depth          = max(0, (itm_ref - 0.5) / 0.5)
 deep_loss_floor    = exit_edge_threshold * (1 + 0.5 * itm_depth)
-optimal_threshold  = ExitBoundary.compute_exit_threshold(seconds_remaining, entry_price,
-                                                         fee_rate, market_price_for_side)
+optimal_threshold  = ExitBoundary.compute_exit_threshold(seconds_remaining, fee_rate,
+                                                         market_price_for_side)
 effective_threshold = (1 - itm_depth) * max(deep_loss_floor, optimal_threshold)
                     + itm_depth * min(deep_loss_floor, optimal_threshold)
 ```
@@ -317,7 +317,7 @@ Telemetry, nightly pipeline, param registry, layout, data sources, run commands,
 
 - **Entry facts:** `btc_price`, `strike_price`, `seconds_remaining`, `market_price_up`, `market_price_down`, `closes_tail` (last 2 closes, so the L6 backtest can reconstruct `last_return`).
 - **Probabilities:** `model_probability` (post-calibrator), `model_probability_raw` (pre-calibrator — stored separately so re-fits don't compound).
-- **Composite signals:** `flow_score`, `spot_flow_signal`, `regime_autocorr`, `regime_direction`, `prev_resolution_margin`.
+- **Composite signals:** `flow_score`, `spot_flow_signal`, `regime_autocorr`, `regime_direction`, `prev_resolution_margin`. `flow_score`/`spot_flow_signal` follow the same None-when-cold rule as the aux fields below — the **recorded** value is `None` when its source feed is cold (no CLOB book + no trades for L3; Coinbase CVD `None` for L3b), even though the live model consumes a `0.0` there (it must produce a number for the logit). So a recorded `0.0` is genuinely flat flow, not a dead feed.
 - **Microstructure aux:** `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`. Each **signal** field is `None` (never `0.0`) when its feed is missing/stale, so the pipeline tells "feed cold" from "real zero". `coinbase_taker_n` is a **count**: `0` (not `None`) when cold, so its sole consumer (requires `n >= 20`) contributes nothing either way.
 - **SPRT:** `sprt_confidence`, `sprt_status`.
 - **Sizing audit:** `adverse_rate_at_30s`, `adverse_kelly_mult` (actual Kelly multiplier applied — enables per-bucket retrospective Sharpe), `entry_phase`, `flip_count`, `is_flip`.
@@ -330,7 +330,7 @@ Side-signed post-fill mid drift at **5/10/15/30/60s**, captured by `AdverseSelec
 
 ### Gate-skip stats (`memory/state/gate_stats*.json`)
 
-Two files. Live counts persist to `state/gate_stats_current.json` on every resolution (mid-day restarts reload it); at the first record of a new ET day the finished day folds into the lifetime accumulator `state/gate_stats.json` (`counts` + `days_accumulated` + first/last day) and the current file resets. The nightly pipeline reads the current-day file. Includes `loss_cut_fired`/`loss_cut_whipsaw_blocked` to audit the 0.5*ATR cushion.
+Two files. Live counts persist to `state/gate_stats_current.json` on every resolution (mid-day restarts reload it); at the first record of a new ET day the finished day folds into the lifetime accumulator `state/gate_stats.json` (`counts` + `days_accumulated` + first/last day) and the current file resets. The nightly pipeline reads the current-day file. Includes `loss_cut_fired`/`loss_cut_whipsaw_blocked` to audit the 0.5*ATR cushion — these are stamped per `evaluate_hold` tick, so they count tick-pressure (a single underwater position re-stamps every tick until it closes), not distinct cut events; read the ratio (blocked vs fired), not the absolute counts.
 
 ### Feed staleness telemetry
 

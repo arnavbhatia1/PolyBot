@@ -117,6 +117,20 @@ class CircuitBreaker:
                 f"Tier locked ${new_tier:,.0f} -> floor ${self.floor:,.2f}"
             )
 
+    def restore_from_peak(self, peak: float, current: float) -> None:
+        """Restart restore: lock the tier/floor from the historical ``peak`` while
+        leaving ``current_bankroll`` at the real (post-drawdown) balance.
+
+        Encapsulates the two-step dance so callers can't get the ordering wrong:
+        ``update_bankroll(peak)`` ratchets the tier up to the high-water mark, then
+        we set ``current_bankroll`` back to the live balance so the drawdown Kelly
+        multiplier applies. e.g. peak=$1000, restart at $700 → floor stays $850,
+        ``kelly_multiplier`` reflects the $700 drawdown rather than resetting to 1.0.
+        """
+        self.peak_bankroll = max(self.peak_bankroll, peak)
+        self.update_bankroll(peak)      # ratchet locked_tier/floor from the peak
+        self.current_bankroll = current  # but size against the live balance
+
     # ------------------------------------------------------------------
     # Streak tracking (Discord alerts only — no effect on sizing)
     # ------------------------------------------------------------------

@@ -12,6 +12,7 @@ from polybot.core.returns import lag1_autocorr
 from polybot.core.aux_layers import autocorr_vol_scale, combine_flow_family
 from polybot.core.derived_features import DERIVED_FEATURES, FeatureContext, L6_LOGIT_CAP
 from polybot.config.param_registry import default_for as _d
+from polybot.execution.base import DEFAULT_FEE_RATE
 
 if TYPE_CHECKING:
     from polybot.core.calibrator import IsotonicCalibrator
@@ -166,6 +167,11 @@ class SignalEngine:
         self.last_raw_prob_up: float = 0.5
         self.last_momentum_score: float = 0.0
         self.last_loss_cut_event: str = ""
+        # The blended exit threshold the most recent evaluate_hold() actually used
+        # (deep-loss-floor vs ExitBoundary curve, weighted by itm_depth). Exposed so
+        # callers re-checking an EXIT (e.g. the phantom-bid SELL verify in main) gate
+        # against the SAME threshold the scalp decision used, not the raw config value.
+        self.last_effective_exit_threshold: float = 0.0
         self.last_atr_rolling_20: float = 0.0
         self.last_atr_long_term_mean: float = 0.0
 
@@ -390,7 +396,7 @@ class SignalEngine:
                  flow_signal: float = 0.0,
                  spot_flow_signal: float = 0.0,
                  prev_resolution_margin: float = 0.0,
-                 fee_rate: float = 0.018) -> TradeSignal:
+                 fee_rate: float = DEFAULT_FEE_RATE) -> TradeSignal:
         if not in_entry_window:
             return TradeSignal("SKIP", 0.5, 0, 0, "Outside entry window")
         if has_position:
@@ -448,7 +454,7 @@ class SignalEngine:
     def evaluate_hold(self, indicators: dict[str, dict], btc_price: float, strike_price: float,
                       seconds_remaining: float, market_price_for_side: float,
                       side: str, exit_threshold: float = -0.10,
-                      entry_price: float = 0.0, fee_rate: float = 0.018,
+                      entry_price: float = 0.0, fee_rate: float = DEFAULT_FEE_RATE,
                       closes: np.ndarray | None = None,
                       flow_signal: float = 0.0,
                       spot_flow_signal: float = 0.0,
@@ -477,12 +483,13 @@ class SignalEngine:
         deep_loss_floor = exit_threshold * (1.0 + 0.5 * itm_depth)
 
         optimal_threshold = self._exit_boundary.compute_exit_threshold(
-            seconds_remaining, entry_price, fee_rate, market_price_for_side)
+            seconds_remaining, fee_rate, market_price_for_side)
         # Blend: ATM trusts the boundary; deeper ITM weights toward the more patient floor.
         effective_threshold = (
             (1 - itm_depth) * max(deep_loss_floor, optimal_threshold)
             + itm_depth * min(deep_loss_floor, optimal_threshold)
         )
+        self.last_effective_exit_threshold = effective_threshold
 
         # Loss-cut: deep underwater near expiry AND BTC is genuinely past strike
         # (>0.5×ATR). The ATR guard suppresses whipsaw-induced false cuts when
@@ -525,7 +532,7 @@ class SignalEngine:
         dead_side_floor = self.calibrator.lowest_learned_prob if self.calibrator else 0.0
         if (holding_edge < self.deep_loss_hold_threshold
                 and model_prob > dead_side_floor
-                and (entry_price <= 0 or market_price_for_side < entry_price)):
+                and market_price_for_side < entry_price):
             return ("HOLD", model_prob, holding_edge,
                     "holding to resolution — deeply underwater but better odds holding than selling now")
 
@@ -543,7 +550,7 @@ class SignalEngine:
                 f"Hold {side}: model={model_prob:.0%} mkt={market_price_for_side:.0%} "
                 f"edge={holding_edge:+.0%}")
 
-    def _kelly(self, prob: float, market_price: float, fee_rate: float = 0.018) -> float:
+    def _kelly(self, prob: float, market_price: float, fee_rate: float = DEFAULT_FEE_RATE) -> float:
         """Fee-aware Kelly. Entry fee on shares → net_b = b × (1 - fee_rate).
         Resolution fees collapse to 0 at price 0/1, no exit adjustment needed.
         """

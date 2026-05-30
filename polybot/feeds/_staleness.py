@@ -71,10 +71,26 @@ class StalenessTracker:
 _lock = Lock()
 
 
-def persist(trackers: Iterable[StalenessTracker], path: Path) -> None:
-    """Atomic write of all tracker snapshots to a single JSON file."""
-    payload = {"updated_at": time.time(), "feeds": [t.snapshot() for t in trackers]}
+def snapshot_feeds(trackers: Iterable[StalenessTracker]) -> list[dict[str, float | int | bool]]:
+    """Read each tracker's gap deque into a plain snapshot list.
+
+    Call this ON the event loop. ``snapshot()`` iterates/sorts the gap deque,
+    which races the loop's ``observe()`` append if done inside a worker thread
+    ("deque mutated during iteration"). Gathering here, then handing the result
+    to ``write_feeds`` in a thread, keeps the deque reads single-threaded.
+    """
+    return [t.snapshot() for t in trackers]
+
+
+def write_feeds(feeds: list[dict[str, float | int | bool]], path: Path) -> None:
+    """Atomic JSON write of pre-gathered snapshots. Safe to run in a worker thread."""
+    payload = {"updated_at": time.time(), "feeds": list(feeds)}
     with _lock:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2))
         tmp.replace(path)
+
+
+def persist(trackers: Iterable[StalenessTracker], path: Path) -> None:
+    """Gather + write synchronously. Safe for direct (non-threaded) callers."""
+    write_feeds(snapshot_feeds(trackers), path)

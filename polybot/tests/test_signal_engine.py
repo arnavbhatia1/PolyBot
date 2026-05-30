@@ -132,9 +132,12 @@ def test_exit_in_profitable_scalp_window(engine):
 def test_deep_loss_holds_to_resolution_when_model_still_gives_chance(engine):
     """Edge < -0.10 AND model_prob still ≥ 0.05 → HOLD (binary residual is real)."""
     # Modest distance + high ATR keeps model_prob well above the dead-side floor.
+    # entry_price above the current market → we're genuinely underwater, which is
+    # the deep-loss-hold precondition (market < entry).
     action, _prob, edge, reason = engine.evaluate_hold(
         _make_indicators(atr_value=80), btc_price=66360, strike_price=66400,
-        seconds_remaining=120, market_price_for_side=0.60, side="Up", exit_threshold=-0.05)
+        seconds_remaining=120, market_price_for_side=0.60, side="Up",
+        exit_threshold=-0.05, entry_price=0.70)
     assert action == "HOLD"
     assert edge < -0.10
     assert "deeply underwater" in reason
@@ -171,9 +174,12 @@ def test_deep_underwater_holds_unless_loss_cut(engine):
     so once the trade has moved this far against us we're better holding for the
     binary residual than locking in the loss.
     """
+    # Bought at 0.98, now marked 0.95 → underwater (market < entry), so the
+    # deep-loss-hold rule keeps the binary residual rather than locking the loss.
     action, _prob, edge, _ = engine.evaluate_hold(
         _make_indicators(atr_value=80), btc_price=66410, strike_price=66400,
-        seconds_remaining=180, market_price_for_side=0.95, side="Up", exit_threshold=-0.05)
+        seconds_remaining=180, market_price_for_side=0.95, side="Up",
+        exit_threshold=-0.05, entry_price=0.98)
     assert action == "HOLD"
     assert edge < -0.20
 

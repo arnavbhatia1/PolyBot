@@ -58,7 +58,7 @@ import math
 from polybot.feeds.binance_depth import BinanceDepthFeed
 from polybot.feeds.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
 from polybot.feeds.coinbase_feed import CoinbaseFeed
-from polybot.feeds._staleness import persist as _persist_staleness
+from polybot.feeds._staleness import snapshot_feeds as _staleness_snapshot, write_feeds as _staleness_write
 from polybot.core.sprt import SPRTAccumulator
 from polybot.core.regime import RegimeDetector
 from polybot.core.signal_engine import compute_signal_consensus
@@ -675,8 +675,8 @@ async def _evaluate_signal_and_enter(
             "atr": indicators.get("atr", {}).get("atr", 0),
             "atr_rolling_20": round(signal_engine.last_atr_rolling_20, 6),
             "atr_long_term_mean": round(signal_engine.last_atr_long_term_mean, 6),
-            "flow_score": flow_score,
-            "spot_flow_signal": spot_flow_signal,
+            "flow_score": flow_score_rec,
+            "spot_flow_signal": spot_flow_rec,
             "prev_resolution_margin": _prev_resolution_margin,
             "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
             "regime_direction": round(signal_engine.last_regime_direction, 4),
@@ -757,6 +757,18 @@ async def _evaluate_signal_and_enter(
         aux_signals.get("coinbase_taker_n", 0),
         vol_factor=_vol_factor,
     )
+    # Telemetry-only "cold vs real-zero" split. The live model above must consume
+    # a number (compute_spot_flow_signal / compute_flow_signal collapse a cold
+    # feed to 0.0), but the *recorded* trade_context value must be None when the
+    # source feed is missing/stale so the dataset can tell "feed cold" from
+    # "genuinely flat flow" (CLAUDE.md §10). spot_flow is cold when Coinbase CVD
+    # is None; book flow is cold when neither CLOB book nor any trade is present.
+    spot_flow_rec = spot_flow_signal if aux_signals.get("coinbase_cvd_60s") is not None else None
+    _book_present = bool(
+        book_up.get("bids") or book_up.get("asks")
+        or book_down.get("bids") or book_down.get("asks")
+    )
+    flow_score_rec = flow_score if (_book_present or flow_data.get("trade_count", 0) > 0) else None
     cvd_accel_val = 0.0
     cvd_accel_norm = 0.0
     if coinbase_feed and coinbase_feed.state.age_seconds <= _AUX_FRESH_S_COINBASE:
@@ -852,6 +864,8 @@ async def _evaluate_signal_and_enter(
                 [float(closes[-2]), float(closes[-1])]
                 if len(closes) >= 2 else None
             )
+            _st_cid = contract.get("slug", contract.get("market_id", ""))
+            _st_flip_count = int(_window_flip_state.get(_st_cid, {}).get("flip_count", 0))
             ghost_tracker.record_rejection(
                 gate_name="sub_threshold_prob",
                 side=side,
@@ -869,12 +883,17 @@ async def _evaluate_signal_and_enter(
                     "atr": indicators.get("atr", {}).get("atr", 0),
                     "atr_rolling_20": round(signal_engine.last_atr_rolling_20, 6),
                     "atr_long_term_mean": round(signal_engine.last_atr_long_term_mean, 6),
-                    "flow_score": flow_score,
-                    "spot_flow_signal": spot_flow_signal,
+                    "flow_score": flow_score_rec,
+                    "spot_flow_signal": spot_flow_rec,
                     "prev_resolution_margin": _prev_resolution_margin,
                     "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
                     "regime_direction": round(signal_engine.last_regime_direction, 4),
                     "closes_tail": _closes_tail,
+                    # Ghost schema parity with _ghost(): by-phase / flip-segmented
+                    # bias cards need these on the sub-threshold population too.
+                    "entry_phase": phase,
+                    "flip_count": _st_flip_count,
+                    "is_flip": _st_flip_count > 0,
                     **aux_signals,
                 }},
             )
@@ -1108,11 +1127,10 @@ async def _evaluate_signal_and_enter(
         return None, last_eval_log_window
     max_fill = side_depth * max_fill_pct
     if size > max_fill:
+        # side_depth ≥ min_side_depth ($50) is enforced above, so max_fill is
+        # always well above the $1 CLOB floor — the final min_size gate below
+        # handles any residual sub-$1 size without a separate sub-cap branch.
         size = round(max_fill, 2)
-        if size < 0.10:
-            _record_skip("thin_book_depth")
-            _emit_gate_skip(cid, "thin_book_depth", f"thin book ${side_depth:.0f}")
-            return None, last_eval_log_window
 
     # Net-edge gate: reject if slippage eats the edge below threshold.
     impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
@@ -1194,8 +1212,8 @@ async def _evaluate_signal_and_enter(
         "size": size,
         "prev_resolution_margin": _prev_resolution_margin,
         # Composite signals used by the model — pipeline replays L1-L5 from these
-        "flow_score": flow_score,
-        "spot_flow_signal": spot_flow_signal,
+        "flow_score": flow_score_rec,
+        "spot_flow_signal": spot_flow_rec,
         # Regime + L2 inputs (autocorr + direction stored exactly for backtest fidelity)
         "regime_state": regime_state.name if regime_state else "unknown",
         "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
@@ -1839,14 +1857,19 @@ async def _evaluate_and_exit_position(
             verified_price = await market_scanner.fetch_market_price(sell_token, "SELL", http_client)
         if verified_price > 0 and verified_price < ws_bid * 0.70:
             # Dramatic mismatch — ws_bid is phantom. Re-evaluate with the real price.
+            # Gate against the SAME blended threshold evaluate_hold used to fire this
+            # EXIT (deep-loss-floor vs ExitBoundary curve), not the raw config value —
+            # otherwise a deep-ITM hold re-checks too strictly and an OTM-urgency
+            # position (effective threshold can go positive) re-holds past forced exit.
+            effective_exit_threshold = signal_engine.last_effective_exit_threshold
             real_edge = model_prob - verified_price
             if pos["id"] not in _abandoned_scalp_positions:
                 logger.info(
                     f"  SCALP VERIFY {pos['side']}  {_fmt_secs(live['seconds_remaining'])}  |  "
                     f"ws_bid={ws_bid:.3f} vs /price={verified_price:.3f} — using real price  "
-                    f"real_edge={real_edge:+.0%} thresh={exit_threshold:+.0%}"
+                    f"real_edge={real_edge:+.0%} thresh={effective_exit_threshold:+.0%}"
                 )
-            if real_edge > exit_threshold:
+            if real_edge > effective_exit_threshold:
                 # Real market not bad enough to scalp — hold
                 return day_wins, day_losses, day_fees, None
             market_price = verified_price
@@ -2841,9 +2864,7 @@ async def main() -> None:
     # → False → floor reset to $700. New condition keeps the $1000 floor.
     persisted_peak = await db.get_peak_bankroll()
     if persisted_peak is not None and persisted_peak > breaker.peak_bankroll:
-        breaker.peak_bankroll = persisted_peak
-        breaker.update_bankroll(persisted_peak)
-        breaker.current_bankroll = init_bankroll
+        breaker.restore_from_peak(persisted_peak, init_bankroll)
         logger.debug(f"CIRCUIT BREAKER: restored persisted peak ${persisted_peak:,.2f} (current ${init_bankroll:,.2f}, drawdown={breaker.drawdown_pct:.1%})")
     else:
         await db.set_peak_bankroll(init_bankroll)
@@ -3008,7 +3029,9 @@ async def main() -> None:
             while True:
                 await asyncio.sleep(60.0)
                 try:
-                    await asyncio.to_thread(_persist_staleness, _staleness_trackers, _staleness_path)
+                    # Gather deque snapshots on the event loop, write in a worker.
+                    _snaps = _staleness_snapshot(_staleness_trackers)
+                    await asyncio.to_thread(_staleness_write, _snaps, _staleness_path)
                 except Exception as e:
                     logger.debug("staleness flush failed: %s", e)
         except asyncio.CancelledError:
@@ -3107,7 +3130,7 @@ if __name__ == "__main__":
             "=" * 70 + "\n"
             f"{e}\n\n"
             "Next steps:\n"
-            "  1) cat polybot/memory/orphan_positions.json\n"
+            "  1) cat polybot/memory/state/orphan_positions.json\n"
             "  2) Manually sweep or resolve any genuine orphan shares on Polymarket\n"
             "  3) Re-run with --allow-orphans to acknowledge known leftover shares\n"
             + "=" * 70 + "\n"

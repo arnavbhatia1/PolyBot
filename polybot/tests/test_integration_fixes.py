@@ -15,7 +15,7 @@ def test_sub_threshold_prob_ghost_includes_aux_signals():
     # Find the sub_threshold_prob ghost block; it must splat aux_signals.
     idx = src.find('gate_name="sub_threshold_prob"')
     assert idx > 0, "sub_threshold_prob ghost block missing"
-    block = src[idx: idx + 1500]
+    block = src[idx: idx + 2000]
     assert "**aux_signals" in block, (
         "sub_threshold_prob ghost block must splat aux_signals so the 13 "
         "Pillar-1 aux fields parity-match other ghost paths"

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -183,6 +184,10 @@ class CoinbaseFeed:
         try:
             price = float(data["price"])
         except (KeyError, ValueError, TypeError):
+            return
+        # float() happily parses "NaN"/"Infinity"; reject non-finite prints so a
+        # bad tick can't flow into L1's z = (btc - strike) / vol_scaled.
+        if not math.isfinite(price):
             return
 
         self.state.price = price

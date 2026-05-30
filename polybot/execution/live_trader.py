@@ -52,7 +52,7 @@ class OrphanPositionError(Exception):
     silently and the gain/loss would just appear in the next bankroll sync.
 
     `run_polybot.ps1` does not auto-restart on this exception; the operator is
-    expected to inspect `memory/orphan_positions.json`, reconcile manually, then
+    expected to inspect `memory/state/orphan_positions.json`, reconcile manually, then
     re-run with `--allow-orphans` to acknowledge the residual shares.
     """
 
@@ -1182,7 +1182,7 @@ class LiveTrader(BaseTrader):
 
         raise OrphanPositionError(
             f"{len(orphans)} on-chain position(s) not known to DB. "
-            "See memory/orphan_positions.json for details. "
+            "See memory/state/orphan_positions.json for details. "
             "After manual review, re-run with --allow-orphans to proceed."
         )
 
