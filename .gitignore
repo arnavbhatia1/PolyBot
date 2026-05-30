@@ -7,6 +7,11 @@ build/
 venv/
 .venv/
 
+# Tooling caches (auto-regenerated; never commit)
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
 # Secrets
 .env
 polybot/config/.env
