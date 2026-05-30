@@ -2616,7 +2616,7 @@ def parse_args() -> argparse.Namespace:
                         help="Run the daily learning pipeline once and exit (no trading)")
     parser.add_argument("--allow-orphans", action="store_true",
                         help="LIVE ONLY: proceed even if on-chain positions exist that the DB doesn't know about. "
-                             "Use only after manual review of memory/orphan_positions.json — these shares will not be managed.")
+                             "Use only after manual review of memory/state/orphan_positions.json — these shares will not be managed.")
     return parser.parse_args()
 
 
@@ -2918,7 +2918,7 @@ async def main() -> None:
         # Orphan-position gate runs BEFORE reconcile so the operator sees orphans
         # before any DB mutations happen. OrphanPositionError propagates to the
         # outer handler — it intentionally aborts startup so the operator can
-        # inspect memory/orphan_positions.json. Pass --allow-orphans after review.
+        # inspect memory/state/orphan_positions.json. Pass --allow-orphans after review.
         if hasattr(trader, "detect_orphan_positions"):
             try:
                 await trader.detect_orphan_positions(db, allow_orphans=args.allow_orphans)

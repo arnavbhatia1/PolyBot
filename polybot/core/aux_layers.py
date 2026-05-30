@@ -19,6 +19,8 @@ from scipy.special import stdtr as _stdtr
 MIN_STUDENT_T_DF = 3
 
 _COINBASE_CVD_SCALE = 30.0       # ≈ typical 60s Coinbase BTC volume at baseline vol
+_CVD_SATURATION_SCALE = 0.8      # L3b CVD tanh output scale (max |cvd_comp|)
+_TAKER_SIGNAL_SCALE = 0.4        # L3b taker-ratio scale: (taker-0.5) * this
 _TAKER_MIN_N = 20                # min trades in window for taker ratio to count
 
 # The L3b cascade scale is regime-relative: scaled by current volatility vs its
@@ -87,9 +89,9 @@ def compute_spot_flow_signal(cvd_60s: float | None,
     if cvd_60s is None:
         return 0.0
     scale = _COINBASE_CVD_SCALE * (vol_factor if vol_factor > 0 else 1.0)
-    cvd_comp = math.tanh(cvd_60s / scale) * 0.8
+    cvd_comp = math.tanh(cvd_60s / scale) * _CVD_SATURATION_SCALE
     taker_comp = (
-        (taker_60s - 0.5) * 2.0 * 0.2
+        (taker_60s - 0.5) * _TAKER_SIGNAL_SCALE
         if (taker_60s is not None and taker_n >= _TAKER_MIN_N)
         else 0.0
     )

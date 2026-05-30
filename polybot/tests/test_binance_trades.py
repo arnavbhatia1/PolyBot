@@ -1,6 +1,18 @@
 import pytest
 import time
-from polybot.feeds.binance_trades import BinanceTradeAccumulator
+from polybot.feeds.binance_trades import BinanceTradeAccumulator, BinanceTradesFeed
+
+
+class TestNonFiniteGuard:
+    def test_drops_non_finite_aggtrade(self):
+        # F9: float("NaN")/("Infinity") parse fine; they must not poison the CVD.
+        acc = BinanceTradeAccumulator()
+        feed = BinanceTradesFeed(acc)
+        for bad in ("NaN", "Infinity"):
+            feed._handle_message({"e": "aggTrade", "p": bad, "q": "1.0", "m": False})
+            feed._handle_message({"e": "aggTrade", "p": "73000", "q": bad, "m": False})
+        assert len(acc._trades) == 0
+
 
 class TestCVD:
     def test_net_buying_positive_cvd(self):

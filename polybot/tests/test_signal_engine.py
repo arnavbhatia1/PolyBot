@@ -167,6 +167,26 @@ def test_deep_loss_exits_when_model_says_side_is_dead():
         seconds_remaining=120, market_price_for_side=0.30, side="Up", exit_threshold=-0.05)
     assert action == "EXIT"
 
+def test_evaluate_hold_stamps_effective_exit_threshold(engine):
+    """F2: evaluate_hold must stamp last_effective_exit_threshold (the blended
+    deep-loss-floor/ExitBoundary value) — main.py's phantom-bid SELL re-verify
+    reads it instead of the raw config threshold. It must be populated and vary
+    with market price (deep-ITM blends toward the more patient floor)."""
+    import math
+    atm = engine.evaluate_hold(
+        _make_indicators(atr_value=80), btc_price=66420, strike_price=66400,
+        seconds_remaining=180, market_price_for_side=0.55, side="Up", exit_threshold=-0.05)
+    atm_thr = engine.last_effective_exit_threshold
+    assert math.isfinite(atm_thr) and -0.30 <= atm_thr <= 0.30
+    engine.evaluate_hold(
+        _make_indicators(atr_value=80), btc_price=66600, strike_price=66400,
+        seconds_remaining=180, market_price_for_side=0.90, side="Up",
+        exit_threshold=-0.05, entry_price=0.92)
+    deep_itm_thr = engine.last_effective_exit_threshold
+    # Deep-ITM blends toward the patient deep_loss_floor → different from ATM.
+    assert deep_itm_thr != atm_thr
+
+
 def test_deep_underwater_holds_unless_loss_cut(engine):
     """Deep-negative edge with time remaining → HOLD (loss-cut fires only near expiry).
 

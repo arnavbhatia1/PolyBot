@@ -1053,7 +1053,7 @@ class LiveTrader(BaseTrader):
           - data-API failure (can't enumerate chain → fail closed)
 
         Lenient mode (--allow-orphans) logs CRITICAL but proceeds. Detected
-        orphan details are persisted to ``memory/orphan_positions.json`` for
+        orphan details are persisted to ``memory/state/orphan_positions.json`` for
         operator review either way.
 
         Returns the count of orphans detected.

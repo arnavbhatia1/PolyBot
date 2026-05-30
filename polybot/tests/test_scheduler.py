@@ -96,6 +96,29 @@ def test_gate_calibrator_defaults_to_none():
     assert _bare_scheduler()._gate_calibrator is None
 
 
+def test_counterfactual_index_selects_scalp_record(tmp_path, monkeypatch):
+    """P2-13: a position_id can have BOTH a scalp CF (context_at_scalp) and a hold
+    CF (context_at_worst_moment). The index must deterministically select the scalp
+    record — the exit-threshold replay reads context_at_scalp.holding_edge, so a
+    hold CF shadowing it (by glob order) would silently skip the override."""
+    import json as _json
+    from polybot.agents import scheduler as sched_mod
+    monkeypatch.setattr(sched_mod, "COUNTERFACTUALS_DIR", tmp_path)
+    pid = 12345
+    (tmp_path / "z_hold.json").write_text(_json.dumps({
+        "position_id": pid, "counterfactual": {"gain_pct": -0.5},
+        "context_at_worst_moment": {"holding_edge": -0.2},
+    }))
+    (tmp_path / "a_scalp.json").write_text(_json.dumps({
+        "position_id": pid, "counterfactual": {"gain_pct": 0.8},
+        "context_at_scalp": {"holding_edge": -0.05},
+    }))
+    idx = _bare_scheduler()._load_counterfactual_index()
+    assert pid in idx
+    assert "context_at_scalp" in idx[pid]
+    assert idx[pid]["counterfactual"]["gain_pct"] == 0.8
+
+
 def _cold_feed_outcome(flow_val):
     """A resolved outcome whose flow signals carry `flow_val` (None = cold feed,
     post Pass-1 telemetry fix). coinbase_cvd_60s=None forces the replay's

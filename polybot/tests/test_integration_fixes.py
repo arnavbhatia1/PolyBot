@@ -12,7 +12,8 @@ from pathlib import Path
 
 def test_sub_threshold_prob_ghost_includes_aux_signals():
     src = Path("polybot/main.py").read_text(encoding="utf-8")
-    # Find the sub_threshold_prob ghost block; it must splat aux_signals.
+    # Find the sub_threshold_prob ghost block; it must splat aux_signals AND stamp
+    # the phase/flip fields (P1-F3) and the cold-feed-aware *_rec flow values (P1-F1).
     idx = src.find('gate_name="sub_threshold_prob"')
     assert idx > 0, "sub_threshold_prob ghost block missing"
     block = src[idx: idx + 2000]
@@ -20,6 +21,23 @@ def test_sub_threshold_prob_ghost_includes_aux_signals():
         "sub_threshold_prob ghost block must splat aux_signals so the 13 "
         "Pillar-1 aux fields parity-match other ghost paths"
     )
+    for field in ('"entry_phase"', '"flip_count"', '"is_flip"'):
+        assert field in block, f"sub_threshold ghost missing {field} (P1-F3 schema parity)"
+    assert "flow_score_rec" in block and "spot_flow_rec" in block, (
+        "sub_threshold ghost must record cold-feed-aware *_rec flow values (P1-F1)"
+    )
+
+
+def test_orphan_path_strings_point_to_state_subdir():
+    """P1-F5: every operator-facing orphan-file reference must point to
+    memory/state/orphan_positions.json (where it's actually written), not the
+    pre-fix memory/orphan_positions.json."""
+    import re
+    for rel in ("polybot/main.py", "polybot/execution/live_trader.py"):
+        src = Path(rel).read_text(encoding="utf-8")
+        # Match the path NOT preceded by 'state/'.
+        bad = re.findall(r"(?<!state/)memory/orphan_positions\.json", src)
+        assert not bad, f"{rel} references memory/orphan_positions.json without /state/"
 
 
 # ---- Stage 4 — norm_score redirect removed; backtest reads raw `score` ----

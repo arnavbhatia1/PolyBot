@@ -10,6 +10,8 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+from polybot.execution.base import DEFAULT_FEE_RATE
+
 logger = logging.getLogger(__name__)
 
 
@@ -195,8 +197,9 @@ class BTCMarketScanner:
         """Polymarket crypto taker rate. Constant — the live per-order fee is
         ``rate × shares × p × (1-p)`` (see ``taker_fee`` in execution/base.py),
         so price-dependent variation is already in the formula, not the rate.
+        Single source: DEFAULT_FEE_RATE in execution/base.py.
         """
-        return 0.018
+        return DEFAULT_FEE_RATE
 
     async def fetch_tick_size(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> str:
         """Fetch tick size from Polymarket CLOB API.
