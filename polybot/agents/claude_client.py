@@ -740,27 +740,28 @@ def _section_counterfactual(ana: dict[str, Any]) -> str:
     if net_dir == "scalp_early":
         lines.append(
             f"→ SCALPING TOO EARLY (${pnl_gap:+.2f} left on table). "
-            f"exit_edge_threshold is manual-only — the signal you CAN act on: "
-            f"if the model is holding good positions that get scalped, it means "
-            f"model probability is DROPPING during the window. Raise logit_scale "
-            f"so the initial signal is stronger, or lower atr_sigma_ratio so "
-            f"high-confidence entries are more confident."
+            f"exit_edge_threshold is the one TUNABLE exit knob — propose it MORE "
+            f"NEGATIVE (toward -0.10) in `changes` so the bot holds longer; the "
+            f"counterfactual backtest will gate it. Secondary: if positions look "
+            f"good at entry but decay, the entry model may be overconfident — raise "
+            f"logit_scale or lower atr_sigma_ratio."
         )
     elif net_dir == "hold_long":
         lines.append(
             "→ HOLDING TOO LONG: scalp would have added value. "
-            "exit_edge_threshold is manual-only — the actionable finding is that "
-            "the entry-side model is OVERCONFIDENT (positions look good at entry "
-            "but decay). Raise atr_sigma_ratio (wider L1 sigma) — the isotonic calibrator will then"
-            "recalibrate next cycle."
+            "exit_edge_threshold is the one TUNABLE exit knob — propose it LESS "
+            "NEGATIVE (toward -0.03) in `changes` so the bot scalps sooner; the "
+            "counterfactual backtest will gate it. Secondary: if entry positions "
+            "decay, raise atr_sigma_ratio (wider L1 sigma) — the isotonic calibrator "
+            "recalibrates next cycle."
         )
     else:
-        lines.append("→ Exit threshold appears well-calibrated (informational only — manual param).")
+        lines.append("→ Exit threshold appears well-calibrated.")
 
-    # Holding-edge accuracy buckets — DIAGNOSTIC ONLY (exit_edge_threshold is manual).
+    # Holding-edge accuracy buckets — informs exit_edge_threshold (tunable) tuning.
     hedge_acc = cf.get("holding_edge_accuracy", {})
     if hedge_acc:
-        lines.append("\nScalp accuracy by holding_edge at exit (diagnostic — exit_edge_threshold is MANUAL-ONLY):")
+        lines.append("\nScalp accuracy by holding_edge at exit (informs exit_edge_threshold tuning):")
         lines.append("  If accuracy <50% across buckets, the entry model is overconfident — isotonic re-fit will compensate next cycle.")
         for bucket, stats in hedge_acc.items():
             lines.append(
@@ -778,7 +779,7 @@ def _section_counterfactual(ana: dict[str, Any]) -> str:
     segments = cf.get("segments", [])
     actionable = [s for s in segments if s.get("signal") != "neutral"]
     if actionable:
-        lines.append("\nExit pattern segments (N≥5, non-neutral only — maps to exit_edge_threshold / loss_cut params):")
+        lines.append("\nExit pattern segments (N≥5, non-neutral only — informs exit_edge_threshold / loss_cut):")
         lines.append(f"  {'Time':<10} {'Edge':<18} {'Regime':<12} {'N':>4} {'Acc':>6} {'AvgΔ':>7}  Signal")
         for s in sorted(actionable, key=lambda x: x.get("n", 0), reverse=True)[:12]:
             lines.append(
@@ -786,8 +787,8 @@ def _section_counterfactual(ana: dict[str, Any]) -> str:
                 f"{s['scalp_accuracy']:>5.0%} {s['avg_pnl_delta']:>+7.4f}  {s['signal']}"
             )
         lines.append(
-            "  scalping_too_early → exit_edge_threshold more negative (manual) or model params to slow exit.\n"
-            "  scalping_correct   → well-calibrated; if loss_cut could be more aggressive, raise loss_cut_fraction."
+            "  scalping_too_early → propose exit_edge_threshold more negative (tunable) or model params to slow exit.\n"
+            "  scalping_correct   → well-calibrated; if loss_cut could be more aggressive, that's a manual loss_cut_fraction note."
         )
 
     # Hold counterfactual summary

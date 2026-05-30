@@ -21,6 +21,7 @@ from polybot.config.param_registry import default_for as _d
 from polybot.core.aux_layers import (compute_spot_flow_signal, regime_vol_factor,
                                       autocorr_vol_scale, combine_flow_family,
                                       student_t_cdf, MIN_STUDENT_T_DF)
+from polybot.execution.base import DEFAULT_FEE_RATE
 from polybot.paths import (
     CRISIS_STATE_PATH, GATE_STATS_CURRENT_PATH, FILL_STATS_PATH,
     COUNTERFACTUALS_DIR,
@@ -959,8 +960,18 @@ class AgentScheduler:
                 continue
             if prob_side < min_prob:
                 continue
-            full_kelly = edge / (1.0 - market_price_side)
-            kelly_frac = kelly_fraction * full_kelly
+            # Fee-aware Kelly — mirrors live SignalEngine._kelly EXACTLY (net_b =
+            # b*(1-fee)) so the backtest sizes the same trades live would. The old
+            # edge/(1-price) form is the fee=0 special case (algebraically equal
+            # when fee=0); omitting the fee inflated absolute Sharpe and shifted the
+            # min_kelly inclusion boundary. DEFAULT_FEE_RATE matches the live
+            # fetch_fee_rate value plumbed into _kelly.
+            if market_price_side <= 0.01 or market_price_side >= 0.99:
+                continue
+            _b = (1.0 - market_price_side) / market_price_side
+            _net_b = _b * max(1e-6, 1.0 - DEFAULT_FEE_RATE)
+            _raw = (prob_side * _net_b - (1.0 - prob_side)) / _net_b
+            kelly_frac = max(0.0, _raw * kelly_fraction)
             if kelly_frac < min_kelly:
                 continue
 

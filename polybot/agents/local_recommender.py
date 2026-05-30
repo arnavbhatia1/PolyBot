@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from polybot.config.param_registry import default_for as _d
-from polybot.agents.recommender_base import BaseRecommender
+from polybot.agents.recommender_base import BaseRecommender, _MIN_N
 
 
 class LocalRecommender(BaseRecommender):
@@ -28,8 +28,10 @@ class LocalRecommender(BaseRecommender):
         # Reactive override — loosen gates blocking profitable ghosts
         self._rule_gates_from_ghosts()
 
-        # Operator-only suggestions
-        self._manual_exit_threshold()
+        # Reactive tunable — exit_edge_threshold from counterfactual evidence
+        self._rule_exit_threshold()
+
+        # Operator-only suggestions (genuinely manual-only params)
         self._manual_adverse_selection()
         self._manual_flip()
 
@@ -55,19 +57,29 @@ class LocalRecommender(BaseRecommender):
                                   predicted_delta=0.012, ci=(-0.008, 0.030))
                     return  # one gate per cycle
 
-    # ---- manual-only suggestions ---- #
-
-    def _manual_exit_threshold(self) -> None:
+    def _rule_exit_threshold(self) -> None:
+        """exit_edge_threshold is the one TUNABLE exit knob (PIPELINE_PARAMS, backtested
+        via the counterfactual override). When the counterfactual tracker shows a net
+        scalp-early / hold-long bias, propose a threshold move into `changes` so the
+        WeightOptimizer adopts it on evidence — NOT a manual observation."""
         cf = self.analysis.get("counterfactual_analysis", {})
         n = int(cf.get("total_scalps_tracked", 0))
-        cur = self.cfg.get("exit_edge_threshold", _d("exit_edge_threshold"))
+        if n < _MIN_N:
+            return
+        cur = float(self.cfg.get("exit_edge_threshold", _d("exit_edge_threshold")))
         net = cf.get("net_exit_direction", "calibrated")
         if net == "scalp_early":
-            self._emit_manual("exit_edge_threshold", cur, max(-0.10, float(cur) - 0.02),
-                              "holds beat scalps — make scalp threshold more negative", n)
+            target = max(-0.10, cur - 0.02)
         elif net == "hold_long":
-            self._emit_manual("exit_edge_threshold", cur, round(min(-0.03, float(cur) + 0.02), 4),
-                              "scalps beat holds — relax scalp threshold", n)
+            target = round(min(-0.03, cur + 0.02), 4)
+        else:
+            return
+        if not self._value_failed("exit_edge_threshold", target):
+            self._propose("exit_edge_threshold", target,
+                          f"counterfactual net '{net}' over {n} scalps — tune exit threshold",
+                          predicted_delta=0.012, ci=(-0.008, 0.030))
+
+    # ---- manual-only suggestions (genuinely manual params) ---- #
 
     def _manual_adverse_selection(self) -> None:
         gate = (self.analysis.get("ghost_analysis", {}) or {}).get("by_gate", {}).get("adverse_rate_30s")
