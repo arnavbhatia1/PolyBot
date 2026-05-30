@@ -45,6 +45,18 @@ def test_validate_renormalizes_weights():
     weights = next(c["value"] for c in result["changes"] if c["param"] == "weights")
     assert abs(sum(weights.values()) - 1.0) < 0.01
 
+def test_validate_drops_non_finite_weights():
+    # P2-2: a NaN/Inf weight must drop the whole weights change — it defeats the
+    # floor/renorm guards and would corrupt settings.yaml + every L4 probability.
+    for bad in (float("nan"), float("inf")):
+        data = {"changes": [
+            {"param": "weights",
+             "value": {"rsi": 0.30, "macd": bad, "stochastic": 0.20, "obv": 0.15, "vwap": 0.15},
+             "reason": "test"},
+        ]}
+        result = _validate_strategy_response(data, total_trades=100)
+        assert not any(c["param"] == "weights" for c in result["changes"])
+
 def test_validate_enforces_momentum_below_min_edge():
     data = {"changes": [{"param": "momentum_weight", "value": 0.15, "reason": "test"}]}
     result = _validate_strategy_response(data, total_trades=100, current_config={"min_edge": 0.10})

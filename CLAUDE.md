@@ -320,13 +320,13 @@ Telemetry, nightly pipeline, param registry, layout, data sources, run commands,
 - **Composite signals:** `flow_score`, `spot_flow_signal`, `regime_autocorr`, `regime_direction`, `prev_resolution_margin`. `flow_score`/`spot_flow_signal` follow the same None-when-cold rule as the aux fields below — the **recorded** value is `None` when its source feed is cold (no CLOB book + no trades for L3; Coinbase CVD `None` for L3b), even though the live model consumes a `0.0` there (it must produce a number for the logit). So a recorded `0.0` is genuinely flat flow, not a dead feed.
 - **Microstructure aux:** `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`. Each **signal** field is `None` (never `0.0`) when its feed is missing/stale, so the pipeline tells "feed cold" from "real zero". `coinbase_taker_n` is a **count**: `0` (not `None`) when cold, so its sole consumer (requires `n >= 20`) contributes nothing either way.
 - **SPRT:** `sprt_confidence`, `sprt_status`.
-- **Sizing audit:** `adverse_rate_at_30s`, `adverse_kelly_mult` (actual Kelly multiplier applied — enables per-bucket retrospective Sharpe), `entry_phase`, `flip_count`, `is_flip`.
+- **Sizing audit:** `adverse_rate_at_30s`, `adverse_kelly_mult` (actual Kelly multiplier applied — recorded for audit; not currently consumed by the pipeline), `entry_phase`, `flip_count`, `is_flip`.
 
 **Ghost rejections share the same schema** (incl. `entry_phase`, `flip_count`, `is_flip` stamped at gate-fire time), so by-phase and flip-segmented bias cards see the full ghost population.
 
 ### `edge_decay.deltas` (merged at close, persisted to outcome JSON)
 
-Side-signed post-fill mid drift at **5/10/15/30/60s**, captured by `AdverseSelectionMonitor` keyed by `position_id`, merged at close. The 15s mean over a 30-min lookback drives the live `edge_decay_threshold` gate. Null windows = trade closed before that checkpoint resolved.
+Side-signed post-fill mid drift at **5/10/15/30/60s**, captured by `AdverseSelectionMonitor` keyed by `position_id`, merged at close. The live `edge_decay_threshold` gate reads the 15s mean over a 30-min lookback from the monitor's **in-memory** window (restart-inherited via `adverse_state.json`); the per-outcome `edge_decay.deltas` persisted here is an **audit record**, not consumed by the nightly pipeline. Null windows = trade closed before that checkpoint resolved.
 
 ### Gate-skip stats (`memory/state/gate_stats*.json`)
 

@@ -367,6 +367,13 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
         if param == "weights":
             if not isinstance(value, dict):
                 continue
+            # Drop the whole set if any weight is non-finite. NaN/Inf defeats the
+            # floor/renorm guards below (`NaN < 0.05` is False, `sum(...)` → NaN so
+            # the `tot > 0` renorm is skipped) and would survive into set_weights +
+            # settings.yaml, turning every L4 probability into NaN.
+            if not all(isinstance(v, (int, float)) and math.isfinite(v)
+                       for v in value.values()):
+                continue
             w = dict(value)
             # Floor and renormalize
             for k in indicators:

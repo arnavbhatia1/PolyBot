@@ -780,10 +780,33 @@ class BiasDetector:
                 "interpretation": interp,
             }
 
+        # Phase / flip segmentation over the full resolved-ghost population, so the
+        # by-phase and flip-segmented views see ghosts too (the fields are stamped at
+        # gate-fire time on every ghost path). Mirrors the by_gate accounting.
+        def _segment(key_fn) -> dict[str, Any]:
+            seg: dict[str, list[dict]] = defaultdict(list)
+            for r in all_resolved:
+                seg[key_fn(r)].append(r)
+            out: dict[str, Any] = {}
+            for k, recs in seg.items():
+                w = sum(1 for r in recs if r.get("ghost_correct", False))
+                gains = [_market_price_gain(r) for r in recs]
+                out[k] = {
+                    "count": len(recs),
+                    "pct_profitable": round(w / len(recs), 4) if recs else 0.0,
+                    "avg_gain_pct": round(sum(gains) / len(gains), 4) if gains else 0.0,
+                }
+            return out
+
+        def _gctx(r: dict[str, Any]) -> dict[str, Any]:
+            return r.get("indicator_snapshot", {}).get("trade_context", {})
+
         return {
             "total_ghosts": total,
             "pct_profitable": round(total_wins / total, 4) if total > 0 else 0.0,
             "by_gate": by_gate_result,
+            "by_entry_phase": _segment(lambda r: str(_gctx(r).get("entry_phase", "unknown"))),
+            "by_flip": _segment(lambda r: "flip" if _gctx(r).get("is_flip") else "initial"),
         }
 
     def analyze_execution_quality_detailed(self, outcomes: list[dict[str, Any]]) -> dict[str, Any]:

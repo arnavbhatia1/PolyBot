@@ -22,6 +22,29 @@ def _make_outcome(ind_scores, correct, trade_context=None):
         "indicator_snapshot": snap,
     }
 
+def test_analyze_ghosts_segments_by_phase_and_flip(detector):
+    """P2-6: ghosts carry entry_phase/flip_count/is_flip (stamped at gate-fire);
+    analyze_ghosts must surface by_entry_phase / by_flip breakdowns, not just by_gate."""
+    def _ghost(phase, flip_count, correct):
+        return {
+            "gate_name": "edge_decay", "resolved": True, "ghost_correct": correct,
+            "side": "up", "ghost_gain_pct": 0.1 if correct else -1.0,
+            "indicator_snapshot": {"trade_context": {
+                "market_price_up": 0.55, "size": 10.0,
+                "entry_phase": phase, "flip_count": flip_count, "is_flip": flip_count > 0,
+            }},
+        }
+    ghosts = [
+        _ghost("normal", 0, True), _ghost("normal", 0, False),
+        _ghost("late", 0, True), _ghost("normal", 2, True),
+    ]
+    res = detector.analyze_ghosts(ghosts)
+    assert "by_entry_phase" in res and "by_flip" in res
+    assert set(res["by_entry_phase"]) == {"normal", "late"}
+    assert res["by_entry_phase"]["normal"]["count"] == 3
+    assert res["by_flip"]["flip"]["count"] == 1
+    assert res["by_flip"]["initial"]["count"] == 3
+
 def test_detect_returns_rich_dict(detector):
     outcomes = [
         _make_outcome({"rsi": 0.5, "macd": 0.5}, correct=True),

@@ -9,6 +9,14 @@ from __future__ import annotations
 
 import math
 
+from scipy.special import stdtr as _stdtr
+
+
+# Minimum Student-t df. Pipeline range is 3-8; df ≤ 2 has undefined variance and a
+# t_scale = sqrt(df/(df-2)) discontinuity (was 1.0 at df ≤ 2, jumping to √3 = 1.73
+# at df = 3). Single source so live (signal_engine) and replay (scheduler) clamp
+# identically.
+MIN_STUDENT_T_DF = 3
 
 _COINBASE_CVD_SCALE = 30.0       # ≈ typical 60s Coinbase BTC volume at baseline vol
 _TAKER_MIN_N = 20                # min trades in window for taker ratio to count
@@ -43,6 +51,13 @@ def autocorr_vol_scale(regime: float) -> float:
     """L1 AR(1) terminal-SD multiplier from the lag-1 return autocorrelation."""
     ac = max(-_AC_VOL_CLAMP, min(_AC_VOL_CLAMP, regime))
     return math.sqrt((1.0 + ac) / (1.0 - ac))
+
+
+def student_t_cdf(t: float, df: float) -> float:
+    """Student-t CDF for L1. Single implementation shared by live
+    (`signal_engine`) and replay (`scheduler`) so the two paths can't drift
+    across scipy entry points (`special.stdtr` vs `stats.t.cdf`)."""
+    return float(_stdtr(df, t))
 
 
 def combine_flow_family(flow_c: float, spot_c: float) -> float:

@@ -19,7 +19,8 @@ from typing import Any
 from polybot.config.loader import save_config
 from polybot.config.param_registry import default_for as _d
 from polybot.core.aux_layers import (compute_spot_flow_signal, regime_vol_factor,
-                                      autocorr_vol_scale, combine_flow_family)
+                                      autocorr_vol_scale, combine_flow_family,
+                                      student_t_cdf, MIN_STUDENT_T_DF)
 from polybot.paths import (
     CRISIS_STATE_PATH, GATE_STATS_CURRENT_PATH, FILL_STATS_PATH,
     COUNTERFACTUALS_DIR,
@@ -722,7 +723,6 @@ class AgentScheduler:
         _atr_short_sum = 0.0
         _atr_long_sum = 0.0
 
-        from scipy.stats import t as t_dist
         realism_factor = 1.0
         if self._config:
             realism_factor = float(self._config.get("execution", {}).get("backtest_realism_factor", 1.0))
@@ -807,12 +807,16 @@ class AgentScheduler:
                     regime_factor = 0.0
 
             raw_prob_up = stored_raw
-            if btc > 0 and strike > 0 and secs > 0 and student_t_df > 2:
+            # df clamped to ≥3 exactly as live (signal_engine), via the shared
+            # MIN_STUDENT_T_DF — removes the t_scale=√(df/(df-2)) discontinuity and
+            # keeps replay identical to live for any df.
+            df_eff = max(MIN_STUDENT_T_DF, student_t_df)
+            if btc > 0 and strike > 0 and secs > 0:
                 minutes = secs / 60.0
                 vol = (atr / atr_sigma_ratio) * math.sqrt(minutes) * autocorr_vol_scale(regime_factor)
                 if vol > 0:
-                    z = ((btc - strike) / vol) * math.sqrt(student_t_df / (student_t_df - 2))
-                    raw_prob_up = float(t_dist.cdf(z, student_t_df))
+                    z = ((btc - strike) / vol) * math.sqrt(df_eff / (df_eff - 2))
+                    raw_prob_up = student_t_cdf(z, df_eff)
             raw_prob_up = max(1e-6, min(1 - 1e-6, raw_prob_up))
             logit_p = math.log(raw_prob_up / (1.0 - raw_prob_up))
 
@@ -833,7 +837,14 @@ class AgentScheduler:
             # vol/price-relative normalization + redundancy combine live uses (shared
             # via aux_layers); fall back to stored values for rows lacking raw aux.
             _vol_factor = regime_vol_factor(atr_raw, ctx.get("atr_long_term_mean"))
-            flow_signal = ctx.get("flow_score", 0.0)
+            # flow_score/spot_flow_signal are stored as None when their feed was
+            # cold (telemetry "feed cold" marker). dict.get returns the present
+            # None — NOT the default — so coerce explicitly to 0.0, exactly as the
+            # live model does (compute_flow_signal/compute_spot_flow_signal collapse
+            # a cold feed to 0.0 before feeding the logit). A bare .get(...,0.0)
+            # would leave None and crash combine_flow_family on None*weight.
+            _fs = ctx.get("flow_score")
+            flow_signal = 0.0 if _fs is None else _fs
             if ctx.get("coinbase_cvd_60s") is not None:
                 spot_flow = compute_spot_flow_signal(
                     ctx.get("coinbase_cvd_60s"),
@@ -842,7 +853,8 @@ class AgentScheduler:
                     vol_factor=_vol_factor,
                 )
             else:
-                spot_flow = ctx.get("spot_flow_signal", 0.0)
+                _sf = ctx.get("spot_flow_signal")
+                spot_flow = 0.0 if _sf is None else _sf
             logit_p += combine_flow_family(
                 flow_signal * (flow_weight * logit_scale),
                 spot_flow * (spot_flow_weight * logit_scale),
@@ -1010,6 +1022,14 @@ class AgentScheduler:
                 pid = d.get("position_id")
                 cf = d.get("counterfactual", {})
                 if pid is None or not isinstance(cf, dict) or cf.get("gain_pct") is None:
+                    continue
+                # Only scalp-type counterfactuals carry `context_at_scalp`, which is
+                # the key the exit-threshold replay reads. A single position_id can
+                # ALSO have a hold-type CF (`context_at_worst_moment`); indexing both
+                # under int(pid) let glob order non-deterministically shadow the scalp
+                # record with the hold one, silently skipping the threshold override.
+                # Select the scalp record explicitly.
+                if "context_at_scalp" not in d:
                     continue
                 idx[int(pid)] = d
             except Exception:
@@ -1185,7 +1205,8 @@ class AgentScheduler:
         regime improved — both branches require no regime to degrade by >0.10
         Sharpe.
 
-        Skipped (returns True) when fewer than 2 regimes have ≥ 20 qualifying trades.
+        Skipped (returns True) when fewer than 2 regimes have ≥ MIN_REGIME_N (8)
+        qualifying trades.
         """
         # Segment outcomes by regime
         regime_buckets: dict[str, list] = {"trending": [], "reverting": [], "neutral": []}
@@ -1224,9 +1245,14 @@ class AgentScheduler:
         ]
         # Acceptance: (a) ≥2 of populated regimes improved, OR (b) dominant regime improved.
         # Both branches share the "no regime degrades >0.10 Sharpe" floor.
-        dom_improved = candidate_by_regime[dominant] > baseline_by_regime[dominant]
+        # "Improved" requires clearing a small margin (not a strict >) so a
+        # float-noise win of ~1e-6 in a single bucket — one repriced trade — can't
+        # satisfy the gate. 0.02 mirrors the holdout-confirmation margin floor.
+        _REGIME_IMPROVE_MARGIN = 0.02
+        dom_improved = (candidate_by_regime[dominant]
+                        > baseline_by_regime[dominant] + _REGIME_IMPROVE_MARGIN)
         n_improved = sum(1 for r in populated
-                         if candidate_by_regime[r] > baseline_by_regime[r])
+                         if candidate_by_regime[r] > baseline_by_regime[r] + _REGIME_IMPROVE_MARGIN)
         detail = " | ".join(
             f"{r}: {baseline_by_regime[r]:+.3f}->{candidate_by_regime[r]:+.3f}"
             for r in sorted(populated)
@@ -1587,7 +1613,19 @@ class AgentScheduler:
                     )
 
             except Exception as e:
-                logger.debug(f"Combined holdout backtest failed (non-critical): {e}")
+                # Fail CLOSED. The combined-holdout check is the last safety gate
+                # before a ≥2-change batch goes live; an exception here is exactly
+                # when we want to be conservative, not adopt the joint set blind.
+                backed_out_params = [c["param"] for c in adopted_changes]
+                for c in info["per_change"]:
+                    if c.get("decision") == "adopted":
+                        c["decision"] = "backed_out"
+                        c["reason"] = f"combined-holdout check errored — backed out (fail-closed): {e}"
+                adopted_changes = []
+                info["interaction_detected"] = True
+                info["backed_out_params"] = backed_out_params
+                info["combined_holdout_error"] = str(e)
+                logger.warning(f"Combined holdout backtest errored — backing out batch {backed_out_params}: {e}")
 
         if not adopted_changes:
             info["decision"] = "no_change"

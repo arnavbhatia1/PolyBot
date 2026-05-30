@@ -6,10 +6,12 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 import numpy as np
-from scipy.special import stdtr as _stdtr
 from polybot.core.exit_boundary import ExitBoundary
 from polybot.core.returns import lag1_autocorr
-from polybot.core.aux_layers import autocorr_vol_scale, combine_flow_family
+from polybot.core.aux_layers import (
+    autocorr_vol_scale, combine_flow_family, student_t_cdf,
+    MIN_STUDENT_T_DF as _MIN_STUDENT_T_DF,
+)
 from polybot.core.derived_features import DERIVED_FEATURES, FeatureContext, L6_LOGIT_CAP
 from polybot.config.param_registry import default_for as _d
 from polybot.execution.base import DEFAULT_FEE_RATE
@@ -37,10 +39,8 @@ _ATR_LONG_TERM_MIN_SAMPLES = 50
 # the precision floor. Old 1e-3 clip collapsed deep-ITM precision before any
 # other layer ran; 1e-6 maps to logit ±13.8, well past the final clamp.
 _L1_CLIP = 1e-6
-# Minimum Student-t df. Pipeline range is 3-8; df ≤ 2 has undefined variance.
-# Clamping at 3 removes the t_scale fallback discontinuity (was 1.0 at df ≤ 2,
-# jumping to √3 = 1.73 at df = 3).
-_MIN_STUDENT_T_DF = 3
+# _MIN_STUDENT_T_DF (the df ≥ 3 clamp) is imported from aux_layers so live and
+# replay share one source.
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +289,7 @@ class SignalEngine:
         # discontinuity that jumped to √(3/1)=1.73 the moment df reached 3.
         df_eff = max(_MIN_STUDENT_T_DF, self.student_t_df)
         t_scale = math.sqrt(df_eff / (df_eff - 2))
-        prob_up = float(_stdtr(df_eff, z * t_scale))
+        prob_up = student_t_cdf(z * t_scale, df_eff)
 
         # Tight clip — preserves deep-ITM/OTM precision so the final logit
         # clamp is the only place L1 information is bounded.

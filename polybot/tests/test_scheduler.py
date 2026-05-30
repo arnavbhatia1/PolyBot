@@ -95,6 +95,45 @@ def test_gate_calibrator_defaults_to_none():
     then run at identity, matching pre-split behavior on an empty window."""
     assert _bare_scheduler()._gate_calibrator is None
 
+
+def _cold_feed_outcome(flow_val):
+    """A resolved outcome whose flow signals carry `flow_val` (None = cold feed,
+    post Pass-1 telemetry fix). coinbase_cvd_60s=None forces the replay's
+    else-branch read of the stored spot_flow_signal."""
+    return {
+        "side": "Up", "correct": True, "gain_pct": 0.1, "exit_reason": "resolution",
+        "timestamp": "2026-04-10T12:00:00Z",
+        "indicator_snapshot": {"trade_context": {
+            "model_probability_raw": 0.62,
+            "market_price_up": 0.55, "market_price_down": 0.45,
+            "btc_price": 66420.0, "strike_price": 66400.0,
+            "atr": 80.0, "seconds_remaining": 180,
+            "regime_autocorr": 0.05, "regime_direction": 1.0,
+            "prev_resolution_margin": 0.0,
+            "flow_score": flow_val, "spot_flow_signal": flow_val,
+            "coinbase_cvd_60s": None, "coinbase_taker_60s": None, "coinbase_taker_n": 0,
+        }},
+    }
+
+
+def test_replay_coerces_cold_feed_none_flow_to_zero():
+    """P2-1 regression: cold-feed flow_score/spot_flow_signal are stored as None
+    (Pass-1 fix). The replay must coerce them to 0.0 like live — NOT leave the
+    present None (dict.get default doesn't apply to a present None), which crashed
+    combine_flow_family on None*weight and aborted the whole optimizer stage."""
+    import math
+    sched = _bare_scheduler()
+    kwargs = dict(
+        recommended_weights={"rsi": 0.2, "macd": 0.2, "stochastic": 0.2, "obv": 0.2, "vwap": 0.2},
+        momentum_weight=0.05, atr_sigma_ratio=1.3, student_t_df=5, min_edge=0.04,
+        calibrator=None, kelly_fraction=0.15, min_kelly=0.01, min_prob=0.56,
+    )
+    # Must not raise, and a cold (None) feed must score identically to a real 0.0.
+    r_none, _ = sched._kelly_bankroll_returns(outcomes=[_cold_feed_outcome(None)], **kwargs)
+    r_zero, _ = sched._kelly_bankroll_returns(outcomes=[_cold_feed_outcome(0.0)], **kwargs)
+    assert r_none == r_zero
+    assert all(math.isfinite(r) for r in r_none)
+
 def _make_outcomes(n):
     """Helper: generate n fake outcome dicts with sequential timestamps."""
     return [

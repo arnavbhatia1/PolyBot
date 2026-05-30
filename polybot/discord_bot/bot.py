@@ -176,6 +176,9 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
 
     @bot.command(name="history")
     async def history(ctx, n: int = 10):
+        # Clamp to a sane range: negative n → SQLite LIMIT -1 (all rows); huge n →
+        # a >2000-char message Discord rejects. Bound to [1, 50].
+        n = max(1, min(50, n))
         trades = await bot.db.get_trade_history(limit=n)
         if not trades:
             await ctx.send("No trade history yet.")
@@ -220,7 +223,7 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         await ctx.send("Trading **resumed**.")
 
     @bot.command(name="clear")
-    async def clear_channels(ctx, target: str = "all"):
+    async def clear_channels(ctx, target: str = "all", confirm: str = ""):
         am = getattr(bot, 'alert_manager', None)
         if not am:
             await ctx.send("Alert manager not available.")
@@ -231,7 +234,18 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         if target in ("all", "control"):
             targets.append(("control", am.control_channel_name))
         if not targets:
-            await ctx.send("Usage: `!clear [trades|control|all]`")
+            await ctx.send("Usage: `!clear [trades|control|all] confirm`")
+            return
+        # Confirmation guard. Purges Discord chat history only (never the DB /
+        # memory / positions — verified), but it's irreversible message deletion,
+        # so require an explicit `confirm` token.
+        if confirm != "confirm":
+            chan_list = ", ".join(f"#{name}" for _, name in targets)
+            await ctx.send(
+                f"`!clear {target}` will delete recent messages from {chan_list} "
+                f"(chat only — no trade/financial data is touched). "
+                f"Re-run `!clear {target} confirm` to proceed."
+            )
             return
         results = []
         for label, name in targets:
@@ -298,14 +312,15 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             except Exception:
                 pass
 
+        # Pipeline runs 23:45 ET (run_polybot.ps1, CLAUDE.md §11/§16).
         now_et = datetime.now(_ET)
-        next_run = now_et.replace(hour=23, minute=30, second=0, microsecond=0)
+        next_run = now_et.replace(hour=23, minute=45, second=0, microsecond=0)
         if next_run <= now_et:
             next_run = next_run + timedelta(days=1)
         delta = next_run - now_et
         hours = int(delta.total_seconds() // 3600)
         mins = int((delta.total_seconds() % 3600) // 60)
-        next_str = f"{next_run.strftime('%Y-%m-%d 23:30 ET')} (in {hours}h {mins}m)"
+        next_str = f"{next_run.strftime('%Y-%m-%d %H:%M ET')} (in {hours}h {mins}m)"
 
         await ctx.send(
             f"**Pipeline**\n"

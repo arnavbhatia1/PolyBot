@@ -74,6 +74,16 @@ class WeightOptimizer:
         recovery path during regime shifts. The floor of −0.05 prevents
         adopting an outright collapse.
         """
+        # Non-finite guard. A NaN/Inf candidate Sharpe (e.g. a malformed weight
+        # set that slipped a non-finite value through) would defeat every
+        # comparison below — `NaN < floor` and `z < FLOOR` are both False, which
+        # would otherwise read as "adopt". Reject outright.
+        if not (math.isfinite(candidate_sharpe) and math.isfinite(current_sharpe)):
+            return False, (
+                f"non-finite Sharpe (candidate={candidate_sharpe}, baseline={current_sharpe}) — "
+                f"rejecting; a candidate produced a NaN/Inf return"
+            ), 0.0
+
         delta = candidate_sharpe - current_sharpe
 
         if n_trades < MIN_CANDIDATE_TRADES:

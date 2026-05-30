@@ -40,3 +40,13 @@ def test_should_adopt_allows_recovery_from_negative_baseline(optimizer):
     adopt, reason, z = optimizer.should_adopt(-0.05, 0.10, n_trades=200)
     assert adopt is True
     assert z > 0.3
+
+
+def test_should_adopt_rejects_non_finite_candidate(optimizer):
+    # P2-2: a NaN/Inf candidate Sharpe (e.g. from a malformed weight set) must be
+    # rejected — NaN comparisons are all False and would otherwise read as "adopt".
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        adopt, reason, z = optimizer.should_adopt(0.20, bad, n_trades=200)
+        assert adopt is False
+        assert "non-finite" in reason
+        assert z == 0.0
