@@ -108,12 +108,8 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             pnls.append(pnl)
             gp = pnl / size if size > 0 else 0
             gain_pcts.append(gp)
-            # Bucket today's trades for the daily Sharpe by ET calendar day. exit_timestamp
-            # is stored in UTC, so a naive [:10] prefix compares a UTC date against the ET
-            # date — bleeding the prior ET evening's trades into "today". That made the
-            # daily Sharpe span a different trade set than the W/L count (which comes from
-            # get_day_stats' correct ET->UTC range), e.g. 100% WR shown next to a negative
-            # Sharpe. Convert to ET first so both agree.
+            # Bucket by ET calendar day. exit_timestamp is UTC, so convert to ET first —
+            # a naive [:10] compares a UTC date to the ET date and mixes in the prior evening.
             exit_ts = t.get("exit_timestamp", "")
             if exit_ts:
                 try:

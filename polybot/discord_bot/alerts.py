@@ -201,10 +201,7 @@ class AlertManager:
             except Exception:
                 return None
 
-        # Real trades only: ghosts (entry-rejected trades) carry a gain_pct but no `pnl`,
-        # so leaving them in would drag the Sharpe negative while showing positive P&L —
-        # and the count/WR/side rows would include trades we never took (the exit/edge
-        # rows already exclude them, since ghosts have no exit_reason).
+        # Real trades only — ghosts (rejected trades) carry a gain_pct but no pnl.
         todays = [o for o in outcomes
                   if _et_date(o) == trading_et_date and not o.get("is_ghost")]
         date_str = trading_et_date.strftime("%Y-%m-%d")

@@ -351,6 +351,8 @@ Runs 23:45 ET (via `run_polybot.ps1`). Five steps; calibrator save deferred to t
 
 ### Calibration window
 
+Both calibrators fit on **real trades only** (ghosts excluded) — the calibrator changes live-trading probabilities, so it must learn from fills the bot actually took, not rejected ghosts.
+
 **Two calibrators (decoupled masters)** — one can't serve both live trading (freshest data) and the OOS gate (a window the holdout never saw):
 
 - **Live / production** — `IsotonicCalibrator.fit` on the **freshest `_CAL_WINDOW_DAYS` (~7d)**, applied to `signal_engine.calibrator` and saved. Goes through the full three-gate production adoption (stage 3).

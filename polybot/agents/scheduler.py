@@ -207,11 +207,8 @@ from polybot.agents.pipeline_analytics import (
 HOLDOUT_DAYS = 7
 _CAL_WINDOW_DAYS = 7
 HOLDOUT_MIN_TRADES = 30
-# Minimum trades before the TAEvolver/WeightOptimizer run at all. Also the floor the
-# pre-holdout (opt) pool must clear: if the rolling holdout would leave fewer than this
-# many trades for the evolver to learn from, the holdout is disabled and the full pool is
-# used. Defined at module scope (not inline) because the holdout decision — which must
-# happen BEFORE the analysis dict is built — depends on it.
+# Min trades before the evolver/optimizer run, and the floor the pre-holdout pool must
+# clear (below it, the holdout is disabled and the full pool is used).
 MIN_TRADES_FOR_LEARNING = 200
 
 class AgentScheduler:
@@ -277,12 +274,8 @@ class AgentScheduler:
 
     @staticmethod
     def _resolved_at_to_iso(v: Any) -> str:
-        """Ghost ``resolved_at`` is stored as a Unix epoch float, but every consumer
-        parses ``exit_timestamp`` as ISO-8601. Convert it here — otherwise
-        ``datetime.fromisoformat("1779951671.66")`` raises, the record is stamped 0.0,
-        and the 60-day window / recency weighting silently drop the ENTIRE resolved-ghost
-        backtest population (the thing that unlocks entry gates from read-only). Older
-        records may already store an ISO string; pass those through unchanged."""
+        """Convert a ghost's epoch-float ``resolved_at`` to ISO-8601 so it parses like
+        every other ``exit_timestamp``. Already-ISO strings pass through unchanged."""
         if v is None or v == "":
             return ""
         if isinstance(v, (int, float)):
@@ -1912,35 +1905,23 @@ class AgentScheduler:
         pipeline_info["train_count"] = len(train_outcomes)
         pipeline_info["validation_count"] = len(all_outcomes) - len(train_outcomes)
 
-        # Review past pipeline adoptions (fill in actual 7d/30d Sharpe),
-        # then auto-revert any that tanked within 1d or 7d.
-        # Uses all_outcomes (including holdout) because review is the intended
-        # consumer of the freshest data — the holdout is for *evolver-context*
-        # exclusion, not for review-purpose exclusion.
+        # Ghosts (rejected trades) belong only in the optimizer's backtest pool (§3).
+        # real_all is the real-trades-only view used by every performance and
+        # model-training consumer: adoption review, the calibrators, the all-time card.
+        real_all = [o for o in all_outcomes if not o.get("is_ghost")]
+
+        # Fill in adoptions' realized 7d/14d/30d Sharpe (review spans the holdout — it
+        # wants the freshest data) and auto-revert any that decayed.
         if self.pipeline_tracker:
-            self.pipeline_tracker.review_past_adoptions(all_outcomes)
+            self.pipeline_tracker.review_past_adoptions(real_all)
             self._apply_revert_adoptions()
 
-        # Holdout split for the evolver context. Everything that feeds the
-        # TA evolver's `analysis` dict from this point on must use `opt_outcomes`
-        # so the last HOLDOUT_DAYS of trades remain genuinely out-of-sample for
-        # adoption confirmation. The crisis check below intentionally stays on
-        # all_outcomes (safety override needs the freshest signal). With
-        # HOLDOUT_DAYS=7 the holdout window also contains the calibrator's fit
-        # pool, so the optimizer's walk-forward folds (which run on opt_outcomes)
-        # never overlap with the calibrator's training data.
+        # Holdout = last HOLDOUT_DAYS, reserved out-of-sample for adoption confirmation.
+        # Disable it (fall back to the full pool) when the holdout is too thin to confirm
+        # on, or the pre-holdout pool is below the learning floor. Must run before the
+        # analysis is built: the recommender keys off analysis["overall"]["total_trades"],
+        # so an empty opt pool would zero all learning even when all_outcomes is large.
         opt_outcomes, holdout_outcomes = self._split_holdout(all_outcomes)
-        # Disable the holdout (fall back to the full pool) when EITHER the holdout is too
-        # thin to confirm on OR the pre-holdout pool is too thin for the evolver to learn
-        # from. This decision MUST happen here, before the analysis dict is built below:
-        # the recommender keys off analysis["overall"]["total_trades"], so building the
-        # analysis on an empty opt pool silently zeroes ALL learning even when
-        # all_outcomes is large. That is exactly what happens to a dataset younger than
-        # HOLDOUT_DAYS — the rolling holdout swallows every trade, leaving opt empty — so
-        # without the second clause the bot stops learning every night for its first week
-        # of life despite hundreds of trades. The OOS guarantee is already forfeited in
-        # this regime; keeping the analysis consistent with the pool the evolver actually
-        # uses is strictly better than proposing nothing.
         if len(holdout_outcomes) < HOLDOUT_MIN_TRADES:
             _holdout_off_reason = (f"only {len(holdout_outcomes)} trades in last "
                                    f"{HOLDOUT_DAYS}d (need {HOLDOUT_MIN_TRADES})")
@@ -1960,15 +1941,10 @@ class AgentScheduler:
         else:
             pipeline_info["holdout_active"] = True
 
-        # Gate-reference calibrator (two-calibrator split, §11): fit on the window
-        # immediately behind the holdout — days [HOLDOUT_DAYS, HOLDOUT_DAYS +
-        # _CAL_WINDOW_DAYS) back — disjoint from the holdout the adoption gate confirms
-        # on. The weight backtests (baseline, folds, _backtest_recommendations /
-        # _backtest_single_change, holdout confirmation, combined check) score
-        # candidates through THIS calibrator, never the live one, so the gate stays OOS
-        # even though the live calibrator (set later in this method) now fits the
-        # freshest data. None → backtests run at identity (no behavior change from
-        # before the split when this window is empty).
+        # Gate-reference calibrator (two-calibrator split, §11): fit on the window behind
+        # the holdout (days [HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS) back), disjoint
+        # from the holdout the adoption gate confirms on, so weight backtests score through
+        # it (not the live calibrator) and stay OOS. None → backtests run at identity.
         def _gcal_ts(o: dict) -> float:
             s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
             try:
@@ -1978,7 +1954,7 @@ class AgentScheduler:
         _g_now = datetime.now(timezone.utc).timestamp()
         _g_lo = _g_now - (HOLDOUT_DAYS + _CAL_WINDOW_DAYS) * 86400.0
         _g_hi = _g_now - HOLDOUT_DAYS * 86400.0
-        _gate_pool = [o for o in all_outcomes if _g_lo <= _gcal_ts(o) < _g_hi]
+        _gate_pool = [o for o in real_all if _g_lo <= _gcal_ts(o) < _g_hi]
         self._gate_calibrator = self._fit_calibrator_on(_gate_pool)
         logger.info(
             f"  Gate calibrator: {'fitted' if self._gate_calibrator else 'identity'} "
@@ -1986,17 +1962,8 @@ class AgentScheduler:
             f"back, disjoint from holdout)"
         )
 
-        # Ghosts belong in the optimizer's BACKTEST pool (they unlock entry gates from
-        # read-only — §3), but NOT in real-performance / bias statistics: a ghost is a
-        # trade we rejected, so counting it in by-side WR or the Sharpe card conflates
-        # "how the strategy did" with "what it declined to do". Derive a real-only view
-        # for the bias detector + analysis-context aggregates; keep opt_outcomes (with
-        # ghosts) for _precompute_baseline and the weight optimizer below. Ghosts get
-        # their own analysis via bias_detector.analyze_ghosts (separate pool, further down).
+        # Real + holdout-excluded view for the bias detector and analysis aggregates.
         opt_real = [o for o in opt_outcomes if not o.get("is_ghost")]
-
-        # Bias detector runs on opt_real (real trades, holdout already excluded) so the
-        # analysis dict the evolver sees is neither holdout-leaked nor ghost-polluted.
         analysis = await self._run_bias_detector(opt_real)
 
         # Gate skip stats: how often did each entry gate fire?
@@ -2016,9 +1983,7 @@ class AgentScheduler:
             except Exception:
                 pass
 
-        # Realized edge, fill slippage, and live fill rate stats — all real-trade
-        # aggregates that feed the evolver context, so use opt_real (no holdout leak,
-        # no ghosts: a rejected ghost never filled and has no realized edge/slippage).
+        # Realized edge / fill slippage / fill rate — real-trade aggregates for the evolver.
         realized_edges = [o.get("realized_edge", 0) for o in opt_real if o.get("realized_edge") is not None]
         fill_slippages = [o.get("fill_slippage", 0) for o in opt_real if o.get("fill_slippage") is not None]
         exec_quality: dict[str, Any] = {}
@@ -2114,7 +2079,9 @@ class AgentScheduler:
                 return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
             except Exception:
                 return 0.0
-        _cal_pool = [o for o in all_outcomes if _cal_cutoff_old <= _ts(o) < _cal_cutoff_new]
+        # real_all only: the calibrator changes LIVE trading probabilities, so it must fit
+        # on trades the bot actually took, not rejected ghosts.
+        _cal_pool = [o for o in real_all if _cal_cutoff_old <= _ts(o) < _cal_cutoff_new]
         if len(_cal_pool) >= 125:
             _split = max(1, int(len(_cal_pool) * 0.6))
             cal_train = _cal_pool[:_split]
@@ -2305,16 +2272,13 @@ class AgentScheduler:
         if cal_info.get("meta_warning"):
             analysis["cal_meta_warning"] = cal_info["meta_warning"]
 
-        # Trend buckets feed evolver analysis — real trades only (opt_real), so the
-        # P&L/WR/Sharpe trend isn't distorted by rejected ghosts.
+        # Trend buckets for the evolver — real trades only.
         from polybot.agents.pipeline_analytics import format_trends
         trends_str = format_trends(opt_real, n_buckets=5, min_per_bucket=50)
         if trends_str:
             analysis["trends"] = trends_str
 
-        # Current-regime snapshot for the evolver: most recent 100 REAL trades from
-        # opt_real (NOT all_outcomes — holdout must remain out-of-sample; not ghosts —
-        # this is a real-performance snapshot).
+        # Current-regime snapshot for the evolver: most recent 100 real trades.
         recent_window = opt_real[-100:] if len(opt_real) >= 100 else opt_real
         if recent_window:
             rw_gains = [o.get("gain_pct", 0) for o in recent_window]
@@ -2343,11 +2307,7 @@ class AgentScheduler:
             _analysis_parts.append(f"{_gate_skips:,} gate skips")
         logger.info("  Analysis done" + (f"  |  {' | '.join(_analysis_parts)}" if _analysis_parts else ""))
 
-        # Gate: need at least MIN_TRADES_FOR_LEARNING trades before running TAEvolver and
-        # WeightOptimizer. The holdout/opt split at the top of this method already fell
-        # back to the full pool if the holdout would have starved opt below this floor, so
-        # by here opt_outcomes is guaranteed non-empty whenever all_outcomes clears the
-        # floor — bias_detector + execution_quality saw the same pool the evolver will.
+        # Need at least MIN_TRADES_FOR_LEARNING trades before running the evolver/optimizer.
         weight_info: dict[str, Any] = {"decision": "skipped"}
         if len(all_outcomes) < MIN_TRADES_FOR_LEARNING:
             logger.info(f"Skipping learning pipeline: only {len(all_outcomes)} trades, need {MIN_TRADES_FOR_LEARNING}")
@@ -2502,14 +2462,11 @@ class AgentScheduler:
                     logger.error(f"Failed to persist isotonic calibrator: {e}")
         pipeline_info["weights"] = weight_info
 
-        # All-time stats — REAL trades only. This is a human-facing performance metric
-        # ("how did my trading do"), so ghosts (rejected trades) must be excluded; their
-        # gain_pct = -1.0 losses would drag the Sharpe negative while contributing $0 P&L
-        # (ghosts carry no `pnl`), producing the misleading "+P&L but negative Sharpe".
-        _real_all = [o for o in all_outcomes if not o.get("is_ghost")]
-        all_gains = [o.get("gain_pct", 0) for o in _real_all]
-        all_pnl = sum(o.get("pnl", 0) for o in _real_all)
-        all_wins = sum(1 for o in _real_all if o.get("correct", False))
+        # All-time stats — real trades only (ghosts have a gain_pct but no pnl, so they'd
+        # show negative Sharpe beside positive P&L).
+        all_gains = [o.get("gain_pct", 0) for o in real_all]
+        all_pnl = sum(o.get("pnl", 0) for o in real_all)
+        all_wins = sum(1 for o in real_all if o.get("correct", False))
         if all_gains:
             avg_g = sum(all_gains) / len(all_gains)
             var_g = sum((r - avg_g) ** 2 for r in all_gains) / len(all_gains) if len(all_gains) > 1 else 1
@@ -2518,8 +2475,8 @@ class AgentScheduler:
         else:
             all_sharpe = 0
         pipeline_info["all_time"] = {
-            "total_trades": len(_real_all),
-            "win_rate": round(all_wins / len(_real_all), 4) if _real_all else 0,
+            "total_trades": len(real_all),
+            "win_rate": round(all_wins / len(real_all), 4) if real_all else 0,
             "sharpe": round(all_sharpe, 4),
             "total_pnl": round(all_pnl, 2),
         }

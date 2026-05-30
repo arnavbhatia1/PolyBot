@@ -2352,11 +2352,17 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     _bankroll = await db.get_bankroll()
     _cal = signal_engine.calibrator
     if _cal is None:
-        _cal_str = "uncalibrated"
+        _cal_str = "off (no calibrator)"
     elif getattr(_cal, "is_identity", True):
-        _cal_str = "identity"
+        _cal_str = "off (using raw model probabilities)"
     else:
-        _cal_str = f"isotonic knots={_cal.n_knots} Δll={_cal.log_loss_improvement:+.4f}"
+        # Plain-language: the calibrator rescales the model's raw win-probability into the
+        # range it actually observed, learned from N past trades. (e.g. a model that says
+        # "98%" but really wins ~70% gets pulled down — corrects overconfidence.)
+        _n_cal = getattr(_cal, "_n_samples", 0)
+        _cal_str = (f"on — model win-probabilities rescaled to "
+                    f"{_cal.lowest_learned_prob:.0%}-{_cal.calibrate(1.0):.0%}, "
+                    f"learned from {_n_cal:,} trades")
     def _f(feed: Any) -> str: return "OK" if feed is not None else "--"
     logger.info(
         f"PolyBot [{_mode_label}] ready  |  Bankroll ${_bankroll:,.2f}  |  "

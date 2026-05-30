@@ -154,10 +154,8 @@ async def test_pipeline_skips_learning_below_200_trades():
 
 
 def test_ghost_resolved_at_epoch_normalizes_to_parseable_iso():
-    """Regression: ghost `resolved_at` is a Unix epoch float, but the pipeline parses
-    exit_timestamp as ISO-8601. If left as a stringified epoch, fromisoformat() raises,
-    the record sorts/windows as 0.0, and the 60-day cutoff drops EVERY resolved ghost —
-    silently killing the entire ghost backtest population (entry-gate tuning signal)."""
+    """Epoch-float resolved_at must normalize to ISO so ghosts aren't stamped 0.0 and
+    dropped by the 60-day window."""
     sched = _bare_scheduler()
     g = {
         "resolved": True, "side": "up", "ghost_correct": True,
@@ -176,15 +174,9 @@ def test_ghost_resolved_at_epoch_normalizes_to_parseable_iso():
 
 @pytest.mark.asyncio
 async def test_pipeline_learns_when_all_data_is_within_holdout_window():
-    """Regression: a dataset younger than HOLDOUT_DAYS must still learn.
-
-    The rolling 7-day holdout was swallowing the ENTIRE dataset of a young bot,
-    leaving the pre-holdout (opt) pool empty. The analysis dict was then built on
-    that empty pool, so the recommender read total_trades=0 and proposed nothing —
-    the pipeline silently stopped learning every night despite hundreds of trades.
-    The pre-existing tests all used April timestamps (>7d old → holdout empty →
-    opt got everything), so this exact path was never exercised. Here every trade
-    is timestamped within the last ~2 days, fully inside the holdout window."""
+    """A dataset entirely inside the holdout window must still learn: the holdout
+    disables and the full pool reaches the analysis builder and evolver (not an empty
+    opt pool, which would zero learning)."""
     seen: dict = {}
 
     async def mock_bias(outcomes=None):
@@ -231,10 +223,8 @@ async def test_pipeline_learns_when_all_data_is_within_holdout_window():
 
 @pytest.mark.asyncio
 async def test_ghosts_excluded_from_bias_but_kept_for_optimizer():
-    """Ghosts must feed the optimizer's backtest pool (§3) but NOT the real-performance
-    analysis. A ghost is a trade we rejected; counting it in by-side WR / the Sharpe card
-    conflates "how the strategy did" with "what it declined to do" — and ghosts carry a
-    gain_pct but no pnl, so they drag the Sharpe negative beside positive P&L."""
+    """Ghosts reach the optimizer's backtest pool (§3) but are excluded from the
+    real-performance bias analysis."""
     seen: dict = {}
 
     async def mock_bias(outcomes=None):
