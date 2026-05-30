@@ -45,11 +45,36 @@ enough to judge it. Neither case ever "retrains from scratch."
 ### 1. Smarter calibration (highest ROI)
 Today **one** correction curve fixes the model's overconfidence everywhere. But the model is almost
 certainly mis-calibrated *differently* in different conditions — early vs. late in the window, calm
-vs. volatile, small-edge vs. big-edge. Fit a **separate calibration curve per condition.**
+vs. volatile, small-edge vs. big-edge, **and at different times of day / days of week.** Fit a
+**separate calibration curve per condition.**
 - **Why it helps:** calibration directly drives bet *size*. Sizing each bet on a probability that's
   right *for that condition* improves compounding more than almost anything else.
 - **Cost/risk:** each condition needs enough trades to fit, or it overfits — so it ships gated
   (falls back to the single curve until a bucket has the samples + passes the same confidence test).
+
+#### 1a. Time-of-day / session conditioning (do this first — cheapest high-value win)
+BTC has strong, persistent **intraday and weekly seasonality** in both volatility and confidence —
+the Asia / EU / US sessions, the CME-hours liquidity vacuum, weekend thinness, top-of-hour and
+funding-clustering effects. The current model is purely *window-relative* (seconds-remaining), so it
+is blind to "this is the 3am ET dead zone" vs. "this is the 9:30am ET equity-open vol spike," and a
+single calibration curve averages those regimes together — systematically over- or under-sizing in
+each. Add **time-of-day / session as a calibration condition** (the first condition to wire into the
+#1 machinery above).
+- **Why this one first:** it's built entirely from data **already recorded** (the UTC `timestamp` on
+  every trade), so it backtests over your **entire existing history with no warm-up and no new
+  feed** — the cheapest possible high-value win, and calibration is the highest-leverage lever.
+- **Why calibration (#1) and not an L6 feature:** the effect is primarily one of *confidence / vol
+  regime* — exactly what a calibration curve corrects and what drives bet size — rather than a clean
+  directional signal. It also reuses #1's existing per-bucket sample-count + bootstrap-CI gate, so
+  there's almost no new machinery. (It *can* instead enter as an L6 feature per #2 — e.g. a session
+  one-hot or a `sin/cos(hour-of-day)` pair at weight 0 — but #1 is preferred for the reasons above.)
+- **How (to avoid overfitting):** bucket by a **small, fixed** session set (e.g. 4–6 buckets: Asia /
+  EU / US / overnight, or trading-day quartiles), NOT a 24-way hour split, and **never cross it
+  combinatorially** with the other conditions above (condition × hour explodes the bucket count).
+  Each session bucket fits its own curve under the same gate, falling back to the global curve until
+  it earns the samples.
+- **Default-neutral:** with no session buckets fitted, behavior is byte-identical to today's single
+  curve — it only ever turns on per-bucket, with evidence.
 
 ### 2. Wake up and grow the L6 layer
 L6 (derived features) is fully built but every weight is 0 — it's dormant. Add a handful more
