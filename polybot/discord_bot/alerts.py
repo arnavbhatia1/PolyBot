@@ -201,7 +201,12 @@ class AlertManager:
             except Exception:
                 return None
 
-        todays = [o for o in outcomes if _et_date(o) == trading_et_date]
+        # Real trades only: ghosts (entry-rejected trades) carry a gain_pct but no `pnl`,
+        # so leaving them in would drag the Sharpe negative while showing positive P&L —
+        # and the count/WR/side rows would include trades we never took (the exit/edge
+        # rows already exclude them, since ghosts have no exit_reason).
+        todays = [o for o in outcomes
+                  if _et_date(o) == trading_et_date and not o.get("is_ghost")]
         date_str = trading_et_date.strftime("%Y-%m-%d")
 
         if not todays:
@@ -277,7 +282,7 @@ class AlertManager:
                 "ALL-TIME",
                 f"  P&L     ${at.get('total_pnl', 0):+,.2f}",
                 f"  Trades  {at.get('total_trades', 0):,}   WR {at.get('win_rate', 0):.0%}",
-                f"  Sharpe  {at.get('sharpe', 0):+.3f} (includes older/broken model versions)",
+                f"  Sharpe  {at.get('sharpe', 0):+.3f}",
             ]
 
         body = "\n".join(today_lines + at_lines)

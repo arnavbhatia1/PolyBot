@@ -230,6 +230,50 @@ async def test_pipeline_learns_when_all_data_is_within_holdout_window():
 
 
 @pytest.mark.asyncio
+async def test_ghosts_excluded_from_bias_but_kept_for_optimizer():
+    """Ghosts must feed the optimizer's backtest pool (§3) but NOT the real-performance
+    analysis. A ghost is a trade we rejected; counting it in by-side WR / the Sharpe card
+    conflates "how the strategy did" with "what it declined to do" — and ghosts carry a
+    gain_pct but no pnl, so they drag the Sharpe negative beside positive P&L."""
+    seen: dict = {}
+
+    async def mock_bias(outcomes=None):
+        seen["bias_ghosts"] = sum(1 for o in (outcomes or []) if o.get("is_ghost"))
+        seen["bias_n"] = len(outcomes or [])
+        return {"per_indicator": {}, "overall": {"total_trades": len(outcomes or [])}}
+
+    async def mock_ta_evolver(analysis, outcomes=None):
+        return {}
+
+    async def mock_weight_optimizer(recs, outcomes=None, **kwargs):
+        seen["opt_ghosts"] = sum(1 for o in (outcomes or []) if o.get("is_ghost"))
+        seen["opt_n"] = len(outcomes or [])
+        return {"decision": "skipped"}
+
+    now = datetime.now(timezone.utc)
+    def _mk(i, ghost):
+        ts = (now - timedelta(minutes=15 * i)).isoformat()
+        return {"timestamp": ts, "exit_timestamp": ts, "correct": True, "gain_pct": 0.1,
+                "pnl": 1.0, "side": "up", "indicator_snapshot": {}, "is_ghost": ghost}
+    reals = [_mk(i, False) for i in range(220)]
+    ghosts = [_mk(i + 220, True) for i in range(40)]
+    outcome_reviewer = MagicMock()
+    outcome_reviewer.load_all_outcomes.return_value = reals + ghosts
+    scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=MagicMock(),
+        ta_evolver=MagicMock(), weight_optimizer=MagicMock(),
+        outcome_interval_seconds=3600, daily_pipeline_hour=2)
+    scheduler._run_bias_detector = mock_bias
+    scheduler._run_ta_evolver = mock_ta_evolver
+    scheduler._run_weight_optimizer = mock_weight_optimizer
+    await scheduler.run_daily_pipeline()
+
+    assert seen.get("bias_ghosts") == 0, "ghosts leaked into the real-performance analysis"
+    assert seen.get("bias_n") == 220, "bias analysis must see exactly the real trades"
+    assert seen.get("opt_ghosts") == 40, "ghosts must still reach the optimizer backtest (§3)"
+    assert seen.get("opt_n") == 260, "optimizer must get the full real+ghost pool"
+
+
+@pytest.mark.asyncio
 async def test_pipeline_runs_learning_at_exactly_200_trades():
     """At exactly 200 trades the learning pipeline should run."""
     call_order = []

@@ -1986,9 +1986,18 @@ class AgentScheduler:
             f"back, disjoint from holdout)"
         )
 
-        # Bias detector runs on opt_outcomes (excludes holdout) so the analysis
-        # dict the evolver sees has no leakage from the last HOLDOUT_DAYS.
-        analysis = await self._run_bias_detector(opt_outcomes)
+        # Ghosts belong in the optimizer's BACKTEST pool (they unlock entry gates from
+        # read-only — §3), but NOT in real-performance / bias statistics: a ghost is a
+        # trade we rejected, so counting it in by-side WR or the Sharpe card conflates
+        # "how the strategy did" with "what it declined to do". Derive a real-only view
+        # for the bias detector + analysis-context aggregates; keep opt_outcomes (with
+        # ghosts) for _precompute_baseline and the weight optimizer below. Ghosts get
+        # their own analysis via bias_detector.analyze_ghosts (separate pool, further down).
+        opt_real = [o for o in opt_outcomes if not o.get("is_ghost")]
+
+        # Bias detector runs on opt_real (real trades, holdout already excluded) so the
+        # analysis dict the evolver sees is neither holdout-leaked nor ghost-polluted.
+        analysis = await self._run_bias_detector(opt_real)
 
         # Gate skip stats: how often did each entry gate fire?
         # Tells Claude which gates are over-filtering and whether adverse selection /
@@ -2007,10 +2016,11 @@ class AgentScheduler:
             except Exception:
                 pass
 
-        # Realized edge, fill slippage, and live fill rate stats — all aggregates
-        # that feed the evolver context, so use opt_outcomes (no holdout leak).
-        realized_edges = [o.get("realized_edge", 0) for o in opt_outcomes if o.get("realized_edge") is not None]
-        fill_slippages = [o.get("fill_slippage", 0) for o in opt_outcomes if o.get("fill_slippage") is not None]
+        # Realized edge, fill slippage, and live fill rate stats — all real-trade
+        # aggregates that feed the evolver context, so use opt_real (no holdout leak,
+        # no ghosts: a rejected ghost never filled and has no realized edge/slippage).
+        realized_edges = [o.get("realized_edge", 0) for o in opt_real if o.get("realized_edge") is not None]
+        fill_slippages = [o.get("fill_slippage", 0) for o in opt_real if o.get("fill_slippage") is not None]
         exec_quality: dict[str, Any] = {}
         if realized_edges:
             exec_quality.update({
@@ -2031,7 +2041,7 @@ class AgentScheduler:
                 pass
         # Slippage breakdown by spread and time-in-window (actionable for max_edge, logit_scale, kelly_fraction)
         try:
-            exec_detail = self.bias_detector.analyze_execution_quality_detailed(opt_outcomes)
+            exec_detail = self.bias_detector.analyze_execution_quality_detailed(opt_real)
             if exec_detail:
                 exec_quality.update(exec_detail)
         except Exception as e:
@@ -2295,15 +2305,17 @@ class AgentScheduler:
         if cal_info.get("meta_warning"):
             analysis["cal_meta_warning"] = cal_info["meta_warning"]
 
-        # Trend buckets feed evolver analysis — opt_outcomes only.
+        # Trend buckets feed evolver analysis — real trades only (opt_real), so the
+        # P&L/WR/Sharpe trend isn't distorted by rejected ghosts.
         from polybot.agents.pipeline_analytics import format_trends
-        trends_str = format_trends(opt_outcomes, n_buckets=5, min_per_bucket=50)
+        trends_str = format_trends(opt_real, n_buckets=5, min_per_bucket=50)
         if trends_str:
             analysis["trends"] = trends_str
 
-        # Current-regime snapshot for the evolver: most recent 100 trades from
-        # opt_outcomes (NOT all_outcomes — holdout must remain out-of-sample).
-        recent_window = opt_outcomes[-100:] if len(opt_outcomes) >= 100 else opt_outcomes
+        # Current-regime snapshot for the evolver: most recent 100 REAL trades from
+        # opt_real (NOT all_outcomes — holdout must remain out-of-sample; not ghosts —
+        # this is a real-performance snapshot).
+        recent_window = opt_real[-100:] if len(opt_real) >= 100 else opt_real
         if recent_window:
             rw_gains = [o.get("gain_pct", 0) for o in recent_window]
             rw_wr = sum(1 for o in recent_window if o.get("correct", False)) / len(recent_window)
@@ -2490,10 +2502,14 @@ class AgentScheduler:
                     logger.error(f"Failed to persist isotonic calibrator: {e}")
         pipeline_info["weights"] = weight_info
 
-        # All-time stats
-        all_gains = [o.get("gain_pct", 0) for o in all_outcomes]
-        all_pnl = sum(o.get("pnl", 0) for o in all_outcomes)
-        all_wins = sum(1 for o in all_outcomes if o.get("correct", False))
+        # All-time stats — REAL trades only. This is a human-facing performance metric
+        # ("how did my trading do"), so ghosts (rejected trades) must be excluded; their
+        # gain_pct = -1.0 losses would drag the Sharpe negative while contributing $0 P&L
+        # (ghosts carry no `pnl`), producing the misleading "+P&L but negative Sharpe".
+        _real_all = [o for o in all_outcomes if not o.get("is_ghost")]
+        all_gains = [o.get("gain_pct", 0) for o in _real_all]
+        all_pnl = sum(o.get("pnl", 0) for o in _real_all)
+        all_wins = sum(1 for o in _real_all if o.get("correct", False))
         if all_gains:
             avg_g = sum(all_gains) / len(all_gains)
             var_g = sum((r - avg_g) ** 2 for r in all_gains) / len(all_gains) if len(all_gains) > 1 else 1
@@ -2502,8 +2518,8 @@ class AgentScheduler:
         else:
             all_sharpe = 0
         pipeline_info["all_time"] = {
-            "total_trades": len(all_outcomes),
-            "win_rate": round(all_wins / len(all_outcomes), 4) if all_outcomes else 0,
+            "total_trades": len(_real_all),
+            "win_rate": round(all_wins / len(_real_all), 4) if _real_all else 0,
             "sharpe": round(all_sharpe, 4),
             "total_pnl": round(all_pnl, 2),
         }
