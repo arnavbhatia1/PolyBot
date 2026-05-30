@@ -1,0 +1,39 @@
+{
+  "market_id": "btc-updown-5m-1780166100",
+  "side": "Down",
+  "gate_name": "sub_threshold_prob",
+  "signal_prob": 0.5912,
+  "signal_edge": -0.0688,
+  "seconds_remaining": 135.4,
+  "indicator_snapshot": {
+    "trade_context": {
+      "model_probability_raw": 0.5911979166888846,
+      "market_price_up": 0.35,
+      "market_price_down": 0.66,
+      "btc_price": 73924.13,
+      "strike_price": 73926.510838615,
+      "seconds_remaining": 135.409396,
+      "atr": 12.12,
+      "atr_rolling_20": 12.12,
+      "atr_long_term_mean": 12.12,
+      "flow_score": 0.1447,
+      "spot_flow_signal": 0.0490981491917656,
+      "prev_resolution_margin": -63.79808748711366,
+      "regime_autocorr": -0.0419,
+      "regime_direction": -1.0,
+      "closes_tail": [
+        74034.65,
+        74028.18
+      ],
+      "coinbase_cvd_60s": 0.3742,
+      "coinbase_taker_60s": 0.5978,
+      "coinbase_taker_n": 182
+    }
+  },
+  "recorded_at": 1780166264.9420767,
+  "resolved": true,
+  "ghost_correct": false,
+  "ghost_gain_pct": -1.0,
+  "resolved_at": 1780166823.7296782,
+  "timestamp": "2026-05-30T18:47:03.729688+00:00"
+}
