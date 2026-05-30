@@ -58,7 +58,7 @@ class PaperTrader(BaseTrader):
         fee_rate: float = DEFAULT_FEE_RATE,
     ) -> FillResult:
         """Simulate a FOK market buy with realistic latency + VWAP + rejects."""
-        del fee_rate  # paper applies fee math in base.py via the same DEFAULT_FEE_RATE
+        del fee_rate  # paper applies fee math in base.py via DEFAULT_FEE_RATE
         if self._precheck_rejects(token_id, side="buy", requested_price=price, size_usd=size):
             return FillResult(filled=False, reason="pre-check: book walk would exceed limit (matches live)")
         await self._simulate_latency()
@@ -97,7 +97,7 @@ class PaperTrader(BaseTrader):
         simulated latency to mirror the ECDSA-sign work live actually saves.
 
         Idempotent within TTL when params haven't drifted — matches live's
-        early-return at ``live_trader.py:715-721``.
+        early-return in ``LiveTrader.warm_sell_signature``.
         """
         del fee_rate  # paper has no signing work; param kept for API parity
         if not token_id or shares <= 0 or expected_price <= 0:

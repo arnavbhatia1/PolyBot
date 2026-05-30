@@ -2210,7 +2210,7 @@ class AgentScheduler:
                     else:
                         current_loss = identity_loss
 
-                    # Kelly-Sharpe on holdout only (sizing sanity check).
+                    # Kelly-Sharpe on cal_val (sizing sanity check).
                     cfg = self._config_for_helper()
                     helper_kwargs = dict(
                         outcomes=cal_val,

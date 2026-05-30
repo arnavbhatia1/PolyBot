@@ -23,7 +23,7 @@ DEFAULT_PARAMS = {
     "atr": {"period": 7, "low_pct": 5, "history": 100},
 }
 
-DEFAULT_WEIGHTS = {"rsi": 0.20, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.20}
+DEFAULT_WEIGHTS = {"rsi": 0.20, "macd": 0.30, "stochastic": 0.15, "obv": 0.15, "vwap": 0.20}
 
 
 class IndicatorEngine:

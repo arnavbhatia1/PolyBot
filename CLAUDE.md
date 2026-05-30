@@ -39,12 +39,12 @@ How P(Up) is formed (§2 — the L1-L6 stack + isotonic calibration) and how the
 
 ## 1. What you're betting on
 
-Every 5 min, Polymarket runs a market: will BTC close higher or lower than at the window's start? Two sides — **Up** / **Down** — each an ERC-1155 token trading $0-$1; winning side pays $1/share, loser $0. Chainlink's BTC/USD oracle is the official resolution source; Polymarket's Gamma API mirrors it for the slug feed.
+Every 5 min, Polymarket runs a market: will BTC close higher or lower than at the window's start? Two sides — **Up**/**Down** — each an ERC-1155 token trading $0-$1; winning side pays $1/share, loser $0. Chainlink's BTC/USD oracle is the resolution source; Polymarket's Gamma API mirrors it for the slug feed.
 
 The bot picks side, size, when to scale in, and when to sell early. Two modes, same engine/gates/telemetry:
 
-- **`paper`** — realism shim: real CLOB books, FOK semantics, convex slippage, configurable network-fail/latency jitter, $1 min, tick-size snapping. Bankroll in a paper SQLite DB.
-- **`live`** — `py-clob-client-v2` FOK orders against the real CLOB, wrapped in `LiveTrader`; verifies USDC balance + allowance before the first order.
+- **`paper`** — realism shim: real CLOB books, FOK semantics, convex slippage, configurable network-fail/latency jitter, $1 min, tick snapping. Bankroll in a paper SQLite DB.
+- **`live`** — `py-clob-client-v2` FOK orders against the real CLOB via `LiveTrader`; verifies USDC balance + allowance before the first order.
 
 Schedule (`run_polybot.ps1`) in §16.
 
@@ -64,12 +64,12 @@ t_scale    = sqrt(df / (df - 2))
 prob_up    = StudentT_CDF(df, z * t_scale)
 ```
 
-- **`student_t_df`** — default 5, clamped >=3 (df <= 2 -> undefined variance + a t_scale discontinuity injecting a 1.0->1.73 jump). Gaussian undersizes BTC's fat tails (kurtosis 6-8).
-- **`atr_sigma_ratio`** — default 1.3, pipeline-tunable 1.2-2.5. The single highest-leverage knob.
-- **Autocorrelation-scaled vol** — BTC 1-min returns aren't i.i.d., so `vol_scaled` is multiplied by the AR(1) terminal-SD ratio `sqrt((1+ac)/(1-ac))`, `ac` = lag-1 autocorr (clamped +/-0.5, the value L2 consumes). Positive autocorr (trend) widens spread -> P(Up) toward 0.5; negative (mean-reversion) tightens. `regime` computed once, shared by L1/L2/L4/L5.
-- **ATR floor**, dynamic: `max(min_atr, 0.30 * rolling_20)`; when `rolling_20 / long_term_200 < atr_regime_shift_threshold` (default 0.60) it widens to `max(base_floor, long_term_mean * threshold * 0.30)` (anti-overconfidence on vol collapse). `rolling_20`/`long_term_200` buffer the last 20/200 ATR **samples**, one per `compute_probability` call (every decision tick — entry *and* hold — **not** per 1-min candle).
+- **`student_t_df`** — default 5, clamped >=3 (df<=2 -> undefined variance + a t_scale 1.0->1.73 jump; Gaussian undersizes BTC's fat tails, kurtosis 6-8). The CDF (`student_t_cdf`) and the clamp (`MIN_STUDENT_T_DF`) live in `aux_layers.py`, shared by live + replay so they can't drift.
+- **`atr_sigma_ratio`** — default 1.3, tunable 1.2-2.5. The single highest-leverage knob.
+- **Autocorrelation-scaled vol** — BTC 1-min returns aren't i.i.d., so `vol_scaled` is multiplied by the AR(1) terminal-SD ratio `sqrt((1+ac)/(1-ac))`, `ac` = lag-1 autocorr (clamped +/-0.5 **before** the sqrt). Positive autocorr (trend) widens spread -> P(Up) toward 0.5; negative (mean-reversion) tightens. `regime` computed **once**, shared by L1/L2/L4/L5.
+- **ATR floor**, dynamic: `max(min_atr, 0.30*rolling_20)`; widens to `max(base_floor, long_term_mean*threshold*0.30)` when `rolling_20/long_term_200 < atr_regime_shift_threshold` (0.60) — anti-overconfidence on vol collapse. Buffers hold the last 20/200 ATR **samples**, appended once per `compute_probability` call (every tick — entry *and* hold — **not** per candle).
 - **L1 clip** at `1e-6` -> logit +/-13.8, past the final +/-4 clamp (the clamp is the precision floor, not the clip).
-- `btc_price` from `_fastest_btc_price`: **Coinbase WS only (<2s)** — lowest-latency feed and the venue Chainlink resolves against. No Binance fallback (a divergent transient print would flip P(side) on a tick the resolver never sees). Coinbase stale (>=2s) -> decision skipped, not zeroed (Binance spot read only to log the cross-venue gap — §9).
+- `btc_price` from `_fastest_btc_price`: **Coinbase WS only (<2s)** — lowest-latency and the venue Chainlink resolves against. No Binance fallback (a divergent transient print would flip P(side) on a tick the resolver never sees). Coinbase stale (>=2s) -> decision skipped, not zeroed (Binance read only to log the cross-venue gap — §9).
 
 ### L2 — Regime
 
@@ -80,7 +80,7 @@ direction   = sign(last_return)
 logit += regime * direction * regime_weight * logit_scale
 ```
 
-Single `lag1_autocorr` helper in `polybot/core/returns.py`; `SignalEngine.compute_regime_factor` and `RegimeDetector` both delegate to it. `last_return` mixes the live Coinbase tick against the most recent fully-closed Binance candle (eliminates the L1/L2 minute-boundary mismatch).
+Single `lag1_autocorr` helper in `core/returns.py`; `SignalEngine.compute_regime_factor` and `RegimeDetector` both delegate to it. `last_return` mixes the live Coinbase tick against the most recent fully-closed Binance candle (eliminates the L1/L2 minute-boundary mismatch).
 
 ### L3 — CLOB flow
 
@@ -106,15 +106,15 @@ spot_flow  = clamp(cvd_comp + taker_comp, +/-1)
 logit += spot_flow * spot_flow_weight * logit_scale     # combined with L3 (redundancy-discounted)
 ```
 
-`compute_spot_flow_signal` in `polybot/core/aux_layers.py` (live + replay share it, can't drift). `vol_factor` scales the `tanh` saturation point to regime — a fixed scale saturates in high-volume regimes, losing resolution when flow is most informative.
+`compute_spot_flow_signal` in `core/aux_layers.py` (live + replay share it). `vol_factor` scales the `tanh` saturation point to regime — a fixed scale saturates in high-volume regimes, losing resolution when flow is most informative.
 
-**CVD-acceleration gate** (sizing-time guard, not L3b magnitude): `coinbase_feed.get_cvd_acceleration(recent_s=15, baseline_s=45)` requires >=10 recent trades. Skips entry when `|spot_flow| >= 0.20` **and** `spot_flow * cvd_accel < 0` (signal already peaked).
+**CVD-acceleration gate** (sizing-time guard, not L3b magnitude): `get_cvd_acceleration(recent_s=15, baseline_s=45)` requires >=10 recent trades. Skips entry when `|spot_flow| >= 0.20` **and** `spot_flow * cvd_accel < 0` (signal already peaked).
 
-**Flow-family combine (L3 + L3b).** Book flow and spot CVD watch the *same* BTC move, so adding them double-counts agreement (the high-conviction case driving the largest sizing). Per direction: strongest contribution at full weight, same-direction corroborator discounted by `_FLOW_REDUNDANCY` (0.5); opposing signals offset naturally (no discount — disagreement is information). Combined (both legs) clamped to **+/-0.50 logits**, so neither flow leg dominates L1.
+**Flow-family combine (L3 + L3b).** Book flow and spot CVD watch the *same* BTC move, so naive addition double-counts agreement. Per direction: strongest contribution at full weight, same-direction corroborator discounted by `_FLOW_REDUNDANCY` (0.5); opposing signals offset naturally (no discount — disagreement is information). Combined clamped to **+/-0.50 logits** so neither leg dominates L1.
 
 ### L4 — Indicator committee (polarity-split, regime-conditional)
 
-Five indicators (RSI, MACD, Stochastic, OBV, VWAP) from the 1-min candle buffer, raw `score` consumed directly (no adaptive normalizer). Groups: **Mean-revert** = RSI, Stochastic, VWAP; **Trend-confirm** = MACD, OBV. Each dot-products with its L4 weights (`weights` dict), then mixes by regime via `t = tanh(regime / regime_momentum_threshold)`:
+Five indicators (RSI, MACD, Stochastic, OBV, VWAP) from the 1-min candle buffer, raw `score` consumed directly. Groups: **Mean-revert** = RSI, Stochastic, VWAP; **Trend-confirm** = MACD, OBV. Each dot-products with its L4 `weights` dict, then mixes by regime via `t = tanh(regime / regime_momentum_threshold)`:
 
 ```
 contrarian_mult    = (1 - t) * 0.5
@@ -126,7 +126,7 @@ score = clamp(score, +/-1)
 logit += score * effective_momentum_weight * logit_scale
 ```
 
-`effective_momentum_weight` = unsigned magnitude scaled `0.5x`->`1.5x` by `|tanh(regime / regime_momentum_threshold)|` (no cliff at the threshold). The `momentum_weight` bound (0-0.10) caps magnitude; **sign is dead at the L4 level** — reborn per-group inside `compute_momentum` from regime + realized direction (revert `t<0`: mean-revert keeps its contrarian sign at full power, trend-confirm dampened; trend `t>0`: mean-revert's sign **replaced** by `sign(last_1min_return)` continuation, trend-confirm full). `regime_momentum_threshold` default 0.15, tunable 0.08-0.25.
+`effective_momentum_weight` = unsigned magnitude scaled `0.5x`->`1.5x` by `|tanh(regime/regime_momentum_threshold)|` (no cliff). `momentum_weight` (0-0.10) caps magnitude; **sign is dead at the L4 level** — reborn per-group in `compute_momentum`: in a revert regime (`t<0`) mean-revert keeps its contrarian sign and trend-confirm is dampened; in a trend regime (`t>0`) mean-revert's sign is **replaced** by `sign(last_1min_return)` and trend-confirm runs full. `regime_momentum_threshold` default 0.15, tunable 0.08-0.25.
 
 ### L5 — Previous-window margin carry
 
@@ -135,11 +135,11 @@ logit += tanh(prev_resolution_margin / max(atr, 1)) * prev_margin_weight * logit
        * (1 - min(l5_regime_damp_cap, |regime|))
 ```
 
-Dampener (orthogonality patch): when `|regime|` is high L2 already encodes the same drift, so L5 contributes only its orthogonal portion. `l5_regime_damp_cap` default 0.7, tunable 0.4-0.9. `prev_resolution_margin` persists with a `saved_at` timestamp in `memory/state/prev_resolution_margin.json`; zeroed if older than 30 min on load.
+Dampener (orthogonality patch): when `|regime|` is high, L2 already encodes the same drift, so L5 contributes only its orthogonal portion. `l5_regime_damp_cap` default 0.7, tunable 0.4-0.9. `prev_resolution_margin` persists with a `saved_at` timestamp in `state/prev_resolution_margin.json`; zeroed if older than 30 min on load.
 
 ### L6 — Derived feature library (closed)
 
-A closed library of **3 bounded transforms** of state already tracked by `compute_probability` (`polybot/core/derived_features.py`). Every weight defaults to **0.0** — the layer is dead until the pipeline raises one off zero with evidence.
+A closed library of **3 bounded transforms** of state already tracked by `compute_probability` (`core/derived_features.py`). Every weight defaults to **0.0** — the layer is dead until the pipeline raises one off zero with evidence.
 
 | Feature | Formula | Notes |
 |---|---|---|
@@ -148,20 +148,19 @@ A closed library of **3 bounded transforms** of state already tracked by `comput
 | `flow_disagreement` | `tanh(flow + spot_flow)` | Direction-aware flow consensus |
 
 ```
-l6_total = sum(derived_weights[name] * logit_scale * feature(ctx))
-l6_total = clamp(l6_total, +/-L6_LOGIT_CAP)        # +/-0.25 logits
+l6_total = clamp(sum(derived_weights[name] * logit_scale * feature(ctx)), +/-L6_LOGIT_CAP)   # +/-0.25
 logit += l6_total
 ```
 
-Cap enforced at the call site, and the **`claude_client` validator drops any L6 weight-change set whose `sum(|w|) * logit_scale` would breach `L6_LOGIT_CAP`** — unbreakable from either side. Adding a feature requires code in `derived_features.py` plus a `ParamSpec` row.
+Cap enforced at the call site, and the `claude_client` validator drops any L6 weight-change set whose `sum(|w|)*logit_scale` would breach `L6_LOGIT_CAP` — unbreakable from either side. Adding a feature requires code in `derived_features.py` plus a `ParamSpec` row.
 
 ### Calibration (isotonic) — sole overconfidence correction
 
-`IsotonicCalibrator` in `polybot/core/calibrator.py`, identity by default. Fits the last 7 days of trades (`>=150 samples` default; pool from the calibration train split, >=75 in train else skipped).
+`IsotonicCalibrator` in `core/calibrator.py`, identity by default. Fits the last 7 days of trades (pool from the calibration train split, >=75 in train else skipped).
 
 Adoption = **single OOB bootstrap-CI gate**: the lower-80% bound of weighted log-loss improvement vs identity, across **300 OOB resamples** with per-bootstrap weight renormalization, must be strictly positive. RNG seeded from `time.time_ns()` each fit. Pre-CI **range check**: `y_min <= 0.50` and `y_max >= 0.55` (else rejected without bootstrapping).
 
-`last_fit_diagnostics` (`oob_ci_lower_nats`, `oob_ci_median_nats`, `n_samples`, `bootstrap_n_completed`, `y_min`, `y_max`, `decision`) is stamped to `pipeline_info["cal_info"]["fit_diagnostics"]` on every `fit()` reaching the bootstrap stage (both `"adopted"` and `"rejected_ci"`). Structural early-rejects (sample count, zero-weight, sklearn exception, range check) return `False` without stamping; visible in the reject-site log line.
+`last_fit_diagnostics` (CI bounds, `n_samples`, `bootstrap_n_completed`, `y_min`/`y_max`, `decision`) is stamped to `pipeline_info["cal_info"]["fit_diagnostics"]` on every `fit()` reaching the bootstrap stage (both `adopted` and `rejected_ci`); structural early-rejects return `False` without stamping (visible in the reject-site log).
 
 `lowest_learned_prob` (lowest `y_thresholds_[0]` output) is the "dead side" floor consumed by `evaluate_hold` — §6.
 
@@ -175,37 +174,35 @@ Edge = `calibrated_model_prob - market_price`. **All** must pass; any single fai
 | `edge` | >= `min_edge` (default 0.04, scaled by flip premium — §7) | `SignalEngine.evaluate` |
 | `Kelly` (fee-aware) | >= `min_kelly` (default 0.01); `b_eff = b * (1 - fee_rate)` | `SignalEngine._kelly` |
 | Spread either side | `spread/2 + DEFAULT_FEE_RATE <= max_spread` (default 0.10) | `_fetch_market_prices` |
-| Book depth | both-sides-thin gate first (>= `min_book_depth_usd = $50` on at least one side); chosen-side depth must also clear it | `_evaluate_signal_and_enter` |
+| Book depth | both-sides-thin first (>= `min_book_depth_usd = $50` on at least one side); chosen-side depth must also clear it | `_evaluate_signal_and_enter` |
 | Price sum | `price_up + price_down in [0.98, 1.02]` (cross-book no-arb) | `_fetch_market_prices` |
 | Book freshness | both sides' WS BBO <= `_WS_STALE_S = 10s` old | `clob_ws.both_books_fresh` |
 | `edge <= max_edge` | default 0.20 — wider edge = stale phantom price | `_evaluate_signal_and_enter` |
 | ATR gate | ATR >= 5th-percentile (lower-bound only) | `IndicatorEngine.atr` |
 | SPRT | not `SKIP`; not opposing the chosen side when conf > 60% with >=6 obs | `SPRTAccumulator` |
 | Adverse-selection hard skip | `adverse_rate_at_30s >= adverse_selection_threshold` (default 0.80) -> reject | `AdverseSelectionMonitor` |
-| Edge-decay | mean 15s post-fill drift (30-min lookback) >= `edge_decay_threshold` (default -0.05). Inactive until >=15 resolved fills in lookback | `AdverseSelectionMonitor.get_recent_decay_mean` |
+| Edge-decay | mean 15s post-fill drift (30-min lookback) >= `edge_decay_threshold` (default -0.05). Inactive until >=15 resolved fills | `AdverseSelectionMonitor.get_recent_decay_mean` |
 | Layer disagreement | reject when `compute_momentum` opposes the chosen side (>0.5 magnitude) and `edge * 0.5 < min_edge` | inline |
 | CVD deceleration | skip if `\|spot_flow\| >= 0.20` AND `spot_flow * cvd_accel < 0` | inline |
 | Regime | skip when `RegimeDetector` classifies `quiet` | `RegimeDetector.classify` |
 | Net-edge after slippage | `edge - price * est_slip >= min_edge` | `slippage_pct` |
-| Pre-submit re-check | walk current ask ladder for FOK VWAP; recomputed net edge must clear `[min_edge, max_edge]`. Fresh-BBA fallback (book unavailable) checks net edge vs `min_edge` and **gross** edge vs `max_edge` (`max_edge` is a stale-phantom guard, slippage is execution cost) | `compute_buy_vwap` |
+| Pre-submit re-check | walk the ask ladder for FOK VWAP; net edge must clear `[min_edge, max_edge]`. Fresh-BBA fallback (book unavailable): net edge vs `min_edge`, **gross** edge vs `max_edge` (max_edge is a stale-phantom guard, slippage is execution cost) | `compute_buy_vwap` |
 | Min order size | size >= $1 (Polymarket CLOB floor; paper mirrors live) | inline |
 | Feed staleness | Coinbase <= 30s, Chainlink <= 60s, Binance aggTrade <= 30s, Binance kline <= 45s | inline |
 
 **Adverse selection is sizing-side, not entry-side.** Above the soft penalty floor (`adverse_penalty_floor` default 0.45):
 
 ```
-kelly_mult = max(adverse_penalty_min,
-                 1 - adverse_penalty_slope * max(0, adverse_rate_at_30s - adverse_penalty_floor))
-           = max(0.30, 1 - 1.5 * max(0, adverse_rate - 0.45))
+kelly_mult = max(0.30, 1 - 1.5 * max(0, adverse_rate_at_30s - 0.45))   # max(adverse_penalty_min, 1 - slope*...)
 ```
 
-So within the firing band the penalty scales down with the fade rate — at `adverse_rate → 0.80⁻` it reaches `1 − 1.5 × 0.35 = 0.475` — and the moment `adverse_rate >= 0.80` (the hard `adverse_selection_threshold`) the trade is blocked entirely, before sizing. (The formula's 0.30 floor is only hit at `adverse_rate ≈ 0.92`, which the 0.80 hard cutoff makes unreachable while trading — it exists as a clamp, not an operating point.) The 30-min lookback is **Bayesian-shrunk to a neutral prior** (n=10, rate=0.5).
+The penalty scales down with the fade rate (at `adverse_rate -> 0.80⁻` it reaches `0.475`); at `adverse_rate >= 0.80` (the hard `adverse_selection_threshold`) the trade is blocked entirely, before sizing. (The 0.30 floor is a clamp, unreachable while trading.) The 30-min lookback is **Bayesian-shrunk to a neutral prior** (n=10, rate=0.5).
 
-Every rejection of a **pipeline-tunable or signal-derived gate** feeds a **ghost** into `GhostTracker` (full L1-L5 inputs + aux microstructure); ghosts resolve at the window's close and feed the backtest pool (raising a gate filters the same ghosts from baseline + candidate equally, lowering includes them). Non-tunable structural gates (`regime` quiet skip, chosen-side `thin_book_depth` vs operator-owned `min_book_depth_usd`, `min_size` $1 floor) reject without ghosting, so the pipeline can't adopt a change that re-includes them.
+Every rejection of a **pipeline-tunable or signal-derived gate** feeds a **ghost** into `GhostTracker` (full L1-L5 inputs + aux microstructure); ghosts resolve at the window's close and feed the backtest pool (raising a gate filters the same ghosts from baseline + candidate equally, lowering includes them). Non-tunable structural gates (`regime` quiet skip, chosen-side `thin_book_depth`, `min_size` $1 floor) reject without ghosting, so the pipeline can't adopt a change that re-includes them.
 
 ## 4. Sizing
 
-Hard caps first, soft multipliers second. Then a $1 floor and a real round-trip net-edge sanity check.
+Soft multipliers first, then `min()` against hard caps (so the caps dominate), then a $1 floor + a real round-trip net-edge check:
 
 ```
 raw_kelly_size = bankroll * signal.kelly_size
@@ -219,27 +216,27 @@ if size < 1.0: skip                                              # CLOB floor
 
 ### Soft multipliers
 
-- **Circuit breaker** — tier-locked floor at $100/150/200/300/400/600/800/1000/1500/2000/3000/4000/6000/8000/10000. Floor = locked_tier * `floor_pct` (default 0.85). Kelly multiplier: `1.0x` at/above the locked tier; `min_multiplier` (default 0.40) at/below the floor; **concave (sqrt) interpolation** between (a $100/$85 midpoint gives ~0.82x vs 0.70x linear). Tier never resets down; ratchets up when bankroll crosses a new tier.
+- **Circuit breaker** — tier-locked floor at $100/150/200/300/400/600/800/1000/1500/2000/3000/4000/6000/8000/10000. Floor = locked_tier * `floor_pct` (0.85). Kelly multiplier: `1.0x` at/above the tier; `min_multiplier` (0.40) at/below the floor; **concave (sqrt) interpolation** between. Tier never resets down; ratchets up on a new tier; persists across restart via the `peak_bankroll` DB row (`restore_from_peak`).
 - **Time multiplier** — `compute_time_multiplier`. First `normal_fraction` of the window (default 60% -> 0-180s): full Kelly. After: penalty scales by `(1 - conviction)` up to `late_max_penalty` (default 0.30).
-- **Consensus multiplier** — `compute_signal_consensus` counts how many of `flow`, `spot_flow`, `cvd_accel_norm` agree with the chosen side (dropping signals below `consensus_dead_zone = 0.05`): >=80% -> 1.30x, >=60% -> 1.00x, >=40% -> 0.80x, else 0.60x.
-- **Concurrent multiplier (correlation-aware)** — `polybot/execution/correlation.py`. Adjacent windows share regime; same-side bets correlated, opposite-side hedged. rho is a **fixed prior**: `+0.75` same-side, `-0.25` opposite-side (`_CORR_SAME_SIDE`, `_CORR_OPPOSITE_SIDE`). Same-market triggers flip logic, not this multiplier. Worst rho across open positions: > 0.6 -> 0.35, > 0.3 -> 0.55, > -0.2 -> 0.70, <= -0.2 -> 0.90.
+- **Consensus multiplier** — `compute_signal_consensus` counts how many of `flow`, `spot_flow`, `cvd_accel_norm` agree with the chosen side (dropping `|signal| < consensus_dead_zone = 0.05`): >=80% -> 1.30x, >=60% -> 1.00x, >=40% -> 0.80x, else 0.60x.
+- **Concurrent multiplier (correlation-aware)** — `execution/correlation.py`. Same-side bets correlated, opposite-side hedged; rho is a **fixed prior** (`+0.75` same / `-0.25` opposite; same-market triggers flip logic, not this). Worst rho across opens: > 0.6 -> 0.35, > 0.3 -> 0.55, > -0.2 -> 0.70, <= -0.2 -> 0.90.
 
 ### Hard caps
 
-- `bankroll * max_bankroll_deployed` (default 0.80)
-- `side_depth * max_book_fill_pct` (default 0.50) — under the thin-CLOB upstream gate requiring at least one side >= $50 depth; if the chosen side is the empty leg of a one-sided book, that's an explicit skip.
+- `bankroll * max_bankroll_deployed` (default 0.80).
+- `side_depth * max_book_fill_pct` (default 0.50) — under the thin-CLOB upstream gate (at least one side >= $50); if the chosen side is the empty leg of a one-sided book, that's an explicit skip.
 
 ## 5. Placing the order
 
 FOK via `py-clob-client-v2`. 3 retries with jittered exponential backoff. HTTP/2 keepalive ping every 5s (against a 60s `keepalive_expiry` pool, so the connection never lapses between pings).
 
 Live mode boot:
-1. `verify_auth` checks `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER` are set and the Safe is reachable.
+1. `verify_auth` checks `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER` set and the Safe reachable.
 2. USDC balance fetched. Allowance = `min(allowances[spender] for all spenders) / 1e6`.
-3. Required allowance: `max_single * max_concurrent_positions * 10` (10x safety), where `max_single = bankroll * kelly_fraction` (a max Kelly-sized single bet — **not** the `max_bankroll_deployed` hard cap). If allowance < required -> `AuthError`, clean exit, **no retry that day** (the outer `while ($true)` restarts next midnight ET; fix allowance before then).
-4. **Mid-session allowance recheck** — every `_ALLOWANCE_RECHECK_EVERY = 10` submits, re-fetch and warn (or fail) if revoked/run down.
+3. Required allowance: `max_single * max_concurrent_positions * 10` (10x safety), `max_single = bankroll * kelly_fraction` (a max Kelly single bet — **not** the `max_bankroll_deployed` cap). If allowance < required -> `AuthError`, clean exit, **no retry that day** (outer `while ($true)` restarts next midnight ET; fix allowance first).
+4. **Mid-session allowance recheck** — every `_ALLOWANCE_RECHECK_EVERY = 10` submits, re-fetch and warn/fail if revoked.
 
-Paper boot: skips auth, same `BaseTrader` open/close path, `PaperTrader` simulates book-walk fill + latency + occasional FOK rejection.
+Paper boot: skips auth, same `BaseTrader` open/close path; `PaperTrader` simulates book-walk fill + latency + occasional FOK rejection.
 
 Per-trade DB write is atomic (single SQLite transaction): `open_position_and_debit_bankroll`, `close_position(... bankroll_delta=... | new_bankroll=...)`. `bankroll_delta` for a relative credit (scalp), `new_bankroll` for absolute on resolution.
 
@@ -253,29 +250,28 @@ Every tick while we hold, re-run the full model and decide HOLD vs EXIT. `holdin
 itm_ref            = market_mid_for_side or market_price_for_side
 itm_depth          = max(0, (itm_ref - 0.5) / 0.5)
 deep_loss_floor    = exit_edge_threshold * (1 + 0.5 * itm_depth)
-optimal_threshold  = ExitBoundary.compute_exit_threshold(seconds_remaining, fee_rate,
-                                                         market_price_for_side)
+optimal_threshold  = ExitBoundary.compute_exit_threshold(seconds_remaining, fee_rate, market_price_for_side)
 effective_threshold = (1 - itm_depth) * max(deep_loss_floor, optimal_threshold)
                     + itm_depth * min(deep_loss_floor, optimal_threshold)
 ```
 
-ATM trusts the `ExitBoundary` curve; deep ITM weights toward the more patient floor.
+ATM trusts the `ExitBoundary` curve; deep ITM weights toward the more patient floor. The blended value is stamped to `last_effective_exit_threshold` so the phantom-bid SELL re-verify (below) gates against the same threshold the scalp used.
 
-**`ExitBoundary.compute_exit_threshold`** in `polybot/core/exit_boundary.py`. Binary-payoff math (payoff kinks at $0/$1, unlike European options):
-- **Deep ITM (`p >= 0.70`):** base time value * `(1 - itm_depth * 0.5)` + resolution premium (`itm_depth * 0.05 * (1 - minutes/5)`) — wants to hold for $1.
-- **Deep OTM (`p <= 0.30`):** base time value * `(1 - otm_depth * 0.7)` + urgency premium ramping in the last 2 minutes — cut losses.
+**`ExitBoundary.compute_exit_threshold`** in `core/exit_boundary.py`. Binary-payoff math (payoff kinks at $0/$1); a pure function of time / market price / fee (entry price doesn't enter):
+- **Deep ITM (`p >= 0.70`):** base time value * `(1 - itm_depth*0.5)` + resolution premium `itm_depth*0.05*(1 - minutes/5)` — wants to hold for $1.
+- **Deep OTM (`p <= 0.30`):** base time value * `(1 - otm_depth*0.7)` + urgency premium ramping in the last 2 min — cut losses.
 - **ATM:** `0.07 * sqrt(minutes) * 0.4 + fee_cost`.
 
 OTM urgency can push the threshold **positive**, forcing exit even when the model is optimistic — final clamp `[-0.30, urgency_premium > 0 ? 0.30 : -0.01]`.
 
 ### Exit branches (in order)
 
-1. **Loss-cut** — `entry_price > 0 AND market_price < entry * loss_cut_fraction (0.65) AND seconds_remaining < loss_cut_time_s (90s) AND BTC on the wrong side of strike by >= 0.5*ATR`. The 0.5*ATR cushion is the whipsaw guard: when BTC sits on the strike and the contract flickers $0.05-$0.70 on thin prints, we don't lock in the bottom. Engine stamps `last_loss_cut_event` in {`""`, `"fired"`, `"whipsaw_blocked"`} per call; the loop counts those into `gate_stats`.
+1. **Loss-cut** — `entry_price > 0 AND market_price < entry * loss_cut_fraction (0.65) AND seconds_remaining < loss_cut_time_s (90s) AND BTC on the wrong side of strike by >= 0.5*ATR`. The 0.5*ATR cushion is the whipsaw guard: when BTC sits on the strike and the contract flickers $0.05-$0.70 on thin prints, we don't lock in the bottom. Engine stamps `last_loss_cut_event` in {`""`, `"fired"`, `"whipsaw_blocked"`}; the loop counts those into `gate_stats`.
 2. **Deep-loss hold** — `holding_edge < deep_loss_hold_threshold (-0.10) AND market < entry AND model_prob > calibrator.lowest_learned_prob`. The binary residual ($1 if we win) beats locking in the loss at a depressed price. **Override:** when `model_prob <= lowest_learned_prob` the calibrator says this side won essentially never at this raw prob, so selling at market beats ~$0 expected. Identity calibrator returns `0.0` (override disabled); refits update it.
-3. **Scalp** — `holding_edge <= effective_threshold` (and not in the deep-loss hold zone), **unless BTC is within 0.5*ATR of the strike on the wrong side** — same whipsaw cushion as branch 1.
+3. **Scalp** — `holding_edge <= effective_threshold` (and not in the deep-loss hold zone), unless BTC is within 0.5*ATR of the strike on the wrong side (same whipsaw cushion as branch 1).
 4. **Hold** — otherwise.
 
-No confidence override. Math says exit, it exits.
+No confidence override — math says exit, it exits. (On EXIT, if the WS best_bid looks phantom — < 70% of a `/price?side=SELL` cross-check — the SELL is re-verified against `last_effective_exit_threshold` first.)
 
 `exit_edge_threshold` is the only operator-touchable exit knob and the **only exit knob the pipeline tunes** (range -0.10..-0.03). On a proposed change, the backtest replays the **counterfactual tracker**'s recorded scalp outcomes through the new threshold: trades whose `holding_edge_at_scalp` exceeds the candidate threshold are re-priced using the matched hold-to-resolution `gain_pct` (`pnl/size` — §13).
 
@@ -289,20 +285,20 @@ spread_cost  = spread + 2 * fee_rate * p * (1 - p)            # real round-trip
 flip_hurdle  = min_edge + max(flip_premium, spread_cost)
 ```
 
-Flips 1-2 pay only the base `flip_edge_premium` (default 0.015); flip 3 pays +0.5pp; flip 4 pays +1.0pp; etc. Or the actual round-trip spread+fee cost, whichever is higher — flips can't churn on micro-edge that won't survive the round trip.
+Flips 1-2 pay only the base `flip_edge_premium` (default 0.015); flip 3 +0.5pp; flip 4 +1.0pp; etc. Or the actual round-trip spread+fee cost, whichever is higher — flips can't churn on micro-edge that won't survive the round trip.
 
 ## 8. Resolution
 
 - **Early scalp** — sold before expiry into the book. The bot keeps the difference; counterfactual tracker logs what hold-to-resolution would have paid.
 - **Resolution** — window closes; Chainlink decides; winner paid binary **$1**, loser **$0**, credited atomically. Exit price decided **oracle-first** (`_resolved_exit_price`): Gamma's `event_metadata` (Chainlink `final_price` vs `price_to_beat`) is authoritative; absent that, a *coherent* resolved CLOB book (closed, prices sum ~1, one side at an extreme) is the fallback. An incoherent book (stale/phantom print) is rejected, not trusted.
 - **Never resolves from Binance** — it can diverge from Chainlink by $20-$200 at the close.
-- **Chainlink orphan fallback** — if Gamma stays silent ~30 min after entry, the bot reads Chainlink directly via `chainlink_feed` and resolves locally. Restart safety: the position stays `open`/`pending_resolution` in the DB (re-evaluated on boot), not a file. `memory/state/orphan_positions.json` is written by a *separate* startup check (`LiveTrader.detect_orphan_positions`) flagging on-chain positions the DB doesn't know about.
+- **Chainlink orphan fallback** — if Gamma stays silent ~30 min after entry, read Chainlink directly via `chainlink_feed` and resolve locally. Restart safety: the position stays `open`/`pending_resolution` in the DB (re-evaluated on boot), not a file. `memory/state/orphan_positions.json` is written by a *separate* startup check (`LiveTrader.detect_orphan_positions`) flagging on-chain positions the DB doesn't know about.
 
 ## 9. Built-in loss handling
 
-The loss-handling stack lives in §3 (adverse-selection, edge-decay, regime quiet-skip, feed-staleness skips — a Coinbase gap >=2s skips the L1 decision, no Binance fallback), §4 (circuit breaker), and §1 (cross-venue gap logging). Facts not stated there:
+The loss-handling stack lives in §3 (adverse-selection, edge-decay, regime quiet-skip, feed-staleness skips — a Coinbase gap >=2s skips the L1 decision, no Binance fallback), §4 (circuit breaker), and §1 (cross-venue gap logging). Also:
 - Circuit-breaker streak counters (3 losses / 3 wins) drive Discord alerts only, never sizing.
-- `AdverseSelectionMonitor` state persisted to `memory/state/adverse_state.json` on every fill so restarts inherit the rolling window.
+- `AdverseSelectionMonitor` state persisted to `state/adverse_state.json` on every fill so restarts inherit the rolling window.
 - **CLOB WS heartbeat** — PING every 10s, force-reconnect if no PONG within 25s.
 
 ---
@@ -315,59 +311,58 @@ Telemetry, nightly pipeline, param registry, layout, data sources, run commands,
 
 ### Per-decision `trade_context` (stamped into outcome + ghost)
 
-- **Entry facts:** `btc_price`, `strike_price`, `seconds_remaining`, `market_price_up`, `market_price_down`, `closes_tail` (last 2 closes, so the L6 backtest can reconstruct `last_return`).
+- **Entry facts:** `btc_price`, `strike_price`, `seconds_remaining`, `market_price_up`, `market_price_down`, `closes_tail` (last 2 closes, so the L6 backtest can reconstruct `last_return`), `atr_rolling_20`, `atr_long_term_mean` (so L6 + the L3b `regime_vol_factor` read stamped values, not a re-derived approximation).
 - **Probabilities:** `model_probability` (post-calibrator), `model_probability_raw` (pre-calibrator — stored separately so re-fits don't compound).
-- **Composite signals:** `flow_score`, `spot_flow_signal`, `regime_autocorr`, `regime_direction`, `prev_resolution_margin`. `flow_score`/`spot_flow_signal` follow the same None-when-cold rule as the aux fields below — the **recorded** value is `None` when its source feed is cold (no CLOB book + no trades for L3; Coinbase CVD `None` for L3b), even though the live model consumes a `0.0` there (it must produce a number for the logit). So a recorded `0.0` is genuinely flat flow, not a dead feed.
-- **Microstructure aux:** `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`. Each **signal** field is `None` (never `0.0`) when its feed is missing/stale, so the pipeline tells "feed cold" from "real zero". `coinbase_taker_n` is a **count**: `0` (not `None`) when cold, so its sole consumer (requires `n >= 20`) contributes nothing either way.
-- **SPRT:** `sprt_confidence`, `sprt_status`.
-- **Sizing audit:** `adverse_rate_at_30s`, `adverse_kelly_mult` (actual Kelly multiplier applied — recorded for audit; not currently consumed by the pipeline), `entry_phase`, `flip_count`, `is_flip`.
+- **Composite signals:** `flow_score`, `spot_flow_signal`, `regime_autocorr`, `regime_direction`, `prev_resolution_margin`.
+- **Microstructure aux:** `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`.
+- **None-vs-0.0 (load-bearing):** every **signal** field is recorded `None` (never `0.0`) when its feed is cold/stale — including `flow_score`/`spot_flow_signal`, whose *live* value collapses cold to `0.0` for the logit but whose *recorded* value is `None`. So a recorded `0.0` is genuinely flat flow, not a dead feed; the pipeline replay coerces `None -> 0.0` on read to match live. `coinbase_taker_n` is a **count**: `0` (not `None`) when cold (consumer requires `n >= 20`).
+- **SPRT:** `sprt_confidence`, `sprt_status`. **Sizing audit:** `adverse_rate_at_30s`, `adverse_kelly_mult` (recorded for audit; not pipeline-consumed), `entry_phase`, `flip_count`, `is_flip`.
 
-**Ghost rejections share the same schema** (incl. `entry_phase`, `flip_count`, `is_flip` stamped at gate-fire time), so by-phase and flip-segmented bias cards see the full ghost population.
+**Ghost rejections share the same schema** (incl. `entry_phase`/`flip_count`/`is_flip` at gate-fire time), so by-phase and flip-segmented bias cards see the full ghost population.
 
 ### `edge_decay.deltas` (merged at close, persisted to outcome JSON)
 
-Side-signed post-fill mid drift at **5/10/15/30/60s**, captured by `AdverseSelectionMonitor` keyed by `position_id`, merged at close. The live `edge_decay_threshold` gate reads the 15s mean over a 30-min lookback from the monitor's **in-memory** window (restart-inherited via `adverse_state.json`); the per-outcome `edge_decay.deltas` persisted here is an **audit record**, not consumed by the nightly pipeline. Null windows = trade closed before that checkpoint resolved.
+Side-signed post-fill mid drift at **5/10/15/30/60s**, captured by `AdverseSelectionMonitor` keyed by `position_id`, merged at close. The live `edge_decay_threshold` gate reads the 15s mean over a 30-min lookback from the monitor's **in-memory** window (restart-inherited via `adverse_state.json`); the per-outcome `edge_decay.deltas` persisted here is an **audit record**, not consumed by the pipeline. Null windows = trade closed before that checkpoint resolved.
 
 ### Gate-skip stats (`memory/state/gate_stats*.json`)
 
-Two files. Live counts persist to `state/gate_stats_current.json` on every resolution (mid-day restarts reload it); at the first record of a new ET day the finished day folds into the lifetime accumulator `state/gate_stats.json` (`counts` + `days_accumulated` + first/last day) and the current file resets. The nightly pipeline reads the current-day file. Includes `loss_cut_fired`/`loss_cut_whipsaw_blocked` to audit the 0.5*ATR cushion — these are stamped per `evaluate_hold` tick, so they count tick-pressure (a single underwater position re-stamps every tick until it closes), not distinct cut events; read the ratio (blocked vs fired), not the absolute counts.
+Two files. Live counts persist to `state/gate_stats_current.json` on every resolution (mid-day restarts reload it); at the first record of a new ET day the finished day folds into the lifetime accumulator `state/gate_stats.json` (`counts` + `days_accumulated` + first/last day) and the current file resets. The nightly pipeline reads the current-day file. `loss_cut_fired`/`loss_cut_whipsaw_blocked` audit the 0.5*ATR cushion — stamped per `evaluate_hold` tick (tick-pressure, not distinct events: an underwater position re-stamps every tick until it closes), so read the ratio, not absolute counts.
 
 ### Feed staleness telemetry
 
-`polybot/feeds/_staleness.StalenessTracker` persists per-feed P50/P95/P99 inter-arrival gaps to `polybot/memory/state/feed_staleness.json` every 60s. `polybot/feeds/_socket.enable_nodelay` verifies `TCP_NODELAY` on every WS connect. `BiasDetector` reads `feed_staleness.json` into the nightly card as `feed_health` (per-feed `{n, p50, p95, p99, max}` + a `degraded_p95_ge_10s` list), so a degrading feed is surfaced, not misattributed to layer signals.
+`feeds/_staleness.StalenessTracker` persists per-feed P50/P95/P99 inter-arrival gaps to `state/feed_staleness.json` every 60s. `feeds/_socket.enable_nodelay` verifies `TCP_NODELAY` on every WS connect. `BiasDetector` reads it into the nightly card as `feed_health` (per-feed `{n, p50, p95, p99, max}` + a `degraded_p95_ge_10s` list), so a degrading feed is surfaced, not misattributed to layer signals.
 
 ## 11. Nightly learning pipeline
 
-Runs 23:45 ET (via `run_polybot.ps1`). Five steps; calibrator save deferred to the end so on-disk state stays coherent across crashes.
+Runs 23:45 ET (via `run_polybot.ps1`). Five stages; calibrator save deferred to the end so on-disk state stays coherent across crashes.
 
 ### Dataset boundaries
 
 - Active dataset bounded to the **last 60 days** before splits (older trades came from probability machines that no longer exist); falls back to full history only if the window has <500 trades.
 - Walk-forward folds inside that window: train 60% / test split across `[60:70][70:80][80:90][90:100]` (each test fold genuinely OOS).
-- **7-day holdout** — last 7 days excluded from all folds AND the evolver's context; the two calibrators below exploit this disjoint window so the holdout-confirmation gate scores candidates on trades the gate calibrator never saw. **Young-dataset fallback:** when the dataset is younger than the holdout window the rolling 7-day cut would swallow every trade, leaving the pre-holdout (`opt`) pool below the 200-trade learning floor. The split therefore disables the holdout (full pool → analysis + evolver, `holdout_active=False`) **before** the analysis dict is built — the recommender keys off `analysis["overall"]["total_trades"]`, so building it on an empty `opt` pool would silently zero all learning despite hundreds of trades. The OOS confirmation is forfeited for that cycle (no separate pool exists); the optimizer's own walk-forward folds still gate adoption.
-- **Realized fills only** — `gain_pct = pnl / size` from closed-trade outcomes, `pnl` already netting actual fee + fill price. No mid-price replay; candidates inherit the slippage any live trade paid.
+- **7-day holdout** — last 7 days excluded from all folds AND the evolver's context, so the holdout-confirmation gate (and gate calibrator) score candidates on trades they never saw. **Young-dataset fallback:** if the dataset is younger than 7 days the holdout cut would swallow every trade, emptying the pre-holdout (`opt`) pool. The split disables the holdout (`holdout_active=False`, full pool -> analysis + evolver) **before** the analysis dict is built — the recommender keys off `analysis["overall"]["total_trades"]`, so building it on an empty `opt` pool would silently zero all learning. OOS confirmation is forfeited that cycle; the walk-forward folds still gate adoption.
+- **Realized fills only** — `gain_pct = pnl / size` from closed-trade outcomes, `pnl` already netting actual fee + fill price. No mid-price replay; candidates inherit the slippage any live trade paid, and the backtest's Kelly sizing mirrors live `_kelly` exactly (fee-aware `net_b = b*(1-fee)`).
 - **Recency weighting** — `0.94^days_ago` (~11-day half-life) inside the window cutoff.
-- **Backtest L1 ATR-floor fidelity (approximate).** Live advances the ATR buffers per decision tick; the backtest advances a local buffer once per stored trade (entry-only). `min_atr`/`atr_regime_shift_threshold` stay backtest-evaluable, and the approximation largely cancels in the baseline-vs-candidate delta. L6 features and the L3b `regime_vol_factor` read the faithfully-stamped `atr_rolling_20`/`atr_long_term_mean` from `trade_context`.
+- **Backtest L1 ATR-floor fidelity (approximate).** Live advances the ATR buffers per decision tick; the backtest advances a local buffer once per stored trade (entry-only). `min_atr`/`atr_regime_shift_threshold` stay backtest-evaluable, and the approximation largely cancels in the baseline-vs-candidate delta. L6 features and the L3b `regime_vol_factor` read the faithfully-stamped `atr_rolling_20`/`atr_long_term_mean`.
 
 ### Calibration window
 
-Both calibrators fit on **real trades only** (ghosts excluded) — the calibrator changes live-trading probabilities, so it must learn from fills the bot actually took, not rejected ghosts.
+Both calibrators fit on **real trades only** (ghosts excluded) — the calibrator changes live probabilities, so it must learn from fills the bot actually took.
 
 **Two calibrators (decoupled masters)** — one can't serve both live trading (freshest data) and the OOS gate (a window the holdout never saw):
+- **Live / production** — `fit` on the **freshest `_CAL_WINDOW_DAYS` (~7d)**, applied to `signal_engine.calibrator` and saved; goes through the full three-gate adoption (stage 3).
+- **Gate reference** — a separate fit on the window **immediately before the holdout** (days `[HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS]` back, `self._gate_calibrator`). **All** weight-optimizer backtests score through this, never the live one (`calibrator` is a required arg of the replay helper, so none can silently fall back), keeping the gate OOS. `None` (identity) when the window is thin.
 
-- **Live / production** — `IsotonicCalibrator.fit` on the **freshest `_CAL_WINDOW_DAYS` (~7d)**, applied to `signal_engine.calibrator` and saved. Goes through the full three-gate production adoption (stage 3).
-- **Gate reference** — a separate fit on the window **immediately before the holdout** (days `[HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS]` back, set once per cycle as `self._gate_calibrator`). All weight-optimizer backtests score through **this** calibrator, never the live one, keeping the gate genuinely OOS. Adopted via `fit`'s bootstrap-CI gate; `None` (identity) when the window is too thin.
-
-Each pool must hold **>=125 trades**, split 60/40 into `cal_train`/`cal_val`; `fit` uses **`min_samples=75`** (overriding the class default 150), so `cal_train` must be >=75, and the Kelly-Sharpe gate ((iii) in stage 3) needs **>=50** `cal_val`. Both arms of every weight comparison share the fixed gate-reference calibrator, so its mapping cancels in the adoption delta to first order.
+Each pool must hold **>=125 trades**, split 60/40 `cal_train`/`cal_val`; `fit` uses **`min_samples=75`** (overriding the class default 150), so `cal_train` >=75, and the Kelly-Sharpe gate (iii) needs **>=50** `cal_val`. Both arms of every weight comparison share the fixed gate calibrator, so its mapping cancels in the adoption delta to first order.
 
 ### Stages (in order)
 
-1. **PipelineTracker** — review of prior adoptions (7d/14d/30d realized Sharpe per adopted version); auto-revert anything that materially underperformed. Revert criterion is **symmetric with adoption** (`actual_sharpe < baseline - ADOPTION_Z_FLOOR * JK_SE`, same `_jk_se`/`ADOPTION_Z_FLOOR` on post-adoption realized Sharpe + trade count), preventing adopt->dip->revert->re-propose oscillation.
-2. **BiasDetector** — per-indicator/side/edge-bucket/regime/time-of-window/phase/flip stats + edge-realization quartiles + execution quality. Runs on `opt_real` (the holdout-excluded pool with **ghosts filtered out**) so the analysis dict has no last-7-day leakage **and** no ghost pollution — a ghost is a rejected trade, so counting it in real-performance stats (WR, Sharpe card) conflates "how the strategy did" with "what it declined to do", and since ghosts carry a `gain_pct` but no `pnl` it would show a negative Sharpe beside positive P&L. Ghosts feed the optimizer's *backtest* pool (§3) and get their own `ghost_analysis` (`analyze_ghosts`/`by_gate`); they're excluded from every real-performance/display metric (BiasDetector, trend buckets, all-time card, daily report). The same separation holds for the all-time/daily Discord stats, which are real-trades-only.
-3. **Calibrator (isotonic)** — fit attempted every cycle, **adopted into production only when it clears all three gates**: (i) per-fit **bootstrap-CI** lower bound > 0 (§2); (ii) beats the *current* calibrator's recency-weighted log-loss on the full cal pool by >= `LOG_LOSS_FLOOR` (0.005 nats); (iii) does not reduce Kelly-Sharpe vs the current calibrator on `cal_val`. If the current calibrator has drifted worse than identity it reverts to identity (or is replaced directly when the new fit beats identity on both). Adoption applies the live calibrator in-memory immediately; **weight backtests use the separate gate-reference calibrator**. On-disk save deferred to step 6.
-4. **TAEvolver** — `ClaudeRecommender` (Anthropic with full analysis + directional table + structural-probe targets) or `LocalRecommender` (rule-based fallback) returns `{changes, manual_observations}`. The `claude_client` validator reroutes manual-only params `changes` -> `manual_observations` and drops combined L6 weight changes that would breach the +/-0.25 cap (§2).
+1. **PipelineTracker** — review prior adoptions (7d/14d/30d realized Sharpe); auto-revert underperformers. Revert criterion is **symmetric with adoption** (`actual_sharpe < baseline - ADOPTION_Z_FLOOR * JK_SE`, same `_jk_se`/floor on post-adoption Sharpe + n) — no adopt->dip->revert oscillation.
+2. **BiasDetector** — per-indicator/side/edge-bucket/regime/time-of-window/phase/flip stats + edge-realization quartiles + execution quality. Runs on `opt_real` (holdout-excluded, **ghosts filtered out**) — no last-7-day leakage, no ghost pollution. Ghosts get their own `ghost_analysis` (`analyze_ghosts`/`by_gate` + by-phase/flip) and feed the optimizer backtest pool (§3), but are excluded from **every** real-performance/display metric (they carry `gain_pct` but no `pnl`, so they'd show a negative Sharpe beside positive P&L).
+3. **Calibrator (isotonic)** — fit attempted every cycle, **adopted into production only when it clears all three gates**: (i) per-fit **bootstrap-CI** lower bound > 0 (§2); (ii) beats the *current* calibrator's recency-weighted log-loss on the full cal pool by >= `LOG_LOSS_FLOOR` (0.005 nats); (iii) doesn't reduce Kelly-Sharpe vs current on `cal_val`. If the current calibrator drifted worse than identity it reverts to identity. Applies live in-memory immediately; weight backtests use the gate-reference calibrator. On-disk save deferred to stage 6.
+4. **TAEvolver** — `ClaudeRecommender` (Anthropic with full analysis + directional table + structural-probe targets) or `LocalRecommender` (rule-based fallback) returns `{changes, manual_observations}`. The `claude_client` validator reroutes manual-only `changes` -> `manual_observations`, clamps out-of-range values, drops unknown params, drops non-finite L4 weights, and drops combined L6 weight changes breaching the +/-0.25 cap.
 5. **WeightOptimizer** — per-param walk-forward backtest; gate decisions live here.
-6. **Deferred calibrator save** — only after `WeightOptimizer.save_config` commits. A crash before this line leaves new weights paired with the previous-session calibrator: mismatched but each a valid artifact (the reverse — new calibrator + stale weights — is the worse half).
+6. **Deferred calibrator save** — only after `WeightOptimizer.save_config` commits. A crash before this line leaves new weights + the previous-session calibrator: mismatched but each a valid artifact (the reverse — new calibrator + stale weights — is the worse half).
 
 ### Adoption gate (WeightOptimizer)
 
@@ -379,14 +374,14 @@ z = delta_sharpe / JK_SE >= ADOPTION_Z_FLOOR (0.3)   # lag-1 autocorr-adjusted
 JK_SE = sqrt((1 + 0.5 * sharpe^2) / n) * sqrt(max(1, 1 + 2*rho1))
 ```
 
-- **Soft abs floor.** `candidate_sharpe < min(0, baseline) - 0.05` is blocked — the loop can adopt a less-negative candidate during a regime shift (recovery), but not an outright collapse.
-- **Fold-consistency floor** — `min(fold_sharpes) >= -0.10` (magnitude-aware: a tiny dip is fine, a deep collapse rejects).
-- **Regime-stratified veto** — activates per regime bucket once it has **>=8 trades** in the validation fold. Two branches share a "no regime degrades >0.10 Sharpe" floor: **(a)** candidate improves in >=2 of 3 populated buckets; **(b)** dominant regime improves AND no other degrades >0.10.
-- **Holdout confirmation** — after clearing the above, baseline vs candidate on the held-out 7-day pool (>=30 trades). `HOLDOUT_ADOPTION_MARGIN = max(0.02, ADOPTION_Z_FLOOR * holdout_jk_se)`; candidate must clear `baseline_h + margin`. `pipeline_info["holdout_active"]` stamped each cycle.
+- **Soft abs floor** — `candidate_sharpe < min(0, baseline) - 0.05` blocked (allows less-negative recovery in a regime shift, not an outright collapse). Non-finite Sharpe rejected outright.
+- **Fold-consistency floor** — `min(fold_sharpes) >= -0.10`.
+- **Regime-stratified veto** — per regime bucket once it has **>=8 trades** in the validation fold; shared "no regime degrades >0.10 Sharpe" floor + either **(a)** improves in >=2 of 3 buckets or **(b)** dominant regime improves AND no other degrades >0.10. "Improves" requires a 0.02 Sharpe margin (float-noise can't pass).
+- **Holdout confirmation** — baseline vs candidate on the held-out 7-day pool (>=30 trades); `margin = max(0.02, ADOPTION_Z_FLOOR * holdout_jk_se)`, candidate must clear `baseline_h + margin`. `pipeline_info["holdout_active"]` stamped each cycle.
 
 ### Combined-holdout interaction check
 
-When `>=2` changes adopt: one combined backtest on the holdout pool (`>= HOLDOUT_MIN_TRADES`). Each already cleared its per-change gates (z-test, fold-consistency, soft-abs floor, regime veto, holdout confirmation) — but two that pass alone can still interfere (shared logit budget, joint clamps).
+When `>=2` changes adopt: one combined backtest on the holdout pool (`>= HOLDOUT_MIN_TRADES`). Each already cleared its per-change gates, but two that pass alone can still interfere (shared logit budget, joint clamps).
 
 ```
 margin = max(0.02, ADOPTION_Z_FLOOR * holdout_jk_se)
@@ -394,7 +389,7 @@ if combined_holdout_sharpe < baseline_holdout_sharpe + margin:
     back out the WHOLE batch
 ```
 
-No iteration; if it fails, drop everything — next cycle re-proposes individually with the directional table reflecting this.
+No iteration; if it fails (or the check itself errors — it fails closed), drop everything — next cycle re-proposes individually with the directional table reflecting this.
 
 ### Crisis mode
 
@@ -403,22 +398,20 @@ Triggers on **either**:
 - **(b)** trailing-3-day Sharpe < 0 over >=20 recent trades — catches sustained multi-day collapses the recent-50 smoothing masks.
 
 - **>=3 consecutive crisis cycles** -> halve `kelly_fraction`, floor **0.04** (intentionally below the 0.05-0.18 tunable range so crisis sizes more defensively than any optimizer-adoptable state; do not "fix" the discrepancy).
-- **Restore on first non-crisis cycle** — original Kelly persisted in `state/crisis_state.json` before the cut, so a mid-pipeline crash can't compound the halving.
-- **Optimizer defers `kelly_fraction` while halving is active.** `_run_weight_optimizer` reads `state/crisis_state.json` at entry; if `kelly_reduced=True`, any `kelly_fraction` candidate is marked `decision="deferred_crisis"` and skipped, re-entering the directional table on the first non-crisis cycle.
+- **Restore on first non-crisis cycle** — original Kelly persisted in `state/crisis_state.json` **before** the cut, so a mid-pipeline crash can't compound the halving.
+- **Optimizer defers `kelly_fraction` while halving is active** — `_run_weight_optimizer` reads `crisis_state.json` at entry; if `kelly_reduced=True`, any `kelly_fraction` candidate is `decision="deferred_crisis"` and skipped, re-entering on the first non-crisis cycle.
 
 ### Adaptive exploration + structural probes (`recommender_base`)
 
-- **`EXPLORE_STEPS`** maps each tunable to a base step (e.g., `atr_sigma_ratio = 0.15`, `final_logit_clamp = 0.50`).
-- **`_rule_exploratory`** ramps step size up when the directional table shows past probes returned `|bt_delta|` under the noise floor (empirical per cycle: `max(0.003, 0.3 * baseline_jk_se)`). Each dead direction adds +50% (cap 3.0x). Adoptions reset the loop.
-- **`STRUCTURAL_PROBES`** fires once per `(param, value)` until evidence appears: `exit_edge_threshold in {-0.08, -0.05, -0.03}` (counterfactual data backs a less-strict exit); L6 turn-on at `0.005` for all three weights (`log_atr_ratio`, `autocorr_signed_mag`, `flow_disagreement`) so every closed-library feature gets >=1 evaluation cycle.
+- **`EXPLORE_STEPS`** maps each tunable to a base step (e.g. `atr_sigma_ratio = 0.15`, `final_logit_clamp = 0.50`).
+- **`_rule_exploratory`** ramps the step up when the directional table shows past probes returned `|bt_delta|` under the noise floor (`max(0.003, 0.3 * baseline_jk_se)`): +50% per dead direction (cap 3.0x); adoptions reset.
+- **`STRUCTURAL_PROBES`** fires once per `(param, value)` until evidence appears: `exit_edge_threshold in {-0.08, -0.05, -0.03}`; L6 turn-on at `0.005` for all three weights so every closed-library feature gets >=1 evaluation. Both recommenders call `_rule_structural_probes()` before `_rule_exploratory`.
 
-Both recommenders call `_rule_structural_probes()` before the rotational `_rule_exploratory`.
-
-### L6 directional bookkeeping
-
-The optimizer captures `old_value` from `signal_engine.derived_weights[fname]` for `derived_*_weight` params (not `getattr(signal_engine, param)`, which returns `None` since L6 weights live in a dict). L6 probes populate the directional table every cycle.
+L6 directional bookkeeping: the optimizer reads `old_value` from `signal_engine.derived_weights[fname]` for `derived_*_weight` params (not `getattr`, which returns `None` since L6 weights live in a dict).
 
 ## 12. What the pipeline can vs cannot touch
+
+The rule: a param is pipeline-tunable only if the realized-fill backtest can faithfully **and** safely score it. Everything the backtest can't simulate (or that's a tail-risk guard) is operator-owned.
 
 ### Pipeline-tunable (`PIPELINE_PARAMS` in `polybot/config/param_registry.py`)
 
@@ -430,7 +423,7 @@ The optimizer captures `old_value` from `signal_engine.derived_weights[fname]` f
 | **Logit amplifier** | `logit_scale` | 2.0-5.0 |
 | **L2-L5 weights** | `regime_weight` (0.01-0.15), `flow_weight` (0.02-0.12), `spot_flow_weight` (0.01-0.15), `prev_margin_weight` (0.01-0.05) | per-param |
 | | `momentum_weight` | 0.0-0.10 (magnitude only — sign is dead at L4) |
-| **Indicator committee (L4)** | `weights` (RSI/MACD/Stochastic/OBV/VWAP dict) | each >= 0.05, renormalized to sum 1.0; adopted via the L4 backtest. Handled as a dict by the optimizer and `claude_client`, not a scalar `ParamSpec`. |
+| **Indicator committee (L4)** | `weights` (RSI/MACD/Stochastic/OBV/VWAP dict) | each >= 0.05, renormalized to sum 1.0; handled as a dict, not a scalar `ParamSpec` |
 | **Sizing** | `kelly_fraction` | 0.05-0.18 |
 | **Entry gates** | `min_edge`, `min_kelly`, `min_model_probability` | tight bands |
 | **Exit** | `exit_edge_threshold` | -0.10..-0.03 |
@@ -439,11 +432,10 @@ The optimizer captures `old_value` from `signal_engine.derived_weights[fname]` f
 
 ### Manual-only (`MANUAL_ONLY_PARAMS`, validator reroutes `changes` -> `manual_observations`)
 
-- **Exit / hold magnitudes outside the curve:** `loss_cut_fraction`, `loss_cut_time_s`, `deep_loss_hold_threshold` — the backtest replays a single stored fill and can't re-simulate these branches; only `exit_edge_threshold` has a counterfactual path (§6).
-- **Entry-timing envelope + flip hurdle:** `normal_fraction`, `late_max_penalty`, `flip_edge_premium` — backtest applies raw Kelly + entry gates only (no time-of-window multiplier, no flip hurdle), so changes yield zero delta (never adoptable).
-- **Entry-time filters operator owns:** `max_edge`, `adverse_selection_threshold`, `edge_decay_threshold`.
-- **Risk caps:** `max_concurrent_positions`, `max_bankroll_deployed`.
-- **Circuit breaker:** `circuit_breaker.floor_pct`, `circuit_breaker.min_multiplier`.
+- **Exit/hold magnitudes outside the curve:** `loss_cut_fraction`, `loss_cut_time_s`, `deep_loss_hold_threshold` — the backtest replays a single stored fill and can't re-simulate these branches; only `exit_edge_threshold` has a counterfactual path (§6).
+- **Entry-timing envelope + flip hurdle:** `normal_fraction`, `late_max_penalty`, `flip_edge_premium` — backtest applies raw Kelly + entry gates only (no time-of-window multiplier, no flip hurdle), so changes yield zero delta.
+- **Entry-time filters operator owns (protective guards):** `max_edge`, `adverse_selection_threshold`, `edge_decay_threshold`.
+- **Risk caps:** `max_concurrent_positions`, `max_bankroll_deployed`. **Circuit breaker:** `circuit_breaker.floor_pct`, `circuit_breaker.min_multiplier`.
 - **Indicator periods:** `indicators.{rsi,macd,stochastic,ema,obv,atr}.*` — backtest replays stored scores at the active period; alternate periods need raw candles per snapshot.
 - **SPRT:** `sprt.{alpha,beta,observation_interval_s,min_confidence}` — intra-window timing; backtest replays a single stored fill instant.
 - **Schedule:** `trading_{start,end}_{hour_et,minute}`.
@@ -452,12 +444,12 @@ The optimizer captures `old_value` from `signal_engine.derived_weights[fname]` f
 
 ## 13. What it deliberately won't do
 
-Guardrails (most enforce a decision made above; collected here so a future edit doesn't undo one by accident):
-- No Gaussian (§2), no Binance resolution (§8), no big single bets (caps via `max_bankroll_deployed`/`max_book_fill_pct` — compounds via frequency).
+Guardrails (most enforce a decision made above; collected so a future edit doesn't undo one by accident):
+- No Gaussian (§2), no Binance resolution (§8), no big single bets (caps via `max_bankroll_deployed`/`max_book_fill_pct` — edge compounds via frequency).
 - No pattern-based exit rules ("RSI > 80, sell") and no confidence override of a scalp — exit is pure edge + time-value math (§6).
 - Don't hold a dead side for its binary residual when the calibrator's lowest-learned knot says ~0% — selling at market beats $0 expected (§6).
 - `gain_pct = pnl/size` arithmetic, never `log_return`, single source across live + backtest + isotonic fit.
-- Entry/exit edge uses the **executable CLOB book BBO** — best_ask to buy, best_bid to sell (what a FOK actually fills against), from the WS BBO with an HTTP `/book` fallback — never the mid. It deliberately does **not** use `GET /price` as primary (its negRisk cross-match returns phantom prices that spike near expiry); `/price?side=SELL` is only a sanity cross-check for a phantom WS bid on exit. The FOK ask-ladder is walked for VWAP slippage. Never skip the fee (`rate * shares * p * (1 - p)`, `rate = 0.018` in `base.DEFAULT_FEE_RATE`).
+- Entry/exit edge uses the **executable CLOB BBO** — best_ask to buy, best_bid to sell (what a FOK fills against), from the WS BBO with an HTTP `/book` fallback, never the mid. Not `GET /price` as primary (its negRisk cross-match returns phantom prices near expiry); `/price?side=SELL` is only a phantom-bid cross-check on exit. FOK ask-ladder walked for VWAP slippage. Never skip the fee (`rate*shares*p*(1-p)`, `rate=0.018` = `base.DEFAULT_FEE_RATE`).
 - Don't bypass the circuit breaker. Don't delete `polybot/db/polybot_*.db`. Regime direction is `sign(last 1-min return)`, not `sign(prob-0.5)`. Layer adjustments are always logit space, never probability space.
 
 ## 14. Project layout
@@ -468,29 +460,27 @@ polybot/
   config/                      settings.yaml, loader.py, param_registry.py (single source of truth)
   core/                        signal_engine, calibrator, order_flow, returns, regime,
                                exit_boundary, sprt, adverse_selection, derived_features,
-                               aux_layers (compute_spot_flow_signal)
-  feeds/                       coinbase_feed (primary BTC + CVD),
-                               binance_feed (1m candles, ATR), binance_depth, binance_trades,
-                               chainlink_feed (strike + resolution),
+                               aux_layers (shared model math: student_t_cdf, autocorr_vol_scale,
+                               combine_flow_family, regime_vol_factor, compute_spot_flow_signal)
+  feeds/                       coinbase_feed (primary BTC + CVD), binance_feed (1m candles, ATR),
+                               binance_depth, binance_trades, chainlink_feed (strike + resolution),
                                clob_ws, market_scanner, _socket, _staleness, _json
   indicators/                  rsi, macd, stochastic, obv, vwap, ema, atr + engine
   execution/                   base (BaseTrader, fee math), paper_trader, live_trader,
                                circuit_breaker (tiered floor), correlation
-  agents/                      scheduler (orchestrator), outcome_reviewer,
-                               counterfactual_tracker, ghost_tracker, bias_detector,
-                               ta_evolver, weight_optimizer, pipeline_tracker, pipeline_analytics,
-                               claude_client (validator), claude_recommender,
-                               recommender_base (EXPLORE_STEPS, STRUCTURAL_PROBES),
-                               local_recommender
+  agents/                      scheduler (orchestrator), outcome_reviewer, counterfactual_tracker,
+                               ghost_tracker, bias_detector, ta_evolver, weight_optimizer,
+                               pipeline_tracker, pipeline_analytics, claude_client (validator),
+                               claude_recommender, recommender_base (EXPLORE_STEPS,
+                               STRUCTURAL_PROBES), local_recommender
   memory/                      records: outcomes/, ghost_outcomes/, counterfactuals/ (+ rollups);
                                calibration/ (isotonic_params.json);
-                               state/ — rolling single-file state + logs: gate_stats.json
-                               (lifetime accumulator) + gate_stats_current.json, adverse_state,
-                               crisis_state, feed_staleness, fill_stats, latency_stats,
-                               orphan_positions, prev_resolution_margin, cf_watchlist,
-                               pipeline_history, pipeline_run_log, strategy_log.md.
-                               Full layout centralized in paths.py (MEMORY_DIR override:
-                               POLYBOT_MEMORY_DIR).
+                               state/ — rolling state + logs: gate_stats.json (lifetime accumulator)
+                               + gate_stats_current.json, adverse_state, crisis_state,
+                               feed_staleness, fill_stats, latency_stats, orphan_positions,
+                               prev_resolution_margin, cf_watchlist, pipeline_history,
+                               pipeline_run_log, strategy_log.md.
+                               Layout centralized in paths.py (MEMORY_DIR override: POLYBOT_MEMORY_DIR).
   discord_bot/                 monitoring + control commands (§18)
   db/models.py                 SQLite (positions, trade_history, bankroll, peak_bankroll).
                                Per-mode: polybot_paper.db / polybot_live.db. memory/ shared.
@@ -517,14 +507,16 @@ Trading/pipeline/test commands in Quick Start. Live pre-flight: `python verify_k
 
 - **Direction sourcing:** empirical directional table only (`pipeline_run_log.json`); no hardcoded per-param priors.
 - **Recency weighting** single source `RECENCY_DECAY_PER_DAY` in `pipeline_analytics.py` (`0.94^days_ago`, ~11-day half-life, inside the 60-day cutoff).
-- **UTC everywhere** for storage; ET only for date-bucketing (gate_stats, daily rollup) and trading-window logic.
-- **Daily rollup** runs inside the 11:45 PM ET pipeline (`rollup_old_outcomes` / `rollup_old_ghosts` / `rollup_old_counterfactuals`), bundling per-trade JSON into `rollup_YYYY-MM-DD.json`.
-- **Shared model math** lives in `aux_layers.py` — the L1 vol-autocorrelation scale (`autocorr_vol_scale`), the flow-family combine (`combine_flow_family`), the L3b regime normalization (`regime_vol_factor` + `compute_spot_flow_signal`) — called by `signal_engine` (live) and `scheduler` (replay) alike, so the optimizer can't tune against a model production doesn't run.
-- Also fixed (detailed where cited): `model_probability_raw` (§10), `gain_pct = pnl/size` never `log_return` (§13), L6 library closed (§2/§11), `edge_decay.deltas` + `adverse_kelly_mult` + aux-fields-`None`-when-stale (§10), atomic open/close (§5), per-mode DB with shared `memory/` (§14).
+- **UTC everywhere** for storage; ET (tz-aware `America/New_York`, not a fixed offset) only for date-bucketing (gate_stats, daily rollup, new-ET-day fold) and trading-window logic.
+- **Daily rollup** runs inside the 11:45 PM ET pipeline (`rollup_old_outcomes`/`_ghosts`/`_counterfactuals`), bundling per-trade JSON into `rollup_YYYY-MM-DD.json`; readers glob both per-trade and rollup files (lossless).
+- **Shared model math** in `aux_layers.py` (`student_t_cdf` + df clamp, `autocorr_vol_scale`, `combine_flow_family`, `regime_vol_factor`, `compute_spot_flow_signal`) is called by `signal_engine` (live) and `scheduler` (replay) alike, so the optimizer can't tune a model production doesn't run. Replay reconstructs the full L1-L6 logit + calibration identically; the only approximation is the per-trade vs per-tick ATR-floor buffer (§11), which cancels in the delta.
+- Other fixed-in-place invariants (cited where they live): `model_probability_raw` separate from calibrated (§10), `gain_pct=pnl/size` never `log_return` (§13), L6 library closed (§2), atomic open/close (§5), per-mode DB + shared `memory/` (§14), circuit-breaker tier persists across restart (§4).
 
 ## 18. Discord
 
-`!status` `!history [n]` `!pause` `!resume` `!clear [trades|control|all]` `!session` `!pipeline` `!commands`
+`!status` `!history [n]` `!pause` `!resume` `!clear [trades|control|all] confirm` `!session` `!pipeline` `!commands`
+
+`!pause` halts new entries only — open positions stay managed (hold/exit/resolution). `!clear` purges Discord chat messages only (never the DB/records) and requires the `confirm` token.
 
 ## 19. Persistence
 

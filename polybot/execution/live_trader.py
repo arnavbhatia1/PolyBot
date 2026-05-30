@@ -426,12 +426,12 @@ class LiveTrader(BaseTrader):
         """Warm the py-clob client's tick-size / neg-risk / fee caches for a
         market's tokens at window discovery, off the hot path.
 
-        Without this, the first FOK of each new 5-min window pays ~2 sequential
-        REST round-trips *inside* create_market_order (resolve condition_id +
-        get_clob_market_info) before it can sign. A single get_clob_market_info
-        call populates tick_size + neg_risk + fee + condition map for BOTH tokens,
-        so the entry order signs with zero network. Best-effort and idempotent per
-        condition_id; on failure the order just falls back to the per-order fetch.
+        Without this, the first FOK of each new window pays ~2 sequential REST
+        round-trips inside create_market_order (resolve condition_id +
+        get_clob_market_info) before it can sign. One get_clob_market_info call
+        populates tick_size + neg_risk + fee + condition map for BOTH tokens, so
+        the entry order signs with zero network. Best-effort, idempotent per
+        condition_id; on failure the order falls back to the per-order fetch.
         """
         if not condition_id or condition_id == self._prewarmed_condition_id:
             return
@@ -582,22 +582,11 @@ class LiveTrader(BaseTrader):
         size: float,
         timeout_s: float = 60.0,
     ) -> FillResult:
-        """Post a maker limit buy (0% fee) with timeout fallback to FOK.
+        """Post a maker limit buy (0% fee), polling for fill up to timeout_s.
 
-        Posts a limit order at *price*, polls for fill up to *timeout_s*
-        seconds.  If the order fills, returns a maker FillResult.  If not
-        filled after the timeout, cancels the resting order and falls back
-        to the existing FOK market-order path.  Any exception at any stage
-        triggers the same FOK fallback — this method never crashes the loop.
-
-        Args:
-            token_id: CLOB token ID.
-            price: Limit price (per share).
-            size: Order size in USDC.
-            timeout_s: Seconds to wait for a maker fill before falling back.
-
-        Returns:
-            FillResult with fill details (reason="maker_fill") or FOK result.
+        On fill, returns a maker FillResult. On timeout, cancels the resting
+        order and falls back to FOK. Any exception triggers the same FOK
+        fallback — this method never crashes the loop. size is USDC.
         """
         try:
             # OrderArgs.size = shares, not USDC
@@ -703,12 +692,12 @@ class LiveTrader(BaseTrader):
                            limit_price: float) -> bool | None:
         """Simulate the FOK walk against the current book snapshot.
 
-        Returns True if the order would likely fill (vwap on the correct side
-        of limit_price), False if the walk would clearly exceed the limit,
-        or None if the book is empty/unparseable (skip pre-check, let FOK try).
+        True if the order would likely fill (vwap on the correct side of
+        limit_price), False if the walk would clearly exceed it, None if the
+        book is empty/unparseable (skip pre-check, let FOK try).
 
-        BUY: vwap must be ≤ limit_price. SELL: vwap must be ≥ limit_price.
-        For BUY, `amount` is USDC notional; for SELL, it is shares.
+        BUY: vwap must be <= limit_price, `amount` is USDC notional.
+        SELL: vwap must be >= limit_price, `amount` is shares.
         """
         levels_key = "asks" if side == BUY else "bids"
         levels_raw = book.get(levels_key) or []

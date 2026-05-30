@@ -118,8 +118,7 @@ class CounterfactualTracker:
             "watched_at": time.time(),
         }
         self._schedule_save_watchlist()
-        # Implicit from the preceding SCALP block — move to debug to stop
-        # duplicating the just-emitted exit context in the console stream.
+        # Debug-level: the SCALP block already emitted this exit context to the console.
         logger.debug(
             f"SCALP watching {_slug_to_window(market_id)} | {pos.get('side', '?')} @ "
             f"{scalp_context.get('exit_fill', 0):.3f}, edge={scalp_context.get('holding_edge', 0):+.2f}"

@@ -40,7 +40,7 @@ EXPLORE_STEPS: dict[str, float] = {
 
 # Forced one-time exploration of audit-identified values. Each (param, value)
 # fires exactly once — when the directional table has no prior record AND the
-# live value isn't already there. Drives 3.4(2) L6 turn-on probes and 3.5
+# live value isn't already there. Drives the L6 turn-on probes and the
 # `exit_edge_threshold` sweep grounded in counterfactual data.
 STRUCTURAL_PROBES: list[tuple[str, float, str]] = [
     ("exit_edge_threshold", -0.08, "structural probe — counterfactual hold-better at edge ≈ -0.08"),

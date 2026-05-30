@@ -79,13 +79,9 @@ class RegimeDetector:
         vol_pct = self._compute_vol_percentile(atr, atr_history)
         dir_ratio = self._compute_directional_ratio(closes, n)
 
-        # Rules checked in priority order.
-        #
-        # ATR-based regimes (quiet/volatile) take priority -- they reflect
-        # market conditions that dominate any directional signal.  Gating
-        # these on autocorrelation is unreliable because near-constant
-        # percentage returns (gentle trends) produce artificially high
-        # autocorrelation from the shrinking denominator.
+        # Rules in priority order. ATR regimes (quiet/volatile) are checked first:
+        # gentle trends produce a shrinking-denominator autocorr spike, so directional
+        # rules can't be trusted over the vol signal.
 
         # 1. Quiet: ATR well below historical norms -- market is asleep.
         if vol_pct < self.vol_low_pct:
@@ -104,7 +100,6 @@ class RegimeDetector:
             or dir_ratio > self.trend_consistency
         )
         if is_trending:
-            # Direction from price returns (majority direction), not CVD
             returns = np.diff(closes[-(n + 1):]) / closes[-(n + 1):-1]
             up_count = np.sum(returns > 0)
             down_count = np.sum(returns < 0)

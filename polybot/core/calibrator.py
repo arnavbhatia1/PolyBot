@@ -96,10 +96,7 @@ class IsotonicCalibrator:
         if self._iso is None:
             return raw_prob
         clipped = max(_EPS, min(1.0 - _EPS, raw_prob))
-        # np.interp over the fitted knots is numerically identical to
-        # IsotonicRegression.predict (both clip then linearly interpolate over the
-        # same X_thresholds_/y_thresholds_) but avoids the per-call np.array alloc +
-        # sklearn validation/interp1d object overhead (~25us -> ~0.8us per call).
+        # np.interp fast path over the cached knots (see _x_thr/_y_thr above): ~25us -> ~0.8us.
         return float(np.interp(clipped, self._x_thr, self._y_thr))
 
     # ---- fitting ----

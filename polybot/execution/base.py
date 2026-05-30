@@ -55,11 +55,10 @@ def slippage_pct(order_size_usd: float, book_depth_usd: float,
                  impact_factor: float = 0.03) -> float:
     """Convex market impact: deeper book consumption costs disproportionately more.
 
-    Returns a percentage (0.015 = 1.5%) to add (buys) or subtract (sells).
-    Uses fill_pct * impact * (1 + fill_pct) so cost accelerates as the order
-    walks through price levels.  At 50% depth the cost is 50% higher than a
-    naive linear model; at 100% it is 2x.  Conservative for negRisk markets
-    where cross-matching creates deeper real liquidity than the raw book shows.
+    Returns a percentage (0.015 = 1.5%) to add (buys) or subtract (sells). Cost
+    accelerates via fill_pct * impact * (1 + fill_pct): 1.5x a linear model at
+    50% depth, 2x at 100%. Conservative for negRisk markets where cross-matching
+    creates deeper real liquidity than the raw book shows.
     """
     if book_depth_usd <= 0:
         return 0.0
@@ -87,12 +86,11 @@ def compute_buy_vwap(book: dict[str, Any] | None, size_usd: float) -> float | No
     """Expected BUY fill VWAP from walking the asks ladder for ``size_usd`` notional.
 
     Returns the size-weighted average price the order would pay if FOK'd against
-    the current book snapshot. Returns ``None`` when the book is missing, asks
-    are empty/unparseable, or total ask depth is below the requested size — in
-    which case the caller should fall back to a coarser gate (best-ask only).
-    The walk uses the same math as ``LiveTrader._estimate_fok_walk`` /
-    ``PaperTrader._precheck_rejects`` so the gate and the actual FOK see the
-    same book.
+    the current book snapshot, or ``None`` when the book is missing, asks are
+    empty/unparseable, or total ask depth is below the requested size (caller
+    falls back to a best-ask-only gate). Same walk math as
+    ``LiveTrader._estimate_fok_walk`` / ``PaperTrader._precheck_rejects`` so the
+    gate and the actual FOK see the same book.
     """
     if not book or size_usd <= 0:
         return None

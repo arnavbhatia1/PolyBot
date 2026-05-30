@@ -1119,7 +1119,8 @@ def _section_adoption_target(context: dict[str, Any]) -> str:
     if baseline_ks is None:
         return ""
     jk_se = ana.get("baseline_jk_se")
-    z_floor = ana.get("adoption_z_floor", 0.5)
+    from polybot.agents.weight_optimizer import ADOPTION_Z_FLOOR
+    z_floor = ana.get("adoption_z_floor", ADOPTION_Z_FLOOR)
     dyn_floor = ana.get("adoption_dynamic_floor")
     n_base = ana.get("baseline_n_trades")
     lines = [

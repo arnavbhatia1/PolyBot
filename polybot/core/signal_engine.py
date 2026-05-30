@@ -28,7 +28,7 @@ _REGIME_MOMENTUM_DAMPEN = 0.5
 # Dynamic ATR floor: max(static, FRACTION × rolling_mean). When the rolling-20
 # ATR collapses well below the long-term mean (regime shift to low vol), widen
 # the floor proportionally so L1 doesn't produce overconfident probabilities.
-# `atr_regime_shift_threshold` (0.60 default) is now pipeline-tunable.
+# `atr_regime_shift_threshold` is pipeline-tunable (range in param_registry).
 _ATR_HISTORY_SIZE = 20
 _ATR_FLOOR_FRACTION = 0.30
 _ATR_HISTORY_MIN_SAMPLES = 5
@@ -39,8 +39,6 @@ _ATR_LONG_TERM_MIN_SAMPLES = 50
 # the precision floor. Old 1e-3 clip collapsed deep-ITM precision before any
 # other layer ran; 1e-6 maps to logit ±13.8, well past the final clamp.
 _L1_CLIP = 1e-6
-# _MIN_STUDENT_T_DF (the df ≥ 3 clamp) is imported from aux_layers so live and
-# replay share one source.
 
 logger = logging.getLogger(__name__)
 

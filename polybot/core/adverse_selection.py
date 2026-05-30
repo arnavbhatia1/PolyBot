@@ -47,15 +47,9 @@ class FillEvent:
 class AdverseSelectionMonitor:
     """Track post-fill price movement to detect adverse selection.
 
-    Usage:
-        monitor = AdverseSelectionMonitor()
-        # After each fill:
-        monitor.record_fill(side="Up", fill_price=0.60, token_id="abc", midprice=0.60)
-        # On each tick:
-        monitor.update_prices(clob_ws, time.time())
-        # Check health:
-        rate = monitor.get_adverse_rate()
-        if rate > threshold: # being picked off (threshold = signal.adverse_selection_threshold)
+    Lifecycle: `record_fill` on every fill, `update_prices` each tick; `get_adverse_rate`
+    returns the (Bayesian-shrunk) fraction of fills the market faded — above
+    `signal.adverse_selection_threshold` means we're being picked off.
     """
 
     def __init__(self, max_fills: int = 200, check_windows: tuple[float, ...] = (10.0, 30.0, 60.0),

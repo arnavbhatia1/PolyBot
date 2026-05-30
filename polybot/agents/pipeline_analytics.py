@@ -1,4 +1,4 @@
-"""Pipeline analytics utilities: time weighting, distribution shift detection, SPRT aggregation."""
+"""Pipeline analytics utilities: recency weighting, distribution-shift detection, ET date helpers."""
 from __future__ import annotations
 
 import math
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
-# For the recency decay used across backtest, calibratorfit, and rollback Sharpe.
+# Recency decay shared by the backtest, calibrator fit, and rollback Sharpe.
 RECENCY_DECAY_PER_DAY: float = 0.94
 
 

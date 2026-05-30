@@ -27,14 +27,11 @@ async def _ensure_client(http_client: httpx.AsyncClient | None) -> AsyncIterator
 class BTCMarketScanner:
     """Discovers active 5-min BTC Up/Down markets on Polymarket via Gamma API.
 
-    These markets use deterministic slugs based on Unix timestamps:
-      btc-updown-5m-{window_ts}
-    where window_ts is floored to the nearest 300-second boundary.
-    Outcomes are "Up"/"Down" (not "Yes"/"No").
+    Deterministic slugs `btc-updown-5m-{window_ts}` (window_ts floored to the
+    300s boundary); outcomes are "Up"/"Down".
 
-    IMPORTANT: Gamma API outcomePrices are stale/indicative — they reflect
-    the last trade price or initial 50/50, NOT the live order book.
-    Always use fetch_clob_book() for real bid/ask prices before trading.
+    Gamma outcomePrices are stale/indicative (last trade or initial 50/50), NOT
+    the live book — always use fetch_clob_book() for real bid/ask before trading.
     """
 
     GAMMA_API = "https://gamma-api.polymarket.com"
@@ -162,19 +159,8 @@ class BTCMarketScanner:
     # --- Polymarket CLOB API (real order book, no auth required) ---
 
     async def fetch_clob_book(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> dict[str, Any]:
-        """Fetch full order book from Polymarket CLOB API.
-
-        No auth required. Caches result for _book_cache_seconds (2s).
-        Returns the raw book dict on success, or {} on failure.
-
-        Book format:
-          {
-            "bids": [{"price": "0.45", "size": "200"}, ...],  # price desc
-            "asks": [{"price": "0.55", "size": "150"}, ...],  # price asc
-            "last_trade_price": "0.50",
-            "tick_size": "0.01",
-            "min_order_size": "5"
-          }
+        """Fetch the full CLOB order book (no auth). Cached _book_cache_seconds (2s).
+        Returns the raw book dict (bids price-desc, asks price-asc), or {} on failure.
         """
         now = time.time()
         cached = self._book_cache.get(token_id)
@@ -202,11 +188,7 @@ class BTCMarketScanner:
         return DEFAULT_FEE_RATE
 
     async def fetch_tick_size(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> str:
-        """Fetch tick size from Polymarket CLOB API.
-
-        Returns tick size as a string (e.g., "0.01").
-        Caches for 1 hour. Falls back to "0.01" on error.
-        """
+        """Fetch tick size as a string (e.g. "0.01"). Cached 1h; "0.01" on error."""
         now = time.time()
         cached = self._tick_size_cache.get(token_id)
         if cached and (now - cached[0]) < self._tick_size_cache_seconds:
@@ -227,29 +209,19 @@ class BTCMarketScanner:
 
     @staticmethod
     def snap_to_tick(price: float, tick_size: str) -> float:
-        """Round price down to nearest tick size increment.
-
-        Polymarket requires prices to be multiples of tick_size and within
-        [tick_size, 1 - tick_size]. Uses string-based precision to avoid
-        floating-point drift.
-        """
+        """Round price down to the nearest tick, clamped to [tick, 1 - tick]
+        (Polymarket's valid range)."""
         tick = float(tick_size)
         if tick <= 0:
             return price
-        # Round down to tick grid
         snapped = round(int(price / tick) * tick, 10)
-        # Clamp to valid range
         min_price = tick
         max_price = round(1.0 - tick, 10)
         return max(min_price, min(snapped, max_price))
 
     @staticmethod
     def clob_best_ask(book: dict[str, Any]) -> tuple[float, float]:
-        """Return (best_ask_price, total_ask_depth) from a CLOB book dict.
-
-        Asks are sorted price ascending — first entry is the best ask.
-        Returns (0.0, 0.0) if book is empty or asks are missing.
-        """
+        """(best_ask_price, total_ask_depth); asks are price-asc. (0.0, 0.0) if empty."""
         asks = book.get("asks", [])
         if not asks:
             return (0.0, 0.0)
@@ -259,11 +231,7 @@ class BTCMarketScanner:
 
     @staticmethod
     def clob_best_bid(book: dict[str, Any]) -> tuple[float, float]:
-        """Return (best_bid_price, total_bid_depth) from a CLOB book dict.
-
-        Bids are sorted price descending — first entry is the best bid.
-        Returns (0.0, 0.0) if book is empty or bids are missing.
-        """
+        """(best_bid_price, total_bid_depth); bids are price-desc. (0.0, 0.0) if empty."""
         bids = book.get("bids", [])
         if not bids:
             return (0.0, 0.0)
@@ -273,11 +241,7 @@ class BTCMarketScanner:
 
     @staticmethod
     def clob_walk_asks(book: dict[str, Any], shares_needed: float) -> float:
-        """Walk ask levels to compute VWAP buy price for shares_needed shares.
-
-        Asks are sorted price ascending (cheapest first).
-        FOK semantics: returns 0.0 if the book cannot fill 100% of the order.
-        """
+        """VWAP buy price across price-asc ask levels. FOK: 0.0 if it can't fill 100%."""
         asks = book.get("asks", [])
         if not asks or shares_needed <= 0:
             return 0.0
@@ -296,11 +260,7 @@ class BTCMarketScanner:
 
     @staticmethod
     def clob_walk_bids(book: dict[str, Any], shares_needed: float) -> float:
-        """Walk bid levels to compute VWAP sell price for shares_needed shares.
-
-        Bids are sorted price descending (highest first).
-        FOK semantics: returns 0.0 if the book cannot fill 100% of the order.
-        """
+        """VWAP sell price across price-desc bid levels. FOK: 0.0 if it can't fill 100%."""
         bids = book.get("bids", [])
         if not bids or shares_needed <= 0:
             return 0.0
@@ -331,18 +291,11 @@ class BTCMarketScanner:
 
     async def fetch_market_price(self, token_id: str, side: str = "BUY",
                                   http_client: httpx.AsyncClient | None = None) -> float:
-        """GET /price — actual execution price accounting for negRisk cross-matching.
+        """GET /price — execution price accounting for negRisk cross-matching.
 
-        The raw token book (GET /book) only shows direct token orders.
-        In negRisk binary markets, the CLOB engine cross-matches orders
-        across complementary tokens, so the real executable price is often
-        much better than the raw best ask/bid.
-
-        Args:
-            token_id: The token to price
-            side: "BUY" or "SELL"
-
-        Returns: execution price as float, or 0.0 on error.
+        In negRisk binary markets the engine cross-matches complementary tokens,
+        so the real executable price often beats the raw best ask/bid in GET /book.
+        Returns the price as a float, or 0.0 on error.
         """
         try:
             url = f"{self.CLOB_API}/price"

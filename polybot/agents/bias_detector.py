@@ -1,8 +1,8 @@
 """BiasDetector: multi-dimensional analysis of trade outcomes for the learning pipeline.
 
-Runs on the 60% training split each night. Produces per-indicator accuracy, side/time/
-regime/volatility breakdowns, calibration curve, edge realization, counterfactual analysis,
-ghost trade gate analysis, cross-window correlation, and time-to-resolution distributions.
+Runs on the holdout-excluded, ghost-filtered real-trades pool (opt_real) each night.
+Produces per-indicator accuracy, side/time/regime/volatility breakdowns, calibration
+curve, edge realization, counterfactual analysis, and ghost-trade gate analysis.
 """
 from __future__ import annotations
 

@@ -83,7 +83,7 @@ class PipelineTracker:
 
         Review windows: 7d (rollback trigger + prediction accuracy), 14d (decay), 30d (trend).
         After both 7d and 14d are filled, computes decay status and retention ratio.
-        DECAYED = Sharpe at 14d < 50% of Sharpe at 7d.
+        DECAYED = 14d delta-Sharpe < 50% of 7d delta-Sharpe (retention < 0.50).
         """
         records = self._load()
         if not records or not outcomes:

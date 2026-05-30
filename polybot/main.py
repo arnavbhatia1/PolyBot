@@ -92,7 +92,8 @@ _console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datef
 _file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="a", encoding="utf-8")
 _file_handler.setFormatter(_StripAnsiFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
 
-# Async logging: ost 1-5ms on disk and matter when scalp decisions chain 5-10 log lines.
+# Async logging: disk writes cost 1-5ms and add up when a scalp decision chains 5-10
+# log lines, so logging is offloaded to a queue thread (below) off the hot path.
 import queue as _queue
 _log_queue: _queue.Queue = _queue.Queue(-1)  # unbounded so logging never blocks
 _queue_handler = logging.handlers.QueueHandler(_log_queue)
@@ -138,7 +139,7 @@ _WS_STALE_S = 10.0  # max age for CLOB WS BBA/book before treating as stale
 
 # Per-feed freshness thresholds for the auxiliary-signal stamping. Each new
 # trade_context field is None when its source is missing or stale beyond these
-# limits — never 0.0, so Pillar 2 can distinguish "feed cold" from "real zero".
+# limits — never 0.0, so the layers can distinguish "feed cold" from "real zero".
 _AUX_FRESH_S_COINBASE = 10.0
 _AUX_FRESH_S_TRADES = 10.0
 _AUX_FRESH_S_DEPTH = 5.0
@@ -633,8 +634,8 @@ async def _evaluate_signal_and_enter(
     """Compute indicators/flow/signal, check for entry, size the trade, execute."""
 
     # Aux signals are stamped once per evaluation so every ghost rejection and
-    # every filled outcome share the same schema. Pillar 2 layers can rely on
-    # the aux fields being either a real value or None — never a 0.0 stand-in.
+    # every filled outcome share the same schema. The layers can rely on the aux
+    # fields being either a real value or None — never a 0.0 stand-in.
     aux_signals = _build_aux_signals(
         coinbase_feed, trades_feed, depth_feed, binance_feed,
     )
@@ -710,10 +711,8 @@ async def _evaluate_signal_and_enter(
     if chainlink_feed and chainlink_feed.age_seconds > 60:
         stale_feeds.append(f"chainlink={chainlink_feed.age_seconds:.0f}s")
     # Binance aggTrade underpins L3b (CVD/taker) and the CVD-deceleration gate.
-    # Previously the staleness check lived inside the spot_flow computation and
-    # silently zeroed L3b on stale data; now we skip entirely (matches CLAUDE.md's
-    # documented behavior) so we don't size off a degraded model when the feed
-    # goes silent.
+    # Skip entirely on stale data rather than silently zeroing L3b — we don't
+    # size off a degraded model when the feed goes silent.
     if trades_feed is not None and trades_feed.accumulator is not None:
         agg_age = trades_feed.accumulator.latest_age_s
         if agg_age > 30:
@@ -978,9 +977,6 @@ async def _evaluate_signal_and_enter(
         # Real round-trip cost in price units: enter at ask (cross half-spread),
         # exit at bid (cross half-spread) = full `spread` plus fee impact on both
         # legs. Polymarket fee impact = fee_rate × p × (1-p), max ~0.45% at ATM.
-        # Old formula `spread/2 + fee_rate` mixed half-spread (price units) with
-        # raw fee_rate (a rate), over-conservative on tight spreads and
-        # under-conservative on wide ones.
         side_price = price_up if side == "Up" else price_down
         if spread_est >= 0:
             fee_impact_one_leg = DEFAULT_FEE_RATE * side_price * (1.0 - side_price)
@@ -1077,7 +1073,7 @@ async def _evaluate_signal_and_enter(
             _record_skip(f"regime:{regime_state.name}")
             _emit_gate_skip(cid, f"regime_{regime_state.name}", f"regime={regime_state.name}")
             return None, last_eval_log_window
-        # Regime: logged for pipeline, NOT applied to sizing (operates near noise at SE=0.14)
+        # Regime: logged for the pipeline, NOT applied to sizing (its Sharpe edge sits inside the noise band).
 
     # Signal consensus: scales size by how many flow signals agree with the chosen side.
     consensus_signals = {
@@ -1110,11 +1106,10 @@ async def _evaluate_signal_and_enter(
     # Cap size to fraction of book depth (realistic fill constraint — unlike risk caps,
     # this is about whether the order can actually fill).
     #
-    # The thin-CLOB-depth gate upstream uses AND across both sides (proceeds if EITHER
-    # side has depth ≥ min). When the chosen side is the empty/thin one of a one-sided
-    # book, we'd previously skip this entire branch (`side_depth > 0` was False) and
-    # blast a full-Kelly order into a 0-liquidity book. Treat an empty/below-floor
-    # chosen-side depth as an explicit skip instead.
+    # The upstream thin-CLOB-depth gate proceeds if EITHER side has depth ≥ min, so the
+    # chosen side can still be the empty/thin leg of a one-sided book. Treat a chosen-side
+    # depth below the floor as an explicit skip rather than blasting a full-Kelly order
+    # into a 0-liquidity book.
     side_depth = depth_usd_up if side == "Up" else depth_usd_down
     max_fill_pct = config.get("execution", {}).get("max_book_fill_pct", 0.50)
     # Reuse the same floor as the upstream both-sides-thin gate so configuration
@@ -1404,7 +1399,8 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             logger.info(f"EVAL {_slug_to_window(cid)}: No strike yet — buffer has {buf_len} candles")
         return None, None, window_strikes, last_eval_log_window, "none"
 
-    # BTC price priority: Coinbase WS > Binance aggTrade > Binance 1-min candle
+    # BTC price comes from Coinbase WS only (the venue Chainlink resolves against);
+    # a stale Coinbase feed returns 0 here and skips the decision.
     trades_feed = kwargs.get("trades_feed")
     btc_price, _price_source = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed)
     if btc_price <= 0:
@@ -1663,15 +1659,13 @@ async def _evaluate_and_exit_position(
         coinbase_feed: Any = None,
         chainlink_feed: Any = None) -> tuple[int, int, float, str | None]:
     """Re-evaluate an active position and exit (scalp) if holding edge is gone."""
-    # NOTE: previously we short-circuited the whole function for any position in
-    # _abandoned_scalp_positions, which silenced 30s hold logs AND prevented any
-    # re-attempt if the price recovered above the $1 CLOB minimum. The deferral
-    # now happens at the actual scalp step (just before close_trade), so we keep
-    # monitoring, keep emitting heartbeats, and resume scalping on recovery.
-    # BTC price priority: Coinbase WS > Binance aggTrade > Binance 1-min candle.
-    # Each leg is hard-gated in _fastest_btc_price; if all three are stale
-    # btc_now is 0 and we HOLD without scalping. Acting on a stale BTC
-    # produced the "moved against us (2%)" pathology mid-window.
+    # Deferral for too-small positions happens at the actual scalp step (just
+    # before close_trade), NOT here — so an abandoned-scalp position keeps being
+    # monitored, keeps emitting heartbeats, and resumes scalping if the bid
+    # recovers above the $1 CLOB minimum.
+    # btc_now comes from _fastest_btc_price (Coinbase only); if stale it returns 0
+    # and we HOLD without scalping. Acting on a stale BTC produced the "moved
+    # against us (2%)" pathology mid-window.
     btc_now, _btc_src = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed)
     if btc_now <= 0:
         _log_hold_heartbeat_stale(pos, live, "no fresh BTC price")
@@ -2344,9 +2338,9 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=60),
         )
 
-    # Day tracking for open/close banners
-    # At scheduled restart (12:15 AM ET), start fresh at 0W/0L.
-    # Only restore from DB if it's a mid-day restart (trading already happened today).
+    # Day tracking for open/close banners.
+    # At the scheduled ~12:01 AM ET restart (12:00-12:30 window), start fresh at 0W/0L.
+    # Only restore from DB on a mid-day restart (trading already happened today).
     from zoneinfo import ZoneInfo
     ET_tz = ZoneInfo("America/New_York")
     _now_et = datetime.now(ET_tz)
