@@ -1,5 +1,116 @@
 # Model Improvements — making the base model trade better
 
+---
+
+# ⭐ STRATEGIC STATUS & REFRAME — 2026-05-31 (READ THIS FIRST)
+
+> **The headline below ("edge = better P(up) model") was tested with data and is wrong.**
+> Everything under "## Model Improvements" still holds as *incremental* model work, but it is
+> **not the priority** until a base edge is proven to exist. This section is the live source of
+> truth for what we're actually trying to achieve and why.
+
+## What we set out to do
+Build a *great* bot. For months the working theory (and the premise of the roadmap below) was:
+the edge comes from forecasting P(BTC up this window) more accurately than the market price.
+We finally **measured** that theory instead of assuming it.
+
+## What the data actually says (the evidence — measured, not guessed)
+- **Model vs market horse race** (1,310 resolved trades + ghosts): model log-loss **1.0520** vs
+  market price **0.6700** vs constant base-rate **0.6774**. *Our model is worse than the market by
+  a mile, and worse than guessing the base rate.* (Brier: model 0.35 vs market 0.24.)
+- **The trades we most want are the ones we're most wrong on:** the "edge ≥ 4pp" cohort (479 trades)
+  won **56.4%** while the market priced them at **63.5%**. When the model shouts "edge," the market
+  was right and we were wrong — the textbook *optimizer's curse*.
+- **Track record (paper):** 763→918+ trades, per-trade Sharpe ≈ **0.002** (statistical zero).
+  Bankroll **$132 peak → ~$83** now; resolution-holds (+) and early scalps (−) roughly cancel.
+  Counterfactuals show the scalp logic is ~neutral, not the culprit — the missing piece is **edge**.
+- **Conclusion:** a better P(up) model is NOT where the edge is. The market already forecasts 5-min
+  BTC direction better than we can, and 1.8% taker fees + ~300 trades/day is a hostile fee structure
+  for a near-zero forecasting edge. *Confidence: high.*
+
+## What we did about it (2026-05-30/31)
+1. **Froze the learning pipeline** (sentinel `memory/state/PIPELINE_FROZEN`; gates `save_config` +
+   calibrator save). This is a **one-time measurement freeze**, not the production cadence — it makes
+   the next ~2 weeks **one stationary strategy** so its Sharpe/log-loss are interpretable. Reversible:
+   delete the file to resume daily adoption.
+2. **Built passive microstructure telemetry** (`feeds/microstructure_recorder.py`, two observation-only
+   hooks in `main.py`, analyzer `analyze_microstructure.py`). Logs CLOB-book-vs-spot snapshots to
+   `memory/microstructure/` (gitignored, local-only). Zero effect on trading.
+
+## The edge hunt — hypotheses & verdicts
+Each is a falsifiable test with a **pre-registered** PURSUE/KILL threshold (don't move them after
+seeing data). "KILL" = *this specific edge hypothesis is disproven — stop pursuing it*, NOT "kill the
+bot." Eliminating dead ends fast is the point.
+
+| # | Hypothesis | Type | Verdict (as of 2026-05-31, ~1 day) |
+|---|---|---|---|
+| H1 | **Forecasting edge** — out-predict the market price | model | **KILL** — disproven by horse race above |
+| H2 | **Latency / stale-quote arb** — pick off a slow CLOB book when spot moves | taker | **KILL (early)** — book staleness p90 = 18ms; reprices ~instantly. No lag to exploit at our speed |
+| H3 | **Resolution-lag** — buy the Chainlink-near-certain side at a discount in the last 60s | taker | **KILL (early)** — winning side already priced right; only 9.4% offer a fillable ≥5pp discount |
+| H4 | **Fill toxicity** — are we the adversely-selected taker? | risk | **Borderline** — post-fill drift mildly negative; informs the maker case |
+
+*Verdicts H2–H4 are ~1 day of data — directional, not final. The 2-week baseline confirms them
+across regimes (esp. a high-volatility stretch, the one thing that could re-open H2/H3).*
+
+## Where this is heading: the MAKER pivot (likely primary direction)
+Every KILL above is a **taker** hypothesis, and we *pay* 1.8% to take liquidity. The structural
+inversion:
+- **Post resting limit orders** at/near the best instead of crossing the spread with FOK.
+- **Earn the spread** and flip the fee from a cost toward a maker rebate/zero — the single biggest
+  swing in the unit economics.
+- Get filled by exactly the impatient taker flow that currently picks *us* off (H4).
+- **The real work is risk, not forecasting:** inventory management, adverse-selection on fills,
+  quote placement/skew, and binary-resolution exposure on unhedged inventory near expiry.
+- **Why it's promising:** there's a sound economic reason a non-HFT participant can earn spread in a
+  thin market like Polymarket 5-min BTC, where forecasting and latency edges are closed.
+- **What it needs:** a quoting/limit-order execution path (today's `LiveTrader` is FOK-only), a
+  maker-fee check on Polymarket, and its own falsifiable paper experiment before any real money.
+- *Confidence: moderate — unvalidated, but the logic and the KILLs both point here.*
+
+## Hypothesized edges — running list (add freely; each gets a falsifiable test)
+- **Maker / spread capture** (H5) — see above. Front-runner.
+- **Cross-venue lead-lag** (H6) — does Binance lead Coinbase/Chainlink on 1–5s horizons? Likely
+  overfished by HFT, but cheap to check from data we already log.
+- **Session / time-of-day conditioning** (H7) — not a standalone edge, but a real *calibration/sizing*
+  improvement (see #1a below) once a base edge exists.
+- **Selective participation** (H8) — if we can't predict winners, can we predict *toxic* windows and
+  simply not trade them? Filtering the bad half could flip break-even to positive even with no
+  forecasting edge. Testable from ghost + outcome data.
+- **Weekend / day-of-week effect** (H9) — *early signal, 2026-06-01:* weekday win rate 60–64% vs
+  weekend 50–54% (mean gain +5.2% vs −4.1%) in the first ~5 days. Plausible mechanism: BTC weekend
+  seasonality (low vol/volume, thin books, chop) makes the vol-scaled L1 overconfident and fills
+  worse. **NOT confirmed — N=1 weekend; can't separate "weekend" from "one low-vol regime."** Re-check
+  at the end of the frozen run (~2 weekends). If it holds, fix = a weekday/weekend calibration bucket
+  (#1a) or simply skip weekend trading. Do NOT act mid-experiment.
+- *(add new hypotheses here as we think of them)*
+
+## The asset we already have (genuinely good news)
+The **infrastructure is alpha-agnostic and strong** (~82/100 engineering): leak-controlled backtests,
+crash-coherent state, calibration gating, ghost tracking, shared live/replay math, full telemetry.
+The months of work built **the factory**; the model is just one product line that didn't pan out. A
+maker strategy (or any future edge) plugs straight into machinery that already works — we are not
+starting over. And we learned the forecasting edge is dead in **paper, at $0 real loss** — the truth
+most retail bots only buy with a blown-up live account.
+
+## The plan / definition of done
+1. **Now → ~2026-06-13:** let the frozen baseline run (paper). Don't touch params; don't act on daily
+   noise. Re-run `python analyze_microstructure.py` ~day 7 (≈2026-06-06) and ~day 14.
+2. **If H2/H3 stay KILL through a volatile stretch:** build the **maker** execution path + a falsifiable
+   paper experiment (H5).
+3. **Only after a real edge is measured:** turn daily learning back on, **tiered** — fast adaptation
+   on high-signal inputs (calibration, risk/sizing), slow/evidence-gated adoption on low-signal core
+   params (raise the z-floor; adopt on accumulated significance, not one day of noise).
+
+---
+
+## Model Improvements — making the base model trade better
+
+> **[Superseded 2026-05-31]** The premise below — that the edge is a better P(up) model — was
+> falsified by the horse race (see Strategic Status above). Keep this roadmap: calibration (#1) still
+> improves *sizing* regardless of edge source, and these items remain valid *incremental* work. But
+> none of it is the priority until a base edge (likely maker, H5) exists. Do not read the line below
+> as the current strategy.
+
 The bot's edge comes from one thing: **how accurately it estimates P(BTC closes up this window).**
 The plumbing (feeds, execution, learning pipeline) is sound. This file is the focused roadmap
 for the only thing that actually grows edge — a better probability model.

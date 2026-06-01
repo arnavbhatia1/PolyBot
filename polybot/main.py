@@ -58,6 +58,7 @@ import math
 from polybot.feeds.binance_depth import BinanceDepthFeed
 from polybot.feeds.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
 from polybot.feeds.coinbase_feed import CoinbaseFeed
+from polybot.feeds.microstructure_recorder import MicrostructureRecorder
 from polybot.feeds._staleness import snapshot_feeds as _staleness_snapshot, write_feeds as _staleness_write
 from polybot.core.sprt import SPRTAccumulator
 from polybot.core.regime import RegimeDetector
@@ -208,6 +209,8 @@ def _save_prev_resolution_margin(margin: float) -> None:
 
 _sprt: SPRTAccumulator | None = None
 _regime_detector: RegimeDetector | None = None
+# Passive edge-discovery telemetry (observation-only; never gates a decision).
+_micro_recorder: MicrostructureRecorder | None = None
 _current_window_id: str = ""
 _early_entry_fired: bool = False
 _adverse_monitor: AdverseSelectionMonitor | None = None
@@ -298,6 +301,45 @@ def _fmt_secs(s: float) -> str:
     """Seconds remaining formatted as M:SS — 298 → '4:58'. Easier to scan than '298s'."""
     s_int = max(0, int(s))
     return f"{s_int // 60}:{s_int % 60:02d}"
+
+
+def _record_micro(clob_ws: Any, token_up: str, token_down: str, *,
+                  market_id: str, seconds_remaining: float, phase: str,
+                  coinbase_feed: Any, chainlink_feed: Any, strike: float,
+                  model_prob_up: float | None = None) -> None:
+    """Feed one passive microstructure snapshot to the recorder. Observation-only;
+    pulls the CLOB BBO + book-update timestamp for both tokens and the spot/Chainlink
+    state. Never raises into the caller — the recorder guards itself, and this wrapper
+    no-ops when telemetry is disabled or the recorder isn't up yet.
+    """
+    rec = _micro_recorder
+    if rec is None or not rec.enabled:
+        return
+    def _bba(tok: str) -> tuple[float, float, float]:
+        d = clob_ws.best_bid_ask.get(tok, {}) if clob_ws else {}
+        try:
+            return (float(d.get("best_bid", 0) or 0), float(d.get("best_ask", 0) or 0),
+                    float(d.get("ts", 0) or 0))
+        except (TypeError, ValueError):
+            return (0.0, 0.0, 0.0)
+    bid_up, ask_up, bkts_up = _bba(token_up)
+    bid_dn, ask_dn, bkts_dn = _bba(token_down)
+    cb_price = cb_age = 0.0
+    if coinbase_feed is not None:
+        cb_price = getattr(coinbase_feed.state, "price", 0.0) or 0.0
+        cb_age = getattr(coinbase_feed.state, "age_seconds", 0.0) or 0.0
+    cl_price = cl_age = 0.0
+    if chainlink_feed is not None:
+        cl_price = getattr(chainlink_feed, "price", 0.0) or 0.0
+        cl_age = getattr(chainlink_feed, "age_seconds", 0.0) or 0.0
+    rec.sample(
+        market_id=market_id, seconds_remaining=seconds_remaining, phase=phase,
+        coinbase_price=cb_price, coinbase_age=cb_age, strike=strike,
+        bid_up=bid_up, ask_up=ask_up, bkts_up=bkts_up,
+        bid_down=bid_dn, ask_down=ask_dn, bkts_down=bkts_dn,
+        chainlink_price=cl_price, chainlink_age=cl_age,
+        model_prob_up=model_prob_up,
+    )
 
 
 def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
@@ -1718,6 +1760,16 @@ async def _evaluate_and_exit_position(
     ws_ask = float(bba.get("best_ask", 0) or 0)
     market_mid = (ws_bid + ws_ask) / 2.0 if (ws_bid > 0 and ws_ask > 0) else 0.0
     bid_age = time.time() - float(bba.get("ts", 0) or 0)
+
+    # Passive edge-discovery snapshot (hold path). Captured BEFORE the no-fresh-bid
+    # early-return so endgame book staleness is recorded even when the bid is absent
+    # — that absence is itself Experiment-B signal (resolution-lag fillability).
+    _record_micro(clob_ws, live.get("token_id_up", ""), live.get("token_id_down", ""),
+                  market_id=pos.get("market_id", ""),
+                  seconds_remaining=live.get("seconds_remaining", 0), phase="hold",
+                  coinbase_feed=coinbase_feed, chainlink_feed=chainlink_feed,
+                  strike=strike_now)
+
     if not (ws_bid > 0 and bid_age <= 10):
         # No fresh bid — can't make exit decisions, but still emit the HOLD heartbeat
         # so the operator knows the position is being monitored.
@@ -2563,6 +2615,12 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             if strike is None:
                 continue
 
+            # Passive edge-discovery snapshot (flat/pre-entry). Observation-only.
+            _record_micro(clob_ws, token_up, token_down, market_id=cid,
+                          seconds_remaining=contract.get("seconds_remaining", 0),
+                          phase="flat", coinbase_feed=coinbase_feed,
+                          chainlink_feed=chainlink_feed, strike=strike)
+
             current_bankroll = await db.get_bankroll()
             traded_cid, last_eval_log_window = await _evaluate_signal_and_enter(
                 contract, cid, binance_feed, indicator_engine,
@@ -2997,6 +3055,12 @@ async def main() -> None:
 
     global _adverse_monitor
     _adverse_monitor = AdverseSelectionMonitor()
+
+    global _micro_recorder
+    _micro_recorder = MicrostructureRecorder()
+    if _micro_recorder.enabled:
+        logger.info("Microstructure telemetry ON — logging to memory/microstructure/ "
+                    "(set POLYBOT_DISABLE_MICRO_LOG=1 to disable)")
 
     await scheduler.start()
     await binance_feed.start()

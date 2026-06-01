@@ -2505,10 +2505,17 @@ class AgentScheduler:
             # artifact on its own. Saving the calibrator first risked a brand-new
             # calibrator paired with stale weights, which is the worse half.
             if _pending_cal_save is not None:
-                try:
-                    _pending_cal_save.save()
-                except Exception as e:
-                    logger.error(f"Failed to persist isotonic calibrator: {e}")
+                from polybot.paths import is_pipeline_frozen
+                if is_pipeline_frozen():
+                    logger.warning(
+                        "PIPELINE FROZEN — isotonic calibrator save suppressed; "
+                        "calibration held fixed (delete memory/state/PIPELINE_FROZEN to resume)"
+                    )
+                else:
+                    try:
+                        _pending_cal_save.save()
+                    except Exception as e:
+                        logger.error(f"Failed to persist isotonic calibrator: {e}")
         pipeline_info["weights"] = weight_info
 
         # All-time stats — real trades only (ghosts have a gain_pct but no pnl, so they'd

@@ -31,6 +31,11 @@ OUTCOMES_DIR: Path = MEMORY_DIR / "outcomes"
 GHOSTS_DIR: Path = MEMORY_DIR / "ghost_outcomes"
 COUNTERFACTUALS_DIR: Path = MEMORY_DIR / "counterfactuals"
 
+# Passive microstructure telemetry (edge-discovery instrumentation). One JSONL per
+# ET day of CLOB-book-vs-spot snapshots; observation-only, never read by the trading
+# loop. Aggregated offline by tools/analyze_microstructure.py. See MicrostructureRecorder.
+MICROSTRUCTURE_DIR: Path = MEMORY_DIR / "microstructure"
+
 # ── Calibrator ────────────────────────────────────────────────────────────────
 CALIBRATION_DIR: Path = MEMORY_DIR / "calibration"
 CALIBRATION_PARAMS_PATH: Path = CALIBRATION_DIR / "isotonic_params.json"
@@ -53,6 +58,22 @@ STRATEGY_LOG_PATH: Path = STATE_DIR / "strategy_log.md"
 # ET day folds into the accumulator (see fold_gate_day + main._ensure_gate_stats_day_loaded).
 GATE_STATS_PATH: Path = STATE_DIR / "gate_stats.json"                 # accumulator
 GATE_STATS_CURRENT_PATH: Path = STATE_DIR / "gate_stats_current.json"  # today only
+
+# Pipeline freeze sentinel. When this file exists, the nightly pipeline still RUNS
+# (analysis, directional table, "would-adopt" diagnostics, rollups) but does NOT
+# mutate the live strategy: save_config() and the isotonic calibrator save become
+# no-ops. This holds every tunable param + the calibrator fixed so a multi-day
+# paper run is ONE stationary strategy — a clean control whose Sharpe/log-loss is
+# interpretable. Freeze: create the file. Unfreeze: delete it. Git-visible on purpose.
+PIPELINE_FROZEN_PATH: Path = STATE_DIR / "PIPELINE_FROZEN"
+
+
+def is_pipeline_frozen() -> bool:
+    """True when the freeze sentinel is present (pipeline mutations suppressed)."""
+    try:
+        return PIPELINE_FROZEN_PATH.exists()
+    except Exception:
+        return False
 
 
 def fold_gate_day(acc_path: Path, counts: dict, day_key: str) -> dict | None:

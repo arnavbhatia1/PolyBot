@@ -24,6 +24,10 @@ polybot/config/.env
 polybot.log
 polybot.log.*
 
+# Passive microstructure telemetry — high-volume (~3.5MB/day), local-only.
+# Persists on disk across restarts for offline analysis; no need to commit.
+polybot/memory/microstructure/
+
 # IDE
 .vscode/
 .idea/

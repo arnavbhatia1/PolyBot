@@ -62,8 +62,10 @@ def test_get_snapshot_serializable(engine):
     json.dumps(engine.get_snapshot(indicators))
 
 def test_default_weights(engine):
+    # Canonical L4 weights (settings.yaml / registry _MANUAL_DEFAULTS / signal_engine
+    # fallbacks): rsi .20 / macd .30 / stoch .15 / obv .15 / vwap .20.
     w = engine.get_weights()
-    assert w["rsi"] == 0.20 and w["macd"] == 0.25
+    assert w["rsi"] == 0.20 and w["macd"] == 0.30
 
 def test_set_weights_updates_in_place(engine):
     engine.set_weights({"rsi": 0.30, "macd": 0.30, "stochastic": 0.15, "obv": 0.10, "vwap": 0.15})

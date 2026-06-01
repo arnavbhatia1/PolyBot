@@ -157,3 +157,46 @@
 - None
 
 **Reasoning:** Local recommender
+
+## 2026-05-31T03:45:39.712690+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - flow_weight=0.07 (exploratory up step (×1.5))
+  - spot_flow_weight=0.07 (exploratory down step (×1.5))
+  - min_model_probability=0.58 (exploratory up step)
+  - prev_margin_weight=0.035 (exploratory up step (×1.5))
+  - min_atr=16.5 (exploratory up step (×1.5))
+
+**Manual Suggestions (1) [operator-only]:**
+  - flip_edge_premium: 0.015 -> 0.035 [?]
+    flip Sharpe -0.021 trails base by 0.055 and negative — raise premium aggressively
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
+
+## 2026-06-01T03:45:15.660923+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - kelly_fraction=0.05 (exploratory down step (×1.5))
+  - min_edge=0.025 (exploratory down step (×1.5))
+  - min_kelly=0.016 (exploratory up step (×1.5))
+  - regime_momentum_threshold=0.09 (exploratory down step (×1.5))
+  - exit_edge_threshold=-0.07 (exploratory up step (×1.5))
+
+**Manual Suggestions (0) [operator-only]:**
+  - none
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender

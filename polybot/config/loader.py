@@ -135,6 +135,18 @@ def save_config(config: dict[str, Any], config_path: str | Path | None = None) -
     changed values, then writes back. Your hand-written comments survive.
     """
     from ruamel.yaml import YAML
+    from polybot.paths import is_pipeline_frozen
+
+    # Freeze gate: when the sentinel is present, every pipeline-adopted param write
+    # (weight optimizer, regime/revert adoptions, crisis-mode kelly) is suppressed so
+    # the live strategy stays fixed for a clean multi-day measurement. See paths.py.
+    if is_pipeline_frozen():
+        import logging
+        logging.getLogger("polybot").warning(
+            "PIPELINE FROZEN — save_config() suppressed; settings.yaml unchanged "
+            "(delete memory/state/PIPELINE_FROZEN to resume adoption)"
+        )
+        return
 
     config_dir = Path(__file__).parent
     if config_path is None:
