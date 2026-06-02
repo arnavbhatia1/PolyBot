@@ -2,7 +2,11 @@
 # Usage: .\run_polybot.ps1
 
 $ErrorActionPreference = "Continue"
-Set-Location $PSScriptRoot
+
+# This script lives in <repo>\scripts\, but the polybot package is at the repo
+# root. Run everything from the repo root so `python -m polybot.main` resolves.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location $RepoRoot
 
 # Prevent machine from sleeping
 powercfg -change -standby-timeout-ac 0
@@ -19,7 +23,7 @@ while ($true) {
     git pull origin main 2>$null
 
     # Read mode from settings.yaml so this is the only place you need to change it
-    $settingsPath = Join-Path $PSScriptRoot "polybot\config\settings.yaml"
+    $settingsPath = Join-Path $RepoRoot "polybot\config\settings.yaml"
     $mode = "paper"
     if (Test-Path $settingsPath) {
         $modeLine = Select-String -Path $settingsPath -Pattern "^mode:" | Select-Object -First 1
