@@ -39,6 +39,10 @@ for _s in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
+# Runs from scripts/ — put the repo root on sys.path so `import polybot` resolves
+# regardless of the caller's CWD (e.g. Windows Task Scheduler).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from polybot.paths import MICROSTRUCTURE_DIR, OUTCOMES_DIR
 
 # Pre-registered thresholds (decided before seeing the data — do not move them after).
