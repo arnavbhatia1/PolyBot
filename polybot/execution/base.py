@@ -48,7 +48,14 @@ class FillResult:
 # Fee math (canonical — imported by paper_trader, live_trader, main)
 # ---------------------------------------------------------------------------
 
-DEFAULT_FEE_RATE = 0.018  # Polymarket Dynamic taker fee model: 1.8% peak
+# Polymarket's `feeRate` coefficient for Crypto markets (docs.polymarket.com/trading/fees).
+# It goes INSIDE the formula `fee = feeRate x shares x p x (1-p)` — a coefficient, not a flat
+# percentage. Peak effective fee is feeRate x 0.25 = 1.75% of payout at p=0.50.
+DEFAULT_FEE_RATE = 0.07
+
+# Flat per-share effective-fee proxy (= feeRate x 0.25, the p=0.50 peak). Use ONLY where the fee
+# is a flat additive cost term (spread/exec-cost gates), never inside the p(1-p) formula.
+EFFECTIVE_FEE_PEAK = round(DEFAULT_FEE_RATE * 0.25, 5)  # 0.0175
 
 
 def slippage_pct(order_size_usd: float, book_depth_usd: float,

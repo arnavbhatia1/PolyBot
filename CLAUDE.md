@@ -173,7 +173,7 @@ Edge = `calibrated_model_prob - market_price`. **All** must pass; any single fai
 | Chosen-side `prob` | >= `min_model_probability` (default 0.56) | `SignalEngine.evaluate` |
 | `edge` | >= `min_edge` (default 0.04, scaled by flip premium — §7) | `SignalEngine.evaluate` |
 | `Kelly` (fee-aware) | >= `min_kelly` (default 0.01); `b_eff = b * (1 - fee_rate)` | `SignalEngine._kelly` |
-| Spread either side | `spread/2 + DEFAULT_FEE_RATE <= max_spread` (default 0.10) | `_fetch_market_prices` |
+| Spread either side | `spread/2 + EFFECTIVE_FEE_PEAK <= max_spread` (default 0.10) | `_fetch_market_prices` |
 | Book depth | both-sides-thin first (>= `min_book_depth_usd = $50` on at least one side); chosen-side depth must also clear it | `_evaluate_signal_and_enter` |
 | Price sum | `price_up + price_down in [0.98, 1.02]` (cross-book no-arb) | `_fetch_market_prices` |
 | Book freshness | both sides' WS BBO <= `_WS_STALE_S = 10s` old | `clob_ws.both_books_fresh` |
@@ -449,7 +449,7 @@ Guardrails (most enforce a decision made above; collected so a future edit doesn
 - No pattern-based exit rules ("RSI > 80, sell") and no confidence override of a scalp — exit is pure edge + time-value math (§6).
 - Don't hold a dead side for its binary residual when the calibrator's lowest-learned knot says ~0% — selling at market beats $0 expected (§6).
 - `gain_pct = pnl/size` arithmetic, never `log_return`, single source across live + backtest + isotonic fit.
-- Entry/exit edge uses the **executable CLOB BBO** — best_ask to buy, best_bid to sell (what a FOK fills against), from the WS BBO with an HTTP `/book` fallback, never the mid. Not `GET /price` as primary (its negRisk cross-match returns phantom prices near expiry); `/price?side=SELL` is only a phantom-bid cross-check on exit. FOK ask-ladder walked for VWAP slippage. Never skip the fee (`rate*shares*p*(1-p)`, `rate=0.018` = `base.DEFAULT_FEE_RATE`).
+- Entry/exit edge uses the **executable CLOB BBO** — best_ask to buy, best_bid to sell (what a FOK fills against), from the WS BBO with an HTTP `/book` fallback, never the mid. Not `GET /price` as primary (its negRisk cross-match returns phantom prices near expiry); `/price?side=SELL` is only a phantom-bid cross-check on exit. FOK ask-ladder walked for VWAP slippage. Never skip the fee (`rate*shares*p*(1-p)`, `rate=0.07` = `base.DEFAULT_FEE_RATE`, Polymarket Crypto `feeRate`; peak effective 1.75% at p=0.5). `DEFAULT_FEE_RATE` is the **coefficient** inside the `p(1-p)` formula; flat-additive cost gates use `EFFECTIVE_FEE_PEAK` (= `rate*0.25` = 0.0175) instead — never mix them.
 - Don't bypass the circuit breaker. Don't delete `polybot/db/polybot_*.db`. Regime direction is `sign(last 1-min return)`, not `sign(prob-0.5)`. Layer adjustments are always logit space, never probability space.
 
 ## 14. Project layout

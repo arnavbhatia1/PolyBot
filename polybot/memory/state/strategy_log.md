@@ -221,3 +221,45 @@
 - None
 
 **Reasoning:** Local recommender
+
+## 2026-06-03T03:45:38.170138+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - logit_scale=4.75 (exploratory up step (×1.5))
+  - student_t_df=3 (exploratory down step (×2.0))
+  - momentum_weight=0.0 (exploratory down step (×2.0))
+  - regime_weight=0.045 (exploratory up step (×1.5))
+  - derived_autocorr_signed_mag_weight=0.015 (exploratory up step (×1.5))
+
+**Manual Suggestions (0) [operator-only]:**
+  - none
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
+
+## 2026-06-04T03:45:55.716000+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - flow_weight=0.02 (exploratory down step (×1.5))
+  - spot_flow_weight=0.07 (exploratory down step (×1.5))
+  - prev_margin_weight=0.035 (exploratory up step (×1.5))
+  - min_atr=18.0 (exploratory up step (×2.0))
+  - min_model_probability=0.59 (exploratory up step (×1.5))
+
+**Manual Suggestions (0) [operator-only]:**
+  - none
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender

@@ -31,7 +31,7 @@ from polybot.paths import (
     GATE_STATS_CURRENT_PATH, STRATEGY_LOG_PATH, PIPELINE_HISTORY_PATH,
     CALIBRATION_PARAMS_PATH, fold_gate_day,
 )
-from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE, compute_buy_vwap
+from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE, EFFECTIVE_FEE_PEAK, compute_buy_vwap
 from polybot.db.models import Database
 from polybot.feeds.binance_feed import BinanceFeed
 from polybot.feeds.market_scanner import BTCMarketScanner
@@ -1018,7 +1018,7 @@ async def _evaluate_signal_and_enter(
                     spread_est = -1.0
         # Real round-trip cost in price units: enter at ask (cross half-spread),
         # exit at bid (cross half-spread) = full `spread` plus fee impact on both
-        # legs. Polymarket fee impact = fee_rate × p × (1-p), max ~0.45% at ATM.
+        # legs. Polymarket fee impact = fee_rate × p × (1-p), max ~1.75% at ATM.
         side_price = price_up if side == "Up" else price_down
         if spread_est >= 0:
             fee_impact_one_leg = DEFAULT_FEE_RATE * side_price * (1.0 - side_price)
@@ -1576,15 +1576,16 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
             spread_down = await market_scanner.get_spread(token_down, http_client)
         spread_val = max(spread_up, spread_down)
         if spread_val >= 0:
-            # Paying the ask = roughly half-spread above mid; add the default taker
-            # fee as a proxy for full execution cost. Gate is still max_spread so
-            # we don't accidentally tighten into illiquid markets — we just account
-            # for the fee-eaten portion of tight-spread entries.
-            effective_cost = spread_val * 0.5 + DEFAULT_FEE_RATE
+            # Paying the ask = roughly half-spread above mid; add the EFFECTIVE peak
+            # taker fee (flat per-share proxy, NOT the raw coefficient) for full
+            # execution cost. Gate is still max_spread so we don't accidentally tighten
+            # into illiquid markets — we just account for the fee-eaten portion of
+            # tight-spread entries.
+            effective_cost = spread_val * 0.5 + EFFECTIVE_FEE_PEAK
             if effective_cost > max_spread:
                 _record_skip("spread_too_wide")
                 logger.debug(
-                    f"Effective exec cost {effective_cost:.3f} (spread/2={spread_val/2:.3f} + fee={DEFAULT_FEE_RATE:.3f}) "
+                    f"Effective exec cost {effective_cost:.3f} (spread/2={spread_val/2:.3f} + fee={EFFECTIVE_FEE_PEAK:.3f}) "
                     f"> {max_spread:.3f} — skipping"
                 )
                 return None, last_eval_log_window

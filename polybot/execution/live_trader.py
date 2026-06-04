@@ -1537,7 +1537,7 @@ class LiveTrader(BaseTrader):
                                     # need gross_vwap = amount / gross_shares so base.py can
                                     # apply the fee correctly. Solve via 2 fixed-point steps:
                                     #   gross_shares ≈ delta / (1 - fee_rate * p * (1-p))
-                                    # Converges in 1-2 iterations for fee_rate=0.018, p≈0.5.
+                                    # Converges in 1-2 iterations for fee_rate=0.07, p≈0.5.
                                     p_est = amount / delta
                                     for _ in range(2):
                                         fee_frac = fee_rate * p_est * (1.0 - p_est)
