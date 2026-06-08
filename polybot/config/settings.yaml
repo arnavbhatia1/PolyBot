@@ -25,8 +25,6 @@ execution:
   paper_latency_mean_s: 0.22
   paper_latency_jitter_s: 0.12
   paper_network_fail_rate: 0.18
-  use_maker_orders: false
-  maker_timeout_s: 15.0
 
 # =============================================================================
 #  SECTION 2: ENTRY GATES - when to enter a trade

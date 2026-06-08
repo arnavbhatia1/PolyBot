@@ -21,20 +21,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 POLYBOT_DIR: Path = Path(__file__).resolve().parent
-# MEMORY_DIR is overridable via POLYBOT_MEMORY_DIR so the test suite (and any ops
-# need) can redirect all persistent state off the real tree. Unset in production →
-# the real polybot/memory/ dir.
 MEMORY_DIR: Path = Path(os.environ.get("POLYBOT_MEMORY_DIR") or (POLYBOT_DIR / "memory"))
 
 # ── Per-event record directories ──────────────────────────────────────────────
 OUTCOMES_DIR: Path = MEMORY_DIR / "outcomes"
 GHOSTS_DIR: Path = MEMORY_DIR / "ghost_outcomes"
 COUNTERFACTUALS_DIR: Path = MEMORY_DIR / "counterfactuals"
-
-# Passive microstructure telemetry (edge-discovery instrumentation). One JSONL per
-# ET day of CLOB-book-vs-spot snapshots; observation-only, never read by the trading
-# loop. Aggregated offline by tools/analyze_microstructure.py. See MicrostructureRecorder.
-MICROSTRUCTURE_DIR: Path = MEMORY_DIR / "microstructure"
 
 # ── Calibrator ────────────────────────────────────────────────────────────────
 CALIBRATION_DIR: Path = MEMORY_DIR / "calibration"

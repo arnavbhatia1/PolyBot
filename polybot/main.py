@@ -58,7 +58,6 @@ import math
 from polybot.feeds.binance_depth import BinanceDepthFeed
 from polybot.feeds.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
 from polybot.feeds.coinbase_feed import CoinbaseFeed
-from polybot.feeds.microstructure_recorder import MicrostructureRecorder
 from polybot.feeds._staleness import snapshot_feeds as _staleness_snapshot, write_feeds as _staleness_write
 from polybot.core.sprt import SPRTAccumulator
 from polybot.core.regime import RegimeDetector
@@ -209,8 +208,6 @@ def _save_prev_resolution_margin(margin: float) -> None:
 
 _sprt: SPRTAccumulator | None = None
 _regime_detector: RegimeDetector | None = None
-# Passive edge-discovery telemetry (observation-only; never gates a decision).
-_micro_recorder: MicrostructureRecorder | None = None
 _current_window_id: str = ""
 _early_entry_fired: bool = False
 _adverse_monitor: AdverseSelectionMonitor | None = None
@@ -219,19 +216,12 @@ _last_logged_action: str = ""  # suppress repeated EVAL blocks when action hasn'
 _last_eval_buy_window: int = 0  # show full BUY block only once per window
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count for the current ET day
 _gate_stats_day_key: str = ""           # ET date string keyed to _gate_skip_counts
-# Gate-skip counts: live current-day counts mirror to GATE_STATS_CURRENT_PATH; on the
-# first record of a new ET day the finished day folds into the lifetime accumulator at
-# GATE_STATS_PATH and the current file resets. No more per-day gate_stats_YYYYMMDD pile.
 from collections import OrderedDict as _OrderedDict
-# Bounded LRUs — each entry is keyed by cid (or (cid, gate_key)). Without an
-# eviction bound these grow forever; the bot runs for days at a time so
-# unbounded would slowly leak ~1MB/week across the three dicts.
 _PENDING_CTX_MAX = 32          # ~32 most recent markets — plenty for active windows
 _GATE_STATE_MAX = 1024         # ~32 markets × ~32 gate keys
 _pending_eval_ctx: _OrderedDict[str, dict] = _OrderedDict()
 _last_gate_skip_state: _OrderedDict[tuple[str, str], float] = _OrderedDict()
 _last_skip_log: _OrderedDict[tuple[str, str], int] = _OrderedDict()
-
 
 def _lru_set(d: _OrderedDict, key, value, max_size: int) -> None:
     """LRU insert with eviction. Touch on overwrite, drop oldest past max_size."""
@@ -241,7 +231,6 @@ def _lru_set(d: _OrderedDict, key, value, max_size: int) -> None:
     while len(d) > max_size:
         d.popitem(last=False)
 
-
 def _log_skip_once(cid: str, key: str, msg: str) -> None:
     """Log a pre-signal skip at most once per 5-min window per (cid, reason)."""
     window = int(time.time() // 300) * 300
@@ -249,7 +238,6 @@ def _log_skip_once(cid: str, key: str, msg: str) -> None:
     if _last_skip_log.get(k) != window:
         _lru_set(_last_skip_log, k, window, _GATE_STATE_MAX)
         logger.info(msg)
-
 
 def _log_hold_heartbeat_stale(pos: dict[str, Any], live: dict[str, Any], reason: str) -> None:
     """30s-throttled HOLD heartbeat for the exit-path stale-feed branch.
@@ -303,45 +291,6 @@ def _fmt_secs(s: float) -> str:
     return f"{s_int // 60}:{s_int % 60:02d}"
 
 
-def _record_micro(clob_ws: Any, token_up: str, token_down: str, *,
-                  market_id: str, seconds_remaining: float, phase: str,
-                  coinbase_feed: Any, chainlink_feed: Any, strike: float,
-                  model_prob_up: float | None = None) -> None:
-    """Feed one passive microstructure snapshot to the recorder. Observation-only;
-    pulls the CLOB BBO + book-update timestamp for both tokens and the spot/Chainlink
-    state. Never raises into the caller — the recorder guards itself, and this wrapper
-    no-ops when telemetry is disabled or the recorder isn't up yet.
-    """
-    rec = _micro_recorder
-    if rec is None or not rec.enabled:
-        return
-    def _bba(tok: str) -> tuple[float, float, float]:
-        d = clob_ws.best_bid_ask.get(tok, {}) if clob_ws else {}
-        try:
-            return (float(d.get("best_bid", 0) or 0), float(d.get("best_ask", 0) or 0),
-                    float(d.get("ts", 0) or 0))
-        except (TypeError, ValueError):
-            return (0.0, 0.0, 0.0)
-    bid_up, ask_up, bkts_up = _bba(token_up)
-    bid_dn, ask_dn, bkts_dn = _bba(token_down)
-    cb_price = cb_age = 0.0
-    if coinbase_feed is not None:
-        cb_price = getattr(coinbase_feed.state, "price", 0.0) or 0.0
-        cb_age = getattr(coinbase_feed.state, "age_seconds", 0.0) or 0.0
-    cl_price = cl_age = 0.0
-    if chainlink_feed is not None:
-        cl_price = getattr(chainlink_feed, "price", 0.0) or 0.0
-        cl_age = getattr(chainlink_feed, "age_seconds", 0.0) or 0.0
-    rec.sample(
-        market_id=market_id, seconds_remaining=seconds_remaining, phase=phase,
-        coinbase_price=cb_price, coinbase_age=cb_age, strike=strike,
-        bid_up=bid_up, ask_up=ask_up, bkts_up=bkts_up,
-        bid_down=bid_dn, ask_down=ask_dn, bkts_down=bkts_dn,
-        chainlink_price=cl_price, chainlink_age=cl_age,
-        model_prob_up=model_prob_up,
-    )
-
-
 def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
     """Emit one combined SKIP line (signal context + gate reason).
 
@@ -366,10 +315,7 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
         f"model {ctx['prob']:.0%} {ctx['direction']}, BTC {ctx['dist']:+,.0f} vs strike | "
         f"{reason}{_sprt_part}{_C.RESET}"
     )
-
-# Startup banner — emitted once after all systems are ready, inside trading_loop
 _startup_banner_logged: bool = False
-
 
 def _et_date_key() -> str:
     """Current ET calendar date as 'YYYYMMDD' — the rollover key for daily gate stats."""
@@ -1196,11 +1142,6 @@ async def _evaluate_signal_and_enter(
     fresh_ask = (float(fresh_bba.get("best_ask", 0) or 0)
                  if _fresh_bba_ts > 0 and (time.time() - _fresh_bba_ts) <= _WS_STALE_S
                  else 0.0)
-    # Maker/FOK blend simulation in paper mode: ~65% maker (0% fee), ~35% taker FOK.
-    if config.get("execution", {}).get("use_maker_orders", False):
-        import random
-        if random.random() < 0.65:
-            fee_rate = 0.0  # maker fill
 
     # Apply slippage to the price returned by _fetch_market_prices (the executable CLOB book best_ask).
     # Entries deliberately use a tight slip (no FOK-cross floor): we WANT the FOK to
@@ -1761,15 +1702,6 @@ async def _evaluate_and_exit_position(
     ws_ask = float(bba.get("best_ask", 0) or 0)
     market_mid = (ws_bid + ws_ask) / 2.0 if (ws_bid > 0 and ws_ask > 0) else 0.0
     bid_age = time.time() - float(bba.get("ts", 0) or 0)
-
-    # Passive edge-discovery snapshot (hold path). Captured BEFORE the no-fresh-bid
-    # early-return so endgame book staleness is recorded even when the bid is absent
-    # — that absence is itself Experiment-B signal (resolution-lag fillability).
-    _record_micro(clob_ws, live.get("token_id_up", ""), live.get("token_id_down", ""),
-                  market_id=pos.get("market_id", ""),
-                  seconds_remaining=live.get("seconds_remaining", 0), phase="hold",
-                  coinbase_feed=coinbase_feed, chainlink_feed=chainlink_feed,
-                  strike=strike_now)
 
     if not (ws_bid > 0 and bid_age <= 10):
         # No fresh bid — can't make exit decisions, but still emit the HOLD heartbeat
@@ -2616,12 +2548,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             if strike is None:
                 continue
 
-            # Passive edge-discovery snapshot (flat/pre-entry). Observation-only.
-            _record_micro(clob_ws, token_up, token_down, market_id=cid,
-                          seconds_remaining=contract.get("seconds_remaining", 0),
-                          phase="flat", coinbase_feed=coinbase_feed,
-                          chainlink_feed=chainlink_feed, strike=strike)
-
             current_bankroll = await db.get_bankroll()
             traded_cid, last_eval_log_window = await _evaluate_signal_and_enter(
                 contract, cid, binance_feed, indicator_engine,
@@ -2882,9 +2808,7 @@ async def main() -> None:
         logger.debug(f"LIVE MODE — {msg}")
         trader = LiveTrader(db=db, max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
-            max_concurrent_positions=exec_cfg["max_concurrent_positions"],
-            use_maker_orders=exec_cfg.get("use_maker_orders", False),
-            maker_timeout_s=exec_cfg.get("maker_timeout_s", 60.0))
+            max_concurrent_positions=exec_cfg["max_concurrent_positions"])
     else:
         trader = PaperTrader(db=db, max_slippage=exec_cfg["max_slippage"],
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
@@ -3000,7 +2924,7 @@ async def main() -> None:
     clob_ws = ClobWebSocket(url=clob_ws_url)
     await clob_ws.start()
 
-    # Give LiveTrader access to CLOB WS for fast maker fill detection
+    # Give the trader access to the CLOB WS (FOK fast-fill path + paper book snapshots)
     if hasattr(trader, "set_clob_ws"):
         trader.set_clob_ws(clob_ws)
     if hasattr(trader, "prewarm_http"):
@@ -3056,12 +2980,6 @@ async def main() -> None:
 
     global _adverse_monitor
     _adverse_monitor = AdverseSelectionMonitor()
-
-    global _micro_recorder
-    _micro_recorder = MicrostructureRecorder()
-    if _micro_recorder.enabled:
-        logger.info("Microstructure telemetry ON — logging to memory/microstructure/ "
-                    "(set POLYBOT_DISABLE_MICRO_LOG=1 to disable)")
 
     await scheduler.start()
     await binance_feed.start()

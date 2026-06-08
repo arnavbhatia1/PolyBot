@@ -171,8 +171,8 @@ class BaseTrader(ABC):
 
     def set_clob_ws(self, clob_ws: Any) -> None:
         """Attach the CLOB WebSocket. Paper uses it for book snapshots in
-        ``_walk_book``; live uses it for fast maker-fill detection and the
-        WS-derived fill-price fast path in ``_submit_fok_order``."""
+        ``_walk_book``; live uses it for the WS-derived fill-price fast path
+        in ``_submit_fok_order``."""
         self._clob_ws = clob_ws
 
     # -- deployed capital ------------------------------------------------

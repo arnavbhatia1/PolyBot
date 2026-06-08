@@ -16,8 +16,6 @@ from py_clob_client_v2.clob_types import (
     AssetType,
     BalanceAllowanceParams,
     MarketOrderArgs,
-    OrderArgs,
-    OrderPayload,
     OrderType,
 )
 from py_clob_client_v2.order_builder.constants import BUY, SELL
@@ -376,8 +374,6 @@ class LiveTrader(BaseTrader):
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
         self.client: ClobClient = _create_clob_client()
-        self.use_maker_orders: bool = kwargs.get("use_maker_orders", False)
-        self.maker_timeout_s: float = kwargs.get("maker_timeout_s", 60.0)
         self._keepalive_task: asyncio.Task | None = None
         self._submit_count_since_allowance_check: int = 0
         self._min_allowance_warn_threshold: float = float(
@@ -504,9 +500,7 @@ class LiveTrader(BaseTrader):
         self, token_id: str, price: float, size: float,
         fee_rate: float = DEFAULT_FEE_RATE,
     ) -> FillResult:
-        """Buy: try maker limit order (0% fee) if enabled, else FOK (1.8% fee)."""
-        if self.use_maker_orders:
-            return await self._execute_buy_limit(token_id, price, size, self.maker_timeout_s)
+        """Buy via FOK."""
         return await self._submit_fok_order(token_id, BUY, size, price, fee_rate=fee_rate)
 
     async def _await_buy_settle(self, ws_event: asyncio.Event | None) -> None:
@@ -572,117 +566,6 @@ class LiveTrader(BaseTrader):
             pre_balance, expected_gain, balance,
         )
         return balance
-
-    # -- Maker limit order with FOK fallback ---------------------------------
-
-    async def _execute_buy_limit(
-        self,
-        token_id: str,
-        price: float,
-        size: float,
-        timeout_s: float = 60.0,
-    ) -> FillResult:
-        """Post a maker limit buy (0% fee), polling for fill up to timeout_s.
-
-        On fill, returns a maker FillResult. On timeout, cancels the resting
-        order and falls back to FOK. Any exception triggers the same FOK
-        fallback — this method never crashes the loop. size is USDC.
-        """
-        try:
-            # OrderArgs.size = shares, not USDC
-            shares = size / price
-
-            order = await asyncio.to_thread(
-                self.client.create_order,
-                OrderArgs(
-                    token_id=token_id,
-                    price=price,
-                    size=shares,
-                    side=BUY,
-                ),
-            )
-            resp = await asyncio.to_thread(self.client.post_order, order)
-
-            order_id = resp.get("orderID") or resp.get("id")
-            if not order_id:
-                logger.warning("Maker order: no order ID returned, falling back to FOK")
-                return await self._submit_fok_order(token_id, BUY, size, price)
-
-            logger.info(
-                "Maker limit order posted: %s at $%.4f (%.4f shares)",
-                order_id, price, shares,
-            )
-
-            # Wait for fill — use CLOB WebSocket trade events for near-instant
-            # detection, with periodic REST poll as backup.
-            clob_ws = self._clob_ws
-            elapsed = 0.0
-            check_interval = 0.3  # fast cycle: WS event or short sleep
-            last_rest_check = 0.0
-            rest_poll_interval = 5.0  # REST backup every 5s in case WS misses it
-
-            while elapsed < timeout_s:
-                # If CLOB WS available, wait for trade event (fast path)
-                if clob_ws and hasattr(clob_ws, "book_updated"):
-                    try:
-                        await asyncio.wait_for(clob_ws.book_updated.wait(), timeout=check_interval)
-                        clob_ws.book_updated.clear()
-                    except asyncio.TimeoutError:
-                        pass
-                else:
-                    await asyncio.sleep(check_interval)
-                elapsed += check_interval
-
-                # Check for fill via REST (every 5s, or immediately after WS trade event)
-                should_check = (elapsed - last_rest_check) >= rest_poll_interval
-                # Also check if a trade just landed on our token via WS
-                if clob_ws:
-                    last_trade = clob_ws.last_trade.get(token_id, {})
-                    if last_trade and abs(float(last_trade.get("price", 0)) - price) < 0.01:
-                        should_check = True  # trade at our price — likely our fill
-
-                if should_check:
-                    last_rest_check = elapsed
-                    try:
-                        order_status = await asyncio.to_thread(self.client.get_order, order_id)
-                        status = order_status.get("status", "")
-                        if status == "MATCHED":
-                            fill_price = await self._get_fill_price(order_id, price)
-                            logger.info(
-                                "Maker order filled: %s at $%.4f (detected in %.1fs)",
-                                order_id, fill_price, elapsed,
-                            )
-                            return FillResult(
-                                filled=True,
-                                fill_price=fill_price,
-                                fill_size=size,
-                                reason="maker_fill",
-                            )
-                        if status in ("CANCELLED", "EXPIRED"):
-                            logger.info(
-                                "Maker order %s, falling back to FOK", status,
-                            )
-                            return await self._submit_fok_order(token_id, BUY, size, price)
-                    except Exception as poll_err:
-                        logger.warning("Maker poll error: %s", poll_err)
-
-            # Timeout — cancel the resting order and fall back to FOK
-            try:
-                await asyncio.to_thread(
-                    self.client.cancel_order, OrderPayload(orderID=order_id)
-                )
-                logger.info(
-                    "Maker order timed out after %.0fs, cancelled %s — falling back to FOK",
-                    timeout_s, order_id,
-                )
-            except Exception as cancel_err:
-                logger.warning("Failed to cancel maker order %s: %s", order_id, cancel_err)
-
-            return await self._submit_fok_order(token_id, BUY, size, price)
-
-        except Exception as e:
-            logger.warning("Maker order flow failed: %s — falling back to FOK", e)
-            return await self._submit_fok_order(token_id, BUY, size, price)
 
     # -- Dust helpers (Polymarket FOK fills sometimes leave fractional residuals
     # when `_get_fill_price` falls back to the limit price and shares_received is
