@@ -43,16 +43,20 @@ enough to judge it. Neither case ever "retrains from scratch."
 ## Do first — uses data we already have (cheap, no new feeds)
 
 ### 1. Smarter calibration (highest ROI)
-Today **one** correction curve fixes the model's overconfidence everywhere. But the model is almost
-certainly mis-calibrated *differently* in different conditions — early vs. late in the window, calm
-vs. volatile, small-edge vs. big-edge, **and at different times of day / days of week.** Fit a
-**separate calibration curve per condition.**
+The foundation is a single **global** isotonic curve that recalibrates **P(up)** across the full
+[0,1] range (fit and served in the same P(up) domain) — it corrects the model's overconfidence and
+drives honest bet *size*. That global curve is the workhorse. The **next** layer is **per-condition**
+calibration: the model may be mis-calibrated *differently* in different conditions — early vs. late in
+the window, calm vs. volatile, small-edge vs. big-edge, time of day / day of week. Fit a **separate
+curve per condition**, gated per-bucket — but adopt it **only with evidence the global curve's
+residuals genuinely differ by that condition** (otherwise it overfits and adds nothing over global).
 - **Why it helps:** calibration directly drives bet *size*. Sizing each bet on a probability that's
   right *for that condition* improves compounding more than almost anything else.
-- **Cost/risk:** each condition needs enough trades to fit, or it overfits — so it ships gated
-  (falls back to the single curve until a bucket has the samples + passes the same confidence test).
+- **Cost/risk:** each condition needs enough trades to fit, or it overfits — so it ships gated (falls
+  back to the global curve until a bucket has the samples + clears the confidence test). Premature
+  until the global curve's residuals show condition-dependence.
 
-#### 1a. Time-of-day / session conditioning (do this first — cheapest high-value win)
+#### 1a. Time-of-day / session conditioning (the first per-condition candidate, gated on evidence)
 BTC has strong, persistent **intraday and weekly seasonality** in both volatility and confidence —
 the Asia / EU / US sessions, the CME-hours liquidity vacuum, weekend thinness, top-of-hour and
 funding-clustering effects. The current model is purely *window-relative* (seconds-remaining), so it

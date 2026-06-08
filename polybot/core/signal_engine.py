@@ -521,13 +521,17 @@ class SignalEngine:
             self.last_loss_cut_event = ""
 
         # Past self.deep_loss_hold_threshold the binary residual beats scalping the loss —
-        # UNLESS the (calibrated) model thinks the side is effectively dead. When
-        # model_prob is at the calibrator's lowest learned knot, the calibrator is
-        # saying "the training data showed the side won essentially never at this
-        # raw prob"; selling at market beats holding for ~$0 expected. Threshold is
-        # read dynamically from the calibrator so re-fits track automatically
-        # (identity returns 0.0, disabling the override).
-        dead_side_floor = self.calibrator.lowest_learned_prob if self.calibrator else 0.0
+        # UNLESS the (calibrated) model thinks the held side is effectively dead. The
+        # calibrator maps P(up), so the held side's minimum achievable calibrated prob
+        # is the lowest learned knot for Up and (1 - highest learned knot) for Down;
+        # model_prob at that floor means the side won essentially never, so selling
+        # beats holding for ~$0 expected. Read dynamically so re-fits track
+        # automatically (identity → floor 0.0, disabling the override).
+        dead_side_floor = (
+            (self.calibrator.lowest_learned_prob if side == "Up"
+             else 1.0 - self.calibrator.highest_learned_prob)
+            if self.calibrator else 0.0
+        )
         if (holding_edge < self.deep_loss_hold_threshold
                 and model_prob > dead_side_floor
                 and market_price_for_side < entry_price):

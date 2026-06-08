@@ -75,6 +75,16 @@ class IsotonicCalibrator:
         return float(self._iso.y_thresholds_[0])
 
     @property
+    def highest_learned_prob(self) -> float:
+        """Highest output the calibrator can return (``y_thresholds_[-1]``); 1.0 at
+        identity. The per-side dead floor for a Down hold is ``1 - highest_learned_prob``
+        (its calibrated-P(down) minimum), so identity → floor 0.0 → override off.
+        """
+        if self._iso is None:
+            return 1.0
+        return float(self._iso.y_thresholds_[-1])
+
+    @property
     def log_loss_improvement(self) -> float:
         """Last adopted fit's weighted log-loss gain vs identity (in nats).
         0.0 when at identity."""

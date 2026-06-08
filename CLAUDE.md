@@ -17,7 +17,7 @@ python -m polybot.main --mode paper       # paper trading
 python -m polybot.main --mode live        # real USDC (needs allowance)
 python -m polybot.main --run-pipeline     # one nightly cycle, no trading
 python -m pytest polybot/tests/           # full suite
-.\run_polybot.ps1                         # daily cycle: trade -> pipeline -> commit -> restart
+.\scripts\run_polybot.ps1                 # daily cycle: trade -> pipeline -> commit -> restart
 ```
 
 ### Secrets

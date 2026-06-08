@@ -40,6 +40,7 @@ for _s in (sys.stdout, sys.stderr):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from polybot.paths import OUTCOMES_DIR
+from polybot.execution.base import DEFAULT_FEE_RATE
 
 ET = ZoneInfo("America/New_York")
 RECORDED_RATE = 0.018          # the coefficient the stored `fees` were computed with
@@ -61,10 +62,13 @@ def load():
 
 
 def net_gain(r, rate):
-    """Net gain_pct re-costed to `rate`. Scales the recorded fee linearly (same
-    shares/price, fee is linear in the coefficient)."""
+    """Net gain_pct re-costed to `rate`. `pnl`/`fees` are net of the coefficient in
+    `fee_restamped` (0.07 for restamped records, else the raw 0.018). Scale only the
+    delta from that base to `rate` — fee is linear in the coefficient — so a record
+    already at 0.07 returns pnl/size unchanged when rate=0.07."""
+    base = r.get("fee_restamped") or DEFAULT_FEE_RATE   # unflagged records are native at the live fee, not 0.018
     fee = r.get("fees") or 0.0
-    extra = fee * (rate / RECORDED_RATE - 1.0)
+    extra = fee * (rate / base - 1.0)
     return (r["pnl"] - extra) / r["size"]
 
 

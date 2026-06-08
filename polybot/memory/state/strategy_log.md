@@ -263,3 +263,90 @@
 - None
 
 **Reasoning:** Local recommender
+
+## 2026-06-05T03:46:01.585372+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - kelly_fraction=0.12 (exploratory up step (×2.0))
+  - min_edge=0.025 (exploratory down step (×1.5))
+  - min_kelly=0.005 (exploratory down step (×2.0))
+  - regime_momentum_threshold=0.09 (exploratory down step (×1.5))
+  - exit_edge_threshold=-0.07 (exploratory up step (×1.5))
+
+**Manual Suggestions (1) [operator-only]:**
+  - flip_edge_premium: 0.015 -> 0.035 [?]
+    flip Sharpe -0.023 trails base by 0.088 and negative — raise premium aggressively
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
+
+## 2026-06-06T03:45:33.474099+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - atr_sigma_ratio=1.2 (exploratory down step (×2.0))
+  - final_logit_clamp=4.75 (exploratory up step (×1.5))
+  - l5_regime_damp_cap=0.85 (exploratory up step (×1.5))
+  - atr_regime_shift_threshold=0.45 (exploratory down step (×1.5))
+  - derived_log_atr_ratio_weight=0.015 (exploratory up step (×1.5))
+
+**Manual Suggestions (1) [operator-only]:**
+  - flip_edge_premium: 0.015 -> 0.035 [?]
+    flip Sharpe -0.110 trails base by 0.147 and negative — raise premium aggressively
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
+
+## 2026-06-07T03:45:33.301543+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - logit_scale=4.75 (exploratory up step (×1.5))
+  - student_t_df=3 (exploratory down step (×2.0))
+  - momentum_weight=0.0 (exploratory down step (×2.0))
+  - regime_weight=0.015 (exploratory down step (×1.5))
+  - derived_autocorr_signed_mag_weight=0.015 (exploratory up step (×1.5))
+
+**Manual Suggestions (1) [operator-only]:**
+  - flip_edge_premium: 0.015 -> 0.035 [?]
+    flip Sharpe -0.090 trails base by 0.065 and negative — raise premium aggressively
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
+
+## 2026-06-08T03:45:28.007484+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - flow_weight=0.08 (exploratory up step (×2.0))
+  - spot_flow_weight=0.13 (exploratory up step (×1.5))
+  - prev_margin_weight=0.01 (exploratory down step (×1.5))
+  - min_atr=18.0 (exploratory up step (×2.0))
+  - min_model_probability=0.59 (exploratory up step (×1.5))
+
+**Manual Suggestions (0) [operator-only]:**
+  - none
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender

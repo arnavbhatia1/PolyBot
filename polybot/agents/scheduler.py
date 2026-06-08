@@ -375,32 +375,49 @@ class AgentScheduler:
             (hold if _ts(o) >= cutoff else opt).append(o)
         return opt, hold
 
-    def _fit_calibrator_on(self, pool: list[dict[str, Any]], *, min_samples: int = 75):
-        """Fit an IsotonicCalibrator on a pool of resolved outcomes
-        (``model_probability_raw`` → realized ``correct``), recency-weighted.
-        Returns the fitted calibrator iff ``fit()``'s bootstrap-CI gate passes, else
-        ``None`` (identity). Used to build the gate-reference calibrator, which scores
-        weight candidates on a window disjoint from the holdout while the live
-        calibrator fits the freshest data.
+    @staticmethod
+    def _calibration_xy(pool: list[dict[str, Any]], now_ts: float | None = None):
+        """(P(up), up_won, recency_weight) per resolved trade — the domain the
+        calibrator is APPLIED to (signal_engine + replay calibrate P(up)). The bot
+        records only the chosen side's prob (``model_probability_raw`` ≥ 0.56), so
+        reconstruct raw P(up) from it + ``side`` and the up-outcome from ``side`` +
+        ``correct``, making the fit domain match the serve domain across the full
+        [0,1] range (Down trades populate P(up) < 0.5).
         """
-        from polybot.core.calibrator import IsotonicCalibrator
+        if now_ts is None:
+            now_ts = datetime.now(timezone.utc).timestamp()
         probs: list[float] = []
         outs: list[int] = []
         ws: list[float] = []
-        now_ts = datetime.now(timezone.utc).timestamp()
         for o in pool:
             ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
             mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
-            if mp <= 0:
+            side = o.get("side")
+            if mp <= 0 or side not in ("Up", "Down"):
                 continue
-            probs.append(mp)
-            outs.append(1 if o.get("correct", False) else 0)
+            p_up = mp if side == "Up" else 1.0 - mp
+            won = bool(o.get("correct", False))
+            up_won = 1 if ((side == "Up") == won) else 0
+            probs.append(p_up)
+            outs.append(up_won)
             s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
             try:
                 t = datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() if s else now_ts
                 ws.append(RECENCY_DECAY_PER_DAY ** max(0.0, (now_ts - t) / 86400.0))
             except Exception:
                 ws.append(1.0)
+        return probs, outs, ws
+
+    def _fit_calibrator_on(self, pool: list[dict[str, Any]], *, min_samples: int = 75):
+        """Fit an IsotonicCalibrator on a pool of resolved outcomes in the P(up)
+        serve domain (see ``_calibration_xy``), recency-weighted. Returns the fitted
+        calibrator iff ``fit()``'s bootstrap-CI gate passes, else ``None`` (identity).
+        Used to build the gate-reference calibrator, which scores weight candidates on
+        a window disjoint from the holdout while the live calibrator fits the freshest
+        data.
+        """
+        from polybot.core.calibrator import IsotonicCalibrator
+        probs, outs, ws = self._calibration_xy(pool)
         if len(probs) < min_samples:
             return None
         cal = IsotonicCalibrator()
@@ -2152,24 +2169,8 @@ class AgentScheduler:
             )
 
         if len(cal_train) >= 75 and self.signal_engine:
-            cal_probs: list[float] = []
-            cal_outcomes: list[int] = []
-            cal_weights: list[float] = []
             cal_now_ts = datetime.now(timezone.utc).timestamp()
-            for o in cal_train:
-                ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
-                mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
-                if mp <= 0:
-                    continue
-                cal_probs.append(mp)
-                cal_outcomes.append(1 if o.get("correct", False) else 0)
-                ts2 = o.get("exit_timestamp", o.get("timestamp", ""))
-                try:
-                    t2 = datetime.fromisoformat(ts2.replace("Z", "+00:00")).timestamp() if ts2 else cal_now_ts
-                    w2 = RECENCY_DECAY_PER_DAY ** max(0.0, (cal_now_ts - t2) / 86400.0)
-                except Exception:
-                    w2 = 1.0
-                cal_weights.append(w2)
+            cal_probs, cal_outcomes, cal_weights = self._calibration_xy(cal_train, cal_now_ts)
 
             if len(cal_probs) >= 75:
                 cal = IsotonicCalibrator()
@@ -2181,19 +2182,7 @@ class AgentScheduler:
                     # Each tier should beat the one below it.
                     # Recency-weighted, matching the calibrator-internal bootstrap CI weighting.
                     import numpy as _np
-                    all_pool_probs, all_pool_outs, all_pool_w = [], [], []
-                    for o in _cal_pool:
-                        ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
-                        mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
-                        if mp > 0:
-                            all_pool_probs.append(mp)
-                            all_pool_outs.append(1 if o.get("correct", False) else 0)
-                            ts3 = o.get("exit_timestamp", o.get("timestamp", ""))
-                            try:
-                                t3 = datetime.fromisoformat(ts3.replace("Z", "+00:00")).timestamp() if ts3 else cal_now_ts
-                                all_pool_w.append(RECENCY_DECAY_PER_DAY ** max(0.0, (cal_now_ts - t3) / 86400.0))
-                            except Exception:
-                                all_pool_w.append(1.0)
+                    all_pool_probs, all_pool_outs, all_pool_w = self._calibration_xy(_cal_pool, cal_now_ts)
 
                     if all_pool_probs:
                         _p = _np.asarray(all_pool_probs, dtype=float)
