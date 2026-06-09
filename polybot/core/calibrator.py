@@ -23,12 +23,57 @@ _BOOTSTRAP_N = 300
 _BOOTSTRAP_LOWER_PCT = 20    # strict gate: lower-80% CI of OOB improvement must be positive
 _DEFAULT_MIN_SAMPLES = 150
 
+# --- Tail-overconfidence guards (operator-owned; calibration is changed by hand
+# with tests, never pipeline-tuned). Isotonic overfits sparse extreme bins — a few
+# lucky high/low-prob trades pool to ~0/1, and Kelly then MAX-sizes a "certain" bet
+# that historically wins ~66%. Two layered guards close that hole:
+#   1. Output clamp [_CAL_OUT_LO, _CAL_OUT_HI] — a DATA-JUSTIFIED confidence ceiling.
+#      Realized win rates top out ~0.66-0.69 and bottom ~0.16 at this horizon, so no
+#      calibrated probability beyond [0.15, 0.85] is ever warranted; capping there
+#      bounds Kelly on the highest-conviction trades. The bound never touches an honest
+#      fit (which tops ~0.66 — full margin); it only catches a sparse all-win/all-loss
+#      tail bin that the prior alone can't fully temper at the very edge.
+#   2. Beta-prior smoothing — _PRIOR_FRAC*n pseudo-observations at p=0.5, spread over
+#      _PRIOR_ANCHORS points across the range. Dense mid-range barely moves; sparse
+#      tails are pulled toward their realized rate. Weight scales with pool size, so
+#      it tempers thin windows without crushing them. Tuned (0.10) so raw>=0.97 lands
+#      ~0.66 (its realized win rate) at ~zero log-loss cost; it also TIGHTENS the
+#      OOB-CI (less tail variance), so the regularized fit is MORE robustly adoptable.
+_CAL_OUT_LO = 0.15
+_CAL_OUT_HI = 0.85
+_PRIOR_FRAC = 0.10
+_PRIOR_ANCHORS = 50
+
 
 def _weighted_log_loss(probs: np.ndarray, outcomes: np.ndarray, weights: np.ndarray) -> float:
     """Weighted binary cross-entropy. Internal helper for the adoption gate."""
     p = np.clip(probs, _EPS, 1.0 - _EPS)
     loss = -(outcomes * np.log(p) + (1 - outcomes) * np.log(1 - p))
     return float(np.sum(weights * loss) / np.sum(weights))
+
+
+def _make_iso():
+    """IsotonicRegression with the calibrated-output clamp baked in (guard #1)."""
+    from sklearn.isotonic import IsotonicRegression
+    return IsotonicRegression(out_of_bounds="clip", y_min=_CAL_OUT_LO, y_max=_CAL_OUT_HI)
+
+
+def _augment_with_prior(probs: np.ndarray, outcomes: np.ndarray, weights: np.ndarray):
+    """Append Beta-prior pseudo-observations (guard #2): _PRIOR_ANCHORS anchors at
+    p=0.5 spread across [_CAL_OUT_LO, _CAL_OUT_HI], carrying _PRIOR_FRAC * (real
+    sample count) total weight. Pulls sparse extreme bins toward the center so a
+    handful of lucky tail trades can't slam the curve to 0/1; weight scales with the
+    pool so thin windows are tempered, not crushed. No-op when the prior is disabled.
+    """
+    n = len(probs)
+    if n == 0 or _PRIOR_FRAC <= 0.0 or _PRIOR_ANCHORS <= 0:
+        return probs, outcomes, weights
+    anchor_x = np.linspace(_CAL_OUT_LO, _CAL_OUT_HI, _PRIOR_ANCHORS)
+    anchor_y = np.full(_PRIOR_ANCHORS, 0.5)
+    anchor_w = np.full(_PRIOR_ANCHORS, (_PRIOR_FRAC * n) / _PRIOR_ANCHORS)
+    return (np.concatenate([probs, anchor_x]),
+            np.concatenate([outcomes, anchor_y]),
+            np.concatenate([weights, anchor_w]))
 
 
 class IsotonicCalibrator:
@@ -107,7 +152,10 @@ class IsotonicCalibrator:
             return raw_prob
         clipped = max(_EPS, min(1.0 - _EPS, raw_prob))
         # np.interp fast path over the cached knots (see _x_thr/_y_thr above): ~25us -> ~0.8us.
-        return float(np.interp(clipped, self._x_thr, self._y_thr))
+        out = float(np.interp(clipped, self._x_thr, self._y_thr))
+        # Belt-and-suspenders clamp: fitted knots already lie within the bound, so this
+        # only ever fires on a hand-edited/legacy file — never a silently certain bet.
+        return min(_CAL_OUT_HI, max(_CAL_OUT_LO, out))
 
     # ---- fitting ----
 
@@ -134,9 +182,9 @@ class IsotonicCalibrator:
             w_arr = np.ones(len(probs))
 
         try:
-            from sklearn.isotonic import IsotonicRegression
-            iso = IsotonicRegression(out_of_bounds="clip", y_min=_EPS, y_max=1.0 - _EPS)
-            iso.fit(probs_arr, outcomes_arr, sample_weight=w_arr)
+            probs_aug, outcomes_aug, w_aug = _augment_with_prior(probs_arr, outcomes_arr, w_arr)
+            iso = _make_iso()
+            iso.fit(probs_aug, outcomes_aug, sample_weight=w_aug)
         except Exception as e:
             logger.warning(f"Isotonic fit failed: {e}")
             return False
@@ -179,8 +227,9 @@ class IsotonicCalibrator:
             w_b_norm = w_b / w_b.sum() * len(w_b)
             w_oob_norm = w_oob / w_oob.sum() * len(w_oob)
             try:
-                iso_b = IsotonicRegression(out_of_bounds="clip", y_min=_EPS, y_max=1.0 - _EPS)
-                iso_b.fit(p_b, o_b, sample_weight=w_b_norm)
+                pb_aug, ob_aug, wb_aug = _augment_with_prior(p_b, o_b, w_b_norm)
+                iso_b = _make_iso()
+                iso_b.fit(pb_aug, ob_aug, sample_weight=wb_aug)
                 boot_improvements.append(
                     _weighted_log_loss(p_oob, o_oob, w_oob_norm)
                     - _weighted_log_loss(iso_b.predict(p_oob), o_oob, w_oob_norm)
@@ -253,14 +302,15 @@ class IsotonicCalibrator:
 
         if data.get("type") == "isotonic" and "x_thresholds" in data and "y_thresholds" in data:
             try:
-                from sklearn.isotonic import IsotonicRegression
                 x_thr = np.asarray(data["x_thresholds"], dtype=float)
                 y_thr = np.asarray(data["y_thresholds"], dtype=float)
                 if len(x_thr) == 0 or len(x_thr) != len(y_thr):
                     raise ValueError(f"degenerate thresholds (x={len(x_thr)}, y={len(y_thr)})")
-                iso = IsotonicRegression(out_of_bounds="clip", y_min=_EPS, y_max=1.0 - _EPS)
+                iso = _make_iso()
                 # Re-fitting on the threshold pairs recovers the function exactly
                 # — they're already monotonic so isotonic is identity on its own knots.
+                # The clamp also caps any legacy file whose knots exceed the bound
+                # (e.g. a pre-guard curve that slammed toward ~1.0).
                 iso.fit(x_thr, y_thr)
                 self._iso = iso
                 self._cache_thresholds()

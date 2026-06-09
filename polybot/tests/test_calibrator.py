@@ -244,3 +244,75 @@ def test_load_missing_file_is_noop(tmp_path):
     cal = IsotonicCalibrator()
     cal.load(path)
     assert cal.is_identity
+
+
+# ---------------------------------------------------------------------------
+# Tail-overconfidence guards: Beta-prior smoothing + data-justified output clamp.
+# Regression coverage for the 06-09 slam — raw>=0.97 -> calibrated ~1.0, which
+# Kelly then MAX-sized into "certain" bets that historically win ~66%.
+# ---------------------------------------------------------------------------
+
+def _strong_miscalibrated(n=400, seed=8):
+    """Step-function miscalibration strong enough that the OOB-CI gate adopts."""
+    rng = np.random.default_rng(seed)
+    probs = list(rng.uniform(0.15, 0.85, n))
+    outcomes = [1 if rng.uniform() < (0.05 + 0.9 * (p > 0.5)) else 0 for p in probs]
+    return probs, outcomes
+
+
+def test_calibrated_output_bounded_to_clamp():
+    """No fit may ever emit a calibrated probability outside [_CAL_OUT_LO, _CAL_OUT_HI]
+    — the hard guarantee that bounds Kelly on the highest-conviction trades."""
+    from polybot.core.calibrator import _CAL_OUT_LO, _CAL_OUT_HI
+    probs, outcomes = _strong_miscalibrated()
+    probs += [0.982] * 8 + [0.018] * 8          # both extreme edges, all one-way
+    outcomes += [1] * 8 + [0] * 8
+    cal = IsotonicCalibrator()
+    assert cal.fit(probs, outcomes, min_samples=150) is True
+    for p in np.linspace(0.0, 1.0, 101):
+        out = cal.calibrate(float(p))
+        assert _CAL_OUT_LO - 1e-9 <= out <= _CAL_OUT_HI + 1e-9, f"raw {p:.2f} -> {out:.4f} escaped clamp"
+
+
+def test_sparse_all_win_top_bin_does_not_slam():
+    """A handful of lucky raw>=0.97 trades that ALL win must not calibrate to ~1.0
+    (the exact live-curve pathology). Prior + clamp hold it at/below the ceiling."""
+    from polybot.core.calibrator import _CAL_OUT_HI
+    probs, outcomes = _strong_miscalibrated()
+    probs += [0.982] * 12                         # sparse top spike...
+    outcomes += [1] * 12                          # ...that all happened to win
+    cal = IsotonicCalibrator()
+    assert cal.fit(probs, outcomes, min_samples=150) is True
+    out = cal.calibrate(0.982)
+    assert out <= _CAL_OUT_HI + 1e-9, f"top slammed to {out:.3f}"
+    assert out < 0.90, f"top still over-confident at {out:.3f} (unregularized would be ~1.0)"
+
+
+def test_prior_preserves_midrange_compression():
+    """The prior tempers only sparse tails — the dense mid-range overconfidence
+    correction is intact. A 0.80 bucket whose true rate is 50% still compresses."""
+    cal = IsotonicCalibrator()
+    probs = [0.15] * 60 + [0.85] * 60 + [0.80] * 300
+    outcomes = [1] * 9 + [0] * 51 + [1] * 51 + [0] * 9 + [1] * 150 + [0] * 150
+    assert cal.fit(probs, outcomes, min_samples=75) is True
+    assert cal.calibrate(0.80) < 0.70
+
+
+def test_load_caps_legacy_slammed_curve(tmp_path):
+    """A pre-guard file whose knots reach ~1.0 must be capped to the clamp on load,
+    so a restart on the old isotonic_params.json can't keep serving the slam."""
+    from polybot.core.calibrator import _CAL_OUT_LO, _CAL_OUT_HI
+    path = tmp_path / "slam.json"
+    path.write_text(json.dumps({
+        "type": "isotonic",
+        "x_thresholds": [0.10, 0.50, 0.90, 0.97, 0.98],
+        "y_thresholds": [0.000001, 0.50, 0.76, 0.999999, 0.999999],
+        "n_samples": 1663,
+    }))
+    cal = IsotonicCalibrator()
+    cal.load(path)
+    assert not cal.is_identity
+    assert cal.calibrate(0.98) <= _CAL_OUT_HI + 1e-9
+    assert cal.calibrate(0.01) >= _CAL_OUT_LO - 1e-9
+    assert cal.highest_learned_prob <= _CAL_OUT_HI + 1e-9
+    assert cal.lowest_learned_prob >= _CAL_OUT_LO - 1e-9

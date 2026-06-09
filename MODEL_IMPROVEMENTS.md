@@ -1,18 +1,26 @@
-# Model Improvements — making the base model trade better
+# Model Improvements — making the bot trade better
 
-The bot's edge comes from one thing: **how accurately it estimates P(BTC closes up this window).**
-The plumbing (feeds, execution, learning pipeline) is sound. This file is the focused roadmap
-for the only thing that actually grows edge — a better probability model.
+**What actually makes money — read this first.** The bot's realized edge is its
+**exit policy + Kelly sizing**: cut losers small, ride winners to $1, and size each bet
+by conviction. Held to resolution the raw forecast *loses* — at a 5-minute horizon BTC
+direction is close to a coin flip, and the model's directional hit-rate sits *below* the
+price-implied breakeven. So the highest-value model work is whatever makes **bet-sizing
+honest** (calibration) and **protects that exit alpha** — **not** forecasting direction
+better, which has a near-zero empirical ceiling at this horizon. Rank everything below by
+that lens. Judge every change on **dollar P&L (size-weighted)** — the metric the edge
+actually lives in — never equal-weighted per-trade averages, and never at the cost of
+degrading the exit policy.
 
-**How the base model works today:** it stacks evidence in logit space — L1 (how far price is from
-the strike vs. expected move, using fat-tailed Student-t volatility), L2 (trend/mean-revert regime),
-L3+L3b (order-book flow + Coinbase buy/sell pressure), L4 (RSI/MACD/etc. committee), L5 (carry from
-last window) — then squashes to a probability and applies an isotonic calibration curve. L6 (extra
-derived features) exists but is switched off.
+**How the base model works today:** it stacks evidence in logit space — L1 (how far price
+is from the strike vs. the expected move, using fat-tailed Student-t volatility), L2
+(trend/mean-revert regime), L3+L3b (order-book flow + Coinbase buy/sell pressure), L4
+(RSI/MACD/etc. committee), L5 (carry from the last window) — squashes to a probability,
+then applies an isotonic calibration curve that corrects the model's overconfidence so bet
+*size* is honest. L6 (extra derived features) exists but is switched off.
 
-**Ground rule:** everything below lands as a *mechanism* the bot's own backtest/adoption pipeline
-turns on **only with evidence**. Nothing here changes live trading until it proves out. Ranked by
-payoff-per-effort.
+**Ground rule:** everything below lands as a *mechanism* the bot's own backtest/adoption
+pipeline turns on **only with evidence**. Nothing here changes live trading until it proves
+out on realized-fill dollar P&L.
 
 ## The rule for every addition: additive, never destructive
 
@@ -40,93 +48,118 @@ enough to judge it. Neither case ever "retrains from scratch."
 
 ---
 
-## Do first — uses data we already have (cheap, no new feeds)
+## Tier 1 — make sizing honest (the proven lever; data in hand)
+
+Calibration leads the roadmap because it's the **sizing** lever, and sizing is where the edge is. It
+doesn't try to predict direction better — it corrects how confident the model is allowed to be, so each
+bet is sized on a probability that's actually true.
 
 ### 1. Smarter calibration (highest ROI)
-The foundation is a single **global** isotonic curve that recalibrates **P(up)** across the full
-[0,1] range (fit and served in the same P(up) domain) — it corrects the model's overconfidence and
-drives honest bet *size*. That global curve is the workhorse. The **next** layer is **per-condition**
-calibration: the model may be mis-calibrated *differently* in different conditions — early vs. late in
-the window, calm vs. volatile, small-edge vs. big-edge, time of day / day of week. Fit a **separate
-curve per condition**, gated per-bucket — but adopt it **only with evidence the global curve's
-residuals genuinely differ by that condition** (otherwise it overfits and adds nothing over global).
-- **Why it helps:** calibration directly drives bet *size*. Sizing each bet on a probability that's
-  right *for that condition* improves compounding more than almost anything else.
-- **Cost/risk:** each condition needs enough trades to fit, or it overfits — so it ships gated (falls
-  back to the global curve until a bucket has the samples + clears the confidence test). Premature
-  until the global curve's residuals show condition-dependence.
+The foundation — a single **global** isotonic curve recalibrating **P(up)** across the full [0,1] range
+(fit and served in the same P(up) domain) — is live: it corrects overconfidence and drives honest bet
+size, and is the single highest-value model change made to date. That global curve is the workhorse.
+It carries two **tail-overconfidence guards** — a data-justified output clamp [0.15, 0.85] plus Beta-prior
+smoothing of sparse extreme bins — so a few lucky high-confidence trades can't slam the curve to ~1.0 and
+trick Kelly into max-sizing a false certainty (the failure mode that bought overpriced "certainties"); see CLAUDE.md §2.
+The **next** layer is **per-condition** calibration: the model may be mis-calibrated *differently* in
+different conditions — early vs. late in the window, calm vs. volatile, small- vs. big-edge, time of
+day / day of week. Fit a **separate curve per condition**, gated per-bucket — but adopt it **only with
+evidence the global curve's residuals genuinely differ by that condition**, measured on *post-calibration*
+data. Otherwise it overfits and adds nothing over global.
+- **Why it helps:** calibration directly drives bet *size* — the proven edge. Sizing each bet on a
+  probability that's right *for that condition* compounds harder than almost anything else.
+- **Cost/risk:** each condition needs enough trades to fit or it overfits — so it ships gated (falls
+  back to the global curve until a bucket has the samples + clears the confidence test). **Premature
+  until the global curve has traded selectively long enough to show condition-dependent residuals.**
 
-#### 1a. Time-of-day / session conditioning (the first per-condition candidate, gated on evidence)
-BTC has strong, persistent **intraday and weekly seasonality** in both volatility and confidence —
-the Asia / EU / US sessions, the CME-hours liquidity vacuum, weekend thinness, top-of-hour and
-funding-clustering effects. The current model is purely *window-relative* (seconds-remaining), so it
-is blind to "this is the 3am ET dead zone" vs. "this is the 9:30am ET equity-open vol spike," and a
-single calibration curve averages those regimes together — systematically over- or under-sizing in
-each. Add **time-of-day / session as a calibration condition** (the first condition to wire into the
-#1 machinery above).
-- **Why this one first:** it's built entirely from data **already recorded** (the UTC `timestamp` on
-  every trade), so it backtests over your **entire existing history with no warm-up and no new
-  feed** — the cheapest possible high-value win, and calibration is the highest-leverage lever.
-- **Why calibration (#1) and not an L6 feature:** the effect is primarily one of *confidence / vol
-  regime* — exactly what a calibration curve corrects and what drives bet size — rather than a clean
-  directional signal. It also reuses #1's existing per-bucket sample-count + bootstrap-CI gate, so
-  there's almost no new machinery. (It *can* instead enter as an L6 feature per #2 — e.g. a session
-  one-hot or a `sin/cos(hour-of-day)` pair at weight 0 — but #1 is preferred for the reasons above.)
-- **How (to avoid overfitting):** bucket by a **small, fixed** session set (e.g. 4–6 buckets: Asia /
-  EU / US / overnight, or trading-day quartiles), NOT a 24-way hour split, and **never cross it
-  combinatorially** with the other conditions above (condition × hour explodes the bucket count).
-  Each session bucket fits its own curve under the same gate, falling back to the global curve until
-  it earns the samples.
-- **Default-neutral:** with no session buckets fitted, behavior is byte-identical to today's single
-  curve — it only ever turns on per-bucket, with evidence.
+#### 1a. Time-of-day / session conditioning (first per-condition candidate, hard-gated)
+BTC has persistent **intraday and weekly seasonality** in volatility and confidence — Asia / EU / US
+sessions, the CME-hours liquidity vacuum, weekend thinness, top-of-hour and funding-clustering effects.
+The model is purely *window-relative* (seconds-remaining), so it's blind to "3am ET dead zone" vs.
+"9:30am ET equity-open vol spike," and a single calibration curve averages those regimes together —
+systematically over- or under-sizing in each. Add **time-of-day / session as a calibration condition**
+(the first condition to wire into #1's machinery).
+- **Why this one first:** built entirely from data **already recorded** (the UTC `timestamp` on every
+  trade), so it backtests over your entire history with no warm-up and no new feed — the moment there's
+  evidence to justify it.
+- **Why calibration, not an L6 feature:** the effect is one of *confidence / vol regime* — what a
+  calibration curve corrects and what drives bet size — not a clean directional signal. It reuses #1's
+  per-bucket sample-count + bootstrap-CI gate, so there's almost no new machinery.
+- **How (to avoid overfitting):** bucket by a **small, fixed** session set (4–6 buckets: Asia / EU / US
+  / overnight, or trading-day quartiles), NOT a 24-way hour split, and **never cross it combinatorially**
+  with the other conditions (condition × hour explodes the bucket count). Each bucket fits its own curve
+  under the same gate, falling back to global until it earns the samples.
+- **Gated + default-neutral:** with no session buckets fitted, behavior is byte-identical to today's
+  single curve. **Premature by its own gate until post-calibration data shows session-dependent
+  residuals — and there is no such data yet.**
 
-### 2. Wake up and grow the L6 layer
-L6 (derived features) is fully built but every weight is 0 — it's dormant. Add a handful more
-features computed from data the model *already sees* (e.g. richer combinations of flow, vol, and
-momentum) and let the pipeline discover which earn their weight.
-- **Why it helps:** cheapest way to let the model find new *combinations* of existing information.
-- **Cost/risk:** low — features start at weight 0 and only turn on if they prove out.
+---
 
-### 3. Expose the model's hard-coded constants as tunable knobs
-Several internal constants are still a human's first guess: the flow-agreement discount (0.5), the
-L3b flow saturation scale, the L4 mean-revert/trend split. Turn them into knobs.
-- **Why it helps:** lets the optimizer improve them with evidence instead of leaving them frozen.
+## Tier 2 — tune what already exists (cheap, low-risk, not new forecasting)
+
+These add no forecasting surface — they let the optimizer improve mechanics that are currently a human's
+first guess. Each defaults to today's value, so nothing changes until the pipeline tunes it on evidence.
+
+### 2. Expose the model's hard-coded constants as tunable knobs
+Several internal constants are still a first guess: the flow-agreement redundancy discount (0.5), the
+L3b flow saturation scale, the L4 mean-revert/trend mix constants. Turn them into knobs the optimizer
+can move with evidence.
+- **Why it helps:** lets the pipeline improve existing combination logic instead of leaving it frozen —
+  without widening the model's forecasting surface.
 - **Cost/risk:** low — each defaults to today's value, so nothing changes until the pipeline tunes it.
 
-### 4. Let layer weights become regime-aware
-The model already changes L4/L5 *behavior* by regime. Go one step further and let the pipeline learn
+### 3. Let layer weights become regime-aware
+The model already changes L4/L5 *behavior* by regime. Go one step further: let the pipeline learn
 **different layer weights** in trending vs. choppy markets.
 - **Why it helps:** the same signal often means different things in different regimes; weighting it
-  accordingly captures that.
+  accordingly captures that — reweighting existing signals, not adding new ones.
 - **Cost/risk:** more knobs = bigger search space; gated and pipeline-validated.
 
 ---
 
-## Bigger bets — need a new data feed (higher ceiling, more work)
+## Tier 3 — forecasting improvements (low ceiling at 5-min; hard-gated, do last)
 
-### 5. A sharper volatility estimate in L1 (highest-leverage layer)
-L1 is the dominant layer, and it relies on ATR — which is **backward-looking**. Feed it a
-**forward-looking** vol input (options-implied vol, or sub-minute realized vol) as a better estimate
-or cross-check of the expected move.
-- **Why it helps:** L1 sets the core probability; even a small accuracy gain there compounds across
+**Honest caveat:** everything in this tier tries to predict direction better. Your own data says that's
+the *weak* lever at this horizon — the forecast is ≈ noise and held-to-resolution loses. So each is
+strictly evidence-gated, expected to move the needle little, and worth pursuing only after the sizing
+levers (Tier 1–2) are exhausted. They're here for completeness, not because they're promising.
+
+### 4. Wake up and grow the L6 layer
+L6 (derived features) is fully built but every weight is 0 — dormant. Add a handful of features computed
+from data the model *already sees* (richer combinations of flow, vol, and momentum) and let the pipeline
+discover which earn their weight.
+- **Why it might help:** cheapest way to let the model find new *combinations* of existing information.
+- **Cost/risk:** low mechanically (weight 0 until proven) — but it's forecasting, so the expected payoff
+  is low; don't mistake "cheap to try" for "likely to work."
+
+### 5. A sharper volatility estimate in L1 (the best-justified forecasting item)
+L1 is the dominant layer and relies on ATR, which is **backward-looking**. Feed it a **forward-looking**
+vol input (options-implied vol, or sub-minute realized vol) as a better estimate or cross-check of the
+expected move.
+- **Why this ranks above the others here:** a better vol estimate mostly sharpens the model's *confidence*
+  (the z-score magnitude), which feeds **sizing** through calibration — closer to the proven lever than
+  picking direction. L1 sets the core probability, so even a small accuracy gain there compounds across
   every trade.
-- **Cost/risk:** needs an implied-vol source (or reuse fast realized vol); must prove it beats ATR.
+- **Cost/risk:** needs an implied-vol source (or fast realized vol), and must prove it beats ATR on
+  dollar P&L.
 
 ### 6. Give the model information it's currently blind to
-The model only sees price, the order book, Coinbase flow, and indicators. The biggest *new* edge
-usually comes from new information:
+The model only sees price, the order book, Coinbase flow, and indicators. New information is where
+genuinely new edge *could* live — but most new signals are noise:
 - **Perp funding rate** — leveraged positioning / directional bias.
-- **Options-implied vol** — the market's own forward view of volatility.
+- **Options-implied vol** — the market's own forward view of volatility (also feeds #5).
 - **Order-book depth *dynamics*** — how liquidity is building or pulling, not just the snapshot.
 - **Combined multi-venue flow** — Binance + Coinbase pressure together, not one venue alone.
-- **Why it helps:** this is where genuinely new edge lives.
-- **Cost/risk:** each needs a new feed, and most new signals are noise — so each enters as an L6
-  feature at weight 0 and survives only if the backtest says it adds real edge. Capture the data
-  first, then let the pipeline judge.
+- **Cost/risk:** each needs a new feed, and most new signals are noise — so each enters as an L6 feature
+  at weight 0 and survives only if the backtest says it adds real dollar edge. Capture the data first,
+  then let the pipeline judge.
 
 ---
 
 ## The order I'd go in
-1–4 use data already in hand and are low-risk — do them first (calibration #1 is the biggest single
-win). 5–6 need new feeds and have the highest ceiling but more work. Every one of them goes through
-the backtest gate, so the model only ever adopts what actually trades better.
+**Tier 1 first** — calibration is the biggest win because it's the sizing lever. The global curve is
+live; per-condition (1a) waits for evidence that residuals differ by condition on *post-calibration*
+data, which doesn't exist yet. **Tier 2 next** — low-risk knob/weight tuning on what already exists.
+**Tier 3 last** — forecasting bets with a low empirical ceiling at this horizon; hard-gated, and don't
+expect much. Every one goes through the backtest gate on **dollar P&L**, and nothing is allowed to
+degrade the exit policy that is the actual edge.

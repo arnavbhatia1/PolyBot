@@ -160,9 +160,11 @@ Cap enforced at the call site, and the `claude_client` validator drops any L6 we
 
 Adoption = **single OOB bootstrap-CI gate**: the lower-80% bound of weighted log-loss improvement vs identity, across **300 OOB resamples** with per-bootstrap weight renormalization, must be strictly positive. RNG seeded from `time.time_ns()` each fit. Pre-CI **range check**: `y_min <= 0.50` and `y_max >= 0.55` (else rejected without bootstrapping).
 
+**Tail-overconfidence guards** (baked into `fit()`, so live + replay + both fit sites share them; operator-owned, never pipeline-tuned). Isotonic overfits sparse extreme bins — a few lucky high/low-prob trades pool to ~0/1 and Kelly then max-sizes a "certain" bet that historically wins ~66%. Two layers: **(1) output clamp** — calibrated prob bounded to **[0.15, 0.85]** (`_CAL_OUT_LO/_HI`), a data-justified ceiling (realized win rates top ~0.66-0.69 / bottom ~0.16 at this horizon, so nothing beyond is warranted); never touches an honest fit, caps a slammed tail. **(2) Beta-prior smoothing** — `_PRIOR_FRAC` (0.10) × n pseudo-observations at p=0.5 over `_PRIOR_ANCHORS` (50) anchors (weight scales with pool size), pulling sparse tails toward their realized rate while leaving dense mid-range compression intact. `load()` applies the clamp too, so a legacy slammed `isotonic_params.json` is capped on read. Both also **tighten** the OOB-CI (less tail variance → more robustly adoptable).
+
 `last_fit_diagnostics` (CI bounds, `n_samples`, `bootstrap_n_completed`, `y_min`/`y_max`, `decision`) is stamped to `pipeline_info["cal_info"]["fit_diagnostics"]` on every `fit()` reaching the bootstrap stage (both `adopted` and `rejected_ci`); structural early-rejects return `False` without stamping (visible in the reject-site log).
 
-`lowest_learned_prob` (lowest `y_thresholds_[0]` output) is the "dead side" floor consumed by `evaluate_hold` — §6.
+`lowest_learned_prob` / `highest_learned_prob` (`y_thresholds_[0]`/`[-1]`, themselves bounded to [0.15, 0.85] by the clamp) are the per-side "dead side" floors consumed by `evaluate_hold` — §6.
 
 ## 3. Entry gates
 

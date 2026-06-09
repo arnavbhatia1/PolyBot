@@ -350,3 +350,24 @@
 - None
 
 **Reasoning:** Local recommender
+
+## 2026-06-09T03:45:42.898162+00:00
+
+**Source:** Local
+**Proposed Changes (5):**
+  - kelly_fraction=0.12 (exploratory up step (×2.0))
+  - min_edge=0.025 (exploratory down step (×1.5))
+  - min_kelly=0.005 (exploratory down step (×2.0))
+  - regime_momentum_threshold=0.21 (exploratory up step (×1.5))
+  - exit_edge_threshold=-0.07 (exploratory up step (×1.5))
+
+**Manual Suggestions (0) [operator-only]:**
+  - none
+
+**Findings:**
+- None
+
+**Warnings:**
+- None
+
+**Reasoning:** Local recommender
