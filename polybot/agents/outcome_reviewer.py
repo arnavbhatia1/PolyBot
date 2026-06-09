@@ -59,9 +59,10 @@ class OutcomeReviewer:
                   "exit_reason": exit_reason,
                   # 0.0 = held to resolution; > 0 = scalp with this many seconds left in window
                   "seconds_remaining_at_exit": seconds_remaining_at_exit,
-                  # Side-signed post-fill mid drift at 5/10/15/30/60s. Positive = market
-                  # moved in our favor. Absent / null windows = trade closed or feed lapsed
-                  # before that checkpoint resolved. None when monitor was disabled.
+                  # Post-fill drift of the traded token's mid at 5/10/15/30/60s.
+                  # Positive = our side's price rose (in our favor). Absent / null
+                  # windows = trade closed or feed lapsed before that checkpoint
+                  # resolved. None when monitor was disabled.
                   "edge_decay": edge_decay,
                   "exit_timestamp": exit_timestamp or now_utc,
                   "timestamp": now_utc}

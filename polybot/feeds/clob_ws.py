@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 HEARTBEAT_INTERVAL = 10            # PING cadence (Polymarket spec)
-HEARTBEAT_TIMEOUT = 25             # Reconnect if no PONG within 2.5× interval
+HEARTBEAT_TIMEOUT = 25             # No-PONG threshold; checked once per PING cycle, so worst-case detection ~30-35s
 RECONNECT_BASE = 1
 RECONNECT_MAX = 30
 TRADE_BUFFER_MAXLEN = 500          # ≥120s of trades at peak Polymarket BTC rate

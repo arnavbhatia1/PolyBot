@@ -7,7 +7,7 @@ def test_atr_positive():
     c = np.array([float(99 + i % 3) for i in range(20)])
     assert compute_atr(h, l, c, period=14) > 0
 
-def test_atr_gate_passes_normal_volatility():
+def test_atr_gate_returns_bool_on_normal_volatility():
     h = np.array([float(100 + (i % 5)) for i in range(100)])
     l = np.array([float(98 + (i % 5)) for i in range(100)])
     c = np.array([float(99 + (i % 5)) for i in range(100)])

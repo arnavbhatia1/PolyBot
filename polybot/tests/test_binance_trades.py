@@ -5,7 +5,7 @@ from polybot.feeds.binance_trades import BinanceTradeAccumulator, BinanceTradesF
 
 class TestNonFiniteGuard:
     def test_drops_non_finite_aggtrade(self):
-        # F9: float("NaN")/("Infinity") parse fine; they must not poison the CVD.
+        # float("NaN")/("Infinity") parse fine; they must not poison the CVD.
         acc = BinanceTradeAccumulator()
         feed = BinanceTradesFeed(acc)
         for bad in ("NaN", "Infinity"):
@@ -47,7 +47,7 @@ class TestTakerRatio:
         now = time.time()
         acc.add_trade(73000, 1.0, False, now)
         acc.add_trade(73000, 1.0, False, now)
-        # Bypass the 5-trade noise floor: this test is asserting the math, not the gate.
+        # Bypass the default 20-trade noise floor: this test asserts the math, not the gate.
         assert acc.get_taker_ratio(window_s=120, min_trades=2) == pytest.approx(1.0)
 
     def test_balanced(self):

@@ -58,6 +58,17 @@ async def test_init_raises_without_private_key(db):
             LiveTrader(db=db)
 
 
+@pytest.mark.asyncio
+async def test_init_raises_without_funder(db):
+    """Safe signature type signs against the funder — without it every order
+    fails downstream with an opaque signing error, so boot fails loudly."""
+    with patch.dict("os.environ", {"POLYMARKET_PRIVATE_KEY": "0x" + "ab" * 32}, clear=True):
+        sys.modules.pop("polybot.execution.live_trader", None)
+        from polybot.execution.live_trader import LiveTrader
+        with pytest.raises(ValueError, match="POLYMARKET_FUNDER"):
+            LiveTrader(db=db)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -232,17 +243,38 @@ async def test_open_trade_no_retry_on_balance_error(trader):
 
 
 @pytest.mark.asyncio
-async def test_open_trade_retries_on_exception(trader, monkeypatch):
-    """post_order raises ConnectionError, then succeeds — call_count == 2."""
+async def test_open_trade_no_resubmit_on_post_exception(trader, monkeypatch):
+    """post_order raising = ambiguous (the order may have reached the exchange).
+    The loop must NOT submit a second order — that's the double-fill path."""
     import polybot.execution.live_trader as lt_mod
     monkeypatch.setattr(lt_mod, "_RETRY_BASE_DELAY", 0.01)
 
     signed_order = {"order": "signed-payload"}
     trader.client.create_market_order.return_value = signed_order
+    trader.client.post_order.side_effect = ConnectionError("socket closed")
 
-    success_resp = {"success": True, "status": "matched", "orderID": "order-ex-retry"}
-    trader.client.post_order.side_effect = [ConnectionError("socket closed"), success_resp]
+    result = await trader.open_trade(**_TRADE_KWARGS)
 
+    assert result.success is False
+    assert "double fill" in result.reason
+    assert trader.client.post_order.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_open_trade_retries_on_sign_exception(trader, monkeypatch):
+    """Signing is local — nothing reached the exchange, so a retry is safe.
+    create_market_order raises once, then the order succeeds — post_order
+    still happens and the trade fills."""
+    import polybot.execution.live_trader as lt_mod
+    monkeypatch.setattr(lt_mod, "_RETRY_BASE_DELAY", 0.01)
+
+    signed_order = {"order": "signed-payload"}
+    trader.client.create_market_order.side_effect = [
+        ConnectionError("sign hiccup"), signed_order,
+    ]
+    trader.client.post_order.return_value = {
+        "success": True, "status": "matched", "orderID": "order-sign-retry",
+    }
     trader.client.get_order.return_value = {
         "associate_trades": [{"price": "0.55", "size": "18.18"}],
     }
@@ -250,7 +282,30 @@ async def test_open_trade_retries_on_exception(trader, monkeypatch):
     result = await trader.open_trade(**_TRADE_KWARGS)
 
     assert result.success is True
-    assert trader.client.post_order.call_count == 2
+    assert trader.client.create_market_order.call_count == 2
+    assert trader.client.post_order.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_open_trade_unmatched_status_cancels_instead_of_retrying(trader, monkeypatch):
+    """An accepted-but-unmatched FOK (e.g. "delayed") is cancelled and settled
+    from its trade record — never resubmitted."""
+    import polybot.execution.live_trader as lt_mod
+    monkeypatch.setattr(lt_mod, "_RETRY_BASE_DELAY", 0.01)
+
+    signed_order = {"order": "signed-payload"}
+    trader.client.create_market_order.return_value = signed_order
+    trader.client.post_order.return_value = {
+        "success": True, "status": "delayed", "orderID": "order-delayed",
+    }
+    # No associated trades → the delayed order never filled.
+    trader.client.get_order.return_value = {"associate_trades": []}
+
+    result = await trader.open_trade(**_TRADE_KWARGS)
+
+    assert result.success is False
+    assert trader.client.post_order.call_count == 1
+    trader.client.cancel.assert_called_once_with("order-delayed")
 
 
 # ---------------------------------------------------------------------------
@@ -302,17 +357,48 @@ async def test_resolve_position_winner(trader):
     positions = await trader.db.get_open_positions()
     shares_held = positions[0]["shares_held"]
 
-    # Mock balance to reflect winnings: remaining bankroll (50) + shares_held * $1
+    # First tick: auto-redeem hasn't landed — balance still pre-redeem.
+    # resolve_position must report pending without closing the position.
+    trader.client.get_balance_allowance.return_value = {
+        "balance": str(int(50.0 * 1e6))
+    }
+    result = await trader.resolve_position(pos_id, exit_price=1.0)
+    assert result.success is False
+    assert result.pending is True
+    assert len(await trader.db.get_open_positions()) == 1
+
+    # Redeem lands: remaining bankroll (50) + shares_held * $1.
     winning_balance = 50.0 + shares_held
     trader.client.get_balance_allowance.return_value = {
         "balance": str(int(winning_balance * 1e6))
     }
-
     result = await trader.resolve_position(pos_id, exit_price=1.0)
 
     assert result.success is True
     bankroll = await trader.db.get_bankroll()
     assert bankroll == pytest.approx(winning_balance, rel=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_resolve_position_winner_deadline_trusts_balance(trader):
+    """If the redeem never shows up, the deadline closes the position on the
+    raw balance instead of leaving it pending forever."""
+    _setup_successful_fill(trader, fill_price="0.50", fill_size="100.0")
+    kwargs = {**_TRADE_KWARGS, "price": 0.50, "size": 50.0, "market_id": "mkt-deadline"}
+    open_result = await trader.open_trade(**kwargs)
+    pos_id = open_result.position_id
+
+    trader.client.get_balance_allowance.return_value = {
+        "balance": str(int(50.0 * 1e6))
+    }
+    result = await trader.resolve_position(pos_id, exit_price=1.0)
+    assert result.pending is True
+
+    trader._redeem_pending[pos_id]["deadline"] = 0.0
+    result = await trader.resolve_position(pos_id, exit_price=1.0)
+    assert result.success is True
+    bankroll = await trader.db.get_bankroll()
+    assert bankroll == pytest.approx(50.0, rel=1e-4)
 
 
 @pytest.mark.asyncio
@@ -337,7 +423,7 @@ async def test_resolve_position_loser(trader):
 
 
 # ---------------------------------------------------------------------------
-# Orphan position detection (S1) — verifies the startup safety gate
+# Orphan position detection — verifies the startup safety gate
 # ---------------------------------------------------------------------------
 
 class _FakeResponse:

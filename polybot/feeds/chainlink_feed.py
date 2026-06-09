@@ -56,6 +56,13 @@ class ChainlinkFeed:
             return self._price
         return None
 
+    @staticmethod
+    def _epoch_seconds(ts: float) -> float:
+        """Normalize an epoch timestamp to seconds. RTDS payloads carry
+        milliseconds; boundary bookkeeping and get_strike() are keyed in
+        seconds, so an un-normalized value can never match a lookup."""
+        return ts / 1000.0 if ts > 1e11 else ts
+
     def _record_boundary(self, observed_ts: float) -> None:
         if self._price <= 0:
             return
@@ -150,7 +157,7 @@ class ChainlinkFeed:
                             # back to wall-clock so the boundary record is robust to
                             # a missing payload field.
                             payload_ts = payload.get("timestamp") or payload.get("ts")
-                            observed_ts = float(payload_ts) if payload_ts is not None else now
+                            observed_ts = self._epoch_seconds(float(payload_ts)) if payload_ts is not None else now
                             self.staleness.observe(now)
                             self._record_boundary(observed_ts)
                         except (ValueError, TypeError):

@@ -49,9 +49,10 @@ class OrphanPositionError(Exception):
     only reconciles DB-known rows — so without this gate the orphan would resolve
     silently and the gain/loss would just appear in the next bankroll sync.
 
-    `run_polybot.ps1` does not auto-restart on this exception; the operator is
-    expected to inspect `memory/state/orphan_positions.json`, reconcile manually, then
-    re-run with `--allow-orphans` to acknowledge the residual shares.
+    `run_polybot.ps1` restarts at the next 12:01 AM ET regardless, but this gate
+    trips again at boot — trading stays down until the operator inspects
+    `memory/state/orphan_positions.json`, reconciles manually, then re-runs with
+    `--allow-orphans` to acknowledge the residual shares.
     """
 
 logger = logging.getLogger(__name__)
@@ -73,12 +74,12 @@ _ALLOWANCE_RECHECK_EVERY = 10
 _FILL_PRICE_LOOKUP_RETRIES = 3
 _FILL_PRICE_LOOKUP_DELAY = 0.05
 _DUST_THRESHOLD_SHARES = 0.01
+_REDEEM_WAIT_MAX_S = 60.0  # give a winning auto-redeem this long before trusting the raw balance
 _BALANCE_SETTLE_FLOOR = 0.03  # min chain-settle wait even if WS fires immediately
-_BALANCE_SETTLE_DELAY = 0.15  # max wait (legacy fixed delay, used as ceiling + no-WS fallback)
-# Tightened from 0.05/0.25. WS trade events for our token typically arrive within
-# 50-150ms of the match-engine confirmation — the old 250ms ceiling left ~100ms
-# of idle wait on every successful BUY. Floor stays small enough to absorb any
-# ordering jitter between POST-success and the WS event landing.
+_BALANCE_SETTLE_DELAY = 0.15  # max wait — WS-wait ceiling, and the fixed delay when no WS is attached
+# WS trade events for our token typically arrive within 50-150ms of the
+# match-engine confirmation; the floor absorbs ordering jitter between
+# POST-success and the WS event landing.
 
 def _retry_sleep(attempt: int) -> float:
     """Exponential backoff with multiplicative jitter. attempt is 1-indexed."""
@@ -101,6 +102,12 @@ class AuthError(RuntimeError):
     The main loop catches this once and shuts down so the operator notices
     immediately instead of watching every entry silently fail.
     """
+
+
+class _AmbiguousPostError(Exception):
+    """post_order failed in a way that can't prove the order never reached the
+    exchange (timeout, connection dropped mid-request). Blind-retrying risks a
+    double fill, so the submit loop resolves these without resubmitting."""
 
 
 def _looks_like_auth_error(err: object) -> bool:
@@ -235,7 +242,7 @@ def _update_fill_stats(filled: bool, side: str, reason: str = "") -> None:
                 stats.update(_json.loads(_FILL_STATS_PATH.read_text()))
             except Exception:
                 pass
-        # Backfill the buckets dict if a pre-S7 stats file is loaded.
+        # Backfill the buckets dict if an older stats file lacks it.
         if "failure_buckets" not in stats or not isinstance(stats["failure_buckets"], dict):
             stats["failure_buckets"] = {b: 0 for b in _FAILURE_BUCKETS}
         for b in _FAILURE_BUCKETS:
@@ -272,6 +279,10 @@ def _create_clob_client() -> ClobClient:
     if not private_key:
         raise ValueError("Missing required secret: POLYMARKET_PRIVATE_KEY")
     funder = os.environ.get("POLYMARKET_FUNDER", "")
+    if not funder:
+        # Safe signature type signs against the funder address — without it every
+        # order fails downstream with an opaque signing error.
+        raise ValueError("Missing required secret: POLYMARKET_FUNDER")
 
     client = ClobClient(
         "https://clob.polymarket.com",
@@ -323,8 +334,8 @@ def _get_balance_and_allowance_usd(client: ClobClient) -> tuple[float, float]:
 def verify_auth(min_allowance_usd: float | None = None) -> tuple[bool, str, float]:
     """Verify Polymarket auth and return (ok, message, balance).
 
-    If ``min_allowance_usd`` is provided, auth fails when the Safe's USDC allowance
-    to the CTF Exchange is below it. Typical production threshold:
+    If ``min_allowance_usd`` is provided, auth fails when the Safe's minimum USDC
+    allowance across the exchange/adapter spenders is below it. Typical production threshold:
     ``(bankroll × kelly_fraction) × max_concurrent_positions × safety_multiplier``.
 
     Used by verify_keys.py (no threshold — informational) and main.py preflight
@@ -369,7 +380,6 @@ class LiveTrader(BaseTrader):
     def __init__(self, db: Database, **kwargs: Any) -> None:
         super().__init__(
             db=db,
-            max_slippage=kwargs.get("max_slippage", 0.02),
             max_bankroll_deployed=kwargs.get("max_bankroll_deployed", 0.80),
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
@@ -379,9 +389,9 @@ class LiveTrader(BaseTrader):
         self._min_allowance_warn_threshold: float = float(
             kwargs.get("min_allowance_warn_usd", 25.0)
         )
-        # 2 workers lets a concurrent BUY+SELL (entry firing while a scalp is in
-        # flight) sign in parallel instead of queueing serially. Each worker
-        # holds its own ECDSA signer; py-clob-client is thread-safe per call.
+        # 2 workers let a concurrent BUY+SELL (entry firing while a scalp is in
+        # flight) sign in parallel instead of queueing serially; py-clob-client
+        # is thread-safe per call.
         self._sign_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="clob-sign"
         )
@@ -403,6 +413,11 @@ class LiveTrader(BaseTrader):
         self._SELL_WARMUP_TTL_S: float = 5.0
         self._buy_warmups: dict[str, dict] = {}
         self._BUY_WARMUP_TTL_S: float = 5.0
+        # Winning resolutions awaiting on-chain auto-redeem: position_id →
+        # {"pre": balance before redeem, "deadline": give-up timestamp}.
+        # _resolve_bankroll checks once per call (non-blocking) and the trading
+        # loop retries each tick, so the loop never stalls on a redeem poll.
+        self._redeem_pending: dict[int, dict[str, float]] = {}
         # Last condition_id whose market-info (tick/neg-risk/fee) we warmed into the
         # py-clob client cache at discovery — dedups prewarm_market_info per window.
         self._prewarmed_condition_id: str = ""
@@ -506,10 +521,10 @@ class LiveTrader(BaseTrader):
     async def _await_buy_settle(self, ws_event: asyncio.Event | None) -> None:
         """Wait for the chain to register a BUY fill before reading balance.
 
-        Adaptive: always waits the floor (~50ms) for chain settlement, then
-        either returns the moment the CLOB WS reports a trade on our token,
-        or hits the legacy 250ms ceiling. Falls back to the fixed delay if
-        no WS is attached (parity with the pre-event-driven behavior).
+        Adaptive: always waits _BALANCE_SETTLE_FLOOR for chain settlement,
+        then either returns the moment the CLOB WS reports a trade on our
+        token, or hits the _BALANCE_SETTLE_DELAY ceiling. No WS attached →
+        fixed _BALANCE_SETTLE_DELAY wait.
 
         Wakes from any trade on our token, not just ours — the downstream
         balance-delta check tolerates that (a noise wake reads `delta=0`,
@@ -529,6 +544,72 @@ class LiveTrader(BaseTrader):
         except asyncio.TimeoutError:
             pass
 
+    def _ws_vwap_since(self, token_id: str, submit_ts: float, expected_price: float,
+                       amount: float) -> float | None:
+        """Gross BUY fill VWAP from CLOB WS trade events since ``submit_ts``, or
+        None when the events can't confidently be attributed to our order.
+
+        Filters to taker-buy-plausible prices (≤ limit + 0.005 tick rounding) and
+        requires total shares within [0.85, 1.30]× of expected — outside that,
+        background trades on our level or a missed WS event make the VWAP
+        untrustworthy and the caller falls back to slower sources. Returns the
+        GROSS vwap: base.py applies the entry fee itself (entry_fee_shares on
+        gross shares), so a net-of-fee price here would double-count it.
+        """
+        clob_ws = self._clob_ws
+        if clob_ws is None or not hasattr(clob_ws, "trades_since"):
+            return None
+        try:
+            ws_trades = clob_ws.trades_since(token_id, submit_ts - 0.05)
+        except Exception:
+            return None
+        candidates = [
+            t for t in ws_trades
+            if 0 < float(t.get("price", 0) or 0) <= expected_price + 0.005
+        ]
+        if not candidates:
+            return None
+        gross_shares = sum(float(t["size"]) for t in candidates)
+        if gross_shares <= _DUST_THRESHOLD_SHARES:
+            return None
+        gross_cost = sum(float(t["size"]) * float(t["price"]) for t in candidates)
+        expected_shares = amount / expected_price
+        if not (0.85 * expected_shares <= gross_shares <= 1.30 * expected_shares):
+            return None
+        gross_vwap = gross_cost / gross_shares
+        logger.debug("BUY WS-derived VWAP: %d trade(s), gross_shares=%.4f @ %.4f",
+                     len(candidates), gross_shares, gross_vwap)
+        return gross_vwap
+
+    async def _settle_unmatched_order(self, resp: dict, token_id: str, side: str,
+                                      amount: float, expected_price: float) -> FillResult:
+        """Resolve an accepted-but-unmatched FOK (e.g. status "delayed") without
+        resubmitting — the order exists at the exchange and may still fill, so a
+        fresh submit is the double-fill path. Cancels best-effort, then trusts
+        the order's trade record: filled iff associated trades exist."""
+        status = resp.get("status")
+        order_id = resp.get("orderID", "")
+        logger.warning("FOK %s status=%r — cancelling and checking trades instead of retrying",
+                       side, status)
+        if order_id:
+            try:
+                await asyncio.to_thread(self.client.cancel, order_id)
+            except Exception as e:
+                logger.debug("cancel of unmatched order failed (may have matched): %s", e)
+            fill_price = await self._get_fill_price(order_id, 0.0)
+            if fill_price > 0:
+                _update_fill_stats(filled=True, side=side)
+                if side == BUY:
+                    asyncio.create_task(self._cache_post_buy_balance(token_id))
+                else:
+                    self._invalidate_balance_cache(token_id)
+                    asyncio.create_task(self._sweep_residual(token_id, fill_price))
+                notional = amount if side == BUY else amount * fill_price
+                return FillResult(filled=True, fill_price=fill_price, fill_size=notional)
+        reason = f"unmatched status {status!r} — cancelled, no fill"
+        _update_fill_stats(filled=False, side=side, reason=reason)
+        return FillResult(filled=False, reason=reason)
+
     async def _execute_sell(
         self, token_id: str, shares: float, price: float,
         fee_rate: float = DEFAULT_FEE_RATE,
@@ -536,40 +617,49 @@ class LiveTrader(BaseTrader):
         """FOK market sell for `shares` shares."""
         return await self._submit_fok_order(token_id, SELL, shares, price, fee_rate=fee_rate)
 
-    async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
+    async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float | None:
         """Sync bankroll with real Polymarket balance.
 
-        On winning resolutions, poll until the auto-redeem USDC lands on-chain
-        (up to 60s total). Stops early once balance rises above pre-redeem level,
-        so we don't wait 60s on a fast chain. Losses skip entirely — no redeem tx.
+        Losses settle immediately (no redeem tx). Winning resolutions wait for
+        the auto-redeem USDC to land on-chain, but never block: each call makes
+        one balance check and returns None while the credit is in flight (the
+        trading loop retries next tick, so concurrent positions stay managed).
+        After _REDEEM_WAIT_MAX_S the raw balance is trusted as-is.
         """
         if exit_price < 0.99:
             real_balance = await self.get_balance()
             logger.info("Resolution bankroll sync: real balance=%.2f", real_balance)
             return real_balance
 
-        pre_balance = await self.get_balance()
+        pos_id = position.get("id", -1)
+        wait = self._redeem_pending.get(pos_id)
+        if wait is None:
+            pre_balance = await self.get_balance()
+            self._redeem_pending[pos_id] = {
+                "pre": pre_balance,
+                "deadline": time.time() + _REDEEM_WAIT_MAX_S,
+            }
+            return None
+        balance = await self.get_balance()
         expected_gain = position.get("shares_held", 0) * exit_price
-        # Poll with backoff: 5s, 5s, 10s, 10s, 15s, 15s = 60s max
-        for delay in (5, 5, 10, 10, 15, 15):
-            await asyncio.sleep(delay)
-            balance = await self.get_balance()
-            if balance >= pre_balance + expected_gain * 0.95:
-                logger.info(
-                    "Winning resolution — auto-redeem confirmed: balance %.2f -> %.2f",
-                    pre_balance, balance,
-                )
-                return balance
-        logger.warning(
-            "Winning resolution — auto-redeem not detected after 60s "
-            "(pre=%.2f expected_gain=%.2f final=%.2f). Using final balance.",
-            pre_balance, expected_gain, balance,
-        )
-        return balance
+        if balance >= wait["pre"] + expected_gain * 0.95:
+            del self._redeem_pending[pos_id]
+            logger.info(
+                "Winning resolution — auto-redeem confirmed: balance %.2f -> %.2f",
+                wait["pre"], balance,
+            )
+            return balance
+        if time.time() >= wait["deadline"]:
+            del self._redeem_pending[pos_id]
+            logger.warning(
+                "Winning resolution — auto-redeem not detected after %.0fs "
+                "(pre=%.2f expected_gain=%.2f final=%.2f). Using final balance.",
+                _REDEEM_WAIT_MAX_S, wait["pre"], expected_gain, balance,
+            )
+            return balance
+        return None
 
-    # -- Dust helpers (Polymarket FOK fills sometimes leave fractional residuals
-    # when `_get_fill_price` falls back to the limit price and shares_received is
-    # undercount) --
+    # -- FOK pre-check + balance/dust helpers --------------------------------
     @staticmethod
     def _estimate_fok_walk(book: dict, side: str, amount: float,
                            limit_price: float) -> bool | None:
@@ -1314,9 +1404,14 @@ class LiveTrader(BaseTrader):
             try:
                 if attempt == 1 and presigned is not None:
                     # POST the pre-signed order directly, skip the sign step.
+                    # post_order failures wrap as _AmbiguousPostError: once the
+                    # POST may have reached the exchange, the loop must not resubmit.
                     def _post_presigned() -> tuple[dict, float, float]:
                         _p0 = time.perf_counter()
-                        r = self.client.post_order(presigned, OrderType.FOK)
+                        try:
+                            r = self.client.post_order(presigned, OrderType.FOK)
+                        except Exception as e:
+                            raise _AmbiguousPostError(str(e)) from e
                         return r, 0.0, time.perf_counter() - _p0
                     _lat_t0 = time.perf_counter()
                     resp, sign_s, post_s = await loop.run_in_executor(
@@ -1326,11 +1421,17 @@ class LiveTrader(BaseTrader):
                     mo = MarketOrderArgs(token_id=token_id, amount=amount, side=side, price=expected_price)
                     # Sign and post in one thread dispatch on the dedicated executor,
                     # with per-leg timing so the post-distribution shape is observable.
+                    # Signing is local (safe to retry); post_order failures wrap as
+                    # _AmbiguousPostError so the loop never resubmits an order that
+                    # may have reached the exchange.
                     def _sign_and_post(order_args: MarketOrderArgs) -> tuple[dict, float, float]:
                         _s0 = time.perf_counter()
                         signed = self.client.create_market_order(order_args)
                         _s1 = time.perf_counter()
-                        r = self.client.post_order(signed, OrderType.FOK)
+                        try:
+                            r = self.client.post_order(signed, OrderType.FOK)
+                        except Exception as e:
+                            raise _AmbiguousPostError(str(e)) from e
                         return r, _s1 - _s0, time.perf_counter() - _s1
                     _lat_t0 = time.perf_counter()
                     resp, sign_s, post_s = await loop.run_in_executor(
@@ -1355,85 +1456,59 @@ class LiveTrader(BaseTrader):
 
                 if resp.get("status") == "matched":
                     order_id = resp.get("orderID", "")
-                    fill_price: float | None = None
-                    if side == BUY:
-                        # Same settle window the balance-delta path used — gives
-                        # the WS time to deliver our matched trade event(s).
-                        await self._await_buy_settle(ws_settle_event)
-                        # --- Fast path: WS-derived VWAP ---
-                        # Skips the second _get_token_balance REST call
-                        # (~30-100ms saved). Sanity-bound against expected fill
-                        # size so background trades on our level or a missed WS
-                        # event fall through to the balance-delta fallback.
-                        if clob_ws is not None and hasattr(clob_ws, "trades_since"):
-                            try:
-                                ws_trades = clob_ws.trades_since(token_id, submit_ts - 0.05)
-                            except Exception:
-                                ws_trades = []
-                            # Taker buys can't fill above limit; 0.005 absorbs tick rounding.
-                            candidates = [
-                                t for t in ws_trades
-                                if 0 < float(t.get("price", 0) or 0) <= expected_price + 0.005
-                            ]
-                            if candidates:
-                                gross_shares = sum(float(t["size"]) for t in candidates)
-                                gross_cost = sum(
-                                    float(t["size"]) * float(t["price"]) for t in candidates
-                                )
-                                if gross_shares > _DUST_THRESHOLD_SHARES:
-                                    gross_vwap = gross_cost / gross_shares
-                                    expected_shares = amount / expected_price
-                                    # Lower 0.85: tolerate small slippage / one
-                                    # missed level. Upper 1.30: VWAP >23% below
-                                    # limit would be very surprising — likely
-                                    # background trade pollution.
-                                    if 0.85 * expected_shares <= gross_shares <= 1.30 * expected_shares:
-                                        # Return gross VWAP. base.py applies the fee uniformly
-                                        # (entry_fee_shares on gross_shares) and records the
-                                        # correct net_shares. The earlier net-shares synthetic
-                                        # price caused base.py to deduct the fee a second time,
-                                        # leaving shares_held under-reported by ~0.45% (the
-                                        # difference showed up as on-chain dust).
-                                        fill_price = gross_vwap
+                    # Matched = filled. Nothing past this point may re-enter the
+                    # retry loop — a fill-price lookup hiccup would resubmit an
+                    # already-filled order.
+                    try:
+                        fill_price: float | None = None
+                        if side == BUY:
+                            # Same settle window the balance-delta path used — gives
+                            # the WS time to deliver our matched trade event(s).
+                            await self._await_buy_settle(ws_settle_event)
+                            # Fast path: WS-derived VWAP skips the second
+                            # _get_token_balance REST call (~30-100ms saved).
+                            fill_price = self._ws_vwap_since(
+                                token_id, submit_ts, expected_price, amount)
+                            if fill_price is not None and balance_task is not None \
+                                    and not balance_task.done():
+                                # WS path won — discard the parallel balance
+                                # pre-fetch so it doesn't leak a task.
+                                balance_task.cancel()
+                                balance_task = None
+                            # --- Fallback: balance-delta ---
+                            if fill_price is None and balance_task is not None:
+                                try:
+                                    balance_before = await balance_task
+                                except Exception:
+                                    balance_before = -1.0
+                                balance_task = None
+                                if balance_before >= 0:
+                                    balance_after = await self._get_token_balance(token_id)
+                                    delta = balance_after - balance_before
+                                    if delta > _DUST_THRESHOLD_SHARES:
+                                        # delta is net_shares (post-fee chain balance change). We
+                                        # need gross_vwap = amount / gross_shares so base.py can
+                                        # apply the fee correctly. Solve via 2 fixed-point steps:
+                                        #   gross_shares ≈ delta / (1 - fee_rate * p * (1-p))
+                                        # Converges in 1-2 iterations for fee_rate=0.07, p≈0.5.
+                                        p_est = amount / delta
+                                        for _ in range(2):
+                                            fee_frac = fee_rate * p_est * (1.0 - p_est)
+                                            gross_shares = delta / max(1.0 - fee_frac, 1e-6)
+                                            p_est = amount / gross_shares
+                                        fill_price = p_est
                                         logger.debug(
-                                            "BUY WS-derived VWAP: %d trade(s), "
-                                            "gross_shares=%.4f @ %.4f",
-                                            len(candidates), gross_shares, gross_vwap,
+                                            "BUY balance-delta VWAP fallback: net=%.4f -> "
+                                            "gross_vwap=%.4f (before=%.4f after=%.4f notional=%.2f)",
+                                            delta, fill_price, balance_before, balance_after, amount,
                                         )
-                                        # WS path won — discard the parallel balance
-                                        # pre-fetch so it doesn't leak a task.
-                                        if balance_task is not None and not balance_task.done():
-                                            balance_task.cancel()
-                                            balance_task = None
-                        # --- Fallback: balance-delta (existing path) ---
-                        if fill_price is None and balance_task is not None:
-                            try:
-                                balance_before = await balance_task
-                            except Exception:
-                                balance_before = -1.0
-                            balance_task = None
-                            if balance_before >= 0:
-                                balance_after = await self._get_token_balance(token_id)
-                                delta = balance_after - balance_before
-                                if delta > _DUST_THRESHOLD_SHARES:
-                                    # delta is net_shares (post-fee chain balance change). We
-                                    # need gross_vwap = amount / gross_shares so base.py can
-                                    # apply the fee correctly. Solve via 2 fixed-point steps:
-                                    #   gross_shares ≈ delta / (1 - fee_rate * p * (1-p))
-                                    # Converges in 1-2 iterations for fee_rate=0.07, p≈0.5.
-                                    p_est = amount / delta
-                                    for _ in range(2):
-                                        fee_frac = fee_rate * p_est * (1.0 - p_est)
-                                        gross_shares = delta / max(1.0 - fee_frac, 1e-6)
-                                        p_est = amount / gross_shares
-                                    fill_price = p_est
-                                    logger.debug(
-                                        "BUY balance-delta VWAP fallback: net=%.4f -> "
-                                        "gross_vwap=%.4f (before=%.4f after=%.4f notional=%.2f)",
-                                        delta, fill_price, balance_before, balance_after, amount,
-                                    )
-                    if fill_price is None:
-                        fill_price = await self._get_fill_price(order_id, expected_price)
+                        if fill_price is None:
+                            fill_price = await self._get_fill_price(order_id, expected_price)
+                    except Exception as e:
+                        logger.warning(
+                            "FOK %s matched but fill-price determination failed (%s) — "
+                            "using limit price", side, e)
+                        fill_price = expected_price
                     order_short = (f"{order_id[:6]}…{order_id[-4:]}"
                                    if isinstance(order_id, str) and len(order_id) > 12
                                    else order_id)
@@ -1446,8 +1521,8 @@ class LiveTrader(BaseTrader):
                     )
                     _update_fill_stats(filled=True, side=side)
                     # Fire-and-forget: the recheck only logs a warning when allowance
-                    # drops below threshold; blocking the FOK return path on it cost
-                    # 30-100ms every 10th submit for zero trading-logic benefit.
+                    # drops below threshold — not worth blocking the FOK return path
+                    # 30-100ms every 10th submit.
                     asyncio.create_task(self._maybe_recheck_allowance())
                     if side == BUY:
                         # Background prefetch of post-BUY chain balance — primes
@@ -1466,15 +1541,41 @@ class LiveTrader(BaseTrader):
                         fill_size=notional_usdc,
                     )
 
-                # Unexpected status
-                last_error = f"Unexpected status: {resp.get('status')}"
-                logger.warning("FOK %d/%d: unexpected status %s", attempt, _MAX_RETRIES, resp.get('status'))
-                if attempt < _MAX_RETRIES:
-                    await asyncio.sleep(_retry_sleep(attempt))
+                # Accepted but not matched (e.g. "delayed"): the order exists at
+                # the exchange and may still fill — resubmitting is the
+                # double-fill path. Cancel and settle from its trade record.
+                if balance_task is not None and not balance_task.done():
+                    balance_task.cancel()
+                return await self._settle_unmatched_order(
+                    resp, token_id, side, amount, expected_price)
 
             except AuthError:
                 raise
+            except _AmbiguousPostError as e:
+                if _looks_like_auth_error(e):
+                    logger.error("AUTH FAILURE during FOK submit: %s", e)
+                    raise AuthError(str(e)) from e
+                if balance_task is not None and not balance_task.done():
+                    balance_task.cancel()
+                if side == BUY:
+                    # The POST may have reached the exchange — check the WS trade
+                    # feed before declaring a miss, so a real fill can't leave
+                    # on-chain shares the DB doesn't know about. (SELL has no such
+                    # check; a phantom-filled sell reconciles via _sellable_shares
+                    # and the resolution balance sync.)
+                    await self._await_buy_settle(ws_settle_event)
+                    vwap = self._ws_vwap_since(token_id, submit_ts, expected_price, amount)
+                    if vwap is not None:
+                        _update_fill_stats(filled=True, side=side)
+                        asyncio.create_task(self._cache_post_buy_balance(token_id))
+                        return FillResult(filled=True, fill_price=vwap, fill_size=amount)
+                reason = f"POST outcome unknown ({e}) — not retried to avoid double fill"
+                logger.warning("FOK %s %s", side, reason)
+                _update_fill_stats(filled=False, side=side, reason="ambiguous post — not retried")
+                return FillResult(filled=False, reason=reason)
             except Exception as e:
+                # Reachable only by pre-POST failures (signing, local errors) —
+                # nothing reached the exchange, so a retry is safe.
                 if _looks_like_auth_error(e):
                     logger.error("AUTH FAILURE during FOK submit: %s", e)
                     raise AuthError(str(e)) from e

@@ -43,7 +43,7 @@ Every 5 min, Polymarket runs a market: will BTC close higher or lower than at th
 
 The bot picks side, size, when to scale in, and when to sell early. Two modes, same engine/gates/telemetry:
 
-- **`paper`** — realism shim: real CLOB books, FOK semantics, convex slippage, configurable network-fail/latency jitter, $1 min, tick snapping. Bankroll in a paper SQLite DB.
+- **`paper`** — realism shim: real CLOB books, FOK semantics (incl. live's retry-on-price-moved), convex slippage, configurable network-fail/latency jitter, $1 min, tick snapping, simulated residual sweep (scalp fee-headroom shares credited to bankroll like live's on-chain sweep, excluded from pnl like live's records). Bankroll in a paper SQLite DB.
 - **`live`** — `py-clob-client-v2` FOK orders against the real CLOB via `LiveTrader`; verifies USDC balance + allowance before the first order.
 
 Schedule (`run_polybot.ps1`) in §16.
@@ -95,7 +95,7 @@ Top-5 levels each side by best price.
 
 ### L3b — Spot CVD (Coinbase)
 
-Coinbase is the largest US-volume BTC venue and where Chainlink resolves. Per-trade CVD + taker ratio from the WS L2 + match feed:
+Coinbase is the largest US-volume BTC venue and where Chainlink resolves. Per-trade CVD + taker ratio from the WS `ticker` feed (fires per trade with taker side):
 
 ```
 cvd_60s    = signed Coinbase BTC volume over 60s
@@ -175,13 +175,13 @@ Edge = `calibrated_model_prob - market_price`. **All** must pass; any single fai
 | Chosen-side `prob` | >= `min_model_probability` (default 0.56) | `SignalEngine.evaluate` |
 | `edge` | >= `min_edge` (default 0.04, scaled by flip premium — §7) | `SignalEngine.evaluate` |
 | `Kelly` (fee-aware) | >= `min_kelly` (default 0.01); `b_eff = b * (1 - fee_rate)` | `SignalEngine._kelly` |
-| Spread either side | `spread/2 + EFFECTIVE_FEE_PEAK <= max_spread` (default 0.10) | `_fetch_market_prices` |
+| Spread either side | `spread/2 + EFFECTIVE_FEE_PEAK <= max_spread` (default 0.10); spread unavailable (WS + REST both fail) = skip, fail-closed | `_fetch_market_prices` |
 | Book depth | both-sides-thin first (>= `min_book_depth_usd = $50` on at least one side); chosen-side depth must also clear it | `_evaluate_signal_and_enter` |
 | Price sum | `price_up + price_down in [0.98, 1.02]` (cross-book no-arb) | `_fetch_market_prices` |
-| Book freshness | both sides' WS BBO <= `_WS_STALE_S = 10s` old | `clob_ws.both_books_fresh` |
+| Book freshness | both sides' WS book snapshots <= `_WS_STALE_S = 10s` old | `clob_ws.both_books_fresh` |
 | `edge <= max_edge` | default 0.20 — wider edge = stale phantom price | `_evaluate_signal_and_enter` |
 | ATR gate | ATR >= 5th-percentile (lower-bound only) | `IndicatorEngine.atr` |
-| SPRT | not `SKIP`; not opposing the chosen side when conf > 60% with >=6 obs | `SPRTAccumulator` |
+| SPRT | not `SKIP`; not opposing the chosen side when conf > 60% with >=6 obs; conf >= `min_confidence` (0.02) once >=6 obs | `SPRTAccumulator` |
 | Adverse-selection hard skip | `adverse_rate_at_30s >= adverse_selection_threshold` (default 0.80) -> reject | `AdverseSelectionMonitor` |
 | Edge-decay | mean 15s post-fill drift (30-min lookback) >= `edge_decay_threshold` (default -0.05). Inactive until >=15 resolved fills | `AdverseSelectionMonitor.get_recent_decay_mean` |
 | Layer disagreement | reject when `compute_momentum` opposes the chosen side (>0.5 magnitude) and `edge * 0.5 < min_edge` | inline |
@@ -200,11 +200,11 @@ kelly_mult = max(0.30, 1 - 1.5 * max(0, adverse_rate_at_30s - 0.45))   # max(adv
 
 The penalty scales down with the fade rate (at `adverse_rate -> 0.80⁻` it reaches `0.475`); at `adverse_rate >= 0.80` (the hard `adverse_selection_threshold`) the trade is blocked entirely, before sizing. (The 0.30 floor is a clamp, unreachable while trading.) The 30-min lookback is **Bayesian-shrunk to a neutral prior** (n=10, rate=0.5).
 
-Every rejection of a **pipeline-tunable or signal-derived gate** feeds a **ghost** into `GhostTracker` (full L1-L5 inputs + aux microstructure); ghosts resolve at the window's close and feed the backtest pool (raising a gate filters the same ghosts from baseline + candidate equally, lowering includes them). Non-tunable structural gates (`regime` quiet skip, chosen-side `thin_book_depth`, `min_size` $1 floor) reject without ghosting, so the pipeline can't adopt a change that re-includes them.
+**Ghosting:** below-min-prob model skips and the downstream gate vetoes (adverse, edge-decay, edge cap, flip hurdle, SPRT, layer disagreement, CVD decel) feed a **ghost** into `GhostTracker` (full L1-L5 inputs + aux microstructure); ghosts resolve at the window's close and feed the backtest pool (raising a gate filters the same ghosts from baseline + candidate equally, lowering includes them). **Not ghosted:** `min_edge`/`min_kelly` rejections inside `SignalEngine.evaluate` (so those two knobs are under-evaluable downward — the pool is censored just below their thresholds) and the non-tunable structural gates (`regime` quiet skip, chosen-side `thin_book_depth`, `min_size` $1 floor), so the pipeline can't adopt a change that re-includes them. The CLOB-microstructure gates (price sum, book freshness, both-sides depth, spread) run only when prices come from the CLOB (`price_source == "clob"`); on the Gamma fallback they're bypassed and the chosen-side depth check + pre-submit re-check are the remaining guards.
 
 ## 4. Sizing
 
-Soft multipliers first, then `min()` against hard caps (so the caps dominate), then a $1 floor + a real round-trip net-edge check:
+Soft multipliers first, then `min()` against hard caps (so the caps dominate), then a $1 floor + a net-edge-after-slippage check:
 
 ```
 raw_kelly_size = bankroll * signal.kelly_size
@@ -225,18 +225,18 @@ if size < 1.0: skip                                              # CLOB floor
 
 ### Hard caps
 
-- `bankroll * max_bankroll_deployed` (default 0.80).
+- `max_bankroll_deployed` (default 0.80), enforced twice: sizing clamps the single trade to `cash * 0.80`, and `open_trade` rejects when `deployed + size` would exceed `(cash + deployed) * 0.80` — total deployed cost never passes 80% of equity (free cash + open-position cost).
 - `side_depth * max_book_fill_pct` (default 0.50) — under the thin-CLOB upstream gate (at least one side >= $50); if the chosen side is the empty leg of a one-sided book, that's an explicit skip.
 
 ## 5. Placing the order
 
-FOK via `py-clob-client-v2`. 3 retries with jittered exponential backoff. HTTP/2 keepalive ping every 5s (against a 60s `keepalive_expiry` pool, so the connection never lapses between pings).
+FOK via `py-clob-client-v2`. Up to 3 attempts with jittered exponential backoff — but **only exchange-confirmed rejections retry**. Ambiguous outcomes never resubmit (double-fill guard): an accepted-but-unmatched status (e.g. `delayed`) is cancelled and settled from its trade record; a network failure during the POST checks the WS trade feed for a real fill and otherwise reports unfilled; a confirmed match never re-enters the retry loop even if the fill-price lookup fails (limit price used). HTTP/2 keepalive ping every 5s (against a 60s `keepalive_expiry` pool, so the connection never lapses between pings).
 
 Live mode boot:
-1. `verify_auth` checks `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER` set and the Safe reachable.
+1. Client creation requires `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER` (boot fails loudly without either); `verify_auth` checks the Safe reachable.
 2. USDC balance fetched. Allowance = `min(allowances[spender] for all spenders) / 1e6`.
-3. Required allowance: `max_single * max_concurrent_positions * 10` (10x safety), `max_single = bankroll * kelly_fraction` (a max Kelly single bet — **not** the `max_bankroll_deployed` cap). If allowance < required -> `AuthError`, clean exit, **no retry that day** (outer `while ($true)` restarts next midnight ET; fix allowance first).
-4. **Mid-session allowance recheck** — every `_ALLOWANCE_RECHECK_EVERY = 10` submits, re-fetch and warn/fail if revoked.
+3. Required allowance: `max_single * max_concurrent_positions * 10` (10x safety), `max_single = bankroll * kelly_fraction` (a max Kelly single bet — **not** the `max_bankroll_deployed` cap). If allowance < required -> logged clean exit, **no retry that day** (outer `while ($true)` restarts next midnight ET; fix allowance first).
+4. **Mid-session allowance recheck** — every `_ALLOWANCE_RECHECK_EVERY = 10` successful fills, re-fetch and **warn** (never halts) if it drops below threshold.
 
 Paper boot: skips auth, same `BaseTrader` open/close path; `PaperTrader` simulates book-walk fill + latency + occasional FOK rejection.
 
@@ -273,13 +273,13 @@ OTM urgency can push the threshold **positive**, forcing exit even when the mode
 3. **Scalp** — `holding_edge <= effective_threshold` (and not in the deep-loss hold zone), unless BTC is within 0.5*ATR of the strike on the wrong side (same whipsaw cushion as branch 1).
 4. **Hold** — otherwise.
 
-No confidence override — math says exit, it exits. (On EXIT, if the WS best_bid looks phantom — < 70% of a `/price?side=SELL` cross-check — the SELL is re-verified against `last_effective_exit_threshold` first.)
+No confidence override — math says exit, it exits. (On EXIT, if the WS best_bid looks phantom — the `/price?side=SELL` cross-check comes in below 70% of it — the SELL is re-verified against `last_effective_exit_threshold` first.)
 
-`exit_edge_threshold` is the only operator-touchable exit knob and the **only exit knob the pipeline tunes** (range -0.10..-0.03). On a proposed change, the backtest replays the **counterfactual tracker**'s recorded scalp outcomes through the new threshold: trades whose `holding_edge_at_scalp` exceeds the candidate threshold are re-priced using the matched hold-to-resolution `gain_pct` (`pnl/size` — §13).
+`exit_edge_threshold` is the only operator-touchable exit knob and the **only exit knob the pipeline tunes** (range -0.10..-0.03). On a proposed change, the backtest replays the **counterfactual tracker**'s recorded scalp outcomes through the candidate: a scalp re-prices to its matched hold-to-resolution `gain_pct` (`pnl/size` — §13) only when the candidate would **not** have fired it — judged against the same blended effective threshold live fires on (shared `effective_exit_threshold` in `exit_boundary.py`, recomputed from the recorded scalp-moment state). Loss-cut closes fire independently of the threshold and are never re-priced (scalp records carry a `loss_cut` flag; records without it replay as ordinary scalps).
 
 ## 7. Flip trading
 
-After a scalp, the bot can re-enter the same window — including the opposite side — **unboundedly** (one position at a time). Each re-entry clears the standard entry gates plus a flip premium:
+After a scalp, the bot can re-enter the same window — including the opposite side — **unboundedly** (one position per window; across different windows, `max_concurrent_positions` caps the total). Each re-entry clears the standard entry gates plus a flip premium:
 
 ```
 flip_premium = flip_edge_premium + 0.005 * max(0, flip_count - 2)
@@ -292,7 +292,7 @@ Flips 1-2 pay only the base `flip_edge_premium` (default 0.015); flip 3 +0.5pp; 
 ## 8. Resolution
 
 - **Early scalp** — sold before expiry into the book. The bot keeps the difference; counterfactual tracker logs what hold-to-resolution would have paid.
-- **Resolution** — window closes; Chainlink decides; winner paid binary **$1**, loser **$0**, credited atomically. Exit price decided **oracle-first** (`_resolved_exit_price`): Gamma's `event_metadata` (Chainlink `final_price` vs `price_to_beat`) is authoritative; absent that, a *coherent* resolved CLOB book (closed, prices sum ~1, one side at an extreme) is the fallback. An incoherent book (stale/phantom print) is rejected, not trusted.
+- **Resolution** — window closes; Chainlink decides; winner paid binary **$1**, loser **$0**, credited atomically. Exit price decided **oracle-first** (`_resolved_exit_price`): Gamma's `event_metadata` (Chainlink `final_price` vs `price_to_beat`) is authoritative; absent that, the fallback is Gamma's *coherent* resolved `outcomePrices` (market `closed`, prices sum ~1, one side at an extreme — Gamma rewrites them to the resolved 1/0 post-close). Incoherent prices (stale/phantom) are rejected, not trusted. Live winning redeems settle **non-blockingly**: one balance check per tick (`pending` result until the auto-redeem lands, 60s deadline then trust the raw balance), so the loop keeps managing other positions meanwhile.
 - **Never resolves from Binance** — it can diverge from Chainlink by $20-$200 at the close.
 - **Chainlink orphan fallback** — if Gamma stays silent ~30 min after entry, read Chainlink directly via `chainlink_feed` and resolve locally. Restart safety: the position stays `open`/`pending_resolution` in the DB (re-evaluated on boot), not a file. `memory/state/orphan_positions.json` is written by a *separate* startup check (`LiveTrader.detect_orphan_positions`) flagging on-chain positions the DB doesn't know about.
 
@@ -301,7 +301,7 @@ Flips 1-2 pay only the base `flip_edge_premium` (default 0.015); flip 3 +0.5pp; 
 The loss-handling stack lives in §3 (adverse-selection, edge-decay, regime quiet-skip, feed-staleness skips — a Coinbase gap >=2s skips the L1 decision, no Binance fallback), §4 (circuit breaker), and §1 (cross-venue gap logging). Also:
 - Circuit-breaker streak counters (3 losses / 3 wins) drive Discord alerts only, never sizing.
 - `AdverseSelectionMonitor` state persisted to `state/adverse_state.json` on every fill so restarts inherit the rolling window.
-- **CLOB WS heartbeat** — PING every 10s, force-reconnect if no PONG within 25s.
+- **CLOB WS heartbeat** — PING every 10s; no PONG for 25s forces a reconnect (checked once per PING cycle, so worst-case detection ~35s).
 
 ---
 
@@ -317,14 +317,14 @@ Telemetry, nightly pipeline, param registry, layout, data sources, run commands,
 - **Probabilities:** `model_probability` (post-calibrator), `model_probability_raw` (pre-calibrator — stored separately so re-fits don't compound).
 - **Composite signals:** `flow_score`, `spot_flow_signal`, `regime_autocorr`, `regime_direction`, `prev_resolution_margin`.
 - **Microstructure aux:** `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`.
-- **None-vs-0.0 (load-bearing):** every **signal** field is recorded `None` (never `0.0`) when its feed is cold/stale — including `flow_score`/`spot_flow_signal`, whose *live* value collapses cold to `0.0` for the logit but whose *recorded* value is `None`. So a recorded `0.0` is genuinely flat flow, not a dead feed; the pipeline replay coerces `None -> 0.0` on read to match live. `coinbase_taker_n` is a **count**: `0` (not `None`) when cold (consumer requires `n >= 20`).
+- **None-vs-0.0 (load-bearing):** every **signal** field is recorded `None` (never `0.0`) when its feed is cold/stale **or its trade buffer doesn't yet span the measurement window (e.g. <60s after a Coinbase reconnect — `CoinbaseFeed.covers`)** — including `flow_score`/`spot_flow_signal`, whose *live* value collapses cold to `0.0` for the logit but whose *recorded* value is `None`. So a recorded `0.0` is genuinely flat flow, not a dead feed; the pipeline replay coerces `None -> 0.0` on read to match live. `coinbase_taker_n` is a **count**: `0` (not `None`) when cold (consumer requires `n >= 20`).
 - **SPRT:** `sprt_confidence`, `sprt_status`. **Sizing audit:** `adverse_rate_at_30s`, `adverse_kelly_mult` (recorded for audit; not pipeline-consumed), `entry_phase`, `flip_count`, `is_flip`.
 
 **Ghost rejections share the same schema** (incl. `entry_phase`/`flip_count`/`is_flip` at gate-fire time), so by-phase and flip-segmented bias cards see the full ghost population.
 
 ### `edge_decay.deltas` (merged at close, persisted to outcome JSON)
 
-Side-signed post-fill mid drift at **5/10/15/30/60s**, captured by `AdverseSelectionMonitor` keyed by `position_id`, merged at close. The live `edge_decay_threshold` gate reads the 15s mean over a 30-min lookback from the monitor's **in-memory** window (restart-inherited via `adverse_state.json`); the per-outcome `edge_decay.deltas` persisted here is an **audit record**, not consumed by the pipeline. Null windows = trade closed before that checkpoint resolved.
+Post-fill drift of the **traded token's own mid** at **5/10/15/30/60s** (positive = our side's price rose = in our favor; baseline and checkpoints share the same axis), captured by `AdverseSelectionMonitor` keyed by `position_id`, merged at close. The live `edge_decay_threshold` gate reads the 15s mean over a 30-min lookback from the monitor's **in-memory** window (restart-inherited via `adverse_state.json`, schema-versioned so a convention change discards old snapshots); the per-outcome `edge_decay.deltas` persisted here is an **audit record**, not consumed by the pipeline. Null windows = trade closed before that checkpoint resolved.
 
 ### Gate-skip stats (`memory/state/gate_stats*.json`)
 

@@ -80,8 +80,8 @@ def test_more_distance_bigger_edge(engine):
 def test_less_time_higher_probability(engine):
     """Less time = more certain = higher probability.
 
-    Distance/ATR chosen so both probabilities stay below the ±3 logit clamp;
-    a saturated `p1` would make this test pass-by-tie.
+    Distance/ATR chosen so both probabilities stay below the final logit clamp;
+    saturation would tie p1 == p2 and break the strict comparison.
     """
     p1 = engine.compute_probability(66430, 66400, 240, 30)
     p2 = engine.compute_probability(66430, 66400, 60, 30)
@@ -101,7 +101,8 @@ def test_no_edge_when_momentum_alone(engine):
         has_position=False, in_entry_window=True,
         btc_price=66400, strike_price=66400,
         seconds_remaining=180, market_price_up=0.50, market_price_down=0.50)
-    # With momentum_weight=0.08, max nudge is 0.08. Edge = 0.58 - 0.50 = 0.08 < 0.10 min_edge
+    # No closes ⇒ regime=0 ⇒ L4 weight dampened to 0.5×0.08; the resulting logit
+    # nudge moves P(Up) only a few points off 0.5, under the 0.10 min_edge.
     assert signal.action == "SKIP"
 
 
@@ -148,9 +149,8 @@ def test_deep_loss_exits_when_model_says_side_is_dead():
 
     With a fitted isotonic calibrator, a calibrated probability at or below the
     lowest learned knot is a credible "the side really will pay zero" signal;
-    selling at market beats holding for ~$0 expected. Mirrors the 10:00 scenario
-    where BTC moved decisively below strike with low ATR and the deep-loss-hold
-    rule would have otherwise trapped the position to expiry. Uses a stub
+    selling at market beats holding for ~$0 expected — the override that keeps
+    the deep-loss-hold rule from trapping a dead side to expiry. Uses a stub
     calibrator so the test is independent of fit-data shape.
     """
     class _StubCal:
@@ -168,11 +168,10 @@ def test_deep_loss_exits_when_model_says_side_is_dead():
     assert action == "EXIT"
 
 def test_evaluate_hold_stamps_effective_exit_threshold(engine):
-    """F2: evaluate_hold must stamp last_effective_exit_threshold (the blended
+    """evaluate_hold must stamp last_effective_exit_threshold (the blended
     deep-loss-floor/ExitBoundary value) — main.py's phantom-bid SELL re-verify
     reads it instead of the raw config threshold. It must be populated and vary
     with market price (deep-ITM blends toward the more patient floor)."""
-    import math
     atm = engine.evaluate_hold(
         _make_indicators(atr_value=80), btc_price=66420, strike_price=66400,
         seconds_remaining=180, market_price_for_side=0.55, side="Up", exit_threshold=-0.05)
@@ -285,7 +284,7 @@ def test_regime_factor_insufficient_data():
 # --- Order flow integration tests ---
 
 def test_flow_signal_bullish():
-    # Inputs sized so the L1 logit stays well below the ±3 clamp — otherwise
+    # Inputs sized so the L1 logit stays well below the final clamp — otherwise
     # both probs saturate at the same ceiling and the flow contribution is lost.
     se = SignalEngine(flow_weight=0.06)
     prob_neutral = se.compute_probability(71050, 71000, 180, 80.0, flow_signal=0.0)
@@ -312,17 +311,14 @@ def test_atr_gate_blocks_entry():
 # --- Fee-aware hold tests ---
 
 def test_evaluate_hold_fee_aware_threshold():
-    """Fee-aware scalp: threshold is harder when fees are high."""
+    """Smoke: evaluate_hold accepts entry_price/fee_rate and returns a valid action."""
     se = SignalEngine()
     indicators = {"atr": {"atr": 50.0}, "rsi": {"score": 0}, "macd": {"score": 0},
                   "stochastic": {"score": 0}, "obv": {"score": 0}, "vwap": {"score": 0}}
-    # With entry_price and fee, effective threshold should be more negative
     action1, _, _, _ = se.evaluate_hold(indicators, 71100, 71000, 180, 0.60, "Up",
                                         exit_threshold=-0.10, entry_price=0.0)
     action2, _, _, _ = se.evaluate_hold(indicators, 71100, 71000, 180, 0.60, "Up",
                                         exit_threshold=-0.10, entry_price=0.50, fee_rate=0.072)
-    # With fee awareness, the threshold is harder (more negative) so it's more likely to HOLD
-    # Both should return the same action type here but the effective thresholds differ
     assert action1 in ("HOLD", "EXIT")
     assert action2 in ("HOLD", "EXIT")
 

@@ -1,7 +1,7 @@
 """Multi-state regime detector.
 
-Classifies BTC microstructure into one of six regimes:
-trending_up, trending_down, mean_reverting, volatile, quiet, neutral.
+Classifies BTC microstructure as trending_up, trending_down, mean_reverting,
+volatile, quiet, or neutral (unknown when data is insufficient).
 quiet skips entry (no edge in flat-vol); all others allow entry.
 """
 
@@ -27,7 +27,7 @@ _REGIMES = {
 }
 
 class RegimeDetector:
-    """Classifies market regime from price closes, ATR, and CVD.
+    """Classifies market regime from price closes and ATR.
 
     Parameters
     ----------
@@ -62,7 +62,6 @@ class RegimeDetector:
         closes: np.ndarray,
         atr: float,
         atr_history: list[float],
-        cvd: float = 0.0,
         autocorr: float | None = None,
     ) -> RegimeState:
         """Classify the current market regime.
@@ -91,10 +90,8 @@ class RegimeDetector:
         if vol_pct > self.vol_high_pct:
             return _REGIMES["volatile"]
 
-        # 3. Trending: strong directional consistency — direction from PRICE, not CVD.
-        #    CVD confirms but does NOT override price direction. Previous logic used
-        #    CVD alone for direction, causing misclassification when prices rose but
-        #    CVD was negative (e.g., thin Binance.US volume with 1 seller).
+        # 3. Trending: strong directional consistency — direction from PRICE returns,
+        #    never CVD (thin-volume CVD can oppose price and misclassify the trend).
         is_trending = (
             autocorr > self.autocorr_threshold
             or dir_ratio > self.trend_consistency

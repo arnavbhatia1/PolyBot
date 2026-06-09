@@ -26,8 +26,7 @@ class BinanceDepthFeed:
     """Subscribes to btcusdt@depth20@100ms; commits both sides atomically."""
 
     def __init__(self, symbol: str = "btcusdt",
-                 ws_url: str = "wss://stream.binance.com:9443/ws",
-                 **_unused: Any) -> None:
+                 ws_url: str = "wss://stream.binance.com:9443/ws") -> None:
         self.symbol = symbol
         self.ws_url = ws_url
         self.top_bids: list[list[str]] = []

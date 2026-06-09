@@ -157,6 +157,72 @@ def test_replay_coerces_cold_feed_none_flow_to_zero():
     assert r_none == r_zero
     assert all(math.isfinite(r) for r in r_none)
 
+def _scalp_outcome(gain=0.02, pid=777):
+    o = _cold_feed_outcome(0.0)
+    o["exit_reason"] = "scalp"
+    o["gain_pct"] = gain
+    o["position_id"] = pid
+    # Clear the entry gates decisively (raw L1 prob ≈ 0.59 vs price 0.50 →
+    # edge ≈ 0.09 ≥ min_edge) so the replay emits exactly one return.
+    o["indicator_snapshot"]["trade_context"]["market_price_up"] = 0.50
+    o["indicator_snapshot"]["trade_context"]["market_price_down"] = 0.50
+    return o
+
+
+def _cf_index(he, secs=120, mp=0.5, loss_cut=False, cf_gain=-1.0, pid=777):
+    return {pid: {"counterfactual": {"gain_pct": cf_gain},
+                  "context_at_scalp": {"holding_edge": he, "seconds_remaining": secs,
+                                       "market_price": mp, "fee_rate": 0.07,
+                                       "loss_cut": loss_cut}}}
+
+
+_REPLAY_KWARGS = dict(
+    recommended_weights={"rsi": 0.2, "macd": 0.2, "stochastic": 0.2, "obv": 0.2, "vwap": 0.2},
+    momentum_weight=0.05, atr_sigma_ratio=1.3, student_t_df=5, min_edge=0.04,
+    calibrator=None, kelly_fraction=0.15, min_kelly=0.01, min_prob=0.56,
+)
+
+
+def test_exit_replay_scores_against_blended_threshold_not_raw():
+    """At ATM with 120s left the blended fire criterion is the boundary curve
+    (≈ -0.057), well above a raw -0.10 candidate. A scalp at holding_edge -0.08
+    would STILL fire live under the candidate, so it must keep its scalp gain —
+    the raw-threshold comparison (-0.08 > -0.10) would wrongly reprice it."""
+    sched = _bare_scheduler()
+    no_cf, _ = sched._kelly_bankroll_returns(
+        outcomes=[_scalp_outcome()], **_REPLAY_KWARGS)
+    with_cf, _ = sched._kelly_bankroll_returns(
+        outcomes=[_scalp_outcome()], exit_threshold_override=-0.10,
+        counterfactual_index=_cf_index(he=-0.08), **_REPLAY_KWARGS)
+    assert len(no_cf) == 1
+    assert with_cf == no_cf  # scalp outcome kept, counterfactual NOT substituted
+
+
+def test_exit_replay_reprices_when_candidate_would_not_fire():
+    """A scalp at holding_edge -0.02 sits above the blended criterion — under the
+    candidate live would have held, so the hold-to-resolution gain substitutes."""
+    sched = _bare_scheduler()
+    no_cf, _ = sched._kelly_bankroll_returns(
+        outcomes=[_scalp_outcome()], **_REPLAY_KWARGS)
+    with_cf, _ = sched._kelly_bankroll_returns(
+        outcomes=[_scalp_outcome()], exit_threshold_override=-0.10,
+        counterfactual_index=_cf_index(he=-0.02), **_REPLAY_KWARGS)
+    assert len(with_cf) == 1
+    assert with_cf != no_cf  # counterfactual gain substituted
+
+
+def test_exit_replay_never_reprices_loss_cuts():
+    """Loss-cut closes fire independently of exit_edge_threshold — even a
+    holding_edge far above the criterion must keep its actual scalp outcome."""
+    sched = _bare_scheduler()
+    no_cf, _ = sched._kelly_bankroll_returns(
+        outcomes=[_scalp_outcome()], **_REPLAY_KWARGS)
+    with_cf, _ = sched._kelly_bankroll_returns(
+        outcomes=[_scalp_outcome()], exit_threshold_override=-0.10,
+        counterfactual_index=_cf_index(he=0.05, loss_cut=True), **_REPLAY_KWARGS)
+    assert with_cf == no_cf
+
+
 def _make_outcomes(n):
     """Helper: generate n fake outcome dicts with sequential timestamps."""
     return [

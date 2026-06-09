@@ -29,41 +29,21 @@ def _sort_levels(orders: list[dict[str, Any]], best_first: str) -> list[dict[str
         return orders
 
 
-def _side_size(orders: list[dict[str, Any]], best_first: str, n: int,
-               distance_weighted: bool, mid: float) -> float:
-    """Sum of top-n sizes. With distance_weighted=True and mid > 0, each level's
-    contribution shrinks linearly with its absolute distance from mid (own-side
-    proximity)."""
+def _side_size(orders: list[dict[str, Any]], best_first: str, n: int) -> float:
+    """Sum of the top-n level sizes (best price first)."""
     sorted_orders = _sort_levels(orders, best_first)
     if not sorted_orders:
         return 0.0
-    if not distance_weighted or mid <= 0:
-        return sum(float(o.get("size", 0)) for o in sorted_orders[:n])
-
-    total = 0.0
-    for o in sorted_orders[:n]:
-        try:
-            price = float(o.get("price", 0))
-            size = float(o.get("size", 0))
-        except (ValueError, TypeError):
-            continue
-        # Linear taper: proximity = 1 at the touch, → 0 at distance == mid.
-        # Caller passes mid in token-price units ∈ (0, 1), so |price − mid| ≤ 1
-        # by construction and the weight stays in [0, 1].
-        weight = max(0.0, 1.0 - abs(price - mid))
-        total += size * weight
-    return total
+    return sum(float(o.get("size", 0)) for o in sorted_orders[:n])
 
 
 def book_imbalance(book_up: dict[str, Any], book_down: dict[str, Any],
-                   depth_levels: int = _BOOK_DEPTH_LEVELS,
-                   distance_weighted: bool = False,
-                   mid_up: float = 0.0, mid_down: float = 0.0) -> float:
+                   depth_levels: int = _BOOK_DEPTH_LEVELS) -> float:
     """Bid/ask imbalance ∈ [-1, 1] across top-N levels of each side."""
-    bid_up = _side_size(book_up.get("bids", []), "high", depth_levels, distance_weighted, mid_up)
-    ask_up = _side_size(book_up.get("asks", []), "low",  depth_levels, distance_weighted, mid_up)
-    bid_down = _side_size(book_down.get("bids", []), "high", depth_levels, distance_weighted, mid_down)
-    ask_down = _side_size(book_down.get("asks", []), "low",  depth_levels, distance_weighted, mid_down)
+    bid_up = _side_size(book_up.get("bids", []), "high", depth_levels)
+    ask_up = _side_size(book_up.get("asks", []), "low", depth_levels)
+    bid_down = _side_size(book_down.get("bids", []), "high", depth_levels)
+    ask_down = _side_size(book_down.get("asks", []), "low", depth_levels)
 
     up_pressure = bid_up - ask_up
     down_pressure = bid_down - ask_down
@@ -111,11 +91,8 @@ def compute_flow_signal(book_up: dict[str, Any], book_down: dict[str, Any],
                         trades_up: list[dict[str, Any]], trades_down: list[dict[str, Any]],
                         book_weight: float = 0.6,
                         trade_weight: float = 0.4,
-                        lookback_seconds: float = 120.0,
-                        distance_weighted: bool = False,
-                        mid_up: float = 0.0, mid_down: float = 0.0) -> FlowData:
-    bi = book_imbalance(book_up, book_down, distance_weighted=distance_weighted,
-                        mid_up=mid_up, mid_down=mid_down)
+                        lookback_seconds: float = 120.0) -> FlowData:
+    bi = book_imbalance(book_up, book_down)
     tf = trade_flow(trades_up, trades_down, lookback_seconds)
 
     score = bi * book_weight + tf * trade_weight

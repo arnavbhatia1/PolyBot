@@ -1,9 +1,8 @@
 """StalenessTracker connection-state + lifetime-count disambiguation.
 
-Regression guard for the feed_staleness.json observability gap: a persisted
-``n=0`` snapshot could mean either "feed connected but received no messages"
-(a genuinely quiet stream) or "socket never came up". The
-two are operationally very different and were previously indistinguishable.
+A persisted ``n=0`` snapshot could mean either "feed connected but received no
+messages" (a genuinely quiet stream) or "socket never came up". The two are
+operationally very different; the snapshot must distinguish them.
 """
 from polybot.feeds._staleness import StalenessTracker
 

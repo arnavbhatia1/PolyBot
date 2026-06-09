@@ -38,7 +38,7 @@ async def test_full_trade_flow(db):
     assert signal.edge >= 0.10
 
     # Paper trade
-    trader = PaperTrader(db=db, max_slippage=0.02, max_bankroll_deployed=0.80,
+    trader = PaperTrader(db=db, max_bankroll_deployed=0.80,
                          paper_network_fail_rate=0.0)
     size = round(1000.0 * signal.kelly_size, 2)
     size = max(size, 1.0)
@@ -74,7 +74,7 @@ async def test_scalp_exit_flow(db):
         seconds_remaining=180, market_price_up=0.55, market_price_down=0.45)
     assert signal.action == "BUY_YES"
 
-    trader = PaperTrader(db=db, max_slippage=0.02, max_bankroll_deployed=0.80,
+    trader = PaperTrader(db=db, max_bankroll_deployed=0.80,
                          paper_network_fail_rate=0.0)
     result = await trader.open_trade(
         market_id="0xdef", question="BTC 5min Up?", side="Up",

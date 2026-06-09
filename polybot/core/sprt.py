@@ -1,6 +1,5 @@
-"""Sequential Probability Ratio Test (SPRT) accumulator for evidence-based entry.
-
-Replaces single-point edge threshold with sequential evidence accumulation.
+"""Sequential Probability Ratio Test (SPRT) accumulator — an entry gate that
+requires evidence accumulated across ticks, not a single-point reading.
 Each tick contributes to a log-likelihood ratio (LLR). Strong signals cross
 the decision boundary in 5-7 ticks; weak signals need more evidence.
 """

@@ -291,10 +291,10 @@ class BTCMarketScanner:
 
     async def fetch_market_price(self, token_id: str, side: str = "BUY",
                                   http_client: httpx.AsyncClient | None = None) -> float:
-        """GET /price — execution price accounting for negRisk cross-matching.
-
-        In negRisk binary markets the engine cross-matches complementary tokens,
-        so the real executable price often beats the raw best ask/bid in GET /book.
+        """GET /price — execution price including negRisk cross-matching of
+        complementary tokens. The cross-match can report phantom prices near
+        expiry, so this is never a primary price source — consumed only as the
+        SELL-side cross-check against a suspect WS best_bid on exit.
         Returns the price as a float, or 0.0 on error.
         """
         try:

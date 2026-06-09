@@ -40,3 +40,32 @@ class ExitBoundary:
         threshold = -(time_value + fee_cost) + urgency_premium
         upper_cap = 0.30 if urgency_premium > 0 else -0.01
         return max(-0.30, min(upper_cap, threshold))
+
+
+def effective_exit_threshold(exit_threshold: float, seconds_remaining: float,
+                             market_price_for_side: float,
+                             fee_rate: float = DEFAULT_FEE_RATE,
+                             market_mid_for_side: float | None = None,
+                             boundary: ExitBoundary | None = None) -> float:
+    """The blended threshold the scalp decision actually fires on.
+
+    ATM trusts the ExitBoundary curve; deeper ITM weights toward the more
+    patient deep-loss floor. Shared by evaluate_hold (live) and the
+    exit_edge_threshold counterfactual replay (scheduler) so a candidate
+    threshold is scored against the same fire criterion live uses.
+    ``market_mid_for_side`` anchors ITM depth when available (live); the
+    replay only has the recorded trade price, the same fallback live uses
+    when the mid is missing.
+    """
+    itm_ref = (market_mid_for_side
+               if market_mid_for_side and market_mid_for_side > 0
+               else market_price_for_side)
+    itm_depth = max(0.0, (itm_ref - 0.5) / 0.5)
+    deep_loss_floor = exit_threshold * (1.0 + 0.5 * itm_depth)
+    optimal = (boundary or _DEFAULT_BOUNDARY).compute_exit_threshold(
+        seconds_remaining, fee_rate, market_price_for_side)
+    return ((1 - itm_depth) * max(deep_loss_floor, optimal)
+            + itm_depth * min(deep_loss_floor, optimal))
+
+
+_DEFAULT_BOUNDARY = ExitBoundary()

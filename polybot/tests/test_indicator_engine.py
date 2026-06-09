@@ -71,7 +71,3 @@ def test_set_weights_updates_in_place(engine):
     engine.set_weights({"rsi": 0.30, "macd": 0.30, "stochastic": 0.15, "obv": 0.10, "vwap": 0.15})
     w = engine.get_weights()
     assert w["rsi"] == 0.30 and w["macd"] == 0.30
-
-
-# IndicatorNormalizer removed in Pillar 2.3 — indicator scores are already
-# bounded [-1, 1] by their compute_*_signal functions, so L4 reads them raw.

@@ -1,7 +1,6 @@
 """L6 closed library of bounded transforms of state already tracked by
-SignalEngine.compute_probability. Every feature is direction-aware (signs track
-realized BTC direction) and naturally bounded; the combined L6 contribution is
-hard-clamped to ±L6_LOGIT_CAP at the call site.
+SignalEngine.compute_probability. Every feature is naturally bounded; the
+combined L6 contribution is hard-clamped to ±L6_LOGIT_CAP at the call site.
 """
 from __future__ import annotations
 

@@ -43,13 +43,15 @@ class TestAdverseSelectionMonitor:
         assert m.get_adverse_rate(30.0) == pytest.approx(5 / 30)
 
     def test_down_side_adverse_shrunk(self, tmp_path):
+        # Mids are the traded (Down) token's own — its mid falling means the
+        # market faded our Down position. 20 adverse fills → 25/30.
         m = _isolated_monitor(tmp_path)
         for i in range(20):
             fill = FillEvent(
                 timestamp=time.time() - 120,
                 side="Down", fill_price=0.60, token_id="t1",
                 midprice_at_fill=0.60,
-                midprice_30s=0.70,
+                midprice_30s=0.50,
                 resolved=True,
             )
             m._fills.append(fill)
@@ -79,7 +81,7 @@ class TestAdverseSelectionMonitor:
         assert m2._fills[0].side == "Up"
         assert m2._fills[1].side == "Down"
 
-    def test_decay_signed_for_up_side(self, tmp_path):
+    def test_decay_for_up_side(self, tmp_path):
         """Up trade: post-fill mid > fill mid means market moved IN FAVOR (positive delta)."""
         m = _isolated_monitor(tmp_path)
         m.record_fill("Up", 0.60, "tA", midprice=0.60, position_id=42)
@@ -91,21 +93,31 @@ class TestAdverseSelectionMonitor:
         snap = m.get_decay_for_position(42)
         assert snap is not None
         assert snap["resolved_windows"] == 5
-        # All deltas should be +0.03 (post 0.63 - fill 0.60 = +0.03, Up sign +1)
         for k in ("5s", "10s", "15s", "30s", "60s"):
             assert snap["deltas"][k] == pytest.approx(0.03)
 
-    def test_decay_signed_for_down_side(self, tmp_path):
-        """Down trade: post-fill mid < fill mid means market moved IN FAVOR (positive delta after sign-flip)."""
+    def test_decay_for_down_side(self, tmp_path):
+        """Down trade: the Down token's own mid rising means market moved IN FAVOR."""
         m = _isolated_monitor(tmp_path)
         m.record_fill("Down", 0.40, "tB", midprice=0.40, position_id=99)
         m._fills[-1].timestamp = time.time() - 65.0
-        prices = {"tB": 0.37}
+        prices = {"tB": 0.43}
         m.update_prices(lambda tid: prices.get(tid, 0))
         snap = m.get_decay_for_position(99)
-        # (0.37 - 0.40) * (-1) = +0.03
         for k in ("5s", "10s", "15s", "30s", "60s"):
             assert snap["deltas"][k] == pytest.approx(0.03)
+
+    def test_schema_mismatch_discards_snapshot(self, tmp_path):
+        """A snapshot saved under a different midprice convention is not loaded."""
+        import json
+        path = tmp_path / "adverse_state.json"
+        m1 = AdverseSelectionMonitor(state_path=path)
+        m1.record_fill("Up", 0.60, "token1", 0.60)
+        data = json.loads(path.read_text())
+        data["schema"] = 1
+        path.write_text(json.dumps(data))
+        m2 = AdverseSelectionMonitor(state_path=path)
+        assert len(m2._fills) == 0
 
     def test_decay_partial_windows_when_closed_early(self, tmp_path):
         """Trade that closes at 12s has 5s/10s resolved but 15s/30s/60s still None."""

@@ -31,10 +31,10 @@ def test_calibrate_clips_inputs():
 
 
 def test_calibrate_np_interp_matches_sklearn_predict(tmp_path):
-    """C1: the np.interp fast path is numerically identical to sklearn's
+    """The np.interp fast path is numerically identical to sklearn's
     IsotonicRegression.predict across the full input range — including the
-    out-of-knot extremes and the EPS-clipped endpoints. Guards the latency
-    refactor from ever drifting the calibrated probability (spec-defined behavior).
+    out-of-knot extremes and the EPS-clipped endpoints — so the fast path can
+    never drift the calibrated probability.
     """
     cal = IsotonicCalibrator()
     p = tmp_path / "iso.json"

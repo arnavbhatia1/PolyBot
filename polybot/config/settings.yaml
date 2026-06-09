@@ -19,7 +19,6 @@ execution:
   initial_bankroll: 100.0     # Starting bankroll for paper mode
 
   # Paper mode realism (ignore for live)
-  max_slippage: 0.02
   slippage_impact_pct: 0.03
   backtest_realism_factor: 0.85
   paper_latency_mean_s: 0.22
@@ -78,8 +77,8 @@ signal:
   prev_margin_weight: 0.02    # [P] L5: carry from last window's resolution (momentum).
   regime_lookback: 50         # [M] How many 1-min candles to measure trend/mean-reversion over.
 
-  # [M] L4 indicator mix (validator has a dedicated branch — pipeline can propose changes
-  # to this dict, but probe step sizes and bounds live in claude_client/local_recommender).
+  # [P] L4 indicator mix — pipeline-tunable via a dedicated validator branch
+  # (each weight >= 0.05, renormalized to sum 1.0, max 0.05 move per cycle).
   weights:
     rsi: 0.2
     macd: 0.3

@@ -199,8 +199,8 @@ class IsotonicCalibrator:
             return False
 
         # Adoption gate: bootstrap CI on log-loss improvement vs identity.
-        # Refitting on N resamples accounts for the isotonic step-function variance
-        # that the previous static 1e-4 threshold ignored.
+        # Refitting per resample captures the isotonic step-function's sampling
+        # variance, which a fixed in-sample threshold would not.
         iso_predictions = iso.predict(probs_arr)
         improvement = (_weighted_log_loss(probs_arr, outcomes_arr, w_arr)
                        - _weighted_log_loss(iso_predictions, outcomes_arr, w_arr))

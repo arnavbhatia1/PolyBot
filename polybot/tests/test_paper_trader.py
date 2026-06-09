@@ -20,7 +20,6 @@ async def trader(db):
     # (latency + network fail sim) that only matters in live paper runs.
     return PaperTrader(
         db=db,
-        max_slippage=0.02,
         max_bankroll_deployed=0.80,
         max_concurrent_positions=5,
         paper_latency_mean_s=0.0,
@@ -102,6 +101,31 @@ async def test_close_trade_updates_bankroll(trader, db):
     assert bankroll > 100.0
 
 
+@pytest.mark.asyncio
+async def test_scalp_residual_credited_to_bankroll_not_pnl(trader, db):
+    """The fee-headroom shares held back from the FOK credit the bankroll (the
+    simulated sweep, mirroring live's on-chain recovery) but stay out of pnl
+    (live's recorded pnl excludes the swept residual too)."""
+    result = await trader.open_trade(
+        market_id="m_dust", question="Q?", side="YES", price=0.50,
+        size=50.0, signal_score=0.72, fee_rate=0.072,
+    )
+    bankroll_after_open = await db.get_bankroll()
+    close_result = await trader.close_trade(position_id=result.position_id, exit_price=0.60)
+
+    shares_ordered = 50.0 / 0.50
+    shares_held = shares_ordered - entry_fee_shares(shares_ordered, 0.50, 0.072)
+    headroom = max(max(0.072 * 0.25, 0.0) + 0.002, 0.005)
+    shares_sold = shares_held * (1.0 - headroom)
+    residual = shares_held - shares_sold
+    revenue = shares_sold * 0.60 - exit_fee_usdc(shares_sold, 0.60, 0.072)
+    sweep = residual * 0.60 - exit_fee_usdc(residual, 0.60, 0.072)
+
+    bankroll = await db.get_bankroll()
+    assert bankroll == pytest.approx(bankroll_after_open + revenue + sweep, abs=0.01)
+    assert close_result.pnl == pytest.approx(revenue - 50.0, abs=0.01)
+
+
 # --- Fee model tests ---
 
 def test_taker_fee_formula():
@@ -177,3 +201,69 @@ async def test_custom_fee_rate_passed_through(trader, db):
     shares_ordered = 10.0 / 0.50
     fee_sh = entry_fee_shares(shares_ordered, 0.50, 0.03)
     assert pos["shares_held"] == pytest.approx(shares_ordered - fee_sh, abs=0.01)
+
+
+class _FakeClobWs:
+    """Minimal clob_ws stub: returns canned book snapshots, counts get_book calls."""
+
+    def __init__(self, books):
+        self._books = books  # list consumed one per get_book call; last repeats
+        self.calls = 0
+
+    def get_book(self, token_id):
+        book = self._books[min(self.calls, len(self._books) - 1)]
+        self.calls += 1
+        return book
+
+
+def _fresh_book(ask_price: float) -> dict:
+    import time as _t
+    return {"ts": _t.time(), "asks": [{"price": str(ask_price), "size": "1000"}],
+            "bids": [{"price": str(ask_price - 0.02), "size": "1000"}]}
+
+
+@pytest.mark.asyncio
+async def test_retry_walk_retries_price_moved_then_fills(trader):
+    """A "Price moved" FOK rejection retries (same class live retries on):
+    attempt 1 sees an ask above the limit, attempt 2 sees it recoil and fills."""
+    trader._PAPER_RETRY_BASE_DELAY = 0.001
+    ws = _FakeClobWs([_fresh_book(0.60), _fresh_book(0.55)])
+    trader.set_clob_ws(ws)
+    result = await trader._retry_walk("tok", side="buy", requested_price=0.55, size_usd=10.0)
+    assert result.filled is True
+    assert ws.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_walk_exhausts_on_persistent_price_moved(trader):
+    """All attempts see the ask above the limit — unfilled after exactly
+    _PAPER_MAX_RETRIES walks, with the price-moved reason."""
+    trader._PAPER_RETRY_BASE_DELAY = 0.001
+    ws = _FakeClobWs([_fresh_book(0.60)])
+    trader.set_clob_ws(ws)
+    result = await trader._retry_walk("tok", side="buy", requested_price=0.55, size_usd=10.0)
+    assert result.filled is False
+    assert "price moved" in result.reason.lower()
+    assert ws.calls == trader._PAPER_MAX_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_retry_walk_no_retry_on_empty_book(trader):
+    """Book-empty rejections don't retry — they won't recover in 30ms."""
+    import time as _t
+    ws = _FakeClobWs([{"ts": _t.time(), "asks": [], "bids": []}])
+    trader.set_clob_ws(ws)
+    result = await trader._retry_walk("tok", side="buy", requested_price=0.55, size_usd=10.0)
+    assert result.filled is False
+    assert ws.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_walk_book_none_book_rejects_without_raising(trader):
+    """get_book returning None (token never subscribed) behaves like a stale
+    book: clean unfilled rejection, no exception."""
+    ws = _FakeClobWs([None])
+    trader.set_clob_ws(ws)
+    result = trader._walk_book("tok", side="buy", requested_price=0.55, size_usd=10.0)
+    assert result.filled is False
+    assert "stale" in result.reason

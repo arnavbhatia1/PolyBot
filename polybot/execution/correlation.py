@@ -1,13 +1,13 @@
 """Correlation-aware multiplier for concurrent-position sizing.
 
-Replaces the flat ``concurrent_position_discount`` that treated two concurrent
-Polymarket BTC windows as if they were independent. They're not — adjacent 5-min
-windows share regime and microstructure, so same-side concurrent bets are highly
-correlated (ρ ≈ 0.7–0.9) and opposite-side bets are naturally hedged (ρ ≈ -0.2).
+Adjacent 5-min Polymarket BTC windows share regime and microstructure, so
+same-side concurrent bets are highly correlated (ρ ≈ 0.7–0.9) and opposite-side
+bets are naturally hedged (ρ ≈ -0.2) — a flat discount that treats them as
+independent misprices both.
 
-Two ρ=0.8 half-Kelly bets carry ~0.9× the variance of a single full-Kelly bet —
-i.e., the flat 0.5× discount under-sizes risk. Two anti-correlated half-Kelly
-bets carry ~0.35× variance, leaving headroom for larger sizing.
+Two ρ=0.8 half-Kelly bets carry ~0.9× the variance of a single full-Kelly bet
+(a flat 0.5× discount under-sizes risk); two anti-correlated half-Kelly bets
+carry ~0.35× variance, leaving headroom for larger sizing.
 """
 from __future__ import annotations
 
@@ -20,8 +20,9 @@ def estimate_correlation(new_side: str, new_market_id: str,
                          open_position: dict[str, Any]) -> float | None:
     """Estimate correlation between a candidate trade and an open position.
 
-    Returns ±0.75 (same side) or -0.25 (opposite). Returns None for same-market
-    positions (flip — handled by flip-trading logic, not by this multiplier).
+    Returns +0.75 (same side) or -0.25 (opposite). Returns None for same-market
+    positions (flip — handled by flip-trading logic, not by this multiplier)
+    and for unrecognized sides.
     """
     if open_position.get("market_id") == new_market_id:
         return None

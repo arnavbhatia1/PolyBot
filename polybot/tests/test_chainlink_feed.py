@@ -40,3 +40,22 @@ class TestChainlinkFeed:
         f._record_boundary(boundary_ts + 290)
         # The latest update before next_boundary defines the strike.
         assert f.get_strike(boundary_ts + 300) == 73000.0
+
+    def test_epoch_seconds_normalizes_rtds_milliseconds(self):
+        """RTDS payload timestamps arrive in epoch ms (e.g. 1781031482000);
+        second-space values pass through unchanged."""
+        assert ChainlinkFeed._epoch_seconds(1781031482000.0) == 1781031482.0
+        assert ChainlinkFeed._epoch_seconds(1781031482.0) == 1781031482.0
+
+    def test_boundary_capture_from_ms_payload(self):
+        """A boundary recorded from a normalized ms timestamp must be retrievable
+        by a second-space get_strike lookup — un-normalized ms keys never match."""
+        f = ChainlinkFeed()
+        boundary_ts = (int(time.time()) // 300) * 300
+        f._price = 71234.56
+        f._record_boundary(ChainlinkFeed._epoch_seconds((boundary_ts + 10) * 1000.0))
+        # Fresh-price fallback must not mask the captured boundary: change the
+        # live price after capture and require the boundary value back.
+        f._price = 99999.0
+        f._last_update = time.time()
+        assert f.get_strike(boundary_ts + 300) == 71234.56

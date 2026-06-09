@@ -3,8 +3,8 @@
 The calibrator is APPLIED to P(up) (signal_engine + replay), but the bot records only
 the chosen-side prob (>=0.56). `_calibration_xy` reconstructs raw P(up) + the up-outcome
 so the fit spans the full [0,1] range, including the P(up) < 0.5 region that down-favored
-windows produce. Pre-fix, the fit used the chosen-side prob directly and never populated
-that region — these tests pin the reconstruction.
+windows produce. A fit on the chosen-side prob would never populate that region —
+these tests pin the reconstruction.
 """
 import pytest
 
@@ -21,8 +21,8 @@ def test_calibration_xy_reconstructs_pup_domain():
     pool = [_mk(0.70, "Up", True), _mk(0.70, "Up", False),
             _mk(0.70, "Down", True), _mk(0.70, "Down", False)]
     probs, outs, _ = Scheduler._calibration_xy(pool)
-    # Down trades map to P(up) = 1 - chosen-side prob = 0.30 (the region production serves
-    # but the pre-fix chosen-side fit never saw).
+    # Down trades map to P(up) = 1 - chosen-side prob = 0.30 (the region production
+    # serves but a chosen-side fit would never see).
     assert probs == pytest.approx([0.70, 0.70, 0.30, 0.30])
     # up_won: Up&win=1, Up&lose=0, Down&win=0 (up lost), Down&lose=1 (up won).
     assert outs == [1, 0, 0, 1]

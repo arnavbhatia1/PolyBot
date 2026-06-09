@@ -1,35 +1,41 @@
-# PolyBot — current work
+# PolyBot — open work
 
-Canonical state: memory `edge-thesis-corrected-baseline.md` (single source of truth).
+Canonical state + history: memory `edge-thesis-corrected-baseline.md` and `part-a-audit-findings.md`
+(single sources of truth). This file lists only what's still to do.
 
-## IN PROGRESS (2026-06-09): Calibration tail-overconfidence fix — iron-tight
-Top-knot slam (raw>=0.97 -> ~1.0) found on first clean day; oversizes false-certainty trades.
-Fix = isotonic + Beta-prior smoothing (prior=0.10*n, 50 anchors) + output clamp [0.018,0.982].
-- [x] Offline prototype on real history: realized raw>=0.97 ~= 0.66; fix lands 0.97->0.68
-- [x] PRIOR_FRAC=0.10 locked — verified on live-sized 1663 pool: slam gone, dLL preserved
-      (+0.073 vs +0.075), OOB-CI lower bound IMPROVES (+0.052 vs +0.023, less overfit)
-- [x] Implement in calibrator.py (augment-and-fit shared by fit + bootstrap; clamp [0.15,0.85];
-      output clip in calibrate(); load() clamps legacy slam; operator-owned constants)
-- [x] Tests: 4 new guards (slam-impossible, output bounded, mid-range preserved, load caps legacy) — 538 pass
-- [x] Re-fit + re-stamp isotonic_params.json (y_max 1.0->0.85, n=1574 freshest-7d; adopted, +0.080 / CI +0.059)
-- [x] Re-scored 06-09 slams: 6/8 overpriced Up "certainties" now SKIP (-EV); slam-cohort stake shrinks 8.1x
-- [x] Docs: CLAUDE.md §2 + MODEL_IMPROVEMENTS.md updated
-- [ ] RESTART the bot — on stale pre-fix code (started 10:52 AM 06-08); restart loads new guards +
-      re-stamped curve (load-clamp caps the old curve immediately regardless)
+## Immediate
 
-## Done (2026-06-08)
-- [x] 12-day frozen baseline analyzed; microstructure A/B/C = no taker edge (chapter closed)
-- [x] Calibrator train/serve domain bug fixed (fit on P(up)+up-outcome, all 3 fit sites) + adopted — validated OOS (+0.053 nats); live at next restart, weight-freeze still ON
-- [x] Analyzer fee-base bugs fixed; dollar P&L is the headline metric (`analyze_edge.py` Q0)
-- [x] Staying TAKER (edge is taker-native; maker worse post-speed-bump-removal)
-- [x] Removed dead code: microstructure recorder + wiring + scripts + local data, and dormant maker infrastructure (taker-only FOK now). 534 tests pass.
-- [x] Reconciled MODEL_IMPROVEMENTS.md with the thesis (doc-only, no live code): proven edge = sizing+exit; calibration is Tier 1 (sizing lever); forecasting items (L6/vol/new feeds) demoted to Tier 3 "low ceiling, hard-gated".
+- [ ] Bot restart pending — running process predates today's fixes; everything loads at the
+      automatic 12:01 AM ET restart (`run_polybot.ps1`). Nothing to do unless restarting early.
+- [ ] Tonight's first unfrozen pipeline run (06-09 23:45 ET): check adoption decisions and that the
+      gate calibrator is non-None. exit_edge_threshold replay is now correctly specified (blended
+      threshold + loss-cut exclusion), but legacy CF records lack the loss_cut flag — treat an
+      exit_edge_threshold adoption with mild skepticism until ~a week of flagged records exists.
+- [ ] Re-freeze trigger: if adoptions degrade realized $, PipelineTracker auto-reverts; manual
+      re-freeze = recreate `memory/state/PIPELINE_FROZEN`.
 
-## Watch — calibrated regime is LIVE (do NOT touch weights yet)
-- [x] Calibrator confirmed loaded — restart 2026-06-08 ~10:52 AM ET, banner "Calibration: on … learned from 1,663 trades" (n matches saved params). Code committed.
-- [ ] First CLEAN calibrated day = 2026-06-09 (today 06-08 is mixed: ~141 of 148 trades were pre-calibration before 10:52). Don't score today as a calibrated day.
-- [ ] Over ~5 clean calibrated days track realized $ at the lower volume: `python scripts/analyze_edge.py` (Q0 dollar P&L). Volume should drop to a fraction of prior.
-- [ ] Decision: does the calibrated/selective bot stay positive on fresh days? Yes → consider unfreezing weights (let the pipeline tune; re-tune min_edge down for honest probs). Bleeds → reassess.
+## Watch — calibrated regime (clean days start 06-09 post-12:01 ET)
+
+- [ ] Over ~10-15 clean calibrated days track realized $ at the lower volume:
+      `python scripts/analyze_edge.py` (Q0 dollar P&L). Tripwires: cumulative $ > 0, no single day
+      >40% of profit, high-confidence trades winning near their calibrated rate.
+- [ ] Decision point: calibrated/selective bot stays positive on fresh days → proceed toward
+      go-live; bleeds → reassess strategy.
 
 ## Go-live gate (unchanged)
-- [ ] Statistically significant, day-clustered, OOS-positive $ net of real fee at calibrated volume → then start tiny with real USDC (no live DB exists yet; everything to date is paper).
+
+- [ ] Statistically significant, day-clustered, OOS-positive $ net of real fee at calibrated volume
+      → then start tiny ($50-100) with real USDC as live-data collection (no live DB exists yet;
+      everything to date is paper). Realistic timeline ~2-3 weeks from 06-09.
+
+## Deferred / known-and-accepted (context, not tasks)
+
+- L2 direction carries a small Coinbase-vs-Binance basis bias (direction-conditional; calibrator
+  can't see it). 200-sample "long-term" ATR buffer spans ~3 min → regime-shift floor + L3b
+  vol_factor mostly inert (pipeline tunes a near-no-op in `atr_regime_shift_threshold`).
+- Ghost censoring at min_edge/min_kelly boundary: those two knobs are only evaluable upward.
+- Circuit breaker sizes 0.40x below $85 bankroll (fresh small live accounts).
+- `compute_atr` is production-dead but kept (test pins canonical Wilder math). Correlation ladder
+  middle rungs (0.55/0.70) unreachable with fixed rho priors — documented design, kept.
+- exit_edge_threshold replay re-prices only toward "hold longer"; simulating earlier scalps would
+  need the CF hold-moment tick series — not built, candidates within -0.10..-0.03 rarely need it.

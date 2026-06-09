@@ -54,6 +54,11 @@ class CoinbaseFeed:
         # Per-trade flow: (ts, signed_size). +size = buyer aggressor, -size = seller aggressor.
         self._trade_buffer_s = trade_buffer_s
         self._trades: deque[tuple[float, float]] = deque()
+        # When the current contiguous trade window began (reset on every
+        # (re)connect, since the deque is cleared). Window-based reads must not
+        # trust a window the buffer doesn't span yet — a fresh reconnect would
+        # otherwise read a truncated window as genuinely flat flow.
+        self._window_start: float = 0.0
 
         self._running = False
         self._ws: Any = None
@@ -73,6 +78,12 @@ class CoinbaseFeed:
                 await self._task
             except asyncio.CancelledError:
                 pass
+
+    def covers(self, window_s: float) -> bool:
+        """True iff the trade buffer continuously spans the last window_s seconds
+        (i.e., no reconnect cleared it mid-window). Consumers stamp None instead
+        of reading a truncated window as a real near-zero."""
+        return self._window_start > 0 and (time.time() - self._window_start) >= window_s
 
     def get_cvd(self, window_s: float = 60.0) -> float:
         """Signed cumulative volume delta over the last window_s seconds."""
@@ -101,7 +112,7 @@ class CoinbaseFeed:
                 baseline += sz
             else:
                 break
-        if recent_n < min_recent_trades:
+        if recent_n < min_recent_trades or not self.covers(recent_s + baseline_s):
             return 0.0
         return recent / max(recent_s, 1.0) - baseline / max(baseline_s, 1.0)
 
@@ -141,6 +152,7 @@ class CoinbaseFeed:
                     self.staleness.reset()
                     self.staleness.mark_connected()
                     self._trades.clear()
+                    self._window_start = time.time()
 
                     await ws.send(json.dumps({
                         "type": "subscribe",

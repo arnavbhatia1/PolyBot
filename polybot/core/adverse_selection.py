@@ -1,8 +1,10 @@
 """Adverse selection monitor: detects if fills are systematically picked off.
 
-After each fill, tracks the midprice at 5/10/15/30/60s later. If the price
-consistently moves against the bot's position after entry, someone is fading
-the bot with better information.
+All midprices — the fill baseline and every checkpoint — are the TRADED
+token's own (bid+ask)/2, so drift is side-relative by construction: our
+token's mid falling after we buy is adverse, for Up and Down alike. After
+each fill, the mid is sampled at 5/10/15/30/60s; if it consistently drops,
+someone is fading the bot with better information.
 
 adverse_selection_rate = P(price moves against you | you just filled).
 Live gate threshold is signal.adverse_selection_threshold (default 0.80). The
@@ -26,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_STATE_PATH = ADVERSE_STATE_PATH
 _MAX_LOOKBACK_S = 2400.0
+# Persisted-state schema. Bump whenever the midprice convention changes so a
+# restart can't mix fills measured on incompatible axes.
+_STATE_SCHEMA = 2
 
 @dataclass
 class FillEvent:
@@ -34,12 +39,12 @@ class FillEvent:
     side: str              # "Up" or "Down"
     fill_price: float      # Price we paid
     token_id: str          # Which token
-    midprice_at_fill: float  # Market midprice at fill time
-    midprice_5s: float | None = None    # Midprice 5s after fill (edge-decay)
-    midprice_10s: float | None = None   # Midprice 10s after fill
-    midprice_15s: float | None = None   # Midprice 15s after fill (edge-decay)
-    midprice_30s: float | None = None   # Midprice 30s after fill
-    midprice_60s: float | None = None   # Midprice 60s after fill
+    midprice_at_fill: float  # Traded token's own mid at fill time
+    midprice_5s: float | None = None    # Traded token's mid 5s after fill (edge-decay)
+    midprice_10s: float | None = None   # 10s after fill
+    midprice_15s: float | None = None   # 15s after fill (edge-decay)
+    midprice_30s: float | None = None   # 30s after fill
+    midprice_60s: float | None = None   # 60s after fill
     resolved: bool = False              # All checkpoints measured
     position_id: int | None = None      # Link to the trade row; merged into outcome at close
 
@@ -52,10 +57,8 @@ class AdverseSelectionMonitor:
     `signal.adverse_selection_threshold` means we're being picked off.
     """
 
-    def __init__(self, max_fills: int = 200, check_windows: tuple[float, ...] = (10.0, 30.0, 60.0),
-                 state_path: Path | None = None) -> None:
+    def __init__(self, max_fills: int = 200, state_path: Path | None = None) -> None:
         self.max_fills = max_fills
-        self.check_windows = check_windows
         self._fills: deque[FillEvent] = deque(maxlen=max_fills)
         self._state_path: Path = state_path or _DEFAULT_STATE_PATH
         self._load()
@@ -107,6 +110,7 @@ class AdverseSelectionMonitor:
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
+                "schema": _STATE_SCHEMA,
                 "saved_at": time.time(),
                 "fills": fills_snapshot,
             }
@@ -115,15 +119,20 @@ class AdverseSelectionMonitor:
             logger.warning(f"AdverseSelectionMonitor save failed: {e}")
 
     def _load(self) -> None:
-        """Restore fill deque from disk if a fresh-enough snapshot exists.
+        """Restore fill deque from disk if a fresh, schema-compatible snapshot exists.
 
-        Discards stale snapshots (>1 hour old) since fill outcomes older than the
-        60-second checkpoint window are irrelevant and stale mid-prices would lie.
+        Discards snapshots older than 2 hours (beyond the gate lookback, so stale
+        mid-prices would lie) and snapshots written under a different midprice
+        convention (schema mismatch).
         """
         try:
             if not self._state_path.exists():
                 return
             data = json.loads(self._state_path.read_text())
+            if data.get("schema") != _STATE_SCHEMA:
+                logger.info("AdverseSelectionMonitor: discarding snapshot with schema %s "
+                            "(current %s)", data.get("schema"), _STATE_SCHEMA)
+                return
             saved_at = float(data.get("saved_at", 0))
             age = time.time() - saved_at
             if age > 7200:
@@ -181,24 +190,24 @@ class AdverseSelectionMonitor:
     def get_decay_for_position(self, position_id: int) -> dict | None:
         """Return the edge-decay snapshot for a given trade, or None if not found.
 
-        Output schema (signed so positive = move in our favor):
+        Output schema:
             ``{
                 "midprice_at_fill": float,
                 "deltas": {"5s": float | None, ... "60s": float | None},
                 "resolved_windows": int,
             }``
-        Each delta is ``(post - fill) * side_sign`` where side_sign is +1 for Up,
-        −1 for Down. So a positive 5s delta means the market moved in the trade's
-        favor 5 seconds after entry; a negative delta means it moved against us.
+        Each delta is ``post - fill`` on the traded token's own mid — positive
+        means our side's price rose after entry (in our favor), negative means
+        it fell (the market faded us). Holds for Up and Down alike since both
+        mids are the token we hold.
         """
         for fill in self._fills:
             if fill.position_id != position_id:
                 continue
-            sign = 1.0 if fill.side == "Up" else -1.0
             def _d(post: float | None) -> float | None:
                 if post is None:
                     return None
-                return round((post - fill.midprice_at_fill) * sign, 6)
+                return round(post - fill.midprice_at_fill, 6)
             deltas = {
                 "5s":  _d(fill.midprice_5s),
                 "10s": _d(fill.midprice_10s),
@@ -217,9 +226,8 @@ class AdverseSelectionMonitor:
         """Fraction of fills where price moved AGAINST us within window_s.
 
         Bayesian shrinkage toward a neutral prior (n=10, rate=0.5): with zero
-        samples the rate is 0.5; with many samples the prior washes out. This
-        keeps the guard active during low-volume hours where the prior cliff
-        previously disabled it.
+        samples the rate is 0.5; with many samples the prior washes out. Keeps
+        the guard active during low-volume hours.
         """
         now = time.time()
         adverse = 0
@@ -236,23 +244,22 @@ class AdverseSelectionMonitor:
             if post is None:
                 continue
             total += 1
-            if fill.side == "Up" and post < fill.midprice_at_fill:
-                adverse += 1
-            elif fill.side == "Down" and post > fill.midprice_at_fill:
+            if post < fill.midprice_at_fill:
                 adverse += 1
         prior_n, prior_rate = 10, 0.5
         return (prior_n * prior_rate + adverse) / (prior_n + total)
 
     def get_recent_decay_mean(self, window_s: float = 15.0, lookback_s: float = 1800.0,
                               min_samples: int = 15) -> float | None:
-        """Mean side-signed post-fill drift at ``window_s`` over the last ``lookback_s``.
+        """Mean post-fill drift of the traded token's mid at ``window_s`` over the
+        last ``lookback_s``.
 
-        Positive return = market drifted in our favor on average; negative = drifted
-        against us (edge decay / adverse selection bleeding through). Returns
-        ``None`` when fewer than ``min_samples`` resolved checkpoints exist — the
-        caller should treat that as "gate inactive" rather than substitute a prior,
-        since this measures a directional drift and the natural neutral prior 0
-        is on the same scale as a real signal.
+        Positive return = our side's price drifted up on average (in our favor);
+        negative = drifted against us (edge decay / adverse selection bleeding
+        through). Returns ``None`` when fewer than ``min_samples`` resolved
+        checkpoints exist — the caller should treat that as "gate inactive"
+        rather than substitute a prior, since this measures a directional drift
+        and the natural neutral prior 0 is on the same scale as a real signal.
         """
         now = time.time()
         deltas: list[float] = []
@@ -271,8 +278,7 @@ class AdverseSelectionMonitor:
                 post = fill.midprice_60s
             if post is None:
                 continue
-            sign = 1.0 if fill.side == "Up" else -1.0
-            deltas.append((post - fill.midprice_at_fill) * sign)
+            deltas.append(post - fill.midprice_at_fill)
         if len(deltas) < min_samples:
             return None
         return sum(deltas) / len(deltas)

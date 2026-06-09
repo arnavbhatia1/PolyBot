@@ -40,7 +40,7 @@ def test_in_entry_window_true():
 def test_in_entry_window_false_too_late():
     assert BTCMarketScanner(entry_window_seconds=120).in_entry_window(seconds_remaining=60) is False
 
-def test_in_entry_window_false_too_early():
+def test_in_entry_window_true_at_window_start():
     # Just started (0 seconds elapsed, 300 remaining) should be in window
     assert BTCMarketScanner(entry_window_seconds=120).in_entry_window(seconds_remaining=300) is True
 

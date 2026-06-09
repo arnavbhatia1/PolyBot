@@ -12,10 +12,9 @@ import math
 from scipy.special import stdtr as _stdtr
 
 
-# Minimum Student-t df. Pipeline range is 3-8; df ≤ 2 has undefined variance and a
-# t_scale = sqrt(df/(df-2)) discontinuity (was 1.0 at df ≤ 2, jumping to √3 = 1.73
-# at df = 3). Single source so live (signal_engine) and replay (scheduler) clamp
-# identically.
+# Minimum Student-t df. Pipeline range is 3-8; df ≤ 2 has undefined variance, so
+# t_scale = sqrt(df/(df-2)) needs df ≥ 3. Single source so live (signal_engine)
+# and replay (scheduler) clamp identically.
 MIN_STUDENT_T_DF = 3
 
 _COINBASE_CVD_SCALE = 30.0       # ≈ typical 60s Coinbase BTC volume at baseline vol

@@ -35,6 +35,7 @@ class TradeResult:
     gain_pct: float = 0.0
     shares: float = 0.0
     fill_price: float = 0.0
+    pending: bool = False  # resolution not final yet (e.g. on-chain redeem in flight) — retry next tick
 
 @dataclass
 class FillResult:
@@ -159,28 +160,19 @@ class BaseTrader(ABC):
     def __init__(
         self,
         db: Database,
-        max_slippage: float = 0.02,
         max_bankroll_deployed: float = 0.80,
         max_concurrent_positions: int = 1,
     ) -> None:
         self.db: Database = db
-        self.max_slippage: float = max_slippage
         self.max_bankroll_deployed: float = max_bankroll_deployed
         self.max_concurrent_positions: int = max_concurrent_positions
         self._clob_ws: Any = None
 
     def set_clob_ws(self, clob_ws: Any) -> None:
-        """Attach the CLOB WebSocket. Paper uses it for book snapshots in
-        ``_walk_book``; live uses it for the WS-derived fill-price fast path
-        in ``_submit_fok_order``."""
+        """Attach the CLOB WebSocket. Paper uses it for book snapshots
+        (fail-rate, pre-check, book walk); live uses it for the WS-derived
+        fill-price fast path in ``_submit_fok_order``."""
         self._clob_ws = clob_ws
-
-    # -- deployed capital ------------------------------------------------
-
-    async def _get_deployed_capital(self) -> float:
-        """Sum of USDC size across all open positions."""
-        positions = await self.db.get_open_positions()
-        return sum(p["size"] for p in positions)
 
     # -- abstract hooks --------------------------------------------------
 
@@ -209,8 +201,17 @@ class BaseTrader(ABC):
         real chain state). Paper execution keeps DB tracking authoritative."""
         return fallback_shares
 
+    def _scalp_residual_credit(self, residual_shares: float, fill_price: float,
+                               fee_rate: float) -> float:
+        """USDC to credit the bankroll for the fee-headroom shares held back from
+        a scalp's FOK. Live returns 0 — its on-chain residual is swept by
+        ``_sweep_residual`` and surfaces in the next absolute balance sync. Paper
+        overrides to credit the simulated sweep, since paper bankroll is
+        delta-only and would otherwise leak ~2% of exit notional per scalp."""
+        return 0.0
+
     @abstractmethod
-    async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
+    async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float | None:
         """Compute new bankroll after market resolution.
 
         resolve_position does NOT route through _execute_sell/close_trade,
@@ -219,7 +220,9 @@ class BaseTrader(ABC):
         Paper: current bankroll + revenue (shares * exit_price - fee).
         Live: fetch real USDC balance from Polymarket (auto-credited).
 
-        Returns the new bankroll value to set in DB.
+        Returns the new bankroll value to set in DB, or None when the credit
+        hasn't settled yet — resolve_position then returns a pending result
+        and the caller retries on a later tick.
         """
 
     # -- open_trade ------------------------------------------------------
@@ -237,15 +240,17 @@ class BaseTrader(ABC):
         fee_rate: float = DEFAULT_FEE_RATE,
     ) -> TradeResult:
         # --- Rejection gates ---
-        # Single composite query: aiosqlite serializes on one connection anyway,
-        # so the previous 4-way gather paid 4 round trips for what one returns.
-        # Also gives an atomic snapshot — no race between sub-reads.
+        # Single composite query: one round trip on aiosqlite's serialized
+        # connection, and an atomic snapshot — no race between sub-reads.
         has_pos, pos_count, bankroll, deployed = await self.db.get_open_trade_preflight(market_id)
         if has_pos:
             return TradeResult(success=False, reason="Duplicate market — already have position")
         if pos_count >= self.max_concurrent_positions:
             return TradeResult(success=False, reason="Max positions reached")
-        max_deployable = bankroll * self.max_bankroll_deployed
+        # `bankroll` is free cash (open positions already debited); add deployed
+        # cost back so the cap means "≤ max_bankroll_deployed of total equity
+        # across all positions" rather than shrinking with each open position.
+        max_deployable = (bankroll + deployed) * self.max_bankroll_deployed
         if deployed + size > max_deployable:
             return TradeResult(
                 success=False,
@@ -322,7 +327,7 @@ class BaseTrader(ABC):
         # Query actual on-chain balance via _sellable_shares so we sell what we
         # really own, not what the DB *thinks* we own. Eliminates dust caused by
         # drift (e.g. partial-fill on a prior close, unrecorded fee deduction).
-        shares = await self._sellable_shares(token_id, fallback_shares)
+        sellable_shares = await self._sellable_shares(token_id, fallback_shares)
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
 
         # Reserve a small share buffer so Polymarket's per-share fee deduction
@@ -331,7 +336,7 @@ class BaseTrader(ABC):
         # 0.005 also handles tiny 1-tick book-depth mismatches at zero fee_rate.
         sell_fee_headroom = max(fee_rate * 0.25, 0.0) + 0.002
         sell_fee_headroom = max(sell_fee_headroom, 0.005)
-        shares = shares * (1.0 - sell_fee_headroom)
+        shares = sellable_shares * (1.0 - sell_fee_headroom)
 
         # --- Execute sell ---
         fill = await self._execute_sell(token_id, shares, exit_price, fee_rate=fee_rate)
@@ -347,10 +352,18 @@ class BaseTrader(ABC):
         gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
 
         # --- Persist to DB (atomic: close + bankroll credit in one transaction) ---
+        # The headroom shares held back from the FOK are credited to the bankroll
+        # via _scalp_residual_credit (paper simulates the sweep; live returns 0
+        # because the on-chain residual lands in the next absolute balance sync).
+        # Deliberately NOT in pnl — live's recorded pnl excludes the swept
+        # residual too, so paper/live trade records stay comparable.
+        residual_credit = self._scalp_residual_credit(
+            sellable_shares - shares, fill.fill_price, fee_rate)
         total_fees = entry_fee_usd + fee_usdc
         await self.db.close_position(
             position_id, exit_price=fill.fill_price,
-            bankroll_delta=revenue, pnl=pnl, fees=total_fees, exit_reason=exit_reason,
+            bankroll_delta=revenue + residual_credit, pnl=pnl, fees=total_fees,
+            exit_reason=exit_reason,
         )
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
@@ -387,6 +400,9 @@ class BaseTrader(ABC):
         lr = log_return(position["entry_price"], exit_price)
         total_fees = entry_fee_usd + exit_fee_usd_val
         new_bankroll = await self._resolve_bankroll(position, exit_price)
+        if new_bankroll is None:
+            return TradeResult(success=False, pending=True, position_id=position_id,
+                               reason="awaiting on-chain redeem")
         await self.db.close_position(
             position_id, exit_price=exit_price,
             new_bankroll=new_bankroll, pnl=pnl, fees=total_fees, exit_reason="resolution",

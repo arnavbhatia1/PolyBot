@@ -23,7 +23,6 @@ SAMPLE_CONFIG = {
         "wins_to_restore": 2,
     },
     "execution": {
-        "max_slippage": 0.02,
         "max_bankroll_deployed": 0.80,
         "max_concurrent_positions": 1,
         "max_book_fill_pct": 0.50,

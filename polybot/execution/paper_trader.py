@@ -17,12 +17,14 @@ class PaperTrader(BaseTrader):
     def __init__(self, db: Any, **kwargs: Any) -> None:
         super().__init__(
             db=db,
-            max_slippage=kwargs.get("max_slippage", 0.02),
             max_bankroll_deployed=kwargs.get("max_bankroll_deployed", 0.80),
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
-        # Realism knobs (all overridable via settings.yaml -> execution.*)
-        # Defaults tuned to live latency_stats.json p50≈770ms, p99≈2.3s.
+        # Realism knobs (all overridable via settings.yaml -> execution.*).
+        # settings.yaml currently sets mean 0.22s / jitter 0.12s — below the
+        # 0.35s floor in _simulate_latency, so the Gaussian leg is mostly
+        # floor-bound and the 4% heavy tail carries the live-like p99. The
+        # kwarg defaults here apply only when settings omit the keys.
         self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.77)
         self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.40)
         # Treated as the fallback fail rate when the book is unavailable — and
@@ -43,7 +45,7 @@ class PaperTrader(BaseTrader):
     # the same FOK behaviour the live bot does (one shot per attempt with a
     # short backoff between retries). Keeps paper P&L distribution honest:
     # in live a transient "ask moved up" often clears within 50-100ms and the
-    # 2nd attempt fills — paper used to give up immediately and skip those.
+    # 2nd attempt fills.
     _PAPER_MAX_RETRIES: int = 3
     _PAPER_RETRY_BASE_DELAY: float = 0.03
 
@@ -96,7 +98,7 @@ class PaperTrader(BaseTrader):
         thresholds identical to live). When valid, _execute_sell skips ~150ms of
         simulated latency to mirror the ECDSA-sign work live actually saves.
 
-        Idempotent within TTL when params haven't drifted — matches live's
+        Idempotent within 1.5s when params haven't drifted — matches live's
         early-return in ``LiveTrader.warm_sell_signature``.
         """
         del fee_rate  # paper has no signing work; param kept for API parity
@@ -190,9 +192,8 @@ class PaperTrader(BaseTrader):
         if self._clob_ws is None or not hasattr(self._clob_ws, "get_book"):
             return False
         book = self._clob_ws.get_book(token_id) or {}
-        import time as _time
         book_ts = float(book.get("ts", 0) or 0)
-        if book_ts <= 0 or (_time.time() - book_ts) > 5.0:
+        if book_ts <= 0 or (time.time() - book_ts) > 5.0:
             return False
         levels_raw = book.get("asks" if side == "buy" else "bids") or []
         if not levels_raw:
@@ -248,13 +249,22 @@ class PaperTrader(BaseTrader):
             # Only retry on the same class of rejection live retries on:
             # the FOK-rejection ("price moved before fill"). Don't retry depth
             # exhaustion or book-empty; those won't recover in 30ms.
-            if "price moved" not in (last.reason or ""):
+            # Case-insensitive, matching live's lowercased failure bucketing.
+            if "price moved" not in (last.reason or "").lower():
                 return last
             if attempt < self._PAPER_MAX_RETRIES:
                 # Exponential backoff with jitter, same shape as live's _retry_sleep.
                 base = self._PAPER_RETRY_BASE_DELAY * (2 ** (attempt - 1))
                 await asyncio.sleep(base * random.uniform(0.8, 1.2))
         return last or FillResult(filled=False, reason="retry exhausted")
+
+    def _scalp_residual_credit(self, residual_shares: float, fill_price: float,
+                               fee_rate: float) -> float:
+        """Simulated residual sweep: the held-back shares sell at the same fill
+        price (live's sweep fills within seconds of the main leg), net of fee."""
+        if residual_shares <= 0 or fill_price <= 0:
+            return 0.0
+        return residual_shares * fill_price - exit_fee_usdc(residual_shares, fill_price, fee_rate)
 
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
         shares = position.get("shares_held") or position["size"] / position["entry_price"]
@@ -269,16 +279,16 @@ class PaperTrader(BaseTrader):
     # ------------------------------------------------------------------
 
     async def _simulate_latency(self, speedup_s: float = 0.0) -> None:
-        """Gaussian-jittered sleep, plus a 4% chance of a heavy-tail spike to mirror
-        live's p99/max (2.3-4.8s outliers from network jitter or REST congestion).
-        Floor at 0.35s — live's fastest observed sign+post.
+        """Gaussian-jittered sleep with a 0.35s floor (live's fastest observed
+        sign+post), plus a 4% chance of a heavy-tail spike (uniform 2-4s,
+        matching live's p99/max outliers). The configured mean sits below the
+        floor, so the Gaussian leg is mostly floor-bound.
 
         ``speedup_s`` subtracts from the sampled latency to mirror cases where live
         skips work (e.g. warm-SELL signature). Floor is preserved so even a saved
         sign-cost still respects live's fastest observed round-trip.
         """
         if random.random() < 0.04:
-            # Heavy tail: uniform [2.0s, 4.0s] roughly matches p95-p99 from live.
             latency = random.uniform(2.0, 4.0)
         else:
             latency = max(0.35, random.gauss(self.latency_mean_s, self.latency_jitter_s))
@@ -290,19 +300,20 @@ class PaperTrader(BaseTrader):
                    size_usd: float) -> FillResult:
         """Walk book levels to compute fill-size-weighted average price (VWAP).
 
-        Buy walks asks ascending; sell walks bids descending. Rejects when
-        post-latency VWAP violates `max_slippage` vs `requested_price`. When
-        the book is stale (>30s) or empty, paper now matches live: live's
-        FOK would have nothing to walk against either and Polymarket's match
-        engine returns insufficient-liquidity. Only the `clob_ws is None`
-        branch falls back to a synthetic fill — that path is exercised solely
-        by unit-test fixtures that pass no clob_ws.
+        Buy walks asks ascending; sell walks bids descending. Strict FOK:
+        rejects when the post-latency VWAP lands on the wrong side of
+        `requested_price`. When the book is stale (>30s) or empty, paper
+        matches live: the FOK would have nothing to walk against and
+        Polymarket's match engine returns insufficient-liquidity. Only the
+        `clob_ws is None` branch falls back to a synthetic fill — that path
+        is exercised solely by unit-test fixtures that pass no clob_ws.
         """
         if self._clob_ws is None:
             return FillResult(filled=True, fill_price=requested_price, fill_size=size_usd)
-        book = self._clob_ws.get_book(token_id) if hasattr(self._clob_ws, "get_book") else {}
-        import time as _time
-        book_age = _time.time() - float(book.get("ts", 0) or 0)
+        # `or {}`: a None book (token never subscribed / WS just reset) walks the
+        # same stale-book rejection path below — unfilled, never an exception.
+        book = (self._clob_ws.get_book(token_id) or {}) if hasattr(self._clob_ws, "get_book") else {}
+        book_age = time.time() - float(book.get("ts", 0) or 0)
         if book_age > 30:
             return FillResult(filled=False, reason="book snapshot stale (>30s)")
         levels_raw = book.get("asks" if side == "buy" else "bids", [])

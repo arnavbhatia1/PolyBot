@@ -412,24 +412,6 @@ class TestResolvePosition:
 
 
 # ---------------------------------------------------------------------------
-# _get_deployed_capital
-# ---------------------------------------------------------------------------
-
-class TestDeployedCapital:
-    @pytest.mark.asyncio
-    async def test_no_positions(self, trader):
-        deployed = await trader._get_deployed_capital()
-        assert deployed == 0.0
-
-    @pytest.mark.asyncio
-    async def test_sums_open_position_sizes(self, trader):
-        await trader.open_trade(**_trade_params(market_id="m1", size=10.0))
-        await trader.open_trade(**_trade_params(market_id="m2", size=15.0))
-        deployed = await trader._get_deployed_capital()
-        assert deployed == pytest.approx(25.0, abs=0.01)
-
-
-# ---------------------------------------------------------------------------
 # BaseTrader is abstract — cannot be instantiated directly
 # ---------------------------------------------------------------------------
 

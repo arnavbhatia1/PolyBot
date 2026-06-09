@@ -21,6 +21,7 @@ from polybot.config.param_registry import default_for as _d
 from polybot.core.aux_layers import (compute_spot_flow_signal, regime_vol_factor,
                                       autocorr_vol_scale, combine_flow_family,
                                       student_t_cdf, MIN_STUDENT_T_DF)
+from polybot.core.exit_boundary import effective_exit_threshold
 from polybot.execution.base import DEFAULT_FEE_RATE
 from polybot.paths import (
     CRISIS_STATE_PATH, GATE_STATS_CURRENT_PATH, FILL_STATS_PATH,
@@ -692,9 +693,10 @@ class AgentScheduler:
         atr_regime_shift_threshold: float | None = None,
         # L6 weights — default 0.0 keeps backtest inert until pipeline raises one (matches live).
         derived_weights: dict[str, float] | None = None,
-        # When set, scalped trades whose recorded `holding_edge_at_scalp > exit_threshold_override`
-        # are repriced using the matched counterfactual hold-to-resolution outcome from `counterfactuals/`,
-        # so the pipeline can score candidate `exit_edge_threshold` values against the alternate-timeline PnL.
+        # When set, scalped trades the candidate threshold would NOT have fired
+        # (judged against the blended effective threshold live fires on, never the
+        # raw value; loss-cut closes excluded) are repriced using the matched
+        # counterfactual hold-to-resolution outcome from `counterfactuals/`.
         exit_threshold_override: float | None = None,
         counterfactual_index: dict[int, dict[str, Any]] | None = None,
     ) -> list[float]:
@@ -1002,10 +1004,13 @@ class AgentScheduler:
             recency_w = RECENCY_DECAY_PER_DAY ** days_ago
 
             # Counterfactual-aware gain_pct for exit_edge_threshold candidates.
-            # If `exit_threshold_override` is set AND this outcome was a scalp with a
-            # recorded counterfactual AND the candidate threshold would NOT have triggered
-            # the scalp (i.e., holding_edge_at_scalp > candidate threshold), substitute
-            # the counterfactual hold-to-resolution gain. Otherwise leave actual gain.
+            # A recorded scalp re-prices to its hold-to-resolution counterfactual
+            # only when the candidate would NOT have fired the scalp — judged
+            # against the same BLENDED effective threshold live fires on
+            # (exit_boundary.effective_exit_threshold), not the raw candidate.
+            # Loss-cut closes fire independently of the threshold, so they are
+            # never re-priced (legacy records without the loss_cut flag replay
+            # as ordinary scalps).
             outcome_gain_pct = o.get("gain_pct", 0.0)
             if (exit_threshold_override is not None
                     and counterfactual_index
@@ -1013,12 +1018,24 @@ class AgentScheduler:
                 pid = o.get("position_id")
                 cf = counterfactual_index.get(pid) if pid is not None else None
                 if cf:
-                    he_at_scalp = cf.get("context_at_scalp", {}).get("holding_edge")
+                    cf_ctx = cf.get("context_at_scalp", {})
+                    he_at_scalp = cf_ctx.get("holding_edge")
                     cf_gain = cf.get("counterfactual", {}).get("gain_pct")
                     if (he_at_scalp is not None
                             and cf_gain is not None
-                            and float(he_at_scalp) > float(exit_threshold_override)):
-                        outcome_gain_pct = float(cf_gain)
+                            and not cf_ctx.get("loss_cut", False)):
+                        mp_at_scalp = float(cf_ctx.get("market_price") or 0.0)
+                        if mp_at_scalp > 0:
+                            eff = effective_exit_threshold(
+                                float(exit_threshold_override),
+                                float(cf_ctx.get("seconds_remaining") or 0.0),
+                                mp_at_scalp,
+                                fee_rate=float(cf_ctx.get("fee_rate") or DEFAULT_FEE_RATE),
+                            )
+                        else:
+                            eff = float(exit_threshold_override)
+                        if float(he_at_scalp) > eff:
+                            outcome_gain_pct = float(cf_gain)
             returns.append(kelly_frac * outcome_gain_pct * realism_factor)
             sample_weights.append(recency_w)
 
@@ -1030,7 +1047,8 @@ class AgentScheduler:
         Cached on the scheduler instance so a multi-fold backtest run pays the
         I/O cost once. The counterfactual JSON shape is documented in
         polybot/agents/counterfactual_tracker.py — keys consumed here:
-        `context_at_scalp.holding_edge`, `counterfactual.gain_pct`.
+        `context_at_scalp.{holding_edge, market_price, seconds_remaining,
+        fee_rate, loss_cut}`, `counterfactual.gain_pct`.
         """
         cached = getattr(self, "_counterfactual_index_cached", None)
         if cached is not None:

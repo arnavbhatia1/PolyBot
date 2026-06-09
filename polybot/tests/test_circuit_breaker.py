@@ -1,4 +1,4 @@
-"""Tests for drawdown-based circuit breaker."""
+"""Tests for the tiered-floor circuit breaker."""
 
 import pytest
 from polybot.execution.circuit_breaker import CircuitBreaker
@@ -43,12 +43,12 @@ class TestDrawdown:
         cb.update_bankroll(900.0)
         assert cb.drawdown_pct == pytest.approx(0.10)
 
-    def test_drawdown_at_max(self):
+    def test_drawdown_at_floor(self):
         cb = CircuitBreaker(initial_bankroll=1000.0)
         cb.update_bankroll(850.0)
         assert cb.drawdown_pct == pytest.approx(0.15)
 
-    def test_drawdown_beyond_max(self):
+    def test_drawdown_beyond_floor(self):
         cb = CircuitBreaker(initial_bankroll=1000.0)
         cb.update_bankroll(700.0)
         assert cb.drawdown_pct == pytest.approx(0.30)
@@ -84,8 +84,8 @@ class TestKellyMultiplier:
         cb = CircuitBreaker(initial_bankroll=1000.0)
         assert cb.kelly_multiplier == 1.0
 
-    def test_min_kelly_at_or_beyond_max_drawdown(self):
-        """Kelly bottoms at min_multiplier once drawdown hits the max — no halt."""
+    def test_min_kelly_at_or_below_floor(self):
+        """Kelly bottoms at min_multiplier once bankroll falls to the floor — no halt."""
         cb = CircuitBreaker(initial_bankroll=1000.0, min_multiplier=0.25)
         cb.update_bankroll(850.0)  # exactly 15% drawdown
         assert cb.kelly_multiplier == pytest.approx(0.25)
@@ -95,7 +95,7 @@ class TestKellyMultiplier:
 
     def test_concave_scaling_midpoint(self):
         """At bankroll midway between floor and tier, concave (sqrt) curve gives
-        min + (1-min) × sqrt(0.5) ≈ 0.7803 — higher than the old linear 0.625.
+        min + (1-min) × sqrt(0.5) ≈ 0.7803.
         """
         import math
         cb = CircuitBreaker(initial_bankroll=1000.0, min_multiplier=0.25, floor_pct=0.85)
@@ -397,7 +397,7 @@ class TestTradingDayScenario:
 
         # Slow recovery
         cb.update_bankroll(800.0)
-        assert cb.kelly_multiplier == 0.25  # Still beyond max_drawdown
+        assert cb.kelly_multiplier == 0.25  # Still below the floor
 
         cb.update_bankroll(900.0)
         assert cb.drawdown_pct == pytest.approx(0.10)

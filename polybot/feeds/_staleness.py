@@ -89,8 +89,3 @@ def write_feeds(feeds: list[dict[str, float | int | bool]], path: Path) -> None:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2))
         tmp.replace(path)
-
-
-def persist(trackers: Iterable[StalenessTracker], path: Path) -> None:
-    """Gather + write synchronously. Safe for direct (non-threaded) callers."""
-    write_feeds(snapshot_feeds(trackers), path)

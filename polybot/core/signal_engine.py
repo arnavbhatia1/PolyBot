@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 import numpy as np
-from polybot.core.exit_boundary import ExitBoundary
+from polybot.core.exit_boundary import ExitBoundary, effective_exit_threshold
 from polybot.core.returns import lag1_autocorr
 from polybot.core.aux_layers import (
     autocorr_vol_scale, combine_flow_family, student_t_cdf,
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 # Regime-conditional L4 amplifier/dampen factors. Pipeline tunes the threshold
 # separating noise band from real regime (`regime_momentum_threshold`); the
-# per-side multipliers stay constant — they're design choices, not data-fit.
+# amplify/dampen anchors stay constant — they're design choices, not data-fit.
 _REGIME_MOMENTUM_AMPLIFY = 1.5
 _REGIME_MOMENTUM_DAMPEN = 0.5
 
@@ -36,8 +36,7 @@ _ATR_LONG_TERM_SIZE = 200
 _ATR_LONG_TERM_MIN_SAMPLES = 50
 
 # L1 prob clip — tight enough that the final logit clamp (not this clip) is
-# the precision floor. Old 1e-3 clip collapsed deep-ITM precision before any
-# other layer ran; 1e-6 maps to logit ±13.8, well past the final clamp.
+# the precision floor: 1e-6 maps to logit ±13.8, well past the final clamp.
 _L1_CLIP = 1e-6
 
 logger = logging.getLogger(__name__)
@@ -283,8 +282,8 @@ class SignalEngine:
             return _calibrated(0.5)
 
         z = distance / vol_scaled
-        # df clamped to ≥3 (pipeline range is 3-8). Removes the t_scale=1.0 fallback
-        # discontinuity that jumped to √(3/1)=1.73 the moment df reached 3.
+        # df clamped to ≥3 (shared MIN_STUDENT_T_DF; pipeline range is 3-8) —
+        # df ≤ 2 has undefined variance and t_scale needs df > 2.
         df_eff = max(_MIN_STUDENT_T_DF, self.student_t_df)
         t_scale = math.sqrt(df_eff / (df_eff - 2))
         prob_up = student_t_cdf(z * t_scale, df_eff)
@@ -476,17 +475,12 @@ class SignalEngine:
         model_prob = prob_up if side == "Up" else 1.0 - prob_up
         holding_edge = model_prob - market_price_for_side
 
-        itm_ref = market_mid_for_side if market_mid_for_side and market_mid_for_side > 0 else market_price_for_side
-        itm_depth = max(0.0, (itm_ref - 0.5) / 0.5)
-        deep_loss_floor = exit_threshold * (1.0 + 0.5 * itm_depth)
-
-        optimal_threshold = self._exit_boundary.compute_exit_threshold(
-            seconds_remaining, fee_rate, market_price_for_side)
-        # Blend: ATM trusts the boundary; deeper ITM weights toward the more patient floor.
-        effective_threshold = (
-            (1 - itm_depth) * max(deep_loss_floor, optimal_threshold)
-            + itm_depth * min(deep_loss_floor, optimal_threshold)
-        )
+        # Blend: ATM trusts the boundary; deeper ITM weights toward the more patient
+        # floor. Shared with the scheduler's exit-threshold replay via exit_boundary.
+        effective_threshold = effective_exit_threshold(
+            exit_threshold, seconds_remaining, market_price_for_side,
+            fee_rate=fee_rate, market_mid_for_side=market_mid_for_side,
+            boundary=self._exit_boundary)
         self.last_effective_exit_threshold = effective_threshold
 
         # Loss-cut: deep underwater near expiry AND BTC is genuinely past strike

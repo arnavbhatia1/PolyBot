@@ -20,14 +20,14 @@ def _engine(mw: float = -0.02, min_atr: float = 8.0) -> SignalEngine:
     )
 
 
-# `regime_momentum_threshold` is now an instance attribute; tests read it via the engine
+# `regime_momentum_threshold` is an instance attribute; tests read it via the engine
 # so settings.yaml tuning doesn't break asserts.
 def _threshold(eng: SignalEngine) -> float:
     return eng.regime_momentum_threshold
 
 
-# After the L4 polarity-split: effective_momentum_weight returns UNSIGNED magnitude,
-# sign lives in per-group multipliers inside compute_momentum.
+# effective_momentum_weight returns UNSIGNED magnitude; sign lives in the
+# per-group multipliers inside compute_momentum.
 
 def test_momentum_magnitude_saturates_in_strong_regime():
     eng = _engine(mw=-0.02)
@@ -51,8 +51,8 @@ def test_momentum_magnitude_is_continuous_across_threshold():
     thresh = _threshold(eng)
     just_under = eng.effective_momentum_weight(regime_autocorr=thresh - 0.001)
     just_over = eng.effective_momentum_weight(regime_autocorr=thresh + 0.001)
-    # The previous cliff jumped by (AMPLIFY-DAMPEN)*base = 0.02; smooth tanh
-    # version should move by < 1% of that across a 0.002 autocorr step.
+    # Smooth tanh conditioning: a 0.002 autocorr step must move the weight by
+    # < 1% of the full (AMPLIFY-DAMPEN)*base = 0.02 swing — no cliff at the threshold.
     assert abs(just_over - just_under) < 0.0002
 
 
