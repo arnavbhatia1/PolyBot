@@ -90,8 +90,10 @@ class TestChainlinkFeed:
         monkeypatch.setattr(cf_mod.websockets, "connect", _RejectingConnect)
 
         _real_sleep = asyncio.sleep
+        sleeps: list[float] = []
 
-        async def _instant_sleep(_s):
+        async def _instant_sleep(s):
+            sleeps.append(s)
             await _real_sleep(0)  # still yields, never waits
 
         monkeypatch.setattr(cf_mod.asyncio, "sleep", _instant_sleep)
@@ -99,16 +101,19 @@ class TestChainlinkFeed:
         f = ChainlinkFeed()
         f._running = True
 
-        async def _stop_after_two():
-            while attempts < 2:
+        async def _stop_after_three():
+            while attempts < 3:
                 await _real_sleep(0)
             f._running = False
 
         with caplog.at_level(logging.WARNING, logger="polybot.feeds.chainlink_feed"):
-            await asyncio.gather(f._run(), _stop_after_two())
+            await asyncio.gather(f._run(), _stop_after_three())
 
-        assert attempts >= 2, "feed must keep retrying through handshake rejections"
+        assert attempts >= 3, "feed must keep retrying through handshake rejections"
         errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
         assert not errors, f"handshake rejection logged as ERROR: {errors}"
         assert any("reconnecting" in r.getMessage() for r in caplog.records)
+        # Backoff doubles per consecutive failure (5 -> 10 -> ...), so an
+        # extended outage can't hammer RTDS into 429ing us indefinitely.
+        assert sleeps[:2] == [5.0, 10.0], f"expected doubling backoff, got {sleeps[:3]}"
         assert f.staleness.connected is False

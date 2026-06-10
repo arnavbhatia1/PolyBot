@@ -20,6 +20,8 @@ RTDS_WS_URL = "wss://ws-live-data.polymarket.com"
 PING_INTERVAL_S = 5            # WebSocket-level ping (library handles)
 APP_PING_INTERVAL_S = 10       # Application-level PING to keep RTDS subscription alive
 STALE_TIMEOUT_S = 60           # Chainlink mainnet can be quiet for >20s in low-vol; 60s is a true dead-feed signal
+RECONNECT_BASE_S = 5.0         # first retry delay; doubles per consecutive failure
+RECONNECT_MAX_S = 60.0         # cap — a flat fast retry during an RTDS outage trips their per-IP 429 limiter
 
 
 class ChainlinkFeed:
@@ -123,6 +125,7 @@ class ChainlinkFeed:
             return
 
     async def _run(self) -> None:
+        backoff = RECONNECT_BASE_S
         while self._running:
             ping_task: asyncio.Task | None = None
             try:
@@ -135,6 +138,7 @@ class ChainlinkFeed:
                         "action": "subscribe",
                         "subscriptions": [{"topic": "crypto_prices_chainlink", "type": "*"}],
                     }))
+                    backoff = RECONNECT_BASE_S
                     ping_task = asyncio.create_task(self._app_ping(ws))
 
                     async for raw in ws:
@@ -164,20 +168,23 @@ class ChainlinkFeed:
                             pass
             except (websockets.ConnectionClosed, websockets.InvalidHandshake,
                     ConnectionError, OSError) as e:
-                # InvalidHandshake covers a server-side rejection (e.g. RTDS
-                # returning HTTP 500 during an outage) — a reconnectable
-                # condition, not a code error.
+                # InvalidHandshake covers a server-side rejection (HTTP 500
+                # outage or 429 rate limit) — a reconnectable condition, not a
+                # code error. Backoff doubles per consecutive failure so an
+                # extended outage doesn't keep us in the 429 penalty box.
                 if not self._running:
                     break
-                logger.warning("ChainlinkFeed: WS disconnected (%s), reconnecting in 5s", e)
+                logger.warning("ChainlinkFeed: WS disconnected (%s), reconnecting in %.0fs", e, backoff)
                 self._ws = None
-                await asyncio.sleep(5)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, RECONNECT_MAX_S)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("ChainlinkFeed: unexpected error: %s", e, exc_info=True)
                 self._ws = None
-                await asyncio.sleep(5)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, RECONNECT_MAX_S)
             finally:
                 self.staleness.mark_disconnected()
                 if ping_task and not ping_task.done():
