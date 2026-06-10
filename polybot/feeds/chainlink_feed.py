@@ -162,7 +162,11 @@ class ChainlinkFeed:
                             self._record_boundary(observed_ts)
                         except (ValueError, TypeError):
                             pass
-            except (websockets.ConnectionClosed, ConnectionError, OSError) as e:
+            except (websockets.ConnectionClosed, websockets.InvalidHandshake,
+                    ConnectionError, OSError) as e:
+                # InvalidHandshake covers a server-side rejection (e.g. RTDS
+                # returning HTTP 500 during an outage) — a reconnectable
+                # condition, not a code error.
                 if not self._running:
                     break
                 logger.warning("ChainlinkFeed: WS disconnected (%s), reconnecting in 5s", e)

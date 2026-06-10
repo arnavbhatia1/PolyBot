@@ -2357,7 +2357,13 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         _cal_str = (f"on — model win-probabilities rescaled to "
                     f"{_cal.lowest_learned_prob:.0%}-{_cal.calibrate(1.0):.0%}, "
                     f"learned from {_n_cal:,} trades")
-    def _f(feed: Any) -> str: return "OK" if feed is not None else "--"
+    def _f(feed: Any) -> str:
+        if feed is None:
+            return "--"
+        # A feed whose tracker has explicitly reported a dead socket is DOWN;
+        # None (no report yet) reads as OK so a slow first connect isn't flagged.
+        _state = getattr(getattr(feed, "staleness", None), "connected", None)
+        return "DOWN" if _state is False else "OK"
     logger.info(
         f"PolyBot [{_mode_label}] ready  |  Bankroll ${_bankroll:,.2f}  |  "
         f"Today: {day_wins}W/{day_losses}L  |  Calibration: {_cal_str}"

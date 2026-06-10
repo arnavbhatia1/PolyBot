@@ -50,6 +50,11 @@ class StalenessTracker:
     def mark_disconnected(self) -> None:
         self._connected = False
 
+    @property
+    def connected(self) -> bool | None:
+        """Live connection state; None when the feed never reported either way."""
+        return self._connected
+
     def snapshot(self) -> dict[str, float | int | bool]:
         snap: dict[str, float | int | bool] = {
             "name": self.name, "n": len(self._gaps), "n_total": self._n_total,
