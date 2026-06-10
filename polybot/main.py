@@ -801,12 +801,12 @@ async def _evaluate_signal_and_enter(
         late_max_penalty=timing_cfg.get("late_max_penalty", _d("late_max_penalty")),
     )
 
-    # Populate eval context for all evaluations — BUY uses actual direction,
-    # model-level SKIP infers it from signal.prob 
+    # Populate eval context for all evaluations. signal.side is the side the
+    # prob/edge refer to (the edge-best side can be the sub-50% one); the
+    # prob>=0.5 heuristic remains only for pre-model skips that carry no side.
     global _last_logged_action, _last_eval_buy_window
     _is_buy = signal.action in ("BUY_YES", "BUY_NO")
-    _direction = "Up" if signal.action == "BUY_YES" else ("Down" if signal.action == "BUY_NO"
-                 else ("Up" if signal.prob >= 0.5 else "Down"))
+    _direction = signal.side or ("Up" if signal.prob >= 0.5 else "Down")
     action_changed = _direction != _last_logged_action or eval_window != last_eval_log_window
     dist = btc_price - strike
     _sprt_info = ""

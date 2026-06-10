@@ -389,3 +389,33 @@ def test_student_t_scale_normalization():
     prob_unscaled = float(student_t_dist.cdf(z, df=4))
     prob_scaled = float(student_t_dist.cdf(z * t_scale, df=4))
     assert prob_scaled > prob_unscaled
+
+
+def test_skip_signal_carries_the_side_its_prob_refers_to():
+    """When the edge-best side is the long-shot (model strongly Down, but only
+    the overpriced-Down/underpriced-Up race leaves Up with the better edge),
+    the SKIP signal's prob is the Up side's sub-50% value — and signal.side must
+    say so. A prob>=0.5 display heuristic would label it as a high-prob Up call
+    and read like a sign-inverted model."""
+    class _ClampCal:  # the production curve's [0.15, 0.85] output clamp
+        def calibrate(self, p):
+            return min(0.85, max(0.15, p))
+
+    se = SignalEngine(min_edge=0.04, kelly_fraction=0.15, momentum_weight=0.0,
+                      min_model_probability=0.56, calibrator=_ClampCal())
+    # BTC far below strike → calibrated P(down)=0.85. Down overpriced (0.95) →
+    # its edge is negative; Up underpriced (0.05) → the small positive edge wins
+    # the edge race carrying the 0.15 long-shot prob.
+    sig = se.evaluate(_make_indicators(atr_value=30), has_position=False, in_entry_window=True,
+                      btc_price=66200, strike_price=66400, seconds_remaining=120,
+                      market_price_up=0.05, market_price_down=0.95)
+    assert sig.action == "SKIP"
+    assert sig.prob < 0.5, "edge-best side here must be the long-shot Up"
+    assert sig.side == "Up", "signal must label the side its prob refers to"
+
+    # Symmetric sanity: fair pricing → edge-best side is the model's side.
+    sig2 = se.evaluate(_make_indicators(atr_value=30), has_position=False, in_entry_window=True,
+                       btc_price=66200, strike_price=66400, seconds_remaining=120,
+                       market_price_up=0.5, market_price_down=0.5)
+    assert sig2.side == "Down"
+    assert sig2.prob > 0.5

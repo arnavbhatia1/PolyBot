@@ -48,6 +48,7 @@ class TradeSignal:
     edge: float          # Model probability - market price
     kelly_size: float    # Optimal fraction of bankroll
     reason: str
+    side: str = ""       # "Up"/"Down" the prob/edge refer to; "" on pre-model skips
 
 def compute_signal_consensus(signals: dict[str, float], side: str, dead_zone: float = 0.05, consensus_config: dict | None = None) -> float:
     """Kelly multiplier from how many signals agree with the chosen side."""
@@ -416,7 +417,8 @@ class SignalEngine:
         best_prob = max(prob_up, prob_down)
         if best_prob < self.min_model_probability:
             return TradeSignal("SKIP", best_prob, 0, 0,
-                               f"below min prob {self.min_model_probability:.0%}")
+                               f"below min prob {self.min_model_probability:.0%}",
+                               side="Up" if prob_up >= prob_down else "Down")
 
         edge_up = prob_up - market_price_up
         edge_down = prob_down - market_price_down
@@ -424,29 +426,38 @@ class SignalEngine:
             best_side, best_edge, best_prob, best_mkt = "BUY_YES", edge_up, prob_up, market_price_up
         else:
             best_side, best_edge, best_prob, best_mkt = "BUY_NO", edge_down, prob_down, market_price_down
+        # The prob/edge in every signal below refer to THIS side — the skip log
+        # must label it as such (an edge-best Down at 15% is the model calling
+        # 85% Up, not a coin-flip Down).
+        side_label = "Up" if best_side == "BUY_YES" else "Down"
 
         if best_prob < self.min_model_probability:
             return TradeSignal("SKIP", best_prob, best_edge, 0,
-                               f"below min prob {self.min_model_probability:.0%}")
+                               f"below min prob {self.min_model_probability:.0%}",
+                               side=side_label)
 
         if best_edge < self.min_edge:
             return TradeSignal("SKIP", best_prob, best_edge, 0,
-                               f"No edge: best={best_edge:+.1%} < floor={self.min_edge:.1%}")
+                               f"No edge: best={best_edge:+.1%} < floor={self.min_edge:.1%}",
+                               side=side_label)
 
         kelly = self._kelly(best_prob, best_mkt, fee_rate=fee_rate)
         if kelly < self.min_kelly:
             return TradeSignal("SKIP", best_prob, best_edge, 0,
-                               f"Kelly too small: {kelly:.1%} < {self.min_kelly:.1%}")
+                               f"Kelly too small: {kelly:.1%} < {self.min_kelly:.1%}",
+                               side=side_label)
 
         if best_side == "BUY_YES":
             return TradeSignal(
                 "BUY_YES", prob_up, edge_up, kelly,
                 f"Up: model={prob_up:.0%} mkt={market_price_up:.0%} edge={edge_up:+.0%} "
-                f"BTC={btc_price:,.0f} strike={strike_price:,.0f} d={btc_price-strike_price:+,.0f}")
+                f"BTC={btc_price:,.0f} strike={strike_price:,.0f} d={btc_price-strike_price:+,.0f}",
+                side="Up")
         return TradeSignal(
             "BUY_NO", prob_down, edge_down, kelly,
             f"Down: model={prob_down:.0%} mkt={market_price_down:.0%} edge={edge_down:+.0%} "
-            f"BTC={btc_price:,.0f} strike={strike_price:,.0f} d={btc_price-strike_price:+,.0f}")
+            f"BTC={btc_price:,.0f} strike={strike_price:,.0f} d={btc_price-strike_price:+,.0f}",
+            side="Down")
 
     def evaluate_hold(self, indicators: dict[str, dict], btc_price: float, strike_price: float,
                       seconds_remaining: float, market_price_for_side: float,
