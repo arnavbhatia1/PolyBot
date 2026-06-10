@@ -61,6 +61,10 @@ PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
               "L6 tanh(flow + spot_flow) — direction-aware flow consensus"),
 )
 
+# Crisis halving may persist kelly_fraction down to this floor — below the
+# optimizer-tunable range, so loader validation bounds kelly_fraction here.
+CRISIS_KELLY_FLOOR: float = 0.04
+
 # ── Derived lookups (everything else imports these, not PIPELINE_PARAMS directly) ──
 BY_NAME: dict[str, ParamSpec] = {p.name: p for p in PIPELINE_PARAMS}
 
@@ -150,6 +154,9 @@ MANUAL_ONLY_PARAMS: frozenset[str] = frozenset({
     # Risk caps (operator-owned policy)
     "max_concurrent_positions",
     "max_bankroll_deployed",
+    # Signal/regime knobs (not pipeline-tunable)
+    "regime_lookback",
+    "consensus_dead_zone",
     # Circuit breaker (bankroll protection)
     "circuit_breaker.floor_pct",
     "circuit_breaker.min_multiplier",

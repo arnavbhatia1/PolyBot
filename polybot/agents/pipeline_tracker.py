@@ -1,7 +1,7 @@
 """Track pipeline recommendation outcomes — did past changes actually help?
 
 Logs each adoption with predicted Sharpe delta. On subsequent runs, fills in
-actual 1d/3d/7d/14d/30d Sharpe from real outcomes so Claude can see its own
+actual 7d/14d/30d Sharpe from real outcomes so Claude can see its own
 track record and detect decay (overfit adoptions that fade within 2 weeks).
 
 Also maintains a run log (pipeline_run_log.json) that records ALL changes tested
@@ -28,6 +28,10 @@ from polybot.agents.weight_optimizer import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Per-change decisions that constitute a final verdict for a (param, value).
+# deferred_crisis is excluded — the candidate was skipped, not tested.
+_FINAL_DECISIONS: frozenset[str] = frozenset({"adopted", "rejected", "backed_out"})
 
 class PipelineTracker:
     def __init__(self, path: str | Path) -> None:
@@ -79,11 +83,15 @@ class PipelineTracker:
         self._save(records)
 
     def review_past_adoptions(self, outcomes: list[dict[str, Any]]) -> None:
-        """Fill in actual Sharpe for adoptions old enough to evaluate.
+        """Fill in actual Sharpe for adoptions whose review windows have elapsed.
 
-        Review windows: 7d (rollback trigger + prediction accuracy), 14d (decay), 30d (trend).
-        After both 7d and 14d are filled, computes decay status and retention ratio.
-        DECAYED = 14d delta-Sharpe < 50% of 7d delta-Sharpe (retention < 0.50).
+        Each window (7d/14d/30d) finalizes once its full duration has passed since
+        adoption, with whatever trade count it then holds. The rollback test runs at
+        every window finalization (n >= _MIN_REVERT_TRADES required to flag) until
+        one fires or all windows are done — a thin 7d window still gets revert-checked
+        at 14d/30d. After both 7d and 14d are filled, computes decay status and
+        retention ratio. DECAYED = 14d delta-Sharpe < 50% of 7d delta-Sharpe
+        (retention < 0.50).
         """
         records = self._load()
         if not records or not outcomes:
@@ -92,11 +100,11 @@ class PipelineTracker:
         now = datetime.now(timezone.utc)
         changed = False
 
-        # (key, days, min_trades, compute_prediction_accuracy)
+        # (key, days, compute_prediction_accuracy)
         WINDOWS = [
-            ("review_7d",  7,  10, True),
-            ("review_14d", 14, 10, False),
-            ("review_30d", 30, 30, False),
+            ("review_7d",  7,  True),
+            ("review_14d", 14, False),
+            ("review_30d", 30, False),
         ]
 
         for rec in records:
@@ -110,13 +118,11 @@ class PipelineTracker:
             effective_baseline = baseline
             age_days = (now - adopt_dt).total_seconds() / 86400
 
-            for key, days, min_trades, check_prediction in WINDOWS:
+            for key, days, check_prediction in WINDOWS:
                 if rec.get(key) is not None or age_days < days:
                     continue
                 rets, weights = self._returns_in_window(outcomes, version, adopt_dt,
                                                         adopt_dt + timedelta(days=days))
-                if len(rets) < min_trades:
-                    continue
 
                 # Weighted Sharpe on the post-adoption window, matching the
                 # methodology of the stored baseline_sharpe (also weighted, for v2+).
@@ -126,7 +132,7 @@ class PipelineTracker:
                     "sharpe": actual_sharpe,
                     "delta_sharpe": actual_delta,
                     "trades": len(rets),
-                    "win_rate": round(sum(1 for r in rets if r > 0) / len(rets), 4),
+                    "win_rate": round(sum(1 for r in rets if r > 0) / len(rets), 4) if rets else 0.0,
                 }
 
                 if check_prediction:
@@ -136,26 +142,26 @@ class PipelineTracker:
                         review["prediction_hit"] = directional_hit
                         review["prediction_error"] = round(abs(actual_delta - float(run_pred)), 4)
                         review["predicted_delta"] = round(float(run_pred), 4)
-                    # Symmetric with adoption: revert when actual_sharpe falls below
-                    # baseline by ≥ ADOPTION_Z_FLOOR × JK_SE on the same n. The fixed
-                    # -0.05 floor used previously could fire on a one-SE noise dip at
-                    # large n, creating adopt→noise→revert→re-propose oscillation.
-                    if len(rets) >= _MIN_REVERT_TRADES:
-                        _revert_se = _jk_se_revert(actual_sharpe, len(rets), rets)
-                        _revert_margin = _ADOPTION_Z_FLOOR * _revert_se
-                        if actual_sharpe < effective_baseline - _revert_margin:
-                            if not rec.get("rollback_recommended"):
-                                rec["rollback_recommended"] = True
-                                rec["rollback_reason"] = (
-                                    f"7d Sharpe {actual_sharpe:.3f} trails baseline "
-                                    f"{effective_baseline:.3f} by ≥ z={_ADOPTION_Z_FLOOR} × "
-                                    f"SE={_revert_se:.4f} (n={len(rets)})"
-                                )
-                            logger.warning(
-                                f"[ROLLBACK RECOMMENDED — 7d] {version}: Sharpe "
-                                f"{actual_sharpe:.3f} trails baseline {effective_baseline:.3f} "
-                                f"by ≥ {_revert_margin:.4f} (n={len(rets)}, SE={_revert_se:.4f})"
-                            )
+
+                # Symmetric with adoption: revert when actual_sharpe falls below
+                # baseline by ≥ ADOPTION_Z_FLOOR × JK_SE on the same n. Evaluated at
+                # each window finalization until a rollback fires.
+                if not rec.get("rollback_recommended") and len(rets) >= _MIN_REVERT_TRADES:
+                    _revert_se = _jk_se_revert(actual_sharpe, len(rets), rets)
+                    _revert_margin = _ADOPTION_Z_FLOOR * _revert_se
+                    if actual_sharpe < effective_baseline - _revert_margin:
+                        window_label = key[len("review_"):]
+                        rec["rollback_recommended"] = True
+                        rec["rollback_reason"] = (
+                            f"{window_label} Sharpe {actual_sharpe:.3f} trails baseline "
+                            f"{effective_baseline:.3f} by ≥ z={_ADOPTION_Z_FLOOR} × "
+                            f"SE={_revert_se:.4f} (n={len(rets)})"
+                        )
+                        logger.warning(
+                            f"[ROLLBACK RECOMMENDED — {window_label}] {version}: Sharpe "
+                            f"{actual_sharpe:.3f} trails baseline {effective_baseline:.3f} "
+                            f"by ≥ {_revert_margin:.4f} (n={len(rets)}, SE={_revert_se:.4f})"
+                        )
 
                 rec[key] = review
                 changed = True
@@ -301,23 +307,29 @@ class PipelineTracker:
         return tested
 
     def get_cumulative_failures(self, max_per_param: int = 5) -> dict[str, list[str]]:
-        """Derive {param: ["value (delta)", ...]} for all historically rejected changes.
+        """Derive {param: ["value (delta, decision)", ...]} for every change with a
+        final verdict (adopted / rejected / backed_out). Recommenders treat any final
+        verdict as evidence that the (param, value) was tested — suppressing
+        structural-probe refires — while deferred decisions (e.g. deferred_crisis)
+        are excluded so those candidates re-enter later.
 
         Reads from pipeline_run_log.json so survives restarts and isn't duplicated
-        in-memory. Most recent rejections first, capped per-param to keep prompts tight.
+        in-memory. Most recent first, capped per-param to keep prompts tight.
         """
         result: dict[str, list[str]] = {}
         runs = self._load_runs()
         for run in reversed(runs):  # newest first
             for c in run.get("changes", []):
-                if c.get("decision") != "rejected":
+                decision = c.get("decision")
+                if decision not in _FINAL_DECISIONS:
                     continue
                 param = c.get("param", "")
                 if not param:
                     continue
                 val = c.get("new_value", "?")
                 delta = c.get("backtest_delta_sharpe")
-                entry = f"{val} (Δ={delta:+.4f})" if isinstance(delta, (int, float)) else f"{val}"
+                entry = (f"{val} (Δ={delta:+.4f}, {decision})"
+                         if isinstance(delta, (int, float)) else f"{val} ({decision})")
                 bucket = result.setdefault(param, [])
                 if entry not in bucket and len(bucket) < max_per_param:
                     bucket.append(entry)

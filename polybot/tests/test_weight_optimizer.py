@@ -8,7 +8,7 @@ def optimizer():
 
 
 def test_should_adopt_passes_with_clear_improvement(optimizer):
-    # Big delta with enough trades clears the z=0.5 floor easily.
+    # Big delta with enough trades clears the z=0.3 floor easily.
     adopt, reason, z = optimizer.should_adopt(0.20, 0.50, n_trades=200)
     assert adopt is True
     assert z > 0.5

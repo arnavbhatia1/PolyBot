@@ -20,7 +20,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 while ($true) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Write-Host "`n[$timestamp] Pulling latest from remote..." -ForegroundColor Cyan
-    git pull origin main 2>$null
+    git pull origin main
 
     # Read mode from settings.yaml so this is the only place you need to change it
     $settingsPath = Join-Path $RepoRoot "polybot\config\settings.yaml"
@@ -41,36 +41,47 @@ while ($true) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Write-Host "[$timestamp] Bot exited (code: $exitCode)" -ForegroundColor Yellow
 
-    # Only commit after a clean pipeline exit (code 0) -- not on crashes or auth errors
+    # Commit only on process exit 0 -- guards against process crashes and auth
+    # failures (the scheduler catches pipeline-internal errors and still exits 0)
     if ($exitCode -ne 0) {
         Write-Host "[$timestamp] Bot exited with error (code: $exitCode) -- skipping commit" -ForegroundColor Red
     }
 
     if ($exitCode -eq 0) {
         Write-Host "[$timestamp] Committing pipeline updates..." -ForegroundColor Cyan
-        git add polybot/config/settings.yaml polybot/memory/ polybot/db/polybot_paper.db polybot/db/polybot_live.db 2>$null
+        # Stage by directory so a missing file (e.g. no live DB yet) can't abort the add
+        git add polybot/config/settings.yaml polybot/memory polybot/db
         $hasChanges = git diff --cached --quiet 2>$null; $hasChanges = $LASTEXITCODE
         if ($hasChanges -ne 0) {
             $date = Get-Date -Format "yyyy-MM-dd"
             git commit -m "auto: daily pipeline update $date" 2>&1 | Where-Object { $_ -notmatch "^\s*(delete|create|rename) mode" } | Write-Host
-            git push origin main 2>$null
             if ($LASTEXITCODE -eq 0) {
-                Write-Host "[$timestamp] Pushed to remote" -ForegroundColor Green
+                git push origin main 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "[$timestamp] Pushed to remote" -ForegroundColor Green
+                } else {
+                    Write-Host "[$timestamp] Push failed (will retry tomorrow)" -ForegroundColor Red
+                }
             } else {
-                Write-Host "[$timestamp] Push failed (will retry tomorrow)" -ForegroundColor Red
+                Write-Host "[$timestamp] Commit failed (code: $LASTEXITCODE) -- skipping push" -ForegroundColor Red
             }
         } else {
             Write-Host "[$timestamp] No config changes to commit" -ForegroundColor DarkGray
         }
     }
 
-    # Wait until 12:01 AM ET to restart
+    # Wait until 12:01 AM ET to restart. A wait over 23 hours means the pipeline
+    # overran past midnight -- start immediately instead of losing a trading day.
     $now = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), "Eastern Standard Time")
     $next1201am = $now.Date.AddMinutes(1)
     if ($now -ge $next1201am) {
         $next1201am = $next1201am.AddDays(1)
     }
     $waitSeconds = ($next1201am - $now).TotalSeconds
+    if ($waitSeconds -gt 23 * 3600) {
+        Write-Host "[$timestamp] Pipeline overran past 12:01 AM ET -- restarting immediately" -ForegroundColor Yellow
+        $waitSeconds = 0
+    }
 
     if ($waitSeconds -gt 10) {
         Write-Host "[$timestamp] Waiting $([math]::Round($waitSeconds/60, 1)) minutes until 12:01 AM ET..." -ForegroundColor DarkGray

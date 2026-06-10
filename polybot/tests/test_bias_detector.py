@@ -1,5 +1,6 @@
 import pytest
 from polybot.agents.bias_detector import BiasDetector
+from polybot.agents.pipeline_analytics import ghost_gain_pct
 
 @pytest.fixture
 def detector():
@@ -44,6 +45,42 @@ def test_analyze_ghosts_segments_by_phase_and_flip(detector):
     assert res["by_entry_phase"]["normal"]["count"] == 3
     assert res["by_flip"]["flip"]["count"] == 1
     assert res["by_flip"]["initial"]["count"] == 3
+
+def test_analyze_ghosts_prices_fee_aware(detector):
+    """Ghost gain/simulated_pnl must net the entry fee via ghost_gain_pct so
+    ghost analysis and the optimizer pool price ghosts identically."""
+    ghosts = [
+        {
+            "gate_name": "edge_cap", "resolved": True, "ghost_correct": True,
+            "side": "up", "ghost_gain_pct": 0.8182,
+            "indicator_snapshot": {"trade_context": {"market_price_up": 0.55, "size": 10.0}},
+        },
+        {
+            "gate_name": "edge_cap", "resolved": True, "ghost_correct": False,
+            "side": "down", "ghost_gain_pct": -1.0,
+            "indicator_snapshot": {"trade_context": {"market_price_down": 0.40, "size": 10.0}},
+        },
+    ]
+    res = detector.analyze_ghosts(ghosts)
+    g_win = ghost_gain_pct(0.55, True)
+    g_loss = ghost_gain_pct(0.40, False)
+    gate = res["by_gate"]["edge_cap"]
+    assert gate["avg_gain_pct"] == pytest.approx(round((g_win + g_loss) / 2, 4), abs=1e-4)
+    assert gate["simulated_pnl"] == pytest.approx(round(10.0 * g_win + 10.0 * g_loss, 2), abs=0.01)
+
+def test_adverse_rate_zero_not_coerced_to_half(detector):
+    """A genuine 0.0 adverse rate buckets as low; None/missing default to 0.5 (medium)."""
+    def _o(ctx):
+        return {"correct": True, "gain_pct": 0.1,
+                "indicator_snapshot": {"trade_context": ctx}}
+    res = detector._analyze_by_adverse_selection([
+        _o({"adverse_rate_at_30s": 0.0}),
+        _o({"adverse_selection_30s": 0.0}),
+        _o({"adverse_rate_at_30s": None}),
+        _o({}),
+    ])
+    assert res["low"]["n"] == 2
+    assert res["medium"]["n"] == 2
 
 def test_detect_returns_rich_dict(detector):
     outcomes = [

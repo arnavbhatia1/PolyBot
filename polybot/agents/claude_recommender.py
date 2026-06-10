@@ -42,17 +42,21 @@ class ClaudeRecommender(BaseRecommender):
             logger.debug(f"Claude API failed: {e}")
             raise  # caller falls back to LocalRecommender
 
-        # Merge Claude's validated changes into self.proposals.
+        # Merge Claude's validated changes into self.proposals. A malformed
+        # predicted delta falls back to the default — it must never discard
+        # the rest of the cycle's validated changes.
         for c in (resp.get("changes") or []):
             if not isinstance(c, dict) or not c.get("param"):
                 continue
+            try:
+                pred = round(float(c.get("predicted_delta_sharpe_7d", 0.015) or 0.015), 4)
+            except (TypeError, ValueError):
+                pred = 0.015
             self.proposals.append({
                 "param": c["param"],
                 "value": c.get("value"),
                 "reason": c.get("reason", "Claude proposal"),
-                "predicted_delta_sharpe_7d": round(
-                    float(c.get("predicted_delta_sharpe_7d", 0.015) or 0.015), 4
-                ),
+                "predicted_delta_sharpe_7d": pred,
                 "confidence_interval": c.get("confidence_interval", [-0.01, 0.05]),
             })
 

@@ -118,6 +118,24 @@ class TestValidateConfigPasses:
 
 
 # ---------------------------------------------------------------------------
+# Validation — crisis kelly floor. Crisis halving may persist kelly_fraction
+# below the optimizer-tunable range; the loader must accept down to the floor.
+# ---------------------------------------------------------------------------
+
+class TestCrisisKellyFloor:
+    def test_kelly_at_crisis_floor_loads(self):
+        cfg = _valid_config()
+        _set_nested(cfg, "math.kelly_fraction", 0.04)
+        validate_config(cfg)  # should not raise
+
+    def test_kelly_below_crisis_floor_raises(self):
+        cfg = _valid_config()
+        _set_nested(cfg, "math.kelly_fraction", 0.039)
+        with pytest.raises(ValueError, match="kelly_fraction"):
+            validate_config(cfg)
+
+
+# ---------------------------------------------------------------------------
 # Validation — missing-field detection. Representative coverage across
 # sections; per-key exhaustion was redundant churn for the validator framework.
 # ---------------------------------------------------------------------------

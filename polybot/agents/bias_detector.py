@@ -12,6 +12,7 @@ import logging
 from collections import defaultdict
 from typing import Any
 
+from polybot.agents.pipeline_analytics import ghost_gain_pct
 from polybot.paths import FEED_STALENESS_PATH
 
 logger = logging.getLogger(__name__)
@@ -431,10 +432,8 @@ class BiasDetector:
         wins: dict[str, int] = {"low": 0, "medium": 0, "high": 0}
         for o in outcomes:
             ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
-            rate = float(
-                ctx.get("adverse_rate_at_30s",
-                        ctx.get("adverse_selection_30s", 0.5)) or 0.5
-            )
+            rate = ctx.get("adverse_rate_at_30s", ctx.get("adverse_selection_30s"))
+            rate = float(rate) if rate is not None else 0.5
             if rate < 0.40:
                 k = "low"
             elif rate <= 0.60:
@@ -738,14 +737,15 @@ class BiasDetector:
                             "adverse_selection", "adverse_selection_30s"}
 
         def _market_price_gain(r: dict[str, Any]) -> float:
-            """gain_pct re-derived from market_price_<side> so the bias detector
-            shares units with `_ghost_to_outcome`'s backtest accounting."""
+            """Fee-aware gain_pct re-derived from market_price_<side> via
+            ghost_gain_pct so ghost analysis prices ghosts identically to the
+            optimizer's backtest pool."""
             side = (r.get("side") or "").lower()
             ctx = r.get("indicator_snapshot", {}).get("trade_context", {})
             mp = ctx.get("market_price_up", 0) if side == "up" else ctx.get("market_price_down", 0)
             if not mp or mp <= 0 or mp >= 1:
                 return float(r.get("ghost_gain_pct", 0))
-            return ((1.0 - mp) / mp) if r.get("ghost_correct") else -1.0
+            return ghost_gain_pct(mp, bool(r.get("ghost_correct")))
 
         by_gate_result: dict[str, Any] = {}
         for gate, records in by_gate.items():

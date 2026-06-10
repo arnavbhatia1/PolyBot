@@ -162,7 +162,7 @@ Adoption = **single OOB bootstrap-CI gate**: the lower-80% bound of weighted log
 
 **Tail-overconfidence guards** (baked into `fit()`, so live + replay + both fit sites share them; operator-owned, never pipeline-tuned). Isotonic overfits sparse extreme bins — a few lucky high/low-prob trades pool to ~0/1 and Kelly then max-sizes a "certain" bet that historically wins ~66%. Two layers: **(1) output clamp** — calibrated prob bounded to **[0.15, 0.85]** (`_CAL_OUT_LO/_HI`), a data-justified ceiling (realized win rates top ~0.66-0.69 / bottom ~0.16 at this horizon, so nothing beyond is warranted); never touches an honest fit, caps a slammed tail. **(2) Beta-prior smoothing** — `_PRIOR_FRAC` (0.10) × n pseudo-observations at p=0.5 over `_PRIOR_ANCHORS` (50) anchors (weight scales with pool size), pulling sparse tails toward their realized rate while leaving dense mid-range compression intact. `load()` applies the clamp too, so a legacy slammed `isotonic_params.json` is capped on read. Both also **tighten** the OOB-CI (less tail variance → more robustly adoptable).
 
-`last_fit_diagnostics` (CI bounds, `n_samples`, `bootstrap_n_completed`, `y_min`/`y_max`, `decision`) is stamped to `pipeline_info["cal_info"]["fit_diagnostics"]` on every `fit()` reaching the bootstrap stage (both `adopted` and `rejected_ci`); structural early-rejects return `False` without stamping (visible in the reject-site log).
+`last_fit_diagnostics` (CI bounds, `n_samples`, `bootstrap_n_completed`, `y_min`/`y_max`, `decision`) is stamped to `pipeline_info["calibration"]["fit_diagnostics"]` on every `fit()` reaching the bootstrap stage (both `adopted` and `rejected_ci`); structural early-rejects return `False` without stamping (visible in the reject-site log).
 
 `lowest_learned_prob` / `highest_learned_prob` (`y_thresholds_[0]`/`[-1]`, themselves bounded to [0.15, 0.85] by the clamp) are the per-side "dead side" floors consumed by `evaluate_hold` — §6.
 
@@ -200,7 +200,7 @@ kelly_mult = max(0.30, 1 - 1.5 * max(0, adverse_rate_at_30s - 0.45))   # max(adv
 
 The penalty scales down with the fade rate (at `adverse_rate -> 0.80⁻` it reaches `0.475`); at `adverse_rate >= 0.80` (the hard `adverse_selection_threshold`) the trade is blocked entirely, before sizing. (The 0.30 floor is a clamp, unreachable while trading.) The 30-min lookback is **Bayesian-shrunk to a neutral prior** (n=10, rate=0.5).
 
-**Ghosting:** below-min-prob model skips and the downstream gate vetoes (adverse, edge-decay, edge cap, flip hurdle, SPRT, layer disagreement, CVD decel) feed a **ghost** into `GhostTracker` (full L1-L5 inputs + aux microstructure); ghosts resolve at the window's close and feed the backtest pool (raising a gate filters the same ghosts from baseline + candidate equally, lowering includes them). **Not ghosted:** `min_edge`/`min_kelly` rejections inside `SignalEngine.evaluate` (so those two knobs are under-evaluable downward — the pool is censored just below their thresholds) and the non-tunable structural gates (`regime` quiet skip, chosen-side `thin_book_depth`, `min_size` $1 floor), so the pipeline can't adopt a change that re-includes them. The CLOB-microstructure gates (price sum, book freshness, both-sides depth, spread) run only when prices come from the CLOB (`price_source == "clob"`); on the Gamma fallback they're bypassed and the chosen-side depth check + pre-submit re-check are the remaining guards.
+**Ghosting:** below-min-prob model skips and the downstream gate vetoes (adverse, edge-decay, edge cap, flip hurdle, SPRT, layer disagreement, CVD decel, net-edge-after-slippage, pre-submit drift) feed a **ghost** into `GhostTracker` (full L1-L5 inputs + aux microstructure); ghosts resolve at the window's close and feed the backtest pool (raising a gate filters the same ghosts from baseline + candidate equally, lowering includes them), priced **fee-aware** via `ghost_gain_pct` — binary payoff net of the entry fee at the recorded price, comparable with realized `gain_pct`. **Not ghosted:** `min_edge`/`min_kelly` rejections inside `SignalEngine.evaluate` (so those two knobs are under-evaluable downward — the pool is censored just below their thresholds) and the non-tunable structural gates (`regime` quiet skip, chosen-side `thin_book_depth`, `min_size` $1 floor), so the pipeline can't adopt a change that re-includes them. The CLOB-microstructure gates (price sum, book freshness, both-sides depth, spread) run only when prices come from the CLOB (`price_source == "clob"`); on the Gamma fallback they're bypassed and the chosen-side depth check + pre-submit re-check are the remaining guards.
 
 ## 4. Sizing
 
@@ -320,7 +320,7 @@ Telemetry, nightly pipeline, param registry, layout, data sources, run commands,
 - **None-vs-0.0 (load-bearing):** every **signal** field is recorded `None` (never `0.0`) when its feed is cold/stale **or its trade buffer doesn't yet span the measurement window (e.g. <60s after a Coinbase reconnect — `CoinbaseFeed.covers`)** — including `flow_score`/`spot_flow_signal`, whose *live* value collapses cold to `0.0` for the logit but whose *recorded* value is `None`. So a recorded `0.0` is genuinely flat flow, not a dead feed; the pipeline replay coerces `None -> 0.0` on read to match live. `coinbase_taker_n` is a **count**: `0` (not `None`) when cold (consumer requires `n >= 20`).
 - **SPRT:** `sprt_confidence`, `sprt_status`. **Sizing audit:** `adverse_rate_at_30s`, `adverse_kelly_mult` (recorded for audit; not pipeline-consumed), `entry_phase`, `flip_count`, `is_flip`.
 
-**Ghost rejections share the same schema** (incl. `entry_phase`/`flip_count`/`is_flip` at gate-fire time), so by-phase and flip-segmented bias cards see the full ghost population.
+**Ghost rejections share the entry-fact schema** (incl. `entry_phase`/`flip_count`/`is_flip`, and post-cal `model_probability` + `edge` where a signal exists at gate-fire), so by-phase and flip-segmented bias cards see the full ghost population. The sizing snapshot (`size`, SPRT, adverse fields) appears only on pre-submit ghosts — earlier gates fire before sizing runs.
 
 ### `edge_decay.deltas` (merged at close, persisted to outcome JSON)
 
@@ -336,14 +336,14 @@ Two files. Live counts persist to `state/gate_stats_current.json` on every resol
 
 ## 11. Nightly learning pipeline
 
-Runs 23:45 ET (via `run_polybot.ps1`). Five stages; calibrator save deferred to the end so on-disk state stays coherent across crashes.
+Runs 23:45 ET (via `run_polybot.ps1`). Five stages; calibrator save deferred to the end so on-disk state stays coherent across crashes. All window boundaries (60d cutoff, holdout split, gate-calibrator window, evolver-context filter, calibration windows) share one per-cycle timestamp. `memory/state/PIPELINE_FROZEN` (file flag) makes the cycle **analysis-only**: data/bias/ghost cards still build, but no calibration change, no weight adoption, no auto-revert — and `loader.save_config` independently refuses writes while frozen.
 
 ### Dataset boundaries
 
 - Active dataset bounded to the **last 60 days** before splits (older trades came from probability machines that no longer exist); falls back to full history only if the window has <500 trades.
-- Walk-forward folds inside that window: train 60% / test split across `[60:70][70:80][80:90][90:100]` (each test fold genuinely OOS).
-- **7-day holdout** — last 7 days excluded from all folds AND the evolver's context, so the holdout-confirmation gate (and gate calibrator) score candidates on trades they never saw. **Young-dataset fallback:** if the dataset is younger than 7 days the holdout cut would swallow every trade, emptying the pre-holdout (`opt`) pool. The split disables the holdout (`holdout_active=False`, full pool -> analysis + evolver) **before** the analysis dict is built — the recommender keys off `analysis["overall"]["total_trades"]`, so building it on an empty `opt` pool would silently zero all learning. OOS confirmation is forfeited that cycle; the walk-forward folds still gate adoption.
-- **Realized fills only** — `gain_pct = pnl / size` from closed-trade outcomes, `pnl` already netting actual fee + fill price. No mid-price replay; candidates inherit the slippage any live trade paid, and the backtest's Kelly sizing mirrors live `_kelly` exactly (fee-aware `net_b = b*(1-fee)`).
+- Walk-forward folds inside that window: candidates scored on test folds `[60:70][70:80][80:90][90:100]`, each genuinely OOS (the first 60% is chronology context only — nothing refits per fold).
+- **7-day holdout** — last 7 days excluded from all folds AND the evolver's per-trade context (outcomes, ghosts, counterfactuals), so the holdout-confirmation gate (and gate calibrator) score candidates on trades they never saw. (Track-record *aggregates* — an adoption's realized 7d-review Sharpe — span the holdout by design; per-trade data never leaks.) **Young-dataset fallback:** if the dataset is younger than 7 days the holdout cut would swallow every trade, emptying the pre-holdout (`opt`) pool. The split disables the holdout (`holdout_active=False`, full pool -> analysis + evolver) **before** the analysis dict is built — the recommender keys off `analysis["overall"]["total_trades"]`, so building it on an empty `opt` pool would silently zero all learning. OOS confirmation is forfeited that cycle; the walk-forward folds still gate adoption.
+- **Realized fills only** — `gain_pct = pnl / size` from closed-trade outcomes, `pnl` already netting actual fee + fill price. No mid-price replay; candidates inherit the slippage any live trade paid, and the backtest's Kelly sizing mirrors live `_kelly` exactly (fee-aware `net_b = b*(1-fee)`). Ghosts join the pool priced fee-aware (`ghost_gain_pct` — §3). Rows missing L1 inputs or with a dead ATR are skipped in both arms (live structurally never trades them; the stored side-probability can't be replayed for a candidate).
 - **Recency weighting** — `0.94^days_ago` (~11-day half-life) inside the window cutoff.
 - **Backtest L1 ATR-floor fidelity (approximate).** Live advances the ATR buffers per decision tick; the backtest advances a local buffer once per stored trade (entry-only). `min_atr`/`atr_regime_shift_threshold` stay backtest-evaluable, and the approximation largely cancels in the baseline-vs-candidate delta. L6 features and the L3b `regime_vol_factor` read the faithfully-stamped `atr_rolling_20`/`atr_long_term_mean`.
 
@@ -355,16 +355,16 @@ Both calibrators fit on **real trades only** (ghosts excluded) — the calibrato
 - **Live / production** — `fit` on the **freshest `_CAL_WINDOW_DAYS` (~7d)**, applied to `signal_engine.calibrator` and saved; goes through the full three-gate adoption (stage 3).
 - **Gate reference** — a separate fit on the window **immediately before the holdout** (days `[HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS]` back, `self._gate_calibrator`). **All** weight-optimizer backtests score through this, never the live one (`calibrator` is a required arg of the replay helper, so none can silently fall back), keeping the gate OOS. `None` (identity) when the window is thin.
 
-Each pool must hold **>=125 trades**, split 60/40 `cal_train`/`cal_val`; `fit` uses **`min_samples=75`** (overriding the class default 150), so `cal_train` >=75, and the Kelly-Sharpe gate (iii) needs **>=50** `cal_val`. Both arms of every weight comparison share the fixed gate calibrator, so its mapping cancels in the adoption delta to first order.
+The **live** pool must hold **>=125 trades**, split 60/40 `cal_train`/`cal_val`; `fit` uses **`min_samples=75`** (overriding the class default 150), so `cal_train` >=75, and the Kelly-Sharpe gate (iii) needs **>=50 replayed `cal_val` returns**. The **gate** calibrator fits its whole window unsplit (min 75 usable samples) — it's a fixed reference mapping, not an adopted artifact. Both arms of every weight comparison share it, so its mapping cancels in the adoption delta to first order.
 
 ### Stages (in order)
 
-1. **PipelineTracker** — review prior adoptions (7d/14d/30d realized Sharpe); auto-revert underperformers. Revert criterion is **symmetric with adoption** (`actual_sharpe < baseline - ADOPTION_Z_FLOOR * JK_SE`, same `_jk_se`/floor on post-adoption Sharpe + n) — no adopt->dip->revert oscillation.
+1. **PipelineTracker** — review prior adoptions (7d/14d/30d realized Sharpe); auto-revert underperformers. Each review window finalizes only once its full duration has elapsed; the rollback test runs at every finalization (7d -> 14d -> 30d) and flags only with >=100 post-adoption trades. Revert criterion is **symmetric with adoption** (`actual_sharpe < baseline - ADOPTION_Z_FLOOR * JK_SE`, same `_jk_se`/floor on post-adoption Sharpe + n) — no adopt->dip->revert oscillation. Adoption records store real old/new values (incl. the L4 `weights` dict), so every param reverts; a record touching `kelly_fraction` is deferred while crisis halving is active.
 2. **BiasDetector** — per-indicator/side/edge-bucket/regime/time-of-window/phase/flip stats + edge-realization quartiles + execution quality. Runs on `opt_real` (holdout-excluded, **ghosts filtered out**) — no last-7-day leakage, no ghost pollution. Ghosts get their own `ghost_analysis` (`analyze_ghosts`/`by_gate` + by-phase/flip) and feed the optimizer backtest pool (§3), but are excluded from **every** real-performance/display metric (they carry `gain_pct` but no `pnl`, so they'd show a negative Sharpe beside positive P&L).
-3. **Calibrator (isotonic)** — fit attempted every cycle, **adopted into production only when it clears all three gates**: (i) per-fit **bootstrap-CI** lower bound > 0 (§2); (ii) beats the *current* calibrator's recency-weighted log-loss on the full cal pool by >= `LOG_LOSS_FLOOR` (0.005 nats); (iii) doesn't reduce Kelly-Sharpe vs current on `cal_val`. If the current calibrator drifted worse than identity it reverts to identity. Applies live in-memory immediately; weight backtests use the gate-reference calibrator. On-disk save deferred to stage 6.
+3. **Calibrator (isotonic)** — fit attempted every cycle, **adopted into production only when it clears all three gates**: (i) per-fit **bootstrap-CI** lower bound > 0 (§2); (ii) beats the *current* calibrator's recency-weighted log-loss on the full cal pool by >= `LOG_LOSS_FLOOR` (0.005 nats); (iii) doesn't reduce Kelly-Sharpe vs current on `cal_val` (>=50 replayed returns, else the night is a no-op). If the current calibrator drifted worse than identity, the new fit is tried against identity directly; identity is restored only when the new fit also fails. Applies live in-memory immediately; weight backtests use the gate-reference calibrator. On-disk save deferred to stage 6. Every exit path stamps an explicit decision + reason (the summary never shows a bare "identity" while a fitted isotonic is serving).
 4. **TAEvolver** — `ClaudeRecommender` (Anthropic with full analysis + directional table + structural-probe targets) or `LocalRecommender` (rule-based fallback) returns `{changes, manual_observations}`. The `claude_client` validator reroutes manual-only `changes` -> `manual_observations`, clamps out-of-range values, drops unknown params, drops non-finite L4 weights, and drops combined L6 weight changes breaching the +/-0.25 cap.
 5. **WeightOptimizer** — per-param walk-forward backtest; gate decisions live here.
-6. **Deferred calibrator save** — only after `WeightOptimizer.save_config` commits. A crash before this line leaves new weights + the previous-session calibrator: mismatched but each a valid artifact (the reverse — new calibrator + stale weights — is the worse half).
+6. **Deferred calibrator save** — after the optimizer stage (when it ran, `save_config` has committed first); also runs when a young dataset skipped the optimizer, so an adoption/revert at 125-199 trades still persists. A crash before this line leaves new weights + the previous-session calibrator: mismatched but each a valid artifact (the reverse — new calibrator + stale weights — is the worse half).
 
 ### Adoption gate (WeightOptimizer)
 
@@ -373,17 +373,17 @@ Per candidate change on the 4-fold walk-forward:
 ```
 n_candidate_trades >= MIN_CANDIDATE_TRADES (100)
 z = delta_sharpe / JK_SE >= ADOPTION_Z_FLOOR (0.3)   # lag-1 autocorr-adjusted
-JK_SE = sqrt((1 + 0.5 * sharpe^2) / n) * sqrt(max(1, 1 + 2*rho1))
+JK_SE = sqrt((1 + 0.5 * sharpe^2) / n) * sqrt(max(1, 1 + 2*rho1))   # sharpe = baseline; n, rho1 from candidate returns
 ```
 
 - **Soft abs floor** — `candidate_sharpe < min(0, baseline) - 0.05` blocked (allows less-negative recovery in a regime shift, not an outright collapse). Non-finite Sharpe rejected outright.
-- **Fold-consistency floor** — `min(fold_sharpes) >= -0.10`.
+- **Fold-consistency floor** — `min(fold_sharpes) >= -0.10` (per-fold Sharpe needs >=3 replayed trades; the floor applies once >=2 such folds exist). Pooled candidate returns include every fold's trades — the same inclusion rule as the baseline.
 - **Regime-stratified veto** — per regime bucket once it has **>=8 trades** in the validation fold; shared "no regime degrades >0.10 Sharpe" floor + either **(a)** improves in >=2 of 3 buckets or **(b)** dominant regime improves AND no other degrades >0.10. "Improves" requires a 0.02 Sharpe margin (float-noise can't pass).
 - **Holdout confirmation** — baseline vs candidate on the held-out 7-day pool (>=30 trades); `margin = max(0.02, ADOPTION_Z_FLOOR * holdout_jk_se)`, candidate must clear `baseline_h + margin`. `pipeline_info["holdout_active"]` stamped each cycle.
 
 ### Combined-holdout interaction check
 
-When `>=2` changes adopt: one combined backtest on the holdout pool (`>= HOLDOUT_MIN_TRADES`). Each already cleared its per-change gates, but two that pass alone can still interfere (shared logit budget, joint clamps).
+When `>=2` changes adopt: one combined backtest on the holdout pool (`>= HOLDOUT_MIN_TRADES`), carrying the `exit_edge_threshold` counterfactual override when that change is in the batch. Each already cleared its per-change gates, but two that pass alone can still interfere (shared logit budget, joint clamps).
 
 ```
 margin = max(0.02, ADOPTION_Z_FLOOR * holdout_jk_se)
@@ -399,15 +399,15 @@ Triggers on **either**:
 - **(a)** baseline Sharpe < 0.10 AND (recent-50 WR < 48% OR recent-50 `avg_loss/avg_win > 2.0`), or
 - **(b)** trailing-3-day Sharpe < 0 over >=20 recent trades — catches sustained multi-day collapses the recent-50 smoothing masks.
 
-- **>=3 consecutive crisis cycles** -> halve `kelly_fraction`, floor **0.04** (intentionally below the 0.05-0.18 tunable range so crisis sizes more defensively than any optimizer-adoptable state; do not "fix" the discrepancy).
-- **Restore on first non-crisis cycle** — original Kelly persisted in `state/crisis_state.json` **before** the cut, so a mid-pipeline crash can't compound the halving.
-- **Optimizer defers `kelly_fraction` while halving is active** — `_run_weight_optimizer` reads `crisis_state.json` at entry; if `kelly_reduced=True`, any `kelly_fraction` candidate is `decision="deferred_crisis"` and skipped, re-entering on the first non-crisis cycle.
+- **>=3 consecutive crisis cycles** -> halve `kelly_fraction`, floor **`CRISIS_KELLY_FLOOR` (0.04)** — intentionally below the 0.05-0.18 tunable range so crisis sizes more defensively than any optimizer-adoptable state. The loader validates `kelly_fraction` against the same constant, so the persisted floor survives the next boot.
+- **Restore on first non-crisis cycle** — original Kelly persisted in `state/crisis_state.json` **before** the cut, so a mid-pipeline crash can't compound the halving; the crisis state resets only after the restore's `save_config` succeeds (a failed save retries next cycle).
+- **`kelly_fraction` is locked while halving is active** — the optimizer defers any `kelly_fraction` candidate (`decision="deferred_crisis"`) and the auto-revert path defers any record touching it; both re-enter on the first non-crisis cycle.
 
 ### Adaptive exploration + structural probes (`recommender_base`)
 
 - **`EXPLORE_STEPS`** maps each tunable to a base step (e.g. `atr_sigma_ratio = 0.15`, `final_logit_clamp = 0.50`).
-- **`_rule_exploratory`** ramps the step up when the directional table shows past probes returned `|bt_delta|` under the noise floor (`max(0.003, 0.3 * baseline_jk_se)`): +50% per dead direction (cap 3.0x); adoptions reset.
-- **`STRUCTURAL_PROBES`** fires once per `(param, value)` until evidence appears: `exit_edge_threshold in {-0.08, -0.05, -0.03}`; L6 turn-on at `0.005` for all three weights so every closed-library feature gets >=1 evaluation. Both recommenders call `_rule_structural_probes()` before `_rule_exploratory`.
+- **`_rule_exploratory`** ramps the step up when the directional table shows past probes returned `|bt_delta|` under the noise floor (`max(0.003, 0.3 * baseline_jk_se)`): +50% per dead direction, up to 2.0x with both directions dead; adoptions reset.
+- **`STRUCTURAL_PROBES`** fires once per `(param, value)` until evidence appears — any final verdict (adopted, rejected, backed-out) counts as evidence; a crisis-deferred test doesn't: `exit_edge_threshold in {-0.08, -0.05, -0.03}`; L6 turn-on at `0.005` for all three weights so every closed-library feature gets >=1 evaluation. Both recommenders call `_rule_structural_probes()` before `_rule_exploratory`.
 
 L6 directional bookkeeping: the optimizer reads `old_value` from `signal_engine.derived_weights[fname]` for `derived_*_weight` params (not `getattr`, which returns `None` since L6 weights live in a dict).
 
@@ -440,6 +440,7 @@ The rule: a param is pipeline-tunable only if the realized-fill backtest can fai
 - **Risk caps:** `max_concurrent_positions`, `max_bankroll_deployed`. **Circuit breaker:** `circuit_breaker.floor_pct`, `circuit_breaker.min_multiplier`.
 - **Indicator periods:** `indicators.{rsi,macd,stochastic,ema,obv,atr}.*` — backtest replays stored scores at the active period; alternate periods need raw candles per snapshot.
 - **SPRT:** `sprt.{alpha,beta,observation_interval_s,min_confidence}` — intra-window timing; backtest replays a single stored fill instant.
+- **Signal plumbing:** `regime_lookback` (L2 autocorr window), `consensus_dead_zone` (sizing consensus filter).
 - **Schedule:** `trading_{start,end}_{hour_et,minute}`.
 
 `is_manual_only(name)` is the single source of truth. If a param appears in both lists (operator error), tunable wins.
@@ -481,8 +482,8 @@ polybot/
                                + gate_stats_current.json, adverse_state, crisis_state,
                                feed_staleness, fill_stats, latency_stats, orphan_positions,
                                prev_resolution_margin, cf_watchlist, pipeline_history,
-                               pipeline_run_log, strategy_log.md.
-                               Layout centralized in paths.py (MEMORY_DIR override: POLYBOT_MEMORY_DIR).
+                               pipeline_run_log, strategy_log.md, PIPELINE_FROZEN (flag, §11).
+                               Layout centralized in polybot/paths.py (MEMORY_DIR override: POLYBOT_MEMORY_DIR).
   discord_bot/                 monitoring + control commands (§18)
   db/models.py                 SQLite (positions, trade_history, bankroll, peak_bankroll).
                                Per-mode: polybot_paper.db / polybot_live.db. memory/ shared.
@@ -503,7 +504,7 @@ polybot/
 
 Trading/pipeline/test commands in Quick Start. Live pre-flight: `python verify_keys.py` (verify Polymarket creds + USDC balance/allowance).
 
-`run_polybot.ps1` is the daily loop: starts 12:01 AM ET, stops trading 11:30 PM ET, runs the pipeline 11:45 PM ET, commits + pushes as it exits (~11:55 PM ET), then sleeps until the next 12:01 AM ET restart. The outer `while ($true)` survives auth errors but won't retry the same day — fix auth before midnight.
+`run_polybot.ps1` is the daily loop: starts 12:01 AM ET, stops trading 11:30 PM ET, runs the pipeline 11:45 PM ET, commits + pushes as it exits (~11:55 PM ET), then sleeps until the next 12:01 AM ET restart — unless the exit slipped past midnight, in which case it restarts immediately instead of losing the day. The commit gate is the process exit code (guards crashes/auth failures; pipeline-internal errors are caught by the scheduler and still exit 0). The outer `while ($true)` survives auth errors but won't retry the same day — fix auth before midnight.
 
 ## 17. Invariants (what doesn't drift)
 
@@ -519,6 +520,8 @@ Trading/pipeline/test commands in Quick Start. Live pre-flight: `python verify_k
 `!status` `!history [n]` `!pause` `!resume` `!clear [trades|control|all] confirm` `!session` `!pipeline` `!commands`
 
 `!pause` halts new entries only — open positions stay managed (hold/exit/resolution). `!clear` purges Discord chat messages only (never the DB/records) and requires the `confirm` token.
+
+`DISCORD_ADMIN_IDS` (comma-separated user IDs, optional in `.env`) restricts all commands to the listed users; unset = open to anyone in the channel, with a startup warning.
 
 ## 19. Persistence
 

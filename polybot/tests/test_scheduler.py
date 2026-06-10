@@ -391,6 +391,232 @@ async def test_ghosts_excluded_from_bias_but_kept_for_optimizer():
     assert seen.get("opt_n") == 260, "optimizer must get the full real+ghost pool"
 
 
+# ---------------------------------------------------------------------------
+# Live-vs-replay parity: the replay must reproduce compute_probability from a
+# production-shaped trade_context (§17 shared-math invariant), numerically.
+# ---------------------------------------------------------------------------
+
+_PARITY_PARAMS = dict(
+    regime_weight=0.08, flow_weight=0.06, spot_flow_weight=0.07,
+    prev_margin_weight=0.03, momentum_weight=0.06, atr_sigma_ratio=1.5,
+    student_t_df=4, logit_scale=3.5, min_atr=10.0,
+    regime_momentum_threshold=0.12, final_logit_clamp=3.5,
+    l5_regime_damp_cap=0.6, atr_regime_shift_threshold=0.5,
+)
+_PARITY_L4 = {"rsi": 0.25, "macd": 0.25, "stochastic": 0.20, "obv": 0.15, "vwap": 0.15}
+_PARITY_L6 = {"log_atr_ratio": 0.0, "autocorr_signed_mag": 0.01, "flow_disagreement": 0.01}
+_PARITY_IND = {"rsi": {"score": 0.4}, "macd": {"score": -0.3}, "stochastic": {"score": 0.2},
+               "obv": {"score": 0.1}, "vwap": {"score": -0.2}}
+
+
+def _parity_live_and_ctx(btc_price: float, strike: float):
+    """Run a fresh live engine once and stamp a trade_context exactly the way
+    main.py does (incl. its 4dp/6dp rounding). Returns (p_up_live, raw_up, ctx);
+    model_probability_raw is stamped per side by _parity_replayed_prob."""
+    import math
+    import numpy as np
+    from polybot.core.signal_engine import SignalEngine
+
+    closes = np.array([66000 + 30 * math.sin(i * 0.7) + i * 3 for i in range(40)], dtype=float)
+    atr, secs, fs, sf, pm = 30.0, 180.0, 0.3, 0.2, 12.0
+    eng = SignalEngine(weights=dict(_PARITY_L4), derived_weights=dict(_PARITY_L6),
+                       **_PARITY_PARAMS)
+    p_up = eng.compute_probability(btc_price, strike, secs, atr, _PARITY_IND,
+                                   closes=closes, flow_signal=fs, spot_flow_signal=sf,
+                                   prev_resolution_margin=pm)
+    ctx = {
+        "btc_price": btc_price, "strike_price": strike, "seconds_remaining": secs,
+        "market_price_up": 0.30, "market_price_down": 0.30,
+        "closes_tail": [float(closes[-2]), float(closes[-1])],
+        "atr": atr,
+        "atr_rolling_20": round(eng.last_atr_rolling_20, 6),
+        "atr_long_term_mean": round(eng.last_atr_long_term_mean, 6),
+        "prev_resolution_margin": pm,
+        "flow_score": fs, "spot_flow_signal": sf,
+        "regime_autocorr": round(eng.last_regime_autocorr, 4),
+        "regime_direction": round(eng.last_regime_direction, 4),
+    }
+    return p_up, eng.last_raw_prob_up, ctx
+
+
+def _parity_replayed_prob(ctx: dict, side: str, raw_up: float) -> float:
+    """Replay one stamped outcome and invert the Kelly sizing back to the
+    probability the replay used (gain_pct=1, kelly_fraction=1 → return = raw
+    Kelly; p = (r·net_b + 1) / (net_b + 1))."""
+    from polybot.execution.base import DEFAULT_FEE_RATE
+    sched = _bare_scheduler()
+    side_ctx = dict(ctx)
+    # main.py stamps the CHOSEN SIDE's raw probability.
+    side_ctx["model_probability_raw"] = raw_up if side == "Up" else 1.0 - raw_up
+    o = {"side": side, "gain_pct": 1.0,
+         "exit_timestamp": datetime.now(timezone.utc).isoformat(),
+         "indicator_snapshot": {**_PARITY_IND, "trade_context": side_ctx}}
+    returns, _ = sched._kelly_bankroll_returns(
+        outcomes=[o], recommended_weights=dict(_PARITY_L4),
+        min_edge=-1.0, calibrator=None, kelly_fraction=1.0, min_kelly=0.0, min_prob=0.0,
+        derived_weights=dict(_PARITY_L6), **_PARITY_PARAMS)
+    assert len(returns) == 1, "parity row was filtered out of the replay"
+    mp = 0.30
+    net_b = ((1.0 - mp) / mp) * (1.0 - DEFAULT_FEE_RATE)
+    return (returns[0] * net_b + 1.0) / (net_b + 1.0)
+
+
+def test_replay_matches_live_probability_up_side():
+    """Full-stack numeric parity, Up side: L1 t-CDF + L2-L5 + active L6 + clamp +
+    sigmoid must round-trip through the stamped context within stamping precision
+    (regime is stamped at 4dp — anything beyond ~1e-3 is a real divergence)."""
+    p_live, raw_up, ctx = _parity_live_and_ctx(btc_price=66480.0, strike=66400.0)
+    p_replay = _parity_replayed_prob(ctx, "Up", raw_up)
+    assert abs(p_replay - p_live) < 1e-3, f"live {p_live:.6f} vs replay {p_replay:.6f}"
+    assert abs(p_live - 0.5) > 0.05, "test inputs must produce a non-trivial probability"
+
+
+def test_replay_matches_live_probability_down_side():
+    """Down side: the replay must produce P(down) = 1 - P(up), not misread the
+    stored side-probability as P(up)."""
+    p_live_up, raw_up, ctx = _parity_live_and_ctx(btc_price=66320.0, strike=66400.0)
+    p_replay_down = _parity_replayed_prob(ctx, "Down", raw_up)
+    assert abs(p_replay_down - (1.0 - p_live_up)) < 1e-3, (
+        f"live P(down) {1.0 - p_live_up:.6f} vs replay {p_replay_down:.6f}")
+
+
+def test_replay_skips_rows_without_l1_inputs_or_atr():
+    """Rows missing btc/strike/seconds or with a dead ATR can't be replayed for a
+    candidate (and live structurally never trades an ATR-dead tick) — they must be
+    skipped in both arms, never approximated from the stored side-probability."""
+    _, _, ctx = _parity_live_and_ctx(btc_price=66480.0, strike=66400.0)
+    sched = _bare_scheduler()
+    for missing in ("btc_price", "strike_price", "seconds_remaining", "atr"):
+        broken = dict(ctx)
+        broken[missing] = 0
+        broken["model_probability_raw"] = 0.62
+        o = {"side": "Up", "gain_pct": 1.0,
+             "exit_timestamp": datetime.now(timezone.utc).isoformat(),
+             "indicator_snapshot": {**_PARITY_IND, "trade_context": broken}}
+        returns, _ = sched._kelly_bankroll_returns(
+            outcomes=[o], recommended_weights=dict(_PARITY_L4),
+            min_edge=-1.0, calibrator=None, kelly_fraction=1.0, min_kelly=0.0, min_prob=0.0,
+            derived_weights=dict(_PARITY_L6), **_PARITY_PARAMS)
+        assert returns == [], f"row with {missing}=0 must be skipped, not replayed"
+
+
+@pytest.mark.asyncio
+async def test_combined_holdout_check_includes_exit_threshold_override():
+    """When the adopted batch contains exit_edge_threshold, the combined-holdout
+    backtest must carry the counterfactual override — otherwise the 'joint set'
+    silently excludes that change's entire effect."""
+    sched = _bare_scheduler()
+    sched.weight_optimizer.should_adopt.return_value = (True, "ok", 1.0)
+    sched.pipeline_tracker = None
+    sched._check_regime_adoption = lambda *a, **k: (True, "regime ok")
+    sched._load_counterfactual_index = lambda: {1: {"counterfactual": {"gain_pct": 0.5},
+                                                    "context_at_scalp": {}}}
+    base_returns = ([0.010, -0.009] * 30, [1.0] * 60)   # sharpe ≈ 0.05
+    cand_returns = ([0.050, 0.040] * 30, [1.0] * 60)    # sharpe ≈ 9
+    sched._backtest_recommendations = lambda recs, outcomes: base_returns
+    sched._backtest_single_change = lambda change, outcomes: {
+        "returns": cand_returns[0], "weights": cand_returns[1],
+        "sharpe": 9.0, "candidate_trades": 60}
+    combined_calls = []
+    def _spy(**kwargs):
+        combined_calls.append(kwargs)
+        return cand_returns
+    sched._kelly_bankroll_returns = _spy
+    recs = {"changes": [{"param": "exit_edge_threshold", "value": -0.05},
+                        {"param": "min_edge", "value": 0.05}]}
+    outcomes = _make_outcomes(200)
+    info = await sched._run_weight_optimizer(recs, outcomes,
+                                             holdout_outcomes=_make_outcomes(60))
+    assert info["decision"] == "adopted", info
+    assert len(combined_calls) == 1, "combined-holdout backtest must run once"
+    assert combined_calls[0]["exit_threshold_override"] == -0.05
+    assert combined_calls[0]["counterfactual_index"] is not None
+
+
+@pytest.mark.asyncio
+async def test_evolver_ghost_context_excludes_holdout_epoch_resolved_at():
+    """Ghost `resolved_at` is an epoch float — the evolver-context holdout filter
+    must parse it and drop holdout-period ghosts, not fail open and leak them."""
+    seen: dict = {}
+    now = datetime.now(timezone.utc)
+
+    async def mock_bias(outcomes=None):
+        return {"per_indicator": {}, "overall": {"total_trades": len(outcomes or [])}}
+    async def mock_ta_evolver(analysis, outcomes=None):
+        return {}
+    async def mock_weight_optimizer(recs, outcomes=None, **kwargs):
+        return {"decision": "skipped"}
+
+    def _mk(days_ago):
+        ts = (now - timedelta(days=days_ago)).isoformat()
+        return {"timestamp": ts, "exit_timestamp": ts, "correct": True,
+                "gain_pct": 0.1, "indicator_snapshot": {}}
+    # 230 pre-holdout + 40 in-holdout → holdout active.
+    outcome_reviewer = MagicMock()
+    outcome_reviewer.load_all_outcomes.return_value = (
+        [_mk(8 + i * 0.2) for i in range(230)] + [_mk(0.1 + i * 0.05) for i in range(40)])
+
+    ghost_tracker = MagicMock()
+    old_ghost = {"resolved": True, "resolved_at": (now - timedelta(days=10)).timestamp(),
+                 "gate_name": "old"}
+    fresh_ghost = {"resolved": True, "resolved_at": now.timestamp(), "gate_name": "fresh"}
+    ghost_tracker.load_all.return_value = [old_ghost, fresh_ghost]
+
+    bias_detector = MagicMock()
+    bias_detector.analyze_ghosts.side_effect = lambda ghosts: seen.update(
+        gates=[g.get("gate_name") for g in ghosts]) or {}
+
+    scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=bias_detector,
+        ta_evolver=MagicMock(), weight_optimizer=MagicMock(),
+        outcome_interval_seconds=3600, daily_pipeline_hour=2)
+    scheduler.ghost_tracker = ghost_tracker
+    scheduler._run_bias_detector = mock_bias
+    scheduler._run_ta_evolver = mock_ta_evolver
+    scheduler._run_weight_optimizer = mock_weight_optimizer
+    await scheduler.run_daily_pipeline()
+
+    assert seen.get("gates") == ["old"], (
+        f"holdout-period ghost leaked into the evolver context: {seen.get('gates')}")
+
+
+@pytest.mark.asyncio
+async def test_frozen_pipeline_is_analysis_only(monkeypatch):
+    """PIPELINE_FROZEN → analysis still runs, but no evolver/optimizer, no
+    auto-revert, and the live calibrator object is left untouched."""
+    import polybot.paths as paths_mod
+    monkeypatch.setattr(paths_mod, "is_pipeline_frozen", lambda: True)
+    from polybot.core.calibrator import IsotonicCalibrator
+
+    calls = []
+    async def mock_bias(outcomes=None):
+        calls.append("bias")
+        return {"per_indicator": {}, "overall": {}}
+    async def mock_ta_evolver(analysis, outcomes=None):
+        calls.append("ta_evolver")
+        return {}
+    async def mock_weight_optimizer(recs, outcomes=None, **kwargs):
+        calls.append("weight_optimizer")
+        return {"decision": "skipped"}
+
+    outcome_reviewer = MagicMock()
+    outcome_reviewer.load_all_outcomes.return_value = _make_outcomes(250)
+    scheduler = AgentScheduler(outcome_reviewer=outcome_reviewer, bias_detector=MagicMock(),
+        ta_evolver=MagicMock(), weight_optimizer=MagicMock(),
+        outcome_interval_seconds=3600, daily_pipeline_hour=2)
+    scheduler.signal_engine = MagicMock()
+    sentinel_cal = IsotonicCalibrator()
+    scheduler.signal_engine.calibrator = sentinel_cal
+    scheduler.pipeline_tracker = MagicMock()
+    scheduler._apply_revert_adoptions = lambda: calls.append("revert")
+    scheduler._run_bias_detector = mock_bias
+    scheduler._run_ta_evolver = mock_ta_evolver
+    scheduler._run_weight_optimizer = mock_weight_optimizer
+    await scheduler.run_daily_pipeline()
+
+    assert calls == ["bias"], f"frozen cycle ran adoption stages: {calls}"
+    assert scheduler.signal_engine.calibrator is sentinel_cal, "frozen cycle swapped the calibrator"
+
+
 @pytest.mark.asyncio
 async def test_pipeline_runs_learning_at_exactly_200_trades():
     """At exactly 200 trades the learning pipeline should run."""

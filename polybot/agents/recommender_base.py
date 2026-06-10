@@ -7,6 +7,7 @@ exploratory probe.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -39,8 +40,8 @@ EXPLORE_STEPS: dict[str, float] = {
 }
 
 # Forced one-time exploration of audit-identified values. Each (param, value)
-# fires exactly once — when the directional table has no prior record AND the
-# live value isn't already there. Drives the L6 turn-on probes and the
+# fires until it has a final verdict (adopted/rejected/backed_out) in the run
+# log or the value is already live. Drives the L6 turn-on probes and the
 # `exit_edge_threshold` sweep grounded in counterfactual data.
 STRUCTURAL_PROBES: list[tuple[str, float, str]] = [
     ("exit_edge_threshold", -0.08, "structural probe — counterfactual hold-better at edge ≈ -0.08"),
@@ -93,7 +94,8 @@ class BaseRecommender:
         self.manual_obs: list[dict[str, Any]] = []
         self.warnings: list[str] = []
         self._dir_table = self._parse_dir_table(self.analysis.get("directional_table", ""))
-        self._failed_values = self._parse_failures(self.analysis.get("cumulative_failures", {}))
+        self._tested_values, self._failed_values = self._parse_tested_values(
+            self.analysis.get("cumulative_failures", {}))
 
     def recommend(self) -> dict[str, Any]:
         raise NotImplementedError
@@ -188,17 +190,27 @@ class BaseRecommender:
             }
         return out
 
-    def _parse_failures(self, failures: dict[str, list[str]]) -> dict[str, set[float]]:
-        out: dict[str, set[float]] = defaultdict(set)
-        for param, attempts in (failures or {}).items():
+    def _parse_tested_values(self, tested: dict[str, list[str]]
+                             ) -> tuple[dict[str, set[float]], dict[str, set[float]]]:
+        """Split decision-tagged entries ("0.05 (Δ=+0.0010, adopted)") into all
+        final-verdict values (structural-probe evidence) and the failed subset
+        (rejected/backed_out; entries without a decision tag count as failed)."""
+        all_vals: dict[str, set[float]] = defaultdict(set)
+        failed: dict[str, set[float]] = defaultdict(set)
+        for param, attempts in (tested or {}).items():
             for a in attempts:
-                m = re.match(r"^([\-\+]?[\d.]+)", str(a))
-                if m:
-                    try:
-                        out[param].add(float(m.group(1)))
-                    except ValueError:
-                        pass
-        return out
+                s = str(a)
+                m = re.match(r"^([\-\+]?[\d.]+)", s)
+                if not m:
+                    continue
+                try:
+                    v = float(m.group(1))
+                except ValueError:
+                    continue
+                all_vals[param].add(v)
+                if "adopted" not in s:
+                    failed[param].add(v)
+        return all_vals, failed
 
     def _direction_ok(self, param: str, direction: str) -> bool:
         """Block (param, direction) pairs with empirical evidence of failure."""
@@ -214,10 +226,15 @@ class BaseRecommender:
     def _value_failed(self, param: str, value: float, atol: float = 1e-3) -> bool:
         return any(abs(f - value) < atol for f in self._failed_values.get(param, set()))
 
+    def _value_tested(self, param: str, value: float, atol: float = 1e-3) -> bool:
+        """True when the (param, value) has a final verdict — adopted, rejected,
+        or backed_out — so a structural probe needn't re-fire."""
+        return any(abs(f - value) < atol for f in self._tested_values.get(param, set()))
+
     def _rule_structural_probes(self) -> None:
-        """Forced one-cycle exploration of audit-identified values. Fires once
-        per (param, value) — when there's no live evidence yet AND the value
-        isn't already the running config. Skips after evidence appears."""
+        """Forced one-cycle exploration of audit-identified values. Fires per
+        (param, value) until a final verdict exists in the run log AND only when
+        the value isn't already the running config."""
         for param, value, reason in STRUCTURAL_PROBES:
             if param not in CLAMP_RANGES:
                 continue
@@ -227,7 +244,7 @@ class BaseRecommender:
                     continue
             except (TypeError, ValueError):
                 pass
-            if self._value_failed(param, value):
+            if self._value_tested(param, value):
                 continue
             self._propose(param, value, reason, predicted_delta=0.010, ci=(-0.005, 0.030))
 
@@ -278,7 +295,10 @@ class BaseRecommender:
             elif dn_bt is not None:
                 direction = "down" if dn_bt >= 0 else "up"
             else:
-                direction = "up" if (cycle + hash(param)) % 2 == 0 else "down"
+                # Stable per-param digest — hash() is salted per process, which
+                # would randomize the rotation across runs.
+                digest = int(hashlib.md5(param.encode()).hexdigest(), 16)
+                direction = "up" if (cycle + digest) % 2 == 0 else "down"
 
             if not self._direction_ok(param, direction):
                 direction = "down" if direction == "up" else "up"

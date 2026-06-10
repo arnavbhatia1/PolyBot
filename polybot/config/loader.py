@@ -67,9 +67,12 @@ def validate_config(config: dict[str, Any]) -> None:
         elif not strict and val < 0:
             errors.append(f"{dotted_key}: must be >= 0, got {val}")
 
-    from polybot.config.param_registry import PIPELINE_PARAMS
+    from polybot.config.param_registry import CRISIS_KELLY_FLOOR, PIPELINE_PARAMS
     for _spec in PIPELINE_PARAMS:
-        _check_range(_spec.yaml_key, _spec.lo, _spec.hi, integer=(_spec.cast is int))
+        # kelly_fraction's lower bound admits the crisis-halving floor, which can
+        # persist a value below the optimizer-tunable range.
+        _lo = CRISIS_KELLY_FLOOR if _spec.name == "kelly_fraction" else _spec.lo
+        _check_range(_spec.yaml_key, _lo, _spec.hi, integer=(_spec.cast is int))
 
     _check_range("signal.max_edge", 0.15, 0.30)
     weights_val, weights_found = _get_nested(config, "signal.weights")

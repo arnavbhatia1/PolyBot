@@ -197,6 +197,7 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
 
 from polybot.agents.pipeline_analytics import (
     RECENCY_DECAY_PER_DAY,
+    ghost_gain_pct,
     weighted_sharpe_from_returns as _weighted_sharpe,
     sharpe as _sharpe,
 )
@@ -297,9 +298,11 @@ class AgentScheduler:
         and lowering a gate includes the ghosts that would have fired — and we know how
         each ghost resolved.
 
-        Gain_pct is re-derived from the recorded market_price_<side> so it matches the
-        execution-price accounting used by real outcomes (ghost_gain_pct stored on-disk
-        is computed against signal_prob, which doesn't match real fills).
+        Gain_pct is re-derived fee-aware from the recorded market_price_<side>
+        (``ghost_gain_pct``) so it matches real outcomes' net-of-fee ``pnl/size``
+        accounting — a gross binary payoff would systematically flatter the marginal
+        trades a gate-loosening candidate adds. The on-disk ghost gain (computed
+        against signal_prob) is ignored for the same reason.
         """
         if not g.get("resolved"):
             return None
@@ -319,7 +322,7 @@ class AgentScheduler:
             )
             return None
         correct = bool(g.get("ghost_correct"))
-        gain_pct = ((1.0 - mp) / mp) if correct else -1.0
+        gain_pct = ghost_gain_pct(mp, correct)
         return {
             "side": side,
             "correct": correct,
@@ -360,11 +363,18 @@ class AgentScheduler:
         return combined
 
     @staticmethod
-    def _split_holdout(outcomes: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Split outcomes by exit_timestamp: (optimizer_pool, last-HOLDOUT_DAYS pool)."""
+    def _split_holdout(outcomes: list[dict[str, Any]],
+                       now_ts: float | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Split outcomes by exit_timestamp: (optimizer_pool, last-HOLDOUT_DAYS pool).
+
+        ``now_ts`` lets the pipeline pass one cycle-wide timestamp so this cutoff
+        and the gate-calibrator window share the exact same boundary (no seam where
+        a trade lands in both)."""
         if not outcomes:
             return [], []
-        cutoff = datetime.now(timezone.utc).timestamp() - HOLDOUT_DAYS * 86400.0
+        if now_ts is None:
+            now_ts = datetime.now(timezone.utc).timestamp()
+        cutoff = now_ts - HOLDOUT_DAYS * 86400.0
         def _ts(o: dict) -> float:
             s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
             try:
@@ -392,8 +402,10 @@ class AgentScheduler:
         ws: list[float] = []
         for o in pool:
             ctx = o.get("indicator_snapshot", {}).get("trade_context", {})
-            mp = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
-            side = o.get("side")
+            # `or` chain: an explicit null in either field falls through instead of
+            # crashing the numeric compare below.
+            mp = ctx.get("model_probability_raw") or ctx.get("model_probability") or 0.0
+            side = str(o.get("side") or "").capitalize()
             if mp <= 0 or side not in ("Up", "Down"):
                 continue
             p_up = mp if side == "Up" else 1.0 - mp
@@ -466,9 +478,16 @@ class AgentScheduler:
         """Live value of `param` for the directional log's old_value. L6 weights
         live in `signal_engine.derived_weights` and `exit_edge_threshold` is
         scheduler-owned — a plain getattr(signal_engine, param) returns None for
-        both, blanking the directional table's first row for those params."""
-        if not self.signal_engine or param == "weights":
+        both, blanking the directional table's first row for those params.
+        For `weights` returns the live L4 dict (pre-mutation), which the adoption
+        record needs so a flagged weights change can actually be reverted."""
+        if not self.signal_engine:
             return None
+        if param == "weights":
+            if not self.indicator_engine:
+                return None
+            return {k: v for k, v in self.indicator_engine.get_weights().items()
+                    if k in ("rsi", "macd", "stochastic", "obv", "vwap")}
         if param.startswith("derived_") and param.endswith("_weight"):
             return self.signal_engine.derived_weights.get(param[len("derived_"):-len("_weight")])
         if param == "exit_edge_threshold":
@@ -699,7 +718,7 @@ class AgentScheduler:
         # counterfactual hold-to-resolution outcome from `counterfactuals/`.
         exit_threshold_override: float | None = None,
         counterfactual_index: dict[int, dict[str, Any]] | None = None,
-    ) -> list[float]:
+    ) -> tuple[list[float], list[float]]:
         """Replay the full logit composition used in production for a candidate
         config and return the Kelly-sized per-trade returns. Sharpe of the result
         is the candidate's adoption metric.
@@ -760,7 +779,7 @@ class AgentScheduler:
                 continue
             ctx = snap.get("trade_context", {})
 
-            stored_raw = ctx.get("model_probability_raw", ctx.get("model_probability", 0))
+            stored_raw = ctx.get("model_probability_raw") or ctx.get("model_probability") or 0.0
             if stored_raw <= 0 or stored_raw >= 1:
                 continue
 
@@ -772,11 +791,19 @@ class AgentScheduler:
             if market_price_side <= 0 or market_price_side >= 1:
                 continue
 
-            # L1 — re-derive raw prob_up from CDF; fall back to stored when incomplete.
-            btc = ctx.get("btc_price", 0)
-            strike = ctx.get("strike_price", 0)
-            atr_raw = ctx.get("atr", 0)
-            secs = ctx.get("seconds_remaining", 0)
+            # L1 — re-derive raw prob_up from the CDF. Rows missing the L1 inputs are
+            # skipped (both arms identically): the layer stack can't be replayed for a
+            # candidate without them, and `stored_raw` already embeds live's full layer
+            # stack for the CHOSEN SIDE — re-deriving from it would invert Down-side
+            # rows and double-count L2-L6. ATR-dead rows are skipped for the same
+            # reason: live returns calibrated(0.5) without the layer stack and the
+            # (non-tunable) ATR gate blocks entry, so no candidate can trade them.
+            btc = ctx.get("btc_price") or 0
+            strike = ctx.get("strike_price") or 0
+            atr_raw = ctx.get("atr") or 0
+            secs = ctx.get("seconds_remaining") or 0
+            if btc <= 0 or strike <= 0 or secs <= 0 or atr_raw <= 0:
+                continue
 
             # Update rolling ATR state BEFORE the floor is read — mirrors
             # SignalEngine._record_atr → _effective_atr_floor ordering exactly.
@@ -826,18 +853,14 @@ class AgentScheduler:
                 else:
                     regime_factor = 0.0
 
-            raw_prob_up = stored_raw
             # df clamped to ≥3 exactly as live (signal_engine), via the shared
             # MIN_STUDENT_T_DF — removes the t_scale=√(df/(df-2)) discontinuity and
             # keeps replay identical to live for any df.
             df_eff = max(MIN_STUDENT_T_DF, student_t_df)
-            if btc > 0 and strike > 0 and secs > 0:
-                minutes = secs / 60.0
-                vol = (atr / atr_sigma_ratio) * math.sqrt(minutes) * autocorr_vol_scale(regime_factor)
-                if vol > 0:
-                    z = ((btc - strike) / vol) * math.sqrt(df_eff / (df_eff - 2))
-                    raw_prob_up = student_t_cdf(z, df_eff)
-            raw_prob_up = max(1e-6, min(1 - 1e-6, raw_prob_up))
+            minutes = max(secs / 60.0, 0.01)  # same floor as live
+            vol = (atr / atr_sigma_ratio) * math.sqrt(minutes) * autocorr_vol_scale(regime_factor)
+            z = ((btc - strike) / vol) * math.sqrt(df_eff / (df_eff - 2))
+            raw_prob_up = max(1e-6, min(1 - 1e-6, student_t_cdf(z, df_eff)))
             logit_p = math.log(raw_prob_up / (1.0 - raw_prob_up))
 
             # L2 — regime × direction (regime_factor computed above for L1 vol scaling).
@@ -1358,8 +1381,6 @@ class AgentScheduler:
                 info["n_baseline_trades"] = _cn
             return info
 
-        def _clamp(val, lo, hi): return max(lo, min(hi, val))
-
         # --- Baseline: reuse the cached values from `_precompute_baseline` if available
         # (computed once per cycle to feed Claude's prompt). Recomputing here would just
         # repeat the same 4-fold backtest with the same data and same calibrator.
@@ -1447,11 +1468,14 @@ class AgentScheduler:
                 fold_result = self._backtest_single_change(change, fold_test)
                 fold_returns = fold_result["returns"]
                 fold_weights = fold_result["weights"]
-                if len(fold_returns) < 3:
-                    continue
-                fold_sharpes.append(_weighted_sharpe(fold_returns, fold_weights))
+                # Pool every return unconditionally — the baseline pools all of its
+                # fold returns, so the z-test must compare like with like. The
+                # per-fold Sharpe (consistency diagnostic only) still needs ≥3
+                # returns to be meaningful.
                 all_candidate_returns.extend(fold_returns)
                 all_candidate_weights.extend(fold_weights)
+                if len(fold_returns) >= 3:
+                    fold_sharpes.append(_weighted_sharpe(fold_returns, fold_weights))
 
             # Always record diagnostic fields up front so rejection branches
             # below preserve enough detail in pipeline_run_log.json to tell
@@ -1599,6 +1623,20 @@ class AgentScheduler:
                     elif param in _TN:
                         combined_rec[f"recommended_{param}"] = value
 
+                # exit_edge_threshold acts on the backtest only via the counterfactual
+                # override — without it the "joint set" would silently exclude that
+                # change. Clamp to the registry range, same as the per-change backtest.
+                _exit_c = next((c for c in adopted_changes
+                                if c["param"] == "exit_edge_threshold"
+                                and c.get("value") is not None), None)
+                _exit_thr_combined: float | None = None
+                _cf_index_combined: dict[int, dict[str, Any]] | None = None
+                if _exit_c is not None:
+                    from polybot.config.param_registry import CLAMP_RANGES as _CR
+                    _lo, _hi, _cast = _CR["exit_edge_threshold"]
+                    _exit_thr_combined = _cast(max(_lo, min(_hi, _cast(_exit_c["value"]))))
+                    _cf_index_combined = self._load_counterfactual_index()
+
                 cfg_combined = self._config_for_helper(combined_rec)
                 calibrator = self._gate_calibrator
                 base_h_rets, base_h_w = self._backtest_recommendations({}, holdout_outcomes)
@@ -1624,6 +1662,8 @@ class AgentScheduler:
                     l5_regime_damp_cap=cfg_combined["l5_regime_damp_cap"],
                     atr_regime_shift_threshold=cfg_combined["atr_regime_shift_threshold"],
                     derived_weights=cfg_combined["derived_weights"],
+                    exit_threshold_override=_exit_thr_combined,
+                    counterfactual_index=_cf_index_combined,
                 )
                 base_h_sharpe = _weighted_sharpe(base_h_rets, base_h_w) if base_h_rets else 0.0
                 combined_h_sharpe = _weighted_sharpe(combined_rets, combined_w) if combined_rets else 0.0
@@ -1712,24 +1752,17 @@ class AgentScheduler:
                         self.signal_engine.derived_weights[_fname] = clamped
                     elif hasattr(self.signal_engine, param):
                         setattr(self.signal_engine, param, clamped)
-                elif param == "adverse_selection_threshold" and self._config:
-                    self._config.setdefault("signal", {})["adverse_selection_threshold"] = _clamp(float(value), 0.45, 0.75)
-                elif param == "max_edge":
-                    self.signal_engine.max_edge = _clamp(float(value), 0.15, 0.30)
-                elif param == "trading_start_hour_et":
-                    self._trading_start = (int(value), 0)
-                elif param == "trading_end_hour_et":
-                    self._trading_end = (int(value), 59)
 
         # Persist to settings.yaml — registry yaml_key drives section routing.
+        # Only registry tunables (+ the weights dict) can reach adopted_changes:
+        # the validator reroutes manual-only params and unknown params backtest
+        # as baseline (z=0 → rejected).
         if self._config:
             from polybot.config.param_registry import BY_NAME as _BY_NAME
-            sig = self._config.setdefault("signal", {})
-            sched = self._config.setdefault("schedule", {})
-
             if weights_change:
-                sig["weights"] = {k: v for k, v in new_weights.items()
-                                   if k in ("rsi", "macd", "stochastic", "obv", "vwap")}
+                self._config.setdefault("signal", {})["weights"] = {
+                    k: v for k, v in new_weights.items()
+                    if k in ("rsi", "macd", "stochastic", "obv", "vwap")}
 
             for change in adopted_changes:
                 param = change["param"]
@@ -1746,16 +1779,6 @@ class AgentScheduler:
                     for _p in _parts[:-1]:
                         _node = _node.setdefault(_p, {})
                     _node[_parts[-1]] = clamped
-                elif param == "adverse_selection_threshold":
-                    sig["adverse_selection_threshold"] = _clamp(float(value), 0.45, 0.75)
-                elif param == "max_edge":
-                    sig["max_edge"] = _clamp(float(value), 0.15, 0.30)
-                elif param == "trading_start_hour_et":
-                    sched["trading_start_hour_et"] = int(value)
-                elif param == "trading_end_hour_et":
-                    sched["trading_end_hour_et"] = int(value)
-                elif param == "trading_end_minute":
-                    sched["trading_end_minute"] = int(value)
 
             try:
                 config_to_save = dict(self._config)
@@ -1789,7 +1812,10 @@ class AgentScheduler:
         for change in adopted_changes:
             param = change["param"]
             if param == "weights":
-                tracker_changes["weights"] = ("(prev)", "(new)")
+                # Real dicts (pre-mutation old via _directional_old_value) so the
+                # auto-revert path can restore the prior L4 committee.
+                tracker_changes["weights"] = (old_by_param.get("weights"),
+                                              dict(change["value"] or {}))
             else:
                 tracker_changes[param] = (old_by_param.get(param), change["value"])
 
@@ -1822,6 +1848,9 @@ class AgentScheduler:
         params to their pre-adoption values unless a newer adoption already changed
         the same param (in which case the newer adoption takes precedence).
         Updates both signal_engine and settings.yaml so the revert is live immediately.
+        A record touching kelly_fraction is deferred (retried next cycle) while the
+        crisis halving is active — reverting would strip the crisis floor, and the
+        later restore would clobber the revert with a stale value.
         """
         if not self.pipeline_tracker:
             return
@@ -1829,8 +1858,12 @@ class AgentScheduler:
         if not records:
             return
 
-        def _clamp(v, lo, hi):
-            return max(lo, min(hi, v))
+        _kelly_locked = False
+        try:
+            if CRISIS_STATE_PATH.exists():
+                _kelly_locked = bool(json.loads(CRISIS_STATE_PATH.read_text()).get("kelly_reduced"))
+        except Exception:
+            _kelly_locked = False
 
         already_handled: set[str] = set()  # params touched by records processed so far
         reverted_any = False
@@ -1843,13 +1876,25 @@ class AgentScheduler:
                 already_handled.update(changes_raw.keys())
                 continue
 
-            # Build revert list using old (pre-adoption) values
+            if _kelly_locked and "kelly_fraction" in changes_raw:
+                # Deferred, not reverted — retried on the first non-halved cycle.
+                # Its params still shield older records (newest adoption wins).
+                logger.info("[AUTO-REVERT] deferred: record touches kelly_fraction "
+                            "while crisis halving is active")
+                already_handled.update(changes_raw.keys())
+                continue
+
+            # Build revert list using old (pre-adoption) values. `weights` reverts
+            # only when the record carries a real dict — placeholder-string records
+            # hold nothing restorable.
             revert_changes: list[dict[str, Any]] = []
             for param, vals in changes_raw.items():
-                if param in already_handled or param == "weights":
+                if param in already_handled:
                     continue
-                old_val = vals[0] if isinstance(vals, list) and len(vals) >= 2 else None
+                old_val = vals[0] if isinstance(vals, (list, tuple)) and len(vals) >= 2 else None
                 if old_val is None:
+                    continue
+                if param == "weights" and not isinstance(old_val, dict):
                     continue
                 revert_changes.append({"param": param, "value": old_val})
 
@@ -1864,7 +1909,14 @@ class AgentScheduler:
                 from polybot.config.param_registry import BY_NAME as _BY_NAME
                 for rc in revert_changes:
                     p, v = rc["param"], rc["value"]
-                    if p == "exit_edge_threshold":
+                    if p == "weights":
+                        _w5 = {k: float(x) for k, x in v.items()
+                               if k in ("rsi", "macd", "stochastic", "obv", "vwap")}
+                        if _w5:
+                            if self.indicator_engine:
+                                self.indicator_engine.set_weights(_w5)
+                            self.signal_engine.weights = dict(_w5)
+                    elif p == "exit_edge_threshold":
                         spec = _BY_NAME[p]
                         self._exit_edge_threshold = spec.cast(max(spec.lo, min(spec.hi, spec.cast(v))))
                     elif p in _BY_NAME:
@@ -1875,15 +1927,18 @@ class AgentScheduler:
                             self.signal_engine.derived_weights[_fname] = _clamped
                         elif hasattr(self.signal_engine, p):
                             setattr(self.signal_engine, p, _clamped)
-                    elif p == "max_edge":
-                        self.signal_engine.max_edge = _clamp(float(v), 0.15, 0.30)
 
             # Apply to config dict and persist to settings.yaml
             if self._config:
                 from polybot.config.param_registry import BY_NAME as _BY_NAME
                 for rc in revert_changes:
                     p, v = rc["param"], rc["value"]
-                    if p in _BY_NAME:
+                    if p == "weights":
+                        _w5 = {k: float(x) for k, x in v.items()
+                               if k in ("rsi", "macd", "stochastic", "obv", "vwap")}
+                        if _w5:
+                            self._config.setdefault("signal", {})["weights"] = _w5
+                    elif p in _BY_NAME:
                         spec = _BY_NAME[p]
                         clamped = spec.cast(max(spec.lo, min(spec.hi, spec.cast(v))))
                         _parts = spec.yaml_key.split(".")
@@ -1891,13 +1946,15 @@ class AgentScheduler:
                         for _p in _parts[:-1]:
                             _node = _node.setdefault(_p, {})
                         _node[_parts[-1]] = clamped
-                    elif p == "max_edge":
-                        self._config.setdefault("signal", {})["max_edge"] = _clamp(float(v), 0.15, 0.30)
                 try:
                     from polybot.config.loader import save_config
                     save_config(dict(self._config))
                 except Exception as e:
+                    # In-memory revert already applied; the record stays flagged so
+                    # the persist retries next cycle. Its params still shield older
+                    # records from re-reverting to even older values in this pass.
                     logger.error(f"Auto-revert: failed to persist settings.yaml: {e}")
+                    already_handled.update(changes_raw.keys())
                     continue
 
             rec["reverted"] = True
@@ -1922,6 +1979,26 @@ class AgentScheduler:
         logger.info(f"─── Pipeline starting — {now_et_str} ───")
 
         pipeline_info: dict[str, Any] = {}
+
+        # Frozen = analysis-only cycle: data/bias/ghost cards still build, but the
+        # calibrator is neither refit nor swapped, no weight change is tested or
+        # adopted, and no auto-revert fires. (loader.save_config independently
+        # refuses to persist while frozen — this gate keeps the in-memory engines
+        # untouched too.)
+        from polybot.paths import is_pipeline_frozen
+        _frozen = is_pipeline_frozen()
+        if _frozen:
+            logger.warning(
+                "PIPELINE FROZEN — analysis-only cycle "
+                "(delete memory/state/PIPELINE_FROZEN to resume adoption)"
+            )
+            pipeline_info["frozen"] = True
+        # One timestamp for every window boundary this cycle (60d cutoff, holdout
+        # split, gate-calibrator window, evolver-context filter, calibration windows)
+        # so no record can straddle two boundaries computed at different instants.
+        _cycle_now_ts = _now_utc.timestamp()
+        # Counterfactuals accumulate between cycles — rebuild the index per cycle.
+        self._counterfactual_index_cached = None
 
         # Snapshot current config before changes
         old_config = {}
@@ -1959,7 +2036,7 @@ class AgentScheduler:
         # candidates aren't judged against probability machines that no longer
         # exist. Walk-forward 60/40 is preserved INSIDE the window.
         PIPELINE_WINDOW_DAYS = 60
-        _cutoff_ts = datetime.now(timezone.utc).timestamp() - PIPELINE_WINDOW_DAYS * 86400.0
+        _cutoff_ts = _cycle_now_ts - PIPELINE_WINDOW_DAYS * 86400.0
         def _otime(o: dict) -> float:
             s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
             try:
@@ -1995,17 +2072,19 @@ class AgentScheduler:
         real_all = [o for o in all_outcomes if not o.get("is_ghost")]
 
         # Fill in adoptions' realized 7d/14d/30d Sharpe (review spans the holdout — it
-        # wants the freshest data) and auto-revert any that decayed.
+        # wants the freshest data) and auto-revert any that decayed. Reverts mutate
+        # the engines + settings.yaml, so they're suspended while frozen.
         if self.pipeline_tracker:
             self.pipeline_tracker.review_past_adoptions(real_all)
-            self._apply_revert_adoptions()
+            if not _frozen:
+                self._apply_revert_adoptions()
 
         # Holdout = last HOLDOUT_DAYS, reserved out-of-sample for adoption confirmation.
         # Disable it (fall back to the full pool) when the holdout is too thin to confirm
         # on, or the pre-holdout pool is below the learning floor. Must run before the
         # analysis is built: the recommender keys off analysis["overall"]["total_trades"],
         # so an empty opt pool would zero all learning even when all_outcomes is large.
-        opt_outcomes, holdout_outcomes = self._split_holdout(all_outcomes)
+        opt_outcomes, holdout_outcomes = self._split_holdout(all_outcomes, now_ts=_cycle_now_ts)
         if len(holdout_outcomes) < HOLDOUT_MIN_TRADES:
             _holdout_off_reason = (f"only {len(holdout_outcomes)} trades in last "
                                    f"{HOLDOUT_DAYS}d (need {HOLDOUT_MIN_TRADES})")
@@ -2035,9 +2114,8 @@ class AgentScheduler:
                 return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
             except Exception:
                 return 0.0
-        _g_now = datetime.now(timezone.utc).timestamp()
-        _g_lo = _g_now - (HOLDOUT_DAYS + _CAL_WINDOW_DAYS) * 86400.0
-        _g_hi = _g_now - HOLDOUT_DAYS * 86400.0
+        _g_lo = _cycle_now_ts - (HOLDOUT_DAYS + _CAL_WINDOW_DAYS) * 86400.0
+        _g_hi = _cycle_now_ts - HOLDOUT_DAYS * 86400.0
         _gate_pool = [o for o in real_all if _g_lo <= _gcal_ts(o) < _g_hi]
         self._gate_calibrator = self._fit_calibrator_on(_gate_pool)
         logger.info(
@@ -2105,18 +2183,22 @@ class AgentScheduler:
         # later re-prices, so leaking holdout-period records here would make that
         # confirmation partially in-sample. (No filter when holdout is inactive — there
         # is no separate confirmation pool to protect.)
-        _evo_cutoff = datetime.now(timezone.utc).timestamp() - HOLDOUT_DAYS * 86400.0
+        _evo_cutoff = _cycle_now_ts - HOLDOUT_DAYS * 86400.0
         _holdout_on = bool(pipeline_info.get("holdout_active"))
         def _before_holdout(rec: dict[str, Any], *ts_keys: str) -> bool:
             if not _holdout_on:
                 return True
             for _k in ts_keys:
                 _s = rec.get(_k)
-                if _s:
-                    try:
-                        return datetime.fromisoformat(str(_s).replace("Z", "+00:00")).timestamp() < _evo_cutoff
-                    except Exception:
-                        return True  # unparseable ts → keep (matches load_all's lenient sort)
+                if _s in (None, ""):
+                    continue
+                # Ghost `resolved_at` is an epoch float; everything else is ISO-8601.
+                if isinstance(_s, (int, float)):
+                    return float(_s) < _evo_cutoff
+                try:
+                    return datetime.fromisoformat(str(_s).replace("Z", "+00:00")).timestamp() < _evo_cutoff
+                except Exception:
+                    return True  # unparseable ts → keep (matches load_all's lenient sort)
             return True  # no ts field → keep
 
         # Counterfactual analysis: how accurate are our scalp exits?
@@ -2151,12 +2233,17 @@ class AgentScheduler:
         # CURRENT calibrator on full-pool weighted log-loss by ≥ LOG_LOSS_FLOOR AND not
         # reduce Kelly-Sharpe vs the current calibrator on cal_val.
         cal_info: dict[str, Any] = {"decision": "skipped"}
+        # Current serving calibrator, stamped up front so every exit path (skip,
+        # reject, frozen) renders truthfully in the summary instead of a bare
+        # "identity" while a fitted isotonic is live.
+        cal_info["current_n_knots"] = (
+            getattr(getattr(self.signal_engine, "calibrator", None), "n_knots", 0) or 0
+        ) if self.signal_engine else 0
         from polybot.core.calibrator import IsotonicCalibrator, _weighted_log_loss as _wll
         MIN_CAL_VALIDATION_TRADES = 50
         _pending_cal_save: IsotonicCalibrator | None = None
-        _now_ts = datetime.now(timezone.utc).timestamp()
-        _cal_cutoff_new = _now_ts                                  # freshest edge (day 0)
-        _cal_cutoff_old = _now_ts - _CAL_WINDOW_DAYS * 86400.0      # _CAL_WINDOW_DAYS back
+        _cal_cutoff_new = _cycle_now_ts                                  # freshest edge (day 0)
+        _cal_cutoff_old = _cycle_now_ts - _CAL_WINDOW_DAYS * 86400.0      # _CAL_WINDOW_DAYS back
         def _ts(o: dict) -> float:
             s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
             try:
@@ -2166,7 +2253,11 @@ class AgentScheduler:
         # real_all only: the calibrator changes LIVE trading probabilities, so it must fit
         # on trades the bot actually took, not rejected ghosts.
         _cal_pool = [o for o in real_all if _cal_cutoff_old <= _ts(o) < _cal_cutoff_new]
-        if len(_cal_pool) >= 125:
+        if _frozen:
+            cal_train = []
+            cal_val = []
+            cal_info["reason"] = "pipeline frozen — calibration unchanged"
+        elif len(_cal_pool) >= 125:
             _split = max(1, int(len(_cal_pool) * 0.6))
             cal_train = _cal_pool[:_split]
             cal_val = _cal_pool[_split:]
@@ -2187,13 +2278,25 @@ class AgentScheduler:
             )
 
         if len(cal_train) >= 75 and self.signal_engine:
-            cal_now_ts = datetime.now(timezone.utc).timestamp()
+            cal_now_ts = _cycle_now_ts
             cal_probs, cal_outcomes, cal_weights = self._calibration_xy(cal_train, cal_now_ts)
 
-            if len(cal_probs) >= 75:
+            if len(cal_probs) < 75:
+                cal_info["decision"] = "rejected"
+                cal_info["reason"] = (f"only {len(cal_probs)} usable calibration samples "
+                                      f"after filtering (need 75)")
+            else:
                 cal = IsotonicCalibrator()
                 _fit_ok = cal.fit(cal_probs, cal_outcomes, min_samples=75, sample_weights=cal_weights)
                 cal_info["fit_diagnostics"] = dict(cal.last_fit_diagnostics)
+                if not _fit_ok:
+                    cal_info["decision"] = "rejected"
+                    _fit_dec = (cal.last_fit_diagnostics or {}).get("decision")
+                    cal_info["reason"] = (
+                        "bootstrap-CI gate failed (OOB lower bound ≤ 0)"
+                        if _fit_dec == "rejected_ci"
+                        else "fit rejected before bootstrap (range check / weights / fit error)"
+                    )
                 if _fit_ok:
                     # Log-loss on full 7-day pool (more data = more reliable calibration signal).
                     # Hierarchy: identity (no-cal) → current (live) → new (today's fit).
@@ -2251,7 +2354,9 @@ class AgentScheduler:
                     # Min nats the new fit must beat the current calibrator by, on the
                     # full cal pool's recency-weighted log-loss, before adoption.
                     LOG_LOSS_FLOOR = 0.005
-                    cal_info = {
+                    # update(), not reassign — fit_diagnostics (and current_n_knots)
+                    # must survive into the adopted/reverted/rejected record.
+                    cal_info.update({
                         "identity_loss": round(identity_loss, 4) if all_pool_probs else None,
                         "current_loss": round(current_loss, 4) if all_pool_probs else None,
                         "new_loss": round(new_loss_full, 4) if all_pool_probs else None,
@@ -2267,7 +2372,7 @@ class AgentScheduler:
                                      if getattr(cal, "_iso", None) is not None else None),
                         "span_max": (round(float(cal._iso.y_thresholds_[-1]), 4)
                                      if getattr(cal, "_iso", None) is not None else None),
-                    }
+                    })
 
                     insufficient = len(new_returns) < MIN_CAL_VALIDATION_TRADES
                     # Gate 1: new fit must beat current on log-loss by ≥ LOG_LOSS_FLOOR (0.005)
@@ -2345,7 +2450,8 @@ class AgentScheduler:
                 "win_rate": round(rw_wr, 4),
                 "total_pnl": round(rw_pnl, 4),
                 "mean_gain_pct": round(sum(rw_gains) / len(rw_gains), 6) if rw_gains else 0,
-                "note": "Most recent 100 trades (all_outcomes tail) — use to detect active regime shifts",
+                "note": ("Most recent 100 real trades in the optimizer pool "
+                         "(holdout-excluded — ends ~7d ago when the holdout is active)"),
             }
 
         # Emit analysis summary now that bias/calibration are done
@@ -2365,7 +2471,10 @@ class AgentScheduler:
 
         # Need at least MIN_TRADES_FOR_LEARNING trades before running the evolver/optimizer.
         weight_info: dict[str, Any] = {"decision": "skipped"}
-        if len(all_outcomes) < MIN_TRADES_FOR_LEARNING:
+        if _frozen:
+            recommendations = {}
+            weight_info["reason"] = "pipeline frozen (analysis-only cycle)"
+        elif len(all_outcomes) < MIN_TRADES_FOR_LEARNING:
             logger.info(f"Skipping learning pipeline: only {len(all_outcomes)} trades, need {MIN_TRADES_FOR_LEARNING}")
             recommendations = {}
             weight_info["reason"] = f"only {len(all_outcomes)} trades (need {MIN_TRADES_FOR_LEARNING})"
@@ -2450,11 +2559,14 @@ class AgentScheduler:
                 )
 
                 # Sustained crisis (3+ consecutive runs) → auto-reduce kelly_fraction.
-                # Floor at 0.04 so we never disable sizing entirely.
+                # CRISIS_KELLY_FLOOR sits below the optimizer-tunable range so crisis
+                # sizes more defensively than any adoptable state; the loader accepts
+                # it (same constant) so the persisted value survives the next boot.
                 if _crisis_state["streak"] >= 3 and not _crisis_state.get("kelly_reduced") \
                         and self.signal_engine and self._config:
+                    from polybot.config.param_registry import CRISIS_KELLY_FLOOR
                     _orig = float(self.signal_engine.kelly_fraction)
-                    _reduced = max(0.04, _orig * 0.5)
+                    _reduced = max(CRISIS_KELLY_FLOOR, _orig * 0.5)
                     # Persist kelly_reduced BEFORE applying the cut so a crash
                     # mid-pipeline can't compound the halving on restart.
                     _crisis_state["original_kelly"] = _orig
@@ -2480,7 +2592,11 @@ class AgentScheduler:
             else:
                 pipeline_info["crisis_mode"] = False
 
-                # Recovery: if we previously auto-reduced kelly, restore it
+                # Recovery: if we previously auto-reduced kelly, restore it. Crisis
+                # state resets only after the restore persists — a failed save keeps
+                # the state so the restore retries next cycle instead of leaving the
+                # halved value on disk beside a clean crisis file.
+                _restore_persist_failed = False
                 if _crisis_state.get("kelly_reduced") and _crisis_state.get("original_kelly") is not None \
                         and self.signal_engine and self._config:
                     _orig = float(_crisis_state["original_kelly"])
@@ -2489,15 +2605,20 @@ class AgentScheduler:
                     try:
                         from polybot.config.loader import save_config
                         save_config(dict(self._config))
+                        logger.info(
+                            f"[AUTO KELLY RESTORE] kelly_fraction restored to {_orig:.3f} "
+                            f"after crisis ended (was reduced for {_crisis_state.get('streak', 0)} cycles)."
+                        )
+                        pipeline_info["kelly_auto_restored"] = True
                     except Exception as e:
-                        logger.error(f"Auto Kelly restore: failed to persist: {e}")
-                    logger.info(
-                        f"[AUTO KELLY RESTORE] kelly_fraction restored to {_orig:.3f} "
-                        f"after crisis ended (was reduced for {_crisis_state.get('streak', 0)} cycles)."
-                    )
-                    pipeline_info["kelly_auto_restored"] = True
+                        _restore_persist_failed = True
+                        logger.error(
+                            f"Auto Kelly restore: failed to persist — crisis state kept, "
+                            f"restore retries next cycle: {e}"
+                        )
 
-                _crisis_state = {"streak": 0, "kelly_reduced": False, "original_kelly": None}
+                if not _restore_persist_failed:
+                    _crisis_state = {"streak": 0, "kelly_reduced": False, "original_kelly": None}
 
             try:
                 _crisis_state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2506,24 +2627,20 @@ class AgentScheduler:
                 logger.debug(f"Failed to persist crisis_state: {e}")
 
             weight_info = await self._run_weight_optimizer(recommendations, opt_outcomes, pipeline_source=source, holdout_outcomes=holdout_outcomes)
-            # Deferred save: weight_optimizer.save_config has already returned by here.
-            # A crash before the next line leaves new weights + the previous-session
-            # calibrator on disk — slightly mismatched but each is a valid, coherent
-            # artifact on its own. Saving the calibrator first risked a brand-new
-            # calibrator paired with stale weights, which is the worse half.
-            if _pending_cal_save is not None:
-                from polybot.paths import is_pipeline_frozen
-                if is_pipeline_frozen():
-                    logger.warning(
-                        "PIPELINE FROZEN — isotonic calibrator save suppressed; "
-                        "calibration held fixed (delete memory/state/PIPELINE_FROZEN to resume)"
-                    )
-                else:
-                    try:
-                        _pending_cal_save.save()
-                    except Exception as e:
-                        logger.error(f"Failed to persist isotonic calibrator: {e}")
         pipeline_info["weights"] = weight_info
+
+        # Deferred save: when the optimizer ran, its save_config has already returned
+        # by here. A crash before the next line leaves new weights + the previous-
+        # session calibrator on disk — slightly mismatched but each a valid, coherent
+        # artifact on its own. Saving the calibrator first risked a brand-new
+        # calibrator paired with stale weights, the worse half. Sits OUTSIDE the
+        # learning-floor gate so an adoption/revert on a young dataset (125-199
+        # trades) still persists. While frozen, stage 3 never sets a pending save.
+        if _pending_cal_save is not None:
+            try:
+                _pending_cal_save.save()
+            except Exception as e:
+                logger.error(f"Failed to persist isotonic calibrator: {e}")
 
         # All-time stats — real trades only (ghosts have a gain_pct but no pnl, so they'd
         # show negative Sharpe beside positive P&L).

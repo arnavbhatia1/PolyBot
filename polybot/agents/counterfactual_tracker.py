@@ -401,7 +401,7 @@ class CounterfactualTracker:
                 data = json.loads(filepath.read_text())
                 ts = data.get("timestamp", "")
                 date = _utc_ts_to_et_date(ts)
-                if date and date <= today:
+                if date and date < today:
                     files_by_date[date].append((filepath, data))
             except Exception:
                 pass

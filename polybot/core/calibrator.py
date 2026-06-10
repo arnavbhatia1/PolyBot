@@ -90,8 +90,9 @@ class IsotonicCalibrator:
         self._n_samples: int = 0
         self._log_loss_improvement: float = 0.0
         # Diagnostic state exposed for the operator-visible cal_info dict in the
-        # scheduler. Populated on every fit() call regardless of accept/reject so
-        # the gate decision is never silent.
+        # scheduler. Populated by fit() once it reaches the bootstrap gate
+        # ("adopted" / "rejected_ci"); structural early-rejects (min-samples,
+        # bad weights, range check, fit error) return False without touching it.
         self.last_fit_diagnostics: dict[str, float | int | str] = {}
 
     # ---- public read-only state ----
@@ -171,7 +172,15 @@ class IsotonicCalibrator:
 
         probs_arr = np.clip(np.asarray(probs, dtype=float), _EPS, 1.0 - _EPS)
         outcomes_arr = np.asarray(outcomes, dtype=float)
-        if sample_weights is not None and len(sample_weights) == len(probs):
+        if sample_weights is not None:
+            if len(sample_weights) != len(probs):
+                # A caller bug — silently dropping to uniform would un-recency-weight
+                # the fit without anyone noticing.
+                logger.warning(
+                    f"Isotonic calibration: sample_weights length {len(sample_weights)} "
+                    f"!= {len(probs)} probs; rejecting fit"
+                )
+                return False
             w_arr = np.asarray(sample_weights, dtype=float)
             total = w_arr.sum()
             if total <= 0:
@@ -282,7 +291,12 @@ class IsotonicCalibrator:
                 "n_samples": self._n_samples,
                 "log_loss_improvement": round(self._log_loss_improvement, 4),
             }
-        path.write_text(json.dumps(payload, indent=2))
+        # Atomic write (tmp + replace) — a crash mid-write must not leave a torn
+        # file that load() can only fail back to identity from.
+        import os
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2))
+        os.replace(tmp, path)
 
     def load(self, path: Path | None = None) -> None:
         path = path or DEFAULT_PARAMS_PATH

@@ -1,4 +1,5 @@
-"""Pipeline analytics utilities: recency weighting, distribution-shift detection, ET date helpers."""
+"""Pipeline analytics utilities: recency weighting, distribution-shift detection,
+ET date helpers, fee-aware ghost pricing."""
 from __future__ import annotations
 
 import math
@@ -6,6 +7,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from polybot.execution.base import DEFAULT_FEE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,20 @@ def weighted_sharpe_from_returns(returns: list[float], weights: list[float]) -> 
     var = sum(w * (r - mean) ** 2 for r, w in zip(returns, weights)) / w_sum
     std = math.sqrt(var) if var > 0 else 0.0
     return mean / std if std > 0 else 0.0
+
+
+def ghost_gain_pct(market_price: float, correct: bool,
+                   fee_rate: float = DEFAULT_FEE_RATE) -> float:
+    """Hold-to-resolution gain per $1 of size for a taker buy at market_price,
+    netting the entry fee (fee = rate * shares * p * (1-p) with shares = size/p,
+    so fee per $1 of size = fee_rate * (1 - p)). Prices ghost (untraded)
+    decisions fee-aware so they're comparable with realized gain_pct = pnl/size.
+    """
+    p = market_price
+    if p <= 0.0 or p >= 1.0:
+        return 0.0
+    fee = fee_rate * (1.0 - p)
+    return ((1.0 - p) / p - fee) if correct else (-1.0 - fee)
 
 
 def utc_ts_to_et_date(ts: str) -> str:

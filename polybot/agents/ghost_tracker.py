@@ -192,7 +192,7 @@ class GhostTracker:
                     continue
                 ts = data.get("timestamp", "")
                 date = _utc_ts_to_et_date(ts)
-                if date and date <= today:
+                if date and date < today:
                     files_by_date[date].append(fp)
             except Exception:
                 pass

@@ -20,6 +20,19 @@ _ET = ZoneInfo("America/New_York")
 
 logger = logging.getLogger(__name__)
 
+
+def _dedup_key(record: dict[str, Any]) -> Any:
+    """Identity key for an outcome record: (position_id, market_id).
+
+    position_id is per-mode SQLite AUTOINCREMENT while memory/ is shared across
+    paper/live, so position_id alone can collide across modes. Records without
+    market_id key by position_id alone.
+    """
+    pid = record.get("position_id")
+    mid = record.get("market_id")
+    return (pid, mid) if mid else pid
+
+
 class OutcomeReviewer:
     def __init__(self, outcomes_dir: str) -> None:
         self.outcomes_dir: Path = Path(outcomes_dir)
@@ -74,20 +87,21 @@ class OutcomeReviewer:
     def load_all_outcomes(self) -> list[dict[str, Any]]:
         """Load all outcomes from both individual files and daily rollup files.
 
-        Deduplicates by position_id — a trade present in both (e.g., after a partial
-        rollup run) is only counted once. Sorted by exit_timestamp for correct
-        walk-forward fold ordering.
+        Deduplicates by (position_id, market_id) — a trade present in both (e.g.,
+        after a partial rollup run) is only counted once, and a paper/live
+        position_id collision doesn't drop a distinct trade. Sorted by
+        exit_timestamp for correct walk-forward fold ordering.
         """
         outcomes = []
-        seen_ids: set = set()
+        seen_keys: set = set()
         for filepath in self.outcomes_dir.glob("*.json"):
             try:
                 raw = json.loads(filepath.read_text())
                 records = raw if isinstance(raw, list) else [raw]
                 for record in records:
-                    pid = record.get("position_id")
-                    if pid not in seen_ids:
-                        seen_ids.add(pid)
+                    key = _dedup_key(record)
+                    if key not in seen_keys:
+                        seen_keys.add(key)
                         outcomes.append(record)
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"Failed to load outcome {filepath}: {e}")
@@ -114,7 +128,7 @@ class OutcomeReviewer:
                     continue
                 ts = data.get("exit_timestamp", data.get("timestamp", ""))
                 date = _utc_ts_to_et_date(ts)
-                if date and date <= today:
+                if date and date < today:
                     files_by_date[date].append((filepath, data))
             except Exception:
                 pass
@@ -128,8 +142,8 @@ class OutcomeReviewer:
                     existing = json.loads(rollup_path.read_text())
                 except Exception:
                     existing = []
-            existing_ids = {o.get("position_id") for o in existing}
-            new_records = [d for _, d in pairs if d.get("position_id") not in existing_ids]
+            existing_keys = {_dedup_key(o) for o in existing}
+            new_records = [d for _, d in pairs if _dedup_key(d) not in existing_keys]
             combined = sorted(
                 existing + new_records,
                 key=lambda x: x.get("exit_timestamp", x.get("timestamp", "")),

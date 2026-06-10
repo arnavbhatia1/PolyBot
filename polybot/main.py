@@ -630,10 +630,10 @@ async def _evaluate_signal_and_enter(
         """Record a ghost trade when a downstream gate rejects a real BUY signal.
 
         Builds a base trade_context from closure vars at gate-fire time
-        (model_probability_raw + market prices + L1–L5 layer inputs) so the
-        ghost survives AgentScheduler._ghost_to_outcome's market-price gate
-        and reaches the calibration + KS-shift + backtest pools. A
-        caller-supplied snap (e.g. pre-submit ghosts pass the full live
+        (calibrated + raw model probability, edge, market prices + L1–L5
+        layer inputs) so the ghost survives AgentScheduler._ghost_to_outcome's
+        market-price gate and reaches the calibration + KS-shift + backtest
+        pools. A caller-supplied snap (e.g. pre-submit ghosts pass the full live
         indicator snapshot) merges on top — caller values win for overlapping
         keys.
         """
@@ -653,7 +653,9 @@ async def _evaluate_signal_and_enter(
         _ghost_cid = contract.get("slug", contract.get("market_id", ""))
         _ghost_flip_count = int(_window_flip_state.get(_ghost_cid, {}).get("flip_count", 0))
         base_ctx: dict[str, Any] = {
+            "model_probability": signal.prob,
             "model_probability_raw": raw_prob_side,
+            "edge": signal.edge,
             "market_price_up": price_up,
             "market_price_down": price_down,
             "btc_price": btc_price,
@@ -1200,7 +1202,7 @@ async def _evaluate_signal_and_enter(
         # "feed cold / stale", never 0.0.
         "depth_usd_top20": depth_feed.get_depth_usd() if depth_feed else 0,
         **aux_signals,
-        # SPRT diagnostic state (consumed by BiasDetector's by_sprt_confidence bucket).
+        # SPRT state: sprt_confidence feeds BiasDetector's by_sprt_confidence bucket; sprt_status is audit-only.
         "sprt_confidence": _sprt.get_confidence() if _sprt else 0,
         "sprt_status": _sprt.get_status() if _sprt else "N/A",
         # Adverse-selection rolling state (gate diagnostic). Field name reads as

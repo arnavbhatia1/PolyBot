@@ -328,6 +328,17 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     # Per-param clamp ranges — imported from param_registry (single source of truth).
     CLAMP_RANGES = _CLAMP_RANGES
 
+    # min_edge candidate in this batch (clamped) — the momentum guard below must
+    # compare against the value that will be live if the batch adopts.
+    _batch_min_edge: float | None = None
+    for _ch in data["changes"][:5]:
+        if isinstance(_ch, dict) and _ch.get("param") == "min_edge" and _ch.get("value") is not None:
+            _lo, _hi, _cast = CLAMP_RANGES["min_edge"]
+            try:
+                _batch_min_edge = _cast(max(_lo, min(_hi, _cast(_ch["value"]))))
+            except (TypeError, ValueError):
+                pass
+
     validated_changes: list[dict[str, Any]] = []
 
     for change in data["changes"][:5]:  # enforce max 5
@@ -423,13 +434,14 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
                 clamped = cast(max(lo, min(hi, raw_value)))
             except (TypeError, ValueError):
                 continue
-            # Extra: momentum magnitude must stay below min_edge (registry clamps
+            # Extra: momentum magnitude must stay below min_edge — the batch's
+            # proposed min_edge when present, else live (registry clamps
             # momentum_weight to [0.0, 0.10] so clamped is always non-negative here).
             momentum_floor_applied = False
             if param == "momentum_weight":
-                min_edge_live = cfg.get("min_edge", _d("min_edge"))
-                if clamped >= min_edge_live:
-                    clamped = float(min_edge_live - 0.001)
+                min_edge_ref = _batch_min_edge if _batch_min_edge is not None else cfg.get("min_edge", _d("min_edge"))
+                if clamped >= min_edge_ref:
+                    clamped = float(min_edge_ref - 0.001)
                     momentum_floor_applied = True
             entry: dict[str, Any] = {"param": param, "value": clamped, "reason": reason}
             # Surface clamps so the directional table attributes results to the actual tested value.
@@ -462,7 +474,6 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
     # would exceed headroom; the next cycle can propose smaller weights.
     try:
         from polybot.core.derived_features import DERIVED_FEATURES, L6_LOGIT_CAP
-        _logit_scale = float(cfg.get("logit_scale", _d("logit_scale")))
         _l6_pending: dict[str, float] = {}
         _l6_change_indices: list[int] = []
         for idx, ch in enumerate(data["changes"]):
@@ -472,8 +483,15 @@ def _validate_strategy_response(data: dict[str, Any], current_weights: dict[str,
                 _l6_pending[_fname] = float(ch.get("value", 0.0))
                 _l6_change_indices.append(idx)
         if _l6_pending:
+            # Headroom uses the batch's proposed logit_scale when present (already
+            # clamped above), else live; live L6 weights come from the flat
+            # current-config keys (derived_{fname}_weight).
+            _logit_scale = float(next(
+                (ch.get("value") for ch in data["changes"] if ch.get("param") == "logit_scale"),
+                cfg.get("logit_scale", _d("logit_scale")),
+            ))
             _l6_live = {
-                fname: float(_cfg_get(cfg, f"signal.derived.{fname}") or 0.0)
+                fname: float(cfg.get(f"derived_{fname}_weight") or 0.0)
                 for fname in DERIVED_FEATURES.keys()
             }
             _l6_merged = {**_l6_live, **_l6_pending}
@@ -578,9 +596,9 @@ def _section_config(cfg: dict[str, Any]) -> str:
         f"min_model_probability: {cfg.get('min_model_probability', _d('min_model_probability'))}  (pipeline-tunable since ghosts joined backtest)\n"
         f"min_edge (entry_threshold): {cfg.get('min_edge', _d('min_edge'))}  (pipeline-tunable since ghosts joined backtest)\n"
         f"min_kelly (entry gate): {cfg.get('min_kelly', _d('min_kelly'))}  (pipeline-tunable since ghosts joined backtest)\n"
+        f"exit_edge_threshold: {cfg.get('exit_edge_threshold', _d('exit_edge_threshold'))}  (range -0.10 to -0.03; the ONLY pipeline-tunable exit knob)\n"
         "\n### MANUAL-ONLY (not in `changes` — propose via `manual_observations` if data warrants):\n"
-        f"# Exit / scalp / loss-cut\n"
-        f"exit_edge_threshold: {cfg.get('exit_edge_threshold', _d('exit_edge_threshold'))}\n"
+        f"# Loss-cut\n"
         f"loss_cut_fraction: {cfg.get('loss_cut_fraction', _d('loss_cut_fraction'))}  "
         f"loss_cut_time_s: {cfg.get('loss_cut_time_s', _d('loss_cut_time_s'))}\n"
         f"# Entry filters (informed flow / stale price)\n"
@@ -1154,13 +1172,14 @@ def _section_adoption_target(context: dict[str, Any]) -> str:
 
 
 def _section_cumulative_failures(ana: dict[str, Any]) -> str:
-    # Cumulative failures — all parameter values tried across all cycles
+    # All (param, value) pairs with a final verdict across past cycles
+    # (adopted / rejected / backed_out) — Claude must not re-test these blindly.
     cum_failures = ana.get("cumulative_failures", {})
     if not cum_failures:
         return ""
-    lines = ["## Cumulative Failed Attempts (do NOT repeat these)"]
+    lines = ["## Previously Tested Values (final verdicts — do NOT re-propose rejected/backed_out ones)"]
     for param, attempts in cum_failures.items():
-        lines.append(f"- **{param}**: tried {', '.join(attempts[:5])} — all failed")
+        lines.append(f"- **{param}**: {', '.join(attempts[:5])}")
     return "\n".join(lines)
 
 

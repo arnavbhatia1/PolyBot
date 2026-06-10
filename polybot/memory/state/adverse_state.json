@@ -1,75 +1,20 @@
 {
-  "saved_at": 1781015058.6012027,
+  "schema": 2,
+  "saved_at": 1781045295.8683696,
   "fills": [
     {
-      "timestamp": 1781014878.821215,
-      "side": "Down",
-      "fill_price": 0.7599999999999999,
-      "token_id": "88859339185724127101997036964626478201544112238352293039885757656633479463521",
-      "midprice_at_fill": 0.505,
-      "midprice_5s": 0.785,
-      "midprice_10s": 0.795,
-      "midprice_15s": 0.735,
-      "midprice_30s": 0.845,
-      "midprice_60s": 0.815,
-      "resolved": true,
-      "position_id": 2832
-    },
-    {
-      "timestamp": 1781015006.5362525,
+      "timestamp": 1781045295.8672645,
       "side": "Down",
       "fill_price": 0.75,
-      "token_id": "88859339185724127101997036964626478201544112238352293039885757656633479463521",
-      "midprice_at_fill": 0.505,
-      "midprice_5s": 0.695,
-      "midprice_10s": 0.675,
-      "midprice_15s": 0.675,
-      "midprice_30s": 0.775,
-      "midprice_60s": null,
-      "resolved": false,
-      "position_id": 2833
-    },
-    {
-      "timestamp": 1781015030.1210592,
-      "side": "Down",
-      "fill_price": 0.8,
-      "token_id": "88859339185724127101997036964626478201544112238352293039885757656633479463521",
-      "midprice_at_fill": 0.505,
-      "midprice_5s": 0.835,
-      "midprice_10s": 0.735,
-      "midprice_15s": 0.765,
-      "midprice_30s": null,
-      "midprice_60s": null,
-      "resolved": false,
-      "position_id": 2834
-    },
-    {
-      "timestamp": 1781015048.7740676,
-      "side": "Down",
-      "fill_price": 0.7699999999999999,
-      "token_id": "88859339185724127101997036964626478201544112238352293039885757656633479463521",
-      "midprice_at_fill": 0.505,
-      "midprice_5s": 0.745,
-      "midprice_10s": null,
-      "midprice_15s": null,
-      "midprice_30s": null,
-      "midprice_60s": null,
-      "resolved": false,
-      "position_id": 2835
-    },
-    {
-      "timestamp": 1781015058.5996187,
-      "side": "Down",
-      "fill_price": 0.72,
-      "token_id": "88859339185724127101997036964626478201544112238352293039885757656633479463521",
-      "midprice_at_fill": 0.505,
+      "token_id": "109397146747013090230065283411885716065543608604433359757032034747579518073871",
+      "midprice_at_fill": 0.745,
       "midprice_5s": null,
       "midprice_10s": null,
       "midprice_15s": null,
       "midprice_30s": null,
       "midprice_60s": null,
       "resolved": false,
-      "position_id": 2836
+      "position_id": 2839
     }
   ]
 }

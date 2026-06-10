@@ -63,6 +63,60 @@ def test_validate_enforces_momentum_below_min_edge():
     by_param = {c["param"]: c["value"] for c in result["changes"]}
     assert by_param["momentum_weight"] < 0.10
 
+def test_validate_momentum_guard_uses_batch_min_edge():
+    # The momentum cap compares against the batch's proposed min_edge, not live.
+    data = {"changes": [
+        {"param": "momentum_weight", "value": 0.05, "reason": "test"},
+        {"param": "min_edge", "value": 0.06, "reason": "test"},
+    ]}
+    result = _validate_strategy_response(data, total_trades=100,
+                                         current_config={"min_edge": 0.04})
+    by_param = {c["param"]: c["value"] for c in result["changes"]}
+    assert by_param["momentum_weight"] == 0.05  # below the batch's 0.06, kept
+
+def test_validate_momentum_guard_floors_against_lowered_batch_min_edge():
+    data = {"changes": [
+        {"param": "min_edge", "value": 0.02, "reason": "test"},
+        {"param": "momentum_weight", "value": 0.03, "reason": "test"},
+    ]}
+    result = _validate_strategy_response(data, total_trades=100,
+                                         current_config={"min_edge": 0.08})
+    by_param = {c["param"]: c["value"] for c in result["changes"]}
+    assert by_param["momentum_weight"] == pytest.approx(0.019)
+
+def test_l6_cap_counts_live_flat_key_weights():
+    # Live L6 weight lives under the flat current-config key; its union with the
+    # proposal breaches the cap: (0.04 live + 0.03 proposed) * 4.0 = 0.28 > 0.25.
+    data = {"changes": [
+        {"param": "derived_log_atr_ratio_weight", "value": 0.03, "reason": "test"},
+    ]}
+    cfg = {"logit_scale": 4.0, "derived_flow_disagreement_weight": 0.04, "min_edge": 0.04}
+    result = _validate_strategy_response(data, total_trades=100, current_config=cfg)
+    assert not any(c["param"].startswith("derived_") for c in result["changes"])
+
+def test_l6_cap_uses_batch_logit_scale():
+    # The batch's proposed logit_scale 5.0 sets the headroom, not the live 3.0:
+    # (0.03 + 0.03) * 5.0 = 0.30 > 0.25 → L6 changes dropped, logit_scale kept.
+    data = {"changes": [
+        {"param": "derived_log_atr_ratio_weight", "value": 0.03, "reason": "test"},
+        {"param": "derived_autocorr_signed_mag_weight", "value": 0.03, "reason": "test"},
+        {"param": "logit_scale", "value": 5.0, "reason": "test"},
+    ]}
+    cfg = {"logit_scale": 3.0, "min_edge": 0.04}
+    result = _validate_strategy_response(data, total_trades=100, current_config=cfg)
+    params = {c["param"] for c in result["changes"]}
+    assert "logit_scale" in params
+    assert not any(p.startswith("derived_") for p in params)
+
+def test_l6_cap_keeps_non_breaching_batch():
+    # (0.005 live + 0.03 proposed) * 4.0 = 0.14 < 0.25 → kept.
+    data = {"changes": [
+        {"param": "derived_log_atr_ratio_weight", "value": 0.03, "reason": "test"},
+    ]}
+    cfg = {"logit_scale": 4.0, "derived_flow_disagreement_weight": 0.005, "min_edge": 0.04}
+    result = _validate_strategy_response(data, total_trades=100, current_config=cfg)
+    assert any(c["param"] == "derived_log_atr_ratio_weight" for c in result["changes"])
+
 def test_validate_clamps_kelly_fraction():
     data = {"changes": [{"param": "kelly_fraction", "value": 0.50, "reason": "test"}]}
     result = _validate_strategy_response(data, total_trades=100)
@@ -180,3 +234,14 @@ def test_format_strategy_context_includes_sections():
     assert "Overall Performance" in text
     assert "Recent Trades" in text
     assert "Previous Recommendations" in text
+
+
+def test_config_prompt_lists_exit_edge_threshold_as_tunable():
+    # exit_edge_threshold is the ONLY pipeline-tunable exit knob — it must appear
+    # in the tunable block, above the MANUAL-ONLY header.
+    text = _format_strategy_context({
+        "current_config": {"exit_edge_threshold": -0.07, "min_edge": 0.04},
+        "analysis": {},
+        "trades": [],
+    })
+    assert text.index("exit_edge_threshold") < text.index("### MANUAL-ONLY")

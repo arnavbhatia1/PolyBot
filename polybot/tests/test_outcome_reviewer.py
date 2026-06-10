@@ -1,7 +1,11 @@
 import json
 import pytest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from polybot.agents.outcome_reviewer import OutcomeReviewer
+
+_ET = ZoneInfo("America/New_York")
 
 @pytest.fixture
 def outcomes_dir(tmp_path):
@@ -64,3 +68,42 @@ def test_exit_reason_defaults_to_resolution(reviewer, outcomes_dir):
         exit_price=0.0, log_return=-10.0)
     data = json.loads(list(Path(outcomes_dir).glob("*.json"))[0].read_text())
     assert data["exit_reason"] == "resolution"
+
+def _write_outcome(outcomes_dir, position_id, market_id, ts_iso, name=None):
+    outcomes_dir.mkdir(parents=True, exist_ok=True)
+    record = {"position_id": position_id, "exit_timestamp": ts_iso, "timestamp": ts_iso}
+    if market_id is not None:
+        record["market_id"] = market_id
+    fname = name or f"{position_id}_{market_id}_{ts_iso[:10]}.json"
+    (outcomes_dir / fname).write_text(json.dumps(record))
+
+def test_rollup_skips_current_et_day(reviewer, outcomes_dir):
+    yesterday_noon_et = (datetime.now(_ET) - timedelta(days=1)).replace(
+        hour=12, minute=0, second=0, microsecond=0)
+    y_iso = yesterday_noon_et.astimezone(timezone.utc).isoformat()
+    t_iso = datetime.now(timezone.utc).isoformat()
+    _write_outcome(outcomes_dir, 1, "m_old", y_iso)
+    _write_outcome(outcomes_dir, 2, "m_today", t_iso)
+
+    rolled = reviewer.rollup_old_outcomes()
+
+    assert rolled == 1
+    names = {p.name for p in outcomes_dir.glob("*.json")}
+    assert f"rollup_{yesterday_noon_et.strftime('%Y-%m-%d')}.json" in names
+    assert any("m_today" in n for n in names)  # today's file untouched
+    assert not any("m_old" in n and not n.startswith("rollup_") for n in names)
+
+def test_load_all_dedups_by_position_and_market(reviewer, outcomes_dir):
+    ts = "2026-06-01T12:00:00+00:00"
+    _write_outcome(outcomes_dir, 1, "m1", ts, name="a.json")
+    _write_outcome(outcomes_dir, 1, "m1", ts, name="b.json")  # duplicate
+    _write_outcome(outcomes_dir, 1, "m2", ts, name="c.json")  # paper/live id collision
+    outcomes = reviewer.load_all_outcomes()
+    assert len(outcomes) == 2
+    assert {o["market_id"] for o in outcomes} == {"m1", "m2"}
+
+def test_load_all_dedups_legacy_records_by_position_id(reviewer, outcomes_dir):
+    ts = "2026-06-01T12:00:00+00:00"
+    _write_outcome(outcomes_dir, 7, None, ts, name="a.json")
+    _write_outcome(outcomes_dir, 7, None, ts, name="b.json")
+    assert len(reviewer.load_all_outcomes()) == 1

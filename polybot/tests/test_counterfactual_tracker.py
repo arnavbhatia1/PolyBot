@@ -1,7 +1,11 @@
 import json
 import time
 import pytest
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from polybot.agents.counterfactual_tracker import CounterfactualTracker
+
+_ET = ZoneInfo("America/New_York")
 
 
 @pytest.fixture
@@ -141,6 +145,29 @@ def test_load_all_skips_malformed(tracker, memory_dir):
     (cf_dir / "bad.json").write_text("not valid json{{{")
     (cf_dir / "good.json").write_text(json.dumps({"timestamp": "2026-01-01"}))
     assert len(tracker.load_all()) == 1
+
+
+# --- rollup_old_counterfactuals() ---
+
+def test_rollup_skips_current_et_day(tracker, memory_dir):
+    cf_dir = memory_dir / "counterfactuals"
+    cf_dir.mkdir(parents=True, exist_ok=True)
+    yesterday_noon_et = (datetime.now(_ET) - timedelta(days=1)).replace(
+        hour=12, minute=0, second=0, microsecond=0)
+    y_iso = yesterday_noon_et.astimezone(timezone.utc).isoformat()
+    t_iso = datetime.now(timezone.utc).isoformat()
+    (cf_dir / "old.json").write_text(json.dumps(
+        {"position_id": 1, "market_id": "m_old", "timestamp": y_iso}))
+    (cf_dir / "today.json").write_text(json.dumps(
+        {"position_id": 2, "market_id": "m_today", "timestamp": t_iso}))
+
+    rolled = tracker.rollup_old_counterfactuals()
+
+    assert rolled == 1
+    names = {p.name for p in cf_dir.glob("*.json")}
+    assert f"rollup_{yesterday_noon_et.strftime('%Y-%m-%d')}.json" in names
+    assert "today.json" in names  # today's file untouched
+    assert "old.json" not in names
 
 
 # --- BiasDetector.analyze_counterfactuals integration ---
