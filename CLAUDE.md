@@ -521,8 +521,6 @@ Trading/pipeline/test commands in Quick Start. Live pre-flight: `python verify_k
 
 `!pause` halts new entries only — open positions stay managed (hold/exit/resolution). `!clear` purges Discord chat messages only (never the DB/records) and requires the `confirm` token.
 
-`DISCORD_ADMIN_IDS` (comma-separated user IDs, optional in `.env`) restricts all commands to the listed users; unset = open to anyone in the channel, with a startup warning.
-
 ## 19. Persistence
 
 `memory/` (records: outcomes, counterfactuals, ghosts; calibration; and `state/`: pipeline history/run-log + rolling state), the per-mode SQLite DB, and `settings.yaml` are git-tracked, committed + pushed by `run_polybot.ps1` as it exits (§16).

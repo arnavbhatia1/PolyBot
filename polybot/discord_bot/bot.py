@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import math
-import os
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -22,23 +21,6 @@ from polybot.paths import PIPELINE_RUN_LOG_PATH, CALIBRATION_PARAMS_PATH
 logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
-
-
-def parse_admin_ids(raw: str | None) -> frozenset[int]:
-    """Parse DISCORD_ADMIN_IDS (comma-separated Discord user IDs) into an allowlist."""
-    ids: set[int] = set()
-    for part in (raw or "").split(","):
-        part = part.strip()
-        if part.isdigit():
-            ids.add(int(part))
-        elif part:
-            logger.warning(f"DISCORD_ADMIN_IDS entry {part!r} is not a numeric user ID — ignored")
-    return frozenset(ids)
-
-
-def is_authorized(admin_ids: frozenset[int], user_id: int) -> bool:
-    """Empty allowlist (DISCORD_ADMIN_IDS unset) = commands open to everyone."""
-    return not admin_ids or user_id in admin_ids
 
 
 def _slug_to_window(slug: str) -> str:
@@ -66,14 +48,6 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
     bot.is_paused = False
     bot.ready_event = asyncio.Event()
 
-    bot.admin_ids = parse_admin_ids(os.environ.get("DISCORD_ADMIN_IDS"))
-    if not bot.admin_ids:
-        logger.warning("DISCORD_ADMIN_IDS not set — Discord commands are open to all channel members")
-
-    @bot.check
-    async def admin_only(ctx):
-        return is_authorized(bot.admin_ids, ctx.author.id)
-
     @bot.event
     async def on_ready():
         logger.debug(f"Discord bot connected as {bot.user}")
@@ -88,11 +62,6 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         """
         if isinstance(error, commands.CommandNotFound):
             logger.debug(f"Unknown Discord command: {ctx.message.content!r}")
-            return
-        if isinstance(error, commands.CheckFailure):
-            logger.warning(
-                f"Unauthorized Discord command from {ctx.author} ({ctx.author.id}): "
-                f"{ctx.message.content!r}")
             return
         if isinstance(error, commands.CommandInvokeError):
             root = error.original

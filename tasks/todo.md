@@ -15,8 +15,6 @@ Canonical state + history: memory `edge-thesis-corrected-baseline.md`, `part-a-a
       loss_cut flag and replay as ordinary scalps until a week of flagged records accumulates.
 - [ ] Re-freeze lever if adoptions degrade realized $: recreate `memory/state/PIPELINE_FROZEN`
       (now a true analysis-only switch: no calibration change, no adoption, no auto-revert).
-- [ ] Optional hardening: set `DISCORD_ADMIN_IDS` in `polybot/config/.env` — Discord commands are
-      open to all channel members until it's set.
 
 ## Watch — calibrated regime (clean days started 06-09)
 
