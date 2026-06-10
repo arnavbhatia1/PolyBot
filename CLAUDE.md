@@ -502,7 +502,7 @@ polybot/
 
 ## 16. Running
 
-Trading/pipeline/test commands in Quick Start. Live pre-flight: `python verify_keys.py` (verify Polymarket creds + USDC balance/allowance).
+Trading/pipeline/test commands in Quick Start. Live pre-flight: `python scripts/verify_keys.py` (verify Polymarket creds + USDC balance/allowance; runnable from any directory).
 
 `run_polybot.ps1` is the daily loop: starts 12:01 AM ET, stops trading 11:30 PM ET, runs the pipeline 11:45 PM ET, commits + pushes as it exits (~11:55 PM ET), then sleeps until the next 12:01 AM ET restart — unless the exit slipped past midnight, in which case it restarts immediately instead of losing the day. The commit gate is the process exit code (guards crashes/auth failures; pipeline-internal errors are caught by the scheduler and still exit 0). The outer `while ($true)` survives auth errors but won't retry the same day — fix auth before midnight.
 
