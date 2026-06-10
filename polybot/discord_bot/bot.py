@@ -12,21 +12,17 @@ import math
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
-
 import discord
 from discord.ext import commands
-
 from polybot.paths import PIPELINE_RUN_LOG_PATH, CALIBRATION_PARAMS_PATH
 
 logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
-
 def _slug_to_window(slug: str) -> str:
     """Convert btc-updown-5m-1776691500 to '9:25-9:30 ET'."""
     try:
-        from datetime import timedelta
         ts = int(slug.rsplit("-", 1)[-1])
         start = datetime.fromtimestamp(ts, tz=_ET)
         end = start + timedelta(minutes=5)
@@ -138,7 +134,6 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         else:
             day_sharpe = 0
 
-        # Build message
         state = "PAUSED" if bot.is_paused else "ACTIVE"
         mode = bot.config.get("mode", "paper").upper()
         pnl_sign = "+" if pnl_24h >= 0 else ""
@@ -197,7 +192,6 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             exit_reason = t.get("exit_reason", "res")
             trade_type = "SCALP" if exit_reason == "scalp" else "HOLD"
             side = t.get("side", "?")
-            # Format time from exit_timestamp
             exit_ts = t.get("exit_timestamp", "")
             try:
                 dt = datetime.fromisoformat(exit_ts.replace("Z", "+00:00")).astimezone(_ET)

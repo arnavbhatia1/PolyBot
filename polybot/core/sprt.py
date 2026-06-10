@@ -9,17 +9,11 @@ import time
 
 
 class SPRTAccumulator:
-    """SPRT accumulator that tracks directional evidence for Up vs Down.
+    """SPRT accumulator tracking directional evidence for Up vs Down.
 
-    Parameters
-    ----------
-    alpha : float
-        Type I error rate (false positive). Default 0.05.
-    beta : float
-        Type II error rate (false negative). Default 0.10.
-    min_interval_s : float
-        Minimum seconds between observations. BTC ticks are autocorrelated
-        (rho ~0.2-0.4), so feeding every tick inflates evidence. Default 5.0.
+    ``alpha``/``beta``: Type I/II error rates. ``min_interval_s``: min seconds
+    between observations — BTC ticks are autocorrelated (rho ~0.2-0.4), so
+    feeding every tick inflates evidence.
     """
 
     def __init__(self, alpha: float = 0.05, beta: float = 0.10, min_interval_s: float = 5.0):
@@ -39,20 +33,8 @@ class SPRTAccumulator:
         return max(self._up_evidence, self._down_evidence)
 
     def update(self, prob_up: float) -> str:
-        """Add one observation and return decision.
-
-        Parameters
-        ----------
-        prob_up : float
-            Model probability that BTC finishes Up (0 to 1).
-
-        Returns
-        -------
-        str
-            "ENTER" if evidence crosses upper boundary,
-            "SKIP" if evidence crosses lower boundary,
-            "ACCUMULATING" if still collecting evidence.
-        """
+        """Add one observation; return "ENTER" (crossed upper boundary),
+        "SKIP" (declared noise), or "ACCUMULATING"."""
         if self._status != "ACCUMULATING":
             return self._status
 
@@ -62,9 +44,8 @@ class SPRTAccumulator:
         self._last_update_ts = now
         self._observation_count += 1
 
-        # Evidence increment: how much this tick supports a directional signal.
-        # log(max(p, 1-p) / 0.5) — stronger signals add more evidence.
-        # When prob_up == 0.5, increment is log(1) = 0 — no evidence.
+        # Evidence increment log(max(p, 1-p) / 0.5): stronger signals add more;
+        # prob_up == 0.5 adds nothing.
         prob_down = 1.0 - prob_up
 
         if prob_up > 0.5:
@@ -75,12 +56,10 @@ class SPRTAccumulator:
             self._down_evidence += increment
         # prob_up == 0.5: no evidence added to either side
 
-        # Check ENTER: strong directional evidence
         if self.llr >= self.upper_bound:
             self._status = "ENTER"
-        # Check SKIP: evidence is weak or conflicted after enough observations.
-        # 12 obs × 5s = 60s into window before declaring noise; 15% threshold
-        # avoids nuking choppy-but-tradeable windows.
+        # SKIP: weak/conflicted after 12 obs × 5s = 60s into the window; the 15%
+        # threshold avoids nuking choppy-but-tradeable windows.
         elif self._observation_count >= 12 and self.llr < self.upper_bound * 0.15:
             self._status = "SKIP"
 

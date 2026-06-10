@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import math
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 # Adoption requires this many candidate trades AND z-score above this floor.
@@ -26,20 +23,13 @@ def _lag1_autocorr(values: list[float]) -> float:
 
 
 def _jk_se(sharpe: float, n_trades: int, returns: list[float] | None = None) -> float:
-    """Jobson-Korkie SE for per-trade Sharpe, inflated by the lag-1
-    autocorrelation of realized returns when available.
-
-    Earlier versions ran a data-adaptive Newey-West correction with Bartlett
-    weights over L≈4-5 lags. Empirically the higher-order lags (k≥2) sat inside
-    the ±2/√n noise band at production sample sizes, so summing them added
-    estimator variance without removing bias. Collapsed to lag-1 only:
-    `se × sqrt(max(1, 1 + 2·ρ₁))`. Floor at 1 keeps the correction from
-    shrinking SE when ρ₁ < 0 (an artifact of the underlying short-window
-    estimator, not a real anti-autocorrelation signal we'd want to credit).
+    """Jobson-Korkie SE for per-trade Sharpe, inflated by lag-1 autocorrelation:
+    `se × sqrt(max(1, 1 + 2·ρ₁))`. The floor at 1 keeps ρ₁ < 0 (a short-window
+    estimator artifact, not real anti-autocorrelation) from shrinking SE.
 
     Two scheduler-internal sites (`_precompute_baseline`, `_run_weight_optimizer`)
-    compute the same SE inline using `_lag1_autocorr` directly — three call
-    sites, one mathematical regime.
+    compute the same SE inline via `_lag1_autocorr` — three call sites, one
+    mathematical regime.
     """
     if n_trades < 2:
         return 0.0

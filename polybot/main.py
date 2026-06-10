@@ -16,8 +16,7 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 
 # Force UTF-8 on stdout/stderr so Windows cp1252 consoles don't choke on box-drawing
-# chars (═ ─ Δ ± ✓ ✗ ⚠ →) used in pipeline summary output. errors='replace' keeps the
-# process alive if a terminal still can't render a given codepoint.
+# chars in pipeline summaries; errors='replace' survives any still-unrenderable codepoint.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -92,8 +91,7 @@ _console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datef
 _file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="a", encoding="utf-8")
 _file_handler.setFormatter(_StripAnsiFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
 
-# Async logging: disk writes cost 1-5ms and add up when a scalp decision chains 5-10
-# log lines, so logging is offloaded to a queue thread (below) off the hot path.
+# Async logging: disk writes (1-5ms each) are offloaded to a queue thread, off the hot path.
 import queue as _queue
 _log_queue: _queue.Queue = _queue.Queue(-1)  # unbounded so logging never blocks
 _queue_handler = logging.handlers.QueueHandler(_log_queue)
@@ -137,9 +135,8 @@ _CONTRACT_CACHE_TTL = 5.0  # seconds — re-fetch at most every 5s per contract
 _CONTRACT_RESOLUTION_TTL = 2.0  # faster polling when contract might be resolving
 _WS_STALE_S = 10.0  # max age for CLOB WS BBA/book before treating as stale
 
-# Freshness threshold for the auxiliary-signal stamping. Each aux trade_context
-# field is None when its source is missing or stale beyond this limit — never
-# 0.0, so the layers can distinguish "feed cold" from "real zero".
+# Aux-signal freshness limit: aux trade_context fields stamp None (never 0.0) when
+# the source is missing/stale, so "feed cold" stays distinguishable from "real zero".
 _AUX_FRESH_S_COINBASE = 10.0
 
 # Sub-second CVD-acceleration scale — local to the deceleration gate. L3b uses
@@ -209,11 +206,9 @@ def _save_prev_resolution_margin(margin: float) -> None:
 _sprt: SPRTAccumulator | None = None
 _regime_detector: RegimeDetector | None = None
 _current_window_id: str = ""
-_early_entry_fired: bool = False
 _adverse_monitor: AdverseSelectionMonitor | None = None
 _last_adverse_skip_log_window: int = 0  # throttle adverse-skip logs to once per 5-min window
 _last_logged_action: str = ""  # suppress repeated EVAL blocks when action hasn't changed
-_last_eval_buy_window: int = 0  # show full BUY block only once per window
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count for the current ET day
 _gate_stats_day_key: str = ""           # ET date string keyed to _gate_skip_counts
 from collections import OrderedDict as _OrderedDict
@@ -242,10 +237,8 @@ def _log_skip_once(cid: str, key: str, msg: str) -> None:
 def _log_hold_heartbeat_stale(pos: dict[str, Any], live: dict[str, Any], reason: str) -> None:
     """30s-throttled HOLD heartbeat for the exit-path stale-feed branch.
 
-    Shares the _last_hold_log throttle with the normal HOLD log so the
-    operator sees a steady pulse confirming the position is being monitored
-    and *why* the bot won't act. Surfacing the reason is the whole point —
-    silent fallbacks are what produced the "moved against us (2%)" pathology.
+    Shares the _last_hold_log throttle with the normal HOLD log. Must surface WHY
+    the bot won't act — silent fallbacks produced the "moved against us (2%)" pathology.
     """
     now_ts = time.time()
     mid = pos.get("market_id", "")
@@ -261,13 +254,10 @@ def _log_hold_heartbeat_stale(pos: dict[str, Any], live: dict[str, Any], reason:
 def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) -> tuple[float, str]:
     """Return the Coinbase BTC price + source label, or (0.0, "stale").
 
-    Coinbase is the lowest-latency feed here and the venue Chainlink resolves
-    against, so it is the sole price source for decisions. When Coinbase isn't
-    fresh (<2s) the decision is SKIPPED — callers must treat (0.0, "stale") as
-    "skip this decision", not a zero price. Sourcing from Binance on a Coinbase
-    gap would trust a venue that can diverge across the strike on a transient
-    print, flipping P(side) on a tick the resolver never sees; skipping is safer.
-    Binance is read only to log the cross-venue gap for monitoring.
+    Coinbase (the venue Chainlink resolves against) is the sole decision price;
+    callers must treat (0.0, "stale") as "skip this decision", not a zero price.
+    No Binance fallback — a divergent transient print could flip P(side) on a tick
+    the resolver never sees. Binance is read only to log the cross-venue gap.
     """
     cb_price = cb_age = bt_price = bt_age = 0.0
     if coinbase_feed:
@@ -295,9 +285,7 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
     """Emit one combined SKIP line (signal context + gate reason).
 
     Throttled per (cid, gate_key) — direction is intentionally NOT in the key, so
-    rapid Up/Down ping-pong on the same gate (e.g. "No edge" firing alternately
-    for each side as model prob hovers around the threshold) emits a single
-    SKIP rather than 20× in 5 seconds. New gate or new window logs immediately.
+    rapid Up/Down ping-pong on the same gate emits one SKIP, not 20× in 5 seconds.
     """
     ctx = _pending_eval_ctx.get(cid)
     if not ctx:
@@ -315,7 +303,6 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
         f"model {ctx['prob']:.0%} {ctx['direction']}, BTC {ctx['dist']:+,.0f} vs strike | "
         f"{reason}{_sprt_part}{_C.RESET}"
     )
-_startup_banner_logged: bool = False
 
 def _et_date_key() -> str:
     """Current ET calendar date as 'YYYYMMDD' — the rollover key for daily gate stats."""
@@ -596,9 +583,8 @@ async def _record_outcome(outcome_reviewer: Any, pos: dict[str, Any], exit_price
         )
     except Exception as e:
         logger.error(f"Failed to record outcome: {e}")
-    # Sync gate_stats to disk on every outcome (scalp and resolution alike) so
-    # intraday telemetry never trails the last resolution. Background thread
-    # keeps the close path off the I/O critical section.
+    # Sync gate_stats to disk on every outcome so intraday telemetry never trails
+    # the last resolution; background thread keeps the close path off disk I/O.
     asyncio.create_task(asyncio.to_thread(flush_gate_stats))
 
 
@@ -621,21 +607,17 @@ async def _evaluate_signal_and_enter(
         ghost_tracker: Any = None) -> tuple[str | None, int]:
     """Compute indicators/flow/signal, check for entry, size the trade, execute."""
 
-    # Aux signals are stamped once per evaluation so every ghost rejection and
-    # every filled outcome share the same schema. The layers can rely on the aux
-    # fields being either a real value or None — never a 0.0 stand-in.
+    # Stamped once per evaluation so ghosts and filled outcomes share one schema;
+    # aux fields are a real value or None — never a 0.0 stand-in.
     aux_signals = _build_aux_signals(coinbase_feed)
 
     def _ghost(gate: str, signal: Any, snap: dict) -> None:
         """Record a ghost trade when a downstream gate rejects a real BUY signal.
 
-        Builds a base trade_context from closure vars at gate-fire time
-        (calibrated + raw model probability, edge, market prices + L1–L5
-        layer inputs) so the ghost survives AgentScheduler._ghost_to_outcome's
-        market-price gate and reaches the calibration + KS-shift + backtest
-        pools. A caller-supplied snap (e.g. pre-submit ghosts pass the full live
-        indicator snapshot) merges on top — caller values win for overlapping
-        keys.
+        Base trade_context is built from closure vars at gate-fire time so the
+        ghost survives AgentScheduler._ghost_to_outcome's market-price gate and
+        reaches the calibration/backtest pools; a caller-supplied snap merges on
+        top (caller wins on overlapping keys).
         """
         if ghost_tracker is None or signal is None:
             return
@@ -690,17 +672,15 @@ async def _evaluate_signal_and_enter(
             indicator_snapshot=merged_snap,
         )
 
-    # Feed freshness gate: skip entries when any critical price/strike feed has
-    # gone silent. A connected-but-idle WebSocket can leave stale state in place
-    # while we evaluate; better to skip the window than to size on stale data.
+    # Feed freshness gate: a connected-but-idle WebSocket can leave stale state in
+    # place — better to skip the window than size on stale data.
     stale_feeds: list[str] = []
     if coinbase_feed and coinbase_feed.state.age_seconds > 30:
         stale_feeds.append(f"coinbase={coinbase_feed.state.age_seconds:.0f}s")
     if chainlink_feed and chainlink_feed.age_seconds > 60:
         stale_feeds.append(f"chainlink={chainlink_feed.age_seconds:.0f}s")
-    # Binance aggTrade underpins L3b (CVD/taker) and the CVD-deceleration gate.
-    # Skip entirely on stale data rather than silently zeroing L3b — we don't
-    # size off a degraded model when the feed goes silent.
+    # Binance aggTrade underpins L3b + the CVD-decel gate: skip entirely rather
+    # than silently zeroing L3b — never size off a degraded model.
     if trades_feed is not None and trades_feed.accumulator is not None:
         agg_age = trades_feed.accumulator.latest_age_s
         if agg_age > 30:
@@ -717,18 +697,15 @@ async def _evaluate_signal_and_enter(
     in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
 
     # SPRT: accumulate evidence on new windows (no hard observe block)
-    global _sprt, _current_window_id, _early_entry_fired
+    global _sprt, _current_window_id
     window_id = contract.get("market_id", contract.get("slug", ""))
     if window_id != _current_window_id:
         _current_window_id = window_id
         if _sprt: _sprt.reset()
-        _early_entry_fired = False
         _last_skip_log.pop(cid, None)  # fresh window — allow skip reasons to log again
 
-    # Compute indicators and evaluate probability model
     indicators = indicator_engine.compute_all(binance_feed.buffer)
 
-    # Compute order flow signal from CLOB data
     trades_up = clob_ws.get_trade_history(token_up) if clob_ws else []
     trades_down = clob_ws.get_trade_history(token_down) if clob_ws else []
     flow_data = compute_flow_signal(book_up, book_down, trades_up, trades_down)
@@ -744,12 +721,10 @@ async def _evaluate_signal_and_enter(
         aux_signals.get("coinbase_taker_n", 0),
         vol_factor=_vol_factor,
     )
-    # Telemetry-only "cold vs real-zero" split. The live model above must consume
-    # a number (compute_spot_flow_signal / compute_flow_signal collapse a cold
-    # feed to 0.0), but the *recorded* trade_context value must be None when the
-    # source feed is missing/stale so the dataset can tell "feed cold" from
-    # "genuinely flat flow" (CLAUDE.md §10). spot_flow is cold when Coinbase CVD
-    # is None; book flow is cold when neither CLOB book nor any trade is present.
+    # Cold-vs-real-zero split (CLAUDE.md §10): the live model consumes a number
+    # (cold collapses to 0.0), but the *recorded* trade_context value must be None
+    # when the feed is cold — spot_flow cold when Coinbase CVD is None; book flow
+    # cold when neither CLOB book nor any trade is present.
     spot_flow_rec = spot_flow_signal if aux_signals.get("coinbase_cvd_60s") is not None else None
     _book_present = bool(
         book_up.get("bids") or book_up.get("asks")
@@ -762,12 +737,10 @@ async def _evaluate_signal_and_enter(
         cvd_accel_val = coinbase_feed.get_cvd_acceleration(recent_s=15.0, baseline_s=45.0)
         cvd_accel_norm = math.tanh(cvd_accel_val / _COINBASE_CVD_ACCEL_SCALE)
 
-    # Get closes array for regime detection
     closes = binance_feed.buffer.get_closes()
 
-    # Fetch the live fee rate so Kelly sizes against the cost the trader will
-    # actually pay, not the hardcoded default. Constant today (no HTTP call),
-    # but plumbing it through means a future per-token rate Just Works.
+    # Live fee rate so Kelly sizes against the actual cost (constant today; plumbed
+    # so a future per-token rate Just Works).
     fee_rate = await market_scanner.fetch_fee_rate(token_up, http_client)
 
     signal = signal_engine.evaluate(
@@ -781,9 +754,8 @@ async def _evaluate_signal_and_enter(
         fee_rate=fee_rate,
     )
 
-    # SPRT: feed the signal into the accumulator (used by SPRT side gate below).
-    # signal.prob is the probability of the CHOSEN side, so invert for BUY_NO to
-    # produce the prob_up that SPRT expects.
+    # SPRT accumulator input: signal.prob is the CHOSEN side's probability, so
+    # invert for BUY_NO to produce the prob_up SPRT expects.
     if _sprt:
         if signal.action == "BUY_YES":
             _sprt.update(signal.prob)
@@ -804,7 +776,7 @@ async def _evaluate_signal_and_enter(
     # Populate eval context for all evaluations. signal.side is the side the
     # prob/edge refer to (the edge-best side can be the sub-50% one); the
     # prob>=0.5 heuristic remains only for pre-model skips that carry no side.
-    global _last_logged_action, _last_eval_buy_window
+    global _last_logged_action
     _is_buy = signal.action in ("BUY_YES", "BUY_NO")
     _direction = signal.side or ("Up" if signal.prob >= 0.5 else "Down")
     action_changed = _direction != _last_logged_action or eval_window != last_eval_log_window
@@ -830,7 +802,6 @@ async def _evaluate_signal_and_enter(
         if action_changed:
             last_eval_log_window = eval_window
             _last_logged_action = _direction
-            _last_eval_buy_window = eval_window
             _last_gate_skip_state.pop(cid, None)
     else:
         last_eval_log_window = eval_window
@@ -914,11 +885,8 @@ async def _evaluate_signal_and_enter(
             )
 
     # --- EDGE DECAY GATE ---
-    # Mean drift of the traded token's mid in the 15s window after recent
-    # fills. The adverse_selection gate above counts fills crossing the wrong
-    # way; this gate measures HOW HARD they cross. A consistently negative drift means
-    # quotes are repositioning against us faster than we can scalp out — a
-    # direct read on whether the structural edge has decayed.
+    # Adverse-selection counts fills crossing the wrong way; this measures HOW HARD
+    # they cross (mean 15s post-fill mid drift) — a read on structural edge decay.
     if _adverse_monitor is not None:
         edge_decay_threshold = config.get("signal", {}).get("edge_decay_threshold", -0.05)
         recent_decay = _adverse_monitor.get_recent_decay_mean(window_s=15.0, lookback_s=1800.0,
@@ -946,8 +914,7 @@ async def _evaluate_signal_and_enter(
     flip_state = _window_flip_state.setdefault(cid, {"flip_count": 0})
     flip_count = flip_state["flip_count"]
     if flip_count >= 1:
-        # Per-flip premium: base + 0.005 × max(0, flip_count − 2). Flip 1–2 pay the
-        # base premium; flip 3 pays +0.5pp, flip 4 pays +1.0pp, etc. — unbounded.
+        # Flips 1–2 pay the base premium; +0.5pp per flip beyond the 2nd, unbounded.
         flip_premium_base = config.get("entry_timing", {}).get("flip_edge_premium", _d("flip_edge_premium"))
         flip_premium = flip_premium_base + 0.005 * max(0, flip_count - 2)
         spread_est = -1.0
@@ -959,9 +926,8 @@ async def _evaluate_signal_and_enter(
                     spread_est = float(bba.get("spread", -1)) if bba.get("spread") else -1.0
                 except (TypeError, ValueError):
                     spread_est = -1.0
-        # Real round-trip cost in price units: enter at ask (cross half-spread),
-        # exit at bid (cross half-spread) = full `spread` plus fee impact on both
-        # legs. Polymarket fee impact = fee_rate × p × (1-p), max ~1.75% at ATM.
+        # Real round-trip cost: full `spread` (half-spread crossed each leg) plus
+        # fee impact on both legs (fee_rate × p × (1-p), max ~1.75% at ATM).
         side_price = price_up if side == "Up" else price_down
         if spread_est >= 0:
             fee_impact_one_leg = DEFAULT_FEE_RATE * side_price * (1.0 - side_price)
@@ -975,8 +941,6 @@ async def _evaluate_signal_and_enter(
             return None, last_eval_log_window
 
     # --- SPRT GATE ---
-    # Blocks entries when sequential evidence is definitively weak (SKIP status)
-    # or hasn't yet accumulated enough directional support (low confidence).
     # Placed after side/cid assignment so _log_skip_once and _ghost have proper context.
     if _sprt:
         sprt_cfg = config["sprt"]
@@ -989,8 +953,7 @@ async def _evaluate_signal_and_enter(
             _ghost("sprt_skip", signal, {})
             _emit_gate_skip(cid, f"sprt_skip_{side}", f"SPRT: signal too weak ({sprt_obs} obs)")
             return None, last_eval_log_window
-        # Minimum-evidence floor: after the 6-obs warmup, require at least
-        # `min_confidence` accumulated LLR before allowing entry.
+        # Minimum-evidence floor after the 6-obs warmup.
         if sprt_obs >= 6 and sprt_conf < min_sprt_conf:
             _record_skip("sprt_low_confidence")
             _ghost("sprt_low_confidence", signal, {})
@@ -1006,11 +969,8 @@ async def _evaluate_signal_and_enter(
             return None, last_eval_log_window
 
     # --- LAYER DISAGREEMENT GATE ---
-    # `compute_momentum` is regime-aware and sign-coherent (positive = bullish in
-    # the current regime). Reuse the cached value from compute_probability above —
-    # the inputs (indicators, regime) haven't changed since signal_engine.evaluate.
-    # Threshold 0.5 matches a strong-disagreement signal on the unit-clamped
-    # output (group sums × weights, regime-conditioned).
+    # Reuses the momentum cached by compute_probability (inputs unchanged since
+    # evaluate); 0.5 = strong disagreement on the unit-clamped, sign-coherent output.
     momentum_score = signal_engine.last_momentum_score
     momentum_opposes = (
         (side == "Up" and momentum_score < -0.5)
@@ -1023,10 +983,8 @@ async def _evaluate_signal_and_enter(
         return None, last_eval_log_window
 
     # --- CVD DECELERATION GATE ---
-    # Skip when spot-flow is materially driving the entry but buying pressure is
-    # already fading. spot_flow_signal × cvd_accel_val < 0 means the CVD spike
-    # has peaked and is reverting — these entries resolve at $0 rather than
-    # recovering, because the momentum that created the signal is already gone.
+    # spot_flow × cvd_accel < 0 = the CVD spike already peaked and is reverting;
+    # these entries resolve at $0 rather than recovering.
     if abs(spot_flow_signal) >= 0.20 and spot_flow_signal * cvd_accel_val < 0:
         _record_skip("cvd_decel")
         _ghost("cvd_decel", signal, {})
@@ -1044,7 +1002,6 @@ async def _evaluate_signal_and_enter(
     raw_kelly_size = bankroll * signal.kelly_size
     size = round(raw_kelly_size * kelly_mult * time_mult, 2)
 
-    # Regime-based Kelly adjustment
     regime_state = None
     if _regime_detector:
         atr_val = indicators.get("atr", {}).get("atr", 0)
@@ -1087,17 +1044,12 @@ async def _evaluate_signal_and_enter(
     if size > bankroll * max_bankroll_pct:
         size = round(bankroll * max_bankroll_pct, 2)
 
-    # Cap size to fraction of book depth (realistic fill constraint — unlike risk caps,
-    # this is about whether the order can actually fill).
-    #
-    # The upstream thin-CLOB-depth gate proceeds if EITHER side has depth ≥ min, so the
-    # chosen side can still be the empty/thin leg of a one-sided book. Treat a chosen-side
-    # depth below the floor as an explicit skip rather than blasting a full-Kelly order
-    # into a 0-liquidity book.
+    # Book-depth fill cap. The upstream thin-CLOB gate passes if EITHER side has
+    # depth ≥ min, so the chosen side can still be the empty leg of a one-sided
+    # book — explicit skip rather than a full-Kelly order into 0 liquidity.
     side_depth = depth_usd_up if side == "Up" else depth_usd_down
     max_fill_pct = config.get("execution", {}).get("max_book_fill_pct", 0.50)
-    # Reuse the same floor as the upstream both-sides-thin gate so configuration
-    # has one source of truth and the two gates can't drift apart.
+    # Same floor as the upstream both-sides-thin gate so the two can't drift apart.
     min_side_depth = market_scanner.min_book_depth_usd
     if side_depth < min_side_depth:
         _record_skip("thin_book_depth")
@@ -1106,9 +1058,8 @@ async def _evaluate_signal_and_enter(
         return None, last_eval_log_window
     max_fill = side_depth * max_fill_pct
     if size > max_fill:
-        # side_depth ≥ min_side_depth ($50) is enforced above, so max_fill is
-        # always well above the $1 CLOB floor — the final min_size gate below
-        # handles any residual sub-$1 size without a separate sub-cap branch.
+        # side_depth ≥ $50 is enforced above, so max_fill sits well above the $1
+        # CLOB floor; the min_size gate below handles any residual sub-$1 size.
         size = round(max_fill, 2)
 
     # Net-edge gate: reject if slippage eats the edge below threshold.
@@ -1121,10 +1072,8 @@ async def _evaluate_signal_and_enter(
         _emit_gate_skip(cid, "net_edge_slippage", f"net edge {net_edge:+.1%} after {est_slip:.2%} slippage")
         return None, last_eval_log_window
 
-    # Final minimum size check — after all caps have been applied. Polymarket's
-    # CLOB rejects marketable orders below $1 notional, so gate here to avoid
-    # spamming attempts that can never fill. Paper mode mirrors the same floor
-    # so backtest sample matches live execution.
+    # Final min-size check after all caps: Polymarket's CLOB rejects orders below
+    # $1 notional. Paper mirrors the floor so the backtest sample matches live.
     if size < 1.0:
         _record_skip("min_size")
         _emit_gate_skip(cid, "min_size", f"size ${size:.2f} < $1 min")
@@ -1139,12 +1088,9 @@ async def _evaluate_signal_and_enter(
                  if _fresh_bba_ts > 0 and (time.time() - _fresh_bba_ts) <= _WS_STALE_S
                  else 0.0)
 
-    # Apply slippage to the price returned by _fetch_market_prices (the executable CLOB book best_ask).
-    # Entries deliberately use a tight slip (no FOK-cross floor): we WANT the FOK to
-    # reject when prices have moved adversely between signal and fill — that adverse-
-    # selection rejection is a feature, it stops us from buying post-reversal tops.
-    # Exits use a loose floor instead (see exit_fill in evaluate_hold) — there we
-    # must fill to avoid death-spiral lockout.
+    # Entries deliberately use a tight slip (no FOK-cross floor): an FOK reject on
+    # adverse movement is a feature — it stops buying post-reversal tops. Exits use
+    # a loose floor instead (see exit_fill) — there we must fill to avoid lockout.
     impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
     slip = slippage_pct(size, side_depth, impact)
     price = market_scanner.snap_to_tick(price * (1 + slip), tick_size)
@@ -1155,9 +1101,8 @@ async def _evaluate_signal_and_enter(
         ))
 
     snapshot = indicator_engine.get_snapshot(indicators)
-    # Last two closes are stored so the L6 backtest can reconstruct `last_return`
-    # for the autocorr_signed_mag feature — without them that feature is dormant
-    # in replay and the pipeline can't adopt it even if it would help live.
+    # Last two closes let the L6 backtest reconstruct `last_return` for
+    # autocorr_signed_mag — without them the feature is dormant in replay.
     _closes_buf = binance_feed.buffer.get_closes()
     _closes_tail = (
         [float(_closes_buf[-2]), float(_closes_buf[-1])]
@@ -1196,30 +1141,25 @@ async def _evaluate_signal_and_enter(
         "entry_phase": phase,
         "flip_count": flip_count,
         "is_flip": flip_count > 0,
-        # Order-book microstructure (Binance.com BTC spot top-20). Each aux
-        # field stamped from the once-per-evaluation `aux_signals` dict so
-        # filled outcomes and ghost rejections share the same schema. None means
-        # "feed cold / stale", never 0.0.
+        # Microstructure aux, stamped from the once-per-evaluation `aux_signals`
+        # dict (same schema as ghosts). None means "feed cold/stale", never 0.0.
         "depth_usd_top20": depth_feed.get_depth_usd() if depth_feed else 0,
         **aux_signals,
         # SPRT state: sprt_confidence feeds BiasDetector's by_sprt_confidence bucket; sprt_status is audit-only.
         "sprt_confidence": _sprt.get_confidence() if _sprt else 0,
         "sprt_status": _sprt.get_status() if _sprt else "N/A",
-        # Adverse-selection rolling state (gate diagnostic). Field name reads as
-        # "fraction of fills that moved against us measured AT 30s post-fill" over
-        # the monitor's 30-minute lookback — 30s is the checkpoint, not the lookback.
+        # Adverse-selection diagnostic — 30s is the post-fill checkpoint, not the
+        # lookback (that's the monitor's 30-minute window).
         "adverse_rate_at_30s": adverse_rate_at_30s if adverse_rate_at_30s >= 0 else 0.5,
         "adverse_kelly_mult": round(adverse_kelly_mult, 3),
         # Token IDs for both outcomes — required for startup reconciliation and dust sweeping.
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
     }
-    # Pre-submit edge re-check.
-    # Prefer walking the current ask ladder for the actual expected FOK VWAP —
-    # the modeled `slip` (slippage_pct) approximates this against `side_depth`,
-    # but the book itself is the ground truth. When the book is unavailable or
-    # too thin to walk (returns None), fall back to the BBA-only fresh_ask gate
-    # so this never tightens-by-skipping a path the old gate would have passed.
+    # Pre-submit edge re-check: walk the ask ladder for the actual expected FOK
+    # VWAP (the book is ground truth vs the modeled slip). Book unavailable/too
+    # thin → fall back to the BBA-only fresh_ask gate, so this never tightens a
+    # path the BBA gate would have passed.
     max_edge_live = config.get("signal", {}).get("max_edge", 0.20)
     book_for_walk = clob_ws.get_book(token_id) if clob_ws else None
     if book_for_walk:
@@ -1267,11 +1207,9 @@ async def _evaluate_signal_and_enter(
         return None, last_eval_log_window
 
     if result.success:
-        # Drop the open-positions cache so the next entry tick sees this new
-        # position instead of trailing the 1s TTL.
+        # Drop the open-positions cache so the next tick sees this position immediately.
         _invalidate_open_positions_cache()
-        # Use the actual fill price (may differ from signal-moment price due to
-        # paper trader latency + book-walk, or live FOK slippage).
+        # Actual fill price (paper latency/book-walk or live FOK slippage may differ).
         fill_price = result.fill_price if result.fill_price > 0 else price
         slip_note = f"  [filled @ {fill_price:.3f} vs signal {price:.3f}]" if abs(fill_price - price) > 0.001 else ""
 
@@ -1281,26 +1219,22 @@ async def _evaluate_signal_and_enter(
         bankroll_now = await db.get_bankroll()
         _dist = btc_price - strike
         _why_parts = []
-        # BTC position vs strike
         if side == "Up":
             _why_parts.append(f"BTC ${abs(_dist):,.0f} {'above' if _dist > 0 else 'below'} strike — {'Favors Up' if _dist > 0 else 'fighting strike'}")
         else:
             _why_parts.append(f"BTC ${abs(_dist):,.0f} {'below' if _dist < 0 else 'above'} strike — {'Favors Down' if _dist < 0 else 'fighting strike'}")
-        # Order flow
         if flow_score > 0.1:
             _why_parts.append(f"Strong buy pressure in book (flow {flow_score:+.2f})")
         elif flow_score < -0.1:
             _why_parts.append(f"Strong sell pressure in book (flow {flow_score:+.2f})")
         else:
             _why_parts.append(f"neutral book flow ({flow_score:+.2f})")
-        # CVD / spot flow
         if spot_flow_signal > 0.05:
             _why_parts.append(f"Buyers dominating on Binance (cvd {spot_flow_signal:+.2f})")
         elif spot_flow_signal < -0.05:
             _why_parts.append(f"Sellers dominating on Binance (cvd {spot_flow_signal:+.2f})")
         else:
             _why_parts.append(f"Neutral CVD ({spot_flow_signal:+.2f})")
-        # Regime
         if regime_state and regime_state.name == "trending":
             _why_parts.append(f"Market trending {side.lower()}")
         elif regime_state and regime_state.name == "reverting":
@@ -1350,9 +1284,8 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     except (ValueError, IndexError):
         contract_window_ts = int(now_ts // 300) * 300  # fallback
 
-    # Always prefer Gamma's priceToBeat — it's the authoritative resolution value.
-    # Override any cached strike if Gamma now has it (it may not be available at
-    # window open but appears mid-window as Gamma catches up).
+    # Gamma's priceToBeat is the authoritative resolution value — override any
+    # cached strike once it appears (often mid-window, after Gamma catches up).
     ptb = (contract or {}).get("event_metadata") or {}
     ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
     if ptb and window_strikes.get(contract_window_ts) != ptb:
@@ -1369,7 +1302,6 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
                 window_strikes[contract_window_ts] = cl_strike
                 logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
 
-    # Clean old strikes
     window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
 
     strike = window_strikes.get(contract_window_ts, 0)
@@ -1417,18 +1349,15 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
                 return ws_book
         return await market_scanner.fetch_clob_book(token, http_client)
 
-    # Fetch both books in parallel. We derive entry prices from the direct CLOB
-    # best_ask (the actual price you'd PAY to buy this token via FOK), NOT the
-    # /price cross-matched API which can return phantom executable prices that
-    # don't reflect what live trading actually fills against.
+    # Entry prices derive from the direct CLOB best_ask (what a FOK actually pays),
+    # NOT the /price cross-matched API, which can return phantom executable prices.
     book_up, book_down = await asyncio.gather(
         _get_book(ws_book_up, token_up),
         _get_book(ws_book_down, token_down),
     )
 
-    # Direct best_ask from the CLOB book — what FOK buys would actually pay.
-    # Treat stale BBA entries (no recent WS update) as missing so we fall
-    # through to the freshly-fetched book or Gamma fallback.
+    # Stale BBA entries are treated as missing so we fall through to the
+    # freshly-fetched book or Gamma fallback.
     bba_up = clob_ws.best_bid_ask.get(token_up, {}) if clob_ws else {}
     bba_down = clob_ws.best_bid_ask.get(token_down, {}) if clob_ws else {}
     def _bba_fresh(bba: dict) -> bool:
@@ -1453,9 +1382,8 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
     else:
         price_up, price_down, price_source = contract["price_up"], contract["price_down"], "gamma"
 
-    # Per-token book freshness gate. Without this, one side stale by >1s under the
-    # _WS_STALE_S 10s ceiling can cause the price_sum check to reject otherwise-valid
-    # markets when the freshness skew is the real culprit, not the no-arb math.
+    # Per-token freshness gate: one side stale (yet under _WS_STALE_S) would make
+    # the price_sum check reject valid markets when skew, not no-arb, is the culprit.
     if (
         price_source == "clob"
         and clob_ws is not None
@@ -1478,11 +1406,9 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
 
     eval_window = int(now_ts // 300) * 300
 
-    # Book depth in USD
     depth_usd_up = depth_up * ask_up if ask_up > 0 else 0
     depth_usd_down = depth_down * ask_down if ask_down > 0 else 0
 
-    # Skip if no real depth to fill against
     if price_source == "clob":
         min_depth = market_scanner.min_book_depth_usd
         if depth_usd_up < min_depth and depth_usd_down < min_depth:
@@ -1493,9 +1419,8 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
                 logger.info(f"EVAL {_slug_to_window(_cid)}: Thin CLOB depth — Up=${depth_usd_up:.0f} Dn=${depth_usd_down:.0f}, skipping window")
             return None, last_eval_log_window
 
-    # Skip if effective execution cost (ask-distance + taker fee) too wide on
-    # either side — the side we end up trading governs the cost, and we don't
-    # know it yet.
+    # Effective execution cost must clear max_spread on EITHER side — we don't yet
+    # know which side we'll trade.
     if price_source == "clob":
         def _ws_spread(bba: dict, fresh: bool) -> float:
             if not fresh:
@@ -1521,11 +1446,9 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
             _record_skip("spread_unavailable")
             logger.debug("Spread unavailable from WS + REST — skipping tick (fail-closed)")
             return None, last_eval_log_window
-        # Paying the ask = roughly half-spread above mid; add the EFFECTIVE peak
-        # taker fee (flat per-share proxy, NOT the raw coefficient) for full
-        # execution cost. Gate is still max_spread so we don't accidentally tighten
-        # into illiquid markets — we just account for the fee-eaten portion of
-        # tight-spread entries.
+        # Half-spread above mid + the EFFECTIVE peak taker fee (flat per-share
+        # proxy, NOT the raw coefficient). Gate stays max_spread — accounts for the
+        # fee-eaten portion without tightening into illiquid markets.
         effective_cost = spread_val * 0.5 + EFFECTIVE_FEE_PEAK
         if effective_cost > max_spread:
             _record_skip("spread_too_wide")
@@ -1583,9 +1506,8 @@ async def _discover_contract_and_subscribe(market_scanner: Any,
         await clob_ws.subscribe(new_tokens)
         ws_subscribed_tokens.extend(new_tokens)
 
-    # Pre-warm tick_size cache for both tokens so the entry path hits cache
-    # and avoids paying ~30-100ms of HTTP latency right before order submit.
-    # 1-hour TTL — well beyond the 5-minute window lifespan.
+    # Pre-warm tick_size cache so the entry path avoids ~30-100ms of HTTP latency
+    # right before order submit (1-hour TTL outlives the 5-minute window).
     if http_client and market_scanner and current_tokens:
         await asyncio.gather(
             *[market_scanner.fetch_tick_size(t, http_client) for t in current_tokens],
@@ -1643,22 +1565,17 @@ async def _evaluate_and_exit_position(
         coinbase_feed: Any = None,
         chainlink_feed: Any = None) -> tuple[int, int, float]:
     """Re-evaluate an active position and exit (scalp) if holding edge is gone."""
-    # Deferral for too-small positions happens at the actual scalp step (just
-    # before close_trade), NOT here — so an abandoned-scalp position keeps being
-    # monitored, keeps emitting heartbeats, and resumes scalping if the bid
-    # recovers above the $1 CLOB minimum.
-    # btc_now comes from _fastest_btc_price (Coinbase only); if stale it returns 0
-    # and we HOLD without scalping. Acting on a stale BTC produced the "moved
-    # against us (2%)" pathology mid-window.
+    # Too-small-position deferral happens at the scalp step, NOT here — abandoned
+    # positions keep being monitored and resume scalping if the bid recovers ≥ $1.
+    # Stale Coinbase → btc_now 0 → HOLD without scalping (acting on a stale BTC
+    # produced the "moved against us (2%)" pathology mid-window).
     btc_now, _btc_src = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed)
     if btc_now <= 0:
         _log_hold_heartbeat_stale(pos, live, "no fresh BTC price")
         return day_wins, day_losses, day_fees
 
-    # Mirror the entry-path staleness gate. Every signal-input feed must be
-    # fresh, or we defer the decision. CLAUDE.md spec: Coinbase >30s,
-    # Chainlink >60s, aggTrade >30s (L3b CVD/taker). kline >45s catches a
-    # stale indicator/ATR buffer.
+    # Mirrors the entry-path staleness gate (CLAUDE.md §3 thresholds); kline >45s
+    # catches a stale indicator/ATR buffer.
     _stale: list[str] = []
     if coinbase_feed and coinbase_feed.state.age_seconds > 30:
         _stale.append(f"coinbase={coinbase_feed.state.age_seconds:.0f}s")
@@ -1671,11 +1588,9 @@ async def _evaluate_and_exit_position(
     _candle_age = binance_feed.buffer.latest_age_s if binance_feed and binance_feed.buffer else float("inf")
     if _candle_age > 45:
         _stale.append(f"binance_kline={_candle_age:.0f}s")
-    # Safer staleness policy: loss-cut math (BTC vs strike + ATR) is independent
-    # of the L3b/Chainlink signals. Only candle staleness corrupts ATR; the
-    # other stale feeds degrade the scalp signals but can't fake a loss-cut.
-    # Allow evaluate_hold to fire under non-critical staleness so loss-cut can
-    # still protect the position; revert any non-loss-cut EXIT below.
+    # Loss-cut math (BTC vs strike + ATR) is independent of L3b/Chainlink; only
+    # candle staleness corrupts ATR. Under non-critical staleness evaluate_hold
+    # still fires so loss-cut can protect — any non-loss-cut EXIT is reverted below.
     scalp_gated_by_stale = False
     if _stale:
         if any("kline" in s for s in _stale):
@@ -1691,10 +1606,8 @@ async def _evaluate_and_exit_position(
 
     indicators = indicator_engine.compute_all(binance_feed.buffer)
 
-    # Hold/scalp decisions use the direct best_bid from the CLOB WebSocket BBO — the
-    # actual price you'd RECEIVE when selling, matching what live FOK fills against.
-    # We deliberately avoid the /price cross-matched API, which can spike to phantom
-    # values near expiry from stale cross-match offers that wouldn't actually fill.
+    # Hold/scalp decisions use the CLOB WS best_bid (what a SELL FOK receives) —
+    # never the /price cross-matched API, which can spike to phantom values near expiry.
     hold_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
     other_token = live.get("token_id_down", "") if pos["side"] == "Up" else live.get("token_id_up", "")
     bba = clob_ws.best_bid_ask.get(hold_token, {}) if clob_ws else {}
@@ -1723,7 +1636,6 @@ async def _evaluate_and_exit_position(
                       else default_exit_threshold)
     closes = binance_feed.buffer.get_closes()
 
-    # Compute order flow for hold evaluation
     hold_trades_up = clob_ws.get_trade_history(live.get("token_id_up", "")) if clob_ws else []
     hold_trades_down = clob_ws.get_trade_history(live.get("token_id_down", "")) if clob_ws else []
     hold_flow = compute_flow_signal(
@@ -1795,20 +1707,16 @@ async def _evaluate_and_exit_position(
                 "btc_distance_atr": round((btc_now - strike_now) / _cf_atr, 3),
             }, aux_signals=_hold_aux)
 
-        # Pre-sign the SELL FOK in the background when scalp is imminent
-        # (holding_edge approaching exit_threshold). Saves ~150ms of ECDSA
-        # sign work from the hot path when PRE-SCALP eventually fires. Both
-        # traders expose warm_sell_signature (paper mirrors the warm-path
-        # timing); the hasattr check guards any trader that doesn't.
+        # Pre-sign the SELL FOK when a scalp is imminent — saves ~150ms of ECDSA
+        # work from the hot path; hasattr guards a trader without warm_sell_signature.
         if (hasattr(trader, 'warm_sell_signature')
                 and -0.05 < holding_edge < -0.005):
             _sell_token = (live.get("token_id_up", "") if pos["side"] == "Up"
                            else live.get("token_id_down", ""))
             if _sell_token:
                 _shares = pos.get("shares_held") or pos["size"] / pos["entry_price"]
-                # Approximate exit_fill = market_price × (1 − 8% cross floor).
-                # _take_sell_warmup tolerates ±1¢ drift between this estimate
-                # and the actual exit_fill computed at PRE-SCALP time.
+                # Approximate exit_fill = market_price × (1 − 8% cross floor);
+                # _take_sell_warmup tolerates ±1¢ drift vs the actual exit_fill.
                 _warm_price = round(market_price * 0.92, 4)
                 asyncio.create_task(trader.warm_sell_signature(
                     _sell_token, _shares, _warm_price,
@@ -1818,10 +1726,9 @@ async def _evaluate_and_exit_position(
     if action == "EXIT":
         sell_token = live.get("token_id_up", "") if pos["side"] == "Up" else live.get("token_id_down", "")
 
-        # PRICE VERIFICATION: guard against the CLOB WS carrying a phantom best_bid
-        # (timestamp refreshed by an unrelated price_change event, stale price value).
-        # Fast-path: if the other side's bid is also fresh and both sum to ~1.0,
-        # no-arb is satisfied — ws_bid must be real, skip the HTTP round-trip.
+        # PRICE VERIFICATION: guards a phantom ws best_bid (ts refreshed by an
+        # unrelated price_change event). Fast-path: both sides fresh and summing
+        # to ~1.0 satisfies no-arb — ws_bid is real, skip the HTTP round-trip.
         other_bba = clob_ws.best_bid_ask.get(other_token, {}) if clob_ws else {}
         other_bid = float(other_bba.get("best_bid", 0) or 0)
         other_age = time.time() - float(other_bba.get("ts", 0) or 0)
@@ -1830,11 +1737,10 @@ async def _evaluate_and_exit_position(
         if not noarb_ok and market_scanner and http_client and sell_token:
             verified_price = await market_scanner.fetch_market_price(sell_token, "SELL", http_client)
         if verified_price > 0 and verified_price < ws_bid * 0.70:
-            # Dramatic mismatch — ws_bid is phantom. Re-evaluate with the real price.
-            # Gate against the SAME blended threshold evaluate_hold used to fire this
-            # EXIT (deep-loss-floor vs ExitBoundary curve), not the raw config value —
-            # otherwise a deep-ITM hold re-checks too strictly and an OTM-urgency
-            # position (effective threshold can go positive) re-holds past forced exit.
+            # ws_bid is phantom — re-evaluate with the real price, gated against the
+            # SAME blended threshold evaluate_hold fired on, not the raw config value:
+            # else deep-ITM re-checks too strictly and an OTM-urgency position
+            # (effective threshold can go positive) re-holds past forced exit.
             effective_exit_threshold = signal_engine.last_effective_exit_threshold
             real_edge = model_prob - verified_price
             if pos["id"] not in _abandoned_scalp_positions:
@@ -1848,10 +1754,8 @@ async def _evaluate_and_exit_position(
                 return day_wins, day_losses, day_fees
             market_price = verified_price
 
-        # Apply slippage to sell price (worse fill for seller).
-        # Prefer the WS BBO bid size over the book snapshot — the snapshot can be
-        # stale (>30s) while ws_bid is required to be fresh (≤10s, checked above).
-        # When both are available, take the larger (more conservative slippage).
+        # Sell-side slippage vs available bid depth: book snapshot's bid depth
+        # first, WS BBO size as fallback when the snapshot has no bids.
         hold_book = clob_ws.get_book(hold_token) if clob_ws else {}
         book_bid_depth_usd = sum(
             float(b.get("size", 0)) * float(b.get("price", 0))
@@ -1866,12 +1770,9 @@ async def _evaluate_and_exit_position(
         slip = max(slippage_pct(exit_size_usd, bid_depth_usd, impact), fok_floor)
         exit_fill = round(market_price * (1 - slip), 4)
 
-        # Polymarket rejects marketable orders below $1 notional. Pre-check here
-        # so we don't spam the CLOB with guaranteed-fail attempts. Mark deferred
-        # (not abandoned) so subsequent ticks keep monitoring — if the bid
-        # recovers above $1 (e.g., BTC moves in our favor), we'll resume scalping.
-        # Heartbeat log every 30s mirrors the normal HOLD cadence so the operator
-        # always knows the position is being watched.
+        # Polymarket rejects orders below $1 notional — defer (not abandon) so
+        # subsequent ticks keep monitoring and resume scalping if the bid recovers;
+        # 30s heartbeat mirrors the normal HOLD cadence.
         if exit_size_usd < 1.0:
             now_ts = time.time()
             if pos["id"] not in _abandoned_scalp_positions:
@@ -1890,8 +1791,7 @@ async def _evaluate_and_exit_position(
                 )
             return day_wins, day_losses, day_fees
 
-        # Size recovered above the $1 floor — clear the deferred flag and proceed
-        # with the scalp. Surface the transition so the operator sees the resume.
+        # Size recovered above the $1 floor — clear the deferred flag and scalp.
         if pos["id"] in _abandoned_scalp_positions:
             _abandoned_scalp_positions.discard(pos["id"])
             logger.info(
@@ -1910,9 +1810,8 @@ async def _evaluate_and_exit_position(
         result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token, position=pos)
         if not result.success:
             if "CLOB minimum" in (result.reason or ""):
-                # Race: size was >= $1 when we checked but the price dropped
-                # by the time the order hit. Treat the same as the pre-check
-                # path — defer, monitor, retry next tick.
+                # Race: size was >= $1 at the pre-check but dropped by order time —
+                # defer, monitor, retry next tick.
                 _abandoned_scalp_positions.add(pos["id"])
                 logger.info(
                     f"  SCALP DEFERRED — order rejected by CLOB minimum (${exit_size_usd:.2f}), "
@@ -1985,20 +1884,17 @@ async def _evaluate_and_exit_position(
 def _resolved_exit_price(live: dict[str, Any], side: str) -> tuple[float | None, str | None]:
     """Decide a resolved position's binary exit price from current market state.
 
-    Returns ``(exit_price, oracle_log)``:
-      - ``exit_price`` is the binary payoff — ``1.0`` for the winning side, ``0.0``
-        for the loser — or ``None`` when the window has not resolved yet (the caller
-        keeps waiting).
-      - ``oracle_log`` is a human log fragment when the Chainlink oracle decided, else ``None``.
+    Returns ``(exit_price, oracle_log)``: ``exit_price`` is the binary payoff
+    (1.0 winner / 0.0 loser) or ``None`` when the window hasn't resolved yet
+    (caller keeps waiting); ``oracle_log`` is a human log fragment when the
+    Chainlink oracle decided, else ``None``.
 
     Source priority matches §8 (Chainlink is the source of truth, never Binance):
       1. ``event_metadata`` (final_price vs price_to_beat) — the Chainlink oracle.
-      2. A *coherent* resolved CLOB book — ``closed`` with both prices present, summing
-         to ~1, and one side at an extreme. The winner is derived from ``price_up``'s
-         side and paid 1.0/0.0; an incoherent book (one side a stale/phantom print) is
-         rejected so a winning side can't mis-resolve to the wrong value, and the caller
-         falls through to the oracle/orphan path. Paying the binary 1.0/0.0 (rather than
-         the ~0.99 book price) is the exact payoff and incurs zero taker fee at the extreme.
+      2. A *coherent* resolved CLOB book (``closed``, prices sum ~1, one side at an
+         extreme), paid the exact binary 1.0/0.0 — zero taker fee at the extreme.
+         An incoherent book (stale/phantom print) is rejected so a winning side
+         can't mis-resolve; the caller falls through to the oracle/orphan path.
     """
     if not live:
         return None, None
@@ -2245,7 +2141,6 @@ async def _check_trading_schedule(
     in_trading_hours = now_time_et >= active_start and now_time_et < active_end
 
     if in_trading_hours and current_trading_day != today_str:
-        # New trading day — send day open banner
         if current_trading_day is not None and alert_manager:
             # Close previous day first (if bot ran overnight)
             bankroll = await db.get_bankroll()
@@ -2350,9 +2245,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     elif getattr(_cal, "is_identity", True):
         _cal_str = "off (using raw model probabilities)"
     else:
-        # Plain-language: the calibrator rescales the model's raw win-probability into the
-        # range it actually observed, learned from N past trades. (e.g. a model that says
-        # "98%" but really wins ~70% gets pulled down — corrects overconfidence.)
+        # Calibrator rescales raw win-probability into the observed range — corrects overconfidence.
         _n_cal = getattr(_cal, "_n_samples", 0)
         _cal_str = (f"on — model win-probabilities rescaled to "
                     f"{_cal.lowest_learned_prob:.0%}-{_cal.calibrate(1.0):.0%}, "
@@ -2375,8 +2268,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         f"Discord {'Connected' if alert_manager is not None else 'Unavailable'}"
     )
 
-    # Closure captures clob_ws once — reused across all book-update ticks instead
-    # of recreating the function each iteration.
+    # Closure captures clob_ws once — reused across all book-update ticks.
     _midprice_fn = _get_token_midprice(clob_ws) if clob_ws else None
 
     while True:
@@ -2384,7 +2276,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         if scheduler and getattr(scheduler, '_shutdown_requested', False):
             break
 
-        # Event-driven: react instantly to WebSocket book/resolution updates, timeout 1s for housekeeping
+        # Event-driven: react instantly to WebSocket book/resolution updates; short timeout for housekeeping
         if clob_ws:
             try:
                 # Wake on book update OR market resolution — whichever comes first
@@ -2396,11 +2288,9 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     t.cancel()
                 if clob_ws.book_updated.is_set():
                     clob_ws.book_updated.clear()
-                # Resolve pending adverse-selection checkpoints every loop tick,
-                # not only on book_updated — otherwise a WS-quiet token leaves
-                # multiple post-fill checkpoints collapsing onto the next event.
-                # _get_token_midprice already returns 0 for stale BBAs, so this
-                # never records a stale mid as a fresh checkpoint.
+                # Resolve adverse-selection checkpoints every loop tick, not only on
+                # book_updated — a WS-quiet token would collapse multiple checkpoints
+                # onto the next event. Stale BBAs read 0 mid, never a fresh checkpoint.
                 if _adverse_monitor is not None and _midprice_fn is not None:
                     _adverse_monitor.update_prices(_midprice_fn)
                 if clob_ws.market_resolved.is_set():
@@ -2455,7 +2345,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     if not resolved:
                         continue  # Gamma hasn't resolved yet — wait for next tick
                 else:
-                    # Active position — re-evaluate using probability model
                     day_wins, day_losses, day_fees = \
                         await _evaluate_and_exit_position(
                             pos, live, binance_feed, indicator_engine,
@@ -2500,10 +2389,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             if not contract:
                 continue
 
-            # Warm the py-clob market-info cache (tick-size / neg-risk / fee) for
-            # this window's tokens so the entry FOK's create_market_order signs
-            # without paying ~2 sequential REST round-trips inside it. Off the hot
-            # path; dedups per condition_id. PaperTrader has no such method (no-op).
+            # Warm the py-clob market-info cache so the entry FOK signs without ~2
+            # sequential REST round-trips; dedups per condition_id (PaperTrader: no-op).
             if hasattr(trader, "prewarm_market_info"):
                 asyncio.create_task(trader.prewarm_market_info(contract.get("condition_id", "")))
 
@@ -2556,10 +2443,9 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 ghost_tracker=ghost_tracker)
 
         except AuthError as e:
-            # Auth/signing failure — every subsequent order will fail the same way.
-            # Bail loudly so the operator notices instead of letting entries silently
-            # skip for hours. run_polybot.ps1 keeps looping but won't retry until
-            # the next 12:01 AM ET start — fix creds before then.
+            # Every subsequent order would fail identically — bail loudly rather than
+            # silently skipping entries for hours. run_polybot.ps1 keeps looping but
+            # won't retry until the next 12:01 AM ET start — fix creds before then.
             logger.error("AUTH FAILURE — stopping trading loop: %s", e)
             if alert_manager:
                 try:
@@ -2595,7 +2481,6 @@ async def run_pipeline() -> None:
     config = load_config()
     base_dir = Path(__file__).parent
 
-    # Logging
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
     signal_cfg = config.get("signal", {})
@@ -2710,10 +2595,8 @@ async def main() -> None:
     config["mode"] = mode
     base_dir = Path(__file__).parent
 
-    # Database — always per-mode (polybot_paper.db / polybot_live.db).
-    # Positions, bankroll, peak, and trade_history are isolated by mode so flipping
-    # paper -> live can never inherit stale paper state. Pipeline learnings live in
-    # polybot/memory/ and are shared (calibration + weights transfer across modes).
+    # Per-mode DB (polybot_paper.db / polybot_live.db) so flipping paper -> live
+    # never inherits stale paper state; memory/ learnings are shared across modes.
     db_path = config["database"]["path"].replace(".db", f"_{mode}.db")
 
     db = Database(db_path)
@@ -2722,7 +2605,6 @@ async def main() -> None:
     if await db.get_bankroll() == 0:
         await db.set_bankroll(config["execution"]["initial_bankroll"])
 
-    # Binance feed
     binance_cfg = config.get("binance", {})
     binance_feed = BinanceFeed(
         symbol=binance_cfg.get("symbol", "btcusdt"),
@@ -2731,7 +2613,6 @@ async def main() -> None:
         rest_url=binance_cfg.get("rest_url", "https://api.binance.com/api/v3"),
     )
 
-    # BTC market scanner
     market_cfg = config.get("market", {})
     market_scanner = BTCMarketScanner(
         entry_window_seconds=market_cfg.get("entry_window_seconds", 120),
@@ -2741,7 +2622,6 @@ async def main() -> None:
         clob_url=market_cfg.get("clob_url"),
     )
 
-    # Indicator engine
     signal_cfg = config.get("signal", {})
     ind_cfg = config.get("indicators", {})
     indicator_params = {
@@ -2768,7 +2648,6 @@ async def main() -> None:
         params=indicator_params,
     )
 
-    # Signal engine — probability model with edge-based entry
     from polybot.core.calibrator import IsotonicCalibrator
 
     signal_engine = _build_signal_engine(signal_cfg, config)
@@ -2782,7 +2661,6 @@ async def main() -> None:
     # Brain (Claude client kept for TA evolver analysis calls)
     claude = ClaudeClient(api_key=get_secret("ANTHROPIC_API_KEY"), model="claude-sonnet-4-6")
 
-    # Execution — route based on mode
     exec_cfg = config["execution"]
     if mode == "live":
         # Allowance floor: cover at least 10 rounds of max-sized concurrent positions so a
@@ -2823,13 +2701,10 @@ async def main() -> None:
         losses_to_reduce=cb_cfg.get("losses_to_reduce", 3),
         wins_to_restore=cb_cfg.get("wins_to_restore", 3),
     )
-    # Restore locked_tier from persisted peak so floor survives restarts.
-    # Compare against breaker.peak_bankroll (which CircuitBreaker.__init__ seeds
-    # from initial_bankroll), not init_bankroll directly — otherwise restarting
-    # with a healthy live_balance that's below the historical peak silently
-    # drops the floor protection. e.g. peak=$1000, drawdown to $700, restart
-    # with live_balance=$700: old condition `persisted_peak > init_bankroll`
-    # → False → floor reset to $700. New condition keeps the $1000 floor.
+    # Restore locked_tier from the persisted peak so the floor survives restarts.
+    # Compare against breaker.peak_bankroll (seeded from initial_bankroll), not
+    # init_bankroll — else a restart below the historical peak silently drops the
+    # floor protection (peak $1000, restart at $700 → floor must stay $1000).
     persisted_peak = await db.get_peak_bankroll()
     if persisted_peak is not None and persisted_peak > breaker.peak_bankroll:
         breaker.restore_from_peak(persisted_peak, init_bankroll)
@@ -2837,7 +2712,6 @@ async def main() -> None:
     else:
         await db.set_peak_bankroll(init_bankroll)
 
-    # Agents
     agents_cfg = config["agents"]
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
     counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
@@ -2897,11 +2771,9 @@ async def main() -> None:
 
         try:
             if hasattr(trader, "reconcile_open"):
-                # Pass outcome_reviewer + signal_engine so the missed-close recovery
-                # path can write a real trade_history row + outcome JSON instead of
-                # silently zeroing exit_price (Phase-1 Flow-5(c)). Exit_reason is
-                # stamped "reconcile_recovery_*" so the pipeline pool can be
-                # filtered post-hoc if the operator wants to quarantine these.
+                # outcome_reviewer + signal_engine let missed-close recovery write a
+                # real trade_history row + outcome JSON instead of silently zeroing
+                # exit_price; exit_reason "reconcile_recovery_*" allows post-hoc filtering.
                 await trader.reconcile_open(
                     db, outcome_reviewer=outcome_reviewer, signal_engine=signal_engine,
                 )
@@ -2910,7 +2782,6 @@ async def main() -> None:
         except Exception as e:
             logger.warning(f"Startup reconciliation failed (non-blocking): {e}")
 
-    # CLOB WebSocket — real-time order book feed
     clob_ws_url = market_cfg.get("clob_ws_url", "wss://ws-subscriptions-clob.polymarket.com/ws/market")
     clob_ws = ClobWebSocket(url=clob_ws_url)
     await clob_ws.start()
@@ -2947,10 +2818,8 @@ async def main() -> None:
     if _prev_resolution_margin != 0.0:
         logger.debug(f"Restored prev_resolution_margin: {_prev_resolution_margin:+.2f}")
 
-    # Gate-skip stats: today's live counts live in GATE_STATS_CURRENT_PATH; at the
-    # first record of a new ET day the finished day folds into the lifetime
-    # accumulator (GATE_STATS_PATH). The loaders run lazily from _record_skip /
-    # flush_gate_stats; this just syncs the current-day file to what's on disk.
+    # Gate-skip stats load lazily from _record_skip / flush_gate_stats; this just
+    # syncs the current-day file to what's on disk.
     _ensure_gate_stats_day_loaded()
     flush_gate_stats()
 
@@ -3088,10 +2957,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     except OrphanPositionError as e:
-        # Print to stderr with a clear remediation hint — no stack trace, since
-        # the situation is operator-actionable, not a code bug. The orphan gate
-        # trips again at every boot until reconciled, so trading stays down
-        # even though run_polybot.ps1 restarts at the next 12:01 AM ET.
+        # Operator-actionable, not a code bug — remediation hint, no stack trace.
+        # The orphan gate trips again at every boot until reconciled, so trading
+        # stays down even though run_polybot.ps1 restarts at the next 12:01 AM ET.
         import sys as _sys
         _sys.stderr.write(
             "\n" + "=" * 70 + "\n"

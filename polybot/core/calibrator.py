@@ -23,22 +23,17 @@ _BOOTSTRAP_N = 300
 _BOOTSTRAP_LOWER_PCT = 20    # strict gate: lower-80% CI of OOB improvement must be positive
 _DEFAULT_MIN_SAMPLES = 150
 
-# --- Tail-overconfidence guards (operator-owned; calibration is changed by hand
-# with tests, never pipeline-tuned). Isotonic overfits sparse extreme bins — a few
-# lucky high/low-prob trades pool to ~0/1, and Kelly then MAX-sizes a "certain" bet
-# that historically wins ~66%. Two layered guards close that hole:
-#   1. Output clamp [_CAL_OUT_LO, _CAL_OUT_HI] — a DATA-JUSTIFIED confidence ceiling.
-#      Realized win rates top out ~0.66-0.69 and bottom ~0.16 at this horizon, so no
-#      calibrated probability beyond [0.15, 0.85] is ever warranted; capping there
-#      bounds Kelly on the highest-conviction trades. The bound never touches an honest
-#      fit (which tops ~0.66 — full margin); it only catches a sparse all-win/all-loss
-#      tail bin that the prior alone can't fully temper at the very edge.
-#   2. Beta-prior smoothing — _PRIOR_FRAC*n pseudo-observations at p=0.5, spread over
-#      _PRIOR_ANCHORS points across the range. Dense mid-range barely moves; sparse
-#      tails are pulled toward their realized rate. Weight scales with pool size, so
-#      it tempers thin windows without crushing them. Tuned (0.10) so raw>=0.97 lands
-#      ~0.66 (its realized win rate) at ~zero log-loss cost; it also TIGHTENS the
-#      OOB-CI (less tail variance), so the regularized fit is MORE robustly adoptable.
+# --- Tail-overconfidence guards (operator-owned, never pipeline-tuned). Isotonic
+# overfits sparse extreme bins — a few lucky tail trades pool to ~0/1 and Kelly then
+# MAX-sizes a "certain" bet that historically wins ~66%. Two layered guards:
+#   1. Output clamp [_CAL_OUT_LO, _CAL_OUT_HI] — data-justified ceiling (realized win
+#      rates top ~0.66-0.69 / bottom ~0.16 at this horizon). Never touches an honest
+#      fit; only caps a slammed all-win/all-loss tail bin.
+#   2. Beta-prior smoothing — _PRIOR_FRAC*n pseudo-observations at p=0.5 over
+#      _PRIOR_ANCHORS anchors; weight scales with pool size, so sparse tails pull
+#      toward their realized rate while dense mid-range barely moves. Tuned (0.10) so
+#      raw>=0.97 lands ~0.66 at ~zero log-loss cost; also TIGHTENS the OOB-CI (less
+#      tail variance), making the regularized fit MORE robustly adoptable.
 _CAL_OUT_LO = 0.15
 _CAL_OUT_HI = 0.85
 _PRIOR_FRAC = 0.10
@@ -60,10 +55,8 @@ def _make_iso():
 
 def _augment_with_prior(probs: np.ndarray, outcomes: np.ndarray, weights: np.ndarray):
     """Append Beta-prior pseudo-observations (guard #2): _PRIOR_ANCHORS anchors at
-    p=0.5 spread across [_CAL_OUT_LO, _CAL_OUT_HI], carrying _PRIOR_FRAC * (real
-    sample count) total weight. Pulls sparse extreme bins toward the center so a
-    handful of lucky tail trades can't slam the curve to 0/1; weight scales with the
-    pool so thin windows are tempered, not crushed. No-op when the prior is disabled.
+    p=0.5 across [_CAL_OUT_LO, _CAL_OUT_HI], carrying _PRIOR_FRAC × real-sample
+    total weight. No-op when the prior is disabled.
     """
     n = len(probs)
     if n == 0 or _PRIOR_FRAC <= 0.0 or _PRIOR_ANCHORS <= 0:
@@ -110,11 +103,9 @@ class IsotonicCalibrator:
 
     @property
     def lowest_learned_prob(self) -> float:
-        """Lowest output the calibrator can return. When fitted, this is
-        y_thresholds_[0] — raw inputs at or below the lowest x_threshold are
-        clipped to this value, so the calibrated probability cannot fall below
-        it. When identity (no fit), returns 0.0 so any "model says dead" override
-        is inactive — no fit means no learned floor.
+        """Lowest output the calibrator can return (``y_thresholds_[0]`` when
+        fitted). Identity returns 0.0 so the "model says dead" override is
+        inactive — no fit means no learned floor.
         """
         if self._iso is None:
             return 0.0

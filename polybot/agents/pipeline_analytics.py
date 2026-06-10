@@ -3,14 +3,11 @@ ET date helpers, fee-aware ghost pricing."""
 from __future__ import annotations
 
 import math
-import logging
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from polybot.execution.base import DEFAULT_FEE_RATE
-
-logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 

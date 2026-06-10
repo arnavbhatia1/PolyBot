@@ -19,11 +19,8 @@ def _get_nested(config: dict[str, Any], dotted_key: str) -> tuple[Any, bool]:
     return current, True
 
 def _set_nested_ruamel(doc: Any, dotted_key: str, value: Any) -> None:
-    """Set a value in a ruamel CommentedMap by dotted path.
-
-    Creates intermediate maps if missing so a fresh ParamSpec that references a
-    new nested section (e.g. ``signal.derived.x``) doesn't crash save_config
-    when the section hasn't been written yet.
+    """Set a value in a ruamel CommentedMap by dotted path, creating intermediate
+    maps so a fresh ParamSpec referencing a new nested section doesn't crash save_config.
     """
     from ruamel.yaml.comments import CommentedMap
     keys = dotted_key.split(".")
@@ -131,18 +128,14 @@ def get_config() -> dict[str, Any]:
     return _config
 
 def save_config(config: dict[str, Any], config_path: str | Path | None = None) -> None:
-    """Write pipeline-adopted values back into settings.yaml, preserving all comments.
-
-    Uses ruamel.yaml round-trip mode: loads the file as a CommentedMap (which
-    stores inline comments, block comments, and formatting), patches only the
-    changed values, then writes back. Your hand-written comments survive.
+    """Write pipeline-adopted values back into settings.yaml, preserving all comments
+    (ruamel round-trip mode: load as CommentedMap, patch changed values, write back).
     """
     from ruamel.yaml import YAML
     from polybot.paths import is_pipeline_frozen
 
-    # Freeze gate: when the sentinel is present, every pipeline-adopted param write
-    # (weight optimizer, regime/revert adoptions, crisis-mode kelly) is suppressed so
-    # the live strategy stays fixed for a clean multi-day measurement. See paths.py.
+    # Freeze gate: every pipeline-adopted param write (optimizer, reverts, crisis
+    # kelly) is suppressed so the live strategy stays fixed. See paths.py.
     if is_pipeline_frozen():
         import logging
         logging.getLogger("polybot").warning(
@@ -163,14 +156,12 @@ def save_config(config: dict[str, Any], config_path: str | Path | None = None) -
     with open(config_path, "r") as f:
         doc = ryaml.load(f)
 
-    # Patch pipeline-tunable params
     from polybot.config.param_registry import PIPELINE_PARAMS
     for spec in PIPELINE_PARAMS:
         val, found = _get_nested(config, spec.yaml_key)
         if found:
             _set_nested_ruamel(doc, spec.yaml_key, spec.cast(val))
 
-    # Patch signal.weights
     weights, found = _get_nested(config, "signal.weights")
     if found and isinstance(weights, dict):
         for k, v in weights.items():

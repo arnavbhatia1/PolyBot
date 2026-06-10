@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import random
 import time
 from typing import Any
 
 from polybot.execution.base import BaseTrader, FillResult, DEFAULT_FEE_RATE, exit_fee_usdc
-
-logger = logging.getLogger(__name__)
 
 
 class PaperTrader(BaseTrader):
@@ -20,38 +17,28 @@ class PaperTrader(BaseTrader):
             max_bankroll_deployed=kwargs.get("max_bankroll_deployed", 0.80),
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
-        # Realism knobs (all overridable via settings.yaml -> execution.*).
-        # settings.yaml currently sets mean 0.22s / jitter 0.12s — below the
-        # 0.35s floor in _simulate_latency, so the Gaussian leg is mostly
-        # floor-bound and the 4% heavy tail carries the live-like p99. The
-        # kwarg defaults here apply only when settings omit the keys.
+        # Realism knobs (all overridable via settings.yaml -> execution.*; kwarg
+        # defaults apply only when settings omit the keys). settings.yaml sets
+        # mean 0.22s / jitter 0.12s — below the 0.35s floor in _simulate_latency,
+        # so the 4% heavy tail carries the live-like p99.
         self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.77)
         self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.40)
-        # Treated as the fallback fail rate when the book is unavailable — and
-        # as the i.i.d. baseline (genuine network/protocol errors) when book
-        # state is readable. Real live FOK rejects cluster around adverse moves
-        # (thin top-of-book, wide spread); _compute_fail_rate adds state-dependent
-        # terms on top of this floor.
+        # Fallback fail rate when the book is unavailable; the i.i.d. baseline
+        # otherwise — _compute_fail_rate adds state-dependent terms on top.
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.02)
-        # Warm-SELL bookkeeping — mirrors LiveTrader's _sell_warmups dict. Lets paper
-        # see the same ~150ms ECDSA-sign saving live realizes during the scalp danger
-        # zone (main.py calls warm_sell_signature on every hold tick where
-        # -0.05 < holding_edge < -0.005). Same TTL and drift thresholds as live, so
-        # the realization rate emerges from identical conditions rather than a
-        # hardcoded probability — paper saves the speedup iff live would have.
+        # Warm-SELL bookkeeping — mirrors LiveTrader's _sell_warmups (same TTL +
+        # drift thresholds), so paper saves the ~150ms ECDSA-sign cost iff live
+        # would have, rather than at a hardcoded probability.
         self._sell_warmups: dict[str, dict[str, float]] = {}
 
-    # Match live's _MAX_RETRIES + _RETRY_BASE_DELAY semantics so paper trades
-    # the same FOK behaviour the live bot does (one shot per attempt with a
-    # short backoff between retries). Keeps paper P&L distribution honest:
+    # Match live's _MAX_RETRIES + _RETRY_BASE_DELAY so paper P&L stays honest:
     # in live a transient "ask moved up" often clears within 50-100ms and the
     # 2nd attempt fills.
     _PAPER_MAX_RETRIES: int = 3
     _PAPER_RETRY_BASE_DELAY: float = 0.03
 
-    # Warm-SELL parameters mirror LiveTrader exactly so paper and live realize
-    # the speedup on the same set of trades. Speedup ~150ms = the ECDSA-sign
-    # cost live skips when a valid pre-signed order exists.
+    # Warm-SELL parameters mirror LiveTrader exactly; speedup ~150ms = the
+    # ECDSA-sign cost live skips when a valid pre-signed order exists.
     _SELL_WARMUP_TTL_S: float = 5.0
     _SELL_WARMUP_SPEEDUP_S: float = 0.15
 
@@ -77,9 +64,8 @@ class PaperTrader(BaseTrader):
         size_usd = shares * price
         if self._precheck_rejects(token_id, side="sell", requested_price=price, size_usd=size_usd):
             return FillResult(filled=False, reason="pre-check: book walk would exceed limit (matches live)")
-        # Consume a warm-SELL signature if one is valid for these params — the
-        # speedup matches the ~150ms ECDSA-sign cost live skips. If no valid
-        # warmup, pay full simulated latency just as live would.
+        # Consume a valid warm-SELL signature (≈150ms speedup, matching live);
+        # otherwise pay full simulated latency just as live would.
         warmup_speedup = self._SELL_WARMUP_SPEEDUP_S if self._take_sell_warmup(
             token_id, shares, price
         ) else 0.0
@@ -93,13 +79,9 @@ class PaperTrader(BaseTrader):
                                   fee_rate: float = DEFAULT_FEE_RATE) -> None:
         """Paper analogue of LiveTrader.warm_sell_signature — bookkeeping only.
 
-        Records (shares, expected_price, ts) so a subsequent _execute_sell can
-        check whether the warmup is still valid (within TTL and parameter drift
-        thresholds identical to live). When valid, _execute_sell skips ~150ms of
-        simulated latency to mirror the ECDSA-sign work live actually saves.
-
-        Idempotent within 1.5s when params haven't drifted — matches live's
-        early-return in ``LiveTrader.warm_sell_signature``.
+        Records (shares, expected_price, ts); a valid warmup lets _execute_sell
+        skip ~150ms of simulated latency (the ECDSA-sign work live saves).
+        Idempotent within 1.5s when params haven't drifted — matches live.
         """
         del fee_rate  # paper has no signing work; param kept for API parity
         if not token_id or shares <= 0 or expected_price <= 0:
@@ -119,11 +101,9 @@ class PaperTrader(BaseTrader):
 
     def _take_sell_warmup(self, token_id: str, shares: float,
                           expected_price: float) -> bool:
-        """Return True iff a valid warmup exists for these SELL params.
-
-        Mirrors LiveTrader._take_sell_warmup acceptance criteria: TTL <= 5s,
-        price drift < 1¢, size drift < 5%. Always pops the entry to prevent
-        stale reuse — main.py will re-arm on the next hold tick if needed.
+        """True iff a valid warmup exists for these SELL params. Mirrors live's
+        acceptance criteria (TTL <= 5s, price drift < 1¢, size drift < 5%);
+        always pops the entry to prevent stale reuse — main.py re-arms next tick.
         """
         entry = self._sell_warmups.pop(token_id, None)
         if entry is None:
@@ -137,15 +117,13 @@ class PaperTrader(BaseTrader):
             return False
         return True
 
-    # State-dependent FOK fail rate. Live FOK rejects cluster around adverse
-    # moves: thin top-of-book + wide spread = match engine more likely to
-    # reject before the limit can clear. Coefficients here are estimates;
-    # refine them once fill_stats.json buckets failures by cause. Until then
-    # the formula must satisfy two safety properties:
-    #   1) Max combined rate must not exceed ~2× the i.i.d. baseline (caps
-    #      regime-specific over-rejection if our state proxies are wrong).
-    #   2) When book is unavailable, fall back to the constant network_fail_rate
-    #      so tests and degraded-feed startup behave deterministically.
+    # State-dependent FOK fail rate (live rejects cluster around thin top-of-book
+    # + wide spread). Coefficients are estimates pending fill_stats.json cause
+    # buckets; two safety properties hold regardless:
+    #   1) Max combined rate <= ~2× the i.i.d. baseline (caps over-rejection if
+    #      the state proxies are wrong).
+    #   2) Book unavailable -> constant network_fail_rate (deterministic tests
+    #      and degraded-feed startup).
     _STATE_FAIL_RATE_BASE: float = 0.005
     _STATE_FAIL_RATE_WIDE_SPREAD: float = 0.010   # additive when spread > 5%
     _STATE_FAIL_RATE_THIN_TOP_DEPTH: float = 0.010  # additive when top-of-book < $50
@@ -184,10 +162,9 @@ class PaperTrader(BaseTrader):
 
     def _precheck_rejects(self, token_id: str, side: str, requested_price: float,
                           size_usd: float) -> bool:
-        """Mirror live's FOK pre-check: walk the current book against the limit and
-        reject before sleeping if the walk would clearly exceed limit. Returns False
-        when the book is missing, stale (>5s), or empty — let _walk_book handle those
-        same as live's pre-check abstains in those cases.
+        """Mirror live's FOK pre-check: reject before sleeping if the book walk
+        would clearly exceed the limit. Returns False (abstains, like live) when
+        the book is missing, stale (>5s), or empty — _walk_book handles those.
         """
         if self._clob_ws is None or not hasattr(self._clob_ws, "get_book"):
             return False
@@ -236,20 +213,17 @@ class PaperTrader(BaseTrader):
 
     async def _retry_walk(self, token_id: str, side: str, requested_price: float,
                           size_usd: float) -> FillResult:
-        """Run _walk_book up to _PAPER_MAX_RETRIES times with exponential backoff
-        between attempts. Re-reads the book each pass so any intervening WS update
-        is reflected, matching live's behavior where the second attempt sees a
-        post-recoil snapshot of the order book."""
+        """Run _walk_book up to _PAPER_MAX_RETRIES times with exponential backoff,
+        re-reading the book each pass — like live, the 2nd attempt sees a
+        post-recoil snapshot."""
         last: FillResult | None = None
         for attempt in range(1, self._PAPER_MAX_RETRIES + 1):
             last = self._walk_book(token_id, side=side, requested_price=requested_price,
                                    size_usd=size_usd)
             if last.filled:
                 return last
-            # Only retry on the same class of rejection live retries on:
-            # the FOK-rejection ("price moved before fill"). Don't retry depth
-            # exhaustion or book-empty; those won't recover in 30ms.
-            # Case-insensitive, matching live's lowercased failure bucketing.
+            # Only retry the rejection class live retries: FOK "price moved".
+            # Depth exhaustion / book-empty won't recover in 30ms.
             if "price moved" not in (last.reason or "").lower():
                 return last
             if attempt < self._PAPER_MAX_RETRIES:
@@ -279,14 +253,9 @@ class PaperTrader(BaseTrader):
     # ------------------------------------------------------------------
 
     async def _simulate_latency(self, speedup_s: float = 0.0) -> None:
-        """Gaussian-jittered sleep with a 0.35s floor (live's fastest observed
-        sign+post), plus a 4% chance of a heavy-tail spike (uniform 2-4s,
-        matching live's p99/max outliers). The configured mean sits below the
-        floor, so the Gaussian leg is mostly floor-bound.
-
-        ``speedup_s`` subtracts from the sampled latency to mirror cases where live
-        skips work (e.g. warm-SELL signature). Floor is preserved so even a saved
-        sign-cost still respects live's fastest observed round-trip.
+        """Gaussian-jittered sleep, floor 0.35s (live's fastest sign+post), plus
+        a 4% heavy-tail spike (uniform 2-4s, live's p99/max). ``speedup_s``
+        subtracts saved work (warm-SELL signature) but the floor still holds.
         """
         if random.random() < 0.04:
             latency = random.uniform(2.0, 4.0)
@@ -298,20 +267,16 @@ class PaperTrader(BaseTrader):
 
     def _walk_book(self, token_id: str, side: str, requested_price: float,
                    size_usd: float) -> FillResult:
-        """Walk book levels to compute fill-size-weighted average price (VWAP).
-
-        Buy walks asks ascending; sell walks bids descending. Strict FOK:
-        rejects when the post-latency VWAP lands on the wrong side of
-        `requested_price`. When the book is stale (>30s) or empty, paper
-        matches live: the FOK would have nothing to walk against and
-        Polymarket's match engine returns insufficient-liquidity. Only the
-        `clob_ws is None` branch falls back to a synthetic fill — that path
-        is exercised solely by unit-test fixtures that pass no clob_ws.
+        """Walk book levels to a VWAP fill. Buy walks asks ascending; sell walks
+        bids descending. Strict FOK: rejects when the post-latency VWAP lands on
+        the wrong side of `requested_price`. Stale (>30s) or empty book rejects,
+        matching live's insufficient-liquidity. Only the `clob_ws is None`
+        branch fills synthetically — exercised solely by unit-test fixtures.
         """
         if self._clob_ws is None:
             return FillResult(filled=True, fill_price=requested_price, fill_size=size_usd)
-        # `or {}`: a None book (token never subscribed / WS just reset) walks the
-        # same stale-book rejection path below — unfilled, never an exception.
+        # `or {}`: a None book (never subscribed / WS reset) takes the stale-book
+        # rejection below — unfilled, never an exception.
         book = (self._clob_ws.get_book(token_id) or {}) if hasattr(self._clob_ws, "get_book") else {}
         book_age = time.time() - float(book.get("ts", 0) or 0)
         if book_age > 30:
@@ -363,9 +328,8 @@ class PaperTrader(BaseTrader):
                 reason=f"Insufficient book depth (remaining={remaining:.2f})",
             )
 
-        # Strict FOK semantics:
-        #   BUY: rejects if vwap > requested_price (book ask moved up between calc and fill)
-        #   SELL: rejects if vwap < requested_price (book bid moved down between calc and fill)
+        # Strict FOK: BUY rejects if vwap > requested_price, SELL if vwap <
+        # requested_price (book moved between calc and fill).
         if side == "buy":
             if vwap > requested_price:
                 return FillResult(filled=False, reason="Price moved before fill (simulated)")

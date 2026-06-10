@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
-
 from polybot.feeds.binance_feed import CandleBuffer
 from polybot.indicators.rsi import compute_rsi_signal
 from polybot.indicators.macd import compute_macd_signal
@@ -11,8 +9,6 @@ from polybot.indicators.ema import compute_ema_signal
 from polybot.indicators.obv import compute_obv_signal
 from polybot.indicators.vwap import compute_vwap_signal
 from polybot.indicators.atr import compute_atr_gate
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_PARAMS = {
     "rsi": {"period": 5, "overbought": 70, "oversold": 30},
@@ -28,7 +24,6 @@ DEFAULT_WEIGHTS = {"rsi": 0.20, "macd": 0.30, "stochastic": 0.15, "obv": 0.15, "
 
 class IndicatorEngine:
     """Computes RSI/MACD/Stoch/EMA/OBV/VWAP/ATR each tick from the candle buffer.
-
     Indicator ``score`` fields are already bounded in [-1, 1] by their respective
     compute_*_signal functions — L4 reads them directly, no adaptive normalization.
     """

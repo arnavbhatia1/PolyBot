@@ -29,18 +29,10 @@ _REGIMES = {
 class RegimeDetector:
     """Classifies market regime from price closes and ATR.
 
-    Parameters
-    ----------
-    lookback : int
-        Number of recent closes to use for autocorrelation (default 50).
-    vol_high_pct : float
-        ATR percentile above which market is considered high-volatility (default 75).
-    vol_low_pct : float
-        ATR percentile below which market is considered low-volatility (default 25).
-    autocorr_threshold : float
-        |autocorr| must exceed this for trending or mean-reverting (default 0.25).
-    trend_consistency : float
-        Fraction of returns in the same direction to qualify as trending (default 0.70).
+    ``lookback``: closes used for autocorr. ``vol_high_pct``/``vol_low_pct``:
+    ATR percentiles bounding volatile/quiet. ``autocorr_threshold``: |autocorr|
+    needed for trending or mean-reverting. ``trend_consistency``: same-direction
+    return fraction to qualify as trending.
     """
 
     def __init__(
@@ -64,11 +56,8 @@ class RegimeDetector:
         atr_history: list[float],
         autocorr: float | None = None,
     ) -> RegimeState:
-        """Classify the current market regime.
-
-        ``autocorr`` can be passed in from signal_engine.last_regime_autocorr to
-        avoid recomputing the 1-lag autocorrelation on the same closes array.
-        """
+        """Classify the current market regime. ``autocorr`` can be passed in
+        (signal_engine.last_regime_autocorr) to avoid recomputing it."""
         n = self.lookback
         if len(closes) < n + 2 or len(atr_history) < 1:
             return _REGIMES["unknown"]
@@ -120,12 +109,8 @@ class RegimeDetector:
 
     @staticmethod
     def _compute_vol_percentile(atr: float, atr_history: list[float]) -> float:
-        """Where the current ATR ranks in recent history (0-100).
-
-        Midrank percentile: values strictly below count fully, values equal to
-        atr count as half. Avoids the degenerate case where atr == all history
-        values yields 0th percentile.
-        """
+        """Current ATR's rank in recent history (0-100). Midrank: equal values
+        count as half, so atr == all history doesn't yield 0th percentile."""
         n = len(atr_history)
         if n == 0:
             return 50.0
@@ -139,11 +124,8 @@ class RegimeDetector:
 
     @staticmethod
     def _compute_directional_ratio(closes: np.ndarray, n: int) -> float:
-        """Fraction of returns in the dominant direction over the lookback.
-
-        A value of 1.0 means every return was in the same direction.
-        A value of 0.5 means equal up/down moves. Returns 0.0 if insufficient data.
-        """
+        """Fraction of returns in the dominant direction over the lookback
+        (1.0 = all one way, 0.5 = balanced; 0.0 on insufficient data)."""
         returns = np.diff(closes[-(n + 1):]) / closes[-(n + 1):-1]
         if len(returns) < 2:
             return 0.0

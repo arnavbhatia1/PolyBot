@@ -70,13 +70,9 @@ class AdverseSelectionMonitor:
 
     def record_fill(self, side: str, fill_price: float, token_id: str, midprice: float,
                     position_id: int | None = None) -> None:
-        """Record a new fill event for tracking.
-
-        ``position_id`` links the FillEvent to the DB row so the close-time outcome
-        writer can pull the post-fill midprice trail and stamp ``edge_decay`` into
-        the persisted JSON. Optional for backward compatibility — callers that
-        don't supply it lose the per-trade lookup but the adverse-rate gate still
-        works.
+        """Record a new fill event. ``position_id`` links to the DB row so the
+        close-time outcome writer can stamp ``edge_decay``; optional — without it
+        the per-trade lookup is lost but the adverse-rate gate still works.
         """
         self._prune_stale()
         self._fills.append(FillEvent(
@@ -119,11 +115,9 @@ class AdverseSelectionMonitor:
             logger.warning(f"AdverseSelectionMonitor save failed: {e}")
 
     def _load(self) -> None:
-        """Restore fill deque from disk if a fresh, schema-compatible snapshot exists.
-
-        Discards snapshots older than 2 hours (beyond the gate lookback, so stale
-        mid-prices would lie) and snapshots written under a different midprice
-        convention (schema mismatch).
+        """Restore the fill deque from disk. Discards snapshots older than 2h
+        (beyond the gate lookback — stale mids would lie) or written under a
+        different midprice convention (schema mismatch).
         """
         try:
             if not self._state_path.exists():
@@ -163,10 +157,7 @@ class AdverseSelectionMonitor:
 
     def update_prices(self, get_midprice_fn) -> None:
         """Update pending fill events with current midprices.
-
-        Args:
-            get_midprice_fn: callable(token_id) -> float, returns current midprice
-        """
+        ``get_midprice_fn``: callable(token_id) -> float."""
         now = time.time()
         for fill in self._fills:
             if fill.resolved:
@@ -188,18 +179,12 @@ class AdverseSelectionMonitor:
                 fill.resolved = True
 
     def get_decay_for_position(self, position_id: int) -> dict | None:
-        """Return the edge-decay snapshot for a given trade, or None if not found.
+        """Edge-decay snapshot for a trade, or None if not found.
 
-        Output schema:
-            ``{
-                "midprice_at_fill": float,
-                "deltas": {"5s": float | None, ... "60s": float | None},
-                "resolved_windows": int,
-            }``
-        Each delta is ``post - fill`` on the traded token's own mid — positive
-        means our side's price rose after entry (in our favor), negative means
-        it fell (the market faded us). Holds for Up and Down alike since both
-        mids are the token we hold.
+        Schema: ``{"midprice_at_fill": float, "deltas": {"5s"…"60s": float|None},
+        "resolved_windows": int}``. Each delta is ``post - fill`` on the traded
+        token's own mid — positive = in our favor, negative = market faded us;
+        holds for Up and Down alike since both mids are the token we hold.
         """
         for fill in self._fills:
             if fill.position_id != position_id:
@@ -251,15 +236,11 @@ class AdverseSelectionMonitor:
 
     def get_recent_decay_mean(self, window_s: float = 15.0, lookback_s: float = 1800.0,
                               min_samples: int = 15) -> float | None:
-        """Mean post-fill drift of the traded token's mid at ``window_s`` over the
-        last ``lookback_s``.
-
-        Positive return = our side's price drifted up on average (in our favor);
-        negative = drifted against us (edge decay / adverse selection bleeding
-        through). Returns ``None`` when fewer than ``min_samples`` resolved
-        checkpoints exist — the caller should treat that as "gate inactive"
-        rather than substitute a prior, since this measures a directional drift
-        and the natural neutral prior 0 is on the same scale as a real signal.
+        """Mean post-fill drift of the traded token's mid at ``window_s`` over
+        ``lookback_s``. Positive = in our favor; negative = edge decay. ``None``
+        below ``min_samples`` resolved checkpoints — caller treats that as "gate
+        inactive", never substitutes a prior (a neutral 0 is on the same scale
+        as a real signal).
         """
         now = time.time()
         deltas: list[float] = []

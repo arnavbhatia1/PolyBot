@@ -93,12 +93,10 @@ def exit_fee_usdc(shares: float, price: float, fee_rate: float = DEFAULT_FEE_RAT
 def compute_buy_vwap(book: dict[str, Any] | None, size_usd: float) -> float | None:
     """Expected BUY fill VWAP from walking the asks ladder for ``size_usd`` notional.
 
-    Returns the size-weighted average price the order would pay if FOK'd against
-    the current book snapshot, or ``None`` when the book is missing, asks are
-    empty/unparseable, or total ask depth is below the requested size (caller
-    falls back to a best-ask-only gate). Same walk math as
-    ``LiveTrader._estimate_fok_walk`` / ``PaperTrader._precheck_rejects`` so the
-    gate and the actual FOK see the same book.
+    ``None`` when the book is missing, asks are empty/unparseable, or depth is
+    below the requested size (caller falls back to a best-ask-only gate). Same
+    walk math as ``LiveTrader._estimate_fok_walk`` / ``PaperTrader._precheck_rejects``
+    so the gate and the actual FOK see the same book.
     """
     if not book or size_usd <= 0:
         return None
@@ -129,15 +127,9 @@ def compute_buy_vwap(book: dict[str, Any] | None, size_usd: float) -> float | No
     return spent / consumed
 
 
-
-
 def _entry_fee_usd_from_position(position: dict[str, Any], shares_held: float) -> float:
-    """Reconstruct the USD value of the entry fee (which was paid in shares).
-
-    `shares_ordered = size / entry_price`, and `shares_held = shares_ordered −
-    fee_in_shares`. So `fee_in_shares = shares_ordered − shares_held`, and the
-    USD-equivalent is that delta × entry_price. Used for logging only — the
-    bankroll math doesn't double-count the fee.
+    """USD value of the entry fee (paid in shares): (size/entry_price − shares_held)
+    × entry_price. Logging only — bankroll math doesn't double-count the fee.
     """
     entry_price = position["entry_price"]
     shares_ordered = position["size"] / entry_price
@@ -169,8 +161,7 @@ class BaseTrader(ABC):
         self._clob_ws: Any = None
 
     def set_clob_ws(self, clob_ws: Any) -> None:
-        """Attach the CLOB WebSocket. Paper uses it for book snapshots
-        (fail-rate, pre-check, book walk); live uses it for the WS-derived
+        """Attach the CLOB WebSocket — paper: book snapshots; live: WS-derived
         fill-price fast path in ``_submit_fok_order``."""
         self._clob_ws = clob_ws
 
@@ -181,12 +172,8 @@ class BaseTrader(ABC):
         self, token_id: str, price: float, size: float,
         fee_rate: float = DEFAULT_FEE_RATE,
     ) -> FillResult:
-        """Execute a buy order. Returns FillResult with actual fill details.
-
-        ``fee_rate`` is forwarded so live execution can convert a gross VWAP
-        (from WS trade events) into the net-shares-based fill_price the rest
-        of the system expects. Paper execution can ignore it.
-        """
+        """Execute a buy order. ``fee_rate`` lets live convert a WS gross VWAP
+        into the net-shares-based fill_price; paper ignores it."""
 
     @abstractmethod
     async def _execute_sell(
@@ -196,9 +183,8 @@ class BaseTrader(ABC):
         """Execute a sell order. Returns FillResult with actual fill details."""
 
     async def _sellable_shares(self, token_id: str, fallback_shares: float) -> float:
-        """Return shares actually available to sell. Override in LiveTrader to query
-        the on-chain balance (avoids drift between DB-tracked shares_held and
-        real chain state). Paper execution keeps DB tracking authoritative."""
+        """Shares actually available to sell. LiveTrader overrides to query the
+        on-chain balance (avoids DB-vs-chain drift); paper keeps DB authoritative."""
         return fallback_shares
 
     def _scalp_residual_credit(self, residual_shares: float, fill_price: float,
@@ -212,17 +198,10 @@ class BaseTrader(ABC):
 
     @abstractmethod
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float | None:
-        """Compute new bankroll after market resolution.
-
-        resolve_position does NOT route through _execute_sell/close_trade,
-        so this method is responsible for fee calculation if applicable.
-
-        Paper: current bankroll + revenue (shares * exit_price - fee).
-        Live: fetch real USDC balance from Polymarket (auto-credited).
-
-        Returns the new bankroll value to set in DB, or None when the credit
-        hasn't settled yet — resolve_position then returns a pending result
-        and the caller retries on a later tick.
+        """New bankroll after resolution (does NOT route through _execute_sell/
+        close_trade, so handles fees itself). Paper: bankroll + revenue net of fee.
+        Live: real Polymarket USDC balance. Returns None when the credit hasn't
+        settled — resolve_position reports pending and the caller retries next tick.
         """
 
     # -- open_trade ------------------------------------------------------
@@ -267,16 +246,14 @@ class BaseTrader(ABC):
         fee_in_shares = entry_fee_shares(shares_ordered, fill.fill_price, fee_rate)
         shares_received = shares_ordered - fee_in_shares
 
-        # Serialize snapshot lazily — caller may pass a dict to defer the
-        # JSON dump off the path-to-submit. On a rejected entry the dump
-        # never happens at all.
+        # Lazy serialization — a dict defers the JSON dump off the path-to-submit;
+        # a rejected entry never dumps at all.
         if isinstance(indicator_snapshot, dict):
             indicator_snapshot = _dumps_snapshot(indicator_snapshot)
 
-        # --- Persist atomically: position insert + bankroll debit in one transaction.
-        # Either both writes happen or neither, so a crash mid-write cannot leave
-        # the DB with a position record but no bankroll debit (or vice versa).
-        # Bankroll debit = USDC spent only (entry fee is paid in shares, not USDC).
+        # --- Persist atomically: position insert + bankroll debit in one transaction
+        # (a crash mid-write can't leave one without the other). Debit = USDC spent
+        # only — entry fee is paid in shares, not USDC.
         try:
             pos_id = await self.db.open_position_and_debit_bankroll(
                 new_bankroll=bankroll - fill.fill_size,
@@ -324,16 +301,14 @@ class BaseTrader(ABC):
 
         # --- Shares and fee rate from position ---
         fallback_shares = position.get("shares_held") or position["size"] / position["entry_price"]
-        # Query actual on-chain balance via _sellable_shares so we sell what we
-        # really own, not what the DB *thinks* we own. Eliminates dust caused by
-        # drift (e.g. partial-fill on a prior close, unrecorded fee deduction).
+        # _sellable_shares sells what we really own (on-chain), not what the DB
+        # thinks — eliminates dust from drift.
         sellable_shares = await self._sellable_shares(token_id, fallback_shares)
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
 
-        # Reserve a small share buffer so Polymarket's per-share fee deduction
-        # (fee_rate × shares × p × (1-p), bounded by fee_rate × 0.25 at p=0.5)
-        # doesn't push the FOK above available balance. The fallback floor of
-        # 0.005 also handles tiny 1-tick book-depth mismatches at zero fee_rate.
+        # Share buffer so Polymarket's per-share fee deduction (fee_rate × shares
+        # × p × (1-p), peak fee_rate × 0.25) doesn't push the FOK above available
+        # balance; the 0.005 floor also covers 1-tick mismatches at zero fee_rate.
         sell_fee_headroom = max(fee_rate * 0.25, 0.0) + 0.002
         sell_fee_headroom = max(sell_fee_headroom, 0.005)
         shares = sellable_shares * (1.0 - sell_fee_headroom)
@@ -352,11 +327,11 @@ class BaseTrader(ABC):
         gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
 
         # --- Persist to DB (atomic: close + bankroll credit in one transaction) ---
-        # The headroom shares held back from the FOK are credited to the bankroll
-        # via _scalp_residual_credit (paper simulates the sweep; live returns 0
-        # because the on-chain residual lands in the next absolute balance sync).
-        # Deliberately NOT in pnl — live's recorded pnl excludes the swept
-        # residual too, so paper/live trade records stay comparable.
+        # Headroom shares held back from the FOK are credited via
+        # _scalp_residual_credit (paper simulates the sweep; live returns 0 — its
+        # residual lands in the next absolute balance sync). Deliberately NOT in
+        # pnl: live's recorded pnl excludes the swept residual too, so paper/live
+        # trade records stay comparable.
         residual_credit = self._scalp_residual_credit(
             sellable_shares - shares, fill.fill_price, fee_rate)
         total_fees = entry_fee_usd + fee_usdc

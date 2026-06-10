@@ -31,11 +31,9 @@ logger = logging.getLogger(__name__)
 def _slug_to_window(slug: str) -> str:
     """Convert btc-updown-5m-1776691500 to '9:25-9:30 ET'."""
     try:
-        from zoneinfo import ZoneInfo
-        from datetime import datetime, timedelta
+        from datetime import timedelta
         ts = int(slug.rsplit("-", 1)[-1])
-        ET = ZoneInfo("America/New_York")
-        start = datetime.fromtimestamp(ts, tz=ET)
+        start = datetime.fromtimestamp(ts, tz=_ET)
         end = start + timedelta(minutes=5)
         return f"{start.strftime('%I:%M').lstrip('0')}-{end.strftime('%I:%M ET').lstrip('0')}"
     except Exception:
@@ -280,10 +278,8 @@ class CounterfactualTracker:
                 to_remove.append(position_id)
                 continue
 
-            # Resolve only via Chainlink eventMetadata — no Binance fallback.
-            # Binance candle close ≠ Polymarket resolution price; using it produces
-            # wrong training data. The 10-min expiry window above gives Chainlink
-            # enough time to post (typically 2-5 min after round close).
+            # Resolve only via Chainlink eventMetadata — no Binance fallback
+            # (Binance close ≠ Polymarket resolution price → wrong training data).
             meta = event_metadata.get(market_id)
             if not meta or meta.get("final_price") is None:
                 continue  # keep waiting — Chainlink final_price not posted yet
@@ -310,7 +306,7 @@ class CounterfactualTracker:
                 "position_id": ctx["position_id"],
                 "market_id": market_id,
                 "side": side,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "actual": {
                     "exit_reason": "scalp",
                     "exit_price": ctx["scalp_exit_price"],

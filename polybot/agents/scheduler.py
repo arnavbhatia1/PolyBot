@@ -155,10 +155,8 @@ def _format_pipeline_summary(pipeline_info: dict[str, Any]) -> str:
     elif holdout_active:
         lines.append(f"  Holdout:     ready ({holdout_n} trades) — no proposals tested tonight")
     elif holdout_n is not None:
-        # holdout_n == 0 with a "younger than" reason means the holdout was deliberately
-        # disabled (dataset younger than the window) and ALL trades went to training —
-        # not that recent trades are missing. Surface that so the summary doesn't read
-        # like a data outage when there are hundreds of fresh trades.
+        # "younger than" reason = holdout deliberately disabled (dataset younger than
+        # the window), not a data outage — all trades went to training.
         _skip = pipeline_info.get("holdout_skipped_reason", "")
         if "younger than" in _skip:
             lines.append("  Holdout:     inactive — dataset younger than the 7-day window; "
@@ -215,6 +213,18 @@ HOLDOUT_MIN_TRADES = 30
 # clear (below it, the holdout is disabled and the full pool is used).
 MIN_TRADES_FOR_LEARNING = 200
 
+def _outcome_ts(o: dict) -> float:
+    """Outcome exit_timestamp (fallback: timestamp) as epoch seconds; unparseable -> 0.0.
+
+    Shared by every window boundary (holdout split, 60d cutoff, gate-calibrator
+    window, calibration window) so they all parse records identically.
+    """
+    s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
 class AgentScheduler:
     def __init__(self, outcome_reviewer: Any, bias_detector: Any, ta_evolver: Any, weight_optimizer: Any,
                  indicator_engine: Any = None, signal_engine: Any = None, alert_manager: Any = None,
@@ -256,13 +266,8 @@ class AgentScheduler:
             self.ta_evolver.claude_client = claude_client
 
     def _invalidate_baseline_cache(self) -> None:
-        """Drop the cached baseline Sharpe / JK_SE / N. The baseline + fold
-        backtests now score through ``self._gate_calibrator`` (set once per
-        cycle), so a *live* calibrator swap no longer changes them and the cache
-        is rebuilt each cycle after the gate calibrator is set. The optimizer-stage
-        cache check (``_run_weight_optimizer``) sees the None and recomputes before
-        the per-change z-tests.
-        """
+        """Drop the cached baseline Sharpe / JK_SE / N; `_run_weight_optimizer`
+        sees the None and recomputes before the per-change z-tests."""
         self._baseline_kelly_sharpe = None
         self._baseline_n_trades = None
         self._baseline_jk_se = None
@@ -290,19 +295,13 @@ class AgentScheduler:
         return str(v)
 
     def _ghost_to_outcome(self, g: dict[str, Any]) -> dict[str, Any] | None:
-        """Normalize a resolved ghost record into the same shape as outcomes/.
+        """Normalize a resolved ghost (gate-rejected trade) into the outcomes/ shape.
 
-        Ghosts are trades rejected at live entry gates (min_edge, min_prob, min_kelly, etc.).
-        Including them in the backtest population unlocks those gates from read-only:
-        raising a gate now filters the same fills out of baseline and candidate equally,
-        and lowering a gate includes the ghosts that would have fired — and we know how
-        each ghost resolved.
-
-        Gain_pct is re-derived fee-aware from the recorded market_price_<side>
-        (``ghost_gain_pct``) so it matches real outcomes' net-of-fee ``pnl/size``
-        accounting — a gross binary payoff would systematically flatter the marginal
-        trades a gate-loosening candidate adds. The on-disk ghost gain (computed
-        against signal_prob) is ignored for the same reason.
+        Ghosts in the backtest pool make entry gates tunable: raising a gate filters
+        baseline and candidate identically; lowering one includes ghosts with known
+        resolutions. Gain_pct is re-derived fee-aware from market_price_<side>
+        (``ghost_gain_pct``) to match real outcomes' net-of-fee ``pnl/size`` — the
+        on-disk ghost gain (vs signal_prob, gross) would flatter marginal trades.
         """
         if not g.get("resolved"):
             return None
@@ -375,15 +374,9 @@ class AgentScheduler:
         if now_ts is None:
             now_ts = datetime.now(timezone.utc).timestamp()
         cutoff = now_ts - HOLDOUT_DAYS * 86400.0
-        def _ts(o: dict) -> float:
-            s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
-            try:
-                return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
-            except Exception:
-                return 0.0
         opt, hold = [], []
         for o in outcomes:
-            (hold if _ts(o) >= cutoff else opt).append(o)
+            (hold if _outcome_ts(o) >= cutoff else opt).append(o)
         return opt, hold
 
     @staticmethod
@@ -539,7 +532,6 @@ class AgentScheduler:
         if not outcomes:
             return {}
 
-        # Build current config from live engines (see _build_current_config).
         current_config = self._build_current_config()
 
         if hasattr(self, '_last_per_change_results') and self._last_per_change_results:
@@ -723,8 +715,7 @@ class AgentScheduler:
         config and return the Kelly-sized per-trade returns. Sharpe of the result
         is the candidate's adoption metric.
         """
-        # Pull every optional default from the registry — keeps this method
-        # in lockstep with settings.yaml / param_registry.
+        # Optional defaults resolve from the registry — lockstep with param_registry.
         if regime_weight is None: regime_weight = _d("regime_weight")
         if flow_weight is None: flow_weight = _d("flow_weight")
         if spot_flow_weight is None: spot_flow_weight = _d("spot_flow_weight")
@@ -735,10 +726,9 @@ class AgentScheduler:
         if final_logit_clamp is None: final_logit_clamp = _d("final_logit_clamp")
         if l5_regime_damp_cap is None: l5_regime_damp_cap = _d("l5_regime_damp_cap")
         if atr_regime_shift_threshold is None: atr_regime_shift_threshold = _d("atr_regime_shift_threshold")
-        # L6 weights — pre-resolve so the hot loop doesn't dict-lookup defaults per outcome.
         from polybot.core.derived_features import DERIVED_FEATURES, FeatureContext, L6_LOGIT_CAP
-        # Constants shared with live (kept in lockstep via single import — if signal_engine.py
-        # changes these, the backtest moves too).
+        # Constants shared with live via single import — if signal_engine.py changes
+        # these, the backtest moves too.
         from polybot.core.signal_engine import (
             _ATR_HISTORY_MIN_SAMPLES as _ATR_MIN_SHORT,
             _ATR_LONG_TERM_MIN_SAMPLES as _ATR_MIN_LONG,
@@ -765,10 +755,8 @@ class AgentScheduler:
         realism_factor = 1.0
         if self._config:
             realism_factor = float(self._config.get("execution", {}).get("backtest_realism_factor", 1.0))
-        # Recency weights are returned alongside returns so downstream code can
-        # compute a proper weighted Sharpe (mean and variance both weighted),
-        # rather than multiplying the weight into each return and biasing
-        # variance with the weights' own dispersion.
+        # Recency weights returned alongside returns so callers compute a proper
+        # weighted Sharpe — never multiplied into the returns (would bias variance).
         now_ts = datetime.now(timezone.utc).timestamp()
         returns: list[float] = []
         sample_weights: list[float] = []
@@ -791,13 +779,10 @@ class AgentScheduler:
             if market_price_side <= 0 or market_price_side >= 1:
                 continue
 
-            # L1 — re-derive raw prob_up from the CDF. Rows missing the L1 inputs are
-            # skipped (both arms identically): the layer stack can't be replayed for a
-            # candidate without them, and `stored_raw` already embeds live's full layer
-            # stack for the CHOSEN SIDE — re-deriving from it would invert Down-side
-            # rows and double-count L2-L6. ATR-dead rows are skipped for the same
-            # reason: live returns calibrated(0.5) without the layer stack and the
-            # (non-tunable) ATR gate blocks entry, so no candidate can trade them.
+            # L1 — re-derive raw prob_up from the CDF. Rows missing L1 inputs or with
+            # a dead ATR are skipped in BOTH arms: `stored_raw` embeds live's full
+            # CHOSEN-SIDE stack (replaying from it would invert Down rows and
+            # double-count L2-L6), and the non-tunable ATR gate blocks such trades live.
             btc = ctx.get("btc_price") or 0
             strike = ctx.get("strike_price") or 0
             atr_raw = ctx.get("atr") or 0
@@ -838,7 +823,6 @@ class AgentScheduler:
                 atr_effective = max(atr_raw, min_atr)
             atr = atr_effective
 
-
             # Regime (lag-1 autocorr) feeds L1 vol scaling + L2/L4/L5. Stored float
             # when available (exact); regime_state string approximation for old rows.
             stored_autocorr = ctx.get("regime_autocorr")
@@ -853,9 +837,7 @@ class AgentScheduler:
                 else:
                     regime_factor = 0.0
 
-            # df clamped to ≥3 exactly as live (signal_engine), via the shared
-            # MIN_STUDENT_T_DF — removes the t_scale=√(df/(df-2)) discontinuity and
-            # keeps replay identical to live for any df.
+            # df clamped ≥3 via the shared MIN_STUDENT_T_DF — replay identical to live.
             df_eff = max(MIN_STUDENT_T_DF, student_t_df)
             minutes = max(secs / 60.0, 0.01)  # same floor as live
             vol = (atr / atr_sigma_ratio) * math.sqrt(minutes) * autocorr_vol_scale(regime_factor)
@@ -865,10 +847,8 @@ class AgentScheduler:
 
             # L2 — regime × direction (regime_factor computed above for L1 vol scaling).
             prev_margin = ctx.get("prev_resolution_margin", 0.0)
-            # Direction: prefer the actual last-1min-return sign captured at signal time
-            # (stored from signal_engine.last_regime_direction). Fall back to
-            # sign(prev_resolution_margin) for outcomes recorded before that field
-            # was added — the proxy is noisy but the field is now exact for new trades.
+            # Direction: stamped last-1min-return sign when present; noisy
+            # sign(prev_resolution_margin) proxy for rows recorded before the field.
             stored_direction = ctx.get("regime_direction")
             if stored_direction is not None:
                 direction = float(stored_direction)
@@ -880,12 +860,10 @@ class AgentScheduler:
             # vol/price-relative normalization + redundancy combine live uses (shared
             # via aux_layers); fall back to stored values for rows lacking raw aux.
             _vol_factor = regime_vol_factor(atr_raw, ctx.get("atr_long_term_mean"))
-            # flow_score/spot_flow_signal are stored as None when their feed was
-            # cold (telemetry "feed cold" marker). dict.get returns the present
-            # None — NOT the default — so coerce explicitly to 0.0, exactly as the
-            # live model does (compute_flow_signal/compute_spot_flow_signal collapse
-            # a cold feed to 0.0 before feeding the logit). A bare .get(...,0.0)
-            # would leave None and crash combine_flow_family on None*weight.
+            # flow_score/spot_flow_signal are recorded None when the feed was cold;
+            # coerce explicitly to 0.0 exactly as live does before feeding the logit.
+            # (.get(..., 0.0) returns the present None and combine_flow_family would
+            # crash on None*weight.)
             _fs = ctx.get("flow_score")
             flow_signal = 0.0 if _fs is None else _fs
             if ctx.get("coinbase_cvd_60s") is not None:
@@ -1003,11 +981,8 @@ class AgentScheduler:
             if prob_side < min_prob:
                 continue
             # Fee-aware Kelly — mirrors live SignalEngine._kelly EXACTLY (net_b =
-            # b*(1-fee)) so the backtest sizes the same trades live would. The old
-            # edge/(1-price) form is the fee=0 special case (algebraically equal
-            # when fee=0); omitting the fee inflated absolute Sharpe and shifted the
-            # min_kelly inclusion boundary. DEFAULT_FEE_RATE matches the live
-            # fetch_fee_rate value plumbed into _kelly.
+            # b*(1-fee)) so the backtest sizes the same trades live would;
+            # DEFAULT_FEE_RATE matches the live fetch_fee_rate value plumbed into _kelly.
             if market_price_side <= 0.01 or market_price_side >= 0.99:
                 continue
             _b = (1.0 - market_price_side) / market_price_side
@@ -1026,14 +1001,12 @@ class AgentScheduler:
                 days_ago = 0.0
             recency_w = RECENCY_DECAY_PER_DAY ** days_ago
 
-            # Counterfactual-aware gain_pct for exit_edge_threshold candidates.
-            # A recorded scalp re-prices to its hold-to-resolution counterfactual
-            # only when the candidate would NOT have fired the scalp — judged
-            # against the same BLENDED effective threshold live fires on
-            # (exit_boundary.effective_exit_threshold), not the raw candidate.
-            # Loss-cut closes fire independently of the threshold, so they are
-            # never re-priced (legacy records without the loss_cut flag replay
-            # as ordinary scalps).
+            # Counterfactual-aware gain_pct for exit_edge_threshold candidates: a
+            # recorded scalp re-prices to its hold-to-resolution counterfactual only
+            # when the candidate would NOT have fired it — judged against the same
+            # BLENDED effective threshold live fires on, never the raw candidate.
+            # Loss-cut closes fire independently of the threshold: never re-priced
+            # (records without the loss_cut flag replay as ordinary scalps).
             outcome_gain_pct = o.get("gain_pct", 0.0)
             if (exit_threshold_override is not None
                     and counterfactual_index
@@ -1092,12 +1065,9 @@ class AgentScheduler:
                 cf = d.get("counterfactual", {})
                 if pid is None or not isinstance(cf, dict) or cf.get("gain_pct") is None:
                     continue
-                # Only scalp-type counterfactuals carry `context_at_scalp`, which is
-                # the key the exit-threshold replay reads. A single position_id can
-                # ALSO have a hold-type CF (`context_at_worst_moment`); indexing both
-                # under int(pid) let glob order non-deterministically shadow the scalp
-                # record with the hold one, silently skipping the threshold override.
-                # Select the scalp record explicitly.
+                # Index only scalp-type CFs (`context_at_scalp` — the key the replay
+                # reads). A pid can also have a hold-type CF; indexing both would let
+                # glob order shadow the scalp record and silently skip the override.
                 if "context_at_scalp" not in d:
                     continue
                 idx[int(pid)] = d
@@ -1139,6 +1109,33 @@ class AgentScheduler:
         }
         return cfg
 
+    @staticmethod
+    def _backtest_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
+        """Common `_kelly_bankroll_returns` kwargs from a `_config_for_helper` cfg.
+        Per-site extras (outcomes, calibrator, exit override) are passed explicitly
+        at each call site."""
+        return dict(
+            recommended_weights=cfg["weights"],
+            momentum_weight=cfg["momentum_weight"],
+            atr_sigma_ratio=cfg["atr_sigma_ratio"],
+            student_t_df=cfg["student_t_df"],
+            min_edge=cfg["min_edge"],
+            kelly_fraction=cfg["kelly_fraction"],
+            min_kelly=cfg["min_kelly"],
+            min_prob=cfg["min_model_probability"],
+            regime_weight=cfg["regime_weight"],
+            flow_weight=cfg["flow_weight"],
+            spot_flow_weight=cfg["spot_flow_weight"],
+            prev_margin_weight=cfg["prev_margin_weight"],
+            logit_scale=cfg["logit_scale"],
+            min_atr=cfg["min_atr"],
+            regime_momentum_threshold=cfg["regime_momentum_threshold"],
+            final_logit_clamp=cfg["final_logit_clamp"],
+            l5_regime_damp_cap=cfg["l5_regime_damp_cap"],
+            atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],
+            derived_weights=cfg["derived_weights"],
+        )
+
     def _backtest_recommendations(self, recommendations: dict[str, Any],
                                     outcomes: list[dict[str, Any]]) -> tuple[list[float], list[float]]:
         """Kelly-sized portfolio returns + parallel recency weights.
@@ -1156,26 +1153,8 @@ class AgentScheduler:
 
         return self._kelly_bankroll_returns(
             outcomes=outcomes,
-            recommended_weights=cfg["weights"],
-            momentum_weight=cfg["momentum_weight"],
-            atr_sigma_ratio=cfg["atr_sigma_ratio"],
-            student_t_df=cfg["student_t_df"],
-            min_edge=cfg["min_edge"],
             calibrator=calibrator,
-            kelly_fraction=cfg["kelly_fraction"],
-            min_kelly=cfg["min_kelly"],
-            min_prob=cfg["min_model_probability"],
-            regime_weight=cfg["regime_weight"],
-            flow_weight=cfg["flow_weight"],
-            spot_flow_weight=cfg["spot_flow_weight"],
-            prev_margin_weight=cfg["prev_margin_weight"],
-            logit_scale=cfg["logit_scale"],
-            min_atr=cfg["min_atr"],
-            regime_momentum_threshold=cfg["regime_momentum_threshold"],
-            final_logit_clamp=cfg["final_logit_clamp"],
-            l5_regime_damp_cap=cfg["l5_regime_damp_cap"],
-            atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],
-            derived_weights=cfg["derived_weights"],
+            **self._backtest_kwargs(cfg),
         )
 
     def _backtest_single_change(self, change: dict[str, Any],
@@ -1231,28 +1210,10 @@ class AgentScheduler:
 
         returns, weights = self._kelly_bankroll_returns(
             outcomes=outcomes,
-            recommended_weights=cfg["weights"],
-            momentum_weight=cfg["momentum_weight"],
-            atr_sigma_ratio=cfg["atr_sigma_ratio"],
-            student_t_df=cfg["student_t_df"],
-            min_edge=cfg["min_edge"],
             calibrator=calibrator,
-            kelly_fraction=cfg["kelly_fraction"],
-            min_kelly=cfg["min_kelly"],
-            min_prob=cfg["min_model_probability"],
-            regime_weight=cfg["regime_weight"],
-            flow_weight=cfg["flow_weight"],
-            spot_flow_weight=cfg["spot_flow_weight"],
-            prev_margin_weight=cfg["prev_margin_weight"],
-            logit_scale=cfg["logit_scale"],
-            min_atr=cfg["min_atr"],
-            regime_momentum_threshold=cfg["regime_momentum_threshold"],
-            final_logit_clamp=cfg["final_logit_clamp"],
-            l5_regime_damp_cap=cfg["l5_regime_damp_cap"],
-            atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],
-            derived_weights=cfg["derived_weights"],
             exit_threshold_override=_exit_thr_override,
             counterfactual_index=_cf_index,
+            **self._backtest_kwargs(cfg),
         )
         return {
             "returns": returns,
@@ -1289,10 +1250,8 @@ class AgentScheduler:
             else:
                 regime_buckets["neutral"].append(o)
 
-        # Lowered from 20 → 8: BTC regime labeling rarely produces a non-neutral
-        # bucket with ≥20 samples in a single validation fold, so the stratified
-        # check was effectively dormant. 8 still requires a meaningful sample but
-        # lets trending / mean-reverting buckets participate when they're real.
+        # 8 requires a meaningful sample while still letting trending/mean-reverting
+        # buckets participate (≥20 left the stratified check effectively dormant).
         MIN_REGIME_N = 8
         populated = {k: v for k, v in regime_buckets.items() if len(v) >= MIN_REGIME_N}
         if len(populated) < 2:
@@ -1361,15 +1320,13 @@ class AgentScheduler:
 
         _crisis_kelly_locked: bool = False
         try:
-            import json as _json_cm
             _cs_path = CRISIS_STATE_PATH
             if _cs_path.exists():
-                _cs = _json_cm.loads(_cs_path.read_text())
+                _cs = json.loads(_cs_path.read_text())
                 _crisis_kelly_locked = bool(_cs.get("kelly_reduced"))
         except Exception:
             _crisis_kelly_locked = False
 
-        # Get the changes list (new format) or fall back to checking for recommended_weights
         changes_list: list[dict[str, Any]] = recommendations.get("changes", [])
 
         if not changes_list:
@@ -1599,16 +1556,10 @@ class AgentScheduler:
             return info
 
         # --- Combined holdout interaction check ---
-        # When ≥2 changes were independently adopted, each cleared its per-change
-        # holdout confirmation against the last HOLDOUT_DAYS. But two changes that
-        # each look good in isolation can interfere when applied together (shared
-        # logit budget, joint clamps, ratchet effects). Run ONE combined backtest
-        # against the holdout pool: if the joint set fails to clear baseline by
-        # the same z-floor margin used for per-change adoption, back out the
-        # whole batch and let the next cycle re-propose individually with the
-        # directional table updated. No iteration — the per-change adoption gates
-        # have already done the per-direction filtering; the question here is
-        # purely "does the combined set survive on fresh data?"
+        # ≥2 independently-adopted changes can interfere (shared logit budget, joint
+        # clamps). One combined backtest on the holdout: if the joint set misses
+        # baseline + the per-change z-floor margin, back out the WHOLE batch. No
+        # iteration — next cycle re-proposes individually with the table updated.
         if len(adopted_changes) >= 2 and holdout_outcomes and len(holdout_outcomes) >= HOLDOUT_MIN_TRADES:
             try:
                 from polybot.config.param_registry import TUNABLE_NAMES as _TN
@@ -1642,28 +1593,10 @@ class AgentScheduler:
                 base_h_rets, base_h_w = self._backtest_recommendations({}, holdout_outcomes)
                 combined_rets, combined_w = self._kelly_bankroll_returns(
                     outcomes=holdout_outcomes,
-                    recommended_weights=cfg_combined["weights"],
-                    momentum_weight=cfg_combined["momentum_weight"],
-                    atr_sigma_ratio=cfg_combined["atr_sigma_ratio"],
-                    student_t_df=cfg_combined["student_t_df"],
-                    min_edge=cfg_combined["min_edge"],
                     calibrator=calibrator,
-                    kelly_fraction=cfg_combined["kelly_fraction"],
-                    min_kelly=cfg_combined["min_kelly"],
-                    min_prob=cfg_combined["min_model_probability"],
-                    regime_weight=cfg_combined["regime_weight"],
-                    flow_weight=cfg_combined["flow_weight"],
-                    spot_flow_weight=cfg_combined["spot_flow_weight"],
-                    prev_margin_weight=cfg_combined["prev_margin_weight"],
-                    logit_scale=cfg_combined["logit_scale"],
-                    min_atr=cfg_combined["min_atr"],
-                    regime_momentum_threshold=cfg_combined["regime_momentum_threshold"],
-                    final_logit_clamp=cfg_combined["final_logit_clamp"],
-                    l5_regime_damp_cap=cfg_combined["l5_regime_damp_cap"],
-                    atr_regime_shift_threshold=cfg_combined["atr_regime_shift_threshold"],
-                    derived_weights=cfg_combined["derived_weights"],
                     exit_threshold_override=_exit_thr_combined,
                     counterfactual_index=_cf_index_combined,
+                    **self._backtest_kwargs(cfg_combined),
                 )
                 base_h_sharpe = _weighted_sharpe(base_h_rets, base_h_w) if base_h_rets else 0.0
                 combined_h_sharpe = _weighted_sharpe(combined_rets, combined_w) if combined_rets else 0.0
@@ -1796,12 +1729,10 @@ class AgentScheduler:
                              current_sharpe: float, pipeline_source: str) -> None:
         """Record a run's adopted changes into the PipelineTracker for the auto-revert path.
 
-        Old values come from the pre-mutation `old_value` captured per change in
-        `info["per_change"]` (via `_directional_old_value`, which reads L6 weights from
-        `derived_weights`). This MUST NOT re-read `getattr(signal_engine, param)`: by the
-        time this runs the mutation loop has already applied the new values, so a re-read
-        returns the NEW value for every param (revert → no-op) and `None` for L6 weights
-        (revert silently skipped, since they live in `derived_weights`, not as attributes).
+        Old values MUST come from the pre-mutation `old_value` in info["per_change"]
+        (via `_directional_old_value`) — the mutation loop has already run, so a
+        getattr re-read would return the NEW value (revert → no-op) and None for L6
+        weights (revert silently skipped; they live in `derived_weights`).
         """
         if not (self.pipeline_tracker and adopted_changes):
             return
@@ -1947,7 +1878,6 @@ class AgentScheduler:
                             _node = _node.setdefault(_p, {})
                         _node[_parts[-1]] = clamped
                 try:
-                    from polybot.config.loader import save_config
                     save_config(dict(self._config))
                 except Exception as e:
                     # In-memory revert already applied; the record stays flagged so
@@ -2016,10 +1946,8 @@ class AgentScheduler:
                 "atr_sigma_ratio": getattr(self.signal_engine, 'atr_sigma_ratio', _d("atr_sigma_ratio")),
             }
 
-        # Walk-forward validation: train on first 60%, validate across 4 expanding
-        # folds of the remaining 40% (each fold is genuinely out-of-sample).
         # Rollups are best-effort — a disk/permission error must not crash the
-        # whole pipeline, but it MUST surface so the operator can fix the cause.
+        # pipeline, but it MUST surface so the operator can fix the cause.
         def _safe_rollup(name: str, fn):
             try:
                 return fn()
@@ -2037,13 +1965,7 @@ class AgentScheduler:
         # exist. Walk-forward 60/40 is preserved INSIDE the window.
         PIPELINE_WINDOW_DAYS = 60
         _cutoff_ts = _cycle_now_ts - PIPELINE_WINDOW_DAYS * 86400.0
-        def _otime(o: dict) -> float:
-            s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
-            try:
-                return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
-            except Exception:
-                return 0.0
-        _windowed = [o for o in _raw_outcomes if _otime(o) >= _cutoff_ts]
+        _windowed = [o for o in _raw_outcomes if _outcome_ts(o) >= _cutoff_ts]
         if len(_windowed) >= 500:  # need ≥500 for the 4-fold expanding test
             all_outcomes = _windowed
             _window_note = f"  |  bounded to last {PIPELINE_WINDOW_DAYS}d (was {len(_raw_outcomes):,})"
@@ -2108,15 +2030,9 @@ class AgentScheduler:
         # the holdout (days [HOLDOUT_DAYS, HOLDOUT_DAYS + _CAL_WINDOW_DAYS) back), disjoint
         # from the holdout the adoption gate confirms on, so weight backtests score through
         # it (not the live calibrator) and stay OOS. None → backtests run at identity.
-        def _gcal_ts(o: dict) -> float:
-            s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
-            try:
-                return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
-            except Exception:
-                return 0.0
         _g_lo = _cycle_now_ts - (HOLDOUT_DAYS + _CAL_WINDOW_DAYS) * 86400.0
         _g_hi = _cycle_now_ts - HOLDOUT_DAYS * 86400.0
-        _gate_pool = [o for o in real_all if _g_lo <= _gcal_ts(o) < _g_hi]
+        _gate_pool = [o for o in real_all if _g_lo <= _outcome_ts(o) < _g_hi]
         self._gate_calibrator = self._fit_calibrator_on(_gate_pool)
         logger.info(
             f"  Gate calibrator: {'fitted' if self._gate_calibrator else 'identity'} "
@@ -2131,11 +2047,10 @@ class AgentScheduler:
         # Gate skip stats: how often did each entry gate fire?
         # Tells Claude which gates are over-filtering and whether adverse selection /
         # pre-submit drift / late-window guards are actually affecting trade count.
-        import json as _json
         _gate_stats_path = GATE_STATS_CURRENT_PATH
         if _gate_stats_path.exists():
             try:
-                gate_stats = _json.loads(_gate_stats_path.read_text())
+                gate_stats = json.loads(_gate_stats_path.read_text())
                 # Flatten nested {"counts": {...}, "total_skips": N} → {"gate": N, "total_skips": N}
                 # so claude_client can iterate flat k/v pairs without knowing the schema.
                 counts = gate_stats.get("counts", gate_stats)
@@ -2159,7 +2074,7 @@ class AgentScheduler:
         _fill_stats_path = FILL_STATS_PATH
         if _fill_stats_path.exists():
             try:
-                fill_stats = _json.loads(_fill_stats_path.read_text())
+                fill_stats = json.loads(_fill_stats_path.read_text())
                 exec_quality["fok_fill_rate"] = fill_stats.get("fill_rate", None)
                 exec_quality["fok_total_attempts"] = fill_stats.get("total_attempts", 0)
                 exec_quality["fok_buy_fill_rate"] = round(
@@ -2178,11 +2093,9 @@ class AgentScheduler:
             analysis["execution_quality"] = exec_quality
 
         # Counterfactual + ghost analysis feed the evolver context. When the holdout
-        # is active, exclude the last HOLDOUT_DAYS from these aggregates: they inform
-        # exit_edge_threshold / entry-gate proposals that the holdout-confirmation gate
-        # later re-prices, so leaking holdout-period records here would make that
-        # confirmation partially in-sample. (No filter when holdout is inactive — there
-        # is no separate confirmation pool to protect.)
+        # is active, exclude the last HOLDOUT_DAYS so the holdout-confirmation gate
+        # stays OOS for the proposals these aggregates inform. (No filter when
+        # inactive — there is no confirmation pool to protect.)
         _evo_cutoff = _cycle_now_ts - HOLDOUT_DAYS * 86400.0
         _holdout_on = bool(pipeline_info.get("holdout_active"))
         def _before_holdout(rec: dict[str, Any], *ts_keys: str) -> bool:
@@ -2225,13 +2138,11 @@ class AgentScheduler:
             if resolved_ghosts:
                 analysis["ghost_analysis"] = self.bias_detector.analyze_ghosts(resolved_ghosts)
 
-        # Live/production isotonic re-fit on the FRESHEST _CAL_WINDOW_DAYS so the
-        # calibrator live trading sizes on tracks current microstructure instead of
-        # trailing 7-14 days behind. (The OOS gate-reference calibrator was already fit
-        # on the disjoint pre-holdout window above; weight backtests use that one.)
-        # Adoption gate (on top of fit()'s bootstrap CI): the new fit must beat the
-        # CURRENT calibrator on full-pool weighted log-loss by ≥ LOG_LOSS_FLOOR AND not
-        # reduce Kelly-Sharpe vs the current calibrator on cal_val.
+        # Live/production isotonic re-fit on the FRESHEST _CAL_WINDOW_DAYS (the OOS
+        # gate-reference calibrator was fit on the disjoint pre-holdout window above;
+        # weight backtests use that one). Adoption gate on top of fit()'s bootstrap
+        # CI: the new fit must beat the CURRENT calibrator on full-pool weighted
+        # log-loss by ≥ LOG_LOSS_FLOOR AND not reduce Kelly-Sharpe on cal_val.
         cal_info: dict[str, Any] = {"decision": "skipped"}
         # Current serving calibrator, stamped up front so every exit path (skip,
         # reject, frozen) renders truthfully in the summary instead of a bare
@@ -2244,15 +2155,9 @@ class AgentScheduler:
         _pending_cal_save: IsotonicCalibrator | None = None
         _cal_cutoff_new = _cycle_now_ts                                  # freshest edge (day 0)
         _cal_cutoff_old = _cycle_now_ts - _CAL_WINDOW_DAYS * 86400.0      # _CAL_WINDOW_DAYS back
-        def _ts(o: dict) -> float:
-            s = o.get("exit_timestamp", o.get("timestamp", "")) or ""
-            try:
-                return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
-            except Exception:
-                return 0.0
         # real_all only: the calibrator changes LIVE trading probabilities, so it must fit
         # on trades the bot actually took, not rejected ghosts.
-        _cal_pool = [o for o in real_all if _cal_cutoff_old <= _ts(o) < _cal_cutoff_new]
+        _cal_pool = [o for o in real_all if _cal_cutoff_old <= _outcome_ts(o) < _cal_cutoff_new]
         if _frozen:
             cal_train = []
             cal_val = []
@@ -2322,28 +2227,7 @@ class AgentScheduler:
 
                     # Kelly-Sharpe on cal_val (sizing sanity check).
                     cfg = self._config_for_helper()
-                    helper_kwargs = dict(
-                        outcomes=cal_val,
-                        recommended_weights=cfg["weights"],
-                        momentum_weight=cfg["momentum_weight"],
-                        atr_sigma_ratio=cfg["atr_sigma_ratio"],
-                        student_t_df=cfg["student_t_df"],
-                        min_edge=cfg["min_edge"],
-                        kelly_fraction=cfg["kelly_fraction"],
-                        min_kelly=cfg["min_kelly"],
-                        min_prob=cfg["min_model_probability"],
-                        regime_weight=cfg["regime_weight"],
-                        flow_weight=cfg["flow_weight"],
-                        spot_flow_weight=cfg["spot_flow_weight"],
-                        prev_margin_weight=cfg["prev_margin_weight"],
-                        logit_scale=cfg["logit_scale"],
-                        min_atr=cfg["min_atr"],
-                        regime_momentum_threshold=cfg["regime_momentum_threshold"],
-                        final_logit_clamp=cfg["final_logit_clamp"],
-                        l5_regime_damp_cap=cfg["l5_regime_damp_cap"],
-                        atr_regime_shift_threshold=cfg["atr_regime_shift_threshold"],
-                        derived_weights=cfg["derived_weights"],
-                    )
+                    helper_kwargs = dict(outcomes=cal_val, **self._backtest_kwargs(cfg))
                     identity_returns, identity_weights = self._kelly_bankroll_returns(calibrator=None, **helper_kwargs)
                     new_returns, new_weights = self._kelly_bankroll_returns(calibrator=cal, **helper_kwargs)
                     current_returns, current_weights = self._kelly_bankroll_returns(calibrator=cur_cal, **helper_kwargs)
@@ -2540,12 +2424,11 @@ class AgentScheduler:
             ) or (len(_trailing_gains) >= 20 and _trailing_3d_sharpe < 0.0)
 
             # Sustained crisis (≥3 cycles) → halve kelly_fraction, restore on first non-crisis.
-            import json as _json
             _crisis_state_path = CRISIS_STATE_PATH
             _crisis_state = {"streak": 0, "kelly_reduced": False, "original_kelly": None}
             try:
                 if _crisis_state_path.exists():
-                    _crisis_state.update(_json.loads(_crisis_state_path.read_text()))
+                    _crisis_state.update(json.loads(_crisis_state_path.read_text()))
             except Exception:
                 pass
 
@@ -2573,13 +2456,12 @@ class AgentScheduler:
                     _crisis_state["kelly_reduced"] = True
                     try:
                         _crisis_state_path.parent.mkdir(parents=True, exist_ok=True)
-                        _crisis_state_path.write_text(_json.dumps(_crisis_state, indent=2))
+                        _crisis_state_path.write_text(json.dumps(_crisis_state, indent=2))
                     except Exception as e:
                         logger.error(f"Auto Kelly reduction: failed to persist crisis_state: {e}")
                     self.signal_engine.kelly_fraction = _reduced
                     self._config.setdefault("math", {})["kelly_fraction"] = _reduced
                     try:
-                        from polybot.config.loader import save_config
                         save_config(dict(self._config))
                     except Exception as e:
                         logger.error(f"Auto Kelly reduction: failed to persist: {e}")
@@ -2603,7 +2485,6 @@ class AgentScheduler:
                     self.signal_engine.kelly_fraction = _orig
                     self._config.setdefault("math", {})["kelly_fraction"] = _orig
                     try:
-                        from polybot.config.loader import save_config
                         save_config(dict(self._config))
                         logger.info(
                             f"[AUTO KELLY RESTORE] kelly_fraction restored to {_orig:.3f} "
@@ -2622,7 +2503,7 @@ class AgentScheduler:
 
             try:
                 _crisis_state_path.parent.mkdir(parents=True, exist_ok=True)
-                _crisis_state_path.write_text(_json.dumps(_crisis_state, indent=2))
+                _crisis_state_path.write_text(json.dumps(_crisis_state, indent=2))
             except Exception as e:
                 logger.debug(f"Failed to persist crisis_state: {e}")
 

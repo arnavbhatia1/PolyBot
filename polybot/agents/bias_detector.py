@@ -111,7 +111,6 @@ class BiasDetector:
         """Win rate / Sharpe by entry phase (early/normal/late). Uses the phase
         the bot tagged at entry time, so the segmentation matches the runtime
         time-multiplier logic exactly."""
-        from collections import defaultdict
         buckets: dict[str, list[float]] = defaultdict(list)
         wins: dict[str, int] = defaultdict(int)
         for o in outcomes:

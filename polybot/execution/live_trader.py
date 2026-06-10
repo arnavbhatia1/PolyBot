@@ -42,17 +42,11 @@ _clob_helpers._http_client = httpx.Client(
 )
 
 class OrphanPositionError(Exception):
-    """Raised at startup when on-chain positions exist that the DB doesn't know about.
-
-    A FOK fill that acked but failed to write the DB row leaves shares on chain
-    with no local record. The trading loop can never manage them and `reconcile_open`
-    only reconciles DB-known rows — so without this gate the orphan would resolve
-    silently and the gain/loss would just appear in the next bankroll sync.
-
-    `run_polybot.ps1` restarts at the next 12:01 AM ET regardless, but this gate
-    trips again at boot — trading stays down until the operator inspects
-    `memory/state/orphan_positions.json`, reconciles manually, then re-runs with
-    `--allow-orphans` to acknowledge the residual shares.
+    """Raised at startup when on-chain positions exist that the DB doesn't know about
+    (e.g. a FOK fill acked but the DB row write failed) — the loop can never manage
+    them and `reconcile_open` only covers DB-known rows. Trips again on every boot:
+    trading stays down until the operator inspects `memory/state/orphan_positions.json`,
+    reconciles manually, then re-runs with `--allow-orphans`.
     """
 
 logger = logging.getLogger(__name__)
@@ -280,8 +274,8 @@ def _create_clob_client() -> ClobClient:
         raise ValueError("Missing required secret: POLYMARKET_PRIVATE_KEY")
     funder = os.environ.get("POLYMARKET_FUNDER", "")
     if not funder:
-        # Safe signature type signs against the funder address — without it every
-        # order fails downstream with an opaque signing error.
+        # Safe signing needs the funder address — without it every order fails
+        # downstream with an opaque signing error.
         raise ValueError("Missing required secret: POLYMARKET_FUNDER")
 
     client = ClobClient(
@@ -291,10 +285,8 @@ def _create_clob_client() -> ClobClient:
         signature_type=SignatureTypeV2.POLY_GNOSIS_SAFE,  # MetaMask EOA → Polymarket Safe
         funder=funder,
     )
-    # Derive first (GET) — Cloudflare blocks POST /auth/api-key with 403 even
-    # though the library swallows it via fallback. Calling derive directly
-    # avoids the noisy 403 log on every startup. Fall back to create only
-    # for fresh accounts that haven't generated keys yet.
+    # Derive first (GET) — Cloudflare 403s POST /auth/api-key, so deriving
+    # directly avoids a noisy log; create only for fresh accounts without keys.
     try:
         creds = client.derive_api_key()
     except Exception:
@@ -314,11 +306,10 @@ def _get_balance_usd(client: ClobClient) -> float:
 def _get_balance_and_allowance_usd(client: ClobClient) -> tuple[float, float]:
     """Fetch (USDC_balance_usd, min_USDC_allowance_usd) from Polymarket.
 
-    Polymarket returns a dict ``allowances: {spender_addr: amount}`` keyed by the
-    three exchange/adapter contracts: CTF Exchange, Neg Risk Exchange, Neg Risk
-    Adapter. Any one of them at zero blocks that market type, so we return the
-    MIN across all three — if any spender is under-approved, preflight fails.
-    Returns (balance, 0.0) if the allowances dict is missing or empty.
+    ``allowances`` is keyed by the three exchange/adapter spenders; any one at
+    zero blocks that market type, so return the MIN across them — an
+    under-approved spender fails preflight. (balance, 0.0) when the dict is
+    missing/empty.
     """
     result = client.get_balance_allowance(
         BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
@@ -334,12 +325,9 @@ def _get_balance_and_allowance_usd(client: ClobClient) -> tuple[float, float]:
 def verify_auth(min_allowance_usd: float | None = None) -> tuple[bool, str, float]:
     """Verify Polymarket auth and return (ok, message, balance).
 
-    If ``min_allowance_usd`` is provided, auth fails when the Safe's minimum USDC
-    allowance across the exchange/adapter spenders is below it. Typical production threshold:
-    ``(bankroll × kelly_fraction) × max_concurrent_positions × safety_multiplier``.
-
-    Used by verify_keys.py (no threshold — informational) and main.py preflight
-    (threshold passed from config — hard gate).
+    With ``min_allowance_usd``, fails when the Safe's min USDC allowance across
+    spenders is below it. Used by verify_keys.py (no threshold — informational)
+    and main.py preflight (threshold from config — hard gate).
     """
     try:
         client = _create_clob_client()
@@ -389,34 +377,30 @@ class LiveTrader(BaseTrader):
         self._min_allowance_warn_threshold: float = float(
             kwargs.get("min_allowance_warn_usd", 25.0)
         )
-        # 2 workers let a concurrent BUY+SELL (entry firing while a scalp is in
-        # flight) sign in parallel instead of queueing serially; py-clob-client
+        # 2 workers let a concurrent BUY+SELL sign in parallel; py-clob-client
         # is thread-safe per call.
         self._sign_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="clob-sign"
         )
         self._latched_auth_error: str | None = None
         # Post-BUY chain-balance cache: token_id → (timestamp, balance_shares).
-        # Filled after each successful FOK BUY by a background task; consumed by
-        # _sellable_shares to skip the ~300ms /balance-allowance REST call on
-        # the subsequent SELL. Safe because this bot runs single-position per
-        # market: nothing else touches the wallet between our BUY and our SELL.
-        # TTL of 300s (one full 5-min market window) bounds staleness; beyond
-        # that we re-query to be safe.
+        # Filled after each FOK BUY by a background task; lets _sellable_shares
+        # skip the ~300ms REST call on the subsequent SELL. Safe in
+        # single-position-per-market mode (nothing else touches the wallet
+        # between our BUY and SELL); 300s TTL bounds staleness.
         self._balance_cache: dict[str, tuple[float, float]] = {}
         self._BALANCE_CACHE_TTL_S: float = 300.0
-        # Pre-signed SELL warm-ups. Filled in the background when main.py detects
-        # holding_edge is in the "danger zone" — eliminates the ECDSA sign step
-        # (~150ms) from the scalp's hot path so we just POST when PRE-SCALP fires.
-        # Entry: token_id → {"order": signed_dict, "amount": shares, "price": p, "ts": time}.
+        # Pre-signed SELL warm-ups, filled in the background when main.py sees
+        # holding_edge in the danger zone — removes the ~150ms ECDSA sign from
+        # the scalp hot path. token_id → {"order", "amount", "price", "ts"}.
         self._sell_warmups: dict[str, dict] = {}
         self._SELL_WARMUP_TTL_S: float = 5.0
         self._buy_warmups: dict[str, dict] = {}
         self._BUY_WARMUP_TTL_S: float = 5.0
         # Winning resolutions awaiting on-chain auto-redeem: position_id →
-        # {"pre": balance before redeem, "deadline": give-up timestamp}.
-        # _resolve_bankroll checks once per call (non-blocking) and the trading
-        # loop retries each tick, so the loop never stalls on a redeem poll.
+        # {"pre": balance before redeem, "deadline": give-up ts}. One
+        # non-blocking check per _resolve_bankroll call; the loop retries each
+        # tick, never stalling on a redeem poll.
         self._redeem_pending: dict[int, dict[str, float]] = {}
         # Last condition_id whose market-info (tick/neg-risk/fee) we warmed into the
         # py-clob client cache at discovery — dedups prewarm_market_info per window.
@@ -434,14 +418,10 @@ class LiveTrader(BaseTrader):
                 self._latched_auth_error = str(e)
 
     async def prewarm_market_info(self, condition_id: str) -> None:
-        """Warm the py-clob client's tick-size / neg-risk / fee caches for a
-        market's tokens at window discovery, off the hot path.
-
-        Without this, the first FOK of each new window pays ~2 sequential REST
-        round-trips inside create_market_order (resolve condition_id +
-        get_clob_market_info) before it can sign. One get_clob_market_info call
-        populates tick_size + neg_risk + fee + condition map for BOTH tokens, so
-        the entry order signs with zero network. Best-effort, idempotent per
+        """Warm the py-clob tick-size/neg-risk/fee caches at window discovery,
+        off the hot path — otherwise the first FOK of each window pays ~2
+        sequential REST round-trips inside create_market_order before it can
+        sign. One call covers BOTH tokens. Best-effort, idempotent per
         condition_id; on failure the order falls back to the per-order fetch.
         """
         if not condition_id or condition_id == self._prewarmed_condition_id:
@@ -519,16 +499,11 @@ class LiveTrader(BaseTrader):
         return await self._submit_fok_order(token_id, BUY, size, price, fee_rate=fee_rate)
 
     async def _await_buy_settle(self, ws_event: asyncio.Event | None) -> None:
-        """Wait for the chain to register a BUY fill before reading balance.
-
-        Adaptive: always waits _BALANCE_SETTLE_FLOOR for chain settlement,
-        then either returns the moment the CLOB WS reports a trade on our
-        token, or hits the _BALANCE_SETTLE_DELAY ceiling. No WS attached →
-        fixed _BALANCE_SETTLE_DELAY wait.
-
-        Wakes from any trade on our token, not just ours — the downstream
-        balance-delta check tolerates that (a noise wake reads `delta=0`,
-        which gracefully falls through to associate_trades VWAP).
+        """Wait for the chain to register a BUY fill before reading balance:
+        always _BALANCE_SETTLE_FLOOR, then until the CLOB WS reports a trade on
+        our token or the _BALANCE_SETTLE_DELAY ceiling (fixed ceiling wait when
+        no WS). Wakes on ANY trade on our token — a noise wake reads delta=0
+        and falls through to associate_trades VWAP.
         """
         await asyncio.sleep(_BALANCE_SETTLE_FLOOR)
         if ws_event is None:
@@ -547,14 +522,11 @@ class LiveTrader(BaseTrader):
     def _ws_vwap_since(self, token_id: str, submit_ts: float, expected_price: float,
                        amount: float) -> float | None:
         """Gross BUY fill VWAP from CLOB WS trade events since ``submit_ts``, or
-        None when the events can't confidently be attributed to our order.
-
-        Filters to taker-buy-plausible prices (≤ limit + 0.005 tick rounding) and
-        requires total shares within [0.85, 1.30]× of expected — outside that,
-        background trades on our level or a missed WS event make the VWAP
-        untrustworthy and the caller falls back to slower sources. Returns the
-        GROSS vwap: base.py applies the entry fee itself (entry_fee_shares on
-        gross shares), so a net-of-fee price here would double-count it.
+        None when the events can't confidently be attributed to our order
+        (prices must be ≤ limit + 0.005 tick rounding; total shares within
+        [0.85, 1.30]× expected — else fall back to slower sources). GROSS vwap:
+        base.py applies the entry fee itself, so net-of-fee here would
+        double-count it.
         """
         clob_ws = self._clob_ws
         if clob_ws is None or not hasattr(clob_ws, "trades_since"):
@@ -665,12 +637,10 @@ class LiveTrader(BaseTrader):
                            limit_price: float) -> bool | None:
         """Simulate the FOK walk against the current book snapshot.
 
-        True if the order would likely fill (vwap on the correct side of
-        limit_price), False if the walk would clearly exceed it, None if the
-        book is empty/unparseable (skip pre-check, let FOK try).
-
-        BUY: vwap must be <= limit_price, `amount` is USDC notional.
-        SELL: vwap must be >= limit_price, `amount` is shares.
+        True = would likely fill (vwap on the correct side of limit_price),
+        False = would clearly exceed it, None = book empty/unparseable (skip
+        pre-check, let FOK try). BUY: vwap <= limit_price, `amount` is USDC;
+        SELL: vwap >= limit_price, `amount` is shares.
         """
         levels_key = "asks" if side == BUY else "bids"
         levels_raw = book.get(levels_key) or []
@@ -729,15 +699,10 @@ class LiveTrader(BaseTrader):
     async def _sellable_shares(self, token_id: str, fallback_shares: float) -> float:
         """Query on-chain balance so close_trade sells what we really own.
 
-        Hot path: returns the cached post-BUY chain balance (set by
-        _cache_post_buy_balance after each successful entry) when it's still
-        within TTL. This skips the ~300ms /balance-allowance REST round-trip
-        on the subsequent SELL, since nothing else touches the wallet between
-        our BUY and SELL in single-position mode.
-
-        Falls back to fallback_shares if (a) no token_id, (b) the API query
-        failed (returned 0), or (c) the on-chain balance is implausibly far
-        from the DB-tracked value (>3x or <0.3x).
+        Hot path: a within-TTL post-BUY cached balance skips the ~300ms REST
+        round-trip on the SELL. Falls back to fallback_shares if (a) no
+        token_id, (b) the API query failed (returned 0), or (c) the chain
+        balance is implausibly far from the DB value (>3x or <0.3x).
         """
         if not token_id:
             return fallback_shares
@@ -781,10 +746,8 @@ class LiveTrader(BaseTrader):
         return chain_bal
 
     async def _cache_post_buy_balance(self, token_id: str) -> None:
-        """Background task: fetch post-BUY chain balance once and cache it so
-        the subsequent SELL's _sellable_shares can skip the REST roundtrip.
-        Fire-and-forget; quiet on failure (cache miss → SELL falls back to a
-        live query, same behaviour as before this optimization)."""
+        """Background task: cache the post-BUY chain balance for _sellable_shares.
+        Fire-and-forget; on failure the SELL just falls back to a live query."""
         if not token_id:
             return
         try:
@@ -800,15 +763,10 @@ class LiveTrader(BaseTrader):
 
     async def warm_sell_signature(self, token_id: str, shares: float,
                                   expected_price: float, fee_rate: float = DEFAULT_FEE_RATE) -> None:
-        """Pre-sign a SELL FOK order in the background.
-
-        Called by main.py during HOLD ticks when holding_edge is close to
-        scalp threshold. Eliminates ~150ms of ECDSA sign latency from the
-        scalp's hot path: when PRE-SCALP fires, _submit_fok_order finds the
-        pre-signed order and only POSTs (skipping the create_market_order step).
-
-        Idempotent: re-running within TTL refreshes the cached signature with
-        current parameters, since the SELL price drifts every tick.
+        """Pre-sign a SELL FOK in the background (main.py calls this on HOLD
+        ticks near the scalp threshold). When PRE-SCALP fires, _submit_fok_order
+        finds the pre-signed order and only POSTs — saves ~150ms of ECDSA sign.
+        Re-running re-signs only when the warmup is stale or params drifted.
         """
         if not token_id or shares <= 0 or expected_price <= 0:
             return
@@ -883,11 +841,9 @@ class LiveTrader(BaseTrader):
 
     def _take_sell_warmup(self, token_id: str, shares: float,
                           expected_price: float) -> dict | None:
-        """Consume a pre-signed SELL order if it matches current parameters.
-
-        Returns the signed-order dict or None if no usable warmup exists.
-        Always drops the cache entry to prevent stale reuse — _submit_fok_order
-        will re-issue via warm_sell_signature on the next tick if needed.
+        """Consume a pre-signed SELL order if it matches current parameters,
+        else None. Always pops the entry to prevent stale reuse — the next tick
+        re-arms via warm_sell_signature if needed.
         """
         entry = self._sell_warmups.pop(token_id, None)
         if entry is None:
@@ -895,9 +851,8 @@ class LiveTrader(BaseTrader):
         age = time.time() - entry["ts"]
         if age > self._SELL_WARMUP_TTL_S:
             return None
-        # Parameters must match closely. Price drift > 1 cent or size drift >
-        # 5% means the SELL conditions changed enough that the signature
-        # references the wrong amount — re-sign rather than risk a bad fill.
+        # Price drift > 1¢ or size drift > 5% means the signature references the
+        # wrong amount — re-sign rather than risk a bad fill.
         if abs(entry["price"] - expected_price) > 0.01:
             return None
         if abs(entry["amount"] - shares) / max(shares, 1e-6) > 0.05:
@@ -949,12 +904,9 @@ class LiveTrader(BaseTrader):
             logger.warning("Dust sweep failed: %s — leaving as orphaned dust", short)
 
     async def reconcile_dust(self, db: Database, max_age_hours: int = 24) -> int:
-        """Scan recently-closed positions for residual on-chain shares and sweep them.
-
-        Called once at startup. Reads token_ids from the indicator_snapshot of
-        recently-closed positions and queries each conditional-token balance; if
-        residual shares > dust threshold, fires a FOK SELL to recover value before
-        expiry. Returns count of swept token_ids. Non-blocking on any error.
+        """Startup scan: sweep residual on-chain shares of recently-closed
+        positions (token_ids from indicator_snapshot; FOK SELL when residual >
+        dust threshold). Returns count of swept token_ids; non-blocking on error.
         """
         swept = 0
         try:
@@ -1003,22 +955,15 @@ class LiveTrader(BaseTrader):
 
     async def detect_orphan_positions(self, db: Database,
                                       allow_orphans: bool = False) -> int:
-        """Query Polymarket data API for all on-chain positions and refuse to
-        start if any chain position is not referenced by an open / recently-
-        closed DB row.
+        """Refuse to start if any on-chain position isn't referenced by an
+        open/pending DB row (or one closed within _ORPHAN_LOOKBACK_HOURS —
+        sweep may not have finished before restart).
 
-        Strict mode (allow_orphans=False) raises ``OrphanPositionError`` on:
-          - any non-dust chain position not referenced by an open/pending DB row
-            (or a row closed in the last _ORPHAN_LOOKBACK_HOURS — sweep may
-            not have completed before restart)
-          - DB read failure (can't determine known token_ids → fail closed)
-          - data-API failure (can't enumerate chain → fail closed)
-
-        Lenient mode (--allow-orphans) logs CRITICAL but proceeds. Detected
-        orphan details are persisted to ``memory/state/orphan_positions.json`` for
-        operator review either way.
-
-        Returns the count of orphans detected.
+        Strict mode (allow_orphans=False) raises OrphanPositionError on orphans
+        AND on DB-read or data-API failure (can't verify → fail closed). Lenient
+        mode (--allow-orphans) logs CRITICAL but proceeds. Either way, orphan
+        details persist to ``memory/state/orphan_positions.json``. Returns the
+        orphan count.
         """
         funder = os.environ.get("POLYMARKET_FUNDER", "").strip()
         if not funder:
@@ -1029,8 +974,7 @@ class LiveTrader(BaseTrader):
             raise OrphanPositionError(msg)
 
         # 1) Collect DB-known token_ids: open + pending + recently closed
-        # (recently-closed catches the case where the close JUST happened but
-        # the operator restarted before the bankroll/dust sweep ran).
+        # (covers a close that landed just before a restart, pre-sweep).
         known_tokens: set[str] = set()
         try:
             cursor = await db.conn.execute(
@@ -1058,7 +1002,6 @@ class LiveTrader(BaseTrader):
             raise OrphanPositionError(msg) from e
 
         # 2) Fetch chain positions from Polymarket's public data API
-        import httpx
         try:
             async with httpx.AsyncClient(timeout=15.0) as http:
                 resp = await http.get(self._POSITIONS_API_URL, params={"user": funder})
@@ -1154,19 +1097,15 @@ class LiveTrader(BaseTrader):
         """Reconcile DB-open positions against on-chain balances.
 
         Two recovery paths:
-          1) chain≤dust && db>dust → close-was-missed. Reconstruct exit_price
-             best-effort (current CLOB mid → 1.0/0.0 if at extremes, else
-             entry_price as zero-PnL fallback) and route through close_position
-             so trade_history gets a real row + outcome_reviewer.record_outcome
-             writes the per-trade JSON. exit_reason="reconcile_recovery" so the
-             pipeline pool sees these as recovered rows (operator can choose to
-             quarantine post-hoc by filtering on that reason).
-          2) chain>dust && |chain-db|>0.5 → shares-held drifted. Update DB shares
-             to chain truth, no close.
+          1) chain≤dust && db>dust → close-was-missed: reconstruct exit_price
+             best-effort and route through close_position so trade_history +
+             the outcome JSON get real rows; exit_reason="reconcile_recovery_*"
+             marks them for post-hoc filtering.
+          2) chain>dust && |chain-db|>0.5 → shares drifted: update DB shares to
+             chain truth, no close.
 
-        The bankroll has already been synced to chain via set_bankroll(live_balance)
-        before this method runs, so close_position is called without bankroll_delta
-        to avoid double-counting.
+        Bankroll was already synced to chain (set_bankroll) before this runs, so
+        close_position is called without bankroll_delta to avoid double-counting.
         """
         changed = 0
         try:
@@ -1263,9 +1202,8 @@ class LiveTrader(BaseTrader):
             except Exception as inner:
                 logger.error("Reconcile recovery: even fallback close failed: %s", inner)
             return
-        # Write the per-trade outcome JSON so the pipeline can see the recovered
-        # row. Best-effort: if outcome_reviewer isn't wired in this restart,
-        # the trade_history row still exists and the pipeline has fallback paths.
+        # Per-trade outcome JSON for the pipeline. Best-effort: without an
+        # outcome_reviewer the trade_history row still exists.
         if outcome_reviewer is None:
             logger.debug("Reconcile recovery: outcome_reviewer not provided, skipping JSON write")
             return
@@ -1335,23 +1273,15 @@ class LiveTrader(BaseTrader):
     ) -> FillResult:
         """Submit FOK market order with exponential-backoff retry.
 
-        Args:
-            token_id: CLOB token ID.
-            side: BUY or SELL.
-            amount: USDC for BUY, shares for SELL.
-            expected_price: Used as fallback if fill price lookup fails.
-            fee_rate: Used to convert WS-derived gross VWAP into the
-                net-shares-based fill_price the rest of the system expects.
-
-        Returns:
-            FillResult with fill details or failure reason.
+        ``amount``: USDC for BUY, shares for SELL. ``expected_price``: fallback
+        when fill-price lookup fails. ``fee_rate``: converts WS-derived gross
+        VWAP into the net-shares-based fill_price the system expects.
         """
         if self._latched_auth_error is not None:
             raise AuthError(f"latched from keepalive: {self._latched_auth_error}")
 
-        # Polymarket rejects marketable orders below $1 notional. Short-circuit
-        # before hammering CLOB 3× for a guaranteed-fail order. BUY amount is
-        # USDC; SELL amount is shares (× expected_price for notional).
+        # Polymarket rejects marketable orders below $1 notional — short-circuit
+        # before hammering CLOB 3× for a guaranteed fail.
         notional_usd = amount if side == BUY else amount * expected_price
         if notional_usd < _MIN_ORDER_USD - 0.01:
             logger.info(
@@ -1362,10 +1292,9 @@ class LiveTrader(BaseTrader):
             _update_fill_stats(filled=False, side=side, reason=reason)
             return FillResult(filled=False, reason=reason)
 
-        # Order-book pre-check: simulate FOK walk against the current book.
-        # Avoids burning ~770ms × 3 retries on orders that would reject anyway
-        # because the book has already moved past our limit. Best-effort: skip
-        # the precheck if we don't have a fresh book snapshot (let the FOK try).
+        # Pre-check: simulate the FOK walk so a book already past our limit
+        # doesn't burn ~770ms × 3 retries. Best-effort — no fresh snapshot, no
+        # pre-check (let the FOK try).
         if self._clob_ws is not None and hasattr(self._clob_ws, "get_book"):
             book = self._clob_ws.get_book(token_id) or {}
             book_ts = float(book.get("ts", 0) or 0)
@@ -1381,12 +1310,9 @@ class LiveTrader(BaseTrader):
         balance_before: float = -1.0
         ws_settle_event: asyncio.Event | None = None
         clob_ws = self._clob_ws if side == BUY else None
-        # submit_ts is captured BEFORE signing so the WS trade-buffer scan
-        # below can find our matched trades — they land on the WS within
-        # ~50-200ms of the POST returning success, but their `timestamp` is
-        # set when the trade is dispatched (close to submit_ts + chain latency).
-        # A small slack (-50ms) tolerates clock skew between our host and
-        # Polymarket's match-engine timestamp.
+        # submit_ts is captured BEFORE signing so the WS trade-buffer scan can
+        # find our matched trades (their `timestamp` is set at dispatch, close
+        # to submit_ts + chain latency; the -50ms slack tolerates clock skew).
         submit_ts = time.time()
         if side == BUY:
             balance_task = asyncio.create_task(self._get_token_balance(token_id))
@@ -1419,11 +1345,10 @@ class LiveTrader(BaseTrader):
                     _record_submit_latency(time.perf_counter() - _lat_t0, sign_s, post_s)
                 else:
                     mo = MarketOrderArgs(token_id=token_id, amount=amount, side=side, price=expected_price)
-                    # Sign and post in one thread dispatch on the dedicated executor,
-                    # with per-leg timing so the post-distribution shape is observable.
-                    # Signing is local (safe to retry); post_order failures wrap as
-                    # _AmbiguousPostError so the loop never resubmits an order that
-                    # may have reached the exchange.
+                    # Sign + post in one thread dispatch, per-leg timed. Signing
+                    # is local (safe to retry); post_order failures wrap as
+                    # _AmbiguousPostError so the loop never resubmits an order
+                    # that may have reached the exchange.
                     def _sign_and_post(order_args: MarketOrderArgs) -> tuple[dict, float, float]:
                         _s0 = time.perf_counter()
                         signed = self.client.create_market_order(order_args)
@@ -1462,8 +1387,7 @@ class LiveTrader(BaseTrader):
                     try:
                         fill_price: float | None = None
                         if side == BUY:
-                            # Same settle window the balance-delta path used — gives
-                            # the WS time to deliver our matched trade event(s).
+                            # Give the WS time to deliver our matched trade event(s).
                             await self._await_buy_settle(ws_settle_event)
                             # Fast path: WS-derived VWAP skips the second
                             # _get_token_balance REST call (~30-100ms saved).
@@ -1471,7 +1395,7 @@ class LiveTrader(BaseTrader):
                                 token_id, submit_ts, expected_price, amount)
                             if fill_price is not None and balance_task is not None \
                                     and not balance_task.done():
-                                # WS path won — discard the parallel balance
+                                # WS path won — cancel the parallel balance
                                 # pre-fetch so it doesn't leak a task.
                                 balance_task.cancel()
                                 balance_task = None
@@ -1600,13 +1524,10 @@ class LiveTrader(BaseTrader):
     # -- Fill price lookup --------------------------------------------------
 
     async def _get_fill_price(self, order_id: str, fallback_price: float) -> float:
-        """Fetch actual fill price via VWAP from associate_trades.
-
-        Retries a few times because the CLOB's REST view often lags the match
-        engine by 100–300ms — falling back to the submitted limit price
-        misreports VWAP for partial fills and breaks fee accounting downstream.
-        Only falls back to the limit price after all retries fail or the
-        order genuinely has no associated trades.
+        """Actual fill VWAP from associate_trades. Retries because the CLOB REST
+        view lags the match engine 100–300ms; falls back to the limit price only
+        after all retries fail or the order genuinely has no trades (a premature
+        fallback misreports VWAP and breaks fee accounting downstream).
         """
         last_err: Exception | None = None
         for attempt in range(_FILL_PRICE_LOOKUP_RETRIES):

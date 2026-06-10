@@ -1,17 +1,10 @@
 """Filesystem paths for everything PolyBot persists under `polybot/memory/`.
 
-Single source of truth for the memory layout — open this file to see the whole
-map. All paths are keyed off MEMORY_DIR so the bot's running directory can't leak
-a stray `polybot/polybot/memory/` tree.
-
-Three kinds of state live under memory/:
-  - per-event RECORD dirs: outcomes/, ghost_outcomes/, counterfactuals/ (append-only
-    JSON per trade/ghost/scalp, plus their rollup_YYYY-MM-DD.json bundles)
-  - calibration/: the fitted isotonic calibrator
-  - state/: rolling single-file state + logs — everything the bot/pipeline rewrites
-    in place (adverse/crisis/feed state, fill+latency stats, the prev-margin carry,
-    the counterfactual watchlist, pipeline history/run-log, the strategy log, and the
-    gate-skip accumulator + current-day file).
+Single source of truth for the memory layout. All paths key off MEMORY_DIR so the
+bot's running directory can't leak a stray `polybot/polybot/memory/` tree.
+Under memory/: per-event record dirs (outcomes/, ghost_outcomes/, counterfactuals/
+— append-only JSON + rollup_YYYY-MM-DD.json bundles), calibration/ (fitted
+isotonic), and state/ (rolling single-file state + logs rewritten in place).
 """
 from __future__ import annotations
 
@@ -51,12 +44,10 @@ STRATEGY_LOG_PATH: Path = STATE_DIR / "strategy_log.md"
 GATE_STATS_PATH: Path = STATE_DIR / "gate_stats.json"                 # accumulator
 GATE_STATS_CURRENT_PATH: Path = STATE_DIR / "gate_stats_current.json"  # today only
 
-# Pipeline freeze sentinel. When this file exists, the nightly pipeline still RUNS
-# (analysis, directional table, "would-adopt" diagnostics, rollups) but does NOT
-# mutate the live strategy: save_config() and the isotonic calibrator save become
-# no-ops. This holds every tunable param + the calibrator fixed so a multi-day
-# paper run is ONE stationary strategy — a clean control whose Sharpe/log-loss is
-# interpretable. Freeze: create the file. Unfreeze: delete it. Git-visible on purpose.
+# Pipeline freeze sentinel. When present the nightly pipeline still RUNS but does
+# NOT mutate the live strategy (save_config + calibrator save become no-ops), so a
+# multi-day paper run is ONE stationary, interpretable strategy. Freeze: create the
+# file. Unfreeze: delete it. Git-visible on purpose.
 PIPELINE_FROZEN_PATH: Path = STATE_DIR / "PIPELINE_FROZEN"
 
 

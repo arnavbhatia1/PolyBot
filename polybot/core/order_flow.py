@@ -1,15 +1,12 @@
 """L3 flow signal: book imbalance + recency-weighted trade flow → flow_signal ∈ [-1, 1]."""
 from __future__ import annotations
 
-import logging
 import math
 import time
 from typing import Any, TypedDict
 
-logger = logging.getLogger(__name__)
 _BOOK_DEPTH_LEVELS = 5
 _TRADE_FLOW_HALF_LIFE_S = 30.0
-
 
 class FlowData(TypedDict):
     flow_score: float

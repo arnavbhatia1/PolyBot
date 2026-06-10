@@ -165,10 +165,9 @@ class SignalEngine:
         self.last_raw_prob_up: float = 0.5
         self.last_momentum_score: float = 0.0
         self.last_loss_cut_event: str = ""
-        # The blended exit threshold the most recent evaluate_hold() actually used
-        # (deep-loss-floor vs ExitBoundary curve, weighted by itm_depth). Exposed so
-        # callers re-checking an EXIT (e.g. the phantom-bid SELL verify in main) gate
-        # against the SAME threshold the scalp decision used, not the raw config value.
+        # Blended exit threshold the most recent evaluate_hold() used. Exposed so
+        # EXIT re-checks (e.g. main's phantom-bid SELL verify) gate against the
+        # SAME threshold the scalp decision used, not the raw config value.
         self.last_effective_exit_threshold: float = 0.0
         self.last_atr_rolling_20: float = 0.0
         self.last_atr_long_term_mean: float = 0.0
@@ -525,13 +524,11 @@ class SignalEngine:
         else:
             self.last_loss_cut_event = ""
 
-        # Past self.deep_loss_hold_threshold the binary residual beats scalping the loss —
-        # UNLESS the (calibrated) model thinks the held side is effectively dead. The
-        # calibrator maps P(up), so the held side's minimum achievable calibrated prob
-        # is the lowest learned knot for Up and (1 - highest learned knot) for Down;
-        # model_prob at that floor means the side won essentially never, so selling
-        # beats holding for ~$0 expected. Read dynamically so re-fits track
-        # automatically (identity → floor 0.0, disabling the override).
+        # Past deep_loss_hold_threshold the binary residual beats scalping the loss —
+        # UNLESS the calibrated model says the held side is effectively dead: at its
+        # minimum achievable calibrated prob (lowest learned knot for Up, 1 − highest
+        # for Down) the side won essentially never, so selling beats ~$0 expected.
+        # Read dynamically so re-fits track (identity → floor 0.0, override off).
         dead_side_floor = (
             (self.calibrator.lowest_learned_prob if side == "Up"
              else 1.0 - self.calibrator.highest_learned_prob)

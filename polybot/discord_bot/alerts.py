@@ -210,7 +210,6 @@ class AlertManager:
             await self._safe_send(channel, f"**Daily Report — {date_str} ET**\nNo trades today.")
             return
 
-        # Core stats
         total_pnl = sum(o.get("pnl", 0) for o in todays)
         total_fees = sum(o.get("fees", 0) for o in todays)
         wins = sum(1 for o in todays if o.get("correct"))
@@ -238,7 +237,6 @@ class AlertManager:
         low_edge = [o for o in todays
                     if 0.04 <= o.get("indicator_snapshot", {}).get("trade_context", {}).get("edge", 0) < 0.08]
 
-        # Build one combined report inside a single code block.
         at = pipeline_info.get("all_time", {})
         summary_block = pipeline_info.get("summary_block", "")
 

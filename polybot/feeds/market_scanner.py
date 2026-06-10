@@ -47,8 +47,7 @@ class BTCMarketScanner:
         self.cache_seconds: int = cache_seconds
         self.symbol: str = symbol
         self.min_book_depth_usd: float = min_book_depth_usd
-        # Override the class-level CLOB_API only when caller passed a truthy URL; empty
-        # string / None / missing config falls back to the hardcoded constant.
+        # Truthy override only — empty string/None falls back to the class constant.
         if clob_url:
             self.CLOB_API = clob_url
         self._cached_contract: dict[str, Any] | None = None
@@ -77,7 +76,6 @@ class BTCMarketScanner:
         prices_raw = market.get("outcomePrices", [])
         clob_tokens_raw = market.get("clobTokenIds", [])
 
-        # Parse JSON strings if needed
         if isinstance(outcomes, str):
             outcomes = json.loads(outcomes)
         if isinstance(prices_raw, str):
@@ -326,7 +324,6 @@ class BTCMarketScanner:
     async def find_active_contract(self, http_client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:
         now = time.time()
 
-        # Return cache if fresh
         if self._cached_contract and (now - self._cache_time) < self.cache_seconds:
             contract = self._cached_contract
             end_str = contract.get("end_date", "")
@@ -341,7 +338,6 @@ class BTCMarketScanner:
                     pass
             self._cached_contract = None
 
-        # Try current window, then next window
         window_ts = self._current_window_ts()
         for ts in [window_ts, window_ts + self.WINDOW_SECONDS]:
             slug = self._make_slug(ts)
