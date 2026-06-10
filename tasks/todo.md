@@ -2,8 +2,20 @@
 
 Canonical state + history: memory `edge-thesis-corrected-baseline.md`, `part-a-audit-findings.md`,
 `part-b-audit-findings.md` (single sources of truth). This file lists only what's still to do.
+Edge verdict + diagnostic evidence: `tasks/goal.md` (2026-06-10, fable_dev).
 
 ## Immediate
+
+- [ ] First pipeline run on fable_dev's symmetric exit replay: exit_edge_threshold candidates now
+      produce nonzero deltas in both directions (previously structurally 0 for less-patient values)
+      — confirm decisions look sane against the sweep numbers in tasks/goal.md.
+
+## Research (exit engine — the validated edge)
+
+- [ ] ITM patience: 409/653 ITM scalps would have resolved $1 (model pessimism mid-window wrong
+      63%). Explore a stronger ExitBoundary resolution premium; validate via symmetric replay only.
+- [ ] Latency thesis: test `cross_venue_gap` / `fast_realized_vol_60s` (already in CF aux context)
+      as exit-trigger refinements.
 
 - [ ] Bot restart pending — the running process predates today's Part B fixes; everything loads at
       the automatic 12:01 AM ET restart (`run_polybot.ps1`). Nothing to do unless restarting early.
@@ -36,8 +48,10 @@ Canonical state + history: memory `edge-thesis-corrected-baseline.md`, `part-a-a
 - L2 direction carries a small Coinbase-vs-Binance basis bias (direction-conditional; calibrator
   can't see it). 200-sample "long-term" ATR buffer spans ~3 min → regime-shift floor + L3b
   vol_factor mostly inert.
-- exit_edge_threshold replay re-prices only toward "hold longer"; simulating earlier scalps would
-  need the CF hold-moment tick series — not built, candidates within -0.10..-0.03 rarely need it.
+- exit_edge_threshold replay is symmetric (fable_dev): hold records re-price to their worst-moment
+  hypothetical scalp when the candidate would fire (whipsaw + deep-loss-hold branches respected).
+  Remaining approximation: the snapshot is the worst-holding_edge moment, not a tick series — a
+  candidate could fire at another moment where the boundary sat higher. Accepted.
 - Replay scores the recorded side only (live picks the best side per tick) — inherent to
   realized-fill replay. Tracker rollback compares backtest baseline vs realized fills (different
   populations) — accepted, the z-margin is symmetric.

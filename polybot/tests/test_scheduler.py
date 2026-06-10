@@ -223,6 +223,81 @@ def test_exit_replay_never_reprices_loss_cuts():
     assert with_cf == no_cf
 
 
+def test_counterfactual_scan_reads_rollup_arrays(tmp_path, monkeypatch):
+    """The nightly rollup bundles per-trade CFs into one array per day BEFORE the
+    optimizer stage loads the index — rolled-up records must still be indexed, or
+    the exit-threshold replay silently shrinks to the current day's scalps."""
+    import json as _json
+    from polybot.agents import scheduler as sched_mod
+    monkeypatch.setattr(sched_mod, "COUNTERFACTUALS_DIR", tmp_path)
+    (tmp_path / "rollup_2026-06-01.json").write_text(_json.dumps([
+        {"position_id": 1, "counterfactual": {"gain_pct": 0.8},
+         "context_at_scalp": {"holding_edge": -0.05}},
+        {"position_id": 2, "counterfactual": {"gain_pct": -0.4},
+         "context_at_worst_moment": {"holding_edge": -0.06}},
+    ]))
+    sched = _bare_scheduler()
+    assert 1 in sched._load_counterfactual_index()
+    assert 2 in sched._load_hold_counterfactual_index()
+
+
+def _resolution_outcome(gain=0.1, pid=888, entry_price=0.45):
+    o = _cold_feed_outcome(0.0)
+    o["gain_pct"] = gain
+    o["position_id"] = pid
+    o["entry_price"] = entry_price
+    o["indicator_snapshot"]["trade_context"]["market_price_up"] = 0.50
+    o["indicator_snapshot"]["trade_context"]["market_price_down"] = 0.50
+    return o
+
+
+def _hold_cf_index(he, secs=120, mp=0.5, dist=1.2, cf_gain=-0.2, pid=888):
+    return {pid: {"counterfactual": {"gain_pct": cf_gain},
+                  "context_at_worst_moment": {"holding_edge": he, "seconds_remaining": secs,
+                                              "market_price": mp,
+                                              "btc_distance_atr": dist}}}
+
+
+def test_hold_replay_reprices_when_candidate_would_fire():
+    """A held trade whose worst moment sat between the live and candidate fire
+    criteria (he -0.04: above blended -0.10's ≈ -0.057, below blended -0.03's
+    -0.03) re-prices to the hypothetical-scalp gain only under the candidate —
+    this is the direction the scalp-side path is structurally blind to."""
+    sched = _bare_scheduler()
+    patient, _ = sched._kelly_bankroll_returns(
+        outcomes=[_resolution_outcome()], exit_threshold_override=-0.10,
+        hold_counterfactual_index=_hold_cf_index(he=-0.04), **_REPLAY_KWARGS)
+    eager, _ = sched._kelly_bankroll_returns(
+        outcomes=[_resolution_outcome()], exit_threshold_override=-0.03,
+        hold_counterfactual_index=_hold_cf_index(he=-0.04), **_REPLAY_KWARGS)
+    assert len(patient) == 1 and len(eager) == 1
+    assert eager != patient  # candidate fires at the worst moment -> hypo scalp gain
+
+
+def test_hold_replay_respects_whipsaw_cushion():
+    """BTC within 0.5*ATR of the strike on the wrong side held live regardless of
+    threshold — the candidate must not flip it (side Up, dist -0.3 = wrong side)."""
+    sched = _bare_scheduler()
+    base, _ = sched._kelly_bankroll_returns(
+        outcomes=[_resolution_outcome()], **_REPLAY_KWARGS)
+    flipped, _ = sched._kelly_bankroll_returns(
+        outcomes=[_resolution_outcome()], exit_threshold_override=-0.03,
+        hold_counterfactual_index=_hold_cf_index(he=-0.04, dist=-0.3), **_REPLAY_KWARGS)
+    assert flipped == base
+
+
+def test_hold_replay_respects_deep_loss_hold_branch():
+    """Deeply underwater (he < deep_loss_hold_threshold, price < entry) live holds
+    for the binary residual independent of the scalp threshold — never re-priced."""
+    sched = _bare_scheduler()
+    base, _ = sched._kelly_bankroll_returns(
+        outcomes=[_resolution_outcome(entry_price=0.60)], **_REPLAY_KWARGS)
+    flipped, _ = sched._kelly_bankroll_returns(
+        outcomes=[_resolution_outcome(entry_price=0.60)], exit_threshold_override=-0.03,
+        hold_counterfactual_index=_hold_cf_index(he=-0.30), **_REPLAY_KWARGS)
+    assert flipped == base
+
+
 def _make_outcomes(n):
     """Helper: generate n fake outcome dicts with sequential timestamps."""
     return [

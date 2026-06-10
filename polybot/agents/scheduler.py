@@ -704,12 +704,16 @@ class AgentScheduler:
         atr_regime_shift_threshold: float | None = None,
         # L6 weights — default 0.0 keeps backtest inert until pipeline raises one (matches live).
         derived_weights: dict[str, float] | None = None,
-        # When set, scalped trades the candidate threshold would NOT have fired
+        # When set, the replay re-decides recorded exits in BOTH directions
         # (judged against the blended effective threshold live fires on, never the
-        # raw value; loss-cut closes excluded) are repriced using the matched
-        # counterfactual hold-to-resolution outcome from `counterfactuals/`.
+        # raw value): scalps the candidate would NOT have fired reprice to their
+        # hold-to-resolution counterfactual (loss-cut closes excluded), and holds
+        # the candidate WOULD have fired at the recorded worst moment reprice to
+        # their hypothetical-scalp counterfactual (whipsaw-cushion and
+        # deep-loss-hold branches respected — they hold regardless of threshold).
         exit_threshold_override: float | None = None,
         counterfactual_index: dict[int, dict[str, Any]] | None = None,
+        hold_counterfactual_index: dict[int, dict[str, Any]] | None = None,
     ) -> tuple[list[float], list[float]]:
         """Replay the full logit composition used in production for a candidate
         config and return the Kelly-sized per-trade returns. Sharpe of the result
@@ -1032,25 +1036,84 @@ class AgentScheduler:
                             eff = float(exit_threshold_override)
                         if float(he_at_scalp) > eff:
                             outcome_gain_pct = float(cf_gain)
+            # Mirror image — without it the replay is blind to less-patient
+            # candidates (they fire strictly more often, so the scalp-side path
+            # alone yields delta == 0 and the z-gate auto-rejects). A held trade
+            # re-prices to its worst-moment hypothetical scalp when the candidate
+            # WOULD have fired there, unless a threshold-independent live branch
+            # (whipsaw cushion, deep-loss-hold) would have held it anyway.
+            # Approximation: the snapshot is the worst-holding_edge moment, not a
+            # tick series — a candidate could fire at some other moment where the
+            # boundary sat higher; same accepted class as the scalp-side replay.
+            elif (exit_threshold_override is not None
+                    and hold_counterfactual_index
+                    and o.get("exit_reason") == "resolution"):
+                pid = o.get("position_id")
+                cf = hold_counterfactual_index.get(pid) if pid is not None else None
+                if cf:
+                    cf_ctx = cf.get("context_at_worst_moment", {})
+                    he_worst = cf_ctx.get("holding_edge")
+                    cf_gain = cf.get("counterfactual", {}).get("gain_pct")
+                    mp_worst = float(cf_ctx.get("market_price") or 0.0)
+                    if he_worst is not None and cf_gain is not None and mp_worst > 0:
+                        dist = cf_ctx.get("btc_distance_atr")  # (btc - strike)/ATR
+                        o_side = o.get("side", "")
+                        wrong_side = (dist is not None
+                                      and ((o_side == "Up" and dist < 0)
+                                           or (o_side == "Down" and dist > 0)))
+                        whipsaw = wrong_side and abs(float(dist)) <= 0.5
+                        entry_price = float(o.get("entry_price") or 0.0)
+                        deep_loss_hold = (
+                            float(he_worst) < _d("deep_loss_hold_threshold")
+                            and entry_price > 0 and mp_worst < entry_price)
+                        if not whipsaw and not deep_loss_hold:
+                            eff = effective_exit_threshold(
+                                float(exit_threshold_override),
+                                float(cf_ctx.get("seconds_remaining") or 0.0),
+                                mp_worst,
+                                fee_rate=float(cf_ctx.get("fee_rate") or DEFAULT_FEE_RATE),
+                            )
+                            if float(he_worst) <= eff:
+                                outcome_gain_pct = float(cf_gain)
             returns.append(kelly_frac * outcome_gain_pct * realism_factor)
             sample_weights.append(recency_w)
 
         return returns, sample_weights
 
     def _load_counterfactual_index(self) -> dict[int, dict[str, Any]]:
-        """{position_id: counterfactual_dict} for scalp outcomes that resolved.
+        """{position_id: scalp-type counterfactual} for scalp outcomes that resolved.
 
-        Cached on the scheduler instance so a multi-fold backtest run pays the
-        I/O cost once. The counterfactual JSON shape is documented in
-        polybot/agents/counterfactual_tracker.py — keys consumed here:
-        `context_at_scalp.{holding_edge, market_price, seconds_remaining,
+        See _scan_counterfactuals for the shared file scan; keys consumed by the
+        replay: `context_at_scalp.{holding_edge, market_price, seconds_remaining,
         fee_rate, loss_cut}`, `counterfactual.gain_pct`.
+        """
+        return self._scan_counterfactuals()[0]
+
+    def _load_hold_counterfactual_index(self) -> dict[int, dict[str, Any]]:
+        """{position_id: hold-type counterfactual} for positions held to resolution.
+
+        Keys consumed by the replay: `context_at_worst_moment.{holding_edge,
+        market_price, seconds_remaining, btc_distance_atr}`,
+        `counterfactual.gain_pct` (the hypothetical scalp at the worst moment).
+        """
+        return self._scan_counterfactuals()[1]
+
+    def _scan_counterfactuals(self) -> tuple[dict[int, dict[str, Any]], dict[int, dict[str, Any]]]:
+        """One pass over counterfactuals/ -> (scalp_index, hold_index) by position_id.
+
+        Reads per-trade dicts AND rollup arrays (the nightly rollup runs before the
+        optimizer stage, so most history lives in rollups). Scalp-type records key
+        on `context_at_scalp`, hold-type on `context_at_worst_moment` — separate
+        indexes, so a pid carrying both can never be shadowed by glob order.
+        Cached on the scheduler instance so a multi-fold backtest run pays the
+        I/O cost once.
         """
         cached = getattr(self, "_counterfactual_index_cached", None)
         if cached is not None:
             return cached
         import glob
-        idx: dict[int, dict[str, Any]] = {}
+        scalp_idx: dict[int, dict[str, Any]] = {}
+        hold_idx: dict[int, dict[str, Any]] = {}
         try:
             files = glob.glob(str(COUNTERFACTUALS_DIR / "*.json"))
         except Exception:
@@ -1058,23 +1121,23 @@ class AgentScheduler:
         for f in files:
             try:
                 with open(f, "r") as fh:
-                    d = json.load(fh)
+                    payload = json.load(fh)
+            except Exception:
+                continue
+            records = payload if isinstance(payload, list) else [payload]
+            for d in records:
                 if not isinstance(d, dict):
                     continue
                 pid = d.get("position_id")
                 cf = d.get("counterfactual", {})
                 if pid is None or not isinstance(cf, dict) or cf.get("gain_pct") is None:
                     continue
-                # Index only scalp-type CFs (`context_at_scalp` — the key the replay
-                # reads). A pid can also have a hold-type CF; indexing both would let
-                # glob order shadow the scalp record and silently skip the override.
-                if "context_at_scalp" not in d:
-                    continue
-                idx[int(pid)] = d
-            except Exception:
-                continue
-        self._counterfactual_index_cached = idx
-        return idx
+                if "context_at_scalp" in d:
+                    scalp_idx[int(pid)] = d
+                elif "context_at_worst_moment" in d:
+                    hold_idx[int(pid)] = d
+        self._counterfactual_index_cached = (scalp_idx, hold_idx)
+        return scalp_idx, hold_idx
 
     def _config_for_helper(self, recommendations: dict[str, Any] | None = None) -> dict[str, Any]:
         """Resolve config for `_kelly_bankroll_returns` — recommendation first, live engine fallback.
@@ -1204,15 +1267,18 @@ class AgentScheduler:
         # tracker does. Other params see the same data either way.
         _exit_thr_override = None
         _cf_index: dict[int, dict[str, Any]] | None = None
+        _hold_cf_index: dict[int, dict[str, Any]] | None = None
         if param == "exit_edge_threshold" and value is not None:
             _exit_thr_override = float(value)
             _cf_index = self._load_counterfactual_index()
+            _hold_cf_index = self._load_hold_counterfactual_index()
 
         returns, weights = self._kelly_bankroll_returns(
             outcomes=outcomes,
             calibrator=calibrator,
             exit_threshold_override=_exit_thr_override,
             counterfactual_index=_cf_index,
+            hold_counterfactual_index=_hold_cf_index,
             **self._backtest_kwargs(cfg),
         )
         return {
@@ -1582,11 +1648,13 @@ class AgentScheduler:
                                 and c.get("value") is not None), None)
                 _exit_thr_combined: float | None = None
                 _cf_index_combined: dict[int, dict[str, Any]] | None = None
+                _hold_cf_combined: dict[int, dict[str, Any]] | None = None
                 if _exit_c is not None:
                     from polybot.config.param_registry import CLAMP_RANGES as _CR
                     _lo, _hi, _cast = _CR["exit_edge_threshold"]
                     _exit_thr_combined = _cast(max(_lo, min(_hi, _cast(_exit_c["value"]))))
                     _cf_index_combined = self._load_counterfactual_index()
+                    _hold_cf_combined = self._load_hold_counterfactual_index()
 
                 cfg_combined = self._config_for_helper(combined_rec)
                 calibrator = self._gate_calibrator
@@ -1596,6 +1664,7 @@ class AgentScheduler:
                     calibrator=calibrator,
                     exit_threshold_override=_exit_thr_combined,
                     counterfactual_index=_cf_index_combined,
+                    hold_counterfactual_index=_hold_cf_combined,
                     **self._backtest_kwargs(cfg_combined),
                 )
                 base_h_sharpe = _weighted_sharpe(base_h_rets, base_h_w) if base_h_rets else 0.0
