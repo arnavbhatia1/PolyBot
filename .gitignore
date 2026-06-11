@@ -31,3 +31,4 @@ polybot.log.*
 # OS
 .DS_Store
 Thumbs.db
+polybot/memory/recordings/

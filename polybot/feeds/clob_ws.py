@@ -42,6 +42,8 @@ class ClobWebSocket:
 
         self.book_updated: asyncio.Event = asyncio.Event()
         self.market_resolved: asyncio.Event = asyncio.Event()
+        # Optional per-print tape hook: fn(asset_id, trade) (recording.TapeRecorder).
+        self.on_trade = None
 
         self.connected: bool = False
         self._ws: Any = None
@@ -297,6 +299,12 @@ class ClobWebSocket:
             "timestamp": time.time(),
         }
         self.last_trade[asset_id] = trade
+        # Optional tape hook (recording.TapeRecorder.on_trade) — must not raise.
+        if self.on_trade is not None:
+            try:
+                self.on_trade(asset_id, trade)
+            except Exception:
+                pass
         buf = self.trade_buffer.get(asset_id)
         if buf is None:
             buf = deque(maxlen=TRADE_BUFFER_MAXLEN)
