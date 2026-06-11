@@ -11,6 +11,12 @@ from polybot.execution.base import BaseTrader, FillResult, DEFAULT_FEE_RATE, exi
 
 class PaperTrader(BaseTrader):
 
+    # Phase 1 passive exits: paper can honor a maker fill faithfully (the fill is
+    # validated against the real CLOB tape by the conservative prints-through rule
+    # in main, never simulated optimistically). Live stays FOK until a real GTC
+    # order subsystem exists.
+    supports_passive_exit = True
+
     def __init__(self, db: Any, **kwargs: Any) -> None:
         super().__init__(
             db=db,

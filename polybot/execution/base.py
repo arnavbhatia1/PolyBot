@@ -288,7 +288,11 @@ class BaseTrader(ABC):
         token_id: str = "",
         position: dict[str, Any] | None = None,
         exit_reason: str = "scalp",
+        maker_fill: bool = False,
     ) -> TradeResult:
+        """``maker_fill=True`` (Phase 1 passive exit): the resting SELL was
+        already lifted at ``exit_price`` (a tape print strictly through the
+        level), so there is no taker leg to execute and no taker fee."""
         # --- Lookup position ---
         if position is None:
             positions = await self.db.get_open_positions()
@@ -306,22 +310,31 @@ class BaseTrader(ABC):
         sellable_shares = await self._sellable_shares(token_id, fallback_shares)
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
 
-        # Share buffer so Polymarket's per-share fee deduction (fee_rate × shares
-        # × p × (1-p), peak fee_rate × 0.25) doesn't push the FOK above available
-        # balance; the 0.005 floor also covers 1-tick mismatches at zero fee_rate.
-        sell_fee_headroom = max(fee_rate * 0.25, 0.0) + 0.002
-        sell_fee_headroom = max(sell_fee_headroom, 0.005)
-        shares = sellable_shares * (1.0 - sell_fee_headroom)
+        if maker_fill:
+            # No taker leg: fill is the resting level, exit fee is zero.
+            sell_fee_headroom = 0.005
+            shares = sellable_shares * (1.0 - sell_fee_headroom)
+            fill_price = exit_price
+            exit_fee_rate = 0.0
+        else:
+            # Share buffer so Polymarket's per-share fee deduction (fee_rate × shares
+            # × p × (1-p), peak fee_rate × 0.25) doesn't push the FOK above available
+            # balance; the 0.005 floor also covers 1-tick mismatches at zero fee_rate.
+            sell_fee_headroom = max(fee_rate * 0.25, 0.0) + 0.002
+            sell_fee_headroom = max(sell_fee_headroom, 0.005)
+            shares = sellable_shares * (1.0 - sell_fee_headroom)
 
-        # --- Execute sell ---
-        fill = await self._execute_sell(token_id, shares, exit_price, fee_rate=fee_rate)
-        if not fill.filled:
-            return TradeResult(success=False, reason=fill.reason or "Sell not filled")
+            # --- Execute sell ---
+            fill = await self._execute_sell(token_id, shares, exit_price, fee_rate=fee_rate)
+            if not fill.filled:
+                return TradeResult(success=False, reason=fill.reason or "Sell not filled")
+            fill_price = fill.fill_price
+            exit_fee_rate = fee_rate
 
         # --- Fee math and revenue ---
-        lr = log_return(position["entry_price"], fill.fill_price)
-        fee_usdc = exit_fee_usdc(shares, fill.fill_price, fee_rate)
-        revenue = shares * fill.fill_price - fee_usdc
+        lr = log_return(position["entry_price"], fill_price)
+        fee_usdc = exit_fee_usdc(shares, fill_price, exit_fee_rate)
+        revenue = shares * fill_price - fee_usdc
         entry_fee_usd = _entry_fee_usd_from_position(position, shares)
         pnl = revenue - position["size"]
         gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
@@ -333,17 +346,17 @@ class BaseTrader(ABC):
         # pnl: live's recorded pnl excludes the swept residual too, so paper/live
         # trade records stay comparable.
         residual_credit = self._scalp_residual_credit(
-            sellable_shares - shares, fill.fill_price, fee_rate)
+            sellable_shares - shares, fill_price, exit_fee_rate)
         total_fees = entry_fee_usd + fee_usdc
         await self.db.close_position(
-            position_id, exit_price=fill.fill_price,
+            position_id, exit_price=fill_price,
             bankroll_delta=revenue + residual_credit, pnl=pnl, fees=total_fees,
             exit_reason=exit_reason,
         )
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
                            pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=fee_usdc,
-                           gain_pct=gain_pct, shares=shares, fill_price=fill.fill_price)
+                           gain_pct=gain_pct, shares=shares, fill_price=fill_price)
 
     # -- resolve_position ------------------------------------------------
 

@@ -32,3 +32,4 @@ polybot.log.*
 .DS_Store
 Thumbs.db
 polybot/memory/recordings/
+polybot/db/wallet_tape.db*

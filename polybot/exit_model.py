@@ -31,7 +31,11 @@ MODEL_DIR: Path = MEMORY_DIR / "exit_model"
 ARTIFACT_PATH: Path = MODEL_DIR / "exit_model.json"
 METRICS_PATH: Path = MODEL_DIR / "metrics_history.json"
 
-MIN_LABELED_WINDOWS = 7 * 200       # ~7 days of labeled windows before first fit
+# Operator amendment 2026-06-11 (hard 06-22 deadline): first fit at ~4 days of
+# labels instead of 7 — ~800 windows is sufficient for a 13-feature logistic,
+# and the 5-day kill-bar shadow still gates deployment.
+MIN_DAYS_OF_LABELS = 4
+MIN_LABELED_WINDOWS = MIN_DAYS_OF_LABELS * 200
 RECENCY_HALF_LIFE_DAYS = 11.0
 DEGRADE_TOLERANCE = 0.15            # >15% worse than 7-run trailing avg → keep previous
 DRIFT_HORIZON_S = 60.0
@@ -171,10 +175,10 @@ def nightly_refit_job(db: Any):
     metrics degrade >15% vs the trailing-7 average."""
     async def _job() -> dict[str, Any]:
         frame = await load_training_frame(db)
-        if frame is None or frame["n_windows"] < MIN_LABELED_WINDOWS / 200:
+        if frame is None or frame["n_windows"] < MIN_LABELED_WINDOWS:
             n = 0 if frame is None else frame["n_windows"]
             return {"status": "waiting_for_data", "labeled_windows": n,
-                    "needed": MIN_LABELED_WINDOWS // 200}
+                    "needed": MIN_LABELED_WINDOWS}
         if len(frame["X"]) < MIN_LABELED_WINDOWS:
             return {"status": "waiting_for_data", "samples": int(len(frame["X"])),
                     "needed": MIN_LABELED_WINDOWS}

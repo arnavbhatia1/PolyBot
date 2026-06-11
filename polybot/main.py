@@ -243,6 +243,23 @@ _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, hold to resolution
 
+# Phase 1 passive exits: position_id -> resting SELL state. In-memory by design —
+# a restart simply re-evaluates the position and falls back to FOK.
+_resting_exits: dict[int, dict[str, Any]] = {}
+
+
+def _resting_fill_price(prints: list[dict[str, Any]], level: float, posted_ts: float) -> float | None:
+    """Conservative passive-fill rule (same as the shadow sim): a resting SELL at
+    ``level`` fills only when a BUY-side print lands STRICTLY above it after
+    posting — queue position is unknowable, so at-level prints don't count."""
+    for t in prints:
+        if float(t.get("timestamp", 0) or 0) <= posted_ts:
+            continue
+        if (str(t.get("side", "")).upper() == "BUY"
+                and float(t.get("price", 0) or 0) > level):
+            return level
+    return None
+
 # Window-path recorder (recording.WindowPathRecorder) — set by main() at boot.
 _window_recorder = None
 
@@ -1616,6 +1633,9 @@ async def _evaluate_and_exit_position(
     mid = pos["market_id"]
 
     if action == "HOLD":
+        if pos["id"] in _resting_exits:
+            _resting_exits.pop(pos["id"], None)
+            logger.info(f"  RESTING EXIT cancelled — model back to HOLD on {pos['side']}")
         # Log hold status every 30s so the operator knows the bot is alive
         now_ts = time.time()
         if now_ts - _last_hold_log.get(mid, 0) >= 30:
@@ -1736,15 +1756,64 @@ async def _evaluate_and_exit_position(
                 f"attempting exit"
             )
 
-        # Emit the pre-scalp snapshot here (after size guard) so the price the
-        # scalp triggers on is always visible, without spamming on deferred ticks.
-        logger.info(
-            f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
-            f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
-            f"BTC ${btc_now:,.0f} [{_btc_src}]  mkt {market_price:.2f}"
-        )
+        # Phase 1 passive exit (two-stage, kill-bar-gated by config): rest a SELL
+        # at mid for a few seconds — the late chasers who'd otherwise be our FOK
+        # counterparty lift us instead (no taker fee, no half-spread crossed) —
+        # then fall back to the FOK. Loss-cuts always go straight to FOK.
+        result = None
+        _exec_cfg = config.get("execution", {})
+        _is_loss_cut = getattr(signal_engine, "last_loss_cut_event", "") == "fired"
+        if _is_loss_cut:
+            _resting_exits.pop(pos["id"], None)
+        elif (_exec_cfg.get("passive_exit_enabled", False)
+                and getattr(trader, "supports_passive_exit", False)):
+            _timeout = float(_exec_cfg.get("passive_exit_timeout_s", 10.0))
+            _st = _resting_exits.get(pos["id"])
+            if _st is None:
+                if ws_ask > ws_bid > 0 and live["seconds_remaining"] > _timeout + 5.0:
+                    _level = min(round(market_mid + 1e-9, 2), round(ws_ask, 2))
+                    _level = max(_level, round(ws_bid + 0.01, 2))
+                    if len(_resting_exits) > 50:  # lazy sweep of long-dead entries
+                        _cut = time.time() - 600
+                        for _pid in [k for k, v in _resting_exits.items() if v["deadline"] < _cut]:
+                            _resting_exits.pop(_pid, None)
+                    _resting_exits[pos["id"]] = {
+                        "token": sell_token, "level": _level,
+                        "posted_ts": time.time(), "deadline": time.time() + _timeout,
+                    }
+                    logger.info(
+                        f"  RESTING EXIT {pos['side']}  @ {_level:.2f} "
+                        f"(bid {ws_bid:.2f}/ask {ws_ask:.2f})  {_timeout:.0f}s then FOK")
+                    return day_wins, day_losses, day_fees
+                # no usable two-sided quote / window too close — straight to FOK
+            else:
+                _fill = _resting_fill_price(
+                    clob_ws.trades_since(_st["token"], _st["posted_ts"]) if clob_ws else [],
+                    _st["level"], _st["posted_ts"])
+                if _fill is not None:
+                    _resting_exits.pop(pos["id"], None)
+                    result = await trader.close_trade(
+                        pos["id"], _fill, token_id=sell_token, position=pos,
+                        maker_fill=True)
+                    if result.success:
+                        logger.info(f"  PASSIVE FILL — lifted at {_fill:.2f} (maker, no taker fee)")
+                    else:
+                        result = None  # fall back to FOK below
+                elif time.time() >= _st["deadline"]:
+                    _resting_exits.pop(pos["id"], None)  # timeout -> FOK below
+                else:
+                    return day_wins, day_losses, day_fees  # still resting
 
-        result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token, position=pos)
+        if result is None:
+            # Emit the pre-scalp snapshot here (after size guard) so the price the
+            # scalp triggers on is always visible, without spamming on deferred ticks.
+            logger.info(
+                f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
+                f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
+                f"BTC ${btc_now:,.0f} [{_btc_src}]  mkt {market_price:.2f}"
+            )
+
+            result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token, position=pos)
         if not result.success:
             if "CLOB minimum" in (result.reason or ""):
                 # Race: size was >= $1 at the pre-check but dropped by order time —

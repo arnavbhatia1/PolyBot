@@ -1,9 +1,11 @@
 """Phase 5: cross-horizon box-arb monitor (LOG-ONLY until Phase 1 is live).
 
-The hourly BTC up/down and the :55 five-minute window resolve at the same
-instant off the same Chainlink series with different strikes. Monotonicity:
+The 15-minute BTC up/down (btc-updown-15m-T, window [T, T+900)) and the final
+five-minute window inside it (btc-updown-5m-{T+600}) resolve at the same
+instant off the same Chainlink series with different strikes — 96 shared
+expiries/day (verified live 2026-06-11; no hourly series exists). Monotonicity:
 P(BTC > K_high) <= P(BTC > K_low). A violation priced beyond two taker fees is
-a riskless box (buy 5m side + hourly counter-side, guaranteed $1 > cost).
+a riskless box (buy 5m side + 15m counter-side, guaranteed $1 > cost).
 
 Standalone process — does not touch the trading bot:
   python scripts/box_arb_monitor.py            # runs continuously
@@ -30,8 +32,6 @@ GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 OUT = MEMORY_DIR / "recordings" / "box_arb.jsonl"
 
-# Hourly slug candidates — Polymarket naming drifts; first that resolves wins.
-HOURLY_SLUGS = ("btc-updown-1h-{ts}", "btc-updown-hourly-{ts}", "btc-up-or-down-1h-{ts}")
 
 
 async def fetch_event(client: httpx.AsyncClient, slug: str) -> dict | None:
@@ -80,38 +80,33 @@ def log_row(row: dict) -> None:
         f.write(json.dumps(row) + "\n")
 
 
-async def check_overlap(client: httpx.AsyncClient, hour_ts: int) -> None:
-    """At each top of hour, the :55 5m window and the hourly share the expiry."""
-    five_ts = hour_ts - 300
-    five = await fetch_event(client, f"btc-updown-5m-{five_ts}")
-    hourly = None
-    for pattern in HOURLY_SLUGS:
-        hourly = await fetch_event(client, pattern.format(ts=hour_ts - 3600))
-        if hourly:
-            break
-    row: dict = {"ts": round(time.time(), 1), "expiry": hour_ts,
-                 "five_found": bool(five), "hourly_found": bool(hourly)}
-    if not five or not hourly:
+async def check_overlap(client: httpx.AsyncClient, expiry_ts: int) -> None:
+    """Every quarter hour: the last 5m window and the 15m window share the expiry."""
+    five = await fetch_event(client, f"btc-updown-5m-{expiry_ts - 300}")
+    quarter = await fetch_event(client, f"btc-updown-15m-{expiry_ts - 900}")
+    row: dict = {"ts": round(time.time(), 1), "expiry": expiry_ts,
+                 "five_found": bool(five), "quarter_found": bool(quarter)}
+    if not five or not quarter:
         log_row(row)
         return
 
     f_up, f_dn = tokens_of(five)
-    h_up, h_dn = tokens_of(hourly)
+    h_up, h_dn = tokens_of(quarter)
     if not all((f_up, f_dn, h_up, h_dn)):
         log_row(row | {"note": "tokens_missing"})
         return
 
-    # Box A: buy 5m-Up + hourly-Down. Pays $1 iff strikes ordered K5 > Kh... the
-    # guaranteed-$1 leg pair depends on strike order; check both directions and
-    # let the offline analysis sort strike order from the logged metadata.
+    # The guaranteed-$1 leg pair depends on the strike order (K_5m vs K_15m);
+    # check both directions and let the offline analysis sort strike order from
+    # the logged metadata.
     asks = {}
     for name, tok in (("five_up", f_up), ("five_down", f_dn),
-                      ("hour_up", h_up), ("hour_down", h_dn)):
+                      ("quarter_up", h_up), ("quarter_down", h_dn)):
         asks[name] = await best_ask(client, tok)
     row["asks"] = {k: v[0] for k, v in asks.items()}
     row["sizes"] = {k: v[1] for k, v in asks.items()}
 
-    for legs in (("five_up", "hour_down"), ("five_down", "hour_up")):
+    for legs in (("five_up", "quarter_down"), ("five_down", "quarter_up")):
         p1, p2 = asks[legs[0]][0], asks[legs[1]][0]
         if p1 <= 0 or p2 <= 0:
             continue
@@ -131,12 +126,13 @@ async def main() -> None:
     async with httpx.AsyncClient() as client:
         while True:
             now = time.time()
-            next_hour = (int(now // 3600) + 1) * 3600
-            # Sample during the overlap window: last 6 minutes before each hour.
-            wake = next_hour - 360 if now < next_hour - 360 else now + 30
+            next_q = (int(now // 900) + 1) * 900
+            # Sample during the overlap: the final 4 minutes before each quarter hour
+            # (the 5m leg only exists for the last 5 minutes).
+            wake = next_q - 240 if now < next_q - 240 else now + 45
             await asyncio.sleep(max(5.0, wake - now))
-            if time.time() >= next_hour - 360:
-                await check_overlap(client, next_hour)
+            if time.time() >= next_q - 240:
+                await check_overlap(client, next_q)
 
 
 if __name__ == "__main__":
