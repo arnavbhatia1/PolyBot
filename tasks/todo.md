@@ -258,17 +258,19 @@ Everything buildable is built — including the two-stage passive exit itself
 a config flip or a verdict, never a build. Bot restarted onto the lean code at
 10:44 AM 06-11: **data epoch is 06-11**, recorders + nightly jobs live now.
 
-DEADLINE CALENDAR (data epoch 06-11; one day of slack vs 06-22):
+DEADLINE CALENDAR (data epoch 06-11; ~two days of slack vs 06-22):
 - 06-12/13: data accrues (window paths ~288/day, tape, box-arb overlaps 96/day).
-- 06-14: Phase 6 quote-shadow evaluable (3 days tape): `python scripts/shadow_wide_quote.py`.
-- 06-15 09:25: Phase 1 kill bar (Windows task + session reminder run it):
-  `python scripts/shadow_passive_exit.py`. PASS → set execution.passive_exit_enabled:
-  true (code already live, flag-gated) + wire wallet-aware routing the same day.
+- 06-14 09:25: BOTH kill bars (Windows task "PolyBot kill-bar evaluations" runs
+  scripts/run_kill_bar_evals.cmd → memory/state/shadow_eval_2026-06-14.txt):
+  Phase 1 `shadow_passive_exit.py` (ITM fill >= 50%; data spans ~2.6-3 days that
+  morning — if marginal, re-confirm 06-15 before deploying) and Phase 6
+  `shadow_wide_quote.py` (positive EV or documented abort). Phase 1 PASS → set
+  execution.passive_exit_enabled: true + wire wallet-aware routing same day.
 - 06-15 23:45: first exit-model refit (4-day label gate, amended for the deadline).
 - 06-16..20: Phase 3 five-day shadow — run `python scripts/shadow_exit_model.py`
   daily; 06-20/21: verdict; PASS → flip the artifact's deployed flag + wire
   evaluate_hold consumption.
-- 06-16+: box-arb execution + Phase 6 sleeve only if their bars pass; else
+- 06-15+: box-arb execution + Phase 6 sleeve only if their bars pass; else
   document abort (legitimate completion per plan).
 - 06-21/22: buffer + final verification + multi-asset TODO handoff.
 
