@@ -316,7 +316,9 @@ Telemetry, nightly pipeline, param registry, layout, data sources, run commands,
 - **Entry facts:** `btc_price`, `strike_price`, `seconds_remaining`, `market_price_up`, `market_price_down`, `closes_tail` (last 2 closes, so the L6 backtest can reconstruct `last_return`), `atr_rolling_20`, `atr_long_term_mean` (so L6 + the L3b `regime_vol_factor` read stamped values, not a re-derived approximation).
 - **Probabilities:** `model_probability` (post-calibrator), `model_probability_raw` (pre-calibrator — stored separately so re-fits don't compound).
 - **Composite signals:** `flow_score`, `spot_flow_signal`, `regime_autocorr`, `regime_direction`, `prev_resolution_margin`.
-- **Microstructure aux:** `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`.
+- **Microstructure aux:** `coinbase_cvd_60s`, `coinbase_taker_60s`, `coinbase_taker_n`, plus the E3 latency features `cross_venue_gap` (Coinbase − Binance last trade) and `fast_realized_vol_60s` (sample stdev of log returns over `CoinbaseFeed`'s 1s-bucketed price history). The same aux dict is stamped into counterfactual exit contexts (`watch`/`track_hold_moment`).
+- **CLOB book aux (entry only, trades + ghosts):** `clob_depth_top5_up_usd`, `clob_depth_top5_down_usd` (per-side top-5 ask depth — the market's own book, vs `depth_usd_top20` which is **Binance BTC** depth), `clob_book_age_s` (max WS-snapshot age across sides; `None` on HTTP-book fallback).
+- **Price-sum outlier log (E1):** every out-of-band moment the `[0.98, 1.02]` price-sum gate skips appends `{ts, market, ask_up, ask_down, sum, top-of-book sizes}` to `state/price_sum_outliers.jsonl` (1s/market throttle) — the cross-book-arb pool the gate otherwise censors unmeasured.
 - **None-vs-0.0 (load-bearing):** every **signal** field is recorded `None` (never `0.0`) when its feed is cold/stale **or its trade buffer doesn't yet span the measurement window (e.g. <60s after a Coinbase reconnect — `CoinbaseFeed.covers`)** — including `flow_score`/`spot_flow_signal`, whose *live* value collapses cold to `0.0` for the logit but whose *recorded* value is `None`. So a recorded `0.0` is genuinely flat flow, not a dead feed; the pipeline replay coerces `None -> 0.0` on read to match live. `coinbase_taker_n` is a **count**: `0` (not `None`) when cold (consumer requires `n >= 20`).
 - **SPRT:** `sprt_confidence`, `sprt_status`. **Sizing audit:** `adverse_rate_at_30s`, `adverse_kelly_mult` (recorded for audit; not pipeline-consumed), `entry_phase`, `flip_count`, `is_flip`.
 
@@ -481,8 +483,9 @@ polybot/
                                state/ — rolling state + logs: gate_stats.json (lifetime accumulator)
                                + gate_stats_current.json, adverse_state, crisis_state,
                                feed_staleness, fill_stats, latency_stats, orphan_positions,
-                               prev_resolution_margin, cf_watchlist, pipeline_history,
-                               pipeline_run_log, strategy_log.md, PIPELINE_FROZEN (flag, §11).
+                               prev_resolution_margin, cf_watchlist, price_sum_outliers.jsonl
+                               (§10 E1 recorder), pipeline_history, pipeline_run_log,
+                               strategy_log.md, PIPELINE_FROZEN (flag, §11).
                                Layout centralized in polybot/paths.py (MEMORY_DIR override: POLYBOT_MEMORY_DIR).
   discord_bot/                 monitoring + control commands (§18)
   db/models.py                 SQLite (positions, trade_history, bankroll, peak_bankroll).

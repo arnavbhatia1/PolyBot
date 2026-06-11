@@ -75,3 +75,49 @@ class TestCoinbaseFeed:
         f = CoinbaseFeed()
         f._handle_message({"type": "subscriptions", "channels": []})
         assert f.state.price == 0.0
+
+
+class TestRealizedVol:
+    def test_zero_below_three_samples(self):
+        import time
+        f = CoinbaseFeed()
+        now = time.time()
+        f._prices.extend([(now - 5, 71000.0), (now - 4, 71010.0)])
+        assert f.realized_vol(60.0) == 0.0
+
+    def test_flat_prices_zero_vol(self):
+        import time
+        f = CoinbaseFeed()
+        now = time.time()
+        f._prices.extend([(now - i, 71000.0) for i in range(10, 0, -1)])
+        assert f.realized_vol(60.0) == 0.0
+
+    def test_matches_sample_stdev_of_log_returns(self):
+        import math
+        import time
+        f = CoinbaseFeed()
+        now = time.time()
+        prices = [71000.0, 71071.0, 70929.0, 71000.0]
+        f._prices.extend([(now - (len(prices) - i), p) for i, p in enumerate(prices)])
+        rets = [math.log(prices[i] / prices[i - 1]) for i in range(1, len(prices))]
+        m = sum(rets) / len(rets)
+        expected = math.sqrt(sum((r - m) ** 2 for r in rets) / (len(rets) - 1))
+        assert abs(f.realized_vol(60.0) - expected) < 1e-12
+
+    def test_window_excludes_old_samples(self):
+        import time
+        f = CoinbaseFeed()
+        now = time.time()
+        f._prices.extend([(now - 120, 50000.0), (now - 115, 90000.0)])  # outside 60s
+        f._prices.extend([(now - 3, 71000.0), (now - 2, 71000.0), (now - 1, 71000.0)])
+        assert f.realized_vol(60.0) == 0.0  # only the flat in-window samples count
+
+    def test_ticker_samples_prices_at_1s_buckets(self):
+        f = CoinbaseFeed()
+        msg = {"type": "ticker", "product_id": "BTC-USD", "price": "71500.25"}
+        f._handle_message(msg)
+        f._handle_message(msg)  # same second: not resampled
+        assert len(f._prices) == 1
+        f._last_price_sample -= 1.5  # pretend the last sample is older
+        f._handle_message(msg)
+        assert len(f._prices) == 2

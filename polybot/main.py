@@ -28,7 +28,7 @@ from polybot.config.param_registry import default_for as _d
 from polybot.paths import (
     PREV_MARGIN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
     GATE_STATS_CURRENT_PATH, STRATEGY_LOG_PATH, PIPELINE_HISTORY_PATH,
-    CALIBRATION_PARAMS_PATH, fold_gate_day,
+    CALIBRATION_PARAMS_PATH, PRICE_SUM_OUTLIERS_PATH, fold_gate_day,
 )
 from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE, EFFECTIVE_FEE_PEAK, compute_buy_vwap
 from polybot.db.models import Database
@@ -138,14 +138,16 @@ _WS_STALE_S = 10.0  # max age for CLOB WS BBA/book before treating as stale
 # Aux-signal freshness limit: aux trade_context fields stamp None (never 0.0) when
 # the source is missing/stale, so "feed cold" stays distinguishable from "real zero".
 _AUX_FRESH_S_COINBASE = 10.0
+_AUX_FRESH_S_TRADES = 3.0
 
 # Sub-second CVD-acceleration scale — local to the deceleration gate. L3b uses
 # the canonical helper in `polybot/core/aux_layers.py`.
 _COINBASE_CVD_ACCEL_SCALE = 5.0
 
 
-def _build_aux_signals(coinbase_feed: Any) -> dict[str, Any]:
-    """Auxiliary microstructure signals shared between trade_context and ghost replay.
+def _build_aux_signals(coinbase_feed: Any, trades_feed: Any = None) -> dict[str, Any]:
+    """Auxiliary microstructure signals shared between trade_context, ghost replay,
+    and the counterfactual exit contexts (E3 latency features included).
 
     Every field is ``None`` when the source feed is missing, not warm, stale, or
     its trade buffer doesn't yet span the 60s window (post-reconnect) — never
@@ -161,6 +163,18 @@ def _build_aux_signals(coinbase_feed: Any) -> dict[str, Any]:
     else:
         cb_taker, cb_taker_n = None, 0
 
+    # E3 latency features. cross_venue_gap = Coinbase (resolution venue) minus
+    # Binance latest trade — the lead the exit engine monetizes. fast vol from
+    # the 1s-bucketed Coinbase price history.
+    bt_acc = trades_feed.accumulator if trades_feed else None
+    bt_fresh = bt_acc is not None and bt_acc.latest_age_s < _AUX_FRESH_S_TRADES
+    cb_tick_fresh = (coinbase_feed is not None
+                     and coinbase_feed.state.age_seconds < _AUX_FRESH_S_COINBASE)
+    cb_price = coinbase_feed.state.price if cb_tick_fresh else None
+    bn_price = bt_acc.latest_price if bt_fresh else None
+    gap = (cb_price - bn_price) if (cb_price and bn_price) else None
+    fast_rv = coinbase_feed.realized_vol(60.0) if cb_fresh else None
+
     def _r(v: float | None, ndigits: int) -> float | None:
         return None if v is None else round(v, ndigits)
 
@@ -168,7 +182,69 @@ def _build_aux_signals(coinbase_feed: Any) -> dict[str, Any]:
         "coinbase_cvd_60s": _r(cb_cvd, 4),
         "coinbase_taker_60s": _r(cb_taker, 4),
         "coinbase_taker_n": cb_taker_n,
+        "cross_venue_gap": _r(gap, 2),
+        "fast_realized_vol_60s": _r(fast_rv, 6),
     }
+
+def _clob_book_aux(clob_ws: Any, token_up: str, token_down: str,
+                   book_up: dict[str, Any], book_down: dict[str, Any]) -> dict[str, Any]:
+    """E2 fields: per-side CLOB top-5 ask depth (USD) + book age, stamped into the
+    entry trade_context for trades and ghosts. depth_usd_top20 is BINANCE BTC
+    depth — these are the market's own books. None = no book on that side; age
+    is None when either side lacks a timestamped WS snapshot (HTTP books are
+    fetch-fresh but carry no ts)."""
+    now = time.time()
+
+    def _side(token: str, http_book: dict[str, Any]) -> tuple[float | None, float | None]:
+        ws_book = clob_ws.get_book(token) if clob_ws else None
+        ws_ts = float(ws_book.get("ts", 0) or 0) if ws_book else 0.0
+        book = ws_book if (ws_book and ws_ts > 0 and ws_book.get("asks")) else (http_book or {})
+        asks = book.get("asks") or []
+        if not asks:
+            return None, None
+        try:
+            depth = sum(float(a["price"]) * float(a["size"]) for a in asks[:5])
+        except (KeyError, ValueError, TypeError):
+            return None, None
+        age = (now - ws_ts) if book is ws_book else None
+        return depth, age
+
+    depth_up, age_up = _side(token_up, book_up)
+    depth_down, age_down = _side(token_down, book_down)
+    age = max(age_up, age_down) if (age_up is not None and age_down is not None) else None
+    return {
+        "clob_depth_top5_up_usd": None if depth_up is None else round(depth_up, 2),
+        "clob_depth_top5_down_usd": None if depth_down is None else round(depth_down, 2),
+        "clob_book_age_s": None if age is None else round(age, 3),
+    }
+
+
+# E1 recorder throttle: one line per market per second, so a stuck out-of-band
+# window can't grow the JSONL unboundedly at tick rate.
+_last_price_sum_log: dict[str, float] = {}
+
+def _log_price_sum_outlier(market_id: str, price_up: float, price_down: float,
+                           size_up: float, size_down: float) -> None:
+    """Append one out-of-band price-sum moment (the [0.98, 1.02] gate's skip) to
+    PRICE_SUM_OUTLIERS_PATH. Pure telemetry: never raises, never blocks the gate."""
+    try:
+        now = time.time()
+        if now - _last_price_sum_log.get(market_id, 0.0) < 1.0:
+            return
+        _last_price_sum_log[market_id] = now
+        if len(_last_price_sum_log) > 500:
+            _last_price_sum_log.clear()
+        PRICE_SUM_OUTLIERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with PRICE_SUM_OUTLIERS_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": round(now, 3), "market": market_id,
+                "ask_up": price_up, "ask_down": price_down,
+                "sum": round(price_up + price_down, 4),
+                "size_up": round(size_up, 2), "size_down": round(size_down, 2),
+            }) + "\n")
+    except Exception:
+        pass
+
 
 # Throttled logging for hold evaluations and resolution waiting
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
@@ -609,7 +685,8 @@ async def _evaluate_signal_and_enter(
 
     # Stamped once per evaluation so ghosts and filled outcomes share one schema;
     # aux fields are a real value or None — never a 0.0 stand-in.
-    aux_signals = _build_aux_signals(coinbase_feed)
+    aux_signals = _build_aux_signals(coinbase_feed, trades_feed)
+    aux_signals.update(_clob_book_aux(clob_ws, token_up, token_down, book_up, book_down))
 
     def _ghost(gate: str, signal: Any, snap: dict) -> None:
         """Record a ghost trade when a downstream gate rejects a real BUY signal.
@@ -1398,6 +1475,12 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
     price_sum = price_up + price_down
     if price_source == "clob" and (price_sum < 0.98 or price_sum > 1.02):
         _record_skip("stale_prices")
+        _log_price_sum_outlier(
+            contract.get("slug", contract.get("market_id", "")),
+            price_up, price_down,
+            float(book_up.get("asks", [{}])[0].get("size", 0) or 0) if book_up.get("asks") else 0.0,
+            float(book_down.get("asks", [{}])[0].get("size", 0) or 0) if book_down.get("asks") else 0.0,
+        )
         eval_window = int(now_ts // 300) * 300
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
@@ -1645,7 +1728,7 @@ async def _evaluate_and_exit_position(
     )
 
     # Same L3b helper used at entry — identical math via aux_layers.
-    _hold_aux_local = _build_aux_signals(coinbase_feed)
+    _hold_aux_local = _build_aux_signals(coinbase_feed, trades_feed)
     _hold_vol_factor = regime_vol_factor(
         indicators.get("atr", {}).get("atr", 0.0), signal_engine.last_atr_long_term_mean)
     hold_spot_flow = compute_spot_flow_signal(
@@ -1695,7 +1778,7 @@ async def _evaluate_and_exit_position(
                 f"BTC ${btc_now:,.0f} [{_btc_src}]{cl_str}  mkt {market_price:.2f}")
         if counterfactual_tracker:
             _cf_atr = indicators.get("atr", {}).get("atr", 1.0) or 1.0
-            _hold_aux = _build_aux_signals(coinbase_feed)
+            _hold_aux = _build_aux_signals(coinbase_feed, trades_feed)
             counterfactual_tracker.track_hold_moment(pos["market_id"], pos, {
                 "holding_edge": holding_edge, "model_prob": model_prob,
                 "market_price": market_price, "seconds_remaining": live["seconds_remaining"],
@@ -1860,7 +1943,7 @@ async def _evaluate_and_exit_position(
 
             if counterfactual_tracker:
                 _cf_atr2 = indicators.get("atr", {}).get("atr", 1.0) or 1.0
-                _cf_aux = _build_aux_signals(coinbase_feed)
+                _cf_aux = _build_aux_signals(coinbase_feed, trades_feed)
                 counterfactual_tracker.watch(pos, {
                     "exit_fill": exit_fill, "pnl": pnl, "gain_pct": gain_pct,
                     "holding_edge": holding_edge, "model_prob": model_prob,

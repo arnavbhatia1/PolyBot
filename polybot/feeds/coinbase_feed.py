@@ -54,6 +54,10 @@ class CoinbaseFeed:
         # Per-trade flow: (ts, signed_size). +size = buyer aggressor, -size = seller aggressor.
         self._trade_buffer_s = trade_buffer_s
         self._trades: deque[tuple[float, float]] = deque()
+        # 1s-bucketed (ts, price) history for realized_vol — same sampling the
+        # old 1s-kline fast vol used, so the metric definition is unchanged.
+        self._prices: deque[tuple[float, float]] = deque()
+        self._last_price_sample: float = 0.0
         # When the current contiguous trade window began (reset on every
         # (re)connect, since the deque is cleared). Window-based reads must not
         # trust a window the buffer doesn't span yet — a fresh reconnect would
@@ -116,6 +120,19 @@ class CoinbaseFeed:
             return 0.0
         return recent / max(recent_s, 1.0) - baseline / max(baseline_s, 1.0)
 
+    def realized_vol(self, window_s: float = 60.0) -> float:
+        """Sample stdev of log returns over the 1s-bucketed price history in the
+        window. 0.0 when fewer than 3 samples; gate on covers(window_s) to avoid
+        reading a reconnect-truncated window as genuinely quiet."""
+        cutoff = time.time() - window_s
+        closes = [p for ts, p in self._prices if ts >= cutoff and p > 0]
+        if len(closes) < 3:
+            return 0.0
+        rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
+        m = sum(rets) / len(rets)
+        var = sum((r - m) ** 2 for r in rets) / max(1, len(rets) - 1)
+        return math.sqrt(var)
+
     def get_taker_ratio(self, window_s: float = 60.0, min_trades: int = 20) -> tuple[float, int]:
         """(buy_fraction, n) over window. Returns (0.5, n) when n < min_trades."""
         cutoff = time.time() - window_s
@@ -152,6 +169,8 @@ class CoinbaseFeed:
                     self.staleness.reset()
                     self.staleness.mark_connected()
                     self._trades.clear()
+                    self._prices.clear()
+                    self._last_price_sample = 0.0
                     self._window_start = time.time()
 
                     await ws.send(json.dumps({
@@ -204,6 +223,13 @@ class CoinbaseFeed:
 
         self.state.price = price
         self.state.updated_at = now
+
+        if now - self._last_price_sample >= 1.0:
+            self._prices.append((now, price))
+            self._last_price_sample = now
+            cutoff = now - self._trade_buffer_s
+            while self._prices and self._prices[0][0] < cutoff:
+                self._prices.popleft()
 
         bid = data.get("best_bid")
         ask = data.get("best_ask")

@@ -35,6 +35,9 @@ LATENCY_STATS_PATH: Path = STATE_DIR / "latency_stats.json"
 ORPHAN_POSITIONS_PATH: Path = STATE_DIR / "orphan_positions.json"
 PREV_MARGIN_PATH: Path = STATE_DIR / "prev_resolution_margin.json"
 CF_WATCHLIST_PATH: Path = STATE_DIR / "cf_watchlist.json"
+# E1 recorder: out-of-band price-sum moments the [0.98, 1.02] gate skips (JSONL,
+# append-only) — the cross-book-arb pool the gate otherwise censors unmeasured.
+PRICE_SUM_OUTLIERS_PATH: Path = STATE_DIR / "price_sum_outliers.jsonl"
 PIPELINE_HISTORY_PATH: Path = STATE_DIR / "pipeline_history.json"
 PIPELINE_RUN_LOG_PATH: Path = STATE_DIR / "pipeline_run_log.json"
 STRATEGY_LOG_PATH: Path = STATE_DIR / "strategy_log.md"

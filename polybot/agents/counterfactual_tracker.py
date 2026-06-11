@@ -83,7 +83,7 @@ class CounterfactualTracker:
 
         ``aux_signals`` is the live ``_build_aux_signals`` output stamped at the
         scalp moment — preserved verbatim so the resolution record carries the
-        same 13 Pillar-1 microstructure fields the entry trade_context carries.
+        same aux microstructure fields the entry trade_context carries.
         """
         position_id = pos.get("id", 0)
         market_id = pos.get("market_id", "")
