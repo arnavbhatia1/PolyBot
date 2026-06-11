@@ -1150,5 +1150,77 @@
         ]
       }
     ]
+  },
+  {
+    "date": "2026-06-11T03:45:48.412430+00:00",
+    "source": "claude",
+    "baseline_sharpe": 0.1794,
+    "changes": [
+      {
+        "param": "atr_sigma_ratio",
+        "old_value": 1.3,
+        "new_value": 1.2,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": -0.0662,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "final_logit_clamp",
+        "old_value": 4.0,
+        "new_value": 4.75,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "l5_regime_damp_cap",
+        "old_value": 0.7,
+        "new_value": 0.85,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "atr_regime_shift_threshold",
+        "old_value": 0.6,
+        "new_value": 0.45,
+        "direction": "down",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      },
+      {
+        "param": "derived_log_atr_ratio_weight",
+        "old_value": 0.0,
+        "new_value": 0.015,
+        "direction": "up",
+        "decision": "rejected",
+        "backtest_delta_sharpe": 0.0,
+        "predicted_delta_sharpe_7d": 0.005,
+        "confidence_interval": [
+          -0.012,
+          0.02
+        ]
+      }
+    ]
   }
 ]
