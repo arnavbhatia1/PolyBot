@@ -252,43 +252,55 @@ Do not skip the sequence. Phase 3 and 4 without Phase 2 data are building on not
 
 ## DEFINITION OF DONE (FOR THIS GOAL)
 
-**BUILD STATUS (2026-06-11, commits 3b218a0d + f938902b; 439 tests green).** All
-buildable-now work is shipped; the open boxes below are kill-bar/wall-clock
-gated, not code gated. New code loads at the 06-12 12:01 AM restart.
-`PIPELINE_FROZEN` created so tonight's old in-memory process can't write the
-old config schema back; the new NightlyScheduler has no adoption surface.
+**BUILD STATUS (2026-06-11 EOD; 444 tests green). HARD DEADLINE: 2026-06-22.**
+Everything buildable is built — including the two-stage passive exit itself
+(flag-gated) and both downstream shadow evaluators — so every remaining box is
+a config flip or a verdict, never a build. Bot restarted onto the lean code at
+10:44 AM 06-11: **data epoch is 06-11**, recorders + nightly jobs live now.
 
-Kill-bar calendar: tape + window-path data start 06-12 → Phase 1 shadow
-evaluable ~06-15 (`python scripts/shadow_passive_exit.py`); exit-model first
-refit when ~7 days of labels exist (~06-19), 5-day shadow after; wallet tables
-populate from the first labeled night.
+DEADLINE CALENDAR (data epoch 06-11; one day of slack vs 06-22):
+- 06-12/13: data accrues (window paths ~288/day, tape, box-arb overlaps 96/day).
+- 06-14: Phase 6 quote-shadow evaluable (3 days tape): `python scripts/shadow_wide_quote.py`.
+- 06-15 09:25: Phase 1 kill bar (Windows task + session reminder run it):
+  `python scripts/shadow_passive_exit.py`. PASS → set execution.passive_exit_enabled:
+  true (code already live, flag-gated) + wire wallet-aware routing the same day.
+- 06-15 23:45: first exit-model refit (4-day label gate, amended for the deadline).
+- 06-16..20: Phase 3 five-day shadow — run `python scripts/shadow_exit_model.py`
+  daily; 06-20/21: verdict; PASS → flip the artifact's deployed flag + wire
+  evaluate_hold consumption.
+- 06-16+: box-arb execution + Phase 6 sleeve only if their bars pass; else
+  document abort (legitimate completion per plan).
+- 06-21/22: buffer + final verification + multi-asset TODO handoff.
 
 The goal is complete when all of the following are true:
 
 - [x] Dead code deleted; replay passes on current regime with gutted codebase
       (L2-L6/SPRT/calibration/optimizer/recommenders gone; exit-policy sweep +
-      L1 smoke verified on the gutted code; suite 439 green)
+      L1 smoke verified on the gutted code; suite green)
 - [ ] Passive exit (resting limit + FOK fallback) live in production; kill bar passed
-      (tape recorder + conservative shadow evaluator SHIPPED; GTC two-stage exit
-      gets built when the >=50% ITM fill bar passes — evaluable ~06-15)
+      (two-stage state machine BUILT 06-11 — rest at mid, conservative
+      prints-through fill, timeout → FOK, loss-cut bypass, HOLD-flip cancel —
+      behind execution.passive_exit_enabled:false; kill bar evaluable 06-15)
 - [x] Window-path recorder running continuously; 288 windows/day persisted
-      (SHIPPED — self-discovering, self-labeling, write-behind; starts 06-12 restart)
+      (LIVE since 06-11 10:44 — 1 Hz rows + self-labeling confirmed in DB)
 - [ ] Exit-value model live, replacing ExitBoundary; nightly refit pipeline running; kill bar passed
-      (trainer + nightly refit + degradation keep-back SHIPPED, refit data-gated
-      ~06-19; deploy flag flips only after the 5-day CF-replay shadow)
+      (trainer + nightly refit + degradation keep-back live; first fit 06-15;
+      5-day shadow via scripts/shadow_exit_model.py; deploy flag flips at the bar)
 - [ ] Wallet fingerprinting pipeline running; classification tables updating nightly; routing live
-      (ingestion + donor/noise/sharp classification SHIPPED as a nightly job;
-      routing deploys with Phase 1 per plan)
+      (LIVE: nightly job + 3-day historical backfill running 06-11 — tape rows in
+      gitignored db/wallet_tape.db, wallet_stats aggregate in the per-mode DB;
+      first classifications already real: donors at −3..−11c/$1, sharps +12..+37c/$1;
+      routing wires when Phase 1 flips)
 - [ ] Box arb monitor running on BTC; executing valid boxes
-      (monitor SHIPPED log-only — `python scripts/box_arb_monitor.py`; execution
-      deliberately gated on Phase 1 proving order mechanics, per Phase 5/6 sequencing)
-- [ ] Wide-quote maker sleeve live OR explicitly aborted with documented reason (GTC infra unreliable)
-      (awaits Phase 1 shadow verdict by design)
+      (RUNNING since 06-11 — 15m/5m shared-expiry pairs, 96 overlaps/day,
+      log-only to memory/recordings/box_arb.jsonl; execution after Phase 1)
+- [ ] Wide-quote maker sleeve live OR explicitly aborted with documented reason
+      (evaluator scripts/shadow_wide_quote.py ready; verdict 06-14+)
 - [x] Nightly pipeline: model refit + wallet table update + Brier/MAE logging
-      (NightlyScheduler jobs registered: exit_model_refit, window_paths_retention,
-      wallet_tables; Brier/MAE history in memory/exit_model/metrics_history.json)
+      (jobs registered: exit_model_refit, window_paths_retention, wallet_tables)
 - [x] All components verified non-interfering with circuit breaker
-      (recorders are write-behind side-channels; circuit breaker untouched; suite green)
+      (recorders write-behind; passive exit reuses close_trade + breaker path
+      unchanged; suite green)
 
 **One remaining TODO:** Expand passive-exit → exit-value model → wallet fingerprinting to ETH, SOL, XRP five-minute markets. Architecture is parameterized; execution is a symbol loop. Do not start until this BTC goal is complete and all kill bars have passed in production for ≥7 days.
 
