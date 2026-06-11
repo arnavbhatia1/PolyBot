@@ -72,20 +72,26 @@ async def load_training_frame(db: Any, drift_horizon_s: float = DRIFT_HORIZON_S
                               ) -> dict[str, np.ndarray] | None:
     """Rows = 1 Hz samples of labeled windows; columns = FEATURES + labels.
 
-    Resolution label joins window_labels; the drift label pairs each sample with
-    the same window's sample ~drift_horizon_s later (None for the window tail).
+    window_paths lives in its own gitignored DB (recording.PATHS_DB) — ATTACHed
+    here; window_labels lives in the per-mode DB. The drift label pairs each
+    sample with the same window's sample ~drift_horizon_s later.
     """
-    cur = await db.conn.execute("""
-        SELECT p.window_id, p.ts, p.elapsed_s, p.bid_up, p.ask_up, p.bid_down,
-               p.ask_down, p.depth3_bid_up, p.depth3_ask_up, p.depth3_bid_down,
-               p.depth3_ask_down, p.coinbase_price, p.strike, l.resolved_up
-        FROM window_paths p JOIN window_labels l ON l.window_id = p.window_id
-        WHERE p.bid_up IS NOT NULL AND p.ask_up IS NOT NULL
-          AND p.bid_down IS NOT NULL AND p.ask_down IS NOT NULL
-          AND p.coinbase_price IS NOT NULL AND p.strike IS NOT NULL
-        ORDER BY p.window_id, p.ts
-    """)
-    rows = await cur.fetchall()
+    from polybot.recording import PATHS_DB
+    await db.conn.execute("ATTACH DATABASE ? AS paths", (str(PATHS_DB),))
+    try:
+        cur = await db.conn.execute("""
+            SELECT p.window_id, p.ts, p.elapsed_s, p.bid_up, p.ask_up, p.bid_down,
+                   p.ask_down, p.depth3_bid_up, p.depth3_ask_up, p.depth3_bid_down,
+                   p.depth3_ask_down, p.coinbase_price, p.strike, l.resolved_up
+            FROM paths.window_paths p JOIN window_labels l ON l.window_id = p.window_id
+            WHERE p.bid_up IS NOT NULL AND p.ask_up IS NOT NULL
+              AND p.bid_down IS NOT NULL AND p.ask_down IS NOT NULL
+              AND p.coinbase_price IS NOT NULL AND p.strike IS NOT NULL
+            ORDER BY p.window_id, p.ts
+        """)
+        rows = await cur.fetchall()
+    finally:
+        await db.conn.execute("DETACH DATABASE paths")
     if not rows:
         return None
 
@@ -226,8 +232,15 @@ def nightly_refit_job(db: Any):
 def cleanup_job(db: Any, retention_days: int = 90):
     """Nightly retention sweep on window_paths (the plan's rolling 90 days)."""
     async def _job() -> dict[str, Any]:
+        import aiosqlite
+        from polybot.recording import PATHS_DB
         cutoff = time.time() - retention_days * 86400
-        cur = await db.conn.execute("DELETE FROM window_paths WHERE ts < ?", (cutoff,))
-        await db.conn.commit()
-        return {"rows_deleted": cur.rowcount}
+        async with aiosqlite.connect(str(PATHS_DB)) as conn:
+            await conn.execute("PRAGMA busy_timeout=15000")
+            try:
+                cur = await conn.execute("DELETE FROM window_paths WHERE ts < ?", (cutoff,))
+                await conn.commit()
+                return {"rows_deleted": cur.rowcount}
+            except aiosqlite.OperationalError:
+                return {"rows_deleted": 0}
     return _job

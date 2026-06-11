@@ -30,6 +30,10 @@ from polybot.paths import MEMORY_DIR
 logger = logging.getLogger(__name__)
 
 RECORDINGS_DIR: Path = MEMORY_DIR / "recordings"
+# 1 Hz path rows (~86k/day) live in their own gitignored DB so the nightly git
+# commit of the per-mode DB stays small; window_labels (tiny, joined by the
+# wallet job and analysis) stay in the per-mode DB.
+PATHS_DB: Path = Path(__file__).resolve().parent / "db" / "window_paths.db"
 
 _FLUSH_EVERY_S = 10.0
 _TAPE_FLUSH_ROWS = 200
@@ -48,11 +52,10 @@ class WindowPathRecorder:
     """Samples the active 5-min window at 1 Hz into the per-mode DB.
 
     Tables (created on first run):
-      window_paths(window_id, ts, elapsed_s, bid_up, ask_up, bid_down, ask_down,
-                   depth3_bid_up, depth3_ask_up, depth3_bid_down, depth3_ask_down,
-                   coinbase_price, strike, traded)
-      window_labels(window_id PRIMARY KEY, resolved_up, final_price,
-                    price_to_beat, labeled_at)
+      window_paths (in PATHS_DB, gitignored): window_id, ts, elapsed_s, bid/ask
+                   both sides, top-3 depths, coinbase_price, strike, traded
+      window_labels (in the per-mode DB): window_id PRIMARY KEY, resolved_up,
+                   final_price, price_to_beat, labeled_at
     """
 
     def __init__(self, db: Any, clob_ws: Any, coinbase_feed: Any,
@@ -70,11 +73,19 @@ class WindowPathRecorder:
         self._last_label_run = 0.0
         self._rows: list[tuple] = []
         self._running = False
+        self._paths_conn = None
         self.rows_written = 0
         self.labels_written = 0
 
     async def ensure_tables(self) -> None:
-        await self.db.conn.executescript("""
+        import aiosqlite
+        if self._paths_conn is None:
+            self._paths_conn = await aiosqlite.connect(str(PATHS_DB))
+            self._paths_conn.row_factory = aiosqlite.Row
+            await self._paths_conn.execute("PRAGMA journal_mode=WAL")
+            await self._paths_conn.execute("PRAGMA synchronous=NORMAL")
+            await self._paths_conn.execute("PRAGMA busy_timeout=15000")
+        await self._paths_conn.executescript("""
             CREATE TABLE IF NOT EXISTS window_paths (
                 window_id TEXT NOT NULL,
                 ts REAL NOT NULL,
@@ -90,6 +101,9 @@ class WindowPathRecorder:
                 ON window_paths(window_id);
             CREATE INDEX IF NOT EXISTS idx_window_paths_ts
                 ON window_paths(ts);
+        """)
+        await self._paths_conn.commit()
+        await self.db.conn.executescript("""
             CREATE TABLE IF NOT EXISTS window_labels (
                 window_id TEXT PRIMARY KEY,
                 resolved_up INTEGER NOT NULL,
@@ -98,6 +112,25 @@ class WindowPathRecorder:
                 labeled_at REAL NOT NULL
             );
         """)
+        await self.db.conn.commit()
+        await self._migrate_paths_out_of_main_db()
+
+    async def _migrate_paths_out_of_main_db(self) -> None:
+        """One-time: move pre-split window_paths rows out of the per-mode DB so
+        the nightly git commit stays small."""
+        try:
+            cur = await self.db.conn.execute("SELECT * FROM window_paths")
+            rows = await cur.fetchall()
+        except Exception:
+            return
+        if rows:
+            await self._paths_conn.executemany(
+                "INSERT INTO window_paths VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [tuple(r) for r in rows])
+            await self._paths_conn.commit()
+            logger.info(f"window_paths migrated out of per-mode DB: {len(rows)} rows")
+        await self.db.conn.executescript("DROP TABLE IF EXISTS window_paths;")
+        await self.db.conn.execute("VACUUM")
         await self.db.conn.commit()
 
     def mark_traded(self, market_id: str) -> None:
@@ -205,9 +238,9 @@ class WindowPathRecorder:
             return
         rows, self._rows = self._rows, []
         try:
-            await self.db.conn.executemany(
+            await self._paths_conn.executemany(
                 "INSERT INTO window_paths VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
-            await self.db.conn.commit()
+            await self._paths_conn.commit()
             self.rows_written += len(rows)
         except Exception as e:
             logger.warning(f"window_paths flush failed ({len(rows)} rows): {e}")
@@ -240,6 +273,9 @@ class WindowPathRecorder:
     async def stop(self) -> None:
         self._running = False
         await self._flush()
+        if self._paths_conn is not None:
+            await self._paths_conn.close()
+            self._paths_conn = None
 
 
 class TapeRecorder:

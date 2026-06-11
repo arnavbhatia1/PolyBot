@@ -33,3 +33,4 @@ polybot.log.*
 Thumbs.db
 polybot/memory/recordings/
 polybot/db/wallet_tape.db*
+polybot/db/window_paths.db*

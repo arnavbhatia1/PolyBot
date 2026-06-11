@@ -57,7 +57,9 @@ def test_top3_usd_sums_first_three_levels():
 
 
 @pytest.mark.asyncio
-async def test_window_recorder_samples_and_flushes(db):
+async def test_window_recorder_samples_and_flushes(db, tmp_path, monkeypatch):
+    import polybot.recording as recording
+    monkeypatch.setattr(recording, "PATHS_DB", tmp_path / "paths.db")
     await db.initialize()
     rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), coinbase_feed=_FakeCoinbase(),
                              chainlink_feed=_FakeChainlink(), market_scanner=None,
@@ -69,7 +71,7 @@ async def test_window_recorder_samples_and_flushes(db):
     rec.mark_traded(f"btc-updown-5m-{window_ts}")
     rec._sample()
     await rec._flush()
-    cur = await db.conn.execute("SELECT * FROM window_paths")
+    cur = await rec._paths_conn.execute("SELECT * FROM window_paths")
     rows = await cur.fetchall()
     assert len(rows) == 1
     r = rows[0]
@@ -77,11 +79,14 @@ async def test_window_recorder_samples_and_flushes(db):
     assert r["strike"] == 60990.0 and r["coinbase_price"] == 61000.0
     assert r["traded"] == 1
     assert 0 <= r["elapsed_s"] <= 300
+    await rec.stop()
     await db.close()
 
 
 @pytest.mark.asyncio
-async def test_window_recorder_label_write(db):
+async def test_window_recorder_label_write(db, tmp_path, monkeypatch):
+    import polybot.recording as recording
+    monkeypatch.setattr(recording, "PATHS_DB", tmp_path / "paths.db")
     await db.initialize()
     rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), coinbase_feed=None,
                              chainlink_feed=None, market_scanner=None, http_client=None)
@@ -92,6 +97,7 @@ async def test_window_recorder_label_write(db):
     await db.conn.commit()
     cur = await db.conn.execute("SELECT resolved_up FROM window_labels")
     assert (await cur.fetchone())["resolved_up"] == 1
+    await rec.stop()
     await db.close()
 
 
