@@ -6,34 +6,28 @@ Edge verdict + diagnostic evidence: `tasks/goal.md` (2026-06-10, fable_dev).
 
 ## Immediate
 
-- [ ] First pipeline run on fable_dev's symmetric exit replay: exit_edge_threshold candidates now
-      produce nonzero deltas in both directions (previously structurally 0 for less-patient values)
-      — confirm decisions look sane against the sweep numbers in tasks/goal.md.
-- [ ] Verify the hold-CF keying fix on live records (fixed 06-10 evening): new hold-type CFs must
-      carry the resolving position's id — expect no new duplicate pids in counterfactuals/ and
-      ~100% CF coverage of resolutions. The running process predates the fix until the 12:01 AM
-      restart — re-run `python scripts/repair_cf_keying.py --apply` once after restart to sweep
-      any chimeras written in the gap (idempotent).
-- [ ] After restart, confirm the new telemetry flows: `cross_venue_gap`/`fast_realized_vol_60s`
+- [ ] When the pipeline next proposes an exit_edge_threshold candidate, compare its symmetric-replay
+      delta against the sweep numbers in tasks/goal.md (the 06-10 23:45 run — first on the fixed
+      pipeline — proposed none; its 5 exploratory candidates all rejected sanely, auto-commit worked).
+- [ ] Verify the hold-CF keying fix on live records: the 06-11 12:01 AM process carries it —
+      expect no new duplicate pids in counterfactuals/ and ~100% CF coverage of resolutions
+      (post-restart chimera sweep on 06-11 01:20 ET found 0; `scripts/repair_cf_keying.py` is
+      the idempotent checker).
+- [ ] The E1/E2/E3 telemetry commit (0732a0bc) landed AFTER the 06-11 12:01 restart — it loads
+      at the **06-12** 12:01 AM restart. Then confirm: `cross_venue_gap`/`fast_realized_vol_60s`
       + `clob_depth_top5_*`/`clob_book_age_s` non-null in fresh trade_context/ghost/CF records,
       and `state/price_sum_outliers.jsonl` accumulating lines.
 
 ## Research (exit engine — the validated edge)
 
-- [ ] E3 latency thesis: recording restored 06-11 (was stripped in the 06-08 cleanup); run the
-      right/wrong ITM-scalp split per the E3 design in tasks/goal.md once ~2-3 weeks of post-fix
-      CF records exist (~06-25+).
+- [ ] E3 latency thesis: recording restored 06-11 (was stripped in the 06-08 cleanup), collecting
+      from 06-12; run the right/wrong ITM-scalp split per the E3 design in tasks/goal.md once
+      ~2-3 weeks of post-fix CF records exist (~06-26+).
 - [ ] E1 cross-book arb: analyze `state/price_sum_outliers.jsonl` per the E1 design after ~7 days
-      of recording (~06-18+). E2 thin-book premium: after ~10 days of CLOB depth stamps (~06-21+).
+      of recording (~06-19+). E2 thin-book premium: after ~10 days of CLOB depth stamps (~06-22+).
       E4 (perp basis tilt) remains design-only — implement its feed poll only when choosing to
       run it.
 
-- [ ] Bot restart pending — the running process predates today's Part B fixes; everything loads at
-      the automatic 12:01 AM ET restart (`run_polybot.ps1`). Nothing to do unless restarting early.
-- [ ] Tonight's pipeline run (23:45 ET) is the first on the fully fixed pipeline: confirm the
-      nightly auto-commit actually commits (it was silently dead since 05-28 — fixed today), the
-      calibration line in the summary is truthful (decision + reason, never bare "identity"), and
-      adoption decisions look sane.
 - [ ] exit_edge_threshold adoptions: mild skepticism until ~06-16 — pre-flag CF records lack the
       loss_cut flag and replay as ordinary scalps until a week of flagged records accumulates.
 - [ ] Re-freeze lever if adoptions degrade realized $: recreate `memory/state/PIPELINE_FROZEN`
