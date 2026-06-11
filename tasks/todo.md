@@ -11,16 +11,22 @@ Edge verdict + diagnostic evidence: `tasks/goal.md` (2026-06-10, fable_dev).
       — confirm decisions look sane against the sweep numbers in tasks/goal.md.
 - [ ] Verify the hold-CF keying fix on live records (fixed 06-10 evening): new hold-type CFs must
       carry the resolving position's id — expect no new duplicate pids in counterfactuals/ and
-      ~100% CF coverage of resolutions (was 298 dups + 355 missing from flip re-entry mis-keying).
+      ~100% CF coverage of resolutions. The running process predates the fix until the 12:01 AM
+      restart — re-run `python scripts/repair_cf_keying.py --apply` once after restart to sweep
+      any chimeras written in the gap (idempotent).
+- [ ] After restart, confirm the new telemetry flows: `cross_venue_gap`/`fast_realized_vol_60s`
+      + `clob_depth_top5_*`/`clob_book_age_s` non-null in fresh trade_context/ghost/CF records,
+      and `state/price_sum_outliers.jsonl` accumulating lines.
 
 ## Research (exit engine — the validated edge)
 
-- [ ] Latency thesis: test `cross_venue_gap` / `fast_realized_vol_60s` (already in CF aux context)
-      as exit-trigger refinements — formal design is E3 in tasks/goal.md; needs ~2-3 weeks of
-      post-fix hold-CF records before the split test is meaningful.
-- [ ] New-signal experiments E1 (out-of-band price-sum recorder), E2 (CLOB depth + book-age
-      stamping), E4 (perp basis tilt) designed and ready in tasks/goal.md — implement the
-      recording only when choosing to run one; do not implement speculatively.
+- [ ] E3 latency thesis: recording restored 06-11 (was stripped in the 06-08 cleanup); run the
+      right/wrong ITM-scalp split per the E3 design in tasks/goal.md once ~2-3 weeks of post-fix
+      CF records exist (~06-25+).
+- [ ] E1 cross-book arb: analyze `state/price_sum_outliers.jsonl` per the E1 design after ~7 days
+      of recording (~06-18+). E2 thin-book premium: after ~10 days of CLOB depth stamps (~06-21+).
+      E4 (perp basis tilt) remains design-only — implement its feed poll only when choosing to
+      run it.
 
 - [ ] Bot restart pending — the running process predates today's Part B fixes; everything loads at
       the automatic 12:01 AM ET restart (`run_polybot.ps1`). Nothing to do unless restarting early.
@@ -65,10 +71,9 @@ Edge verdict + diagnostic evidence: `tasks/goal.md` (2026-06-10, fable_dev).
 
 ## Deferred / known-and-accepted (context, not tasks)
 
-- Pre-06-05 counterfactual records carry pnl at the old 0.018 fee basis (outcome restamp never
-  touched CF arms; proven exactly — per-pid gaps equal fees*(1-0.018/0.07)). Inflates CF arms
-  ~2pp gain on those days in any arm-swapping replay; decays out of the 60-day window; left
-  unmutated by choice. Fee-corrected exit-edge numbers reported alongside in tasks/goal.md.
+- 333 resolutions (pre-06-11) have no hold-CF — the keying bug wrote their record under the
+  wrong pid and the worst-moment context is unrecoverable. Symmetric-replay coverage of holds
+  is ~76% on history, 100% going forward.
 - Ghost censoring at min_edge/min_kelly boundary: those two knobs are only evaluable upward.
 - L2 direction carries a small Coinbase-vs-Binance basis bias (direction-conditional; calibrator
   can't see it). 200-sample "long-term" ATR buffer spans ~3 min → regime-shift floor + L3b

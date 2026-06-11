@@ -165,6 +165,10 @@ def day_boot_pnl(records: list[dict], label: str) -> dict:
 def make_replay(sched, cfg):
     sig = cfg["signal"]
     l4 = dict(sig["weights"])
+    # The live baseline includes every weight settings.yaml carries — notably the
+    # L6 derived weights (signal.derived.*). Omitting them lets the replay fall
+    # back to registry defaults (0.0) and silently weakens the baseline arm.
+    derived = {k: float(v) for k, v in (sig.get("derived") or {}).items()}
 
     def replay(pool, calibrator, **overrides):
         kwargs = dict(
@@ -178,6 +182,13 @@ def make_replay(sched, cfg):
             kelly_fraction=cfg["math"]["kelly_fraction"],
             min_kelly=sig["min_kelly"],
             min_prob=sig["min_model_probability"],
+            regime_weight=sig["regime_weight"],
+            flow_weight=sig["flow_weight"],
+            spot_flow_weight=sig["spot_flow_weight"],
+            prev_margin_weight=sig["prev_margin_weight"],
+            logit_scale=sig["logit_scale"],
+            min_atr=sig["min_atr"],
+            derived_weights=derived,
         )
         kwargs.update(overrides)
         return sched._kelly_bankroll_returns(**kwargs)
@@ -191,6 +202,7 @@ L1_ONLY = dict(
     flow_weight=0.0,
     spot_flow_weight=0.0,
     prev_margin_weight=0.0,
+    derived_weights={},
 )
 
 

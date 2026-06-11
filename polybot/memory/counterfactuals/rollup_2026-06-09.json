@@ -154,43 +154,6 @@
     "position_id": 2801,
     "market_id": "btc-updown-5m-1780986600",
     "side": "Up",
-    "timestamp": "2026-06-09T06:41:31.174015+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 6.82,
-      "gain_pct": 0.31
-    },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.38,
-      "pnl": -2.212642,
-      "gain_pct": -0.324434
-    },
-    "delta_pnl": 9.032642,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.24531570259606178,
-      "model_prob": 0.13468429740393822,
-      "market_price": 0.38,
-      "seconds_remaining": 221.330584,
-      "exit_threshold_used": -0.1,
-      "strike_price": 63390.29072,
-      "btc_at_worst": 63356.24,
-      "flow_score": -0.2602,
-      "spot_flow_signal": -0.19261029964052478,
-      "regime": "neutral",
-      "btc_distance_atr": -1.202,
-      "worst_at": 1780986678.6709683,
-      "coinbase_cvd_60s": -2.3693,
-      "coinbase_taker_60s": 0.1761,
-      "coinbase_taker_n": 393
-    }
-  },
-  {
-    "position_id": 2801,
-    "market_id": "btc-updown-5m-1780986600",
-    "side": "Up",
     "timestamp": "2026-06-09T06:41:54.931923+00:00",
     "actual": {
       "exit_reason": "scalp",
@@ -342,43 +305,6 @@
     "position_id": 2806,
     "market_id": "btc-updown-5m-1780987800",
     "side": "Down",
-    "timestamp": "2026-06-09T06:59:08.409002+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 6.7704,
-      "gain_pct": 0.361667
-    },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.61,
-      "pnl": -1.285801,
-      "gain_pct": -0.109523
-    },
-    "delta_pnl": 8.056201,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.0565682790956773,
-      "model_prob": 0.5534317209043227,
-      "market_price": 0.61,
-      "seconds_remaining": 165.552351,
-      "exit_threshold_used": -0.1,
-      "strike_price": 63280.677027931655,
-      "btc_at_worst": 63262.91,
-      "flow_score": 0.1735,
-      "spot_flow_signal": -0.055439423369958996,
-      "regime": "neutral",
-      "btc_distance_atr": -0.623,
-      "worst_at": 1780987934.451391,
-      "coinbase_cvd_60s": -0.6393,
-      "coinbase_taker_60s": 0.4007,
-      "coinbase_taker_n": 287
-    }
-  },
-  {
-    "position_id": 2806,
-    "market_id": "btc-updown-5m-1780987800",
-    "side": "Down",
     "timestamp": "2026-06-09T07:04:28.920877+00:00",
     "actual": {
       "exit_reason": "scalp",
@@ -411,43 +337,6 @@
       "coinbase_cvd_60s": -0.5304,
       "coinbase_taker_60s": 0.4221,
       "coinbase_taker_n": 292
-    }
-  },
-  {
-    "position_id": 2808,
-    "market_id": "btc-updown-5m-1780988400",
-    "side": "Up",
-    "timestamp": "2026-06-09T07:10:04.613171+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 9.736067,
-      "gain_pct": 0.103333
-    },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.79,
-      "pnl": -6.963915,
-      "gain_pct": -0.093866
-    },
-    "delta_pnl": 16.699982,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.16149293477664073,
-      "model_prob": 0.6285070652233593,
-      "market_price": 0.79,
-      "seconds_remaining": 259.626067,
-      "exit_threshold_used": -0.1,
-      "strike_price": 63263.18047284574,
-      "btc_at_worst": 63320.16,
-      "flow_score": -0.4112,
-      "spot_flow_signal": 0.0893667691536345,
-      "regime": "neutral",
-      "btc_distance_atr": 1.825,
-      "worst_at": 1780988440.3747776,
-      "coinbase_cvd_60s": 1.0642,
-      "coinbase_taker_60s": 0.6525,
-      "coinbase_taker_n": 360
     }
   },
   {
@@ -681,43 +570,6 @@
     "position_id": 2815,
     "market_id": "btc-updown-5m-1780997400",
     "side": "Down",
-    "timestamp": "2026-06-09T09:37:58.369338+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 5.4374,
-      "gain_pct": 0.31
-    },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.75,
-      "pnl": -0.33128,
-      "gain_pct": -0.058427
-    },
-    "delta_pnl": 5.76868,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.1210888994492254,
-      "model_prob": 0.6289111005507746,
-      "market_price": 0.75,
-      "seconds_remaining": 189.319033,
-      "exit_threshold_used": -0.1,
-      "strike_price": 62790.758184025166,
-      "btc_at_worst": 62745.97,
-      "flow_score": 0.2295,
-      "spot_flow_signal": -0.05402072219118699,
-      "regime": "neutral",
-      "btc_distance_atr": -1.22,
-      "worst_at": 1780997510.6828108,
-      "coinbase_cvd_60s": -0.6924,
-      "coinbase_taker_60s": 0.4111,
-      "coinbase_taker_n": 368
-    }
-  },
-  {
-    "position_id": 2815,
-    "market_id": "btc-updown-5m-1780997400",
-    "side": "Down",
     "timestamp": "2026-06-09T09:43:08.080529+00:00",
     "actual": {
       "exit_reason": "scalp",
@@ -750,43 +602,6 @@
       "coinbase_cvd_60s": 0.3006,
       "coinbase_taker_60s": 0.5518,
       "coinbase_taker_n": 334
-    }
-  },
-  {
-    "position_id": 2818,
-    "market_id": "btc-updown-5m-1781000700",
-    "side": "Up",
-    "timestamp": "2026-06-09T10:33:15.061297+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 8.14507,
-      "gain_pct": 0.151395
-    },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.85,
-      "pnl": -1.160008,
-      "gain_pct": -0.02089
-    },
-    "delta_pnl": 9.305078,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.08698596191690156,
-      "model_prob": 0.7630140380830984,
-      "market_price": 0.85,
-      "seconds_remaining": 82.859421,
-      "exit_threshold_used": -0.1,
-      "strike_price": 62689.62021826628,
-      "btc_at_worst": 62712.45,
-      "flow_score": 0.1198,
-      "spot_flow_signal": 0.2012175502560316,
-      "regime": "mean_reverting",
-      "btc_distance_atr": 0.904,
-      "worst_at": 1781000917.1418252,
-      "coinbase_cvd_60s": 2.7216,
-      "coinbase_taker_60s": 0.8221,
-      "coinbase_taker_n": 247
     }
   },
   {
@@ -1315,43 +1130,6 @@
       "coinbase_cvd_60s": 5.8276,
       "coinbase_taker_60s": 0.6379,
       "coinbase_taker_n": 824
-    }
-  },
-  {
-    "position_id": 2832,
-    "market_id": "btc-updown-5m-1781014800",
-    "side": "Down",
-    "timestamp": "2026-06-09T14:26:53.555911+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 10.466633,
-      "gain_pct": 0.361667
-    },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.7,
-      "pnl": -6.311702,
-      "gain_pct": -0.113438
-    },
-    "delta_pnl": 16.778335,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.18254798982015896,
-      "model_prob": 0.517452010179841,
-      "market_price": 0.7,
-      "seconds_remaining": 128.579416,
-      "exit_threshold_used": -0.1,
-      "strike_price": 61789.13128,
-      "btc_at_worst": 61741.31,
-      "flow_score": 0.2234,
-      "spot_flow_signal": -0.08583357899580005,
-      "regime": "neutral",
-      "btc_distance_atr": -0.471,
-      "worst_at": 1781014971.4227788,
-      "coinbase_cvd_60s": -2.2264,
-      "coinbase_taker_60s": 0.4334,
-      "coinbase_taker_n": 1048
     }
   },
   {

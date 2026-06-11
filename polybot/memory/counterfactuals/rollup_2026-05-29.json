@@ -7,16 +7,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.67104,
-      "gain_pct": 0.982
+      "pnl": 2.60032,
+      "gain_pct": 0.956
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.999,
-      "pnl": 2.665552,
-      "gain_pct": 0.979982
+      "pnl": 2.53,
+      "gain_pct": 0.930147
     },
-    "delta_pnl": 0.005488,
+    "delta_pnl": 0.07032,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.016986209962091547,
@@ -36,7 +36,8 @@
       "coinbase_taker_n": 347,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 293,
@@ -46,15 +47,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.539854371502199,
-      "pnl": 0.446475,
-      "gain_pct": 0.196685
+      "pnl": 0.272635,
+      "gain_pct": 0.120104
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 2.837086,
-      "gain_pct": 1.249818
+      "pnl": 2.693989,
+      "gain_pct": 1.186779
     },
-    "delta_pnl": 2.390612,
+    "delta_pnl": 2.421354,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.26339302387352836,
@@ -76,7 +77,8 @@
       "coinbase_taker_n": 176,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 294,
@@ -86,15 +88,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.85,
-      "pnl": 0.702986,
-      "gain_pct": 0.702986
+      "pnl": 0.64454,
+      "gain_pct": 0.64454
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.022082,
-      "gain_pct": 1.022082
+      "pnl": 0.970309,
+      "gain_pct": 0.970309
     },
-    "delta_pnl": 0.319095,
+    "delta_pnl": 0.325769,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.15685930962953376,
@@ -116,7 +118,8 @@
       "coinbase_taker_n": 236,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 295,
@@ -126,15 +129,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.76,
-      "pnl": 0.535757,
-      "gain_pct": 0.185383
+      "pnl": 0.383311,
+      "gain_pct": 0.132634
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.666751,
-      "gain_pct": 0.57673
+      "pnl": 1.581299,
+      "gain_pct": 0.547162
     },
-    "delta_pnl": 1.130994,
+    "delta_pnl": 1.197988,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.09334478574795213,
@@ -156,46 +159,8 @@
       "coinbase_taker_n": 282,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 300,
-    "market_id": "btc-updown-5m-1780028700",
-    "side": "Down",
-    "timestamp": "2026-05-29T04:33:36.051819+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 1.09002,
-      "gain_pct": 0.2455
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.29,
-      "pnl": -1.769194,
-      "gain_pct": -0.432566
-    },
-    "delta_pnl": 2.859214,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.0211513988664504,
-      "model_prob": 0.2688486011335496,
-      "market_price": 0.29,
-      "seconds_remaining": 253.139063,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73207.23788139925,
-      "btc_at_worst": 73221.61,
-      "flow_score": 0.4595,
-      "spot_flow_signal": 0.053229316845428115,
-      "regime": "neutral",
-      "btc_distance_atr": 0.761,
-      "worst_at": 1780028746.861276,
-      "coinbase_cvd_60s": 0.6477,
-      "coinbase_taker_60s": 0.5899,
-      "coinbase_taker_n": 257,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 296,
@@ -205,15 +170,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.3,
-      "pnl": -1.594058,
-      "gain_pct": -0.392625
+      "pnl": -1.87027,
+      "gain_pct": -0.460658
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -4.06,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.465942,
+    "delta_pnl": -2.18973,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.053826968289159505,
@@ -235,7 +200,8 @@
       "coinbase_taker_n": 184,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 297,
@@ -245,15 +211,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.18,
-      "pnl": -1.370332,
-      "gain_pct": -0.472528
+      "pnl": -1.591369,
+      "gain_pct": -0.548748
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.9,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.529668,
+    "delta_pnl": -1.308631,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.04568907788536264,
@@ -275,7 +241,8 @@
       "coinbase_taker_n": 214,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 298,
@@ -285,15 +252,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.6,
-      "pnl": -0.297048,
-      "gain_pct": -0.108809
+      "pnl": -0.447237,
+      "gain_pct": -0.163823
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.381048,
-      "gain_pct": 0.505879
+      "pnl": 1.310059,
+      "gain_pct": 0.479875
     },
-    "delta_pnl": 1.678096,
+    "delta_pnl": 1.757296,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.0665804409433316,
@@ -315,7 +282,8 @@
       "coinbase_taker_n": 212,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 299,
@@ -325,15 +293,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.29,
-      "pnl": -1.312197,
-      "gain_pct": -0.345315
+      "pnl": -1.588492,
+      "gain_pct": -0.418024
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -3.8,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.487803,
+    "delta_pnl": -2.211508,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.004884682446562316,
@@ -355,7 +323,8 @@
       "coinbase_taker_n": 173,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 300,
@@ -365,15 +334,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.17,
-      "pnl": -2.741328,
-      "gain_pct": -0.670251
+      "pnl": -2.98287,
+      "gain_pct": -0.729308
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -4.09,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.348672,
+    "delta_pnl": -1.10713,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.06546999213113713,
@@ -395,7 +364,8 @@
       "coinbase_taker_n": 183,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 302,
@@ -405,15 +375,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.27,
-      "pnl": -2.426279,
-      "gain_pct": -0.539173
+      "pnl": -2.690513,
+      "gain_pct": -0.597892
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -4.5,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.073721,
+    "delta_pnl": -1.809487,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.07573656747883828,
@@ -435,7 +405,8 @@
       "coinbase_taker_n": 190,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 303,
@@ -445,15 +416,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.59,
-      "pnl": -1.632147,
-      "gain_pct": -0.301134
+      "pnl": -1.86288,
+      "gain_pct": -0.343705
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.090139,
-      "gain_pct": 0.201133
+      "pnl": 1.033269,
+      "gain_pct": 0.19064
     },
-    "delta_pnl": 2.722285,
+    "delta_pnl": 2.896149,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.07790709881194868,
@@ -475,7 +446,8 @@
       "coinbase_taker_n": 382,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 304,
@@ -485,15 +457,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.6,
-      "pnl": 0.702624,
-      "gain_pct": 0.362177
+      "pnl": 0.553703,
+      "gain_pct": 0.285414
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.94,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.642624,
+    "delta_pnl": -2.493703,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.09146684788016235,
@@ -515,7 +487,8 @@
       "coinbase_taker_n": 201,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 305,
@@ -525,15 +498,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.67,
-      "pnl": -0.128313,
-      "gain_pct": -0.072905
+      "pnl": -0.215897,
+      "gain_pct": -0.122669
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 0.705934,
-      "gain_pct": 0.401099
+      "pnl": 0.66949,
+      "gain_pct": 0.380392
     },
-    "delta_pnl": 0.834247,
+    "delta_pnl": 0.885387,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.08453444346487304,
@@ -555,7 +528,8 @@
       "coinbase_taker_n": 227,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 306,
@@ -565,15 +539,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.2,
-      "pnl": -2.142018,
-      "gain_pct": -0.659083
+      "pnl": -2.322009,
+      "gain_pct": -0.714464
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -3.25,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.107982,
+    "delta_pnl": -0.927991,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.008765757987883871,
@@ -595,7 +569,8 @@
       "coinbase_taker_n": 207,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 309,
@@ -605,16 +580,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -2.05,
-      "gain_pct": -1.0
+      "pnl": -2.102234,
+      "gain_pct": -1.02548
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.44,
-      "pnl": -0.314642,
-      "gain_pct": -0.153484
+      "pnl": -0.40718,
+      "gain_pct": -0.198624
     },
-    "delta_pnl": -1.735358,
+    "delta_pnl": -1.695054,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.0609677747364597,
@@ -634,7 +609,8 @@
       "coinbase_taker_n": 120,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 307,
@@ -644,15 +620,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.27,
-      "pnl": -1.466058,
-      "gain_pct": -0.547036
+      "pnl": -1.621229,
+      "gain_pct": -0.604936
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.68,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.213942,
+    "delta_pnl": -1.058771,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.08675155378399224,
@@ -674,7 +650,8 @@
       "coinbase_taker_n": 161,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 308,
@@ -684,15 +661,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.9200000000000002,
-      "pnl": 0.144582,
-      "gain_pct": 0.034923
+      "pnl": 0.023327,
+      "gain_pct": 0.005635
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 0.554384,
-      "gain_pct": 0.133909
+      "pnl": 0.525336,
+      "gain_pct": 0.126893
     },
-    "delta_pnl": 0.409802,
+    "delta_pnl": 0.502009,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.2573543617891565,
@@ -714,7 +691,8 @@
       "coinbase_taker_n": 189,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 310,
@@ -724,15 +702,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.9,
-      "pnl": 1.231172,
-      "gain_pct": 0.286319
+      "pnl": 1.052748,
+      "gain_pct": 0.244825
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.89711,
-      "gain_pct": 0.441188
+      "pnl": 1.799341,
+      "gain_pct": 0.418451
     },
-    "delta_pnl": 0.665938,
+    "delta_pnl": 0.746593,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.14917768332359094,
@@ -754,7 +732,8 @@
       "coinbase_taker_n": 150,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 311,
@@ -764,16 +743,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -4.21,
-      "gain_pct": -1.0
+      "pnl": -4.308514,
+      "gain_pct": -1.0234
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.9,
-      "pnl": 2.610989,
-      "gain_pct": 0.620187
+      "pnl": 2.421537,
+      "gain_pct": 0.575187
     },
-    "delta_pnl": -6.820989,
+    "delta_pnl": -6.730051,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": 0.08201379003790843,
@@ -793,46 +772,8 @@
       "coinbase_taker_n": 172,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 312,
-    "market_id": "btc-updown-5m-1780030800",
-    "side": "Down",
-    "timestamp": "2026-05-29T05:10:44.962200+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 0.675562,
-      "gain_pct": 0.363205
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.45,
-      "pnl": -0.422432,
-      "gain_pct": -0.19648
-    },
-    "delta_pnl": 1.097993,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.3008131854415647,
-      "model_prob": 0.1491868145584353,
-      "market_price": 0.45,
-      "seconds_remaining": 197.688005,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73400.01832578314,
-      "btc_at_worst": 73415.94,
-      "flow_score": 0.256,
-      "spot_flow_signal": 0.15173112254114984,
-      "regime": "neutral",
-      "btc_distance_atr": 0.942,
-      "worst_at": 1780030902.312949,
-      "coinbase_cvd_60s": 1.2837,
-      "coinbase_taker_60s": 0.7938,
-      "coinbase_taker_n": 155,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 312,
@@ -842,15 +783,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.27,
-      "pnl": -1.123567,
-      "gain_pct": -0.522589
+      "pnl": -1.253404,
+      "gain_pct": -0.582979
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.15,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.026433,
+    "delta_pnl": -0.896596,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.09537626780649255,
@@ -872,7 +813,8 @@
       "coinbase_taker_n": 155,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 314,
@@ -882,15 +824,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.34633996153628976,
-      "pnl": -1.860733,
-      "gain_pct": -0.408055
+      "pnl": -2.140497,
+      "gain_pct": -0.469407
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 3.378081,
-      "gain_pct": 0.740807
+      "pnl": 3.205785,
+      "gain_pct": 0.703023
     },
-    "delta_pnl": 5.238813,
+    "delta_pnl": 5.346282,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.07671855667772276,
@@ -912,7 +854,8 @@
       "coinbase_taker_n": 156,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 315,
@@ -922,15 +865,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.54,
-      "pnl": -0.735561,
-      "gain_pct": -0.1988
+      "pnl": -0.94153,
+      "gain_pct": -0.254468
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -3.7,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.964439,
+    "delta_pnl": -2.75847,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.05249149356872007,
@@ -952,7 +895,8 @@
       "coinbase_taker_n": 115,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 316,
@@ -962,15 +906,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.21,
-      "pnl": -1.80686,
-      "gain_pct": -0.600286
+      "pnl": -1.989713,
+      "gain_pct": -0.661034
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -3.01,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.20314,
+    "delta_pnl": -1.020287,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.10036754781331975,
@@ -992,46 +936,8 @@
       "coinbase_taker_n": 138,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 314,
-    "market_id": "btc-updown-5m-1780031100",
-    "side": "Up",
-    "timestamp": "2026-05-29T05:15:50.699584+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 0.842003,
-      "gain_pct": 0.276975
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.52,
-      "pnl": -0.467862,
-      "gain_pct": -0.102601
-    },
-    "delta_pnl": 1.309865,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.15667368828650202,
-      "model_prob": 0.363326311713498,
-      "market_price": 0.52,
-      "seconds_remaining": 228.07155,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73473.46345684005,
-      "btc_at_worst": 73467.19,
-      "flow_score": -0.2067,
-      "spot_flow_signal": 0.08393958232079421,
-      "regime": "neutral",
-      "btc_distance_atr": -0.332,
-      "worst_at": 1780031171.9291494,
-      "coinbase_cvd_60s": 0.5618,
-      "coinbase_taker_60s": 0.6724,
-      "coinbase_taker_n": 143,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 319,
@@ -1041,16 +947,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.532039,
-      "gain_pct": 0.483672
+      "pnl": 0.513163,
+      "gain_pct": 0.466512
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.43,
-      "pnl": -0.405424,
-      "gain_pct": -0.368567
+      "pnl": -0.437524,
+      "gain_pct": -0.397749
     },
-    "delta_pnl": 0.937462,
+    "delta_pnl": 0.950687,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.20544795566876944,
@@ -1070,7 +976,8 @@
       "coinbase_taker_n": 160,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 318,
@@ -1080,15 +987,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.62,
-      "pnl": -0.112639,
-      "gain_pct": -0.078769
+      "pnl": -0.190822,
+      "gain_pct": -0.133442
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.43,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.317361,
+    "delta_pnl": -1.239178,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.07139060660104712,
@@ -1110,46 +1017,8 @@
       "coinbase_taker_n": 186,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 320,
-    "market_id": "btc-updown-5m-1780031700",
-    "side": "Up",
-    "timestamp": "2026-05-29T05:25:44.410587+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 0.0,
-      "pnl": -2.7,
-      "gain_pct": -1.0
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.52,
-      "pnl": -0.411747,
-      "gain_pct": -0.160839
-    },
-    "delta_pnl": -2.288253,
-    "hold_was_optimal": false,
-    "context_at_worst_moment": {
-      "holding_edge": -0.27432914416010695,
-      "model_prob": 0.24567085583989307,
-      "market_price": 0.52,
-      "seconds_remaining": 230.596123,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73493.64062712246,
-      "btc_at_worst": 73481.51,
-      "flow_score": -0.6744,
-      "spot_flow_signal": 0.047909152437829235,
-      "regime": "neutral",
-      "btc_distance_atr": -0.672,
-      "worst_at": 1780031769.4043033,
-      "coinbase_cvd_60s": 0.2636,
-      "coinbase_taker_60s": 0.6022,
-      "coinbase_taker_n": 172,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 320,
@@ -1159,15 +1028,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.33,
-      "pnl": -1.21022,
-      "gain_pct": -0.472742
+      "pnl": -1.35747,
+      "gain_pct": -0.530262
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.607261,
-      "gain_pct": 0.627836
+      "pnl": 1.525001,
+      "gain_pct": 0.595704
     },
-    "delta_pnl": 2.81748,
+    "delta_pnl": 2.882471,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.09888618429175458,
@@ -1189,7 +1058,8 @@
       "coinbase_taker_n": 170,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 322,
@@ -1199,16 +1069,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.323687,
-      "gain_pct": 0.261038
+      "pnl": 0.310147,
+      "gain_pct": 0.250119
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 0.307772,
-      "gain_pct": 0.248203
+      "pnl": 0.290319,
+      "gain_pct": 0.234128
     },
-    "delta_pnl": 0.015916,
+    "delta_pnl": 0.019828,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -1228,46 +1098,8 @@
       "coinbase_taker_n": 191,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 323,
-    "market_id": "btc-updown-5m-1780032300",
-    "side": "Down",
-    "timestamp": "2026-05-29T05:36:03.281193+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 0.490327,
-      "gain_pct": 0.363205
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.32,
-      "pnl": -0.66758,
-      "gain_pct": -0.360854
-    },
-    "delta_pnl": 1.157907,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.13088913914838446,
-      "model_prob": 0.18911086085161555,
-      "market_price": 0.32,
-      "seconds_remaining": 207.681985,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73447.88854730065,
-      "btc_at_worst": 73459.85,
-      "flow_score": 0.0778,
-      "spot_flow_signal": 0.13854124539101265,
-      "regime": "mean_reverting",
-      "btc_distance_atr": 0.642,
-      "worst_at": 1780032392.3191657,
-      "coinbase_cvd_60s": 0.6534,
-      "coinbase_taker_60s": 0.8028,
-      "coinbase_taker_n": 117,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 323,
@@ -1277,15 +1109,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.27,
-      "pnl": -0.859721,
-      "gain_pct": -0.464714
+      "pnl": -0.981296,
+      "gain_pct": -0.53043
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.85,
       "gain_pct": -1.0
     },
-    "delta_pnl": -0.990279,
+    "delta_pnl": -0.868704,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.08156622507234312,
@@ -1307,7 +1139,8 @@
       "coinbase_taker_n": 116,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 325,
@@ -1317,16 +1150,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.549927,
-      "gain_pct": 0.327333
+      "pnl": 2.448657,
+      "gain_pct": 0.314333
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 2.444685,
-      "gain_pct": 0.313823
+      "pnl": 2.308676,
+      "gain_pct": 0.296364
     },
-    "delta_pnl": 0.105242,
+    "delta_pnl": 0.139981,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -1346,7 +1179,8 @@
       "coinbase_taker_n": 127,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 326,
@@ -1356,16 +1190,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.582774,
-      "gain_pct": 0.230345
+      "pnl": 0.557777,
+      "gain_pct": 0.220465
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 0.551092,
-      "gain_pct": 0.217823
+      "pnl": 0.519465,
+      "gain_pct": 0.205322
     },
-    "delta_pnl": 0.031682,
+    "delta_pnl": 0.038312,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -1385,7 +1219,8 @@
       "coinbase_taker_n": 293,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 328,
@@ -1395,16 +1230,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -4.83,
-      "gain_pct": -1.0
+      "pnl": -4.927954,
+      "gain_pct": -1.02028
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.14,
-      "pnl": -3.746297,
-      "gain_pct": -0.775631
+      "pnl": -3.815942,
+      "gain_pct": -0.79005
     },
-    "delta_pnl": -1.083703,
+    "delta_pnl": -1.112012,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": 0.019323497451601224,
@@ -1424,7 +1259,8 @@
       "coinbase_taker_n": 151,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 327,
@@ -1434,15 +1270,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.93,
-      "pnl": 1.743324,
-      "gain_pct": 0.726385
+      "pnl": 1.624882,
+      "gain_pct": 0.677034
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 2.089992,
-      "gain_pct": 0.87083
+      "pnl": 1.98376,
+      "gain_pct": 0.826567
     },
-    "delta_pnl": 0.346668,
+    "delta_pnl": 0.358878,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.175092239306475,
@@ -1464,7 +1300,8 @@
       "coinbase_taker_n": 233,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 329,
@@ -1474,15 +1311,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.81,
-      "pnl": 0.613111,
-      "gain_pct": 0.58953
+      "pnl": 0.550329,
+      "gain_pct": 0.529162
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.02128,
-      "gain_pct": 0.982
+      "pnl": 0.969503,
+      "gain_pct": 0.932215
     },
-    "delta_pnl": 0.408169,
+    "delta_pnl": 0.419174,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.14301983167099352,
@@ -1504,7 +1341,8 @@
       "coinbase_taker_n": 119,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 330,
@@ -1514,16 +1352,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.574473,
-      "gain_pct": 0.57673
+      "pnl": 1.521947,
+      "gain_pct": 0.55749
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 1.530661,
-      "gain_pct": 0.560682
+      "pnl": 1.448587,
+      "gain_pct": 0.530618
     },
-    "delta_pnl": 0.043812,
+    "delta_pnl": 0.07336,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -1543,7 +1381,8 @@
       "coinbase_taker_n": 147,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 331,
@@ -1553,16 +1392,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.948824,
-      "gain_pct": 0.345027
+      "pnl": 0.911644,
+      "gain_pct": 0.331507
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.79,
-      "pnl": 0.161026,
-      "gain_pct": 0.058555
+      "pnl": 0.090889,
+      "gain_pct": 0.033051
     },
-    "delta_pnl": 0.787799,
+    "delta_pnl": 0.820755,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.06047456736421397,
@@ -1582,7 +1421,8 @@
       "coinbase_taker_n": 200,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 333,
@@ -1592,16 +1432,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.601871,
-      "gain_pct": 0.601871
+      "pnl": 0.582111,
+      "gain_pct": 0.582111
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.67,
-      "pnl": 0.066878,
-      "gain_pct": 0.066878
+      "pnl": 0.028282,
+      "gain_pct": 0.028282
     },
-    "delta_pnl": 0.534993,
+    "delta_pnl": 0.553829,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.07781139095055678,
@@ -1621,7 +1461,8 @@
       "coinbase_taker_n": 381,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 332,
@@ -1631,15 +1472,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.38,
-      "pnl": -0.663283,
-      "gain_pct": -0.32674
+      "pnl": -0.793156,
+      "gain_pct": -0.390717
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.03,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.366717,
+    "delta_pnl": -1.236844,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.08008150856066681,
@@ -1661,7 +1502,8 @@
       "coinbase_taker_n": 366,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 334,
@@ -1671,15 +1513,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.76,
-      "pnl": 0.388139,
-      "gain_pct": 0.204283
+      "pnl": 0.28648,
+      "gain_pct": 0.150779
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.143555,
-      "gain_pct": 0.601871
+      "pnl": 1.084977,
+      "gain_pct": 0.571041
     },
-    "delta_pnl": 0.755416,
+    "delta_pnl": 0.798497,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.13364080747183416,
@@ -1701,7 +1543,8 @@
       "coinbase_taker_n": 154,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 335,
@@ -1711,16 +1554,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.10966,
-      "gain_pct": 0.982
+      "pnl": 1.08028,
+      "gain_pct": 0.956
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.44,
-      "pnl": -0.154483,
-      "gain_pct": -0.136711
+      "pnl": -0.206962,
+      "gain_pct": -0.183152
     },
-    "delta_pnl": 1.264143,
+    "delta_pnl": 1.287242,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.12832142545917585,
@@ -1740,46 +1583,8 @@
       "coinbase_taker_n": 111,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 336,
-    "market_id": "btc-updown-5m-1780036800",
-    "side": "Down",
-    "timestamp": "2026-05-29T06:48:31.716637+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 1.025812,
-      "gain_pct": 0.528769
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.34,
-      "pnl": -0.698323,
-      "gain_pct": -0.334126
-    },
-    "delta_pnl": 1.724135,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.046868187699663444,
-      "model_prob": 0.2931318123003366,
-      "market_price": 0.34,
-      "seconds_remaining": 236.89462,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73581.53098456982,
-      "btc_at_worst": 73590.15,
-      "flow_score": 0.2396,
-      "spot_flow_signal": -0.03545959675901122,
-      "regime": "neutral",
-      "btc_distance_atr": 0.574,
-      "worst_at": 1780036863.1057425,
-      "coinbase_cvd_60s": -0.4126,
-      "coinbase_taker_60s": 0.4401,
-      "coinbase_taker_n": 88,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 336,
@@ -1789,15 +1594,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.35,
-      "pnl": -0.666444,
-      "gain_pct": -0.318873
+      "pnl": -0.808363,
+      "gain_pct": -0.386777
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.09,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.423556,
+    "delta_pnl": -1.281637,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.07483233693219093,
@@ -1819,46 +1624,8 @@
       "coinbase_taker_n": 75,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 338,
-    "market_id": "btc-updown-5m-1780037400",
-    "side": "Down",
-    "timestamp": "2026-05-29T06:58:34.314012+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 2.289619,
-      "gain_pct": 0.57673
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.41,
-      "pnl": -1.390788,
-      "gain_pct": -0.328791
-    },
-    "delta_pnl": 3.680407,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.11763825837809144,
-      "model_prob": 0.29236174162190853,
-      "market_price": 0.41,
-      "seconds_remaining": 222.207204,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73639.61893714617,
-      "btc_at_worst": 73646.51,
-      "flow_score": 0.5054,
-      "spot_flow_signal": 0.0014453333079373042,
-      "regime": "neutral",
-      "btc_distance_atr": 0.548,
-      "worst_at": 1780037477.7931557,
-      "coinbase_cvd_60s": 0.0137,
-      "coinbase_taker_60s": 0.5027,
-      "coinbase_taker_n": 213,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 340,
@@ -1868,16 +1635,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.04,
-      "gain_pct": -1.0
+      "pnl": -1.06704,
+      "gain_pct": -1.026
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.74,
-      "pnl": 0.478209,
-      "gain_pct": 0.459816
+      "pnl": 0.419969,
+      "gain_pct": 0.403816
     },
-    "delta_pnl": -1.518209,
+    "delta_pnl": -1.487009,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.4766634051525961,
@@ -1897,7 +1664,8 @@
       "coinbase_taker_n": 110,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 338,
@@ -1907,15 +1675,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.37,
-      "pnl": -1.686291,
-      "gain_pct": -0.39865
+      "pnl": -1.937423,
+      "gain_pct": -0.45802
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -4.23,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.543709,
+    "delta_pnl": -2.292577,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.09767228880516021,
@@ -1937,46 +1705,8 @@
       "coinbase_taker_n": 213,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 341,
-    "market_id": "btc-updown-5m-1780038000",
-    "side": "Up",
-    "timestamp": "2026-05-29T07:08:37.749787+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 0.586649,
-      "gain_pct": 0.293325
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.41,
-      "pnl": -0.88584,
-      "gain_pct": -0.268436
-    },
-    "delta_pnl": 1.472489,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.3021228116632735,
-      "model_prob": 0.10787718833672652,
-      "market_price": 0.41,
-      "seconds_remaining": 252.173442,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73683.79964730646,
-      "btc_at_worst": 73666.32,
-      "flow_score": -0.4708,
-      "spot_flow_signal": 0.005127990329458295,
-      "regime": "neutral",
-      "btc_distance_atr": -1.329,
-      "worst_at": 1780038047.8270085,
-      "coinbase_cvd_60s": 0.0993,
-      "coinbase_taker_60s": 0.5062,
-      "coinbase_taker_n": 272,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 343,
@@ -1986,16 +1716,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.42917,
-      "gain_pct": 0.215561
+      "pnl": 1.367113,
+      "gain_pct": 0.206201
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.9,
-      "pnl": 0.610197,
-      "gain_pct": 0.092036
+      "pnl": 0.505907,
+      "gain_pct": 0.076306
     },
-    "delta_pnl": 0.818973,
+    "delta_pnl": 0.861206,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.03377540858354999,
@@ -2015,7 +1745,8 @@
       "coinbase_taker_n": 271,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 341,
@@ -2025,15 +1756,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.21,
-      "pnl": -2.075987,
-      "gain_pct": -0.629087
+      "pnl": -2.265681,
+      "gain_pct": -0.68657
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -3.3,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.224013,
+    "delta_pnl": -1.034319,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.09073578020507182,
@@ -2055,7 +1786,8 @@
       "coinbase_taker_n": 190,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 344,
@@ -2065,16 +1797,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.03,
-      "gain_pct": -1.0
+      "pnl": -1.056246,
+      "gain_pct": -1.025482
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.47,
-      "pnl": -0.098132,
-      "gain_pct": -0.095274
+      "pnl": -0.146378,
+      "gain_pct": -0.142114
     },
-    "delta_pnl": -0.931868,
+    "delta_pnl": -0.909868,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.15714482051127054,
@@ -2094,7 +1826,8 @@
       "coinbase_taker_n": 342,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 345,
@@ -2104,16 +1837,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.097758,
-      "gain_pct": 0.505879
+      "pnl": 1.059393,
+      "gain_pct": 0.4882
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 1.064498,
-      "gain_pct": 0.490552
+      "pnl": 1.006992,
+      "gain_pct": 0.464052
     },
-    "delta_pnl": 0.03326,
+    "delta_pnl": 0.052401,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -2133,7 +1866,8 @@
       "coinbase_taker_n": 127,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 346,
@@ -2143,16 +1877,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.764327,
-      "gain_pct": 0.943491
+      "pnl": 1.716681,
+      "gain_pct": 0.918011
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 1.727337,
-      "gain_pct": 0.923709
+      "pnl": 1.636898,
+      "gain_pct": 0.875346
     },
-    "delta_pnl": 0.036991,
+    "delta_pnl": 0.079783,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -2172,7 +1906,8 @@
       "coinbase_taker_n": 81,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 347,
@@ -2182,16 +1917,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.01637,
-      "gain_pct": 0.552375
+      "pnl": 0.981926,
+      "gain_pct": 0.533655
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 0.987298,
-      "gain_pct": 0.536575
+      "pnl": 0.934231,
+      "gain_pct": 0.507734
     },
-    "delta_pnl": 0.029073,
+    "delta_pnl": 0.047695,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -2211,7 +1946,8 @@
       "coinbase_taker_n": 662,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 348,
@@ -2221,16 +1957,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 3.531927,
-      "gain_pct": 1.063833
+      "pnl": 3.442155,
+      "gain_pct": 1.036794
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 3.462187,
-      "gain_pct": 1.042827
+      "pnl": 3.281816,
+      "gain_pct": 0.988499
     },
-    "delta_pnl": 0.06974,
+    "delta_pnl": 0.160339,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -2250,7 +1986,8 @@
       "coinbase_taker_n": 193,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 349,
@@ -2260,16 +1997,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.112193,
-      "gain_pct": 1.249818
+      "pnl": 2.062981,
+      "gain_pct": 1.220699
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.68,
-      "pnl": 0.880599,
-      "gain_pct": 0.521064
+      "pnl": 0.766755,
+      "gain_pct": 0.453701
     },
-    "delta_pnl": 1.231594,
+    "delta_pnl": 1.296226,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.014690795110801402,
@@ -2289,7 +2026,8 @@
       "coinbase_taker_n": 184,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 350,
@@ -2299,16 +2037,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.6203,
-      "gain_pct": 0.982
+      "pnl": 1.5774,
+      "gain_pct": 0.956
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.64,
-      "pnl": 0.429429,
-      "gain_pct": 0.26026
+      "pnl": 0.339,
+      "gain_pct": 0.205455
     },
-    "delta_pnl": 1.190871,
+    "delta_pnl": 1.2384,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.05570365403995303,
@@ -2328,7 +2066,8 @@
       "coinbase_taker_n": 184,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 352,
@@ -2338,16 +2077,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -2.91,
-      "gain_pct": -1.0
+      "pnl": -2.93875,
+      "gain_pct": -1.00988
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.23,
-      "pnl": -2.097943,
-      "gain_pct": -0.720943
+      "pnl": -2.138511,
+      "gain_pct": -0.734883
     },
-    "delta_pnl": -0.812057,
+    "delta_pnl": -0.800239,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.21201379003790846,
@@ -2367,7 +2106,8 @@
       "coinbase_taker_n": 303,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 351,
@@ -2377,15 +2117,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.6,
-      "pnl": 0.449565,
-      "gain_pct": 0.394356
+      "pnl": 0.360696,
+      "gain_pct": 0.3164
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.545948,
-      "gain_pct": 1.356094
+      "pnl": 1.468106,
+      "gain_pct": 1.287813
     },
-    "delta_pnl": 1.096382,
+    "delta_pnl": 1.10741,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.4975200842912949,
@@ -2407,7 +2147,8 @@
       "coinbase_taker_n": 159,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 353,
@@ -2417,16 +2158,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.36,
-      "gain_pct": -1.0
+      "pnl": -1.398188,
+      "gain_pct": -1.028079
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.47,
-      "pnl": 0.002931,
-      "gain_pct": 0.002155
+      "pnl": -0.070841,
+      "gain_pct": -0.052089
     },
-    "delta_pnl": -1.362931,
+    "delta_pnl": -1.327347,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.14429696471786924,
@@ -2446,7 +2187,8 @@
       "coinbase_taker_n": 156,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 355,
@@ -2456,16 +2198,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.296239,
-      "gain_pct": 0.771571
+      "pnl": 1.2578,
+      "gain_pct": 0.74869
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.54,
-      "pnl": -0.086138,
-      "gain_pct": -0.051273
+      "pnl": -0.159104,
+      "gain_pct": -0.094705
     },
-    "delta_pnl": 1.382377,
+    "delta_pnl": 1.416904,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.16297662774008026,
@@ -2485,7 +2227,8 @@
       "coinbase_taker_n": 1252,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 356,
@@ -2495,16 +2238,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.510644,
-      "gain_pct": 1.063834
+      "pnl": 1.472248,
+      "gain_pct": 1.036794
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.93,
-      "pnl": 1.302065,
-      "gain_pct": 0.916947
+      "pnl": 1.221389,
+      "gain_pct": 0.860133
     },
-    "delta_pnl": 0.208579,
+    "delta_pnl": 0.250859,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.06614164310713766,
@@ -2524,7 +2267,8 @@
       "coinbase_taker_n": 861,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 358,
@@ -2534,16 +2278,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.414898,
-      "gain_pct": 1.063833
+      "pnl": 1.378934,
+      "gain_pct": 1.036792
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 1.38696,
-      "gain_pct": 1.042827
+      "pnl": 1.314703,
+      "gain_pct": 0.988498
     },
-    "delta_pnl": 0.027938,
+    "delta_pnl": 0.064231,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -2563,7 +2307,8 @@
       "coinbase_taker_n": 625,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 357,
@@ -2573,15 +2318,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.76,
-      "pnl": 0.266877,
-      "gain_pct": 0.132117
+      "pnl": 0.164802,
+      "gain_pct": 0.081585
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.021876,
-      "gain_pct": 0.505879
+      "pnl": 0.96935,
+      "gain_pct": 0.479876
     },
-    "delta_pnl": 0.754999,
+    "delta_pnl": 0.804548,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.09520231720360006,
@@ -2603,7 +2348,8 @@
       "coinbase_taker_n": 1462,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 359,
@@ -2613,15 +2359,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.3,
-      "pnl": -0.863775,
-      "gain_pct": -0.392625
+      "pnl": -1.013446,
+      "gain_pct": -0.460657
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.2,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.336225,
+    "delta_pnl": -1.186554,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.035517202099557166,
@@ -2643,7 +2389,8 @@
       "coinbase_taker_n": 1183,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 360,
@@ -2653,16 +2400,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.16858,
-      "gain_pct": 0.982
+      "pnl": 1.13764,
+      "gain_pct": 0.956
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.5,
-      "pnl": -0.021324,
-      "gain_pct": -0.017919
+      "pnl": -0.080571,
+      "gain_pct": -0.067706
     },
-    "delta_pnl": 1.189904,
+    "delta_pnl": 1.218211,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.12326537028201667,
@@ -2682,7 +2429,8 @@
       "coinbase_taker_n": 978,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 361,
@@ -2692,16 +2440,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.218098,
-      "gain_pct": 1.107362
+      "pnl": 1.187782,
+      "gain_pct": 1.079802
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.49,
-      "pnl": 0.025441,
-      "gain_pct": 0.023128
+      "pnl": -0.033787,
+      "gain_pct": -0.030716
     },
-    "delta_pnl": 1.192657,
+    "delta_pnl": 1.221569,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.12835423798680468,
@@ -2721,7 +2469,8 @@
       "coinbase_taker_n": 812,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 362,
@@ -2731,16 +2480,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -2.46,
-      "gain_pct": -1.0
+      "pnl": -2.52524,
+      "gain_pct": -1.02652
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.93,
-      "pnl": 2.160289,
-      "gain_pct": 0.878166
+      "pnl": 2.025584,
+      "gain_pct": 0.823408
     },
-    "delta_pnl": -4.620289,
+    "delta_pnl": -4.550824,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": 0.04249969841678303,
@@ -2760,7 +2509,8 @@
       "coinbase_taker_n": 1112,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 363,
@@ -2770,16 +2520,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.33,
-      "gain_pct": -1.0
+      "pnl": -1.36527,
+      "gain_pct": -1.026519
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.46,
-      "pnl": -0.104915,
-      "gain_pct": -0.078883
+      "pnl": -0.170131,
+      "gain_pct": -0.127918
     },
-    "delta_pnl": -1.225085,
+    "delta_pnl": -1.195139,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.05010832512649749,
@@ -2799,7 +2549,8 @@
       "coinbase_taker_n": 1211,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 364,
@@ -2809,15 +2560,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.3466830964910995,
-      "pnl": -0.673327,
-      "gain_pct": -0.311725
+      "pnl": -0.821906,
+      "gain_pct": -0.380512
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 2.207696,
-      "gain_pct": 1.022081
+      "pnl": 2.095866,
+      "gain_pct": 0.970308
     },
-    "delta_pnl": 2.881023,
+    "delta_pnl": 2.917772,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.071923937641176,
@@ -2839,7 +2590,8 @@
       "coinbase_taker_n": 831,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 365,
@@ -2849,15 +2601,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.71,
-      "pnl": 0.074386,
-      "gain_pct": 0.041097
+      "pnl": -0.019024,
+      "gain_pct": -0.01051
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.81,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.884386,
+    "delta_pnl": -1.790976,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.08465026953094335,
@@ -2879,7 +2631,8 @@
       "coinbase_taker_n": 734,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 366,
@@ -2889,15 +2642,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.3,
-      "pnl": -0.742062,
-      "gain_pct": -0.392625
+      "pnl": -0.870643,
+      "gain_pct": -0.460658
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.89,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.147938,
+    "delta_pnl": -1.019357,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.05794589380749285,
@@ -2919,7 +2672,8 @@
       "coinbase_taker_n": 636,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 367,
@@ -2929,15 +2683,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.99,
-      "pnl": 0.720469,
-      "gain_pct": 0.305283
+      "pnl": 0.644069,
+      "gain_pct": 0.272911
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 0.772507,
-      "gain_pct": 0.327333
+      "pnl": 0.732487,
+      "gain_pct": 0.310376
     },
-    "delta_pnl": 0.052038,
+    "delta_pnl": 0.088418,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.16374169417293727,
@@ -2959,7 +2713,8 @@
       "coinbase_taker_n": 905,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 368,
@@ -2969,16 +2724,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.31,
-      "gain_pct": -1.0
+      "pnl": -1.340654,
+      "gain_pct": -1.0234
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.38,
-      "pnl": -0.422259,
-      "gain_pct": -0.322335
+      "pnl": -0.470683,
+      "gain_pct": -0.3593
     },
-    "delta_pnl": -0.887741,
+    "delta_pnl": -0.869971,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.1287199706962623,
@@ -2998,7 +2753,8 @@
       "coinbase_taker_n": 903,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 369,
@@ -3008,16 +2764,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.909051,
-      "gain_pct": 0.420857
+      "pnl": 0.875355,
+      "gain_pct": 0.405257
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.83,
-      "pnl": 0.379518,
-      "gain_pct": 0.175703
+      "pnl": 0.318544,
+      "gain_pct": 0.147474
     },
-    "delta_pnl": 0.529534,
+    "delta_pnl": 0.556811,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.06949580359142327,
@@ -3037,7 +2793,8 @@
       "coinbase_taker_n": 876,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 370,
@@ -3047,15 +2804,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.67,
-      "pnl": 0.676398,
-      "gain_pct": 0.36562
+      "pnl": 0.548349,
+      "gain_pct": 0.296405
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.968092,
-      "gain_pct": 1.063833
+      "pnl": 1.868485,
+      "gain_pct": 1.009992
     },
-    "delta_pnl": 1.291694,
+    "delta_pnl": 1.320136,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.08647067187185675,
@@ -3077,7 +2834,8 @@
       "coinbase_taker_n": 1045,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 371,
@@ -3087,15 +2845,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.59,
-      "pnl": 0.021235,
-      "gain_pct": 0.01287
+      "pnl": -0.082297,
+      "gain_pct": -0.049877
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.222332,
-      "gain_pct": 0.740807
+      "pnl": 1.159988,
+      "gain_pct": 0.703023
     },
-    "delta_pnl": 1.201096,
+    "delta_pnl": 1.242285,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.07451542813042311,
@@ -3117,7 +2875,8 @@
       "coinbase_taker_n": 729,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 372,
@@ -3127,16 +2886,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.393625,
-      "gain_pct": 1.063833
+      "pnl": 2.332785,
+      "gain_pct": 1.036793
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.47,
-      "pnl": -0.088317,
-      "gain_pct": -0.039252
+      "pnl": -0.203292,
+      "gain_pct": -0.090352
     },
-    "delta_pnl": 2.481942,
+    "delta_pnl": 2.536077,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": 0.010575223314157667,
@@ -3156,7 +2915,8 @@
       "coinbase_taker_n": 919,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 373,
@@ -3166,15 +2926,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.39,
-      "pnl": -0.449602,
-      "gain_pct": -0.209117
+      "pnl": -0.602269,
+      "gain_pct": -0.280125
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.15,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.700398,
+    "delta_pnl": -1.547731,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.06783294395340966,
@@ -3196,7 +2956,8 @@
       "coinbase_taker_n": 1008,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 374,
@@ -3206,15 +2967,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.78,
-      "pnl": 0.389825,
-      "gain_pct": 0.256464
+      "pnl": 0.308724,
+      "gain_pct": 0.203108
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 0.954311,
-      "gain_pct": 0.627836
+      "pnl": 0.905469,
+      "gain_pct": 0.595703
     },
-    "delta_pnl": 0.564486,
+    "delta_pnl": 0.596745,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.0962286774976624,
@@ -3236,7 +2997,8 @@
       "coinbase_taker_n": 478,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 378,
@@ -3246,16 +3008,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.758595,
-      "gain_pct": 0.2455
+      "pnl": 0.726459,
+      "gain_pct": 0.2351
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.88,
-      "pnl": 0.289448,
-      "gain_pct": 0.093673
+      "pnl": 0.233872,
+      "gain_pct": 0.075687
     },
-    "delta_pnl": 0.469147,
+    "delta_pnl": 0.492587,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.09609735530561547,
@@ -3275,7 +3037,8 @@
       "coinbase_taker_n": 832,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 375,
@@ -3285,15 +3048,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.76,
-      "pnl": 0.109798,
-      "gain_pct": 0.068198
+      "pnl": 0.033056,
+      "gain_pct": 0.020532
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.61,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.719798,
+    "delta_pnl": -1.643056,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.11087356034062612,
@@ -3315,7 +3078,8 @@
       "coinbase_taker_n": 947,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 376,
@@ -3325,15 +3089,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.58,
-      "pnl": -0.069862,
-      "gain_pct": -0.05374
+      "pnl": -0.148209,
+      "gain_pct": -0.114007
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.3,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.230138,
+    "delta_pnl": -1.151791,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.07469356850605424,
@@ -3355,46 +3119,8 @@
       "coinbase_taker_n": 945,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 381,
-    "market_id": "btc-updown-5m-1780068900",
-    "side": "Down",
-    "timestamp": "2026-05-29T15:42:15.471687+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 2.317156,
-      "gain_pct": 0.836518
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.67,
-      "pnl": 0.398252,
-      "gain_pct": 0.201137
-    },
-    "delta_pnl": 1.918904,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.06689393612857553,
-      "model_prob": 0.6031060638714245,
-      "market_price": 0.67,
-      "seconds_remaining": 107.241373,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73939.76145602883,
-      "btc_at_worst": 73919.3,
-      "flow_score": 0.3413,
-      "spot_flow_signal": -0.28356228801245426,
-      "regime": "neutral",
-      "btc_distance_atr": -0.211,
-      "worst_at": 1780069092.7603614,
-      "coinbase_cvd_60s": -7.8259,
-      "coinbase_taker_60s": 0.3013,
-      "coinbase_taker_n": 981,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 377,
@@ -3404,15 +3130,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.29,
-      "pnl": -1.329789,
-      "gain_pct": -0.412978
+      "pnl": -1.547447,
+      "gain_pct": -0.480574
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -3.22,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.890211,
+    "delta_pnl": -1.672553,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.0474162833381932,
@@ -3434,7 +3160,8 @@
       "coinbase_taker_n": 766,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 379,
@@ -3444,15 +3171,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.41999999999999993,
-      "pnl": -0.333259,
-      "gain_pct": -0.111086
+      "pnl": -0.554561,
+      "gain_pct": -0.184854
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 3.458348,
-      "gain_pct": 1.152783
+      "pnl": 3.283617,
+      "gain_pct": 1.094539
     },
-    "delta_pnl": 3.791607,
+    "delta_pnl": 3.838178,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.07217418467032422,
@@ -3474,7 +3201,8 @@
       "coinbase_taker_n": 559,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 380,
@@ -3484,15 +3212,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.64,
-      "pnl": 0.4386,
-      "gain_pct": 0.252069
+      "pnl": 0.319932,
+      "gain_pct": 0.183869
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.70868,
-      "gain_pct": 0.982
+      "pnl": 1.622053,
+      "gain_pct": 0.932215
     },
-    "delta_pnl": 1.27008,
+    "delta_pnl": 1.302121,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.10125139186848864,
@@ -3514,7 +3242,8 @@
       "coinbase_taker_n": 939,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 381,
@@ -3524,15 +3253,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.59,
-      "pnl": 0.097654,
-      "gain_pct": 0.04932
+      "pnl": -0.030181,
+      "gain_pct": -0.015243
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.98,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.077654,
+    "delta_pnl": -1.949819,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.06976121282232073,
@@ -3554,7 +3283,8 @@
       "coinbase_taker_n": 895,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 382,
@@ -3564,15 +3294,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.62,
-      "pnl": 0.121865,
-      "gain_pct": 0.103276
+      "pnl": 0.046373,
+      "gain_pct": 0.039299
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 0.948076,
-      "gain_pct": 0.803455
+      "pnl": 0.899804,
+      "gain_pct": 0.762545
     },
-    "delta_pnl": 0.826211,
+    "delta_pnl": 0.853431,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.06138676778480956,
@@ -3594,7 +3324,8 @@
       "coinbase_taker_n": 756,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 386,
@@ -3604,15 +3335,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.83,
-      "pnl": 0.486506,
-      "gain_pct": 0.383076
+      "pnl": 0.420183,
+      "gain_pct": 0.330853
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.27,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.756506,
+    "delta_pnl": -1.690183,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.11705637999109098,
@@ -3634,7 +3365,8 @@
       "coinbase_taker_n": 520,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 387,
@@ -3644,16 +3376,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.34,
-      "gain_pct": -1.0
+      "pnl": -1.37484,
+      "gain_pct": -1.026
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.5,
-      "pnl": -0.024011,
-      "gain_pct": -0.017919
+      "pnl": -0.090726,
+      "gain_pct": -0.067706
     },
-    "delta_pnl": -1.315989,
+    "delta_pnl": -1.284114,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.07200558002769142,
@@ -3673,7 +3405,8 @@
       "coinbase_taker_n": 433,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 388,
@@ -3683,15 +3416,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.69,
-      "pnl": 0.864971,
-      "gain_pct": 0.56906
+      "pnl": 0.753007,
+      "gain_pct": 0.495399
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.52,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.384971,
+    "delta_pnl": -2.273007,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.09569193183813429,
@@ -3713,7 +3446,8 @@
       "coinbase_taker_n": 1235,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 389,
@@ -3723,15 +3457,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.7,
-      "pnl": 0.353839,
-      "gain_pct": 0.24744
+      "pnl": 0.265763,
+      "gain_pct": 0.185848
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.14894,
-      "gain_pct": 0.803455
+      "pnl": 1.09044,
+      "gain_pct": 0.762546
     },
-    "delta_pnl": 0.795101,
+    "delta_pnl": 0.824677,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.12159924933225341,
@@ -3753,7 +3487,8 @@
       "coinbase_taker_n": 625,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 390,
@@ -3763,15 +3498,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.7200000000000001,
-      "pnl": 0.551823,
-      "gain_pct": 0.38321
+      "pnl": 0.459181,
+      "gain_pct": 0.318876
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.358625,
-      "gain_pct": 0.94349
+      "pnl": 1.289686,
+      "gain_pct": 0.895615
     },
-    "delta_pnl": 0.806803,
+    "delta_pnl": 0.830505,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.10186977936495045,
@@ -3793,7 +3528,8 @@
       "coinbase_taker_n": 465,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 391,
@@ -3803,16 +3539,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.37,
-      "gain_pct": -1.0
+      "pnl": -1.404906,
+      "gain_pct": -1.025479
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.21,
-      "pnl": -0.818809,
-      "gain_pct": -0.597671
+      "pnl": -0.85479,
+      "gain_pct": -0.623935
     },
-    "delta_pnl": -0.551191,
+    "delta_pnl": -0.550116,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.014466411081446334,
@@ -3832,7 +3568,8 @@
       "coinbase_taker_n": 558,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 392,
@@ -3842,16 +3579,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.6383,
-      "gain_pct": 0.327333
+      "pnl": 0.61295,
+      "gain_pct": 0.314333
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.64,
-      "pnl": -0.304222,
-      "gain_pct": -0.156011
+      "pnl": -0.355862,
+      "gain_pct": -0.182493
     },
-    "delta_pnl": 0.942522,
+    "delta_pnl": 0.968812,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.06350142308444051,
@@ -3871,7 +3608,8 @@
       "coinbase_taker_n": 517,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 393,
@@ -3881,16 +3619,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.365453,
-      "gain_pct": 0.261038
+      "pnl": 0.350165,
+      "gain_pct": 0.250118
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 0.347484,
-      "gain_pct": 0.248203
+      "pnl": 0.32778,
+      "gain_pct": 0.234128
     },
-    "delta_pnl": 0.017969,
+    "delta_pnl": 0.022385,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -3910,7 +3648,8 @@
       "coinbase_taker_n": 515,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 394,
@@ -3920,16 +3659,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.829796,
-      "gain_pct": 1.063833
+      "pnl": 2.757868,
+      "gain_pct": 1.036792
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.92,
-      "pnl": 2.383339,
-      "gain_pct": 0.895992
+      "pnl": 2.231305,
+      "gain_pct": 0.838836
     },
-    "delta_pnl": 0.446457,
+    "delta_pnl": 0.526563,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.022510589860172403,
@@ -3949,7 +3688,8 @@
       "coinbase_taker_n": 353,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 395,
@@ -3959,16 +3699,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.022036,
-      "gain_pct": 0.276974
+      "pnl": 0.979823,
+      "gain_pct": 0.265535
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.98,
-      "pnl": 0.926133,
-      "gain_pct": 0.250984
+      "pnl": 0.86938,
+      "gain_pct": 0.235604
     },
-    "delta_pnl": 0.095903,
+    "delta_pnl": 0.110443,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": 0.0020137900379084694,
@@ -3988,7 +3728,8 @@
       "coinbase_taker_n": 603,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 396,
@@ -3998,16 +3739,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -6.37,
-      "gain_pct": -1.0
+      "pnl": -6.456124,
+      "gain_pct": -1.01352
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.36,
-      "pnl": -3.321117,
-      "gain_pct": -0.521368
+      "pnl": -3.462885,
+      "gain_pct": -0.543624
     },
-    "delta_pnl": -3.048883,
+    "delta_pnl": -2.993239,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": 0.053116650116977415,
@@ -4027,7 +3768,8 @@
       "coinbase_taker_n": 516,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 397,
@@ -4037,16 +3779,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.963049,
-      "gain_pct": 0.740807
+      "pnl": 0.933981,
+      "gain_pct": 0.718447
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.48,
-      "pnl": -0.223904,
-      "gain_pct": -0.172234
+      "pnl": -0.275996,
+      "gain_pct": -0.212304
     },
-    "delta_pnl": 1.186953,
+    "delta_pnl": 1.209977,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.15469504764038466,
@@ -4066,7 +3808,8 @@
       "coinbase_taker_n": 396,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 398,
@@ -4076,16 +3819,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.621198,
-      "gain_pct": 0.87083
+      "pnl": 2.547633,
+      "gain_pct": 0.84639
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.96,
-      "pnl": 2.392058,
-      "gain_pct": 0.794704
+      "pnl": 2.253269,
+      "gain_pct": 0.748594
     },
-    "delta_pnl": 0.22914,
+    "delta_pnl": 0.294364,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.009674664884582906,
@@ -4105,7 +3848,8 @@
       "coinbase_taker_n": 563,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 399,
@@ -4115,16 +3859,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.316408,
-      "gain_pct": 0.87083
+      "pnl": 2.251396,
+      "gain_pct": 0.846389
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.51,
-      "pnl": -0.144417,
-      "gain_pct": -0.054292
+      "pnl": -0.267072,
+      "gain_pct": -0.100403
     },
-    "delta_pnl": 2.460825,
+    "delta_pnl": 2.518468,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.060885678884455285,
@@ -4144,7 +3888,8 @@
       "coinbase_taker_n": 426,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 400,
@@ -4154,15 +3899,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.33,
-      "pnl": -0.834662,
-      "gain_pct": -0.25447
+      "pnl": -1.079078,
+      "gain_pct": -0.328987
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -3.28,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.445338,
+    "delta_pnl": -2.200922,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.07465594580837204,
@@ -4184,7 +3929,8 @@
       "coinbase_taker_n": 525,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 401,
@@ -4194,15 +3940,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.7400000000000001,
-      "pnl": 0.279311,
-      "gain_pct": 0.273834
+      "pnl": 0.21985,
+      "gain_pct": 0.215539
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 0.755623,
-      "gain_pct": 0.740807
+      "pnl": 0.717083,
+      "gain_pct": 0.703023
     },
-    "delta_pnl": 0.476312,
+    "delta_pnl": 0.497233,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.08960198646486062,
@@ -4224,7 +3970,8 @@
       "coinbase_taker_n": 393,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 402,
@@ -4234,16 +3981,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.527746,
-      "gain_pct": 0.073914
+      "pnl": 0.501758,
+      "gain_pct": 0.070274
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 0.449702,
-      "gain_pct": 0.062984
+      "pnl": 0.418278,
+      "gain_pct": 0.058582
     },
-    "delta_pnl": 0.078044,
+    "delta_pnl": 0.08348,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -4263,7 +4010,8 @@
       "coinbase_taker_n": 781,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 403,
@@ -4273,16 +4021,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.993251,
-      "gain_pct": 1.107362
+      "pnl": 1.943643,
+      "gain_pct": 1.079802
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.49,
-      "pnl": 0.04163,
-      "gain_pct": 0.023128
+      "pnl": -0.055288,
+      "gain_pct": -0.030716
     },
-    "delta_pnl": 1.951621,
+    "delta_pnl": 1.998931,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.04007248879305014,
@@ -4302,7 +4050,8 @@
       "coinbase_taker_n": 530,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 404,
@@ -4312,16 +4061,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -3.08,
-      "gain_pct": -1.0
+      "pnl": -3.171292,
+      "gain_pct": -1.02964
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.34,
-      "pnl": -0.698273,
-      "gain_pct": -0.226712
+      "pnl": -0.846519,
+      "gain_pct": -0.274844
     },
-    "delta_pnl": -2.381727,
+    "delta_pnl": -2.324773,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.037464221821198296,
@@ -4341,7 +4090,8 @@
       "coinbase_taker_n": 529,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 405,
@@ -4351,16 +4101,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.3,
-      "gain_pct": -1.0
+      "pnl": -1.332448,
+      "gain_pct": -1.02496
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.48,
-      "pnl": -0.121503,
-      "gain_pct": -0.093464
+      "pnl": -0.181351,
+      "gain_pct": -0.139501
     },
-    "delta_pnl": -1.178497,
+    "delta_pnl": -1.151097,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.05434989701750648,
@@ -4380,7 +4130,8 @@
       "coinbase_taker_n": 632,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 406,
@@ -4390,15 +4141,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.59,
-      "pnl": 0.551794,
-      "gain_pct": 0.226145
+      "pnl": 0.374905,
+      "gain_pct": 0.15365
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.44,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.991794,
+    "delta_pnl": -2.814905,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.06330238934302634,
@@ -4420,7 +4171,8 @@
       "coinbase_taker_n": 349,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 407,
@@ -4430,15 +4182,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.19999999999999998,
-      "pnl": -1.84342,
-      "gain_pct": -0.646814
+      "pnl": -2.00568,
+      "gain_pct": -0.703747
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.85,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.00658,
+    "delta_pnl": -0.84432,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.0014378004432893943,
@@ -4460,7 +4212,8 @@
       "coinbase_taker_n": 308,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 408,
@@ -4470,16 +4223,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.021279,
-      "gain_pct": 0.462117
+      "pnl": 0.984504,
+      "gain_pct": 0.445477
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.89,
-      "pnl": 0.660145,
-      "gain_pct": 0.298708
+      "pnl": 0.597253,
+      "gain_pct": 0.27025
     },
-    "delta_pnl": 0.361135,
+    "delta_pnl": 0.387251,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.052271588899774124,
@@ -4499,46 +4252,8 @@
       "coinbase_taker_n": 374,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 409,
-    "market_id": "btc-updown-5m-1780083600",
-    "side": "Down",
-    "timestamp": "2026-05-29T19:49:39.047142+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 1.7185,
-      "gain_pct": 0.982
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.5,
-      "pnl": -0.108516,
-      "gain_pct": -0.106388
-    },
-    "delta_pnl": 1.827016,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.11133710785592887,
-      "model_prob": 0.3886628921440711,
-      "market_price": 0.5,
-      "seconds_remaining": 273.568519,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73596.67754168499,
-      "btc_at_worst": 73611.24,
-      "flow_score": 0.4053,
-      "spot_flow_signal": 0.16629511834182023,
-      "regime": "neutral",
-      "btc_distance_atr": 0.342,
-      "worst_at": 1780083626.4325058,
-      "coinbase_cvd_60s": 4.1106,
-      "coinbase_taker_60s": 0.6434,
-      "coinbase_taker_n": 484,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 409,
@@ -4548,15 +4263,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.6600000000000001,
-      "pnl": 0.178812,
-      "gain_pct": 0.175306
+      "pnl": 0.11462,
+      "gain_pct": 0.112373
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 0.819524,
-      "gain_pct": 0.803455
+      "pnl": 0.777797,
+      "gain_pct": 0.762546
     },
-    "delta_pnl": 0.640712,
+    "delta_pnl": 0.663177,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.09589712510583903,
@@ -4578,7 +4293,8 @@
       "coinbase_taker_n": 254,
       "binance_liq_long_usd_min": null,
       "binance_liq_short_usd_min": null
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 411,
@@ -4588,16 +4304,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 3.464857,
-      "gain_pct": 1.022082
+      "pnl": 3.374955,
+      "gain_pct": 0.995562
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.7,
-      "pnl": 1.382489,
-      "gain_pct": 0.407814
+      "pnl": 1.187356,
+      "gain_pct": 0.350253
     },
-    "delta_pnl": 2.082369,
+    "delta_pnl": 2.187599,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.06919763244031274,
@@ -4617,7 +4333,8 @@
       "coinbase_taker_n": 265,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 412,
@@ -4627,16 +4344,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.676214,
-      "gain_pct": 1.022082
+      "pnl": 1.632722,
+      "gain_pct": 0.995562
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.77,
-      "pnl": 0.902914,
-      "gain_pct": 0.550557
+      "pnl": 0.808047,
+      "gain_pct": 0.492712
     },
-    "delta_pnl": 0.773301,
+    "delta_pnl": 0.824675,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.026075282946589895,
@@ -4656,7 +4373,8 @@
       "coinbase_taker_n": 485,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 413,
@@ -4666,16 +4384,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 3.521288,
-      "gain_pct": 1.063833
+      "pnl": 3.431784,
+      "gain_pct": 1.036793
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 3.451757,
-      "gain_pct": 1.042827
+      "pnl": 3.27193,
+      "gain_pct": 0.988499
     },
-    "delta_pnl": 0.06953,
+    "delta_pnl": 0.159854,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -4695,7 +4413,8 @@
       "coinbase_taker_n": 297,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 414,
@@ -4705,16 +4424,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -2.09,
-      "gain_pct": -1.0
+      "pnl": -2.153036,
+      "gain_pct": -1.030161
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.11,
-      "pnl": -1.557011,
-      "gain_pct": -0.744981
+      "pnl": -1.596799,
+      "gain_pct": -0.764019
     },
-    "delta_pnl": -0.532989,
+    "delta_pnl": -0.556237,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": 0.06682877466640312,
@@ -4734,7 +4453,8 @@
       "coinbase_taker_n": 295,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 415,
@@ -4744,16 +4464,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.19,
-      "gain_pct": -1.0
+      "pnl": -1.221558,
+      "gain_pct": -1.026519
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.36,
-      "pnl": -0.333719,
-      "gain_pct": -0.280436
+      "pnl": -0.383734,
+      "gain_pct": -0.322466
     },
-    "delta_pnl": -0.856281,
+    "delta_pnl": -0.837824,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.12688172943861464,
@@ -4773,7 +4493,8 @@
       "coinbase_taker_n": 296,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 416,
@@ -4783,15 +4504,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.38000000000000006,
-      "pnl": -0.294336,
-      "gain_pct": -0.213287
+      "pnl": -0.393431,
+      "gain_pct": -0.285095
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.38,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.085664,
+    "delta_pnl": -0.986569,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.07007356229639605,
@@ -4813,7 +4534,8 @@
       "coinbase_taker_n": 435,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 417,
@@ -4823,15 +4545,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.77,
-      "pnl": 0.214999,
-      "gain_pct": 0.130303
+      "pnl": 0.133488,
+      "gain_pct": 0.080902
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 0.798058,
-      "gain_pct": 0.483672
+      "pnl": 0.757001,
+      "gain_pct": 0.458788
     },
-    "delta_pnl": 0.583059,
+    "delta_pnl": 0.623513,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.09312167163079688,
@@ -4853,7 +4575,8 @@
       "coinbase_taker_n": 309,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 418,
@@ -4863,15 +4586,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.71,
-      "pnl": 0.666378,
-      "gain_pct": 0.265489
+      "pnl": 0.512741,
+      "gain_pct": 0.204279
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 2.016671,
-      "gain_pct": 0.803455
+      "pnl": 1.91399,
+      "gain_pct": 0.762546
     },
-    "delta_pnl": 1.350293,
+    "delta_pnl": 1.401249,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.09270938365886672,
@@ -4893,7 +4616,8 @@
       "coinbase_taker_n": 338,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 419,
@@ -4903,15 +4627,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.95,
-      "pnl": 3.037625,
-      "gain_pct": 0.510525
+      "pnl": 2.785701,
+      "gain_pct": 0.468185
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 3.581132,
-      "gain_pct": 0.601871
+      "pnl": 3.397691,
+      "gain_pct": 0.57104
     },
-    "delta_pnl": 0.543507,
+    "delta_pnl": 0.61199,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.14882579525019535,
@@ -4933,7 +4657,8 @@
       "coinbase_taker_n": 253,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 420,
@@ -4943,16 +4668,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.188798,
-      "gain_pct": 0.943491
+      "pnl": 1.156694,
+      "gain_pct": 0.918011
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.47,
-      "pnl": -0.120045,
-      "gain_pct": -0.095274
+      "pnl": -0.179064,
+      "gain_pct": -0.142114
     },
-    "delta_pnl": 1.308843,
+    "delta_pnl": 1.335758,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.22857288949566823,
@@ -4972,7 +4697,8 @@
       "coinbase_taker_n": 334,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 421,
@@ -4982,16 +4708,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.93,
-      "gain_pct": -1.0
+      "pnl": -1.98018,
+      "gain_pct": -1.026
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.03,
-      "pnl": -1.817246,
-      "gain_pct": -0.941578
+      "pnl": -1.825721,
+      "gain_pct": -0.94597
     },
-    "delta_pnl": -0.112754,
+    "delta_pnl": -0.154459,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": 0.003727334155501555,
@@ -5011,46 +4737,8 @@
       "coinbase_taker_n": 273,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 423,
-    "market_id": "btc-updown-5m-1780088400",
-    "side": "Down",
-    "timestamp": "2026-05-29T21:07:31.171493+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 0.0,
-      "pnl": -4.17,
-      "gain_pct": -1.0
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.39,
-      "pnl": -1.536162,
-      "gain_pct": -0.38213
-    },
-    "delta_pnl": -2.633838,
-    "hold_was_optimal": false,
-    "context_at_worst_moment": {
-      "holding_edge": -0.3097824121949059,
-      "model_prob": 0.08021758780509414,
-      "market_price": 0.39,
-      "seconds_remaining": 114.071908,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73574.63436980349,
-      "btc_at_worst": 73595.0,
-      "flow_score": 0.5287,
-      "spot_flow_signal": 0.16615628799854923,
-      "regime": "neutral",
-      "btc_distance_atr": 1.227,
-      "worst_at": 1780088585.9296942,
-      "coinbase_cvd_60s": 1.6425,
-      "coinbase_taker_60s": 0.806,
-      "coinbase_taker_n": 272,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 427,
@@ -5060,16 +4748,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.85434,
-      "gain_pct": 0.420857
+      "pnl": 0.822672,
+      "gain_pct": 0.405257
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.61,
-      "pnl": -0.282904,
-      "gain_pct": -0.139362
+      "pnl": -0.344733,
+      "gain_pct": -0.169819
     },
-    "delta_pnl": 1.137244,
+    "delta_pnl": 1.167405,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.2184616916954359,
@@ -5089,7 +4777,8 @@
       "coinbase_taker_n": 251,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 422,
@@ -5099,15 +4788,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.57,
-      "pnl": -0.00757,
-      "gain_pct": -0.004533
+      "pnl": -0.114352,
+      "gain_pct": -0.068474
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.288525,
-      "gain_pct": 0.771572
+      "pnl": 1.222862,
+      "gain_pct": 0.732252
     },
-    "delta_pnl": 1.296095,
+    "delta_pnl": 1.337214,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.07627286457008287,
@@ -5129,7 +4818,8 @@
       "coinbase_taker_n": 219,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 423,
@@ -5139,15 +4829,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.19000000000000003,
-      "pnl": -2.822167,
-      "gain_pct": -0.702032
+      "pnl": -3.027773,
+      "gain_pct": -0.753177
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -4.02,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.197833,
+    "delta_pnl": -0.992227,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.09487724423285165,
@@ -5169,7 +4859,8 @@
       "coinbase_taker_n": 262,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 424,
@@ -5179,15 +4870,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.3677529981051651,
-      "pnl": -3.267452,
-      "gain_pct": -0.571233
+      "pnl": -3.503702,
+      "gain_pct": -0.612535
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.069912,
-      "gain_pct": 0.187048
+      "pnl": 1.014048,
+      "gain_pct": 0.177281
     },
-    "delta_pnl": 4.337364,
+    "delta_pnl": 4.51775,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.17373603508486,
@@ -5209,7 +4900,8 @@
       "coinbase_taker_n": 321,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 426,
@@ -5219,15 +4911,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.63,
-      "pnl": 0.634129,
-      "gain_pct": 0.232282
+      "pnl": 0.447188,
+      "gain_pct": 0.163805
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 2.68086,
-      "gain_pct": 0.982
+      "pnl": 2.544946,
+      "gain_pct": 0.932215
     },
-    "delta_pnl": 2.046731,
+    "delta_pnl": 2.097758,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.08545037013687706,
@@ -5249,46 +4941,8 @@
       "coinbase_taker_n": 188,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 428,
-    "market_id": "btc-updown-5m-1780089000",
-    "side": "Down",
-    "timestamp": "2026-05-29T21:17:50.612262+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 0.774377,
-      "gain_pct": 0.420857
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.35,
-      "pnl": -0.717744,
-      "gain_pct": -0.327737
-    },
-    "delta_pnl": 1.492121,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.10153320980194114,
-      "model_prob": 0.24846679019805884,
-      "market_price": 0.35,
-      "seconds_remaining": 222.979451,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73620.96797747587,
-      "btc_at_worst": 73634.97,
-      "flow_score": 0.0014,
-      "spot_flow_signal": 0.10567676606412155,
-      "regime": "neutral",
-      "btc_distance_atr": 0.751,
-      "worst_at": 1780089077.0210238,
-      "coinbase_cvd_60s": 1.3553,
-      "coinbase_taker_60s": 0.6739,
-      "coinbase_taker_n": 249,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 430,
@@ -5298,16 +4952,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 0.711103,
-      "gain_pct": 0.711103
+      "pnl": 0.689263,
+      "gain_pct": 0.689263
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.999,
-      "pnl": 0.709362,
-      "gain_pct": 0.709362
+      "pnl": 0.673011,
+      "gain_pct": 0.673011
     },
-    "delta_pnl": 0.001742,
+    "delta_pnl": 0.016252,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.016986209962091547,
@@ -5327,7 +4981,8 @@
       "coinbase_taker_n": 206,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 428,
@@ -5337,15 +4992,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.3,
-      "pnl": -0.937411,
-      "gain_pct": -0.428041
+      "pnl": -1.080149,
+      "gain_pct": -0.493219
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.19,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.252589,
+    "delta_pnl": -1.109851,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.0630435838223356,
@@ -5367,7 +5022,8 @@
       "coinbase_taker_n": 301,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 431,
@@ -5377,16 +5033,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.505733,
-      "gain_pct": 0.836519
+      "pnl": 1.462677,
+      "gain_pct": 0.812598
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.98,
-      "pnl": 1.438452,
-      "gain_pct": 0.79914
+      "pnl": 1.36012,
+      "gain_pct": 0.755622
     },
-    "delta_pnl": 0.067281,
+    "delta_pnl": 0.102557,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.015785131565240418,
@@ -5406,7 +5062,8 @@
       "coinbase_taker_n": 484,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 432,
@@ -5416,16 +5073,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.195951,
-      "gain_pct": 1.107362
+      "pnl": 1.166187,
+      "gain_pct": 1.079803
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 1.172786,
-      "gain_pct": 1.085913
+      "pnl": 1.111784,
+      "gain_pct": 1.02943
     },
-    "delta_pnl": 0.023165,
+    "delta_pnl": 0.054403,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -5445,7 +5102,8 @@
       "coinbase_taker_n": 283,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 433,
@@ -5455,16 +5113,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.13,
-      "gain_pct": -1.0
+      "pnl": -1.161142,
+      "gain_pct": -1.027559
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.34,
-      "pnl": -0.32997,
-      "gain_pct": -0.292009
+      "pnl": -0.378277,
+      "gain_pct": -0.334759
     },
-    "delta_pnl": -0.80003,
+    "delta_pnl": -0.782865,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": 0.008684519884133823,
@@ -5484,7 +5142,8 @@
       "coinbase_taker_n": 243,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 434,
@@ -5494,16 +5153,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -3.39,
-      "gain_pct": -1.0
+      "pnl": -3.481664,
+      "gain_pct": -1.02704
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.64,
-      "pnl": 1.058678,
-      "gain_pct": 0.312294
+      "pnl": 0.860984,
+      "gain_pct": 0.253978
     },
-    "delta_pnl": -4.448678,
+    "delta_pnl": -4.342648,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": 0.019432571969734913,
@@ -5523,7 +5182,8 @@
       "coinbase_taker_n": 365,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 435,
@@ -5533,16 +5193,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.4,
-      "gain_pct": -1.0
+      "pnl": -1.442952,
+      "gain_pct": -1.03068
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.43,
-      "pnl": 0.037795,
-      "gain_pct": 0.026996
+      "pnl": -0.046353,
+      "gain_pct": -0.033109
     },
-    "delta_pnl": -1.437795,
+    "delta_pnl": -1.396599,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.029482482111087893,
@@ -5562,46 +5222,8 @@
       "coinbase_taker_n": 234,
       "binance_liq_long_usd_min": 0.0,
       "binance_liq_short_usd_min": 0.0
-    }
-  },
-  {
-    "position_id": 436,
-    "market_id": "btc-updown-5m-1780091100",
-    "side": "Up",
-    "timestamp": "2026-05-29T21:53:30.270507+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 2.75733,
-      "gain_pct": 1.107361
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.67,
-      "pnl": 0.100987,
-      "gain_pct": 0.066879
-    },
-    "delta_pnl": 2.656343,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.04231206920443442,
-      "model_prob": 0.6276879307955656,
-      "market_price": 0.67,
-      "seconds_remaining": 260.602827,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73503.72186180904,
-      "btc_at_worst": 73512.39,
-      "flow_score": -0.2592,
-      "spot_flow_signal": 0.09693361107075667,
-      "regime": "neutral",
-      "btc_distance_atr": 0.494,
-      "worst_at": 1780091139.3978121,
-      "coinbase_cvd_60s": 0.6231,
-      "coinbase_taker_60s": 0.7008,
-      "coinbase_taker_n": 212,
-      "binance_liq_long_usd_min": 0.0,
-      "binance_liq_short_usd_min": 0.0
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 439,
@@ -5611,16 +5233,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.371229,
-      "gain_pct": 1.022081
+      "pnl": 2.309701,
+      "gain_pct": 0.995561
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.62,
-      "pnl": 0.568667,
-      "gain_pct": 0.245115
+      "pnl": 0.438705,
+      "gain_pct": 0.189097
     },
-    "delta_pnl": 1.802561,
+    "delta_pnl": 1.870996,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.026868742693969883,
@@ -5638,7 +5260,8 @@
       "coinbase_cvd_60s": 0.6609,
       "coinbase_taker_60s": 0.5947,
       "coinbase_taker_n": 236
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 440,
@@ -5648,16 +5271,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.506555,
-      "gain_pct": 0.2455
+      "pnl": 2.400371,
+      "gain_pct": 0.2351
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 2.377123,
-      "gain_pct": 0.232823
+      "pnl": 2.241552,
+      "gain_pct": 0.219545
     },
-    "delta_pnl": 0.129432,
+    "delta_pnl": 0.158819,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -5675,7 +5298,8 @@
       "coinbase_cvd_60s": -1.2421,
       "coinbase_taker_60s": 0.4129,
       "coinbase_taker_n": 386
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 441,
@@ -5685,15 +5309,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.47000000000000003,
-      "pnl": -0.44833,
-      "gain_pct": -0.25915
+      "pnl": -0.550441,
+      "gain_pct": -0.318174
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.73,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.28167,
+    "delta_pnl": -1.179559,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.09802866856036124,
@@ -5713,7 +5337,8 @@
       "coinbase_cvd_60s": 0.5622,
       "coinbase_taker_60s": 0.5507,
       "coinbase_taker_n": 385
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 442,
@@ -5723,15 +5348,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.56,
-      "pnl": 0.032611,
-      "gain_pct": 0.032611
+      "pnl": -0.034264,
+      "gain_pct": -0.034264
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 0.87083,
-      "gain_pct": 0.87083
+      "pnl": 0.826567,
+      "gain_pct": 0.826567
     },
-    "delta_pnl": 0.838219,
+    "delta_pnl": 0.860831,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.060848539451615336,
@@ -5751,7 +5376,8 @@
       "coinbase_cvd_60s": 0.6108,
       "coinbase_taker_60s": 0.6,
       "coinbase_taker_n": 242
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 443,
@@ -5761,15 +5387,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.32,
-      "pnl": -1.126199,
-      "gain_pct": -0.389688
+      "pnl": -1.316766,
+      "gain_pct": -0.455628
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 2.726686,
-      "gain_pct": 0.94349
+      "pnl": 2.58833,
+      "gain_pct": 0.895616
     },
-    "delta_pnl": 3.852885,
+    "delta_pnl": 3.905096,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.2284485519329149,
@@ -5789,44 +5415,8 @@
       "coinbase_cvd_60s": 0.9125,
       "coinbase_taker_60s": 0.6417,
       "coinbase_taker_n": 351
-    }
-  },
-  {
-    "position_id": 444,
-    "market_id": "btc-updown-5m-1780094700",
-    "side": "Up",
-    "timestamp": "2026-05-29T22:55:53.103357+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 0.0,
-      "pnl": -2.72,
-      "gain_pct": -1.0
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.89,
-      "pnl": 1.480633,
-      "gain_pct": 0.262059
-    },
-    "delta_pnl": -4.200633,
-    "hold_was_optimal": false,
-    "context_at_worst_moment": {
-      "holding_edge": 0.010340084540500283,
-      "model_prob": 0.9003400845405003,
-      "market_price": 0.89,
-      "seconds_remaining": 92.829278,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73377.57441763877,
-      "btc_at_worst": 73398.04,
-      "flow_score": 0.0186,
-      "spot_flow_signal": -0.08472737143619871,
-      "regime": "neutral",
-      "btc_distance_atr": 1.416,
-      "worst_at": 1780094907.1714685,
-      "coinbase_cvd_60s": -0.9561,
-      "coinbase_taker_60s": 0.3519,
-      "coinbase_taker_n": 338
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 444,
@@ -5836,15 +5426,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.88,
-      "pnl": 1.353422,
-      "gain_pct": 0.239544
+      "pnl": 1.115965,
+      "gain_pct": 0.197516
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 2.377843,
-      "gain_pct": 0.420857
+      "pnl": 2.255193,
+      "gain_pct": 0.399149
     },
-    "delta_pnl": 1.02442,
+    "delta_pnl": 1.139228,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.2598499472091028,
@@ -5864,7 +5454,8 @@
       "coinbase_cvd_60s": -3.6582,
       "coinbase_taker_60s": 0.2101,
       "coinbase_taker_n": 397
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 446,
@@ -5874,16 +5465,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 3.223638,
-      "gain_pct": 0.293325
+      "pnl": 3.092196,
+      "gain_pct": 0.281365
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 3.078968,
-      "gain_pct": 0.280161
+      "pnl": 2.906148,
+      "gain_pct": 0.264436
     },
-    "delta_pnl": 0.144669,
+    "delta_pnl": 0.186048,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -5901,7 +5492,8 @@
       "coinbase_cvd_60s": 2.7653,
       "coinbase_taker_60s": 0.6466,
       "coinbase_taker_n": 379
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 447,
@@ -5911,16 +5503,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.187388,
-      "gain_pct": 0.682407
+      "pnl": 1.150292,
+      "gain_pct": 0.661087
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.97,
-      "pnl": 1.098033,
-      "gain_pct": 0.631054
+      "pnl": 1.034881,
+      "gain_pct": 0.594759
     },
-    "delta_pnl": 0.089355,
+    "delta_pnl": 0.115411,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.0761113669190967,
@@ -5938,44 +5530,8 @@
       "coinbase_cvd_60s": -2.4454,
       "coinbase_taker_60s": 0.2583,
       "coinbase_taker_n": 260
-    }
-  },
-  {
-    "position_id": 448,
-    "market_id": "btc-updown-5m-1780095600",
-    "side": "Down",
-    "timestamp": "2026-05-29T23:10:36.459355+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 0.571983,
-      "gain_pct": 0.293325
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.93,
-      "pnl": 2.283233,
-      "gain_pct": 0.878166
-    },
-    "delta_pnl": -1.71125,
-    "hold_was_optimal": false,
-    "context_at_worst_moment": {
-      "holding_edge": -0.08937938153823755,
-      "model_prob": 0.8406206184617625,
-      "market_price": 0.93,
-      "seconds_remaining": 90.657482,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73385.88237141074,
-      "btc_at_worst": 73362.96,
-      "flow_score": 0.4476,
-      "spot_flow_signal": 0.07166836915843307,
-      "regime": "neutral",
-      "btc_distance_atr": -1.15,
-      "worst_at": 1780095809.343621,
-      "coinbase_cvd_60s": 0.8608,
-      "coinbase_taker_60s": 0.6218,
-      "coinbase_taker_n": 336
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 448,
@@ -5985,15 +5541,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.9099999999999999,
-      "pnl": 2.145448,
-      "gain_pct": 0.825172
+      "pnl": 2.005877,
+      "gain_pct": 0.771491
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 2.657412,
-      "gain_pct": 1.022082
+      "pnl": 2.522802,
+      "gain_pct": 0.970308
     },
-    "delta_pnl": 0.511965,
+    "delta_pnl": 0.516925,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.13771112772016936,
@@ -6013,7 +5569,8 @@
       "coinbase_cvd_60s": 0.6636,
       "coinbase_taker_60s": 0.5877,
       "coinbase_taker_n": 350
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 451,
@@ -6023,16 +5580,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.65,
-      "gain_pct": -1.0
+      "pnl": -1.687752,
+      "gain_pct": -1.02288
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.55,
-      "pnl": -0.055321,
-      "gain_pct": -0.033528
+      "pnl": -0.1275,
+      "gain_pct": -0.077272
     },
-    "delta_pnl": -1.594679,
+    "delta_pnl": -1.560252,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.1384258647500607,
@@ -6050,7 +5607,8 @@
       "coinbase_cvd_60s": 0.2903,
       "coinbase_taker_60s": 0.5335,
       "coinbase_taker_n": 329
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 450,
@@ -6060,15 +5618,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.46,
-      "pnl": 0.14552,
-      "gain_pct": 0.092101
+      "pnl": 0.018761,
+      "gain_pct": 0.011874
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 2.232732,
-      "gain_pct": 1.413121
+      "pnl": 2.120405,
+      "gain_pct": 1.342029
     },
-    "delta_pnl": 2.087212,
+    "delta_pnl": 2.101644,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.06704660797799872,
@@ -6088,7 +5646,8 @@
       "coinbase_cvd_60s": 0.3725,
       "coinbase_taker_60s": 0.5418,
       "coinbase_taker_n": 350
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 452,
@@ -6098,16 +5657,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.63994,
-      "gain_pct": 0.982
+      "pnl": 1.59652,
+      "gain_pct": 0.956
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.42,
-      "pnl": -0.294339,
-      "gain_pct": -0.176251
+      "pnl": -0.369768,
+      "gain_pct": -0.221418
     },
-    "delta_pnl": 1.934279,
+    "delta_pnl": 1.966288,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00894688510230307,
@@ -6125,7 +5684,8 @@
       "coinbase_cvd_60s": 0.5281,
       "coinbase_taker_60s": 0.6014,
       "coinbase_taker_n": 257
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 453,
@@ -6135,16 +5695,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.17,
-      "gain_pct": -1.0
+      "pnl": -1.19981,
+      "gain_pct": -1.025479
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.41,
-      "pnl": -0.247608,
-      "gain_pct": -0.211631
+      "pnl": -0.298228,
+      "gain_pct": -0.254895
     },
-    "delta_pnl": -0.922392,
+    "delta_pnl": -0.901582,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.1780045696992199,
@@ -6162,7 +5722,8 @@
       "coinbase_cvd_60s": 1.624,
       "coinbase_taker_60s": 0.7653,
       "coinbase_taker_n": 257
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 454,
@@ -6172,16 +5733,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.717098,
-      "gain_pct": 1.022082
+      "pnl": 1.672546,
+      "gain_pct": 0.995563
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 1.682522,
-      "gain_pct": 1.001501
+      "pnl": 1.594724,
+      "gain_pct": 0.949241
     },
-    "delta_pnl": 0.034576,
+    "delta_pnl": 0.077822,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -6199,7 +5760,8 @@
       "coinbase_cvd_60s": -0.0328,
       "coinbase_taker_60s": 0.4982,
       "coinbase_taker_n": 550
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 455,
@@ -6209,16 +5771,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.42,
-      "gain_pct": -1.0
+      "pnl": -1.461352,
+      "gain_pct": -1.029121
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.28,
-      "pnl": -0.537066,
-      "gain_pct": -0.378215
+      "pnl": -0.594358,
+      "gain_pct": -0.418562
     },
-    "delta_pnl": -0.882934,
+    "delta_pnl": -0.866994,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.016567834801699433,
@@ -6236,7 +5798,8 @@
       "coinbase_cvd_60s": 0.9309,
       "coinbase_taker_60s": 0.6112,
       "coinbase_taker_n": 302
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 458,
@@ -6246,16 +5809,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.780061,
-      "gain_pct": 1.022081
+      "pnl": 2.707926,
+      "gain_pct": 0.995561
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 2.724081,
-      "gain_pct": 1.0015
+      "pnl": 2.581932,
+      "gain_pct": 0.94924
     },
-    "delta_pnl": 0.055981,
+    "delta_pnl": 0.125994,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -6273,7 +5836,8 @@
       "coinbase_cvd_60s": 0.7776,
       "coinbase_taker_60s": 0.7089,
       "coinbase_taker_n": 187
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 461,
@@ -6283,16 +5847,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.4,
-      "gain_pct": -1.0
+      "pnl": -1.4364,
+      "gain_pct": -1.026
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.3,
-      "pnl": -0.578049,
-      "gain_pct": -0.412892
+      "pnl": -0.628235,
+      "gain_pct": -0.448739
     },
-    "delta_pnl": -0.821951,
+    "delta_pnl": -0.808165,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.1648445873270153,
@@ -6310,7 +5874,8 @@
       "coinbase_cvd_60s": 1.0325,
       "coinbase_taker_60s": 0.7949,
       "coinbase_taker_n": 157
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 464,
@@ -6320,16 +5885,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.01,
-      "gain_pct": -1.0
+      "pnl": -1.033108,
+      "gain_pct": -1.022879
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.47,
-      "pnl": -0.177058,
-      "gain_pct": -0.175305
+      "pnl": -0.218207,
+      "gain_pct": -0.216047
     },
-    "delta_pnl": -0.832942,
+    "delta_pnl": -0.814901,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.25880169891138427,
@@ -6347,7 +5912,8 @@
       "coinbase_cvd_60s": -0.8978,
       "coinbase_taker_60s": 0.3499,
       "coinbase_taker_n": 238
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 462,
@@ -6357,15 +5923,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.59,
-      "pnl": -0.06705,
-      "gain_pct": -0.03725
+      "pnl": -0.175267,
+      "gain_pct": -0.097371
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.8,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.73295,
+    "delta_pnl": -1.624733,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.10305419531431453,
@@ -6385,7 +5951,8 @@
       "coinbase_cvd_60s": 0.8094,
       "coinbase_taker_60s": 0.6381,
       "coinbase_taker_n": 242
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 463,
@@ -6395,15 +5962,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.4,
-      "pnl": -0.524306,
-      "gain_pct": -0.349537
+      "pnl": -0.614245,
+      "gain_pct": -0.409497
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 0.982,
-      "gain_pct": 0.654667
+      "pnl": 0.931784,
+      "gain_pct": 0.62119
     },
-    "delta_pnl": 1.506306,
+    "delta_pnl": 1.546029,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.06801062372133154,
@@ -6423,7 +5990,8 @@
       "coinbase_cvd_60s": -0.6403,
       "coinbase_taker_60s": 0.4723,
       "coinbase_taker_n": 331
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 465,
@@ -6433,16 +6001,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.3,
-      "gain_pct": -1.0
+      "pnl": -1.333124,
+      "gain_pct": -1.02548
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.48,
-      "pnl": -0.098613,
-      "gain_pct": -0.075856
+      "pnl": -0.160192,
+      "gain_pct": -0.123224
     },
-    "delta_pnl": -1.201387,
+    "delta_pnl": -1.172932,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.06248171277811865,
@@ -6460,44 +6028,8 @@
       "coinbase_cvd_60s": 1.6829,
       "coinbase_taker_60s": 0.8299,
       "coinbase_taker_n": 222
-    }
-  },
-  {
-    "position_id": 466,
-    "market_id": "btc-updown-5m-1780104000",
-    "side": "Up",
-    "timestamp": "2026-05-30T01:30:55.697039+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 1.141925,
-      "gain_pct": 0.57673
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.43,
-      "pnl": -0.570881,
-      "gain_pct": -0.295793
-    },
-    "delta_pnl": 1.712807,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.2871371379540557,
-      "model_prob": 0.14286286204594428,
-      "market_price": 0.43,
-      "seconds_remaining": 285.92314,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73511.7139,
-      "btc_at_worst": 73490.14,
-      "flow_score": -0.2256,
-      "spot_flow_signal": 0.03823560466388194,
-      "regime": "neutral",
-      "btc_distance_atr": -1.395,
-      "worst_at": 1780104014.0776596,
-      "coinbase_cvd_60s": 0.5594,
-      "coinbase_taker_60s": 0.5583,
-      "coinbase_taker_n": 301
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 466,
@@ -6507,15 +6039,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.4,
-      "pnl": -0.674606,
-      "gain_pct": -0.349537
+      "pnl": -0.790326,
+      "gain_pct": -0.409495
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.263507,
-      "gain_pct": 0.654667
+      "pnl": 1.198896,
+      "gain_pct": 0.62119
     },
-    "delta_pnl": 1.938113,
+    "delta_pnl": 1.989222,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.08803075496677187,
@@ -6535,7 +6067,8 @@
       "coinbase_cvd_60s": 0.1899,
       "coinbase_taker_60s": 0.5182,
       "coinbase_taker_n": 311
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 467,
@@ -6545,15 +6078,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.36999999999999994,
-      "pnl": -0.573424,
-      "gain_pct": -0.356164
+      "pnl": -0.674602,
+      "gain_pct": -0.419007
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.61,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.036576,
+    "delta_pnl": -0.935398,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.17396897419291757,
@@ -6573,7 +6106,8 @@
       "coinbase_cvd_60s": 0.5403,
       "coinbase_taker_60s": 0.635,
       "coinbase_taker_n": 163
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 469,
@@ -6583,15 +6117,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.4,
-      "pnl": -0.294998,
-      "gain_pct": -0.235999
+      "pnl": -0.380236,
+      "gain_pct": -0.304189
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.179363,
-      "gain_pct": 0.94349
+      "pnl": 1.11952,
+      "gain_pct": 0.895616
     },
-    "delta_pnl": 1.474361,
+    "delta_pnl": 1.499756,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.09642480634999501,
@@ -6611,7 +6145,8 @@
       "coinbase_cvd_60s": 2.32,
       "coinbase_taker_60s": 0.7439,
       "coinbase_taker_n": 277
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 470,
@@ -6621,15 +6156,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.56,
-      "pnl": -0.176333,
-      "gain_pct": -0.07139
+      "pnl": -0.327931,
+      "gain_pct": -0.132766
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.47,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.293667,
+    "delta_pnl": -2.142069,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.07939034827144303,
@@ -6649,7 +6184,8 @@
       "coinbase_cvd_60s": 0.1208,
       "coinbase_taker_60s": 0.56,
       "coinbase_taker_n": 98
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 471,
@@ -6659,15 +6195,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.33,
-      "pnl": -2.68483,
-      "gain_pct": -0.481152
+      "pnl": -3.001252,
+      "gain_pct": -0.537859
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -5.58,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.89517,
+    "delta_pnl": -2.578748,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.187037804401857,
@@ -6687,7 +6223,8 @@
       "coinbase_cvd_60s": -0.1482,
       "coinbase_taker_60s": 0.4674,
       "coinbase_taker_n": 170
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 472,
@@ -6697,15 +6234,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.53,
-      "pnl": -0.730214,
-      "gain_pct": -0.225375
+      "pnl": -0.908155,
+      "gain_pct": -0.280295
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.567096,
-      "gain_pct": 0.483671
+      "pnl": 1.486474,
+      "gain_pct": 0.458788
     },
-    "delta_pnl": 2.297309,
+    "delta_pnl": 2.394629,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.024724994073610285,
@@ -6725,7 +6262,8 @@
       "coinbase_cvd_60s": 1.1486,
       "coinbase_taker_60s": 0.7085,
       "coinbase_taker_n": 212
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 474,
@@ -6735,16 +6273,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.188815,
-      "gain_pct": 0.505879
+      "pnl": 1.147267,
+      "gain_pct": 0.488199
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.6,
-      "pnl": -0.241999,
-      "gain_pct": -0.102978
+      "pnl": -0.321801,
+      "gain_pct": -0.136937
     },
-    "delta_pnl": 1.430814,
+    "delta_pnl": 1.469068,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.48848041907211703,
@@ -6762,7 +6300,8 @@
       "coinbase_cvd_60s": -2.8908,
       "coinbase_taker_60s": 0.2879,
       "coinbase_taker_n": 415
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 473,
@@ -6772,15 +6311,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.3499999999999999,
-      "pnl": -0.68849,
-      "gain_pct": -0.391188
+      "pnl": -0.798191,
+      "gain_pct": -0.453518
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.76,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.07151,
+    "delta_pnl": -0.961809,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.08394497460832206,
@@ -6800,7 +6339,8 @@
       "coinbase_cvd_60s": -1.7777,
       "coinbase_taker_60s": 0.3411,
       "coinbase_taker_n": 378
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 477,
@@ -6810,16 +6350,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.92,
-      "gain_pct": -1.0
+      "pnl": -1.9819,
+      "gain_pct": -1.03224
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.43,
-      "pnl": 0.206343,
-      "gain_pct": 0.10747
+      "pnl": 0.078935,
+      "gain_pct": 0.041112
     },
-    "delta_pnl": -2.126343,
+    "delta_pnl": -2.060835,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.16208231877889107,
@@ -6837,44 +6377,8 @@
       "coinbase_cvd_60s": 2.7212,
       "coinbase_taker_60s": 0.8798,
       "coinbase_taker_n": 240
-    }
-  },
-  {
-    "position_id": 478,
-    "market_id": "btc-updown-5m-1780105200",
-    "side": "Up",
-    "timestamp": "2026-05-30T01:48:41.366624+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 1.33729,
-      "gain_pct": 0.627836
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.46,
-      "pnl": -0.183598,
-      "gain_pct": -0.097142
-    },
-    "delta_pnl": 1.520888,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.31350459416411824,
-      "model_prob": 0.1464954058358818,
-      "market_price": 0.46,
-      "seconds_remaining": 283.965758,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73541.74774501998,
-      "btc_at_worst": 73523.99,
-      "flow_score": -0.6163,
-      "spot_flow_signal": 0.21937051503585653,
-      "regime": "neutral",
-      "btc_distance_atr": -1.305,
-      "worst_at": 1780105216.0349746,
-      "coinbase_cvd_60s": 3.6772,
-      "coinbase_taker_60s": 0.8045,
-      "coinbase_taker_n": 359
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 475,
@@ -6884,15 +6388,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.26,
-      "pnl": -1.302033,
-      "gain_pct": -0.504664
+      "pnl": -1.465631,
+      "gain_pct": -0.568074
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.58,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.277967,
+    "delta_pnl": -1.114369,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.04913191605951772,
@@ -6912,7 +6416,8 @@
       "coinbase_cvd_60s": 0.8632,
       "coinbase_taker_60s": 0.7051,
       "coinbase_taker_n": 202
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 476,
@@ -6922,15 +6427,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.62,
-      "pnl": -0.44376,
-      "gain_pct": -0.15462
+      "pnl": -0.587442,
+      "gain_pct": -0.204684
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.096021,
-      "gain_pct": 0.381889
+      "pnl": 1.039389,
+      "gain_pct": 0.362157
     },
-    "delta_pnl": 1.539781,
+    "delta_pnl": 1.626831,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.08587891142548065,
@@ -6950,7 +6455,8 @@
       "coinbase_cvd_60s": 0.7862,
       "coinbase_taker_60s": 0.6918,
       "coinbase_taker_n": 205
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 478,
@@ -6960,15 +6466,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.38000000000000006,
-      "pnl": -0.491563,
-      "gain_pct": -0.260086
+      "pnl": -0.621469,
+      "gain_pct": -0.32882
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.89,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.398437,
+    "delta_pnl": -1.268531,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.09878029072521194,
@@ -6988,7 +6494,8 @@
       "coinbase_cvd_60s": 3.778,
       "coinbase_taker_60s": 0.8119,
       "coinbase_taker_n": 362
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 480,
@@ -6998,16 +6505,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.486193,
-      "gain_pct": 0.462118
+      "pnl": 2.396669,
+      "gain_pct": 0.445478
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.77,
-      "pnl": 0.651892,
-      "gain_pct": 0.12117
+      "pnl": 0.482466,
+      "gain_pct": 0.089678
     },
-    "delta_pnl": 1.8343,
+    "delta_pnl": 1.914203,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.012899996657560253,
@@ -7025,7 +6532,8 @@
       "coinbase_cvd_60s": 2.2264,
       "coinbase_taker_60s": 0.8191,
       "coinbase_taker_n": 241
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 483,
@@ -7035,16 +6543,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 3.045135,
-      "gain_pct": 0.57673
+      "pnl": 2.943547,
+      "gain_pct": 0.55749
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.57,
-      "pnl": -0.571402,
-      "gain_pct": -0.10822
+      "pnl": -0.763817,
+      "gain_pct": -0.144662
     },
-    "delta_pnl": 3.616537,
+    "delta_pnl": 3.707364,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.06498586936096362,
@@ -7062,7 +6570,8 @@
       "coinbase_cvd_60s": 0.9579,
       "coinbase_taker_60s": 0.6779,
       "coinbase_taker_n": 242
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 481,
@@ -7072,15 +6581,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.65,
-      "pnl": 0.424439,
-      "gain_pct": 0.223389
+      "pnl": 0.299072,
+      "gain_pct": 0.157406
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.722277,
-      "gain_pct": 0.906462
+      "pnl": 1.634811,
+      "gain_pct": 0.860427
     },
-    "delta_pnl": 1.297838,
+    "delta_pnl": 1.335739,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.10909492564532908,
@@ -7100,7 +6609,8 @@
       "coinbase_cvd_60s": 0.472,
       "coinbase_taker_60s": 0.7939,
       "coinbase_taker_n": 176
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 482,
@@ -7110,15 +6620,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.72,
-      "pnl": 0.140642,
-      "gain_pct": 0.071756
+      "pnl": 0.03867,
+      "gain_pct": 0.01973
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 0.991523,
-      "gain_pct": 0.505879
+      "pnl": 0.940557,
+      "gain_pct": 0.479876
     },
-    "delta_pnl": 0.85088,
+    "delta_pnl": 0.901887,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.08043476969000662,
@@ -7138,44 +6648,8 @@
       "coinbase_cvd_60s": 0.2269,
       "coinbase_taker_60s": 0.6571,
       "coinbase_taker_n": 131
-    }
-  },
-  {
-    "position_id": 484,
-    "market_id": "btc-updown-5m-1780107300",
-    "side": "Up",
-    "timestamp": "2026-05-30T02:24:27.242748+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 0.0,
-      "pnl": -1.76,
-      "gain_pct": -1.0
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.56,
-      "pnl": -0.875391,
-      "gain_pct": -0.15067
-    },
-    "delta_pnl": -0.884609,
-    "hold_was_optimal": false,
-    "context_at_worst_moment": {
-      "holding_edge": -0.4580773219914939,
-      "model_prob": 0.10192267800850612,
-      "market_price": 0.56,
-      "seconds_remaining": 149.429726,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73575.494222891,
-      "btc_at_worst": 73560.78,
-      "flow_score": -0.5593,
-      "spot_flow_signal": -0.11107089940420813,
-      "regime": "neutral",
-      "btc_distance_atr": -1.238,
-      "worst_at": 1780107450.5721772,
-      "coinbase_cvd_60s": -1.1938,
-      "coinbase_taker_60s": 0.2804,
-      "coinbase_taker_n": 175
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 484,
@@ -7185,15 +6659,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.27,
-      "pnl": -3.458715,
-      "gain_pct": -0.595304
+      "pnl": -3.763311,
+      "gain_pct": -0.64773
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -5.81,
       "gain_pct": -1.0
     },
-    "delta_pnl": -2.351285,
+    "delta_pnl": -2.046689,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.09373821394232768,
@@ -7213,7 +6687,8 @@
       "coinbase_cvd_60s": -2.3208,
       "coinbase_taker_60s": 0.2185,
       "coinbase_taker_n": 207
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 485,
@@ -7223,15 +6698,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.37,
-      "pnl": -1.951397,
-      "gain_pct": -0.517612
+      "pnl": -2.131143,
+      "gain_pct": -0.56529
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.234047,
-      "gain_pct": 0.327333
+      "pnl": 1.170117,
+      "gain_pct": 0.310376
     },
-    "delta_pnl": 3.185444,
+    "delta_pnl": 3.30126,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.2915673697184271,
@@ -7251,7 +6726,8 @@
       "coinbase_cvd_60s": -0.8444,
       "coinbase_taker_60s": 0.3505,
       "coinbase_taker_n": 164
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 487,
@@ -7261,16 +6737,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.56138,
-      "gain_pct": 0.420857
+      "pnl": 1.503504,
+      "gain_pct": 0.405257
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 1.507727,
-      "gain_pct": 0.406395
+      "pnl": 1.425338,
+      "gain_pct": 0.384188
     },
-    "delta_pnl": 0.053653,
+    "delta_pnl": 0.078166,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -7288,7 +6764,8 @@
       "coinbase_cvd_60s": 0.4142,
       "coinbase_taker_60s": 0.6179,
       "coinbase_taker_n": 211
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 488,
@@ -7298,15 +6775,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.41,
-      "pnl": -0.2743,
-      "gain_pct": -0.150714
+      "pnl": -0.406242,
+      "gain_pct": -0.22321
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -1.82,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.5457,
+    "delta_pnl": -1.413758,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.06262721111343289,
@@ -7326,7 +6803,8 @@
       "coinbase_cvd_60s": 0.2028,
       "coinbase_taker_60s": 0.5991,
       "coinbase_taker_n": 136
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 489,
@@ -7336,16 +6814,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 2.329074,
-      "gain_pct": 0.462118
+      "pnl": 2.245209,
+      "gain_pct": 0.445478
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 2.25407,
-      "gain_pct": 0.447236
+      "pnl": 2.131632,
+      "gain_pct": 0.422943
     },
-    "delta_pnl": 0.075004,
+    "delta_pnl": 0.113577,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -7363,7 +6841,8 @@
       "coinbase_cvd_60s": 6.6753,
       "coinbase_taker_60s": 0.9793,
       "coinbase_taker_n": 220
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 491,
@@ -7373,16 +6852,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -8.55,
-      "gain_pct": -1.0
+      "pnl": -8.647812,
+      "gain_pct": -1.01144
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.75,
-      "pnl": -0.398251,
-      "gain_pct": -0.046579
+      "pnl": -0.59534,
+      "gain_pct": -0.06963
     },
-    "delta_pnl": -8.151749,
+    "delta_pnl": -8.052472,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.7010586456908738,
@@ -7400,7 +6879,8 @@
       "coinbase_cvd_60s": -2.4833,
       "coinbase_taker_60s": 0.3113,
       "coinbase_taker_n": 271
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 490,
@@ -7410,15 +6890,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.55,
-      "pnl": 0.059775,
-      "gain_pct": 0.05337
+      "pnl": -0.017439,
+      "gain_pct": -0.015571
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.05671,
-      "gain_pct": 0.943491
+      "pnl": 1.003091,
+      "gain_pct": 0.895617
     },
-    "delta_pnl": 0.996935,
+    "delta_pnl": 1.02053,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.531632067415992,
@@ -7438,7 +6918,8 @@
       "coinbase_cvd_60s": 1.3461,
       "coinbase_taker_60s": 0.7914,
       "coinbase_taker_n": 187
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 493,
@@ -7448,16 +6929,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.31,
-      "gain_pct": -1.0
+      "pnl": -1.332478,
+      "gain_pct": -1.017159
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.25,
-      "pnl": -0.830657,
-      "gain_pct": -0.634089
+      "pnl": -0.857329,
+      "gain_pct": -0.654449
     },
-    "delta_pnl": -0.479343,
+    "delta_pnl": -0.475149,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.20764748174421455,
@@ -7475,7 +6956,8 @@
       "coinbase_cvd_60s": -5.5753,
       "coinbase_taker_60s": 0.1108,
       "coinbase_taker_n": 285
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 492,
@@ -7485,15 +6967,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.33,
-      "pnl": -0.648686,
-      "gain_pct": -0.345045
+      "pnl": -0.776943,
+      "gain_pct": -0.413268
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.921514,
-      "gain_pct": 1.022082
+      "pnl": 1.824181,
+      "gain_pct": 0.970309
     },
-    "delta_pnl": 2.5702,
+    "delta_pnl": 2.601124,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.054036230165411536,
@@ -7513,7 +6995,8 @@
       "coinbase_cvd_60s": 1.0232,
       "coinbase_taker_60s": 0.8934,
       "coinbase_taker_n": 159
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 494,
@@ -7523,16 +7006,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.63,
-      "gain_pct": -1.0
+      "pnl": -1.669838,
+      "gain_pct": -1.02444
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.12,
-      "pnl": -1.269862,
-      "gain_pct": -0.779056
+      "pnl": -1.294732,
+      "gain_pct": -0.794314
     },
-    "delta_pnl": -0.360138,
+    "delta_pnl": -0.375106,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.024559096220270638,
@@ -7550,7 +7033,8 @@
       "coinbase_cvd_60s": 3.4032,
       "coinbase_taker_60s": 0.8826,
       "coinbase_taker_n": 218
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 495,
@@ -7560,16 +7044,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.5,
-      "gain_pct": -1.0
+      "pnl": -1.54134,
+      "gain_pct": -1.02756
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.05,
-      "pnl": -1.344651,
-      "gain_pct": -0.896434
+      "pnl": -1.356379,
+      "gain_pct": -0.904253
     },
-    "delta_pnl": -0.155349,
+    "delta_pnl": -0.184961,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.02362416432561361,
@@ -7587,7 +7071,8 @@
       "coinbase_cvd_60s": 8.7952,
       "coinbase_taker_60s": 0.9614,
       "coinbase_taker_n": 234
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 496,
@@ -7597,16 +7082,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.023557,
-      "gain_pct": 0.441188
+      "pnl": 0.986157,
+      "gain_pct": 0.425068
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.31,
-      "pnl": -1.296371,
-      "gain_pct": -0.558781
+      "pnl": -1.349123,
+      "gain_pct": -0.581519
     },
-    "delta_pnl": 2.319927,
+    "delta_pnl": 2.33528,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.29201379003790845,
@@ -7624,7 +7109,8 @@
       "coinbase_cvd_60s": 16.7052,
       "coinbase_taker_60s": 0.9719,
       "coinbase_taker_n": 230
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 498,
@@ -7634,16 +7120,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 0.0,
-      "pnl": -1.86,
-      "gain_pct": -1.0
+      "pnl": -1.913196,
+      "gain_pct": -1.0286
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.21,
-      "pnl": -1.012814,
-      "gain_pct": -0.544524
+      "pnl": -1.070476,
+      "gain_pct": -0.575525
     },
-    "delta_pnl": -0.847186,
+    "delta_pnl": -0.84272,
     "hold_was_optimal": false,
     "context_at_worst_moment": {
       "holding_edge": -0.17410929703821204,
@@ -7661,7 +7147,8 @@
       "coinbase_cvd_60s": 0.3088,
       "coinbase_taker_60s": 0.6347,
       "coinbase_taker_n": 161
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 497,
@@ -7671,15 +7158,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.36,
-      "pnl": -0.513129,
-      "gain_pct": -0.222134
+      "pnl": -0.682639,
+      "gain_pct": -0.295515
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.31,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.796871,
+    "delta_pnl": -1.627361,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.07618112800516591,
@@ -7699,7 +7186,8 @@
       "coinbase_cvd_60s": 18.9142,
       "coinbase_taker_60s": 0.8169,
       "coinbase_taker_n": 430
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 499,
@@ -7709,16 +7197,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.589385,
-      "gain_pct": 0.836519
+      "pnl": 1.543937,
+      "gain_pct": 0.812598
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 1.55387,
-      "gain_pct": 0.817826
+      "pnl": 1.472082,
+      "gain_pct": 0.77478
     },
-    "delta_pnl": 0.035516,
+    "delta_pnl": 0.071855,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -7736,44 +7224,8 @@
       "coinbase_cvd_60s": -0.0688,
       "coinbase_taker_60s": 0.4606,
       "coinbase_taker_n": 158
-    }
-  },
-  {
-    "position_id": 500,
-    "market_id": "btc-updown-5m-1780111200",
-    "side": "Down",
-    "timestamp": "2026-05-30T03:27:38.148046+00:00",
-    "actual": {
-      "exit_reason": "hold",
-      "exit_price": 1.0,
-      "pnl": 0.689231,
-      "gain_pct": 0.682406
     },
-    "counterfactual": {
-      "exit_reason": "hypothetical_scalp",
-      "exit_price": 0.35,
-      "pnl": -0.312574,
-      "gain_pct": -0.300552
-    },
-    "delta_pnl": 1.001804,
-    "hold_was_optimal": true,
-    "context_at_worst_moment": {
-      "holding_edge": -0.30718409406592473,
-      "model_prob": 0.04281590593407525,
-      "market_price": 0.35,
-      "seconds_remaining": 234.202604,
-      "exit_threshold_used": -0.1,
-      "strike_price": 73634.6601671366,
-      "btc_at_worst": 73659.62,
-      "flow_score": 0.2854,
-      "spot_flow_signal": 0.17631592802618548,
-      "regime": "neutral",
-      "btc_distance_atr": 2.311,
-      "worst_at": 1780111265.797783,
-      "coinbase_cvd_60s": 1.647,
-      "coinbase_taker_60s": 0.8311,
-      "coinbase_taker_n": 209
-    }
+    "fee_restamped": 0.07
   },
   {
     "position_id": 503,
@@ -7783,16 +7235,16 @@
     "actual": {
       "exit_reason": "hold",
       "exit_price": 1.0,
-      "pnl": 1.74166,
-      "gain_pct": 0.87083
+      "pnl": 1.69278,
+      "gain_pct": 0.84639
     },
     "counterfactual": {
       "exit_reason": "hypothetical_scalp",
       "exit_price": 0.99,
-      "pnl": 1.703577,
-      "gain_pct": 0.851789
+      "pnl": 1.614071,
+      "gain_pct": 0.807035
     },
-    "delta_pnl": 0.038083,
+    "delta_pnl": 0.078709,
     "hold_was_optimal": true,
     "context_at_worst_moment": {
       "holding_edge": -0.00798620996209154,
@@ -7810,7 +7262,8 @@
       "coinbase_cvd_60s": 0.4102,
       "coinbase_taker_60s": 0.7298,
       "coinbase_taker_n": 159
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 500,
@@ -7820,15 +7273,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.53,
-      "pnl": 0.057959,
-      "gain_pct": 0.05573
+      "pnl": -0.016034,
+      "gain_pct": -0.015417
     },
     "counterfactual": {
       "resolution_price": 1.0,
-      "pnl": 1.062965,
-      "gain_pct": 1.022082
+      "pnl": 1.009121,
+      "gain_pct": 0.970309
     },
-    "delta_pnl": 1.005006,
+    "delta_pnl": 1.025155,
     "scalp_was_optimal": false,
     "context_at_scalp": {
       "holding_edge": -0.3313604675359585,
@@ -7848,7 +7301,8 @@
       "coinbase_cvd_60s": 1.6726,
       "coinbase_taker_60s": 0.8646,
       "coinbase_taker_n": 208
-    }
+    },
+    "fee_restamped": 0.07
   },
   {
     "position_id": 501,
@@ -7858,15 +7312,15 @@
     "actual": {
       "exit_reason": "scalp",
       "exit_price": 0.35,
-      "pnl": -0.863428,
-      "gain_pct": -0.305098
+      "pnl": -1.058387,
+      "gain_pct": -0.373988
     },
     "counterfactual": {
       "resolution_price": 0.0,
       "pnl": -2.83,
       "gain_pct": -1.0
     },
-    "delta_pnl": -1.966572,
+    "delta_pnl": -1.771613,
     "scalp_was_optimal": true,
     "context_at_scalp": {
       "holding_edge": -0.0644821286952319,
@@ -7886,6 +7340,7 @@
       "coinbase_cvd_60s": 0.0818,
       "coinbase_taker_60s": 0.5504,
       "coinbase_taker_n": 179
-    }
+    },
+    "fee_restamped": 0.07
   }
 ]

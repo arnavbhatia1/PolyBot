@@ -196,8 +196,11 @@ decision). *Kill:* |t|<2 → thin-book premium dead (Binance-proxy null stands).
 
 **E3 — Latency features for exit refinement.** *Why ours:* the edge IS mid-window latency, and
 the threshold family provably cannot separate right from wrong ITM scalps; a separating feature
-might. *Data:* already recording — `cross_venue_gap`, `fast_realized_vol_60s` in CF aux context;
-needs ~2-3 weeks of post-fix records (hold-CFs are trustworthy as of today's keying fix).
+might. *Data:* `cross_venue_gap` + `fast_realized_vol_60s` recording RESTORED 2026-06-11 (the
+06-08 microstructure cleanup had stripped them from `_build_aux_signals` — only 157 Pillar-1-era
+CFs carry them; the original "already recording" claim here was wrong). Collection resumes at the
+12:01 AM restart; needs ~2-3 weeks of post-fix records (hold-CFs are trustworthy as of the
+keying fix).
 *Test:* split `scalp_was_optimal` by feature quartile; day-clustered delta_pnl spread between
 extreme quartiles; then a feature-conditioned threshold through the symmetric replay + full
 adoption gates. *Confirm:* separation t>2 across ≥3 days AND replay delta survives day-clustering
@@ -217,3 +220,57 @@ change (CF hold-record keying) is in the learning evidence stream, fixes a confi
 bug, and protects the audit trail of the one validated edge; 609 tests pass. No parameter,
 gate, or exit change shipped — every candidate tested failed its significance bar, and the
 goal's own rules forbid shipping unproven changes.
+
+---
+
+# FIXES SHIPPED + RE-MEASUREMENT (2026-06-11, fable_dev)
+
+Every fixable finding above is now fixed; the unfixable ones are proofs of absence (no entry
+edge, no mispricing edge, Sharpe bar unreachable) addressed by the E1-E4 designs. 623 tests pass.
+
+## Data repairs (one-off scripts, idempotent, verified)
+
+- **Chimera hold-CFs deleted** (`scripts/repair_cf_keying.py`): 300 hold-type CF records under
+  scalped positions — arms from two different positions, written by the keying bug — removed
+  (re-scan finds 0). The 333 resolutions left without a CF are unrecoverable (worst-moment
+  context was never written for them); coverage heals forward from the code fix.
+- **CF fee basis unified** (`scripts/restamp_cf_fees.py`): 1,570 pre-fix CF records re-priced to
+  the 0.07 coefficient (actual arm := the restamped outcome pnl; hypothetical arm re-priced via
+  0.07-implied shares + 0.07 exit fee; `fee_restamped` flag added). Post-repair reconciliation:
+  CF actual arm == outcome pnl **to the cent on all 2,507 records**; `gain_pct = pnl/size` holds
+  on every arm.
+- Evidence-script defects fixed: `phase4`'s fee-correction now recognizes restamped CFs (was
+  double-counting post-repair); `phase5`'s baseline now passes the full live config including the
+  L6 `flow_disagreement` 0.005 weight (the bug the verifier caught).
+
+## Telemetry shipped (live at the 12:01 AM ET restart; 14 new tests)
+
+- **E1 recorder**: out-of-band price-sum moments now logged (`state/price_sum_outliers.jsonl`)
+  at the gate that skipped 473,859 of them unmeasured. E1 becomes runnable after ~7 days.
+- **E2 fields**: per-side CLOB top-5 ask depth + book age stamped into entry `trade_context`
+  for trades AND ghosts (the old `depth_usd_top20` is Binance BTC depth). Runnable after ~10 days.
+- **E3 prerequisite restored**: `cross_venue_gap` + `fast_realized_vol_60s` back in
+  `_build_aux_signals` (Coinbase gained a 1s-bucketed price history + `realized_vol()`), flowing
+  into trade, ghost, AND counterfactual exit contexts. Runnable after ~2-3 weeks.
+
+## Re-measurement on the repaired pool (single fee basis, no chimeras)
+
+- **Exit edge (Phase 4 numbers above are superseded):** actual vs always-hold **+$690** over
+  14 days, t_day **1.62**, day-clustered bootstrap **p10 +$165 > 0 — still passes the goal bar**,
+  9/14 days positive, best day 41% of delta. ITM scalps +$880 (t 1.88), OTM scalps −$190
+  (t −1.19). The repair revealed part of the earlier +$897/t 2.08 was fee-basis mixing and
+  pool corruption; this is the honest number, and it is weaker but real.
+- **Criterion Sharpe (corrected baseline, refreshed trailing 200):** **+0.13** (50/200 re-enter,
+  production isotonic; identity +0.06). Bar > 0.5: **FAIL** — unchanged verdict.
+- **Money proof (realized $, day-clustered bootstrap, seed 42):** full 14-day pool **+$801,
+  p10 +$230 > 0 — PASS**; trailing 200 +$121, p10 +$98 (3 ET days, thin).
+- **Churn finding status:** fixed where a proven lever existed — the calibrated regime cut
+  volume 233 → 35 trades/day (−85%). Residual fee/gross only fell 62% → 55%: structural to
+  taker FOK on 5-min binaries (maker re-entry was evaluated and refuted 06-09). No further
+  proven lever; E1/E2 are the candidate paths to cheaper inventory.
+
+## What was deliberately NOT changed
+
+No trading-logic, parameter, gate, or exit change: every candidate tested in Phases 1-5 failed
+its day-clustered significance bar (L2-L6 deletion, OTM-scalp suppression t −1.19, ITM patience,
+gate re-tunes). Shipping any of them would be adopting noise — the opposite of "proven."

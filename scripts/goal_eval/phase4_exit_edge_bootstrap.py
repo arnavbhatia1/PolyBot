@@ -143,10 +143,13 @@ def main() -> None:
         delta = act - hold_arm
         # fee correction: on restamped days CF arms are at the OLD coefficient;
         # only the scalp arm's exit fee differs between arms (resolution exit
-        # fee is 0 at p in {0,1}; entry fee is common and cancels).
+        # fee is 0 at p in {0,1}; entry fee is common and cancels). A CF that
+        # carries its own fee_restamped flag (scripts/restamp_cf_fees.py) is
+        # already on the 0.07 basis — correcting again would double-count.
         corr = 0.0
         o = out_by.get(c["position_id"])
         if (kind == "scalp" and o is not None and o.get("fee_restamped") == FEE_NEW
+                and not c.get("fee_restamped")
                 and actual.get("exit_price") is not None
                 and o.get("entry_price") and o.get("size")):
             shares = o["size"] / o["entry_price"]
