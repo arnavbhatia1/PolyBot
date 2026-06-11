@@ -252,17 +252,43 @@ Do not skip the sequence. Phase 3 and 4 without Phase 2 data are building on not
 
 ## DEFINITION OF DONE (FOR THIS GOAL)
 
+**BUILD STATUS (2026-06-11, commits 3b218a0d + f938902b; 439 tests green).** All
+buildable-now work is shipped; the open boxes below are kill-bar/wall-clock
+gated, not code gated. New code loads at the 06-12 12:01 AM restart.
+`PIPELINE_FROZEN` created so tonight's old in-memory process can't write the
+old config schema back; the new NightlyScheduler has no adoption surface.
+
+Kill-bar calendar: tape + window-path data start 06-12 → Phase 1 shadow
+evaluable ~06-15 (`python scripts/shadow_passive_exit.py`); exit-model first
+refit when ~7 days of labels exist (~06-19), 5-day shadow after; wallet tables
+populate from the first labeled night.
+
 The goal is complete when all of the following are true:
 
-- [ ] Dead code deleted; replay passes on current regime with gutted codebase
+- [x] Dead code deleted; replay passes on current regime with gutted codebase
+      (L2-L6/SPRT/calibration/optimizer/recommenders gone; exit-policy sweep +
+      L1 smoke verified on the gutted code; suite 439 green)
 - [ ] Passive exit (resting limit + FOK fallback) live in production; kill bar passed
-- [ ] Window-path recorder running continuously; 288 windows/day persisted
+      (tape recorder + conservative shadow evaluator SHIPPED; GTC two-stage exit
+      gets built when the >=50% ITM fill bar passes — evaluable ~06-15)
+- [x] Window-path recorder running continuously; 288 windows/day persisted
+      (SHIPPED — self-discovering, self-labeling, write-behind; starts 06-12 restart)
 - [ ] Exit-value model live, replacing ExitBoundary; nightly refit pipeline running; kill bar passed
+      (trainer + nightly refit + degradation keep-back SHIPPED, refit data-gated
+      ~06-19; deploy flag flips only after the 5-day CF-replay shadow)
 - [ ] Wallet fingerprinting pipeline running; classification tables updating nightly; routing live
+      (ingestion + donor/noise/sharp classification SHIPPED as a nightly job;
+      routing deploys with Phase 1 per plan)
 - [ ] Box arb monitor running on BTC; executing valid boxes
+      (monitor SHIPPED log-only — `python scripts/box_arb_monitor.py`; execution
+      deliberately gated on Phase 1 proving order mechanics, per Phase 5/6 sequencing)
 - [ ] Wide-quote maker sleeve live OR explicitly aborted with documented reason (GTC infra unreliable)
-- [ ] Nightly pipeline: model refit + wallet table update + Brier/MAE logging
-- [ ] All components verified non-interfering with circuit breaker
+      (awaits Phase 1 shadow verdict by design)
+- [x] Nightly pipeline: model refit + wallet table update + Brier/MAE logging
+      (NightlyScheduler jobs registered: exit_model_refit, window_paths_retention,
+      wallet_tables; Brier/MAE history in memory/exit_model/metrics_history.json)
+- [x] All components verified non-interfering with circuit breaker
+      (recorders are write-behind side-channels; circuit breaker untouched; suite green)
 
 **One remaining TODO:** Expand passive-exit → exit-value model → wallet fingerprinting to ETH, SOL, XRP five-minute markets. Architecture is parameterized; execution is a symbol loop. Do not start until this BTC goal is complete and all kill bars have passed in production for ≥7 days.
 

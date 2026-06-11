@@ -1,0 +1,1 @@
+frozen 2026-06-11: old process must not mutate the gutted settings.yaml tonight; new NightlyScheduler has no adoption surface and ignores this sentinel
