@@ -74,15 +74,12 @@ class TestValidateConfigPasses:
     def test_boundary_low_values(self):
         """All parameters at their minimum allowed values."""
         cfg = _valid_config()
-        _set_nested(cfg, "math.kelly_fraction", 0.05)
+        _set_nested(cfg, "math.kelly_fraction", 0.04)
         _set_nested(cfg, "signal.min_edge", 0.02)
         _set_nested(cfg, "signal.min_kelly", 0.005)
         _set_nested(cfg, "signal.atr_sigma_ratio", 1.2)
         _set_nested(cfg, "signal.exit_edge_threshold", -0.10)
         _set_nested(cfg, "signal.min_model_probability", 0.52)
-        _set_nested(cfg, "signal.momentum_weight", 0.02)
-        _set_nested(cfg, "signal.regime_weight", 0.02)
-        _set_nested(cfg, "signal.flow_weight", 0.02)
         _set_nested(cfg, "signal.student_t_df", 3)
         _set_nested(cfg, "execution.max_concurrent_positions", 1)
         _set_nested(cfg, "execution.max_bankroll_deployed", 0.0)
@@ -105,9 +102,6 @@ class TestValidateConfigPasses:
         _set_nested(cfg, "signal.atr_sigma_ratio", 2.5)
         _set_nested(cfg, "signal.exit_edge_threshold", -0.03)
         _set_nested(cfg, "signal.min_model_probability", 0.70)
-        _set_nested(cfg, "signal.momentum_weight", 0.10)
-        _set_nested(cfg, "signal.regime_weight", 0.10)
-        _set_nested(cfg, "signal.flow_weight", 0.12)
         _set_nested(cfg, "signal.student_t_df", 8)
         _set_nested(cfg, "execution.max_bankroll_deployed", 1.0)
         _set_nested(cfg, "execution.max_book_fill_pct", 1.0)
@@ -118,17 +112,17 @@ class TestValidateConfigPasses:
 
 
 # ---------------------------------------------------------------------------
-# Validation — crisis kelly floor. Crisis halving may persist kelly_fraction
-# below the optimizer-tunable range; the loader must accept down to the floor.
+# Validation — kelly_fraction floor (registry lo = 0.04). The loader must
+# accept the floor exactly and reject anything below it.
 # ---------------------------------------------------------------------------
 
-class TestCrisisKellyFloor:
-    def test_kelly_at_crisis_floor_loads(self):
+class TestKellyFloor:
+    def test_kelly_at_floor_loads(self):
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.04)
         validate_config(cfg)  # should not raise
 
-    def test_kelly_below_crisis_floor_raises(self):
+    def test_kelly_below_floor_raises(self):
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.039)
         with pytest.raises(ValueError, match="kelly_fraction"):
@@ -142,8 +136,8 @@ class TestCrisisKellyFloor:
 
 class TestValidateConfigMissing:
     @pytest.mark.parametrize("key", [
-        "math.kelly_fraction",       # top-level math section
-        "signal.weights",             # nested dict required field
+        "math.kelly_fraction",       # registry-driven check
+        "signal.max_edge",            # loader-specific check outside the registry
         "execution.initial_bankroll", # execution section
     ])
     def test_missing_field_is_reported(self, key):
@@ -164,7 +158,6 @@ class TestValidateConfigOutOfRange:
         ("signal.min_edge", 0.001),                          # float lower
         ("signal.exit_edge_threshold", 0.01),                # signed (must be negative)
         ("signal.student_t_df", 9),                          # int upper
-        ("signal.momentum_weight", 0.15),                    # symmetric signed range
         ("execution.initial_bankroll", -100),                # must be > 0
         ("execution.max_bankroll_deployed", 1.1),            # percent upper
         ("market.entry_window_seconds", 0),                  # must be > 0 (int)
@@ -177,7 +170,7 @@ class TestValidateConfigOutOfRange:
 
 
 # ---------------------------------------------------------------------------
-# Validation — types & weights & multi-error
+# Validation — types & multi-error
 # ---------------------------------------------------------------------------
 
 class TestValidateConfigTypes:
@@ -191,33 +184,6 @@ class TestValidateConfigTypes:
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", "high")
         with pytest.raises(ValueError, match="kelly_fraction.*must be a number"):
-            validate_config(cfg)
-
-
-class TestValidateConfigWeights:
-    def test_weight_below_minimum(self):
-        cfg = _valid_config()
-        cfg["signal"]["weights"]["rsi"] = 0.01
-        cfg["signal"]["weights"]["macd"] = 0.44  # fix sum so only individual error fires
-        with pytest.raises(ValueError, match="signal.weights.rsi.*0.01.*0.05"):
-            validate_config(cfg)
-
-    def test_weights_do_not_sum_to_one(self):
-        cfg = _valid_config()
-        cfg["signal"]["weights"]["rsi"] = 0.30  # was 0.20, total becomes 1.10
-        with pytest.raises(ValueError, match="signal.weights.*sum"):
-            validate_config(cfg)
-
-    def test_weights_sum_within_tolerance(self):
-        cfg = _valid_config()
-        cfg["signal"]["weights"]["rsi"] = 0.2005
-        cfg["signal"]["weights"]["macd"] = 0.2495
-        validate_config(cfg)  # should pass
-
-    def test_weights_not_a_dict(self):
-        cfg = _valid_config()
-        cfg["signal"]["weights"] = [0.2, 0.25, 0.2, 0.15, 0.2]
-        with pytest.raises(ValueError, match="signal.weights.*must be a dict"):
             validate_config(cfg)
 
 

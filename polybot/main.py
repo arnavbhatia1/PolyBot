@@ -39,14 +39,10 @@ from polybot.indicators.engine import IndicatorEngine
 from polybot.core.signal_engine import SignalEngine
 from polybot.core.order_flow import compute_flow_signal
 from polybot.core.aux_layers import compute_spot_flow_signal, regime_vol_factor
-from polybot.agents.claude_client import ClaudeClient
 from polybot.execution.paper_trader import PaperTrader
 from polybot.execution.live_trader import AuthError, LiveTrader, OrphanPositionError, verify_auth
 from polybot.agents.outcome_reviewer import OutcomeReviewer
-from polybot.agents.bias_detector import BiasDetector
-from polybot.agents.ta_evolver import TAEvolver
-from polybot.agents.weight_optimizer import WeightOptimizer
-from polybot.agents.scheduler import AgentScheduler
+from polybot.agents.scheduler import NightlyScheduler
 from polybot.agents.counterfactual_tracker import CounterfactualTracker
 from polybot.agents.ghost_tracker import GhostTracker
 from polybot.discord_bot.bot import create_bot
@@ -58,9 +54,6 @@ from polybot.feeds.binance_depth import BinanceDepthFeed
 from polybot.feeds.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
 from polybot.feeds.coinbase_feed import CoinbaseFeed
 from polybot.feeds._staleness import snapshot_feeds as _staleness_snapshot, write_feeds as _staleness_write
-from polybot.core.sprt import SPRTAccumulator
-from polybot.core.regime import RegimeDetector
-from polybot.core.signal_engine import compute_signal_consensus
 from polybot.core.adverse_selection import AdverseSelectionMonitor
 
 import re
@@ -142,7 +135,6 @@ _AUX_FRESH_S_TRADES = 3.0
 
 # Sub-second CVD-acceleration scale — local to the deceleration gate. L3b uses
 # the canonical helper in `polybot/core/aux_layers.py`.
-_COINBASE_CVD_ACCEL_SCALE = 5.0
 
 
 def _build_aux_signals(coinbase_feed: Any, trades_feed: Any = None) -> dict[str, Any]:
@@ -251,11 +243,14 @@ _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, hold to resolution
 
-# Previous window resolution margin for adjacent window momentum (D2)
+# Window-path recorder (recording.WindowPathRecorder) — set by main() at boot.
+_window_recorder = None
+
+# Previous window resolution margin — recorded telemetry (no model layer consumes it)
 _prev_resolution_margin: float = 0.0
 _PREV_MARGIN_PATH = PREV_MARGIN_PATH
-# L5 reads previous-window margin as "momentum carry." Beyond this many seconds
-# the carry is no longer adjacent to the current window and stamps as zero.
+# Beyond this many seconds the margin is no longer adjacent to the current
+# window and stamps as zero.
 _PREV_MARGIN_STALE_S = 1800  # 30 min ≈ six 5-min windows
 
 def _load_prev_resolution_margin() -> float:
@@ -279,8 +274,6 @@ def _save_prev_resolution_margin(margin: float) -> None:
     except Exception:
         pass
 
-_sprt: SPRTAccumulator | None = None
-_regime_detector: RegimeDetector | None = None
 _current_window_id: str = ""
 _adverse_monitor: AdverseSelectionMonitor | None = None
 _last_adverse_skip_log_window: int = 0  # throttle adverse-skip logs to once per 5-min window
@@ -373,11 +366,10 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
     if prev_time is not None and (now - prev_time) < 30:
         return
     _lru_set(_last_gate_skip_state, key, now, _GATE_STATE_MAX)
-    _sprt_part = f" | {ctx['sprt']}" if ctx.get("sprt") and not gate_key.startswith("sprt") else ""
     logger.info(
         f"{_C.DIM}SKIP {ctx['direction']} {ctx['window_slug']} | "
         f"model {ctx['prob']:.0%} {ctx['direction']}, BTC {ctx['dist']:+,.0f} vs strike | "
-        f"{reason}{_sprt_part}{_C.RESET}"
+        f"{reason}{_C.RESET}"
     )
 
 def _et_date_key() -> str:
@@ -497,29 +489,16 @@ def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
     return SignalEngine(
         min_edge=signal_cfg.get("min_edge", _d("min_edge")),
         kelly_fraction=config["math"].get("kelly_fraction", _d("kelly_fraction")),
-        momentum_weight=signal_cfg.get("momentum_weight", _d("momentum_weight")),
-        weights=signal_cfg.get("weights", _d("weights")),
         min_model_probability=signal_cfg.get("min_model_probability", _d("min_model_probability")),
         student_t_df=signal_cfg.get("student_t_df", _d("student_t_df")),
-        regime_weight=signal_cfg.get("regime_weight", _d("regime_weight")),
-        flow_weight=signal_cfg.get("flow_weight", _d("flow_weight")),
         regime_lookback=signal_cfg.get("regime_lookback", _d("regime_lookback")),
         min_kelly=signal_cfg.get("min_kelly", _d("min_kelly")),
         atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", _d("atr_sigma_ratio")),
-        spot_flow_weight=signal_cfg.get("spot_flow_weight", _d("spot_flow_weight")),
-        prev_margin_weight=signal_cfg.get("prev_margin_weight", _d("prev_margin_weight")),
         min_atr=signal_cfg.get("min_atr", _d("min_atr")),
-        logit_scale=signal_cfg.get("logit_scale", _d("logit_scale")),
         loss_cut_fraction=signal_cfg.get("loss_cut_fraction", _d("loss_cut_fraction")),
         loss_cut_time_s=signal_cfg.get("loss_cut_time_s", _d("loss_cut_time_s")),
-        consensus_dead_zone=signal_cfg.get("consensus_dead_zone", _d("consensus_dead_zone")),
-        consensus_config=signal_cfg.get("consensus"),
-        regime_momentum_threshold=signal_cfg.get("regime_momentum_threshold", _d("regime_momentum_threshold")),
-        final_logit_clamp=signal_cfg.get("final_logit_clamp", _d("final_logit_clamp")),
         deep_loss_hold_threshold=signal_cfg.get("deep_loss_hold_threshold", _d("deep_loss_hold_threshold")),
-        l5_regime_damp_cap=signal_cfg.get("l5_regime_damp_cap", _d("l5_regime_damp_cap")),
         atr_regime_shift_threshold=signal_cfg.get("atr_regime_shift_threshold", _d("atr_regime_shift_threshold")),
-        derived_weights=signal_cfg.get("derived") or {},
     )
 
 
@@ -692,8 +671,7 @@ async def _evaluate_signal_and_enter(
         """Record a ghost trade when a downstream gate rejects a real BUY signal.
 
         Base trade_context is built from closure vars at gate-fire time so the
-        ghost survives AgentScheduler._ghost_to_outcome's market-price gate and
-        reaches the calibration/backtest pools; a caller-supplied snap merges on
+        ghost survives downstream record consumers; a caller-supplied snap merges on
         top (caller wins on overlapping keys).
         """
         if ghost_tracker is None or signal is None:
@@ -756,8 +734,8 @@ async def _evaluate_signal_and_enter(
         stale_feeds.append(f"coinbase={coinbase_feed.state.age_seconds:.0f}s")
     if chainlink_feed and chainlink_feed.age_seconds > 60:
         stale_feeds.append(f"chainlink={chainlink_feed.age_seconds:.0f}s")
-    # Binance aggTrade underpins L3b + the CVD-decel gate: skip entirely rather
-    # than silently zeroing L3b — never size off a degraded model.
+    # Binance aggTrade underpins the recorded flow telemetry and the cross-venue
+    # gap: skip rather than size on stale data.
     if trades_feed is not None and trades_feed.accumulator is not None:
         agg_age = trades_feed.accumulator.latest_age_s
         if agg_age > 30:
@@ -773,12 +751,10 @@ async def _evaluate_signal_and_enter(
 
     in_window = market_scanner.in_entry_window(contract["seconds_remaining"])
 
-    # SPRT: accumulate evidence on new windows (no hard observe block)
-    global _sprt, _current_window_id
+    global _current_window_id
     window_id = contract.get("market_id", contract.get("slug", ""))
     if window_id != _current_window_id:
         _current_window_id = window_id
-        if _sprt: _sprt.reset()
         _last_skip_log.pop(cid, None)  # fresh window — allow skip reasons to log again
 
     indicators = indicator_engine.compute_all(binance_feed.buffer)
@@ -808,12 +784,6 @@ async def _evaluate_signal_and_enter(
         or book_down.get("bids") or book_down.get("asks")
     )
     flow_score_rec = flow_score if (_book_present or flow_data.get("trade_count", 0) > 0) else None
-    cvd_accel_val = 0.0
-    cvd_accel_norm = 0.0
-    if coinbase_feed and coinbase_feed.state.age_seconds <= _AUX_FRESH_S_COINBASE:
-        cvd_accel_val = coinbase_feed.get_cvd_acceleration(recent_s=15.0, baseline_s=45.0)
-        cvd_accel_norm = math.tanh(cvd_accel_val / _COINBASE_CVD_ACCEL_SCALE)
-
     closes = binance_feed.buffer.get_closes()
 
     # Live fee rate so Kelly sizes against the actual cost (constant today; plumbed
@@ -825,21 +795,9 @@ async def _evaluate_signal_and_enter(
         btc_price=btc_price, strike_price=strike,
         seconds_remaining=contract["seconds_remaining"],
         market_price_up=price_up, market_price_down=price_down,
-        closes=closes, flow_signal=flow_score,
-        spot_flow_signal=spot_flow_signal,
-        prev_resolution_margin=_prev_resolution_margin,
+        closes=closes,
         fee_rate=fee_rate,
     )
-
-    # SPRT accumulator input: signal.prob is the CHOSEN side's probability, so
-    # invert for BUY_NO to produce the prob_up SPRT expects.
-    if _sprt:
-        if signal.action == "BUY_YES":
-            _sprt.update(signal.prob)
-        elif signal.action == "BUY_NO":
-            _sprt.update(1.0 - signal.prob)
-        else:
-            _sprt.update(0.5)
 
     # Continuous time multiplier: penalizes ATM trades late, barely penalizes high-conviction trades
     timing_cfg = config.get("entry_timing", {})
@@ -858,22 +816,12 @@ async def _evaluate_signal_and_enter(
     _direction = signal.side or ("Up" if signal.prob >= 0.5 else "Down")
     action_changed = _direction != _last_logged_action or eval_window != last_eval_log_window
     dist = btc_price - strike
-    _sprt_info = ""
-    if _sprt:
-        _s, _c, _f, _n = _sprt.get_status(), _sprt.get_confidence(), _sprt.favored_side(), _sprt.observation_count()
-        if _s != "ACCUMULATING":
-            _sprt_info = f"SPRT {_s} {_c:.0%}"
-        elif _f and _c >= 0.20:
-            _sprt_info = f"SPRT {_c:.0%} leaning {_f}"
-        else:
-            _sprt_info = f"SPRT {_c:.0%} ({_n} obs)"
     _lru_set(_pending_eval_ctx, cid, {
         "direction": _direction,
         "prob": signal.prob,
         "edge": signal.edge,
         "dist": dist,
         "window_slug": _slug_to_window(cid),
-        "sprt": _sprt_info,
     }, _PENDING_CTX_MAX)
     if _is_buy:
         if action_changed:
@@ -1017,59 +965,6 @@ async def _evaluate_signal_and_enter(
             _ghost("flip_insufficient_edge", signal, {})
             return None, last_eval_log_window
 
-    # --- SPRT GATE ---
-    # Placed after side/cid assignment so _log_skip_once and _ghost have proper context.
-    if _sprt:
-        sprt_cfg = config["sprt"]
-        min_sprt_conf = sprt_cfg["min_confidence"]
-        sprt_status = _sprt.get_status()
-        sprt_conf = _sprt.get_confidence()
-        sprt_obs = _sprt.observation_count()
-        if sprt_status == "SKIP":
-            _record_skip("sprt_skip")
-            _ghost("sprt_skip", signal, {})
-            _emit_gate_skip(cid, f"sprt_skip_{side}", f"SPRT: signal too weak ({sprt_obs} obs)")
-            return None, last_eval_log_window
-        # Minimum-evidence floor after the 6-obs warmup.
-        if sprt_obs >= 6 and sprt_conf < min_sprt_conf:
-            _record_skip("sprt_low_confidence")
-            _ghost("sprt_low_confidence", signal, {})
-            _emit_gate_skip(cid, f"sprt_low_conf_{side}",
-                            f"SPRT confidence {sprt_conf:.1%} < {min_sprt_conf:.1%}")
-            return None, last_eval_log_window
-        # Side mismatch: only veto when SPRT has built strong opposite evidence (60%+, 6+ obs)
-        if sprt_obs >= 6 and sprt_conf > 0.60 and _sprt.favored_side() != side:
-            _record_skip("sprt_side_mismatch")
-            _ghost("sprt_side_mismatch", signal, {})
-            _emit_gate_skip(cid, f"sprt_{side}",
-                            f"SPRT {sprt_conf:.0%} leaning {_sprt.favored_side()} (opposite side)")
-            return None, last_eval_log_window
-
-    # --- LAYER DISAGREEMENT GATE ---
-    # Reuses the momentum cached by compute_probability (inputs unchanged since
-    # evaluate); 0.5 = strong disagreement on the unit-clamped, sign-coherent output.
-    momentum_score = signal_engine.last_momentum_score
-    momentum_opposes = (
-        (side == "Up" and momentum_score < -0.5)
-        or (side == "Down" and momentum_score > 0.5)
-    )
-    if momentum_opposes and signal.edge * 0.5 < signal_engine.min_edge:
-        _record_skip("layer_disagreement")
-        _ghost("layer_disagreement", signal, {})
-        _emit_gate_skip(cid, f"layer_disagree_{side}", f"layer disagree — momentum {momentum_score:+.2f} opposes {side}")
-        return None, last_eval_log_window
-
-    # --- CVD DECELERATION GATE ---
-    # spot_flow × cvd_accel < 0 = the CVD spike already peaked and is reverting;
-    # these entries resolve at $0 rather than recovering.
-    if abs(spot_flow_signal) >= 0.20 and spot_flow_signal * cvd_accel_val < 0:
-        _record_skip("cvd_decel")
-        _ghost("cvd_decel", signal, {})
-        _flow_label = "sells" if spot_flow_signal < 0 else "buys"
-        _emit_gate_skip(cid, f"cvd_decel_{side}",
-                        f"CVD reversing — {_flow_label} ({spot_flow_signal:+.2f}) decelerating ({cvd_accel_val:+.2f})")
-        return None, last_eval_log_window
-
     price = price_up if side == "Up" else price_down
     if not bankroll:
         bankroll = await db.get_bankroll()
@@ -1079,36 +974,7 @@ async def _evaluate_signal_and_enter(
     raw_kelly_size = bankroll * signal.kelly_size
     size = round(raw_kelly_size * kelly_mult * time_mult, 2)
 
-    regime_state = None
-    if _regime_detector:
-        atr_val = indicators.get("atr", {}).get("atr", 0)
-        atr_history = [c.high - c.low for c in binance_feed.buffer.get_last_n(50)]
-        regime_state = _regime_detector.classify(
-            closes, atr_val, atr_history,
-            autocorr=signal_engine.last_regime_autocorr,  # already computed in compute_probability
-        )
-        if regime_state.skip:
-            _record_skip(f"regime:{regime_state.name}")
-            _emit_gate_skip(cid, f"regime_{regime_state.name}", f"regime={regime_state.name}")
-            return None, last_eval_log_window
-        # Regime: logged for the pipeline, NOT applied to sizing (its Sharpe edge sits inside the noise band).
-
-    # Signal consensus: scales size by how many flow signals agree with the chosen side.
-    consensus_signals = {
-        "flow": flow_score,
-        "spot_flow": spot_flow_signal,
-        "cvd_accel": cvd_accel_norm,
-    }
-    consensus_mult = compute_signal_consensus(
-        consensus_signals, side,
-        dead_zone=signal_engine.consensus_dead_zone,
-        consensus_config=signal_engine.consensus_config)
-    size = round(size * consensus_mult * adverse_kelly_mult, 2)
-
-    logger.debug(
-        f"  REGIME {regime_state.name if regime_state else 'N/A'}  |  "
-        f"SPRT {_sprt.get_status() if _sprt else 'N/A'} ({_sprt.get_confidence():.0%})  |  "
-        f"consensus {consensus_mult:.1f}x")
+    size = round(size * adverse_kelly_mult, 2)
 
     open_positions = await _get_open_positions_cached(db)
     active_positions = [p for p in open_positions if p.get("status") == "open"]
@@ -1195,8 +1061,7 @@ async def _evaluate_signal_and_enter(
         "market_price_down": price_down,
         "closes_tail": _closes_tail,
         "model_probability": signal.prob,
-        # Pre-calibrator P(side). Stored separately from `model_probability` so the
-        # next pipeline cycle's isotonic re-fit sees raw probabilities, not calibrate(calibrate(...)).
+        # Kept for record-schema continuity — L1 prob is uncalibrated, so raw == prob.
         "model_probability_raw": (
             signal_engine.last_raw_prob_up if side == "Up"
             else 1.0 - signal_engine.last_raw_prob_up
@@ -1207,11 +1072,9 @@ async def _evaluate_signal_and_enter(
         "atr_long_term_mean": round(signal_engine.last_atr_long_term_mean, 6),
         "size": size,
         "prev_resolution_margin": _prev_resolution_margin,
-        # Composite signals used by the model — pipeline replays L1-L5 from these
+        # Recorded flow telemetry (no logit consumes these — exit-model features)
         "flow_score": flow_score_rec,
         "spot_flow_signal": spot_flow_rec,
-        # Regime + L2 inputs (autocorr + direction stored exactly for backtest fidelity)
-        "regime_state": regime_state.name if regime_state else "unknown",
         "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
         "regime_direction": round(signal_engine.last_regime_direction, 4),
         # Time-of-window classification (used by bias_detector time_patterns + flip analysis)
@@ -1222,9 +1085,6 @@ async def _evaluate_signal_and_enter(
         # dict (same schema as ghosts). None means "feed cold/stale", never 0.0.
         "depth_usd_top20": depth_feed.get_depth_usd() if depth_feed else 0,
         **aux_signals,
-        # SPRT state: sprt_confidence feeds BiasDetector's by_sprt_confidence bucket; sprt_status is audit-only.
-        "sprt_confidence": _sprt.get_confidence() if _sprt else 0,
-        "sprt_status": _sprt.get_status() if _sprt else "N/A",
         # Adverse-selection diagnostic — 30s is the post-fill checkpoint, not the
         # lookback (that's the monitor's 30-minute window).
         "adverse_rate_at_30s": adverse_rate_at_30s if adverse_rate_at_30s >= 0 else 0.5,
@@ -1286,6 +1146,8 @@ async def _evaluate_signal_and_enter(
     if result.success:
         # Drop the open-positions cache so the next tick sees this position immediately.
         _invalidate_open_positions_cache()
+        if _window_recorder is not None:
+            _window_recorder.mark_traded(cid)
         # Actual fill price (paper latency/book-walk or live FOK slippage may differ).
         fill_price = result.fill_price if result.fill_price > 0 else price
         slip_note = f"  [filled @ {fill_price:.3f} vs signal {price:.3f}]" if abs(fill_price - price) > 0.001 else ""
@@ -1312,12 +1174,6 @@ async def _evaluate_signal_and_enter(
             _why_parts.append(f"Sellers dominating on Binance (cvd {spot_flow_signal:+.2f})")
         else:
             _why_parts.append(f"Neutral CVD ({spot_flow_signal:+.2f})")
-        if regime_state and regime_state.name == "trending":
-            _why_parts.append(f"Market trending {side.lower()}")
-        elif regime_state and regime_state.name == "reverting":
-            _why_parts.append("Market mean-reverting")
-        else:
-            _why_parts.append("Neutral regime")
         _why = ", ".join(_why_parts)
         logger.info(
             f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
@@ -1742,9 +1598,7 @@ async def _evaluate_and_exit_position(
         market_price, pos["side"], exit_threshold,
         entry_price=pos["entry_price"],
         fee_rate=pos.get("fee_rate") or DEFAULT_FEE_RATE,
-        closes=closes, flow_signal=hold_flow["flow_score"],
-        spot_flow_signal=hold_spot_flow,
-        prev_resolution_margin=_prev_resolution_margin,
+        closes=closes,
         market_mid_for_side=market_mid)
     _lc_evt = getattr(signal_engine, "last_loss_cut_event", "")
     if _lc_evt == "fired":
@@ -2322,17 +2176,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     # --- Startup banner ---
     _mode_label = "LIVE" if not isinstance(trader, PaperTrader) else "PAPER"
     _bankroll = await db.get_bankroll()
-    _cal = signal_engine.calibrator
-    if _cal is None:
-        _cal_str = "off (no calibrator)"
-    elif getattr(_cal, "is_identity", True):
-        _cal_str = "off (using raw model probabilities)"
-    else:
-        # Calibrator rescales raw win-probability into the observed range — corrects overconfidence.
-        _n_cal = getattr(_cal, "_n_samples", 0)
-        _cal_str = (f"on — model win-probabilities rescaled to "
-                    f"{_cal.lowest_learned_prob:.0%}-{_cal.calibrate(1.0):.0%}, "
-                    f"learned from {_n_cal:,} trades")
     def _f(feed: Any) -> str:
         if feed is None:
             return "--"
@@ -2342,7 +2185,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         return "DOWN" if _state is False else "OK"
     logger.info(
         f"PolyBot [{_mode_label}] ready  |  Bankroll ${_bankroll:,.2f}  |  "
-        f"Today: {day_wins}W/{day_losses}L  |  Calibration: {_cal_str}"
+        f"Today: {day_wins}W/{day_losses}L  |  Model: L1-only (entry = inventory sourcing)"
     )
     logger.info(
         f"Feeds: Coinbase {_f(coinbase_feed)} · Binance {_f(binance_feed)} · "
@@ -2572,46 +2415,17 @@ async def run_pipeline() -> None:
     ind_cfg = config.get("indicators", {})
 
     indicator_params = {
-        "rsi": {"period": ind_cfg.get("rsi", {}).get("period", 14),
-                "overbought": ind_cfg.get("rsi", {}).get("overbought", 70),
-                "oversold": ind_cfg.get("rsi", {}).get("oversold", 30)},
-        "macd": {"fast": ind_cfg.get("macd", {}).get("fast_period", 12),
-                 "slow": ind_cfg.get("macd", {}).get("slow_period", 26),
-                 "signal_period": ind_cfg.get("macd", {}).get("signal_period", 9)},
-        "stochastic": {"k_period": ind_cfg.get("stochastic", {}).get("k_period", 14),
-                       "d_smoothing": ind_cfg.get("stochastic", {}).get("d_smoothing", 3),
-                       "overbought": ind_cfg.get("stochastic", {}).get("overbought", 80),
-                       "oversold": ind_cfg.get("stochastic", {}).get("oversold", 20)},
-        "ema": {"fast_period": ind_cfg.get("ema", {}).get("fast_period", 9),
-                "slow_period": ind_cfg.get("ema", {}).get("slow_period", 21),
-                "chop_threshold": ind_cfg.get("ema", {}).get("chop_threshold", 0.0001)},
-        "obv": {"slope_period": ind_cfg.get("obv", {}).get("slope_period", 5)},
         "atr": {"period": ind_cfg.get("atr", {}).get("period", 14),
                 "low_pct": ind_cfg.get("atr", {}).get("low_percentile", 5),
                 "history": ind_cfg.get("atr", {}).get("history_periods", 100)},
     }
-    indicator_engine = IndicatorEngine(weights=signal_cfg.get("weights"),
-                                       params=indicator_params)
+    indicator_engine = IndicatorEngine(params=indicator_params)
 
     signal_engine = _build_signal_engine(signal_cfg, config)
-
-    from polybot.core.calibrator import IsotonicCalibrator
-    calibrator = IsotonicCalibrator()
-    _cal_path = CALIBRATION_PARAMS_PATH
-    calibrator.load(_cal_path)
-    signal_engine.calibrator = calibrator
-
-    claude = ClaudeClient(api_key=get_secret("ANTHROPIC_API_KEY"), model="claude-sonnet-4-6")
 
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
     counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
     ghost_tracker = GhostTracker(memory_dir=str(base_dir / "memory"))
-    bias_detector = BiasDetector()
-    ta_evolver = TAEvolver(strategy_log_path=str(STRATEGY_LOG_PATH),
-                          claude_client=claude)
-    weight_optimizer = WeightOptimizer()
-    from polybot.agents.pipeline_tracker import PipelineTracker
-    pipeline_tracker = PipelineTracker(path=PIPELINE_HISTORY_PATH)
 
     # Discord — connect briefly to send pipeline report
     alert_manager = None
@@ -2629,26 +2443,16 @@ async def run_pipeline() -> None:
             daily_channel_name=config["discord"].get("daily_channel_name", "polybot-daily"))
 
     agents_cfg = config["agents"]
-    scheduler = AgentScheduler(
+    scheduler = NightlyScheduler(
         outcome_reviewer=outcome_reviewer,
-        bias_detector=bias_detector,
-        ta_evolver=ta_evolver,
-        weight_optimizer=weight_optimizer,
-        indicator_engine=indicator_engine,
-        signal_engine=signal_engine,
+        counterfactual_tracker=counterfactual_tracker,
+        ghost_tracker=ghost_tracker,
         alert_manager=alert_manager,
         outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
         daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
         daily_pipeline_minute=agents_cfg.get("daily_pipeline_minute", 0),
         config=config,
-        counterfactual_tracker=counterfactual_tracker,
-        pipeline_tracker=pipeline_tracker,
     )
-    scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", _d("exit_edge_threshold"))
-    scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
-    scheduler._trading_start = (sched_cfg.get("trading_start_hour_et", _d("trading_start_hour_et")), sched_cfg.get("trading_start_minute", _d("trading_start_minute")))
-    scheduler._trading_end = (sched_cfg.get("trading_end_hour_et", _d("trading_end_hour_et")), sched_cfg.get("trading_end_minute", _d("trading_end_minute")))
-    scheduler.ghost_tracker = ghost_tracker
 
     async def _run_with_discord():
         if discord_bot and discord_token:
@@ -2708,41 +2512,13 @@ async def main() -> None:
     signal_cfg = config.get("signal", {})
     ind_cfg = config.get("indicators", {})
     indicator_params = {
-        "rsi": {"period": ind_cfg.get("rsi", {}).get("period", 14),
-                "overbought": ind_cfg.get("rsi", {}).get("overbought", 70),
-                "oversold": ind_cfg.get("rsi", {}).get("oversold", 30)},
-        "macd": {"fast": ind_cfg.get("macd", {}).get("fast_period", 12),
-                 "slow": ind_cfg.get("macd", {}).get("slow_period", 26),
-                 "signal_period": ind_cfg.get("macd", {}).get("signal_period", 9)},
-        "stochastic": {"k_period": ind_cfg.get("stochastic", {}).get("k_period", 14),
-                       "d_smoothing": ind_cfg.get("stochastic", {}).get("d_smoothing", 3),
-                       "overbought": ind_cfg.get("stochastic", {}).get("overbought", 80),
-                       "oversold": ind_cfg.get("stochastic", {}).get("oversold", 20)},
-        "ema": {"fast_period": ind_cfg.get("ema", {}).get("fast_period", 9),
-                "slow_period": ind_cfg.get("ema", {}).get("slow_period", 21),
-                "chop_threshold": ind_cfg.get("ema", {}).get("chop_threshold", 0.0001)},
-        "obv": {"slope_period": ind_cfg.get("obv", {}).get("slope_period", 5)},
         "atr": {"period": ind_cfg.get("atr", {}).get("period", 14),
                 "low_pct": ind_cfg.get("atr", {}).get("low_percentile", 5),
                 "history": ind_cfg.get("atr", {}).get("history_periods", 100)},
     }
-    indicator_engine = IndicatorEngine(
-        weights=signal_cfg.get("weights"),
-        params=indicator_params,
-    )
-
-    from polybot.core.calibrator import IsotonicCalibrator
+    indicator_engine = IndicatorEngine(params=indicator_params)
 
     signal_engine = _build_signal_engine(signal_cfg, config)
-
-    # Load isotonic calibrator (identity if file doesn't exist)
-    calibrator = IsotonicCalibrator()
-    _cal_path = CALIBRATION_PARAMS_PATH
-    calibrator.load(_cal_path)
-    signal_engine.calibrator = calibrator
-
-    # Brain (Claude client kept for TA evolver analysis calls)
-    claude = ClaudeClient(api_key=get_secret("ANTHROPIC_API_KEY"), model="claude-sonnet-4-6")
 
     exec_cfg = config["execution"]
     if mode == "live":
@@ -2799,10 +2575,6 @@ async def main() -> None:
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
     counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
     ghost_tracker = GhostTracker(memory_dir=str(base_dir / "memory"))
-    bias_detector = BiasDetector()
-    ta_evolver = TAEvolver(strategy_log_path=str(STRATEGY_LOG_PATH),
-                          claude_client=claude)
-    weight_optimizer = WeightOptimizer()
 
     # Discord (created before scheduler so alert_manager can be passed in)
     discord_bot = create_bot(db, trader, market_scanner, None, config)
@@ -2812,29 +2584,19 @@ async def main() -> None:
         daily_channel_name=config["discord"].get("daily_channel_name", "polybot-daily"))
     discord_bot.alert_manager = alert_manager
 
-    from polybot.agents.pipeline_tracker import PipelineTracker
-    pipeline_tracker = PipelineTracker(path=PIPELINE_HISTORY_PATH)
-
-    scheduler = AgentScheduler(
+    scheduler = NightlyScheduler(
         outcome_reviewer=outcome_reviewer,
-        bias_detector=bias_detector,
-        ta_evolver=ta_evolver,
-        weight_optimizer=weight_optimizer,
-        indicator_engine=indicator_engine,
-        signal_engine=signal_engine,
+        counterfactual_tracker=counterfactual_tracker,
+        ghost_tracker=ghost_tracker,
         alert_manager=alert_manager,
         outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
         daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
         daily_pipeline_minute=agents_cfg.get("daily_pipeline_minute", 0),
-        market_scanner=market_scanner,
         config=config,
-        counterfactual_tracker=counterfactual_tracker,
-        pipeline_tracker=pipeline_tracker,
     )
     scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", _d("exit_edge_threshold"))
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
     scheduler._auto_shutdown = args.auto_restart
-    scheduler.ghost_tracker = ghost_tracker
     discord_bot.scheduler = scheduler
     if mode == "live":
         # Sync DB bankroll with real Polymarket balance (fetched during preflight)
@@ -2906,21 +2668,6 @@ async def main() -> None:
     _ensure_gate_stats_day_loaded()
     flush_gate_stats()
 
-    # SPRT + regime detector — module-level state for trading loop
-    global _sprt, _regime_detector
-    _sprt = SPRTAccumulator(
-        alpha=config.get("sprt", {}).get("alpha", 0.05),
-        beta=config.get("sprt", {}).get("beta", 0.10),
-        min_interval_s=config.get("sprt", {}).get("observation_interval_s", 5.0),
-    )
-    regime_cfg = config.get("regime", {})
-    _regime_detector = RegimeDetector(
-        lookback=regime_cfg.get("lookback", 50),
-        vol_high_pct=regime_cfg.get("vol_high_percentile", 75),
-        vol_low_pct=regime_cfg.get("vol_low_percentile", 25),
-        autocorr_threshold=regime_cfg.get("autocorr_threshold", 0.25),
-    )
-
     global _adverse_monitor
     _adverse_monitor = AdverseSelectionMonitor()
 
@@ -2964,6 +2711,26 @@ async def main() -> None:
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=60),
     )
 
+    # Recorders (Phases 1-2): window-path stream for the exit-value model +
+    # CLOB tape for the passive-exit shadow sim. Write-behind; never block the loop.
+    from polybot.recording import TapeRecorder, WindowPathRecorder
+    tape_recorder = TapeRecorder()
+    clob_ws.on_trade = tape_recorder.on_trade
+    window_recorder = WindowPathRecorder(
+        db=db, clob_ws=clob_ws, coinbase_feed=coinbase_feed,
+        chainlink_feed=chainlink_feed, market_scanner=market_scanner,
+        http_client=http_client)
+    global _window_recorder
+    _window_recorder = window_recorder
+
+    # Nightly jobs (Phases 3-4): exit-value model refit (data-gated), window-path
+    # retention sweep, wallet-fingerprint ingestion + classification.
+    from polybot.exit_model import nightly_refit_job, cleanup_job
+    from polybot.wallets import nightly_wallet_job
+    scheduler.register_job("exit_model_refit", nightly_refit_job(db))
+    scheduler.register_job("window_paths_retention", cleanup_job(db))
+    scheduler.register_job("wallet_tables", nightly_wallet_job(db, http_client, market_scanner))
+
     async def run_discord():
         backoff = 5
         while True:
@@ -2998,6 +2765,7 @@ async def main() -> None:
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(_flush_staleness_loop()),
+        asyncio.create_task(window_recorder.run()),
         discord_task,
     ]
     logger.debug("PolyBot started — all systems running (WebSocket + event-driven)")
@@ -3011,6 +2779,11 @@ async def main() -> None:
         for t in background_tasks:
             t.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
+        async def _stop_rec(coro):
+            try: await asyncio.wait_for(coro, timeout=2.0)
+            except Exception: pass
+        await _stop_rec(window_recorder.stop())
+        tape_recorder.flush()
         await http_client.aclose()
         async def _stop(coro):
             try: await asyncio.wait_for(coro, timeout=2.0)

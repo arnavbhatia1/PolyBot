@@ -240,23 +240,3 @@ def test_rollup_skips_current_et_day(tracker, memory_dir):
     assert f"rollup_{yesterday_noon_et.strftime('%Y-%m-%d')}.json" in names
     assert "today.json" in names  # today's file untouched
     assert "old.json" not in names
-
-
-# --- BiasDetector.analyze_counterfactuals integration ---
-
-def test_bias_detector_counterfactual_analysis():
-    from polybot.agents.bias_detector import BiasDetector
-    detector = BiasDetector()
-    counterfactuals = [
-        {"scalp_was_optimal": True,  "delta_pnl": 0,    "actual": {"gain_pct": 0.05},
-         "counterfactual": {"gain_pct": -1.0}, "context_at_scalp": {"holding_edge": -0.15, "seconds_remaining": 20}},
-        {"scalp_was_optimal": False, "delta_pnl": 50.0, "actual": {"gain_pct": -0.10},
-         "counterfactual": {"gain_pct": 0.90},  "context_at_scalp": {"holding_edge": -0.02, "seconds_remaining": 60}},
-        {"scalp_was_optimal": False, "delta_pnl": 30.0, "actual": {"gain_pct": 0.02},
-         "counterfactual": {"gain_pct": 0.80},  "context_at_scalp": {"holding_edge": -0.05, "seconds_remaining": 100}},
-    ]
-    result = detector.analyze_counterfactuals(counterfactuals)
-    assert result["total_scalps_tracked"] == 3
-    assert result["optimal_scalps"] == 1
-    assert abs(result["scalp_accuracy"] - 1/3) < 0.01
-    assert abs(result["avg_missed_pnl"] - 40.0) < 0.01

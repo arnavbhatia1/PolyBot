@@ -64,30 +64,11 @@ def validate_config(config: dict[str, Any]) -> None:
         elif not strict and val < 0:
             errors.append(f"{dotted_key}: must be >= 0, got {val}")
 
-    from polybot.config.param_registry import CRISIS_KELLY_FLOOR, PIPELINE_PARAMS
-    for _spec in PIPELINE_PARAMS:
-        # kelly_fraction's lower bound admits the crisis-halving floor, which can
-        # persist a value below the optimizer-tunable range.
-        _lo = CRISIS_KELLY_FLOOR if _spec.name == "kelly_fraction" else _spec.lo
-        _check_range(_spec.yaml_key, _lo, _spec.hi, integer=(_spec.cast is int))
+    from polybot.config.param_registry import VALIDATED_PARAMS
+    for _spec in VALIDATED_PARAMS:
+        _check_range(_spec.yaml_key, _spec.lo, _spec.hi, integer=(_spec.cast is int))
 
     _check_range("signal.max_edge", 0.15, 0.30)
-    weights_val, weights_found = _get_nested(config, "signal.weights")
-    if not weights_found:
-        errors.append("signal.weights: missing from config")
-    elif not isinstance(weights_val, dict):
-        errors.append(f"signal.weights: must be a dict, got {type(weights_val).__name__}")
-    else:
-        for name, w in weights_val.items():
-            if not isinstance(w, (int, float)):
-                errors.append(f"signal.weights.{name}: must be a number, got {type(w).__name__}")
-            elif w < 0.05:
-                errors.append(f"signal.weights.{name}: {w} < 0.05 minimum")
-        numeric_weights = [v for v in weights_val.values() if isinstance(v, (int, float))]
-        if numeric_weights:
-            total = sum(numeric_weights)
-            if abs(total - 1.0) > 0.001:
-                errors.append(f"signal.weights: sum is {total:.4f}, must be 1.0")
 
     _check_positive("execution.max_concurrent_positions", integer=True)
     _check_range("execution.max_bankroll_deployed", 0.0, 1.0)
@@ -99,10 +80,6 @@ def validate_config(config: dict[str, Any]) -> None:
     _check_range("market.max_spread", 0.0, 1.0)
     for cb_key in ("circuit_breaker.losses_to_reduce", "circuit_breaker.wins_to_restore"):
         _check_positive(cb_key, integer=True)
-
-    val, found = _get_nested(config, "signal.consensus_dead_zone")
-    if found:
-        _check_range("signal.consensus_dead_zone", 0.0, 0.20)
 
     if errors:
         header = f"Config validation failed with {len(errors)} error(s):"
@@ -128,7 +105,7 @@ def get_config() -> dict[str, Any]:
     return _config
 
 def save_config(config: dict[str, Any], config_path: str | Path | None = None) -> None:
-    """Write pipeline-adopted values back into settings.yaml, preserving all comments
+    """Write runtime-adopted values back into settings.yaml, preserving all comments
     (ruamel round-trip mode: load as CommentedMap, patch changed values, write back).
     """
     from ruamel.yaml import YAML
@@ -156,21 +133,11 @@ def save_config(config: dict[str, Any], config_path: str | Path | None = None) -
     with open(config_path, "r") as f:
         doc = ryaml.load(f)
 
-    from polybot.config.param_registry import PIPELINE_PARAMS
-    for spec in PIPELINE_PARAMS:
+    from polybot.config.param_registry import VALIDATED_PARAMS
+    for spec in VALIDATED_PARAMS:
         val, found = _get_nested(config, spec.yaml_key)
         if found:
             _set_nested_ruamel(doc, spec.yaml_key, spec.cast(val))
-
-    weights, found = _get_nested(config, "signal.weights")
-    if found and isinstance(weights, dict):
-        for k, v in weights.items():
-            doc["signal"]["weights"][k] = round(float(v), 4)
-
-    # Patch math.kelly_fraction (crisis mode can change it)
-    kf, found = _get_nested(config, "math.kelly_fraction")
-    if found:
-        doc["math"]["kelly_fraction"] = round(float(kf), 4)
 
     # Atomic write
     fd, tmp_path = tempfile.mkstemp(suffix=".yaml", dir=str(config_path.parent))

@@ -3,21 +3,14 @@ import pytest
 import numpy as np
 from polybot.core.signal_engine import SignalEngine
 
-def _make_indicators(atr_value=30.0, rsi_score=0.0, macd_score=0.0,
-                     stoch_score=0.0, obv_score=0.0, vwap_score=0.0):
+def _make_indicators(atr_value=30.0):
     return {
         "atr": {"atr": atr_value, "passes": True, "reason": "ok"},
-        "ema": {"trend": "bullish", "fast_ema": 100.0, "slow_ema": 99.0},
-        "rsi": {"rsi": 50.0, "score": rsi_score},
-        "macd": {"macd": 0.0, "signal": 0.0, "histogram": 0.0, "score": macd_score},
-        "stochastic": {"k": 50.0, "d": 50.0, "score": stoch_score},
-        "obv": {"obv_slope": 0, "price_slope": 0, "score": obv_score},
-        "vwap": {"vwap": 100.0, "deviation": 0, "score": vwap_score},
     }
 
 @pytest.fixture
 def engine():
-    return SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08)
+    return SignalEngine(min_edge=0.10, kelly_fraction=0.15)
 
 def test_buys_up_when_btc_above_strike(engine):
     """BTC $100 above strike with 3 min left, market at 55% — model finds edge."""
@@ -78,32 +71,10 @@ def test_more_distance_bigger_edge(engine):
     assert s2.edge > s1.edge
 
 def test_less_time_higher_probability(engine):
-    """Less time = more certain = higher probability.
-
-    Distance/ATR chosen so both probabilities stay below the final logit clamp;
-    saturation would tie p1 == p2 and break the strict comparison.
-    """
+    """Less time = more certain = higher probability."""
     p1 = engine.compute_probability(66430, 66400, 240, 30)
     p2 = engine.compute_probability(66430, 66400, 60, 30)
     assert p2 > p1
-
-def test_momentum_nudges_probability(engine):
-    """Bullish indicators slightly increase P(Up)."""
-    p_neutral = engine.compute_probability(66400, 66400, 180, 30, _make_indicators())
-    p_bullish = engine.compute_probability(66400, 66400, 180, 30,
-                                           _make_indicators(rsi_score=0.8, macd_score=0.9))
-    assert p_bullish > p_neutral
-
-def test_no_edge_when_momentum_alone(engine):
-    """Indicators alone (BTC at strike) shouldn't create enough edge to trade at 50/50."""
-    signal = engine.evaluate(
-        _make_indicators(rsi_score=1.0, macd_score=1.0, stoch_score=1.0, obv_score=1.0, vwap_score=1.0),
-        has_position=False, in_entry_window=True,
-        btc_price=66400, strike_price=66400,
-        seconds_remaining=180, market_price_up=0.50, market_price_down=0.50)
-    # No closes ⇒ regime=0 ⇒ L4 weight dampened to 0.5×0.08; the resulting logit
-    # nudge moves P(Up) only a few points off 0.5, under the 0.10 min_edge.
-    assert signal.action == "SKIP"
 
 
 # --- evaluate_hold tests ---
@@ -120,7 +91,7 @@ def test_hold_when_model_confident(engine):
 def test_exit_in_profitable_scalp_window(engine):
     """Edge in (-0.05, -0.10) is the empirically profitable scalp zone → EXIT.
 
-    Model ~60% (BTC barely above strike) but market priced at 67% → edge ~-0.07,
+    Model ~60% (BTC barely above strike) but market priced at 67% → edge ~-0.08,
     which sits inside the scalp-correct zone (-0.10 < edge <= effective threshold).
     """
     action, _prob, edge, _ = engine.evaluate_hold(
@@ -130,9 +101,8 @@ def test_exit_in_profitable_scalp_window(engine):
     assert -0.10 < edge < 0.0
 
 
-def test_deep_loss_holds_to_resolution_when_model_still_gives_chance(engine):
-    """Edge < -0.10 AND model_prob still ≥ 0.05 → HOLD (binary residual is real)."""
-    # Modest distance + high ATR keeps model_prob well above the dead-side floor.
+def test_deep_loss_holds_to_resolution_when_underwater(engine):
+    """Edge < deep_loss_hold_threshold AND market < entry → HOLD (binary residual is real)."""
     # entry_price above the current market → we're genuinely underwater, which is
     # the deep-loss-hold precondition (market < entry).
     action, _prob, edge, reason = engine.evaluate_hold(
@@ -144,28 +114,21 @@ def test_deep_loss_holds_to_resolution_when_model_still_gives_chance(engine):
     assert "deeply underwater" in reason
 
 
-def test_deep_loss_exits_when_model_says_side_is_dead():
-    """Edge < -0.10 AND calibrated prob ≤ calibrator's lowest learned knot → EXIT.
-
-    With a fitted isotonic calibrator, a calibrated probability at or below the
-    lowest learned knot is a credible "the side really will pay zero" signal;
-    selling at market beats holding for ~$0 expected — the override that keeps
-    the deep-loss-hold rule from trapping a dead side to expiry. Uses a stub
-    calibrator so the test is independent of fit-data shape.
-    """
-    class _StubCal:
-        is_identity = False
-        lowest_learned_prob = 0.05
-        def calibrate(self, p):
-            # Isotonic clips below-floor inputs to the lowest learned y_threshold.
-            return max(0.05, p)
-
-    se = SignalEngine(min_edge=0.10, kelly_fraction=0.15, momentum_weight=0.08,
-                     calibrator=_StubCal())
-    action, _prob, _edge, _ = se.evaluate_hold(
+def test_deep_loss_holds_even_when_model_says_side_is_dead():
+    """The deep-loss-hold branch is unconditional: even with the model giving the
+    side essentially zero chance, market < entry AND edge < deep_loss_hold_threshold
+    → HOLD the binary residual (no calibrator dead-side override exists)."""
+    se = SignalEngine(min_edge=0.10, kelly_fraction=0.15)
+    # BTC $200 below strike with 2 min left → model P(Up) ≈ 0; entered at 0.70,
+    # marked 0.30 → deeply underwater.
+    action, prob, edge, reason = se.evaluate_hold(
         _make_indicators(atr_value=30), btc_price=66200, strike_price=66400,
-        seconds_remaining=120, market_price_for_side=0.30, side="Up", exit_threshold=-0.05)
-    assert action == "EXIT"
+        seconds_remaining=120, market_price_for_side=0.30, side="Up",
+        exit_threshold=-0.05, entry_price=0.70)
+    assert prob < 0.05
+    assert edge < -0.10
+    assert action == "HOLD"
+    assert "deeply underwater" in reason
 
 def test_evaluate_hold_stamps_effective_exit_threshold(engine):
     """evaluate_hold must stamp last_effective_exit_threshold (the blended
@@ -281,25 +244,12 @@ def test_regime_factor_insufficient_data():
     assert factor == 0.0
 
 
-# --- Order flow integration tests ---
-
-def test_flow_signal_bullish():
-    # Inputs sized so the L1 logit stays well below the final clamp — otherwise
-    # both probs saturate at the same ceiling and the flow contribution is lost.
-    se = SignalEngine(flow_weight=0.06)
-    prob_neutral = se.compute_probability(71050, 71000, 180, 80.0, flow_signal=0.0)
-    prob_bullish = se.compute_probability(71050, 71000, 180, 80.0, flow_signal=1.0)
-    assert prob_bullish > prob_neutral  # bullish flow increases P(Up)
-
-
 # --- ATR gate tests ---
 
 def test_atr_gate_blocks_entry():
     se = SignalEngine(min_edge=0.10)
     indicators = {
         "atr": {"atr": 5.0, "passes": False, "reason": "too_quiet"},
-        "rsi": {"score": 0}, "macd": {"score": 0}, "stochastic": {"score": 0},
-        "obv": {"score": 0}, "vwap": {"score": 0},
     }
     signal = se.evaluate(indicators, has_position=False, in_entry_window=True,
                          btc_price=71500, strike_price=71000,
@@ -313,8 +263,7 @@ def test_atr_gate_blocks_entry():
 def test_evaluate_hold_fee_aware_threshold():
     """Smoke: evaluate_hold accepts entry_price/fee_rate and returns a valid action."""
     se = SignalEngine()
-    indicators = {"atr": {"atr": 50.0}, "rsi": {"score": 0}, "macd": {"score": 0},
-                  "stochastic": {"score": 0}, "obv": {"score": 0}, "vwap": {"score": 0}}
+    indicators = {"atr": {"atr": 50.0}}
     action1, _, _, _ = se.evaluate_hold(indicators, 71100, 71000, 180, 0.60, "Up",
                                         exit_threshold=-0.10, entry_price=0.0)
     action2, _, _, _ = se.evaluate_hold(indicators, 71100, 71000, 180, 0.60, "Up",
@@ -323,38 +272,10 @@ def test_evaluate_hold_fee_aware_threshold():
     assert action2 in ("HOLD", "EXIT")
 
 
-# --- Logit-composition + math invariants ---
-
-def test_regime_direction_from_returns_not_prob():
-    """Trending DOWN + above strike → prob should DECREASE."""
-    se = SignalEngine(regime_weight=0.05)
-    # BTC above strike but trending down (closes decreasing, need lookback+2 closes)
-    closes = np.array([67000 - i * 2.0 for i in range(55)])  # trending down, stays positive
-    prob_no_regime = se.compute_probability(66450, 66400, 180, 30.0)
-    prob_with_regime = se.compute_probability(66450, 66400, 180, 30.0, closes=closes)
-    # Down-trending regime should push prob_up LOWER, not higher
-    assert prob_with_regime < prob_no_regime
-
-
-def test_logit_dampening_near_extremes():
-    """Same flow_signal produces smaller prob shift at p~0.95 vs p~0.50."""
-    se = SignalEngine(flow_weight=0.06)
-    # Near p=0.5 (BTC at strike)
-    p_base_mid = se.compute_probability(66400, 66400, 180, 30.0, flow_signal=0.0)
-    p_flow_mid = se.compute_probability(66400, 66400, 180, 30.0, flow_signal=1.0)
-    shift_mid = abs(p_flow_mid - p_base_mid)
-
-    # Near p=0.95 (BTC well above strike)
-    p_base_high = se.compute_probability(66600, 66400, 60, 30.0, flow_signal=0.0)
-    p_flow_high = se.compute_probability(66600, 66400, 60, 30.0, flow_signal=1.0)
-    shift_high = abs(p_flow_high - p_base_high)
-
-    # Logit-space adjustment should produce SMALLER shift near extremes
-    assert shift_high < shift_mid
-
+# --- Math invariants ---
 
 def test_kelly_gate_rejects_thin_edge_at_high_price():
-    """At strike with no indicators, prob~0.50, edge~0 → SKIP."""
+    """At strike, prob~0.50, edge~0 → SKIP."""
     se = SignalEngine(min_edge=0.03, min_kelly=0.015)
     signal = se.evaluate(_make_indicators(atr_value=50), has_position=False, in_entry_window=True,
                          btc_price=66400, strike_price=66400,
@@ -397,16 +318,11 @@ def test_skip_signal_carries_the_side_its_prob_refers_to():
     the SKIP signal's prob is the Up side's sub-50% value — and signal.side must
     say so. A prob>=0.5 display heuristic would label it as a high-prob Up call
     and read like a sign-inverted model."""
-    class _ClampCal:  # the production curve's [0.15, 0.85] output clamp
-        def calibrate(self, p):
-            return min(0.85, max(0.15, p))
-
-    se = SignalEngine(min_edge=0.04, kelly_fraction=0.15, momentum_weight=0.0,
-                      min_model_probability=0.56, calibrator=_ClampCal())
-    # BTC far below strike → calibrated P(down)=0.85. Down overpriced (0.95) →
-    # its edge is negative; Up underpriced (0.05) → the small positive edge wins
-    # the edge race carrying the 0.15 long-shot prob.
-    sig = se.evaluate(_make_indicators(atr_value=30), has_position=False, in_entry_window=True,
+    se = SignalEngine(min_edge=0.04, kelly_fraction=0.15, min_model_probability=0.56)
+    # High ATR keeps P(Up) ≈ 0.29 — a long shot but far from zero. Down overpriced
+    # (0.95) → its edge is negative; Up underpriced (0.05) → the positive edge wins
+    # the edge race carrying the sub-50% long-shot prob.
+    sig = se.evaluate(_make_indicators(atr_value=400), has_position=False, in_entry_window=True,
                       btc_price=66200, strike_price=66400, seconds_remaining=120,
                       market_price_up=0.05, market_price_down=0.95)
     assert sig.action == "SKIP"
@@ -414,7 +330,7 @@ def test_skip_signal_carries_the_side_its_prob_refers_to():
     assert sig.side == "Up", "signal must label the side its prob refers to"
 
     # Symmetric sanity: fair pricing → edge-best side is the model's side.
-    sig2 = se.evaluate(_make_indicators(atr_value=30), has_position=False, in_entry_window=True,
+    sig2 = se.evaluate(_make_indicators(atr_value=400), has_position=False, in_entry_window=True,
                        btc_price=66200, strike_price=66400, seconds_remaining=120,
                        market_price_up=0.5, market_price_down=0.5)
     assert sig2.side == "Down"

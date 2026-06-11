@@ -1,9 +1,8 @@
-"""Single source of truth for all pipeline-tunable parameters.
+"""Single source of truth for parameter defaults and ranges.
 
-Every file that needs param ranges, defaults, or yaml paths reads from here.
-Adding a new tunable param = add one ParamSpec row. Nothing else needs updating
-(loader validation, CLAMP_RANGES, _config_for_helper, _backtest_single_change,
-and the Claude system-prompt param list all derive from this table).
+All knobs are operator-owned — the nightly knob-tuning pipeline was deleted
+with the entry-side prediction stack (entry forecasting has no edge over the
+CLOB price; tasks/goal.md). Ranges are kept for loader validation only.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -11,70 +10,36 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ParamSpec:
-    name: str        # matches signal_engine attribute name and recommendation key
-    yaml_key: str    # dotted path in settings.yaml (may differ from name, e.g. kelly_fraction)
+    name: str        # matches signal_engine attribute name
+    yaml_key: str    # dotted path in settings.yaml
     lo: float | int
     hi: float | int
-    cast: type       # int or float — applied when clamping and in _config_for_helper
-    default: Any     # fallback when signal_engine attribute is missing
-    description: str # shown in Claude system prompt
+    cast: type       # int or float — applied during loader validation
+    default: Any
+    description: str
 
-PIPELINE_PARAMS: tuple[ParamSpec, ...] = (
-    # ── Layer 1 ─────────────────────────────────────────────────────────────
-    ParamSpec("atr_sigma_ratio",         "signal.atr_sigma_ratio",         1.2,   2.5,   float, 1.3,   "L1 aggressiveness — lower = sharper probs (HIGHEST leverage)"),
-    ParamSpec("student_t_df",            "signal.student_t_df",            3,     8,     int,   5,     "L1 tail fatness — lower = fatter tails (BTC kurtosis target)"),
+# Validated knobs: settings.yaml values must land inside these ranges at load.
+VALIDATED_PARAMS: tuple[ParamSpec, ...] = (
+    # ── L1 (the only model) ──────────────────────────────────────────────────
+    ParamSpec("atr_sigma_ratio",         "signal.atr_sigma_ratio",         1.2,   2.5,   float, 1.3,   "L1 aggressiveness — lower = sharper probs"),
+    ParamSpec("student_t_df",            "signal.student_t_df",            3,     8,     int,   5,     "L1 tail fatness — lower = fatter tails"),
     ParamSpec("min_atr",                 "signal.min_atr",                 8.0,   25.0,  float, 12.0,  "static ATR floor; runtime uses max(min_atr, 0.3 × rolling_20)"),
-    # ── Logit amplifier ─────────────────────────────────────────────────────
-    ParamSpec("logit_scale",             "signal.logit_scale",             2.0,   5.0,   float, 4.0,   "master amplifier on all L2–L5 weights"),
-    # ── Layer 2–5 weights ───────────────────────────────────────────────────
-    ParamSpec("regime_weight",           "signal.regime_weight",           0.01,  0.15,  float, 0.03,  "L2 regime autocorr × direction"),
-    ParamSpec("flow_weight",             "signal.flow_weight",             0.02,  0.12,  float, 0.04,  "L3 CLOB book imbalance + trade flow"),
-    ParamSpec("spot_flow_weight",        "signal.spot_flow_weight",        0.01,  0.15,  float, 0.10,  "L3b Coinbase CVD + taker ratio"),
-    ParamSpec("prev_margin_weight",      "signal.prev_margin_weight",      0.01,  0.05,  float, 0.02,  "L5 prev-window resolution margin carry"),
-    ParamSpec("momentum_weight",         "signal.momentum_weight",         0.0,   0.10,  float, 0.04,  "L4 indicator magnitude"),
+    ParamSpec("atr_regime_shift_threshold", "signal.atr_regime_shift_threshold", 0.40, 0.80, float, 0.60,
+              "rolling/long-term ATR ratio below this widens the ATR floor (L1 vol-shift guard)"),
     # ── Sizing ──────────────────────────────────────────────────────────────
-    ParamSpec("kelly_fraction",          "math.kelly_fraction",            0.05,  0.18,  float, 0.08,  "Kelly sizing fraction — leave unchanged unless strong drawdown evidence"),
-    # ── Entry gates (pipeline-tunable since ghosts are in the backtest) ─────
+    ParamSpec("kelly_fraction",          "math.kelly_fraction",            0.04,  0.18,  float, 0.08,  "Kelly sizing fraction"),
+    # ── Entry gates ─────────────────────────────────────────────────────────
     ParamSpec("min_edge",                "signal.min_edge",                0.02,  0.10,  float, 0.04,  "minimum model–market edge to enter"),
     ParamSpec("min_kelly",               "signal.min_kelly",               0.005, 0.04,  float, 0.01,  "minimum Kelly fraction to enter"),
     ParamSpec("min_model_probability",   "signal.min_model_probability",   0.52,  0.70,  float, 0.56,  "minimum model probability to enter"),
-    # ── Exit / scalp threshold ──────────────────────────────────────────────
-    # TIGHT bound — directly changes realized P&L. Lower (more negative) = hold
-    # longer through noise; upper (less negative) = exit faster on any tick against.
-    ParamSpec("exit_edge_threshold",     "signal.exit_edge_threshold",     -0.10, -0.03, float, -0.07, "holding_edge floor before scalping; blended with exit_boundary curve"),
-    # ── Promoted structural constants (pipeline-searchable, model invariants protected by ranges) ──
-    ParamSpec("regime_momentum_threshold", "signal.regime_momentum_threshold", 0.08, 0.25, float, 0.15,
-              "|autocorr| threshold separating noise band from real regime (L2/L4)"),
-    ParamSpec("final_logit_clamp",       "signal.final_logit_clamp",       3.0,   5.0,   float, 4.0,
-              "absolute clamp on stacked logit before sigmoid (precision floor on extreme probs)"),
-    ParamSpec("l5_regime_damp_cap",      "signal.l5_regime_damp_cap",      0.4,   0.9,   float, 0.7,
-              "max damp applied to L5 by |regime| (L5 retains 1 − min(cap, |regime|) of its weight)"),
-    ParamSpec("atr_regime_shift_threshold","signal.atr_regime_shift_threshold",0.40,0.80,float,0.60,
-              "rolling/long-term ATR ratio below this widens the ATR floor (L1 vol-shift guard)"),
-    # ── L6 derived feature weights (default 0.0 — layer inert until pipeline raises one) ──
-    # Each scaled by logit_scale; combined L6 hard-clamped to ±0.25 logits.
-    ParamSpec("derived_log_atr_ratio_weight",         "signal.derived.log_atr_ratio",         0.0, 0.05, float, 0.0,
-              "L6 log(ATR_short/ATR_long) — vol regime indicator, clipped to ±1.5"),
-    ParamSpec("derived_autocorr_signed_mag_weight",   "signal.derived.autocorr_signed_mag",   0.0, 0.05, float, 0.0,
-              "L6 regime × tanh(last_return × 100) — direction-aware momentum strength"),
-    ParamSpec("derived_flow_disagreement_weight",     "signal.derived.flow_disagreement",     0.0, 0.05, float, 0.0,
-              "L6 tanh(flow + spot_flow) — direction-aware flow consensus"),
+    # ── Exit / scalp threshold (the edge — Phase 3 replaces the hand curve) ─
+    ParamSpec("exit_edge_threshold",     "signal.exit_edge_threshold",     -0.10, -0.03, float, -0.10, "holding_edge floor before scalping; blended with exit_boundary curve"),
 )
 
-# Crisis halving may persist kelly_fraction down to this floor — below the
-# optimizer-tunable range, so loader validation bounds kelly_fraction here.
-CRISIS_KELLY_FLOOR: float = 0.04
+# ── Derived lookups ──────────────────────────────────────────────────────────
+BY_NAME: dict[str, ParamSpec] = {p.name: p for p in VALIDATED_PARAMS}
 
-# ── Derived lookups (everything else imports these, not PIPELINE_PARAMS directly) ──
-BY_NAME: dict[str, ParamSpec] = {p.name: p for p in PIPELINE_PARAMS}
-
-# Format used by claude_client and local_recommender: name → (lo, hi, cast)
-CLAMP_RANGES: dict[str, tuple] = {p.name: (p.lo, p.hi, p.cast) for p in PIPELINE_PARAMS}
-
-# Set of tunable param names for O(1) membership tests
-TUNABLE_NAMES: frozenset[str] = frozenset(p.name for p in PIPELINE_PARAMS)
-
-# ── Manual-only param defaults ────────────────────────────────────────────────
+# ── Operator-owned defaults without ranges ───────────────────────────────────
 _MANUAL_DEFAULTS: dict[str, Any] = {
     # Exit / hold policy
     "max_edge": 0.20,
@@ -82,112 +47,29 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     "loss_cut_time_s": 90.0,
     "adverse_selection_threshold": 0.80,
     "edge_decay_threshold": -0.05,
-    # Exit/hold magnitude outside the exit-boundary curve, plus the entry-timing
-    # envelope and flip hurdle: the backtest can't re-simulate the hold branch, the
-    # time-of-window multiplier, or the flip hurdle, so these are operator-owned.
     "deep_loss_hold_threshold": -0.10,
+    # Entry-timing envelope + flip hurdle
     "normal_fraction": 0.60,
     "late_max_penalty": 0.30,
     "flip_edge_premium": 0.015,
     # Risk caps
     "max_concurrent_positions": 2,
     "max_bankroll_deployed": 0.80,
-    # Schedule (operator-owned; mirror settings.yaml so a missing key falls back coherently)
+    # Schedule (mirror settings.yaml so a missing key falls back coherently)
     "trading_start_hour_et": 0,
     "trading_start_minute": 1,
     "trading_end_hour_et": 23,
     "trading_end_minute": 30,
-    # Signal/regime knobs (not pipeline-tunable)
+    # L1 vol-scale autocorr window
     "regime_lookback": 50,
-    "consensus_dead_zone": 0.05,
-    # Indicator weight dict — mirrors settings.yaml runtime values.
-    "weights": {"rsi": 0.20, "macd": 0.30, "stochastic": 0.15, "obv": 0.15, "vwap": 0.20},
-    # Consensus-Kelly multiplier ladder. Mirrors settings.yaml signal.consensus.
-    # Single source of truth — signal_engine reads via default_for("consensus_config").
-    "consensus_config": {
-        "very_high_pct": 0.80, "very_high_mult": 1.3,
-        "high_pct": 0.60,      "high_mult": 1.0,
-        "medium_pct": 0.40,    "medium_mult": 0.8,
-        "low_mult": 0.6,
-    },
     # Circuit breaker (dotted access)
     "circuit_breaker.floor_pct": 0.85,
     "circuit_breaker.min_multiplier": 0.40,
 }
 
-# Unified defaults map: pipeline params + manual params.
-DEFAULTS: dict[str, Any] = {p.name: p.default for p in PIPELINE_PARAMS} | _MANUAL_DEFAULTS
+# Unified defaults map.
+DEFAULTS: dict[str, Any] = {p.name: p.default for p in VALIDATED_PARAMS} | _MANUAL_DEFAULTS
 
 def default_for(name: str) -> Any:
     """Canonical default for a parameter, by name. Single source of truth."""
     return DEFAULTS[name]
-
-
-# ── Manual-only params (operator-owned, never pipeline-touched) ─────────────
-# Claude/local recommenders may propose these, but the validator reroutes them
-# from `changes` into `manual_observations` so the operator reviews them. The
-# backtest can't simulate exit/timing/schedule changes, so adopting them would
-# bypass the adoption gate. Single source of truth — claude_client imports this.
-MANUAL_ONLY_PARAMS: frozenset[str] = frozenset({
-    # Exit / hold policy. exit_edge_threshold is the ONLY pipeline-tunable exit knob
-    # (it has a counterfactual backtest path; see PIPELINE_PARAMS + §6). The loss-cut
-    # magnitudes and the deep-loss-hold threshold stay operator-owned: the backtest
-    # replays a single stored fill and cannot re-simulate the hold/exit branches.
-    "loss_cut_fraction",
-    "loss_cut_time_s",
-    "deep_loss_hold_threshold",
-    # Entry-timing envelope + flip hurdle. The backtest applies raw Kelly sizing and
-    # entry gates only — it models neither the time-of-window multiplier nor the flip
-    # hurdle, so a change to these yields zero backtest delta (never adoptable).
-    "normal_fraction",
-    "late_max_penalty",
-    "flip_edge_premium",
-    # Entry-time filters (informed flow, stale price, late-window underdog)
-    "adverse_selection_threshold",
-    "edge_decay_threshold",
-    "max_edge",
-    # Schedule
-    "trading_start_hour_et",
-    "trading_start_minute",
-    "trading_end_hour_et",
-    "trading_end_minute",
-    # Risk caps (operator-owned policy)
-    "max_concurrent_positions",
-    "max_bankroll_deployed",
-    # Signal/regime knobs (not pipeline-tunable)
-    "regime_lookback",
-    "consensus_dead_zone",
-    # Circuit breaker (bankroll protection)
-    "circuit_breaker.floor_pct",
-    "circuit_breaker.min_multiplier",
-    # Indicator periods — backtest replays stored scores at the active period;
-    # alternate periods would need raw 1-min candles per snapshot.
-    "indicators.rsi.period",
-    "indicators.rsi.overbought",
-    "indicators.rsi.oversold",
-    "indicators.macd.fast_period",
-    "indicators.macd.slow_period",
-    "indicators.macd.signal_period",
-    "indicators.stochastic.k_period",
-    "indicators.stochastic.d_smoothing",
-    "indicators.stochastic.overbought",
-    "indicators.stochastic.oversold",
-    "indicators.ema.fast_period",
-    "indicators.ema.slow_period",
-    "indicators.ema.chop_threshold",
-    "indicators.obv.slope_period",
-    "indicators.atr.period",
-    "indicators.atr.low_percentile",
-    "indicators.atr.history_periods",
-    # SPRT — controls intra-window entry timing; backtest replays a single
-    # stored fill instant, so alternate timings produce uncomparable fills.
-    "sprt.alpha",
-    "sprt.beta",
-    "sprt.observation_interval_s",
-    "sprt.min_confidence",
-}) - TUNABLE_NAMES  # tunable wins over manual if both lists ever overlap
-
-
-def is_manual_only(name: str) -> bool:
-    """True iff a parameter is operator-owned (rerouted out of `changes`)."""
-    return name in MANUAL_ONLY_PARAMS

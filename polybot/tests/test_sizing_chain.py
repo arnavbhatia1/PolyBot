@@ -6,9 +6,8 @@ class TestSizingChainRegression:
 
     def _make_engine(self, **overrides):
         defaults = dict(
-            min_edge=0.04, kelly_fraction=0.15, momentum_weight=-0.02,
-            min_model_probability=0.58, student_t_df=5, regime_weight=0.03,
-            flow_weight=0.04, min_kelly=0.015, atr_sigma_ratio=1.4, min_atr=8.0,
+            min_edge=0.04, kelly_fraction=0.15, min_model_probability=0.58,
+            student_t_df=5, min_kelly=0.015, atr_sigma_ratio=1.4, min_atr=8.0,
         )
         defaults.update(overrides)
         return SignalEngine(**defaults)
