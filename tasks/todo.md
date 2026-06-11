@@ -9,13 +9,18 @@ Edge verdict + diagnostic evidence: `tasks/goal.md` (2026-06-10, fable_dev).
 - [ ] First pipeline run on fable_dev's symmetric exit replay: exit_edge_threshold candidates now
       produce nonzero deltas in both directions (previously structurally 0 for less-patient values)
       — confirm decisions look sane against the sweep numbers in tasks/goal.md.
+- [ ] Verify the hold-CF keying fix on live records (fixed 06-10 evening): new hold-type CFs must
+      carry the resolving position's id — expect no new duplicate pids in counterfactuals/ and
+      ~100% CF coverage of resolutions (was 298 dups + 355 missing from flip re-entry mis-keying).
 
 ## Research (exit engine — the validated edge)
 
-- [ ] ITM patience: 409/653 ITM scalps would have resolved $1 (model pessimism mid-window wrong
-      63%). Explore a stronger ExitBoundary resolution premium; validate via symmetric replay only.
 - [ ] Latency thesis: test `cross_venue_gap` / `fast_realized_vol_60s` (already in CF aux context)
-      as exit-trigger refinements.
+      as exit-trigger refinements — formal design is E3 in tasks/goal.md; needs ~2-3 weeks of
+      post-fix hold-CF records before the split test is meaningful.
+- [ ] New-signal experiments E1 (out-of-band price-sum recorder), E2 (CLOB depth + book-age
+      stamping), E4 (perp basis tilt) designed and ready in tasks/goal.md — implement the
+      recording only when choosing to run one; do not implement speculatively.
 
 - [ ] Bot restart pending — the running process predates today's Part B fixes; everything loads at
       the automatic 12:01 AM ET restart (`run_polybot.ps1`). Nothing to do unless restarting early.
@@ -42,8 +47,28 @@ Edge verdict + diagnostic evidence: `tasks/goal.md` (2026-06-10, fable_dev).
       → then start tiny ($50-100) with real USDC as live-data collection (no live DB exists yet).
       Realistic timeline ~2-3 weeks from 06-09.
 
+## Refuted (don't re-chase without new evidence — details in tasks/goal.md)
+
+- ITM patience: the +$1,914 ITM-scalp "headroom" is oracle-only. Every "never scalp above X"
+  rule is net negative (-$865 at mp>=0.60, -$150 at mp>=0.75; negative 9-10/14 days); the
+  threshold family can't separate wrong from right ITM scalps (he distributions overlap).
+  Best boundary tweak (+$156, itm_start 0.65/damp 0.7) failed day-clustered test (t=1.57,
+  8/14 days, 63% of gain from one day). Exit boundary stays as-is.
+- L1-only entry model: beats the full stack (Brier 0.2334 vs 0.2349) but loses to the market
+  price with significance (paired per-day Brier, t=2.23). No entry-side rebuild can help.
+  Also refuted as a DELETION (06-10 adoption-replay test): z=-0.30 / day-t=-3.0 on the
+  trailing-200 pool, sign flips with calibrator — L2-L6 stay.
+- Segmented entry edge: zero of 44 segments (regime/time/ATR/depth/spread/distance, raw + L1)
+  beat the market day-clustered; market-better t=3.7-4.4 overall. No pocket exists.
+- Near-expiry phantom fade: sides >=0.85 with <90s left win 95.1% vs price 0.955; fading nets
+  -0.49/$1 (t=-4.35). Cross-book in-band price-sum arb: $0 (sum truncated at 1.01/1.02).
+
 ## Deferred / known-and-accepted (context, not tasks)
 
+- Pre-06-05 counterfactual records carry pnl at the old 0.018 fee basis (outcome restamp never
+  touched CF arms; proven exactly — per-pid gaps equal fees*(1-0.018/0.07)). Inflates CF arms
+  ~2pp gain on those days in any arm-swapping replay; decays out of the 60-day window; left
+  unmutated by choice. Fee-corrected exit-edge numbers reported alongside in tasks/goal.md.
 - Ghost censoring at min_edge/min_kelly boundary: those two knobs are only evaluable upward.
 - L2 direction carries a small Coinbase-vs-Binance basis bias (direction-conditional; calibrator
   can't see it). 200-sample "long-term" ATR buffer spans ~3 min → regime-shift floor + L3b
