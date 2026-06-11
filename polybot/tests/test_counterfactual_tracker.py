@@ -124,6 +124,78 @@ def test_stale_entries_dropped(tracker):
     assert tracker.watching_count == 0
 
 
+# --- hold-moment tracking across flip re-entries (mis-keying guard) ---
+
+def _make_hold_ctx(**overrides):
+    base = {
+        "holding_edge": -0.05, "model_prob": 0.55, "market_price": 0.50,
+        "seconds_remaining": 120, "exit_threshold": -0.10,
+        "strike_price": 42500.0, "btc_price": 42490.0,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_reentry_replaces_prior_positions_worst_moment(tracker):
+    """A flip re-entry must never inherit the previous position's worst moment,
+    even when the prior moment had a deeper holding_edge."""
+    mid = "btc-updown-5m-1000000"
+    pos1 = _make_pos(market_id=mid)
+    pos2 = _make_pos(market_id=mid, side="Down", entry_price=0.55)
+    pos2["id"] = 2
+    tracker.track_hold_moment(mid, pos1, _make_hold_ctx(holding_edge=-0.30))
+    tracker.track_hold_moment(mid, pos2, _make_hold_ctx(holding_edge=-0.05))
+    worst = tracker._hold_worst[mid]
+    assert worst["position_id"] == 2
+    assert worst["side"] == "Down"
+    assert worst["worst_holding_edge"] == -0.05
+
+
+def test_watch_clears_scalped_positions_hold_state(tracker):
+    """Scalping a position discards its hold-worst state; a later position's
+    state in the same market is left alone."""
+    mid = "btc-updown-5m-1000000"
+    pos1 = _make_pos(market_id=mid)
+    tracker.track_hold_moment(mid, pos1, _make_hold_ctx(holding_edge=-0.30))
+    tracker.watch(pos1, _make_scalp_ctx())
+    assert mid not in tracker._hold_worst
+
+    pos2 = _make_pos(market_id=mid)
+    pos2["id"] = 2
+    tracker.track_hold_moment(mid, pos2, _make_hold_ctx(holding_edge=-0.10))
+    tracker.watch(pos1, _make_scalp_ctx())  # stale watch for pos1 must not evict pos2
+    assert tracker._hold_worst[mid]["position_id"] == 2
+
+
+def test_record_hold_resolution_keys_to_resolving_position(tracker, memory_dir):
+    """The full flip sequence: pos1 holds (deep worst) then scalps, pos2 re-enters
+    and resolves — the hold CF must carry pos2's identity, never pos1's."""
+    mid = "btc-updown-5m-1000000"
+    pos1 = _make_pos(market_id=mid)
+    pos2 = _make_pos(market_id=mid, side="Down", entry_price=0.55, size=110.0)
+    pos2["id"] = 2
+    tracker.track_hold_moment(mid, pos1, _make_hold_ctx(holding_edge=-0.30))
+    tracker.watch(pos1, _make_scalp_ctx())
+    tracker.track_hold_moment(mid, pos2, _make_hold_ctx(holding_edge=-0.08, market_price=0.60))
+    record = tracker.record_hold_resolution(mid, 1.0, 25.0, 0.227, position_id=2)
+    assert record is not None
+    assert record["position_id"] == 2
+    assert record["side"] == "Down"
+    assert record["actual"]["pnl"] == 25.0
+    assert record["context_at_worst_moment"]["holding_edge"] == -0.08
+
+
+def test_record_hold_resolution_drops_mismatched_position(tracker, memory_dir):
+    """If the tracked moments belong to a different position (re-entry resolved
+    before its first HOLD tick), no record is written — arms never mix."""
+    mid = "btc-updown-5m-1000000"
+    tracker.track_hold_moment(mid, _make_pos(market_id=mid), _make_hold_ctx())
+    record = tracker.record_hold_resolution(mid, 1.0, 25.0, 0.227, position_id=2)
+    assert record is None
+    assert list((memory_dir / "counterfactuals").glob("*.json")) == []
+    assert mid not in tracker._hold_worst  # consumed either way
+
+
 # --- load_all() ---
 
 def test_load_all_returns_sorted(tracker, memory_dir):

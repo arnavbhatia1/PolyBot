@@ -117,6 +117,10 @@ class CounterfactualTracker:
             "aux_signals": dict(aux_signals or {}),
             "watched_at": time.time(),
         }
+        # This position is no longer held — its worst-moment state must not
+        # survive to be attributed to a later re-entry in the same window.
+        if self._hold_worst.get(market_id, {}).get("position_id") == position_id:
+            self._hold_worst.pop(market_id, None)
         self._schedule_save_watchlist()
         # Debug-level: the SCALP block already emitted this exit context to the console.
         logger.debug(
@@ -145,6 +149,12 @@ class CounterfactualTracker:
         holding_edge = hold_context.get("holding_edge", 0)
         current = self._hold_worst.get(market_id)
 
+        # A flip re-entry reuses the market_id. A surviving worst-moment from the
+        # previous position would mis-key the resolution record to that position
+        # (wrong id/side/entry/shares), so a position change always starts fresh.
+        if current is not None and current.get("position_id") != pos.get("id", 0):
+            current = None
+
         if current is None or holding_edge < current["worst_holding_edge"]:
             self._hold_worst[market_id] = {
                 "position_id": pos.get("id", 0),
@@ -170,7 +180,8 @@ class CounterfactualTracker:
             }
 
     def record_hold_resolution(self, market_id: str, resolution_price: float,
-                               actual_pnl: float, actual_gain_pct: float) -> dict[str, Any] | None:
+                               actual_pnl: float, actual_gain_pct: float,
+                               position_id: Any | None = None) -> dict[str, Any] | None:
         """Record counterfactual for a position that was held to resolution.
 
         Computes what would have happened if the bot had scalped at the worst
@@ -180,6 +191,15 @@ class CounterfactualTracker:
         """
         ctx = self._hold_worst.pop(market_id, None)
         if ctx is None:
+            return None
+        # Never mix arms across positions: if the tracked moments belong to a
+        # different position in this window (re-entry that resolved before its
+        # first HOLD tick), there is no valid counterfactual for the resolver.
+        if position_id is not None and ctx.get("position_id") != position_id:
+            logger.debug(
+                f"HOLD CF dropped for {_slug_to_window(market_id)}: tracked position "
+                f"{ctx.get('position_id')} != resolving position {position_id}"
+            )
             return None
 
         # Hypothetical scalp PnL at worst moment

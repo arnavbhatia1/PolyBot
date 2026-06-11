@@ -1986,7 +1986,7 @@ async def _resolve_expired_position(
                               exit_reason="resolution", pnl=pnl, fees=total_fees)
         if counterfactual_tracker:
             counterfactual_tracker.record_hold_resolution(
-                pos["market_id"], exit_price, pnl, gain_pct)
+                pos["market_id"], exit_price, pnl, gain_pct, position_id=pos["id"])
         # Track resolution margin (final - strike) for next window's L5 carry —
         # from event_metadata regardless of which branch above set exit_price.
         meta = live.get("event_metadata")
