@@ -99,27 +99,6 @@ class CoinbaseFeed:
             total += sz
         return total
 
-    def get_cvd_acceleration(self, recent_s: float = 15.0, baseline_s: float = 45.0,
-                             min_recent_trades: int = 10) -> float:
-        """First derivative of CVD. Returns 0 when the recent window is too thin
-        to trust — mirrors BinanceTradeAccumulator.get_cvd_acceleration semantics.
-        """
-        now = time.time()
-        recent = baseline = 0.0
-        recent_n = 0
-        for ts, sz in reversed(self._trades):
-            age = now - ts
-            if age <= recent_s:
-                recent += sz
-                recent_n += 1
-            elif age <= recent_s + baseline_s:
-                baseline += sz
-            else:
-                break
-        if recent_n < min_recent_trades or not self.covers(recent_s + baseline_s):
-            return 0.0
-        return recent / max(recent_s, 1.0) - baseline / max(baseline_s, 1.0)
-
     def realized_vol(self, window_s: float = 60.0) -> float:
         """Sample stdev of log returns over the 1s-bucketed price history in the
         window. 0.0 when fewer than 3 samples; gate on covers(window_s) to avoid

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import tempfile
 from pathlib import Path
 from typing import Any
 import yaml
@@ -17,19 +16,6 @@ def _get_nested(config: dict[str, Any], dotted_key: str) -> tuple[Any, bool]:
             return None, False
         current = current[k]
     return current, True
-
-def _set_nested_ruamel(doc: Any, dotted_key: str, value: Any) -> None:
-    """Set a value in a ruamel CommentedMap by dotted path, creating intermediate
-    maps so a fresh ParamSpec referencing a new nested section doesn't crash save_config.
-    """
-    from ruamel.yaml.comments import CommentedMap
-    keys = dotted_key.split(".")
-    d = doc
-    for k in keys[:-1]:
-        if k not in d:
-            d[k] = CommentedMap()
-        d = d[k]
-    d[keys[-1]] = value
 
 def validate_config(config: dict[str, Any]) -> None:
     errors: list[str] = []
@@ -103,52 +89,6 @@ def get_config() -> dict[str, Any]:
     if _config is None:
         return load_config()
     return _config
-
-def save_config(config: dict[str, Any], config_path: str | Path | None = None) -> None:
-    """Write runtime-adopted values back into settings.yaml, preserving all comments
-    (ruamel round-trip mode: load as CommentedMap, patch changed values, write back).
-    """
-    from ruamel.yaml import YAML
-    from polybot.paths import is_pipeline_frozen
-
-    # Freeze gate: every pipeline-adopted param write (optimizer, reverts, crisis
-    # kelly) is suppressed so the live strategy stays fixed. See paths.py.
-    if is_pipeline_frozen():
-        import logging
-        logging.getLogger("polybot").warning(
-            "PIPELINE FROZEN — save_config() suppressed; settings.yaml unchanged "
-            "(delete memory/state/PIPELINE_FROZEN to resume adoption)"
-        )
-        return
-
-    config_dir = Path(__file__).parent
-    if config_path is None:
-        config_path = config_dir / "settings.yaml"
-    config_path = Path(config_path)
-
-    ryaml = YAML()
-    ryaml.preserve_quotes = True
-    ryaml.width = 120
-
-    with open(config_path, "r") as f:
-        doc = ryaml.load(f)
-
-    from polybot.config.param_registry import VALIDATED_PARAMS
-    for spec in VALIDATED_PARAMS:
-        val, found = _get_nested(config, spec.yaml_key)
-        if found:
-            _set_nested_ruamel(doc, spec.yaml_key, spec.cast(val))
-
-    # Atomic write
-    fd, tmp_path = tempfile.mkstemp(suffix=".yaml", dir=str(config_path.parent))
-    try:
-        with os.fdopen(fd, "w") as f:
-            ryaml.dump(doc, f)
-        os.replace(tmp_path, str(config_path))
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
 
 def get_secret(key: str) -> str:
     value = os.environ.get(key)

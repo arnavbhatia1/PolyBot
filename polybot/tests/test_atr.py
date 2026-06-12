@@ -1,11 +1,5 @@
 import numpy as np
-from polybot.indicators.atr import compute_atr, compute_atr_gate
-
-def test_atr_positive():
-    h = np.array([float(100 + i % 3) for i in range(20)])
-    l = np.array([float(98 + i % 3) for i in range(20)])
-    c = np.array([float(99 + i % 3) for i in range(20)])
-    assert compute_atr(h, l, c, period=14) > 0
+from polybot.indicators.atr import compute_atr_gate
 
 def test_atr_gate_returns_bool_on_normal_volatility():
     h = np.array([float(100 + (i % 5)) for i in range(100)])

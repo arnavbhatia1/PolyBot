@@ -26,7 +26,6 @@ execution:
 
   # Paper mode realism (ignore for live)
   slippage_impact_pct: 0.03
-  backtest_realism_factor: 0.85
   paper_latency_mean_s: 0.22
   paper_latency_jitter_s: 0.12
   paper_network_fail_rate: 0.18
@@ -121,7 +120,6 @@ binance:
 
 binance_depth:
   ws_url: wss://stream.binance.com:9443/ws
-  rest_url: https://api.binance.com/api/v3
 
 binance_trades:
   ws_url: wss://stream.binance.com:9443/ws

@@ -231,7 +231,7 @@ polybot/
   main.py                      Trading loop, entry/exit/sizing orchestration
   config/                      settings.yaml, loader.py, param_registry.py (defaults + validation ranges)
   core/                        signal_engine (L1 + exit engine), exit_boundary, returns,
-                               adverse_selection, order_flow, calibrator (utility, unwired),
+                               adverse_selection, order_flow,
                                aux_layers (student_t_cdf, autocorr_vol_scale, compute_spot_flow_signal)
   feeds/                       coinbase_feed (primary BTC + CVD + 1s price history),
                                binance_feed (1m candles, ATR), binance_depth, binance_trades,
@@ -244,7 +244,8 @@ polybot/
   execution/                   base (BaseTrader, fee math), paper_trader, live_trader,
                                circuit_breaker, correlation
   agents/                      scheduler (NightlyScheduler), outcome_reviewer,
-                               counterfactual_tracker, ghost_tracker, pipeline_analytics
+                               counterfactual_tracker, ghost_tracker,
+                               pipeline_analytics (ET date helper for rollups)
   memory/                      outcomes/, ghost_outcomes/, counterfactuals/ (+ rollups);
                                exit_model/ (artifact + metrics); recordings/ (gitignored JSONL);
                                state/ (gate stats, adverse, staleness, prev margin, ...)
@@ -252,9 +253,11 @@ polybot/
   discord_bot/                 monitoring + control commands (§13)
   db/models.py                 SQLite per mode (positions, trade_history, bankroll, peak_bankroll,
                                window_paths, window_labels, wallet_trades, wallet_stats)
-scripts/                       run_polybot.ps1 (daily loop), shadow_passive_exit.py (Phase 1 kill bar),
-                               box_arb_monitor.py (Phase 5, standalone), sweep_exit_policy.py,
-                               diagnose_edge.py, analyze_edge.py, repair/restamp utilities, goal_eval/
+scripts/                       run_polybot.ps1 (daily loop), run_kill_bar_evals.cmd (06-14 task),
+                               shadow_passive_exit.py / shadow_exit_model.py / shadow_wide_quote.py
+                               (kill-bar evaluators), box_arb_monitor.py (Phase 5, standalone),
+                               sweep_exit_policy.py, diagnose_edge.py (record loader + edge stats),
+                               backfill_wallets.py, topup_paper_bankroll.py, verify_keys.py
 ```
 
 ## 11. Data sources

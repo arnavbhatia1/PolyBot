@@ -36,17 +36,12 @@ VALIDATED_PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec("exit_edge_threshold",     "signal.exit_edge_threshold",     -0.10, -0.03, float, -0.10, "holding_edge floor before scalping; blended with exit_boundary curve"),
 )
 
-# ── Derived lookups ──────────────────────────────────────────────────────────
-BY_NAME: dict[str, ParamSpec] = {p.name: p for p in VALIDATED_PARAMS}
-
 # ── Operator-owned defaults without ranges ───────────────────────────────────
 _MANUAL_DEFAULTS: dict[str, Any] = {
     # Exit / hold policy
-    "max_edge": 0.20,
     "loss_cut_fraction": 0.65,
     "loss_cut_time_s": 90.0,
     "adverse_selection_threshold": 0.80,
-    "edge_decay_threshold": -0.05,
     "deep_loss_hold_threshold": -0.10,
     # Entry-timing envelope + flip hurdle
     "normal_fraction": 0.60,
@@ -54,7 +49,6 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     "flip_edge_premium": 0.015,
     # Risk caps
     "max_concurrent_positions": 2,
-    "max_bankroll_deployed": 0.80,
     # Schedule (mirror settings.yaml so a missing key falls back coherently)
     "trading_start_hour_et": 0,
     "trading_start_minute": 1,

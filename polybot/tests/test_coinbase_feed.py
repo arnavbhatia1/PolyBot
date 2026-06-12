@@ -53,19 +53,6 @@ class TestCoinbaseFeed:
         f._window_start = time.time() - 61.0
         assert f.covers(60.0) is True
 
-    def test_cvd_acceleration_zero_until_window_covered(self):
-        """Post-reconnect, a truncated baseline would overstate acceleration —
-        the gate stays idle (0.0) until the 15+45s window is spanned."""
-        import time
-        f = CoinbaseFeed()
-        now = time.time()
-        f._window_start = now - 20.0             # only 20s of contiguous buffer
-        for i in range(15):
-            f._trades.append((now - i * 0.5, 1.0))
-        assert f.get_cvd_acceleration() == 0.0
-        f._window_start = now - 61.0
-        assert f.get_cvd_acceleration() != 0.0
-
     def test_ignores_wrong_product(self):
         f = CoinbaseFeed()
         f._handle_message({"type": "ticker", "product_id": "ETH-USD", "price": "3000"})

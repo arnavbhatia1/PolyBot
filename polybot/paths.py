@@ -28,39 +28,20 @@ CALIBRATION_PARAMS_PATH: Path = CALIBRATION_DIR / "isotonic_params.json"
 # ── Rolling single-file state + logs (memory/state/) ──────────────────────────
 STATE_DIR: Path = MEMORY_DIR / "state"
 ADVERSE_STATE_PATH: Path = STATE_DIR / "adverse_state.json"
-CRISIS_STATE_PATH: Path = STATE_DIR / "crisis_state.json"
 FEED_STALENESS_PATH: Path = STATE_DIR / "feed_staleness.json"
 FILL_STATS_PATH: Path = STATE_DIR / "fill_stats.json"
 LATENCY_STATS_PATH: Path = STATE_DIR / "latency_stats.json"
 ORPHAN_POSITIONS_PATH: Path = STATE_DIR / "orphan_positions.json"
 PREV_MARGIN_PATH: Path = STATE_DIR / "prev_resolution_margin.json"
-CF_WATCHLIST_PATH: Path = STATE_DIR / "cf_watchlist.json"
 # E1 recorder: out-of-band price-sum moments the [0.98, 1.02] gate skips (JSONL,
 # append-only) — the cross-book-arb pool the gate otherwise censors unmeasured.
 PRICE_SUM_OUTLIERS_PATH: Path = STATE_DIR / "price_sum_outliers.jsonl"
-PIPELINE_HISTORY_PATH: Path = STATE_DIR / "pipeline_history.json"
 PIPELINE_RUN_LOG_PATH: Path = STATE_DIR / "pipeline_run_log.json"
-STRATEGY_LOG_PATH: Path = STATE_DIR / "strategy_log.md"
 
 # Gate-skip stats: a lifetime accumulator + the live current-day file. Each finished
 # ET day folds into the accumulator (see fold_gate_day + main._ensure_gate_stats_day_loaded).
 GATE_STATS_PATH: Path = STATE_DIR / "gate_stats.json"                 # accumulator
 GATE_STATS_CURRENT_PATH: Path = STATE_DIR / "gate_stats_current.json"  # today only
-
-# Pipeline freeze sentinel. When present the nightly pipeline still RUNS but does
-# NOT mutate the live strategy (save_config + calibrator save become no-ops), so a
-# multi-day paper run is ONE stationary, interpretable strategy. Freeze: create the
-# file. Unfreeze: delete it. Git-visible on purpose.
-PIPELINE_FROZEN_PATH: Path = STATE_DIR / "PIPELINE_FROZEN"
-
-
-def is_pipeline_frozen() -> bool:
-    """True when the freeze sentinel is present (pipeline mutations suppressed)."""
-    try:
-        return PIPELINE_FROZEN_PATH.exists()
-    except Exception:
-        return False
-
 
 def fold_gate_day(acc_path: Path, counts: dict, day_key: str) -> dict | None:
     """Add one finished ET day's gate-skip counts into the lifetime accumulator at

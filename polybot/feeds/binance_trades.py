@@ -89,30 +89,6 @@ class BinanceTradeAccumulator:
         self._cache_put(key, cvd)
         return cvd
 
-    def get_cvd_acceleration(self, recent_s: float = 15.0, baseline_s: float = 45.0,
-                             min_recent_trades: int = 10) -> float:
-        """First derivative of CVD. Returns 0 if recent window is too thin to trust."""
-        now = time.time()
-        recent_cvd = 0.0
-        baseline_cvd = 0.0
-        recent_count = 0
-        for t in self._trades:
-            age = now - t.ts
-            if age <= recent_s:
-                recent_cvd += -t.qty if t.is_buyer_maker else t.qty
-                recent_count += 1
-            elif age <= recent_s + baseline_s:
-                baseline_cvd += -t.qty if t.is_buyer_maker else t.qty
-
-        if recent_count < min_recent_trades:
-            return 0.0
-
-        recent_rate = recent_cvd / max(recent_s, 1.0)
-        baseline_rate = baseline_cvd / max(baseline_s, 1.0)
-        if recent_rate == 0 and baseline_rate == 0:
-            return 0.0
-        return recent_rate - baseline_rate
-
     def get_taker_ratio(self, window_s: float = 60, min_trades: int = 20) -> float:
         """Fraction of aggressive-buy volume. Returns 0.5 when sample is too thin."""
         key = ("taker", window_s, min_trades)

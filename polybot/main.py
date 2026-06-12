@@ -27,8 +27,7 @@ from polybot.config.loader import load_config, get_secret
 from polybot.config.param_registry import default_for as _d
 from polybot.paths import (
     PREV_MARGIN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
-    GATE_STATS_CURRENT_PATH, STRATEGY_LOG_PATH, PIPELINE_HISTORY_PATH,
-    CALIBRATION_PARAMS_PATH, PRICE_SUM_OUTLIERS_PATH, fold_gate_day,
+    GATE_STATS_CURRENT_PATH, PRICE_SUM_OUTLIERS_PATH, fold_gate_day,
 )
 from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE, EFFECTIVE_FEE_PEAK, compute_buy_vwap
 from polybot.db.models import Database
@@ -132,10 +131,6 @@ _WS_STALE_S = 10.0  # max age for CLOB WS BBA/book before treating as stale
 # the source is missing/stale, so "feed cold" stays distinguishable from "real zero".
 _AUX_FRESH_S_COINBASE = 10.0
 _AUX_FRESH_S_TRADES = 3.0
-
-# Sub-second CVD-acceleration scale — local to the deceleration gate. L3b uses
-# the canonical helper in `polybot/core/aux_layers.py`.
-
 
 def _build_aux_signals(coinbase_feed: Any, trades_feed: Any = None) -> dict[str, Any]:
     """Auxiliary microstructure signals shared between trade_context, ghost replay,

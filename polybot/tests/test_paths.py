@@ -6,9 +6,9 @@ import polybot.paths as P
 
 def test_rolling_state_lives_under_state_dir():
     for path in (P.GATE_STATS_PATH, P.GATE_STATS_CURRENT_PATH, P.ADVERSE_STATE_PATH,
-                 P.CRISIS_STATE_PATH, P.FEED_STALENESS_PATH, P.FILL_STATS_PATH,
-                 P.ORPHAN_POSITIONS_PATH, P.PREV_MARGIN_PATH, P.CF_WATCHLIST_PATH,
-                 P.PIPELINE_HISTORY_PATH, P.PIPELINE_RUN_LOG_PATH, P.STRATEGY_LOG_PATH):
+                 P.FEED_STALENESS_PATH, P.FILL_STATS_PATH,
+                 P.ORPHAN_POSITIONS_PATH, P.PREV_MARGIN_PATH,
+                 P.PIPELINE_RUN_LOG_PATH):
         assert path.parent == P.STATE_DIR
 
 
