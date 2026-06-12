@@ -131,7 +131,10 @@ class Database:
             )
             await self.conn.commit()
             return pos_id
-        except Exception:
+        except BaseException:
+            # BaseException: a Ctrl+C/cancel landing mid-transaction must roll
+            # back too — the connection is shared, and a later commit from any
+            # other coroutine would otherwise persist the half-done write.
             await self.conn.rollback()
             raise
 
@@ -211,7 +214,9 @@ class Database:
                     (bankroll_delta,),
                 )
             await self.conn.commit()
-        except Exception:
+        except BaseException:
+            # Same rationale as open_position_and_debit_bankroll: roll back on
+            # cancellation too, or a foreign commit persists the half-done close.
             await self.conn.rollback()
             raise
 

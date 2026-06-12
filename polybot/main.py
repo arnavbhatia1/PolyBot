@@ -2842,13 +2842,18 @@ async def main() -> None:
     finally:
         for t in background_tasks:
             t.cancel()
-        await asyncio.gather(*background_tasks, return_exceptions=True)
-        async def _stop_rec(coro):
-            try: await asyncio.wait_for(coro, timeout=2.0)
+        async def _stop_rec(coro, timeout=2.0):
+            try: await asyncio.wait_for(coro, timeout=timeout)
             except Exception: pass
+        # Every cleanup await is time-boxed: one hung unwind (a dead socket's
+        # close handshake, Discord teardown) must never stall shutdown past
+        # db.close() — skipping that leaves aiosqlite's non-daemon worker
+        # threads holding the interpreter open forever.
+        await _stop_rec(
+            asyncio.gather(*background_tasks, return_exceptions=True), timeout=5.0)
         await _stop_rec(window_recorder.stop())
         tape_recorder.flush()
-        await http_client.aclose()
+        await _stop_rec(http_client.aclose())
         async def _stop(coro):
             try: await asyncio.wait_for(coro, timeout=2.0)
             except Exception: pass

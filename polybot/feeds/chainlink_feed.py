@@ -84,11 +84,14 @@ class ChainlinkFeed:
 
     async def stop(self) -> None:
         self._running = False
+        # Cancel before the first await — stop() runs under a shutdown timeout.
+        for t in (self._task, self._watchdog_task):
+            if t:
+                t.cancel()
         if self._ws:
             await self._ws.close()
         for t in (self._task, self._watchdog_task):
             if t:
-                t.cancel()
                 try:
                     await t
                 except asyncio.CancelledError:

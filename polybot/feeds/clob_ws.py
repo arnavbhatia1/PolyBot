@@ -60,12 +60,14 @@ class ClobWebSocket:
 
     async def close(self) -> None:
         self._closing = True
+        # Cancel before the first await — close() runs under a shutdown timeout.
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+        if self._task:
+            self._task.cancel()
         if self._ws:
             await self._ws.close()
         if self._task:
-            self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:

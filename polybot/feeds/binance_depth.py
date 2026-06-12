@@ -46,10 +46,12 @@ class BinanceDepthFeed:
 
     async def stop(self) -> None:
         self._running = False
-        if self._ws:
-            await self._ws.close()
+        # Cancel before the first await — stop() runs under a shutdown timeout.
         if self._ws_task and not self._ws_task.done():
             self._ws_task.cancel()
+        if self._ws:
+            await self._ws.close()
+        if self._ws_task:
             try:
                 await self._ws_task
             except asyncio.CancelledError:
