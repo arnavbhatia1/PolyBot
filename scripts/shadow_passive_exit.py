@@ -77,20 +77,36 @@ def load_scalps() -> list[dict]:
 
 
 async def load_bba_at(db_path: str, token_rows: list[dict]) -> None:
-    """Attach bid/ask at exit moment from window_paths (per-mode DB)."""
+    """Attach bid/ask at exit moment from window_paths — read-only, from
+    whichever DB holds the table: the trading DB or the recorder's sidecar
+    window_paths.db beside it (the 1 Hz stream lives in the sidecar so the
+    live bot's writes never contend with this read)."""
     import aiosqlite
-    async with aiosqlite.connect(db_path) as conn:
-        conn.row_factory = aiosqlite.Row
-        for r in token_rows:
-            col_bid = "bid_up" if r["side"] == "Up" else "bid_down"
-            col_ask = "ask_up" if r["side"] == "Up" else "ask_down"
+    db = Path(db_path)
+    for cand in (db, db.with_name("window_paths.db")):
+        if not cand.exists():
+            continue
+        async with aiosqlite.connect(
+                f"file:{cand.resolve().as_posix()}?mode=ro", uri=True) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
             cur = await conn.execute(
-                f"SELECT {col_bid} AS b, {col_ask} AS a FROM window_paths "
-                f"WHERE ts BETWEEN ? AND ? AND {col_bid} IS NOT NULL "
-                f"ORDER BY ABS(ts - ?) LIMIT 1",
-                (r["ts"] - 3, r["ts"] + 3, r["ts"]))
-            row = await cur.fetchone()
-            r["bid"], r["ask"] = (row["b"], row["a"]) if row else (None, None)
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='window_paths'")
+            if not await cur.fetchone():
+                continue
+            conn.row_factory = aiosqlite.Row
+            for r in token_rows:
+                col_bid = "bid_up" if r["side"] == "Up" else "bid_down"
+                col_ask = "ask_up" if r["side"] == "Up" else "ask_down"
+                cur = await conn.execute(
+                    f"SELECT {col_bid} AS b, {col_ask} AS a FROM window_paths "
+                    f"WHERE ts BETWEEN ? AND ? AND {col_bid} IS NOT NULL "
+                    f"ORDER BY ABS(ts - ?) LIMIT 1",
+                    (r["ts"] - 3, r["ts"] + 3, r["ts"]))
+                row = await cur.fetchone()
+                r["bid"], r["ask"] = (row["b"], row["a"]) if row else (None, None)
+            return
+    raise SystemExit(
+        f"window_paths table not found in {db} or {db.with_name('window_paths.db')}")
 
 
 def simulate(scalps: list[dict], tape: dict, level: str, timeout_s: float) -> dict:
