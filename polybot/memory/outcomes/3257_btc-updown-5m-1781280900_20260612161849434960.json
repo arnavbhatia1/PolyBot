@@ -1,0 +1,78 @@
+{
+  "position_id": 3257,
+  "market_id": "btc-updown-5m-1781280900",
+  "question": "Bitcoin Up or Down - June 12, 12:15PM-12:20PM ET",
+  "side": "Up",
+  "signal_score": 0.6277942458670572,
+  "correct": false,
+  "entry_price": 0.53,
+  "exit_price": 0.5653488696432273,
+  "log_return": 0.06456600244019359,
+  "size": 22.55,
+  "pnl": -0.43498010499999396,
+  "fees": 1.8611300474999979,
+  "gain_pct": -0.01929,
+  "realized_edge": 0.0978,
+  "fill_slippage": 0.0,
+  "indicator_snapshot": {
+    "atr": {
+      "atr": 78.48,
+      "passes": true,
+      "reason": "ok"
+    },
+    "trade_context": {
+      "btc_price": 63831.9,
+      "strike_price": 63811.75812012633,
+      "seconds_remaining": 114.490139,
+      "market_price_up": 0.53,
+      "market_price_down": 0.49,
+      "closes_tail": [
+        63852.0,
+        63859.99
+      ],
+      "model_probability": 0.6277942458670572,
+      "model_probability_raw": 0.6277942458670572,
+      "edge": 0.0977942458670572,
+      "atr": 78.48,
+      "atr_rolling_20": 84.292,
+      "atr_long_term_mean": 84.79665,
+      "size": 22.55,
+      "prev_resolution_margin": -196.67580786730105,
+      "flow_score": 0.2445,
+      "spot_flow_signal": -0.09963398300580315,
+      "regime_autocorr": -0.0997,
+      "regime_direction": -1.0,
+      "entry_phase": "late",
+      "flip_count": 1,
+      "is_flip": true,
+      "depth_usd_top20": 496241.00477080006,
+      "coinbase_cvd_60s": -1.6643,
+      "coinbase_taker_60s": 0.3707,
+      "coinbase_taker_n": 715,
+      "cross_venue_gap": -38.34,
+      "fast_realized_vol_60s": 9.5e-05,
+      "clob_depth_top5_up_usd": 30136.16,
+      "clob_depth_top5_down_usd": 25211.03,
+      "clob_book_age_s": 0.184,
+      "adverse_rate_at_30s": 0.2631578947368421,
+      "adverse_kelly_mult": 1.0,
+      "token_id_up": "88981064488442766896371091763403364638729634511300692595837892201411455658466",
+      "token_id_down": "33727156275947098552766658685352273790944543262990135385866371629849825848406"
+    }
+  },
+  "exit_reason": "scalp",
+  "seconds_remaining_at_exit": 71.384522,
+  "edge_decay": {
+    "midprice_at_fill": 0.53,
+    "deltas": {
+      "5s": 0.095,
+      "10s": 0.045,
+      "15s": 0.025,
+      "30s": 0.175,
+      "60s": null
+    },
+    "resolved_windows": 4
+  },
+  "exit_timestamp": "2026-06-12T16:18:49.434920+00:00",
+  "timestamp": "2026-06-12T16:18:49.434920+00:00"
+}
