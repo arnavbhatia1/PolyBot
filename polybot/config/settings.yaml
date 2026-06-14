@@ -18,10 +18,11 @@ execution:
   max_book_fill_pct: 0.5      # Never fill more than 50% of the visible book depth (avoids moving market)
   initial_bankroll: 100.0     # Starting bankroll for paper mode
 
-  # Phase 1 passive exits (two-stage: rest SELL at mid, FOK fallback). KILL-BAR
-  # GATED: flip to true only after scripts/shadow_passive_exit.py shows >=50%
-  # conservative fill rate on ITM scalps over >=3 days (tasks/todo.md Phase 1).
-  passive_exit_enabled: false
+  # Phase 1 passive exits (two-stage: rest SELL at mid for passive_exit_timeout_s,
+  # take the maker fill if a BUY prints through, else FOK fallback). Live in paper
+  # only — LiveTrader has no GTC subsystem, so it stays FOK there. Kill bar
+  # (scripts/shadow_passive_exit.py): ITM fill 83-87% over 4 days, +$0.056/fill.
+  passive_exit_enabled: true
   passive_exit_timeout_s: 10.0
 
   # Paper mode realism (ignore for live)

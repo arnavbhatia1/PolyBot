@@ -1,7 +1,7 @@
 """Phase 1 passive-exit units: the conservative fill rule + the maker close path."""
 import pytest
 
-from polybot.main import _resting_fill_price
+from polybot.main import _resting_fill_price, _resting_level
 from polybot.db.models import Database
 from polybot.execution.paper_trader import PaperTrader
 
@@ -25,6 +25,23 @@ def test_fill_ignores_prints_before_posting_and_sells():
 
 def test_fill_returns_level_not_print_price():
     assert _resting_fill_price([_print(101, 0.99)], level=0.56, posted_ts=100) == 0.56
+
+
+# --- resting level: post at mid, capped at ask, floored at bid + 1 tick ---
+
+def test_resting_level_posts_at_mid_inside_a_wide_spread():
+    # mid of 0.55/0.65 = 0.60, comfortably inside [bid+1c, ask]
+    assert _resting_level(market_mid=0.60, ws_bid=0.55, ws_ask=0.65) == 0.60
+
+
+def test_resting_level_capped_at_ask():
+    # mid above the ask (shouldn't happen, but never rest above the touch)
+    assert _resting_level(market_mid=0.70, ws_bid=0.60, ws_ask=0.62) == 0.62
+
+
+def test_resting_level_floored_at_bid_plus_tick():
+    # one-tick market: mid == bid == ask; never give up the whole spread
+    assert _resting_level(market_mid=0.60, ws_bid=0.60, ws_ask=0.60) == 0.61
 
 
 # --- maker close: zero exit fee, fill at the resting level ---

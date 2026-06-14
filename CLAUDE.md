@@ -151,10 +151,14 @@ Exit price oracle-first (`event_metadata` final_price vs price_to_beat; Gamma's
 coherent resolved prices as fallback; never Binance). Chainlink orphan fallback
 after ~30 min of Gamma silence. Live redeems settle non-blockingly.
 
-**Phase 1 (passive exits) is kill-bar-gated:** exits stay taker-FOK until
-`scripts/shadow_passive_exit.py` shows >=50% conservative fill rate on ITM
-scalps over >=3 days of tape; then the two-stage (rest-at-mid → FOK fallback)
-exit gets built and deployed. **Phase 3:** the nightly-trained exit-value model
+**Phase 1 passive exits are live in paper** (`execution.passive_exit_enabled`):
+on a non-loss-cut scalp the bot rests a SELL at `_resting_level` (mid, capped at
+the ask, floored at bid+1 tick) for `passive_exit_timeout_s` (10s), takes the
+maker fill (zero taker fee) if a BUY prints strictly through, else FOK-falls-back;
+loss-cuts skip resting, a HOLD-flip cancels it. Kill bar passed
+(`scripts/shadow_passive_exit.py`: 83-87% ITM fill, +$0.056/fill over 4 days).
+**LiveTrader stays FOK** — it has no GTC subsystem, so live-capital passive exit
+is still an unbuilt phase. **Phase 3:** the nightly-trained exit-value model
 (`polybot/exit_model.py`) replaces the ExitBoundary curve only after a 5-day
 shadow beats it through the counterfactual replay.
 

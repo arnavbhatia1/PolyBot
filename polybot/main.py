@@ -255,6 +255,14 @@ def _resting_fill_price(prints: list[dict[str, Any]], level: float, posted_ts: f
             return level
     return None
 
+
+def _resting_level(market_mid: float, ws_bid: float, ws_ask: float) -> float:
+    """Resting SELL price for the passive exit: post at mid, capped at the ask
+    (never above the touch) and floored at bid + 1 tick (never give up the whole
+    spread). Snapped to the cent grid."""
+    level = min(round(market_mid + 1e-9, 2), round(ws_ask, 2))
+    return max(level, round(ws_bid + 0.01, 2))
+
 # Window-path recorder (recording.WindowPathRecorder) — set by main() at boot.
 _window_recorder = None
 
@@ -1766,8 +1774,7 @@ async def _evaluate_and_exit_position(
             _st = _resting_exits.get(pos["id"])
             if _st is None:
                 if ws_ask > ws_bid > 0 and live["seconds_remaining"] > _timeout + 5.0:
-                    _level = min(round(market_mid + 1e-9, 2), round(ws_ask, 2))
-                    _level = max(_level, round(ws_bid + 0.01, 2))
+                    _level = _resting_level(market_mid, ws_bid, ws_ask)
                     if len(_resting_exits) > 50:  # lazy sweep of long-dead entries
                         _cut = time.time() - 600
                         for _pid in [k for k, v in _resting_exits.items() if v["deadline"] < _cut]:

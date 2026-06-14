@@ -252,20 +252,23 @@ Do not skip the sequence. Phase 3 and 4 without Phase 2 data are building on not
 
 ## DEFINITION OF DONE (FOR THIS GOAL)
 
-**BUILD STATUS (2026-06-11 EOD; 444 tests green). HARD DEADLINE: 2026-06-22.**
-Everything buildable is built — including the two-stage passive exit itself
-(flag-gated) and both downstream shadow evaluators — so every remaining box is
-a config flip or a verdict, never a build. Bot restarted onto the lean code at
-10:44 AM 06-11: **data epoch is 06-11**, recorders + nightly jobs live now.
+**BUILD STATUS (updated 2026-06-14; 416 tests green). HARD DEADLINE: 2026-06-22.**
+The kill-bar-phase builds are done — the two-stage passive exit (now live in
+paper) and all shadow evaluators. Remaining boxes are a verdict (Phase 3 exit
+model, 06-20/21) and genuine builds that surfaced this week: wallet-aware routing
+is **infeasible as specced** (no live wallet identity in the CLOB feeds — Phase 4
+box) and box-arb execution is unbuilt. Bot runs the lean code, **data epoch is
+06-11**, recorders + nightly jobs live.
 
 DEADLINE CALENDAR (data epoch 06-11; ~two days of slack vs 06-22):
 - 06-12/13: data accrues (window paths ~288/day, tape, box-arb overlaps 96/day).
-- 06-14 09:25: BOTH kill bars (Windows task "PolyBot kill-bar evaluations" runs
-  scripts/run_kill_bar_evals.cmd → memory/state/shadow_eval_2026-06-14.txt):
-  Phase 1 `shadow_passive_exit.py` (ITM fill >= 50%; data spans ~2.6-3 days that
-  morning — if marginal, re-confirm 06-15 before deploying) and Phase 6
-  `shadow_wide_quote.py` (positive EV or documented abort). Phase 1 PASS → set
-  execution.passive_exit_enabled: true + wire wallet-aware routing same day.
+- 06-14 [DONE]: both kill bars ran 09:25 → shadow_eval_2026-06-14.txt.
+  Phase 1 PASS on 4-day data (ITM fill 83-87%, uplift +$0.056/fill at mid/10s —
+  the 2-day negative-uplift worry resolved on fuller data) →
+  execution.passive_exit_enabled flipped true (paper; effective next restart).
+  Phase 6 ABORTED (zero stale-touch episodes — strategy precondition never
+  occurs). Wallet-aware routing NOT wired: infeasible as specced (no live wallet
+  identity in CLOB feeds) — see Phase 4 box.
 - 06-15 23:45: first exit-model refit (4-day label gate, amended for the deadline).
 - 06-16..20: Phase 3 five-day shadow — run `python scripts/shadow_exit_model.py`
   daily; 06-20/21: verdict; PASS → flip the artifact's deployed flag + wire
@@ -279,25 +282,44 @@ The goal is complete when all of the following are true:
 - [x] Dead code deleted; replay passes on current regime with gutted codebase
       (L2-L6/SPRT/calibration/optimizer/recommenders gone; exit-policy sweep +
       L1 smoke verified on the gutted code; suite green)
-- [ ] Passive exit (resting limit + FOK fallback) live in production; kill bar passed
-      (two-stage state machine BUILT 06-11 — rest at mid, conservative
-      prints-through fill, timeout → FOK, loss-cut bypass, HOLD-flip cancel —
-      behind execution.passive_exit_enabled:false; kill bar evaluable 06-15)
+- [x] Passive exit (resting limit + FOK fallback) live in PAPER; kill bar passed
+      (kill bar 06-14: ITM fill 83-87% over 4 days, uplift +$0.056/fill at
+      mid/10s — both axes clear; execution.passive_exit_enabled:true, effective
+      next restart. Rest at _resting_level, conservative prints-through fill,
+      timeout → FOK, loss-cut bypass + HOLD-flip cancel intact, 8 unit tests.
+      LIVE-CAPITAL passive exit still UNBUILT — LiveTrader has no GTC subsystem,
+      stays FOK; that remains a real build, not a flag.)
 - [x] Window-path recorder running continuously; 288 windows/day persisted
       (LIVE since 06-11 10:44 — 1 Hz rows + self-labeling confirmed in DB)
 - [ ] Exit-value model live, replacing ExitBoundary; nightly refit pipeline running; kill bar passed
       (trainer + nightly refit + degradation keep-back live; first fit 06-15;
       5-day shadow via scripts/shadow_exit_model.py; deploy flag flips at the bar)
-- [ ] Wallet fingerprinting pipeline running; classification tables updating nightly; routing live
-      (LIVE: nightly job + 3-day historical backfill running 06-11 — tape rows in
+- [ ] Wallet fingerprinting pipeline running + classifying nightly = DONE; routing live = BLOCKED
+      (PIPELINE LIVE since 06-11: nightly job + 3-day backfill — tape rows in
       gitignored db/wallet_tape.db, wallet_stats aggregate in the per-mode DB;
-      first classifications already real: donors at −3..−11c/$1, sharps +12..+37c/$1;
-      routing wires when Phase 1 flips)
+      classifications real: donors −3..−11c/$1, sharps +12..+37c/$1.
+      ROUTING BLOCKER (found 06-14): the spec — "check the book for sharp
+      counterparties before resting" — is infeasible with current feeds.
+      Polymarket's L2 book and trade tape carry NO maker/taker/owner wallet
+      identity (verified: clob_ws book = {price,size} levels, tape =
+      {price,size,side,ts}). Wallet identity exists only post-hoc via the nightly
+      data-api /trades pull, which tags TAKERS — not the resting makers you'd
+      inspect, and not knowable before they trade. wallet_stats is write-only:
+      no decision-time reader exists anywhere in the loop.
+      REALIZABLE ALTERNATIVE (operator decision; needs the Phase 4 7-day paper
+      kill bar before any deploy): a statistical regime gate — rest only in
+      window/time-of-day/quote contexts where sharps historically don't dominate,
+      or gate on live aggressive-BUY tape bursts as a sharp-activity proxy. NOT
+      built today — surfaced, not implemented unasked.)
 - [ ] Box arb monitor running on BTC; executing valid boxes
       (RUNNING since 06-11 — 15m/5m shared-expiry pairs, 96 overlaps/day,
       log-only to memory/recordings/box_arb.jsonl; execution after Phase 1)
-- [ ] Wide-quote maker sleeve live OR explicitly aborted with documented reason
-      (evaluator scripts/shadow_wide_quote.py ready; verdict 06-14+)
+- [x] Wide-quote maker sleeve ABORTED with documented reason
+      (kill bar 06-14: shadow_wide_quote.py found ZERO stale-touch episodes — the
+      book never sat still >=30s through a >=0.5% Coinbase move across 720 labeled
+      windows, so the strategy's precondition never occurs in this regime. No EV
+      to capture; legitimate abort per the plan. Re-evaluate only if the touch
+      behaviour changes — the evaluator stays ready.)
 - [x] Nightly pipeline: model refit + wallet table update + Brier/MAE logging
       (jobs registered: exit_model_refit, window_paths_retention, wallet_tables)
 - [x] All components verified non-interfering with circuit breaker
