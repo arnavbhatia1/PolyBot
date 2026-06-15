@@ -298,18 +298,25 @@ The goal is complete when all of the following are true:
       (PIPELINE LIVE since 06-11: nightly job + 3-day backfill — tape rows in
       gitignored db/wallet_tape.db, wallet_stats aggregate in the per-mode DB;
       classifications real: donors −3..−11c/$1, sharps +12..+37c/$1.
-      ROUTING BLOCKER (found 06-14): the spec — "check the book for sharp
-      counterparties before resting" — is infeasible with current feeds.
-      Polymarket's L2 book and trade tape carry NO maker/taker/owner wallet
-      identity (verified: clob_ws book = {price,size} levels, tape =
-      {price,size,side,ts}). Wallet identity exists only post-hoc via the nightly
-      data-api /trades pull, which tags TAKERS — not the resting makers you'd
-      inspect, and not knowable before they trade. wallet_stats is write-only:
-      no decision-time reader exists anywhere in the loop.
-      REALIZABLE ALTERNATIVE (operator decision; needs the Phase 4 7-day paper
-      kill bar before any deploy): a statistical regime gate — rest only in
-      window/time-of-day/quote contexts where sharps historically don't dominate,
-      or gate on live aggressive-BUY tape bursts as a sharp-activity proxy. NOT
+      ROUTING BLOCKER (web-verified 06-14): the spec — "check the book for sharp
+      counterparties BEFORE resting" — is infeasible. Polymarket's public/live
+      order book is anonymous L2: book = {price,size} per level, tape =
+      {price,size,side,ts}, NO maker/taker/owner identity (CLOB market-channel
+      docs + py-clob-client OrderSummary). You cannot know who is resting, nor
+      who will lift your rest, before you post.
+      CORRECTION to the first pass: identity is NOT "only nightly". Live wallet
+      identity DOES exist, just never pre-post — (a) the authenticated user
+      channel returns the maker_address of YOUR OWN fills at match time; (b) the
+      RTDS activity feed (wss://ws-live-data.polymarket.com, the service we
+      already use for Chainlink) broadcasts proxyWallet for ALL trades at ~100ms,
+      post-match; (c) the Polygon mempool exposes maker/taker ~1.5s pre-confirm.
+      None screen the anonymous resting book pre-post. wallet_stats is still
+      write-only — no decision-time reader exists.
+      REALIZABLE ALTERNATIVE (operator decision; needs the Phase 4 7-day kill bar
+      before any deploy): a post-fill learning loop (identify in ~real-time who
+      lifts our rests via user-channel maker_address / RTDS, fold their markout
+      into wallet_stats) feeding a STATISTICAL regime gate — rest only in
+      window/time-of-day/quote/flow contexts where sharps don't dominate. NOT
       built today — surfaced, not implemented unasked.)
 - [ ] Box arb monitor running on BTC; executing valid boxes
       (RUNNING since 06-11 — 15m/5m shared-expiry pairs, 96 overlaps/day,
