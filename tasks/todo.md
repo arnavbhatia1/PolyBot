@@ -274,8 +274,10 @@ DEADLINE CALENDAR (data epoch 06-11; ~two days of slack vs 06-22):
   running process holds the fixed code — otherwise this refit silently writes no
   artifact and the first fit slips to 06-16 23:45.
 - 06-16..20: Phase 3 five-day shadow runs AUTONOMOUSLY as a nightly job
-  (`exit_model_shadow`, ordered before the refit) — its first night freezes the
-  06-15 model as the out-of-sample baseline and reuses it thereafter; the full
+  (`exit_model_shadow`, ordered before the refit) — because it runs before the
+  refit, the 06-15 run finds no artifact yet and freezes nothing; the 06-16 run
+  freezes the 06-15-trained model as the out-of-sample baseline and reuses it
+  thereafter (so the 5-day count completes 06-21, not 06-20); the full
   report + PASS/FAIL verdict is written each night to
   state/exit_model_shadow_latest.txt. No manual run needed. 06-20/21: read the
   verdict; PASS → flip the artifact's deployed flag + wire evaluate_hold consumption.

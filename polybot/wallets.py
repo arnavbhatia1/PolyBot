@@ -8,8 +8,11 @@ more accurate every night forever.
 
 Nightly job: for each window labeled in the last day, fetch its taker tape from
 the data-api, score each trade against the resolution, fold into per-wallet
-stats. Routing (skip resting exits against sharp counterparties) deploys with
-Phase 1 — until then this is pure accumulation.
+stats. ``wallet_stats`` is write-only today — the originally-specced routing
+(skip resting exits against sharp counterparties) is infeasible on the live
+anonymous L2 book (no maker/taker identity pre-post), so no decision-time reader
+exists. This remains pure accumulation; see tasks/todo.md Phase 4 for the
+realizable post-fill regime-gate alternative.
 
 Storage is split by size: the per-trade tape (~3k prints/window — millions of
 rows) lives in its own gitignored DB (``polybot/db/wallet_tape.db``); only the
@@ -72,7 +75,7 @@ async def open_tape_db(path: Path | None = None) -> aiosqlite.Connection:
 
 
 async def ensure_stats_table(db: Any) -> None:
-    """wallet_stats in the per-mode DB (small, consumed by exit routing)."""
+    """wallet_stats in the per-mode DB (small; write-only — no decision-time reader yet)."""
     await db.conn.executescript("""
         CREATE TABLE IF NOT EXISTS wallet_stats (
             wallet TEXT PRIMARY KEY,

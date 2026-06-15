@@ -24,8 +24,8 @@ python -m polybot.main --mode paper       # paper trading
 python -m polybot.main --mode live        # real USDC (needs allowance)
 python -m polybot.main --run-pipeline     # one nightly cycle, no trading
 python -m pytest polybot/tests/           # full suite
-.\scripts\run_polybot.ps1                 # daily cycle: trade -> nightly jobs -> commit -> restart
-python scripts/box_arb_monitor.py         # Phase 5 box-arb monitor (separate process, log-only)
+.\scripts\run_polybot.ps1                 # daily cycle: trade -> nightly jobs -> commit -> restart; also supervises the box-arb monitor
+python scripts/box_arb_monitor.py         # Phase 5 box-arb monitor (log-only); standalone — only needed if NOT running via run_polybot.ps1
 ```
 
 ### Secrets
@@ -259,7 +259,7 @@ polybot/
                                window_paths, window_labels, wallet_trades, wallet_stats)
 scripts/                       run_polybot.ps1 (daily loop), run_kill_bar_evals.cmd (06-14 task),
                                shadow_passive_exit.py / shadow_exit_model.py / shadow_wide_quote.py
-                               (kill-bar evaluators), box_arb_monitor.py (Phase 5, standalone),
+                               (kill-bar evaluators), box_arb_monitor.py (Phase 5, supervised by run_polybot.ps1),
                                sweep_exit_policy.py, diagnose_edge.py (record loader + edge stats),
                                backfill_wallets.py, topup_paper_bankroll.py, verify_keys.py
 ```
@@ -279,7 +279,9 @@ scripts/                       run_polybot.ps1 (daily loop), run_kill_bar_evals.
 
 `run_polybot.ps1`: starts 12:01 AM ET, stops trading 11:30 PM ET, nightly jobs
 11:45 PM ET, commits + pushes `origin main` on exit, restarts at midnight (or
-immediately if the exit slipped past it). Live pre-flight:
+immediately if the exit slipped past it). Each cycle it also (re)launches the
+Phase 5 box-arb monitor as a supervised child on freshly-pulled code (kills any
+prior instance first), so one launch starts everything. Live pre-flight:
 `python scripts/verify_keys.py`.
 
 - **UTC for storage; ET (`America/New_York`) only for date-bucketing + trading

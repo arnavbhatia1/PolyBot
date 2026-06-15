@@ -15,12 +15,39 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  PolyBot Auto-Restart Loop" -ForegroundColor Cyan
 Write-Host "  Trading: 12:01 AM - 11:30 PM ET" -ForegroundColor Cyan
 Write-Host "  Pipeline: 11:45 PM ET" -ForegroundColor Cyan
+Write-Host "  + supervised box-arb monitor (Phase 5, log-only)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
+
+# Phase 5 box-arb monitor (log-only) runs as a supervised child of this wrapper,
+# so one launch starts everything and each cycle refreshes it on freshly-pulled
+# code. Kill any prior instance first so repeated loops never stack monitors.
+function Start-BoxArbMonitor {
+    param([string]$RepoRoot)
+    Get-CimInstance Win32_Process -Filter "name like '%python%'" |
+        Where-Object { $_.CommandLine -like '*box_arb_monitor.py*' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 500
+    $recDir = Join-Path $RepoRoot "polybot\memory\recordings"
+    if (-not (Test-Path $recDir)) { New-Item -ItemType Directory -Force -Path $recDir | Out-Null }
+    $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    try {
+        $proc = Start-Process -FilePath "python" -ArgumentList "scripts/box_arb_monitor.py" `
+            -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput (Join-Path $recDir "box_arb_monitor.out.log") `
+            -RedirectStandardError  (Join-Path $recDir "box_arb_monitor.err.log")
+        Write-Host "[$ts] Box-arb monitor started (PID $($proc.Id), log-only)" -ForegroundColor DarkCyan
+    } catch {
+        Write-Host "[$ts] Box-arb monitor failed to start: $_" -ForegroundColor Red
+    }
+}
 
 while ($true) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Write-Host "`n[$timestamp] Pulling latest from remote..." -ForegroundColor Cyan
     git pull origin main
+
+    # Refresh the box-arb monitor on the freshly-pulled code (kills any prior one)
+    Start-BoxArbMonitor -RepoRoot $RepoRoot
 
     # Read mode from settings.yaml so this is the only place you need to change it
     $settingsPath = Join-Path $RepoRoot "polybot\config\settings.yaml"
