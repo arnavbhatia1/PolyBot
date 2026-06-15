@@ -63,9 +63,13 @@ def _fit_logistic(X: np.ndarray, y: np.ndarray, w: np.ndarray,
     return beta
 
 def _fit_ridge(X: np.ndarray, y: np.ndarray, w: np.ndarray, l2: float = 1e-2) -> np.ndarray:
-    W = np.diag(w / w.sum())
-    A = X.T @ W @ X + l2 * np.eye(X.shape[1])
-    return np.linalg.solve(A, X.T @ W @ y)
+    # Row-scale by the normalized weights instead of forming a dense N×N diag(w):
+    # X.T @ diag(wn) @ X == (X*wn).T @ X and X.T @ diag(wn) @ y == (X*wn).T @ y. At
+    # ~165k training rows the dense diag would allocate ~200 GiB; this stays O(N*p).
+    wn = (w / w.sum())[:, None]
+    Xw = X * wn
+    A = Xw.T @ X + l2 * np.eye(X.shape[1])
+    return np.linalg.solve(A, Xw.T @ y)
 
 
 async def load_training_frame(db: Any, drift_horizon_s: float = DRIFT_HORIZON_S

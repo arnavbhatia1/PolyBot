@@ -370,6 +370,16 @@ def _fmt_secs(s: float) -> str:
     return f"{s_int // 60}:{s_int % 60:02d}"
 
 
+def _fee_breakdown(result: Any) -> str:
+    """Close-summary fee string: total with an entry/exit split so the line can't be
+    misread as a single charge. Flags the zero-fee maker leg explicitly."""
+    entry, exit_ = result.entry_fee_usd, result.exit_fee_usd
+    total = entry + exit_
+    if getattr(result, "maker_fill", False):
+        return f"${total:.2f}  (entry ${entry:.2f} + exit ${exit_:.2f}, maker — no taker fee)"
+    return f"${total:.2f}  (entry ${entry:.2f} + exit ${exit_:.2f})"
+
+
 def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
     """Emit one combined SKIP line (signal context + gate reason).
 
@@ -1197,7 +1207,7 @@ async def _evaluate_signal_and_enter(
         _why = ", ".join(_why_parts)
         logger.info(
             f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
-            f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  fee ${fee_usd:.2f}{slip_note}  |  "
+            f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  entry fee ${fee_usd:.2f}{slip_note}  |  "
             f"{_slug_to_window(cid)}{'' if phase == 'normal' else f' [{phase}]'}\n"
             f"  {_C.DIM}Why: {_why}{_C.RESET}\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}\n"
@@ -1845,7 +1855,7 @@ async def _evaluate_and_exit_position(
                 f"  {color}{_C.BOLD}SCALP {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_fill:.3f}  |  "
                 f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
                 f"  {_C.DIM}Why: {reason}{_C.RESET}\n"
-                f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees ${total_fees:.2f}{_C.RESET}\n"
+                f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees {_fee_breakdown(result)}{_C.RESET}\n"
                 f"{color}{'=' * 60}{_C.RESET}")
             if alert_manager:
                 await alert_manager.send_trade_closed(
@@ -1975,7 +1985,7 @@ async def _resolve_expired_position(
             f"{color}{'=' * 60}{_C.RESET}\n"
             f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  "
             f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
-            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees ${total_fees:.2f}{_C.RESET}\n"
+            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees {_fee_breakdown(result)}{_C.RESET}\n"
             f"{color}{'=' * 60}{_C.RESET}")
         if alert_manager:
             await alert_manager.send_trade_closed(
@@ -2111,7 +2121,7 @@ async def _manage_orphaned_position(
             f"{color}{'=' * 60}{_C.RESET}\n"
             f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']} (orphan){_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  "
             f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
-            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees ${total_fees:.2f}{_C.RESET}\n"
+            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees {_fee_breakdown(result)}{_C.RESET}\n"
             f"{color}{'=' * 60}{_C.RESET}")
         if alert_manager:
             await alert_manager.send_trade_closed(

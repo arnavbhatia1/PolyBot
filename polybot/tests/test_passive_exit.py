@@ -70,6 +70,10 @@ async def test_maker_fill_close_has_zero_exit_fee(tmp_path):
         assert result.success
         assert result.fill_price == 0.66          # the resting level, no book walk
         assert result.exit_fee_usd == 0.0         # maker pays no taker fee
+        assert result.maker_fill is True
+        # Entry fee = the at-open share haircut only: (size/entry - shares_held) x entry
+        # = (100 - 98) x 0.60. Must NOT include the held-back maker headroom shares.
+        assert result.entry_fee_usd == pytest.approx(1.20)
         assert result.pnl > 0
     finally:
         await db.close()
@@ -89,5 +93,8 @@ async def test_taker_close_still_charges_exit_fee(tmp_path):
         result = await trader.close_trade(pid, 0.66, token_id="tok", position=pos)
         assert result.success
         assert result.exit_fee_usd > 0.0
+        assert result.maker_fill is False
+        # Entry fee is path-independent: a taker close reports the same at-open haircut.
+        assert result.entry_fee_usd == pytest.approx(1.20)
     finally:
         await db.close()

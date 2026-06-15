@@ -35,7 +35,17 @@ independent deep-loss-hold branch held live.
 KILL BAR (tasks/todo.md Phase 3): positive ITM (market_price >= 0.5) $
 improvement over >= 5 distinct ET shadow days.
 
+OUT-OF-SAMPLE GUARANTEE: the first run freezes the live artifact to
+exit_model_shadow.json and reuses it unchanged for the whole shadow; only
+records whose ENTIRE window starts after that artifact's fitted_at are scored.
+The model trains per-tick on each window's resolution label, so a window that
+overlaps training has leaked its label — those are dropped (window-level, not
+decision-tick, cutoff). This keeps the 5-day comparison honest even though the
+nightly job keeps refitting the live artifact underneath. --refreeze re-baselines
+from the current live artifact (e.g. to restart the shadow window).
+
   python scripts/shadow_exit_model.py [--db polybot/db/polybot_paper.db]
+  python scripts/shadow_exit_model.py --refreeze   # re-snapshot the baseline
   python scripts/shadow_exit_model.py --selftest
 """
 from __future__ import annotations
@@ -61,6 +71,8 @@ WINDOW_LEN_S = 300.0
 MATCH_TOL_S = 2.0
 KILL_BAR_DAYS = 5
 _NEEDED_COLS = ("bid_up", "ask_up", "bid_down", "ask_down", "coinbase_price", "strike")
+# Frozen baseline snapshot, beside the live artifact. Pins fitted_at for the shadow.
+SHADOW_ARTIFACT_PATH = ARTIFACT_PATH.with_name("exit_model_shadow.json")
 
 
 def _et_day(ts: float) -> str:
@@ -139,8 +151,8 @@ def build() -> tuple[list[dict], dict]:
                          dist=ctx.get("btc_distance_atr"),
                          entry=entry, side=side or c.get("side", ""),
                          act=actual["pnl"], cf=cf["pnl"],
-                         market_id=market_id, decision_ts=decision_ts,
-                         day=_et_day(decision_ts)))
+                         market_id=market_id, window_ts=window_ts,
+                         decision_ts=decision_ts, day=_et_day(decision_ts)))
     return recs, skipped
 
 
@@ -181,6 +193,44 @@ def load_artifact(path: Path) -> dict | None:
         return art
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _fitted_ts(artifact: dict) -> float | None:
+    """The artifact's training cutoff as a unix timestamp (None if unparseable)."""
+    raw = artifact.get("fitted_at")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def shadow_artifact(refreeze: bool = False) -> tuple[dict | None, bool]:
+    """The frozen shadow baseline: a snapshot of the live artifact taken on the
+    first run and reused unchanged for the rest of the 5-day shadow. Freezing pins
+    fitted_at so every shadow day scores the SAME model — one trained before the
+    shadow window — keeping the comparison out-of-sample even as the nightly job
+    refits the live artifact underneath. Returns (artifact, froze_this_run);
+    ``refreeze`` re-snapshots from the current live artifact."""
+    if refreeze:
+        try:
+            SHADOW_ARTIFACT_PATH.unlink()
+        except FileNotFoundError:
+            pass
+    frozen = load_artifact(SHADOW_ARTIFACT_PATH)
+    if frozen is not None:
+        return frozen, False
+    live = load_artifact(ARTIFACT_PATH)
+    if live is None:
+        return None, False
+    SHADOW_ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Atomic write (mirrors nightly_refit_job): a half-written freeze would be read
+    # back as None and silently re-snapshot a newer, leaked baseline mid-shadow.
+    tmp = SHADOW_ARTIFACT_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(live, indent=1), encoding="utf-8")
+    tmp.replace(SHADOW_ARTIFACT_PATH)
+    return live, True
 
 
 def model_predict(artifact: dict, row: dict) -> tuple[float, float]:
@@ -325,7 +375,7 @@ def selftest() -> None:
                           0.0, 0.0, 0.0, 0.0, 60000.0, strike, 0))
         return dict(kind=kind, he=he, sr=sr, mp=mp, thr=-0.10, loss_cut=loss_cut,
                     dist=dist, entry=entry, side=side, act=act, cf=cf,
-                    market_id=market_id, decision_ts=decision_ts,
+                    market_id=market_id, window_ts=wts, decision_ts=decision_ts,
                     day=_et_day(decision_ts))
 
     recs = [
@@ -377,6 +427,34 @@ def selftest() -> None:
     # ITM (r1, r2, r4): boundary 5 + 1 + 8 = +14 ; model 2 - 3 + 6 = +5
     assert abs(itm_b - 14.0) < 1e-9 and abs(itm_m - 5.0) < 1e-9, (itm_b, itm_m)
 
+    # out-of-sample window filter: keep only windows starting strictly after the cutoff.
+    cutoff = 1_000_000_200 + 300 * 2 + 1  # just after window idx 2 begins
+    oos = [r["market_id"] for r in recs if r["window_ts"] > cutoff]
+    assert oos == [f"btc-updown-5m-{1_000_000_200 + 300 * i}" for i in (3, 4, 5, 6)], oos
+
+    # frozen baseline: snapshot once, then ignore the live artifact until --refreeze.
+    import tempfile
+    global ARTIFACT_PATH, SHADOW_ARTIFACT_PATH
+    _saved = (ARTIFACT_PATH, SHADOW_ARTIFACT_PATH)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            ARTIFACT_PATH = Path(td) / "exit_model.json"
+            SHADOW_ARTIFACT_PATH = ARTIFACT_PATH.with_name("exit_model_shadow.json")
+            assert shadow_artifact() == (None, False)  # nothing to freeze yet
+            ARTIFACT_PATH.write_text(json.dumps({**art, "fitted_at": "2026-06-15T03:45:00+00:00"}),
+                                     encoding="utf-8")
+            a1, froze1 = shadow_artifact()
+            assert froze1 and a1["fitted_at"] == "2026-06-15T03:45:00+00:00", (froze1, a1.get("fitted_at"))
+            # live artifact advances (nightly refit) — the frozen baseline must NOT follow.
+            ARTIFACT_PATH.write_text(json.dumps({**art, "fitted_at": "2026-06-16T03:45:00+00:00"}),
+                                     encoding="utf-8")
+            a2, froze2 = shadow_artifact()
+            assert not froze2 and a2["fitted_at"] == "2026-06-15T03:45:00+00:00", a2.get("fitted_at")
+            a3, froze3 = shadow_artifact(refreeze=True)
+            assert froze3 and a3["fitted_at"] == "2026-06-16T03:45:00+00:00", a3.get("fitted_at")
+    finally:
+        ARTIFACT_PATH, SHADOW_ARTIFACT_PATH = _saved
+
     report(matched)
     print("\nhand-check: boundary $ = 5+1-4+8-2 = +8.00 ; model $ = 2-3-4+6-2 = -1.00")
     print("            ITM delta = +5.00 - 14.00 = -9.00 ; loss-cut + whipsaw arms identical")
@@ -390,16 +468,52 @@ def main() -> None:
     ap.add_argument("--db", default="polybot/db/polybot_paper.db")
     ap.add_argument("--selftest", action="store_true",
                     help="run the in-memory fixture instead of real data")
+    ap.add_argument("--refreeze", action="store_true",
+                    help="re-snapshot the frozen shadow baseline from the current live artifact")
     args = ap.parse_args()
     if args.selftest:
         selftest()
         return
 
+    # Freeze the baseline BEFORE filtering: the kill bar must score a model trained
+    # before the shadow window, reused unchanged across all 5 days (out-of-sample).
+    artifact, froze_now = shadow_artifact(refreeze=args.refreeze)
+    if artifact is None:
+        print(f"NO ARTIFACT YET — neither {SHADOW_ARTIFACT_PATH.name} nor {ARTIFACT_PATH} present.")
+        print("The nightly refit writes the live artifact once enough labeled windows exist "
+              "(polybot/exit_model.py). Re-run on the first shadow day to freeze it.")
+        return
+    fitted_ts = _fitted_ts(artifact)
+    if fitted_ts is None:
+        print(f"ABORT — frozen baseline {SHADOW_ARTIFACT_PATH.name} has no parseable "
+              "fitted_at; cannot guarantee an out-of-sample test.")
+        return
+    print(f"shadow baseline: {SHADOW_ARTIFACT_PATH.name}  fitted_at {artifact.get('fitted_at')}  "
+          f"windows {artifact.get('n_windows')}  brier_oos {artifact.get('brier_oos')} "
+          f"(market {artifact.get('brier_market_baseline')})")
+    if froze_now:
+        print(f"  FROZEN this run from the live artifact -> {SHADOW_ARTIFACT_PATH}")
+        print(f"  NOTE: out-of-sample days accrue only for windows AFTER fitted_at "
+              f"({artifact.get('fitted_at')}). Run this on the FIRST shadow day so all "
+              f"{KILL_BAR_DAYS} ET days can count — a late first run silently shortens the "
+              f"shadow, and --refreeze only moves the cutoff later, never earlier.")
+    else:
+        print(f"  reusing the frozen baseline -> {SHADOW_ARTIFACT_PATH}")
+
     recs, load_skips = build()
-    print(f"counterfactual records after recorder epoch "
+    print(f"\ncounterfactual records after recorder epoch "
           f"({RECORDER_EPOCH:%Y-%m-%d %H:%M} ET): {len(recs)}  skipped {load_skips}")
+
+    # Out-of-sample filter: keep only records whose ENTIRE window starts after the
+    # model's training cutoff. The model trains per-tick on each window's resolution
+    # label, so any window overlapping training has leaked its label — drop it.
+    pre = len(recs)
+    recs = [r for r in recs if r["window_ts"] > fitted_ts]
+    print(f"out-of-sample filter (window starts after fitted_at): kept {len(recs)}, "
+          f"dropped {pre - len(recs)} in-sample")
     if not recs:
-        print("WAITING FOR DATA — no counterfactual records after the recorder epoch yet.")
+        print("WAITING FOR DATA — no out-of-sample counterfactual records after the frozen "
+              "baseline's training cutoff yet (these accrue over the shadow days).")
         return
 
     opened = open_db_with_table(Path(args.db), "window_paths")
@@ -420,16 +534,6 @@ def main() -> None:
     if not matched:
         print("WAITING FOR DATA — no decision moments matched a window_paths row yet.")
         return
-
-    artifact = load_artifact(ARTIFACT_PATH)
-    if artifact is None:
-        print(f"\nNO ARTIFACT YET — {ARTIFACT_PATH} absent or incomplete.")
-        print("The nightly refit writes it once enough labeled windows exist "
-              "(polybot/exit_model.py). Matching pipeline verified above; re-run then.")
-        return
-    print(f"artifact: fitted_at {artifact.get('fitted_at')}  "
-          f"windows {artifact.get('n_windows')}  brier_oos {artifact.get('brier_oos')} "
-          f"(market {artifact.get('brier_market_baseline')})")
 
     try:
         score(matched, artifact)

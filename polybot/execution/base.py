@@ -36,6 +36,7 @@ class TradeResult:
     shares: float = 0.0
     fill_price: float = 0.0
     pending: bool = False  # resolution not final yet (e.g. on-chain redeem in flight) — retry next tick
+    maker_fill: bool = False  # close filled as a resting maker (zero taker fee) vs a taker FOK
 
 @dataclass
 class FillResult:
@@ -335,7 +336,11 @@ class BaseTrader(ABC):
         lr = log_return(position["entry_price"], fill_price)
         fee_usdc = exit_fee_usdc(shares, fill_price, exit_fee_rate)
         revenue = shares * fill_price - fee_usdc
-        entry_fee_usd = _entry_fee_usd_from_position(position, shares)
+        # Entry fee = the at-open share haircut; derive it from the entry-held shares
+        # (fallback_shares), not the headroom-reduced sell qty, so held-back maker
+        # headroom (credited back via _scalp_residual_credit) isn't booked as fee.
+        # Mirrors resolve_position.
+        entry_fee_usd = _entry_fee_usd_from_position(position, fallback_shares)
         pnl = revenue - position["size"]
         gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
 
@@ -356,7 +361,8 @@ class BaseTrader(ABC):
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
                            pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=fee_usdc,
-                           gain_pct=gain_pct, shares=shares, fill_price=fill_price)
+                           gain_pct=gain_pct, shares=shares, fill_price=fill_price,
+                           maker_fill=maker_fill)
 
     # -- resolve_position ------------------------------------------------
 

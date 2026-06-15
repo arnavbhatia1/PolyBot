@@ -270,9 +270,14 @@ DEADLINE CALENDAR (data epoch 06-11; ~two days of slack vs 06-22):
   occurs). Wallet-aware routing NOT wired: infeasible as specced (no live wallet
   identity in CLOB feeds) — see Phase 4 box.
 - 06-15 23:45: first exit-model refit (4-day label gate, amended for the deadline).
+  REQUIRES the bot to have restarted after the 06-15 _fit_ridge OOM fix so the
+  running process holds the fixed code — otherwise this refit silently writes no
+  artifact and the first fit slips to 06-16 23:45.
 - 06-16..20: Phase 3 five-day shadow — run `python scripts/shadow_exit_model.py`
-  daily; 06-20/21: verdict; PASS → flip the artifact's deployed flag + wire
-  evaluate_hold consumption.
+  daily. The FIRST run (06-16 morning) freezes the latest artifact as the
+  out-of-sample baseline; a late first run silently shortens the shadow
+  (--refreeze only moves the cutoff later). 06-20/21: verdict; PASS → flip the
+  artifact's deployed flag + wire evaluate_hold consumption.
 - 06-15+: box-arb execution + Phase 6 sleeve only if their bars pass; else
   document abort (legitimate completion per plan).
 - 06-21/22: buffer + final verification + multi-asset TODO handoff.

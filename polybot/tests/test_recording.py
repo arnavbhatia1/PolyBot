@@ -142,3 +142,27 @@ def test_exit_model_fit_learns_separable_outcome():
     assert len(art["beta_prob_up"]) == len(exit_model.FEATURES) + 1
     assert all(np.isfinite(art["beta_drift_up"]))
     assert art["deployed"] is False
+
+
+def test_exit_model_fit_scales_to_production_row_count():
+    """fit() must stay O(N*p): a ~100k-row frame must train without materializing
+    any dense N×N matrix. The prior diag(w) ridge would attempt ~80 GiB here and
+    OOM — production has ~165k drift rows, which the small-n unit test never hit."""
+    rng = np.random.default_rng(11)
+    n = 100_000
+    dist = rng.normal(0, 50, n)
+    bid_up = np.clip(0.5 + dist / 200, 0.05, 0.95)
+    X = np.column_stack([
+        bid_up, bid_up + 0.02, 1 - bid_up - 0.02, 1 - bid_up,
+        np.full(n, 0.02), np.full(n, 0.02),
+        rng.uniform(10, 100, n), rng.uniform(10, 100, n),
+        rng.uniform(10, 100, n), rng.uniform(10, 100, n),
+        dist, rng.uniform(0, 300, n),
+    ])
+    frame = {"X": X, "y_up": (dist > 0).astype(float),
+             "drift_up": np.clip(dist / 1000, -0.2, 0.2),
+             "ts": np.linspace(time.time() - 5 * 86400, time.time(), n),
+             "n_windows": 500}
+    art = exit_model.fit(frame)
+    assert len(art["beta_drift_up"]) == len(exit_model.FEATURES) + 1
+    assert all(np.isfinite(art["beta_drift_up"]))
