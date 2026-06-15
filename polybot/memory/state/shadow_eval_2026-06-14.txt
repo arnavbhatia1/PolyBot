@@ -1,0 +1,19 @@
+=== Phase 1: passive-exit shadow (bar: ITM fill rate >= 50%) === 
+tape: 1484 tokens, 1667894 prints   scalps with token: 2040
+scalps with BBO context: 563
+
+ level  timeout     n   fill%  ITM n  ITM fill%  uplift $   $/fill  days
+   mid       5s   563  82.8%    189     78.3%     +7.63   +0.016     4  [PASS]
+   mid      10s   563  86.9%    189     82.5%    +25.84   +0.053     4  [PASS]
+   mid      20s   563  89.7%    189     87.3%    +27.61   +0.055     4  [PASS]
+  bid1       5s   563  60.9%    189     60.3%    -24.26   -0.071     4  [PASS]
+  bid1      10s   563  69.3%    189     68.3%     +4.90   +0.013     4  [PASS]
+  bid1      20s   563  76.7%    189     76.7%    +29.50   +0.068     4  [PASS]
+
+KILL BAR: ITM fill rate >= 50% at any (level, timeout) over >= 3 days -> build the GTC two-stage exit. Otherwise it stays FOK.
+ 
+=== Phase 6: wide-quote shadow (bar: positive EV over 3 days) === 
+window_paths source: polybot\db\window_paths.db   window_labels source: polybot\db\polybot_paper.db
+windows: 741 (217992 rows)  labels: 720  tape: 1484 tokens / 1668044 prints
+token attribution: 740/741 windows fully attributed
+no stale-touch episodes detected yet — book never sat still >= 30s through a >= 0.5% Coinbase move. Re-run as data accumulates (or lower --T to probe).

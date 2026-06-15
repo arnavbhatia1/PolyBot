@@ -1,0 +1,49 @@
+{
+  "market_id": "btc-updown-5m-1781443500",
+  "side": "Up",
+  "gate_name": "edge_cap",
+  "signal_prob": 0.6578,
+  "signal_edge": 0.2878,
+  "seconds_remaining": 299.9,
+  "indicator_snapshot": {
+    "trade_context": {
+      "model_probability": 0.6578352356854971,
+      "model_probability_raw": 0.6578352356854971,
+      "edge": 0.28783523568549707,
+      "market_price_up": 0.37,
+      "market_price_down": 0.64,
+      "btc_price": 64305.62,
+      "strike_price": 64295.30308,
+      "seconds_remaining": 299.916443,
+      "atr": 19.41,
+      "atr_rolling_20": 17.092,
+      "atr_long_term_mean": 16.9822,
+      "flow_score": 0.1215,
+      "spot_flow_signal": 0.21982856474309212,
+      "prev_resolution_margin": 20.009653587185312,
+      "regime_autocorr": -0.0773,
+      "regime_direction": -1.0,
+      "closes_tail": [
+        64326.24,
+        64343.33
+      ],
+      "entry_phase": "normal",
+      "flip_count": 0,
+      "is_flip": false,
+      "coinbase_cvd_60s": 2.1469,
+      "coinbase_taker_60s": 0.9246,
+      "coinbase_taker_n": 119,
+      "cross_venue_gap": -37.71,
+      "fast_realized_vol_60s": 4.1e-05,
+      "clob_depth_top5_up_usd": 120563.08,
+      "clob_depth_top5_down_usd": 120749.26,
+      "clob_book_age_s": 0.218
+    }
+  },
+  "recorded_at": 1781443500.858491,
+  "resolved": true,
+  "ghost_correct": false,
+  "ghost_gain_pct": -1.0,
+  "resolved_at": 1781444116.7163453,
+  "timestamp": "2026-06-14T13:35:16.716360+00:00"
+}
