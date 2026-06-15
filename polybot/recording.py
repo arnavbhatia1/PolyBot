@@ -176,6 +176,40 @@ class WindowPathRecorder:
         except Exception as e:
             logger.debug(f"recorder subscribe failed: {e}")
 
+    async def _recover_orphan_labels(self) -> None:
+        """Boot-time: a restart between a window closing and its label being fetched
+        leaves a recorded path with no window_labels row (the queue is in-memory).
+        Re-seed any such window still inside the give-up horizon so _label_pass
+        relabels it. Older orphans are past Gamma's reliable window and are handled
+        by the one-time backfill, not here."""
+        if self._paths_conn is None:
+            return
+        now = time.time()
+        try:
+            cur = await self._paths_conn.execute("SELECT DISTINCT window_id FROM window_paths")
+            path_ids = [r["window_id"] for r in await cur.fetchall()]
+            cur = await self.db.conn.execute("SELECT window_id FROM window_labels")
+            labeled = {r[0] for r in await cur.fetchall()}
+        except Exception as e:
+            logger.debug(f"orphan-label recovery scan skipped: {e}")
+            return
+        seeded = 0
+        for wid in path_ids:
+            if wid in labeled or wid in self._pending_label:
+                continue
+            try:
+                end_ts = int(wid.rsplit("-", 1)[-1]) + 300.0
+            except ValueError:
+                continue
+            # Only the still-recoverable band: ended >30s ago (resolved) and within
+            # the give-up horizon _label_pass honors. Skips the active window and the
+            # long-dead backlog.
+            if 30 < (now - end_ts) <= _LABEL_GIVE_UP_S:
+                self._pending_label[wid] = end_ts
+                seeded += 1
+        if seeded:
+            logger.info(f"orphan-label recovery: re-seeded {seeded} unlabeled window(s) for retry")
+
     async def _label_pass(self) -> None:
         now = time.time()
         for market_id, end_ts in list(self._pending_label.items()):
@@ -248,6 +282,7 @@ class WindowPathRecorder:
     async def run(self) -> None:
         self._running = True
         await self.ensure_tables()
+        await self._recover_orphan_labels()
         logger.info("Window-path recorder running (1 Hz, all windows, batched flush)")
         last_flush = time.time()
         while self._running:

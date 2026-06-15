@@ -2812,6 +2812,12 @@ async def main() -> None:
     scheduler.register_job("window_paths_retention", cleanup_job(db))
     scheduler.register_job("wallet_tables", nightly_wallet_job(db, http_client, market_scanner))
 
+    async def _price_sum_retention_job() -> dict:
+        from polybot.paths import trim_jsonl_by_age, PRICE_SUM_OUTLIERS_PATH
+        dropped = await asyncio.to_thread(trim_jsonl_by_age, PRICE_SUM_OUTLIERS_PATH, 90.0)
+        return {"price_sum_lines_dropped": dropped}
+    scheduler.register_job("price_sum_retention", _price_sum_retention_job)
+
     async def run_discord():
         backoff = 5
         while True:

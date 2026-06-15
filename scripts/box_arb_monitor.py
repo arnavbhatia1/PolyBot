@@ -32,6 +32,9 @@ GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 OUT = MEMORY_DIR / "recordings" / "box_arb.jsonl"
 
+MIN_LEG_PRICE = 0.02        # below this an ask is settling dust, not fillable box liquidity
+MIN_SECONDS_TO_EXPIRY = 15  # don't evaluate a settling/expired book
+
 
 
 async def fetch_event(client: httpx.AsyncClient, slug: str) -> dict | None:
@@ -56,6 +59,18 @@ async def best_ask(client: httpx.AsyncClient, token_id: str) -> tuple[float, flo
     except Exception:
         pass
     return 0.0, 0.0
+
+
+def strike_of(event: dict) -> float | None:
+    """The window strike (priceToBeat) from Gamma eventMetadata — needed to pick
+    the riskless leg pair, since the box direction depends on K_5m vs K_15m."""
+    try:
+        meta = event.get("eventMetadata")
+        if isinstance(meta, dict) and meta.get("priceToBeat") is not None:
+            return float(meta["priceToBeat"])
+    except (TypeError, ValueError):
+        pass
+    return None
 
 
 def tokens_of(event: dict) -> tuple[str, str]:
@@ -96,9 +111,8 @@ async def check_overlap(client: httpx.AsyncClient, expiry_ts: int) -> None:
         log_row(row | {"note": "tokens_missing"})
         return
 
-    # The guaranteed-$1 leg pair depends on the strike order (K_5m vs K_15m);
-    # check both directions and let the offline analysis sort strike order from
-    # the logged metadata.
+    k5, k15 = strike_of(five), strike_of(quarter)
+    row["strikes"] = {"five": k5, "quarter": k15}
     asks = {}
     for name, tok in (("five_up", f_up), ("five_down", f_dn),
                       ("quarter_up", h_up), ("quarter_down", h_dn)):
@@ -106,15 +120,28 @@ async def check_overlap(client: httpx.AsyncClient, expiry_ts: int) -> None:
     row["asks"] = {k: v[0] for k, v in asks.items()}
     row["sizes"] = {k: v[1] for k, v in asks.items()}
 
-    for legs in (("five_up", "quarter_down"), ("five_down", "quarter_up")):
-        p1, p2 = asks[legs[0]][0], asks[legs[1]][0]
-        if p1 <= 0 or p2 <= 0:
-            continue
+    # Only a live, non-settling, two-sided book can host a real box.
+    if expiry_ts - time.time() < MIN_SECONDS_TO_EXPIRY:
+        log_row(row | {"note": "too_close_to_expiry"})
+        return
+    if k5 is None or k15 is None:
+        log_row(row | {"note": "strike_missing"})
+        return
+
+    # Exactly ONE leg pair is a guaranteed-$1 box, fixed by the strike order:
+    #   five_up + quarter_down  is riskless iff K_5m <= K_15m
+    #   five_down + quarter_up  is riskless iff K_5m >= K_15m
+    # The other pair leaves a payout hole (a strike band paying $0), so a sub-$1
+    # cost there is a loss, not an arb — never log it as a violation.
+    legs = ("five_up", "quarter_down") if k5 <= k15 else ("five_down", "quarter_up")
+    p1, p2 = asks[legs[0]][0], asks[legs[1]][0]
+    if p1 >= MIN_LEG_PRICE and p2 >= MIN_LEG_PRICE:
         fee = DEFAULT_FEE_RATE * (p1 * (1 - p1) + p2 * (1 - p2))
         cost = p1 + p2 + fee
         if cost < 1.0:
             row["violation"] = {"legs": legs, "cost": round(cost, 4),
                                 "margin": round(1.0 - cost, 4),
+                                "strikes": {"five": k5, "quarter": k15},
                                 "fillable": round(min(asks[legs[0]][1], asks[legs[1]][1]), 2)}
             print(f"{datetime.now(timezone.utc):%H:%M:%S} BOX: {legs} cost {cost:.4f} "
                   f"margin {1-cost:+.4f} size {row['violation']['fillable']}")

@@ -75,6 +75,11 @@ class Database:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN pnl REAL DEFAULT 0")
         if "fees" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0")
+        if "maker_fill" not in th_cols:
+            # Phase 1 passive-exit observability: 1 = maker (resting) close, 0 = taker
+            # FOK/resolution. Pre-instrumentation rows default 0. Lets the live uplift
+            # be measured straight from the committed DB (GROUP BY maker_fill).
+            await self.conn.execute("ALTER TABLE trade_history ADD COLUMN maker_fill INTEGER DEFAULT 0")
         if "exit_reason" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN exit_reason TEXT NOT NULL DEFAULT 'resolution'")
 
@@ -156,7 +161,7 @@ class Database:
 
     async def _close_position_and_history(
         self, position_id: int, exit_price: float,
-        pnl: float, fees: float, exit_reason: str,
+        pnl: float, fees: float, exit_reason: str, maker_fill: bool = False,
     ) -> None:
         """Mark position closed and write the trade_history row.
 
@@ -175,16 +180,17 @@ class Database:
         await self.conn.execute(
             """INSERT INTO trade_history
             (side, entry_price, exit_price, size,
-             exit_timestamp, pnl, fees, exit_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+             exit_timestamp, pnl, fees, exit_reason, maker_fill)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (pos["side"], pos["entry_price"], exit_price, pos["size"],
-             now, pnl, fees, exit_reason),
+             now, pnl, fees, exit_reason, 1 if maker_fill else 0),
         )
 
     async def close_position(
         self, position_id: int, exit_price: float,
         pnl: float = 0.0, fees: float = 0.0, exit_reason: str = "resolution",
         new_bankroll: float | None = None, bankroll_delta: float | None = None,
+        maker_fill: bool = False,
     ) -> None:
         """Close a position atomically. Pass at most one of new_bankroll / bankroll_delta.
 
@@ -200,7 +206,7 @@ class Database:
             raise ValueError("Pass at most one of new_bankroll / bankroll_delta")
         try:
             await self._close_position_and_history(
-                position_id, exit_price, pnl, fees, exit_reason,
+                position_id, exit_price, pnl, fees, exit_reason, maker_fill,
             )
             if new_bankroll is not None:
                 await self.conn.execute(

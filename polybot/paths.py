@@ -43,6 +43,36 @@ PIPELINE_RUN_LOG_PATH: Path = STATE_DIR / "pipeline_run_log.json"
 GATE_STATS_PATH: Path = STATE_DIR / "gate_stats.json"                 # accumulator
 GATE_STATS_CURRENT_PATH: Path = STATE_DIR / "gate_stats_current.json"  # today only
 
+def trim_jsonl_by_age(path: Path, max_age_days: float) -> int:
+    """Drop lines from an append-only JSONL whose `ts` is older than max_age_days,
+    keeping the file bounded. Atomic (temp + replace); unparseable lines are kept
+    (never silently lose data). Returns lines dropped. Best-effort: never raises.
+    """
+    try:
+        if not path.exists():
+            return 0
+        cutoff = datetime.now(timezone.utc).timestamp() - max_age_days * 86400.0
+        kept, dropped = [], 0
+        for line in path.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            try:
+                if float(json.loads(s).get("ts", 0)) >= cutoff:
+                    kept.append(s)
+                else:
+                    dropped += 1
+            except (ValueError, json.JSONDecodeError, AttributeError):
+                kept.append(s)  # keep anything we can't date rather than lose it
+        if dropped:
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+            tmp.replace(path)
+        return dropped
+    except Exception:
+        return 0
+
+
 def fold_gate_day(acc_path: Path, counts: dict, day_key: str) -> dict | None:
     """Add one finished ET day's gate-skip counts into the lifetime accumulator at
     `acc_path` (created if absent), bumping days_accumulated and the day range.

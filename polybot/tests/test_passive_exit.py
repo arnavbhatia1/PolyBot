@@ -75,6 +75,9 @@ async def test_maker_fill_close_has_zero_exit_fee(tmp_path):
         # = (100 - 98) x 0.60. Must NOT include the held-back maker headroom shares.
         assert result.entry_fee_usd == pytest.approx(1.20)
         assert result.pnl > 0
+        # Persisted to the DB so Phase 1's live uplift is measurable (GROUP BY maker_fill).
+        cur = await db.conn.execute("SELECT maker_fill FROM trade_history ORDER BY id DESC LIMIT 1")
+        assert (await cur.fetchone())[0] == 1
     finally:
         await db.close()
 
@@ -96,5 +99,7 @@ async def test_taker_close_still_charges_exit_fee(tmp_path):
         assert result.maker_fill is False
         # Entry fee is path-independent: a taker close reports the same at-open haircut.
         assert result.entry_fee_usd == pytest.approx(1.20)
+        cur = await db.conn.execute("SELECT maker_fill FROM trade_history ORDER BY id DESC LIMIT 1")
+        assert (await cur.fetchone())[0] == 0
     finally:
         await db.close()

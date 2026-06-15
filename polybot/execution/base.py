@@ -356,7 +356,7 @@ class BaseTrader(ABC):
         await self.db.close_position(
             position_id, exit_price=fill_price,
             bankroll_delta=revenue + residual_credit, pnl=pnl, fees=total_fees,
-            exit_reason=exit_reason,
+            exit_reason=exit_reason, maker_fill=maker_fill,
         )
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
