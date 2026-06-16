@@ -1,0 +1,2 @@
+NO ARTIFACT YET â€” neither exit_model_shadow.json nor C:\Users\abhat\Personal\PolyBot\polybot\memory\exit_model\exit_model.json present.
+The nightly refit writes the live artifact once enough labeled windows exist (polybot/exit_model.py). Re-run on the first shadow day to freeze it.
