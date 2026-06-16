@@ -3,8 +3,8 @@
 Single source of truth for the memory layout. All paths key off MEMORY_DIR so the
 bot's running directory can't leak a stray `polybot/polybot/memory/` tree.
 Under memory/: per-event record dirs (outcomes/, ghost_outcomes/, counterfactuals/
-— append-only JSON + rollup_YYYY-MM-DD.json bundles), calibration/ (fitted
-isotonic), and state/ (rolling single-file state + logs rewritten in place).
+— append-only JSON + rollup_YYYY-MM-DD.json bundles) and state/ (rolling
+single-file state + logs rewritten in place).
 """
 from __future__ import annotations
 
@@ -20,10 +20,6 @@ MEMORY_DIR: Path = Path(os.environ.get("POLYBOT_MEMORY_DIR") or (POLYBOT_DIR / "
 OUTCOMES_DIR: Path = MEMORY_DIR / "outcomes"
 GHOSTS_DIR: Path = MEMORY_DIR / "ghost_outcomes"
 COUNTERFACTUALS_DIR: Path = MEMORY_DIR / "counterfactuals"
-
-# ── Calibrator ────────────────────────────────────────────────────────────────
-CALIBRATION_DIR: Path = MEMORY_DIR / "calibration"
-CALIBRATION_PARAMS_PATH: Path = CALIBRATION_DIR / "isotonic_params.json"
 
 # ── Rolling single-file state + logs (memory/state/) ──────────────────────────
 STATE_DIR: Path = MEMORY_DIR / "state"

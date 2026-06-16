@@ -14,7 +14,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 import discord
 from discord.ext import commands
-from polybot.paths import PIPELINE_RUN_LOG_PATH, CALIBRATION_PARAMS_PATH
+from polybot.paths import PIPELINE_RUN_LOG_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +250,6 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
     @bot.command(name="pipeline")
     async def pipeline_status(ctx):
         run_log_path = PIPELINE_RUN_LOG_PATH
-        cal_path = CALIBRATION_PARAMS_PATH
 
         last_run = "no data"
         status_line = "no data"
@@ -290,22 +289,6 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             except Exception:
                 pass
 
-        cal_line = "unknown"
-        if cal_path.exists():
-            try:
-                cal_data = json.loads(cal_path.read_text())
-                if cal_data.get("type") == "isotonic":
-                    n_samples = cal_data.get("n_samples", 0)
-                    y_thr = cal_data.get("y_thresholds", [])
-                    if y_thr:
-                        cal_line = f"isotonic, n={n_samples}, span [{y_thr[0]:.3f}, {y_thr[-1]:.3f}]"
-                    else:
-                        cal_line = f"isotonic, n={n_samples}"
-                else:
-                    cal_line = "identity (no transform)"
-            except Exception:
-                pass
-
         # Pipeline runs 23:45 ET (run_polybot.ps1, CLAUDE.md §11/§16).
         now_et = datetime.now(_ET)
         next_run = now_et.replace(hour=23, minute=45, second=0, microsecond=0)
@@ -323,7 +306,6 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             f"  Status       {status_line}\n"
             f"  Source       {source_line}\n"
             f"  Baseline     {baseline_line}\n"
-            f"  Calibrator   {cal_line}\n"
             f"  Holdout      {holdout_line}\n"
             f"  Next run     {next_str}\n"
             f"```"
