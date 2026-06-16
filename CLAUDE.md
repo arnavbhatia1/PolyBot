@@ -2,7 +2,7 @@
 
 Lean 5-min BTC Up/Down trader for Polymarket. Entry is **inventory sourcing**
 (L1 fair-value anchor + execution-quality gates — entry forecasting has no edge
-over the CLOB price; evidence in `tasks/goal.md`). The edge is the **exit
+over the CLOB price; evidence in `tasks/todo.md`). The edge is the **exit
 engine**: re-evaluate every tick, sell overpriced hope to momentum chasers or
 ride to $1. A 1 Hz window-path recorder feeds the nightly exit-value model and
 wallet-fingerprint tables (`tasks/todo.md` is the build plan and kill-bar

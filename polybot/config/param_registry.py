@@ -2,7 +2,7 @@
 
 All knobs are operator-owned — the nightly knob-tuning pipeline was deleted
 with the entry-side prediction stack (entry forecasting has no edge over the
-CLOB price; tasks/goal.md). Ranges are kept for loader validation only.
+CLOB price; tasks/todo.md). Ranges are kept for loader validation only.
 """
 from __future__ import annotations
 from dataclasses import dataclass

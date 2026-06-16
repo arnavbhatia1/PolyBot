@@ -6,7 +6,6 @@ Alerts fire on trade open/close, circuit breaker events, and daily session banne
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 from datetime import datetime, timedelta
@@ -14,7 +13,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 import discord
 from discord.ext import commands
-from polybot.paths import PIPELINE_RUN_LOG_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +75,7 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             "`!pause` / `!resume` — Pause or resume entries\n"
             "`!clear [trades|control|all]` — Purge channel messages\n"
             "`!session` — Re-send session banner\n"
-            "`!pipeline` — Last run, adopted changes, calibrator state, next run"
+            "`!pipeline` — Nightly jobs summary + next run"
         )
 
     @bot.command(name="status")
@@ -249,47 +247,9 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
 
     @bot.command(name="pipeline")
     async def pipeline_status(ctx):
-        run_log_path = PIPELINE_RUN_LOG_PATH
-
-        last_run = "no data"
-        status_line = "no data"
-        source_line = "?"
-        baseline_line = "n/a"
-        holdout_line = "skipped (insufficient data)"
-        if run_log_path.exists():
-            try:
-                runs = json.loads(run_log_path.read_text())
-                if runs:
-                    latest = runs[-1]
-                    dt = datetime.fromisoformat(latest["date"].replace("Z", "+00:00")).astimezone(_ET)
-                    last_run = dt.strftime("%Y-%m-%d %H:%M ET")
-                    source_line = latest.get("source", "?")
-                    baseline_sharpe = latest.get("baseline_sharpe", 0.0)
-                    n_baseline = latest.get("n_baseline_trades", 0)
-                    if n_baseline:
-                        baseline_line = f"{baseline_sharpe:+.3f} Sharpe on {n_baseline:,} trades"
-                    else:
-                        baseline_line = f"{baseline_sharpe:+.3f} Sharpe"
-                    changes = latest.get("changes", [])
-                    if isinstance(changes, list):
-                        adopted = [c for c in changes if c.get("decision") == "adopted"]
-                        rejected = [c for c in changes if c.get("decision") != "adopted"]
-                        status_line = f"{len(adopted)} adopted / {len(rejected)} rejected"
-                        h_changes = [c for c in changes if "holdout_candidate_sharpe" in c]
-                        if h_changes:
-                            h_base = h_changes[0].get("holdout_baseline_sharpe", 0.0)
-                            improving = sum(1 for c in h_changes
-                                            if c.get("holdout_candidate_sharpe", 0) >= c.get("holdout_baseline_sharpe", 0))
-                            holdout_line = (f"baseline {h_base:+.3f} Sharpe, "
-                                            f"{improving}/{len(h_changes)} non-degrading")
-                    elif isinstance(changes, dict):
-                        status_line = f"{len(changes)} adopted / 0 rejected"
-                    else:
-                        status_line = "no proposals"
-            except Exception:
-                pass
-
-        # Pipeline runs 23:45 ET (run_polybot.ps1, CLAUDE.md §11/§16).
+        # Nightly jobs run 23:45 ET (run_polybot.ps1; CLAUDE.md §7/§12): record
+        # rollups + exit-model shadow/refit, wallet tables, retention sweeps.
+        # No parameter adoption post-gut — entry forecasting has no edge.
         now_et = datetime.now(_ET)
         next_run = now_et.replace(hour=23, minute=45, second=0, microsecond=0)
         if next_run <= now_et:
@@ -300,15 +260,12 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         next_str = f"{next_run.strftime('%Y-%m-%d %H:%M ET')} (in {hours}h {mins}m)"
 
         await ctx.send(
-            f"**Pipeline**\n"
-            f"```\n"
-            f"  Last run     {last_run}\n"
-            f"  Status       {status_line}\n"
-            f"  Source       {source_line}\n"
-            f"  Baseline     {baseline_line}\n"
-            f"  Holdout      {holdout_line}\n"
-            f"  Next run     {next_str}\n"
-            f"```"
+            "**Nightly Pipeline**\n"
+            "```\n"
+            "  Jobs       record rollups, exit-model shadow + refit,\n"
+            "             wallet tables, window-path/price-sum retention\n"
+            f"  Next run   {next_str}\n"
+            "```"
         )
 
     @bot.command(name="session")

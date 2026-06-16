@@ -794,8 +794,8 @@ async def _evaluate_signal_and_enter(
     flow_data = compute_flow_signal(book_up, book_down, trades_up, trades_down)
     flow_score = flow_data["flow_score"]
 
-    # L3b — shared helper in `polybot/core/aux_layers.py`. Live and
-    # backtest replay both call it so the model math is identical.
+    # L3b — shared helper in `polybot/core/aux_layers.py`; entry and exit paths
+    # both call it so the model math is identical.
     _vol_factor = regime_vol_factor(
         indicators.get("atr", {}).get("atr", 0.0), signal_engine.last_atr_long_term_mean)
     spot_flow_signal = compute_spot_flow_signal(
@@ -804,7 +804,7 @@ async def _evaluate_signal_and_enter(
         aux_signals.get("coinbase_taker_n", 0),
         vol_factor=_vol_factor,
     )
-    # Cold-vs-real-zero split (CLAUDE.md §10): the live model consumes a number
+    # Cold-vs-real-zero split (CLAUDE.md §8): the live model consumes a number
     # (cold collapses to 0.0), but the *recorded* trade_context value must be None
     # when the feed is cold — spot_flow cold when Coinbase CVD is None; book flow
     # cold when neither CLOB book nor any trade is present.
@@ -902,8 +902,8 @@ async def _evaluate_signal_and_enter(
                     "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
                     "regime_direction": round(signal_engine.last_regime_direction, 4),
                     "closes_tail": _closes_tail,
-                    # Ghost schema parity with _ghost(): by-phase / flip-segmented
-                    # bias cards need these on the sub-threshold population too.
+                    # Ghost schema parity with _ghost(): stamp phase + flip fields
+                    # on the sub-threshold population so ghost and filled records share one schema.
                     "entry_phase": phase,
                     "flip_count": _st_flip_count,
                     "is_flip": _st_flip_count > 0,
@@ -1046,7 +1046,7 @@ async def _evaluate_signal_and_enter(
         return None, last_eval_log_window
 
     # Final min-size check after all caps: Polymarket's CLOB rejects orders below
-    # $1 notional. Paper mirrors the floor so the backtest sample matches live.
+    # $1 notional. Paper mirrors the floor so paper and live behave identically.
     if size < 1.0:
         _record_skip("min_size")
         _emit_gate_skip(cid, "min_size", f"size ${size:.2f} < $1 min")
@@ -1074,8 +1074,8 @@ async def _evaluate_signal_and_enter(
         ))
 
     snapshot = indicator_engine.get_snapshot(indicators)
-    # Last two closes let the L6 backtest reconstruct `last_return` for
-    # autocorr_signed_mag — without them the feature is dormant in replay.
+    # Last two closes recorded for the exit-value model / counterfactual replay
+    # (record-schema continuity; kept as an entry fact in the trade_context).
     _closes_buf = binance_feed.buffer.get_closes()
     _closes_tail = (
         [float(_closes_buf[-2]), float(_closes_buf[-1])]
@@ -1083,7 +1083,7 @@ async def _evaluate_signal_and_enter(
     )
 
     snapshot["trade_context"] = {
-        # Entry-time facts — needed by backtest replay
+        # Entry-time facts — recorded for the counterfactual replay harness and exit-value model
         "btc_price": btc_price,
         "strike_price": strike,
         "seconds_remaining": contract["seconds_remaining"],
@@ -1907,7 +1907,7 @@ def _resolved_exit_price(live: dict[str, Any], side: str) -> tuple[float | None,
     (caller keeps waiting); ``oracle_log`` is a human log fragment when the
     Chainlink oracle decided, else ``None``.
 
-    Source priority matches §8 (Chainlink is the source of truth, never Binance):
+    Source priority matches §6 (Chainlink is the source of truth, never Binance):
       1. ``event_metadata`` (final_price vs price_to_beat) — the Chainlink oracle.
       2. A *coherent* resolved CLOB book (``closed``, prices sum ~1, one side at an
          extreme), paid the exact binary 1.0/0.0 — zero taker fee at the extreme.
@@ -2005,8 +2005,9 @@ async def _resolve_expired_position(
         if counterfactual_tracker:
             counterfactual_tracker.record_hold_resolution(
                 pos["market_id"], exit_price, pnl, gain_pct, position_id=pos["id"])
-        # Track resolution margin (final - strike) for next window's L5 carry —
-        # from event_metadata regardless of which branch above set exit_price.
+        # Track resolution margin (final - strike), persisted as the
+        # prev_resolution_margin telemetry field — from event_metadata
+        # regardless of which branch above set exit_price.
         meta = live.get("event_metadata")
         if meta and meta.get("final_price") is not None and meta.get("price_to_beat") is not None:
             _prev_resolution_margin = meta["final_price"] - meta["price_to_beat"]
@@ -2033,8 +2034,9 @@ async def _manage_orphaned_position(
         age = 0
     if age < 600:
         return True, day_wins, day_losses, day_fees  # too young, skip
-    # Track (final_price, strike) for L5 carry — populated by whichever branch
-    # below has the data. Saved at the end alongside resolve_position.
+    # Track (final_price, strike) for the prev_resolution_margin telemetry —
+    # populated by whichever branch below has the data. Saved at the end
+    # alongside resolve_position.
     resolved_final: float | None = None
     resolved_strike: float | None = None
     # Try direct Gamma fetch for eventMetadata (Chainlink oracle)
@@ -2137,8 +2139,8 @@ async def _manage_orphaned_position(
                 await alert_manager.send_circuit_breaker(cb_event, breaker)
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
                               exit_reason="resolution", pnl=pnl, fees=total_fees)
-        # L5 carry — persist whichever branch (eventMetadata or Chainlink
-        # fallback) captured both final_price and strike.
+        # prev_resolution_margin — persist whichever branch (eventMetadata or
+        # Chainlink fallback) captured both final_price and strike.
         if resolved_final is not None and resolved_strike is not None:
             _prev_resolution_margin = resolved_final - resolved_strike
             asyncio.create_task(asyncio.to_thread(_save_prev_resolution_margin, _prev_resolution_margin))
@@ -2737,8 +2739,8 @@ async def main() -> None:
     )
 
 
-    # Restore L5 prev_resolution_margin from last session — without this, every restart
-    # zeroes out the feature for the first few trades, creating a systematic training bias.
+    # Restore prev_resolution_margin from last session so the recorded telemetry
+    # field isn't zeroed for the first trades after each restart.
     global _prev_resolution_margin
     _prev_resolution_margin = _load_prev_resolution_margin()
     if _prev_resolution_margin != 0.0:

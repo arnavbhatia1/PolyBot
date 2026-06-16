@@ -1,4 +1,4 @@
-"""Resolution exit-price decision — `_resolved_exit_price` (§8).
+"""Resolution exit-price decision — `_resolved_exit_price` (§6).
 
 Binary payoff (winner 1.0 / loser 0.0). The Chainlink oracle (`event_metadata`)
 is authoritative and preferred over the CLOB book. A *coherent* resolved book is

@@ -1,9 +1,7 @@
-"""Shared model math for L1 (vol-autocorr scale), L3/L3b (flow combine),
-and the L3b raw signal.
+"""Shared model math for L1 (vol-autocorr scale) and L3/L3b (flow combine).
 
-`signal_engine` (live), `main.py` (live), and `agents/scheduler.py` (backtest
-replay) all call these, so the probability computation is identical across paths
-and the optimizer can never tune against a model production doesn't run.
+`signal_engine` and `main.py` (both live, entry + exit paths) call these so the
+L1 probability math has a single implementation.
 """
 from __future__ import annotations
 
@@ -12,9 +10,8 @@ import math
 from scipy.special import stdtr as _stdtr
 
 
-# Minimum Student-t df. Pipeline range is 3-8; df ≤ 2 has undefined variance, so
-# t_scale = sqrt(df/(df-2)) needs df ≥ 3. Single source so live (signal_engine)
-# and replay (scheduler) clamp identically.
+# Minimum Student-t df. df ≤ 2 has undefined variance, so t_scale =
+# sqrt(df/(df-2)) needs df ≥ 3. Single source for the live L1 clamp.
 MIN_STUDENT_T_DF = 3
 
 _COINBASE_CVD_SCALE = 30.0       # ≈ typical 60s Coinbase BTC volume at baseline vol

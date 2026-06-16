@@ -32,7 +32,6 @@ PREV_MARGIN_PATH: Path = STATE_DIR / "prev_resolution_margin.json"
 # E1 recorder: out-of-band price-sum moments the [0.98, 1.02] gate skips (JSONL,
 # append-only) — the cross-book-arb pool the gate otherwise censors unmeasured.
 PRICE_SUM_OUTLIERS_PATH: Path = STATE_DIR / "price_sum_outliers.jsonl"
-PIPELINE_RUN_LOG_PATH: Path = STATE_DIR / "pipeline_run_log.json"
 
 # Gate-skip stats: a lifetime accumulator + the live current-day file. Each finished
 # ET day folds into the accumulator (see fold_gate_day + main._ensure_gate_stats_day_loaded).

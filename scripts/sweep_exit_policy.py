@@ -52,7 +52,7 @@ def build():
 
 
 def policy_pnl(recs, thr):
-    """Branch-faithful symmetric replay (mirrors scheduler._kelly_bankroll_returns):
+    """Branch-faithful symmetric replay of the live scalp/hold exit decision:
     scalp records un-fire when the candidate's blended threshold wouldn't have
     (loss-cuts never re-priced); hold records flip to their worst-moment
     hypothetical scalp when the candidate WOULD have fired there — unless the

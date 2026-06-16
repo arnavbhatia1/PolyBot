@@ -8,12 +8,12 @@ Two ghost sources:
   min_model_probability — recorded so the pipeline has resolution data on
   the low-confidence region the entry gate filters out.
 
-Ghosts give the pipeline 5–10× more training data per day. Records whose
-indicator_snapshot carries market_price_<side> + model_probability_raw are
-normalized into outcomes by AgentScheduler._ghost_to_outcome and feed both
-the backtest population and the isotonic calibration train pool. Ghosts
-with empty snapshots inform gate-blocking diagnostics (BiasDetector / TA
-Evolver) only.
+Ghosts give the learning loop 5–10× more resolution data per day — the evidence
+stream for any future gate evaluation. Each ghost resolves at window close
+(winning side → 1, losing → 0) into ghost_outcomes/ and folds into the nightly
+record rollups consumed by the exit-value model refit, wallet-markout
+classification, and the counterfactual replay harness. (No entry-side
+optimizer/calibrator consumes them — entry forecasting has no edge.)
 """
 from __future__ import annotations
 
@@ -84,11 +84,10 @@ class GhostTracker:
 
         Called from the main resolution loop alongside CounterfactualTracker.
         Matches CounterfactualTracker's policy: no Binance fallback. Binance
-        candle close ≠ Polymarket resolution price, and ghost outcomes feed
-        the pipeline's bias/ghost analysis — using Binance would mislabel
-        ghost win/loss near the strike and bias the "which gate over-filters"
-        signal. Waits up to 20 min for Chainlink/Gamma to post final_price
-        before giving up.
+        candle close ≠ Polymarket resolution price, and ghost win/loss labels
+        feed gate-skip diagnostics — using Binance would mislabel ghosts near
+        the strike and distort the "which gate over-filters" signal. Waits up
+        to 20 min for Chainlink/Gamma to post final_price before giving up.
         """
         if not self._pending:
             return []

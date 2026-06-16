@@ -35,7 +35,7 @@ execution:
 #  SECTION 2: SIGNAL — L1 fair-value anchor + entry gates + exit engine
 #
 #  Entry is inventory sourcing, not forecasting (the CLOB price beats every
-#  feature stack — tasks/goal.md). L1 exists to anchor the fee/spread/Kelly
+#  feature stack — tasks/todo.md). L1 exists to anchor the fee/spread/Kelly
 #  gates; the bot's edge is the exit engine. All knobs are operator-owned —
 #  the nightly knob-tuning pipeline was deleted with the entry stack.
 # =============================================================================

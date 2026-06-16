@@ -1,9 +1,9 @@
 """OutcomeReviewer: writes per-trade outcome JSON files and rolls them up into daily files.
 
 Each resolved or scalped trade writes an outcome record capturing model probability,
-fill quality, realized edge, and indicator context. The pipeline reads these for isotonic
-calibration, weight optimization, and bias analysis. Daily rollup keeps the file count
-manageable for git.
+fill quality, realized edge, and indicator context. These feed the nightly record
+rollups consumed by the exit-value model refit, wallet-markout classification, and the
+counterfactual replay harness. Daily rollup keeps the file count manageable for git.
 """
 from __future__ import annotations
 

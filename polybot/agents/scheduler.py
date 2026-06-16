@@ -1,11 +1,9 @@
 """Nightly job scheduler: record rollups + pluggable nightly jobs.
 
-The learning surface this used to orchestrate (weight optimizer, recommenders,
-calibration adoption, crisis mode) was deleted with the entry-side prediction
-stack — entry forecasting has no edge over the CLOB price, so there is nothing
-to tune there. What remains nightly: roll per-trade records into daily bundles,
-then run whatever jobs are registered (exit-value model refit, wallet-markout
-classification — Phases 3/4 of tasks/todo.md).
+This scheduler tunes nothing — entry forecasting has no edge over the CLOB price,
+so there are no parameter/model optimizers or calibrators to run. Nightly it rolls
+per-trade records into daily bundles, then runs whatever jobs are registered
+(exit-value model refit, wallet-markout classification — Phases 3/4 of tasks/todo.md).
 """
 from __future__ import annotations
 
