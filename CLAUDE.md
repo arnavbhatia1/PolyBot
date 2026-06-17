@@ -25,7 +25,7 @@ python -m polybot.main --mode live        # real USDC (needs allowance)
 python -m polybot.main --run-pipeline     # one nightly cycle, no trading
 python -m pytest polybot/tests/           # full suite
 .\scripts\run_polybot.ps1                 # daily cycle: trade -> nightly jobs -> commit -> restart; also supervises the box-arb monitor
-python scripts/box_arb_monitor.py         # Phase 5 box-arb monitor (log-only); standalone — only needed if NOT running via run_polybot.ps1
+python scripts/box_arb_monitor.py         # box-arb monitor (log-only); standalone — only needed if NOT running via run_polybot.ps1
 ```
 
 ### Secrets
@@ -67,9 +67,9 @@ prob_up    = StudentT_CDF(df, z * sqrt(df/(df-2)))        # df clamped ≥3
   exit tick share the dedup, keyed on the candle's `candle_ts`).
 - `btc_price` from `_fastest_btc_price`: **Coinbase WS only (<2s)** — the venue
   Chainlink resolves against. Coinbase stale → decision skipped, never zeroed.
-- The L2-L6 layer stack, SPRT, and isotonic entry calibration were **deleted**
-  (2026-06-11): the market price beats every feature stack at entry (k=0,
-  44/44 segments, day-clustered t≈3.7-4.4 against). Do not rebuild entry-side
+- L1 is the entire model — there is no L2-L6 stack, SPRT, or isotonic entry
+  calibration. The market price beats every feature stack at entry (k=0, 44/44
+  segments, day-clustered t≈3.7-4.4 against). Never rebuild entry-side
   prediction — `tasks/todo.md` "WHAT YOU ARE NOT ALLOWED TO DO".
 
 ## 3. Entry gates
@@ -153,16 +153,16 @@ Exit price oracle-first (`event_metadata` final_price vs price_to_beat; Gamma's
 coherent resolved prices as fallback; never Binance). Chainlink orphan fallback
 after ~30 min of Gamma silence. Live redeems settle non-blockingly.
 
-**Phase 1 passive exits are live in paper** (`execution.passive_exit_enabled`):
-on a non-loss-cut scalp the bot rests a SELL at `_resting_level` (mid, capped at
-the ask, floored at bid+1 tick) for `passive_exit_timeout_s` (10s), takes the
-maker fill (zero taker fee) if a BUY prints strictly through, else FOK-falls-back;
-loss-cuts skip resting, a HOLD-flip cancels it. Kill bar passed
-(`scripts/shadow_passive_exit.py`: 83-87% ITM fill, +$0.056/fill over 4 days).
-**LiveTrader stays FOK** — it has no GTC subsystem, so live-capital passive exit
-is still an unbuilt phase. **Phase 3:** the nightly-trained exit-value model
-(`polybot/exit_model.py`) replaces the ExitBoundary curve only after a 5-day
-shadow beats it through the counterfactual replay.
+**Passive exits** (`execution.passive_exit_enabled`): on a non-loss-cut scalp the
+bot rests a SELL at `_resting_level` (mid, capped at the ask, floored at bid+1
+tick) for `passive_exit_timeout_s` (10s), takes the maker fill (zero taker fee)
+if a BUY prints strictly through, else FOK-falls-back; loss-cuts skip resting, a
+HOLD-flip cancels it. PaperTrader simulates this from the tape; LiveTrader mirrors
+it with a real GTD resting SELL (`create_order`/`post_order` GTD, poll `get_order`,
+`cancel_orders` + FOK fallback, cancel/fill-race double-sell guard, 120s GTD
+self-expiry safety net). The nightly-trained exit-value model
+(`polybot/exit_model.py`) replaces the ExitBoundary curve only once it beats the
+curve in counterfactual replay — `deployed` stays False until then.
 
 ## 7. Recorders + learning loop
 
@@ -173,18 +173,20 @@ shadow beats it through the counterfactual replay.
   90-day retention sweep nightly. ~288 labeled windows/day — the training
   stream for the exit-value model.
 - **Tape recorder**: every CLOB trade print →
-  `memory/recordings/tape_YYYY-MM-DD.jsonl` (gitignored). Input to the Phase 1
-  shadow sim and the Phase 6 maker-markout study.
+  `memory/recordings/tape_YYYY-MM-DD.jsonl` (gitignored). Input to the
+  exit-policy shadow sims.
 - **Exit-value model** (`polybot/exit_model.py`): two heads — P(resolve Up |
   state) and E[bid drift 60s] — pure-numpy logistic/ridge, recency-weighted,
   chronological 80/20 metrics (Brier vs the market-mid baseline, MAE vs
   martingale). Nightly refit once ~7 days of labels exist; artifact kept-back
-  when metrics degrade >15% vs trailing-7; `deployed` flag flips only at the
-  Phase 3 kill bar.
+  when metrics degrade >15% vs trailing-7; `deployed` flips only when it beats
+  ExitBoundary in CF replay.
 - **Wallet fingerprints** (`polybot/wallets.py`): nightly data-api ingestion of
   each labeled window's taker tape → per-wallet resolution markout →
   donor/noise/sharp classification (`wallet_stats`). Counterparty information —
-  the one learning surface that compounds. Routing deploys with Phase 1.
+  the one learning surface that compounds. `wallet_stats` is write-only; no
+  decision-time routing consumes it (pre-post identity is infeasible on the
+  anonymous CLOB book — `tasks/todo.md`).
 - **NightlyScheduler** (`agents/scheduler.py`): 23:45 ET — record rollups
   (outcomes/ghosts/counterfactuals → daily bundles) + registered jobs
   (exit-model refit, retention sweep, wallet tables).
@@ -245,8 +247,8 @@ polybot/
                                market_scanner, _socket, _staleness, _json
   indicators/                  atr + engine (ATR-only)
   recording.py                 WindowPathRecorder (1 Hz, all windows) + TapeRecorder (JSONL)
-  exit_model.py                Phase 3 two-head exit-value model (nightly refit, kill-bar-gated deploy)
-  wallets.py                   Phase 4 wallet fingerprinting (data-api ingestion + classification)
+  exit_model.py                two-head exit-value model (nightly refit, kill-bar-gated deploy)
+  wallets.py                   wallet fingerprinting (data-api ingestion + classification)
   execution/                   base (BaseTrader, fee math), paper_trader, live_trader,
                                circuit_breaker, correlation
   agents/                      scheduler (NightlyScheduler), outcome_reviewer,
@@ -259,9 +261,10 @@ polybot/
   discord_bot/                 monitoring + control commands (§13)
   db/models.py                 SQLite per mode (positions, trade_history, bankroll, peak_bankroll,
                                window_paths, window_labels, wallet_trades, wallet_stats)
-scripts/                       run_polybot.ps1 (daily loop), run_kill_bar_evals.cmd (06-14 task),
+scripts/                       run_polybot.ps1 (daily loop),
                                shadow_passive_exit.py / shadow_exit_model.py / shadow_wide_quote.py
-                               (kill-bar evaluators), box_arb_monitor.py (Phase 5, supervised by run_polybot.ps1),
+                               (kill-bar evaluators), box_arb_monitor.py (box-arb monitor, log-only,
+                               supervised by run_polybot.ps1),
                                sweep_exit_policy.py, diagnose_edge.py (record loader + edge stats),
                                backfill_wallets.py, topup_paper_bankroll.py, verify_keys.py
 ```
@@ -274,7 +277,7 @@ scripts/                       run_polybot.ps1 (daily loop), run_kill_bar_evals.
 | Binance.com | `kline_1m` / `depth20@100ms` / `aggTrade` WS | Candles, ATR, depth, cross-venue gap |
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/tick-size` | Books, tape, executable prices |
 | Polymarket Gamma | `GET /events?slug=...` | Discovery + resolution + window labels |
-| Polymarket data-api | `GET /trades?market=...` | Wallet-tagged taker tape (Phase 4) |
+| Polymarket data-api | `GET /trades?market=...` | Wallet-tagged taker tape |
 | Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` | Strike capture + resolution price |
 
 ## 12. Running + invariants
@@ -292,9 +295,8 @@ prior instance first), so one launch starts everything. Live pre-flight:
   stamped for record-schema continuity.
 - Recordings (`memory/recordings/`) are gitignored — never in the nightly
   commit. `memory/` records + per-mode DB + settings.yaml are committed nightly.
-- Kill bars are the deployment authority: Phase 1 ≥50% ITM fill in shadow;
-  Phase 3 beats ExitBoundary in CF replay over 5 shadow days; Phase 6 positive
-  EV in 3-day quote shadow — see `tasks/todo.md` for status.
+- Kill bars are the deployment authority — no phase ships to live capital
+  before its bar passes (`tasks/todo.md` is the open roadmap + kill-bar status).
 
 ## 13. Discord
 
