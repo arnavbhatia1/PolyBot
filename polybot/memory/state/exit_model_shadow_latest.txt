@@ -1,2 +1,19 @@
-NO ARTIFACT YET â€” neither exit_model_shadow.json nor C:\Users\abhat\Personal\PolyBot\polybot\memory\exit_model\exit_model.json present.
-The nightly refit writes the live artifact once enough labeled windows exist (polybot/exit_model.py). Re-run on the first shadow day to freeze it.
+shadow baseline: exit_model_shadow.json  fitted_at 2026-06-16T03:45:48.879319+00:00  windows 1168  brier_oos 0.16869 (market 0.16816)
+  FROZEN this run from the live artifact -> C:\Users\abhat\Personal\PolyBot\polybot\memory\exit_model\exit_model_shadow.json
+  NOTE: out-of-sample days accrue only for windows AFTER fitted_at (2026-06-16T03:45:48.879319+00:00). Run this on the FIRST shadow day so all 5 ET days can count â€” a late first run silently shortens the shadow, and --refreeze only moves the cutoff later, never earlier.
+
+counterfactual records after recorder epoch (2026-06-11 10:44 ET): 1896  skipped {'missing_fields': 0, 'pre_epoch': 2507, 'bad_window_ts': 0}
+out-of-sample filter (window starts after fitted_at): kept 220, dropped 1676 in-sample
+window_paths source: polybot\db\window_paths.db
+matched to window_paths (Â±2s): 193  skipped {'no_row': 0, 'null_fields': 27}
+
+per-ET-day $ (branch-faithful arms on the matched pool):
+         day     n  boundary$     model$     delta$
+  2026-06-16   193    -239.21    -267.73     -28.52
+
+ALL: n=193  boundary -239.21  model -267.73  delta -28.52  day-clustered t n/a (1 day)
+ITM (mp>=0.5): n=97  boundary +180.24  model +192.07  delta +11.83  day-clustered t n/a (1 day)
+fired: boundary 120/193, model 52/193
+
+KILL BAR (Phase 3): positive ITM delta over >= 5 distinct ET days
+-> WAITING FOR DATA (1/5 shadow days)

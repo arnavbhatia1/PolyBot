@@ -1,65 +1,65 @@
 {
-  "updated_at": 1781581969.3940427,
+  "updated_at": 1781668133.2611065,
   "feeds": [
     {
       "name": "binance_kline",
       "n": 2000,
-      "n_total": 21481,
-      "connected": true,
+      "n_total": 18863,
+      "connected": false,
       "p50": 2.001,
-      "p95": 2.133,
-      "p99": 4.006,
-      "max": 7.099
+      "p95": 3.961,
+      "p99": 4.069,
+      "max": 6.017
     },
     {
       "name": "binance_depth",
       "n": 2000,
-      "n_total": 441590,
-      "connected": true,
+      "n_total": 398016,
+      "connected": false,
       "p50": 0.1,
       "p95": 0.102,
-      "p99": 0.4,
-      "max": 0.534
+      "p99": 0.125,
+      "max": 0.505
     },
     {
       "name": "binance_trades",
       "n": 2000,
-      "n_total": 399649,
-      "connected": true,
+      "n_total": 252151,
+      "connected": false,
       "p50": 0.0,
-      "p95": 0.964,
-      "p99": 1.792,
-      "max": 3.095
+      "p95": 0.982,
+      "p99": 1.903,
+      "max": 4.474
     },
     {
       "name": "coinbase",
       "n": 2000,
-      "n_total": 372797,
+      "n_total": 289458,
       "connected": true,
-      "p50": 0.09,
-      "p95": 0.667,
-      "p99": 0.95,
-      "max": 1.134
+      "p50": 0.129,
+      "p95": 0.778,
+      "p99": 0.998,
+      "max": 10.479
     },
     {
       "name": "chainlink",
       "n": 2000,
-      "n_total": 43401,
+      "n_total": 42743,
       "connected": true,
-      "p50": 1.045,
-      "p95": 1.543,
-      "p99": 1.947,
-      "max": 8.378
+      "p50": 1.05,
+      "p95": 1.559,
+      "p99": 1.957,
+      "max": 10.846
     },
     {
       "name": "clob_ws",
       "n": 2000,
-      "n_total": 24536193,
+      "n_total": 23153448,
       "connected": true,
       "p50": 0.0,
-      "p95": 0.004,
-      "p99": 0.011,
-      "max": 0.09
+      "p95": 0.008,
+      "p99": 0.015,
+      "max": 0.403
     }
   ]
 }
