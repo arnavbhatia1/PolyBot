@@ -196,6 +196,107 @@ def test_hold_down_side(engine):
     assert edge > 0
 
 
+# --- Loss-cut positive-edge guard (2026-06-17 fix) ---
+
+def test_loss_cut_fires_when_model_agrees_residual_is_cheap(engine):
+    """Deep underwater, <90s, BTC wrong-side by >0.5xATR, AND the model agrees the
+    bid is NOT underpricing the residual (holding_edge <= 0) → loss-cut fires."""
+    # Up side, BTC $100 below strike (wrong side, >>0.5xATR) → model P(Up) ≈ 0;
+    # a thin bid at 0.10 sits at/above that residual, so holding_edge <= 0.
+    action, _prob, edge, reason = engine.evaluate_hold(
+        _make_indicators(atr_value=30), btc_price=66300, strike_price=66400,
+        seconds_remaining=60, market_price_for_side=0.10, side="Up",
+        exit_threshold=-0.10, entry_price=0.80)
+    assert edge <= 0                       # model values the residual at/below the bid
+    assert action == "EXIT"
+    assert engine.last_loss_cut_event == "fired"
+    assert "cutting loss" in reason
+
+
+def test_loss_cut_skipped_when_model_values_residual_above_bid(engine):
+    """The 06-17 fix: when the model still values the binary residual ABOVE the
+    panic bid (holding_edge > 0), a deep-underwater near-expiry position is NOT
+    loss-cut — it holds the residual rather than locking the loss into a thin bid.
+    (Pre-fix this fired and sold ~0.05-0.18/share of model EV away on ~1/5 cuts.)"""
+    # Up side, BTC only $20 below strike (wrong side, dist 20 > 0.5xATR=15) so the
+    # model still gives the residual real value, while a panic bid prices it 0.05.
+    action, _prob, edge, _reason = engine.evaluate_hold(
+        _make_indicators(atr_value=30), btc_price=66380, strike_price=66400,
+        seconds_remaining=60, market_price_for_side=0.05, side="Up",
+        exit_threshold=-0.10, entry_price=0.80)
+    assert edge > 0                        # model values the residual above the bid
+    assert action == "HOLD"                # not loss-cut, not scalped
+    assert engine.last_loss_cut_event != "fired"
+
+
+# --- ATR per-candle dedup (2026-06-17 fix) ---
+
+def test_record_atr_one_slot_per_candle():
+    """Intra-candle compute_probability calls (same candle_ts, ~1Hz exit ticks)
+    occupy ONE rolling-ATR slot tracking the latest value; distinct candle_ts
+    append; candle_ts=None keeps legacy append-every-call behavior."""
+    se = SignalEngine()
+    se._record_atr(30.0, candle_ts=1000)
+    se._record_atr(34.0, candle_ts=1000)
+    se._record_atr(36.0, candle_ts=1000)
+    assert len(se._atr_history) == 1
+    assert se._atr_history[-1] == 36.0
+    assert se._atr_history_sum == 36.0
+    assert se.last_atr_rolling_20 == 36.0
+    # New candle → new slot; running mean stays exact.
+    se._record_atr(20.0, candle_ts=2000)
+    assert list(se._atr_history) == [36.0, 20.0]
+    assert se._atr_history_sum == 56.0
+    assert se.last_atr_rolling_20 == 28.0
+    # No candle_ts → always append (back-compat for direct/unit-test calls).
+    se._record_atr(10.0)
+    se._record_atr(10.0)
+    assert len(se._atr_history) == 4
+
+
+def test_record_atr_long_term_deque_stays_in_lockstep():
+    """Short and long-term ATR deques both keep one slot per candle with exact
+    running sums (no drift from the replace path)."""
+    se = SignalEngine()
+    for v in (30.0, 31.0, 33.0):           # same candle, three forming updates
+        se._record_atr(v, candle_ts=500)
+    se._record_atr(40.0, candle_ts=560)    # next candle
+    assert list(se._atr_long_term) == [33.0, 40.0]
+    assert se._atr_long_term_sum == 73.0
+    assert se.last_atr_long_term_mean == 36.5
+
+
+def test_evaluate_hold_records_atr_once_per_candle(engine):
+    """Many evaluate_hold ticks within one candle (same atr candle_ts) record the
+    ATR once, not once per tick — the exit-tick pollution bug fixed end-to-end."""
+    ind = {"atr": {"atr": 30.0, "passes": True, "reason": "ok", "candle_ts": 5000}}
+    for _ in range(12):
+        engine.evaluate_hold(ind, 66450, 66400, 120, 0.55, "Up", exit_threshold=-0.10)
+    assert len(engine._atr_history) == 1
+    ind2 = {"atr": {"atr": 28.0, "passes": True, "reason": "ok", "candle_ts": 5060}}
+    engine.evaluate_hold(ind2, 66450, 66400, 60, 0.55, "Up", exit_threshold=-0.10)
+    assert len(engine._atr_history) == 2
+
+
+def test_record_atr_maxlen_eviction_keeps_invariants():
+    """>205 distinct candles, each with several same-candle forming replaces,
+    crossing BOTH the short (20) and long-term (200) deque eviction boundaries:
+    the running sums stay exact and the two deques stay in lockstep at [-1]
+    (the riskiest arithmetic path — front-eviction on one deque while the other
+    keeps growing)."""
+    import math as _m
+    se = SignalEngine()
+    for c in range(210):
+        ts = 1000 + c
+        for j in range(3):  # intra-candle forming updates → replace, not append
+            se._record_atr(20.0 + (c % 7) + j * 0.5, candle_ts=ts)
+        assert se._atr_history[-1] == se._atr_long_term[-1]
+        assert abs(se._atr_history_sum - _m.fsum(se._atr_history)) < 1e-6
+        assert abs(se._atr_long_term_sum - _m.fsum(se._atr_long_term)) < 1e-6
+    assert len(se._atr_history) == 20      # short deque saturated + evicting
+    assert len(se._atr_long_term) == 200   # long deque saturated + evicting
+
+
 # --- Student-t CDF tests ---
 
 def test_student_t_less_extreme_than_normal():

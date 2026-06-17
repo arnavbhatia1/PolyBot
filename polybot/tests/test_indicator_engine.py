@@ -55,3 +55,12 @@ def test_compute_all_returns_atr_only(engine):
 def test_get_snapshot_serializable(engine):
     indicators = engine.compute_all(_make_trending_buffer("up", 50))
     json.dumps(engine.get_snapshot(indicators))
+
+def test_compute_all_stamps_candle_ts(engine):
+    """compute_all stamps the latest candle's open-time (inside the atr sub-dict)
+    so SignalEngine can keep one rolling-ATR slot per candle. Top-level shape
+    is unchanged."""
+    buf = _make_trending_buffer("up", 50)
+    result = engine.compute_all(buf)
+    assert result["atr"]["candle_ts"] == buf.latest().timestamp
+    assert set(result.keys()) == {"atr"}

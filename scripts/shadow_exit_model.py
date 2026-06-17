@@ -29,8 +29,8 @@ carries the Up-bid drift head).
 Both policies use the branch-faithful arm selection of
 sweep_exit_policy.policy_pnl: loss-cut scalps always keep their actual arm;
 hold records flip to their worst-moment hypothetical scalp only when the
-policy fires there AND neither the whipsaw cushion nor the threshold-
-independent deep-loss-hold branch held live.
+policy fires there AND none of the threshold-independent live HOLD branches
+held — whipsaw cushion, deep-loss-hold, or loss-cut positive-edge hold.
 
 KILL BAR (tasks/todo.md Phase 3): positive ITM (market_price >= 0.5) $
 improvement over >= 5 distinct ET shadow days.
@@ -63,6 +63,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from polybot.core.exit_boundary import effective_exit_threshold  # noqa: E402
 from polybot.execution.base import DEFAULT_FEE_RATE  # noqa: E402
 from polybot.exit_model import ARTIFACT_PATH, FEATURES  # noqa: E402
+from polybot.config.param_registry import default_for as _default  # noqa: E402
+
+_LOSS_CUT_FRACTION = _default("loss_cut_fraction")
+_LOSS_CUT_TIME_S = _default("loss_cut_time_s")
 from scripts.diagnose_edge import load_records  # noqa: E402
 
 ET = ZoneInfo("America/New_York")
@@ -282,7 +286,15 @@ def chosen_pnl(rec: dict, fires: bool) -> float:
     whipsaw = wrong_side and abs(dist) <= 0.5
     deep_loss = (rec["he"] < -0.10 and rec["entry"] is not None
                  and rec["mp"] < rec["entry"])
-    if not whipsaw and not deep_loss and fires:
+    # Mirror the live loss-cut positive-edge HOLD (signal_engine.evaluate_hold):
+    # in the loss-cut regime (deep underwater <entry*frac, <loss_cut_time_s,
+    # wrong-side >0.5xATR) with he>0 the model values the residual above the bid,
+    # so live HOLDS rather than cutting — don't re-fire the scalp here.
+    loss_cut_pos_hold = (
+        wrong_side and abs(dist) > 0.5 and rec["he"] > 0
+        and rec["entry"] is not None and rec["mp"] < rec["entry"] * _LOSS_CUT_FRACTION
+        and rec["sr"] < _LOSS_CUT_TIME_S)
+    if not whipsaw and not deep_loss and not loss_cut_pos_hold and fires:
         return rec["cf"]
     return rec["act"]
 
@@ -456,6 +468,14 @@ def selftest() -> None:
         ARTIFACT_PATH, SHADOW_ARTIFACT_PATH = _saved
 
     report(matched)
+    # loss-cut positive-edge HOLD (06-17 fix) — mirrors signal_engine.evaluate_hold:
+    # deep-underwater (<entry*0.65), <90s, wrong-side >0.5xATR record with he>0 must
+    # HOLD (take act), not re-fire the scalp; he<=0 still re-fires (take cf).
+    _lc = dict(kind="hold", he=+0.10, sr=60, mp=0.05, loss_cut=False,
+               dist=-1.0, entry=0.80, side="Up", act=-9.0, cf=-9.5)
+    assert chosen_pnl(_lc, True) == -9.0, "loss-cut he>0 must HOLD (take act)"
+    assert chosen_pnl({**_lc, "he": -0.05}, True) == -9.5, "loss-cut he<=0 re-fires (take cf)"
+
     print("\nhand-check: boundary $ = 5+1-4+8-2 = +8.00 ; model $ = 2-3-4+6-2 = -1.00")
     print("            ITM delta = +5.00 - 14.00 = -9.00 ; loss-cut + whipsaw arms identical")
     print("SELFTEST PASS")

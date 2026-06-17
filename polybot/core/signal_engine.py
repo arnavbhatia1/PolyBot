@@ -99,24 +99,41 @@ class SignalEngine:
         self.last_effective_exit_threshold: float = 0.0
         self.last_atr_rolling_20: float = 0.0
         self.last_atr_long_term_mean: float = 0.0
+        # Candle timestamp of the last ATR appended to the rolling deques. Keeps
+        # ONE slot per 1-min candle: compute_probability runs per exit tick (~1Hz
+        # while holding), so without this the same candle's ATR would flood the
+        # 20-slot deque and compress the lookback to sub-minute history.
+        self._last_atr_candle_ts: int | None = None
 
-    def _record_atr(self, atr: float) -> None:
+    def _record_atr(self, atr: float, candle_ts: int | None = None) -> None:
         if atr <= 0:
             return
         v = float(atr)
         h = self._atr_history
-        if len(h) == h.maxlen:
-            self._atr_history_sum -= h[0]
-        h.append(v)
-        self._atr_history_sum += v
         lt = self._atr_long_term
-        if len(lt) == lt.maxlen:
-            self._atr_long_term_sum -= lt[0]
-        lt.append(v)
-        self._atr_long_term_sum += v
-        n_short = len(self._atr_history)
+        # One slot per candle: when candle_ts repeats (intra-minute forming-candle
+        # updates re-call compute_probability at ~1Hz), REPLACE this candle's slot
+        # with the latest (most-formed) ATR instead of appending — else hundreds of
+        # the same candle's values dominate the rolling deques. candle_ts=None
+        # (direct/unit-test calls) keeps the legacy append-every-call behavior.
+        if candle_ts is not None and candle_ts == self._last_atr_candle_ts and len(h) > 0:
+            self._atr_history_sum += v - h[-1]
+            h[-1] = v
+            self._atr_long_term_sum += v - lt[-1]
+            lt[-1] = v
+        else:
+            if len(h) == h.maxlen:
+                self._atr_history_sum -= h[0]
+            h.append(v)
+            self._atr_history_sum += v
+            if len(lt) == lt.maxlen:
+                self._atr_long_term_sum -= lt[0]
+            lt.append(v)
+            self._atr_long_term_sum += v
+            self._last_atr_candle_ts = candle_ts
+        n_short = len(h)
         self.last_atr_rolling_20 = (self._atr_history_sum / n_short) if n_short > 0 else 0.0
-        n_long = len(self._atr_long_term)
+        n_long = len(lt)
         self.last_atr_long_term_mean = (self._atr_long_term_sum / n_long) if n_long > 0 else 0.0
 
     def _effective_atr_floor(self) -> float:
@@ -142,7 +159,8 @@ class SignalEngine:
 
     def compute_probability(self, btc_price: float, strike_price: float,
                             seconds_remaining: float, atr: float,
-                            closes: np.ndarray | None = None) -> float:
+                            closes: np.ndarray | None = None,
+                            atr_candle_ts: int | None = None) -> float:
         """P(Up) at expiry — Student-t CDF of distance-to-strike over remaining vol."""
         if atr <= 0 or seconds_remaining <= 0:
             self.last_raw_prob_up = 0.5
@@ -164,7 +182,7 @@ class SignalEngine:
             last_return = 0.0
         self.last_regime_direction = 1.0 if last_return > 0 else (-1.0 if last_return < 0 else 0.0)
 
-        self._record_atr(atr)
+        self._record_atr(atr, candle_ts=atr_candle_ts)
         atr_effective = max(atr, self._effective_atr_floor())
         vol_scaled = ((atr_effective / self.atr_sigma_ratio) * math.sqrt(minutes_remaining)
                       * autocorr_vol_scale(regime))
@@ -201,7 +219,8 @@ class SignalEngine:
 
         atr = atr_data.get("atr", 0)
         prob_up = self.compute_probability(btc_price, strike_price,
-                                           seconds_remaining, atr, closes=closes)
+                                           seconds_remaining, atr, closes=closes,
+                                           atr_candle_ts=atr_data.get("candle_ts"))
         prob_down = 1.0 - prob_up
         best_prob = max(prob_up, prob_down)
         if best_prob < self.min_model_probability:
@@ -264,7 +283,8 @@ class SignalEngine:
         """
         atr = indicators.get("atr", {}).get("atr", 0)
         prob_up = self.compute_probability(btc_price, strike_price,
-                                           seconds_remaining, atr, closes=closes)
+                                           seconds_remaining, atr, closes=closes,
+                                           atr_candle_ts=indicators.get("atr", {}).get("candle_ts"))
         model_prob = prob_up if side == "Up" else 1.0 - prob_up
         holding_edge = model_prob - market_price_for_side
 
@@ -292,6 +312,17 @@ class SignalEngine:
             and seconds_remaining < self.loss_cut_time_s
         )
         if loss_cut_would_fire and whip_saw_safe:
+            # Only LOCK the loss when the model agrees the bid isn't underpricing
+            # the residual (holding_edge <= 0). When holding_edge > 0 the model
+            # still values the binary residual ABOVE the panic bid, so hold it to
+            # resolution (+EV vs selling) instead of cutting into a thin book — and
+            # return HOLD explicitly so it can't fall through to an OTM-urgency
+            # scalp that would dump it at the same sub-model-value price.
+            if holding_edge > 0:
+                self.last_loss_cut_event = ""
+                return ("HOLD", model_prob, holding_edge,
+                        "holding to resolution — underwater but the model values the "
+                        "residual above the current bid")
             self.last_loss_cut_event = "fired"
             return ("EXIT", model_prob, holding_edge,
                     f"cutting loss — market dropped to {market_price_for_side:.2f} "

@@ -62,7 +62,9 @@ prob_up    = StudentT_CDF(df, z * sqrt(df/(df-2)))        # df clamped ≥3
 - `student_t_cdf` + df clamp + `autocorr_vol_scale` live in `core/aux_layers.py`.
 - **ATR floor**, dynamic: `max(min_atr, 0.30*rolling_20)`; widens when
   `rolling_20/long_term_200 < atr_regime_shift_threshold` (anti-overconfidence
-  on vol collapse). Buffers append once per `compute_probability` call.
+  on vol collapse). Buffers keep one ATR slot per 1-min candle — replaced within
+  the forming candle, not appended per `compute_probability` call (entry + every
+  exit tick share the dedup, keyed on the candle's `candle_ts`).
 - `btc_price` from `_fastest_btc_price`: **Coinbase WS only (<2s)** — the venue
   Chainlink resolves against. Coinbase stale → decision skipped, never zeroed.
 - The L2-L6 layer stack, SPRT, and isotonic entry calibration were **deleted**

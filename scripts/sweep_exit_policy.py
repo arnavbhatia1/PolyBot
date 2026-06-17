@@ -19,7 +19,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from polybot.core.exit_boundary import effective_exit_threshold  # noqa: E402
+from polybot.config.param_registry import default_for as _default  # noqa: E402
 from scripts.diagnose_edge import load_records  # noqa: E402
+
+_LOSS_CUT_FRACTION = _default("loss_cut_fraction")
+_LOSS_CUT_TIME_S = _default("loss_cut_time_s")
 
 
 def build():
@@ -56,7 +60,7 @@ def policy_pnl(recs, thr):
     scalp records un-fire when the candidate's blended threshold wouldn't have
     (loss-cuts never re-priced); hold records flip to their worst-moment
     hypothetical scalp when the candidate WOULD have fired there — unless the
-    whipsaw cushion or deep-loss-hold branch (threshold-independent) held live."""
+    whipsaw cushion, deep-loss-hold, or loss-cut positive-edge branch held live."""
     total = 0.0
     fired = 0
     for r in recs:
@@ -71,7 +75,15 @@ def policy_pnl(recs, thr):
             (r["side"] == "Up" and dist < 0) or (r["side"] == "Down" and dist > 0))
         whipsaw = wrong_side and abs(dist) <= 0.5
         deep_loss = (r["he"] < -0.10 and r["entry"] is not None and r["mp"] < r["entry"])
-        if not whipsaw and not deep_loss and r["he"] <= eff:
+        # Mirror the live loss-cut positive-edge HOLD (signal_engine.evaluate_hold):
+        # in the loss-cut regime (deep underwater <entry*frac, <loss_cut_time_s,
+        # wrong-side >0.5xATR) with he>0 the model values the residual above the
+        # bid, so live HOLDS rather than cutting — don't re-fire the scalp here.
+        loss_cut_pos_hold = (
+            wrong_side and abs(dist) > 0.5 and r["he"] > 0
+            and r["entry"] is not None and r["mp"] < r["entry"] * _LOSS_CUT_FRACTION
+            and r["sr"] < _LOSS_CUT_TIME_S)
+        if not whipsaw and not deep_loss and not loss_cut_pos_hold and r["he"] <= eff:
             total += r["cf"]
             fired += 1
         else:
