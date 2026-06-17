@@ -596,7 +596,9 @@ class LiveTrader(BaseTrader):
         the auto-redeem USDC to land on-chain, but never block: each call makes
         one balance check and returns None while the credit is in flight (the
         trading loop retries next tick, so concurrent positions stay managed).
-        After _REDEEM_WAIT_MAX_S the raw balance is trusted as-is.
+        If the auto-redeem never lands, the position stays PENDING — we never
+        book an un-redeemed balance (which would silently drop the winner's
+        payout) — and a CRITICAL alert fires once for manual on-chain redemption.
         """
         if exit_price < 0.99:
             real_balance = await self.get_balance()
@@ -622,13 +624,23 @@ class LiveTrader(BaseTrader):
             )
             return balance
         if time.time() >= wait["deadline"]:
-            del self._redeem_pending[pos_id]
-            logger.warning(
-                "Winning resolution — auto-redeem not detected after %.0fs "
-                "(pre=%.2f expected_gain=%.2f final=%.2f). Using final balance.",
-                _REDEEM_WAIT_MAX_S, wait["pre"], expected_gain, balance,
-            )
-            return balance
+            # Auto-redeem has NOT landed. Do NOT book the raw (un-redeemed)
+            # balance — that silently drops the winner's payout from the bankroll
+            # and leaves the winning conditional tokens stranded on-chain. Keep
+            # the position pending (return None → the loop retries; a late
+            # auto-redeem is still caught by the confirmed branch above) and
+            # scream ONCE so the operator can redeem manually if it never lands.
+            if not wait.get("alerted"):
+                wait["alerted"] = True
+                logger.critical(
+                    "WINNING REDEEM STUCK: position %s — auto-redeem not detected "
+                    "%.0fs after a winning resolution (pre=%.2f expected_gain=%.2f "
+                    "current=%.2f). NOT booking the un-redeemed balance; the winnings "
+                    "are stranded on-chain and need a manual redeem. Position stays "
+                    "pending until the credit lands.",
+                    pos_id, _REDEEM_WAIT_MAX_S, wait["pre"], expected_gain, balance,
+                )
+            return None
         return None
 
     # -- FOK pre-check + balance/dust helpers --------------------------------
