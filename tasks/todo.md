@@ -252,7 +252,99 @@ Do not skip the sequence. Phase 3 and 4 without Phase 2 data are building on not
 
 ## DEFINITION OF DONE (FOR THIS GOAL)
 
-**BUILD STATUS (updated 2026-06-14; 416 tests green). HARD DEADLINE: 2026-06-22.**
+**⚠️ 2026-06-17 — POST-AUDIT REALITY (READ FIRST; supersedes the "go-live by 6/22" framing in the build status + deadline calendar below).**
+
+A 30-agent adversarial go-live readiness audit found the load-bearing problem:
+**the exit edge does NOT reproduce on the post-gut lean machine.** The +$690/14d
+thesis was measured PRE-gut (old L2-L6 codebase); re-running the SAME CF harness
+on the post-gut L1-only machine (the code that runs live) shows the exit policy
+at **−$182/7d vs always-hold (t_day −0.68, NOT significant)**, raw paper −$567
+net, −36.6% drawdown, and the canonical ITM per-share signal collapsed to noise
+(t−0.15). The exit "edge" was an artifact of the inventory the DELETED entry
+stack sourced, not the exit policy itself.
+
+**→ THE GO-LIVE GATE IS NO LONGER THE 6/22 DATE.** It is a demonstrated,
+significantly-positive **post-gut CF edge (t_day ≥ 2 over ≥10 clean days)
+measured ON THE FIXED CODE**. 6/22 stands only as the build/fix-complete date;
+the real-capital cutover is data-conditional (earliest ~late June/early July,
+and ONLY if the edge materializes — if it doesn't, the −$182 was real and
+go-live is off until the strategy improves).
+
+**FIXES SHIPPED 06-17 (the two confirmed bugs were SUPPRESSING the edge, so the
+−$182 is a PRE-FIX number — the re-measurement must run on the fixed code):**
+- **#1 (commit c7520006, verified sound, 424 tests)** — loss-cut now HOLDs when
+  holding_edge>0 (the model values the residual above the panic bid) instead of
+  dumping it (was the single biggest post-gut leak, −$212/7d); ATR rolling deques
+  keep ONE slot per 1-min candle (were flooded every ~1Hz exit tick → narrowed
+  the floor on falling vol → L1 overconfident). CF replay harness
+  (sweep_exit_policy + shadow_exit_model) mirrored to the new HOLD so it stays
+  branch-faithful (replay-symmetry); CLAUDE.md §2 updated; +7 tests.
+- **#3 (commit 31aa856d, verified sound)** — a winning live resolution never
+  books an un-redeemed balance after the 60s deadline (stays pending + one
+  CRITICAL "WINNING REDEEM STUCK" alert; late auto-redeem still caught; restart
+  auto-recovered by reconcile_open). No on-chain redeem tx shipped (none was
+  live-testable; surfacing the stuck winner is the safe completion).
+
+**SCOPE DECISIONS (operator-directed):**
+- **Live GTC passive exit (#4): IN PROGRESS** — build LiveTrader's resting-limit
+  exit to mirror PaperTrader exactly (GTD/GTC rest at _resting_level → poll
+  get_order → cancel/FOK-fallback, zero-taker-fee maker accounting, boot
+  get_open_orders reconcile). Until it ships, live = FOK-only exits (forfeits the
+  ~+$0.05/fill maker uplift the paper book includes).
+- **Never-sleep watchdog + push alerts (#2): DECLINED by operator.** KNOWN
+  RESIDUAL RISK carried into live: a host sleep/freeze leaves open LIVE positions
+  unmanaged (happened twice in paper via laptop lid-close); --auto-restart only
+  recovers after the host wakes. Accept or mitigate before real capital.
+- **Auto-redeem explicit on-chain tx: NOT WANTED** — the safe-pending+alert fix
+  (#3) is the accepted completion.
+
+**Phase 3 exit-value model:** verdict reads 06-21 (autonomous shadow), expected
+FAIL (the learned two-head logistic/ridge does not beat ExitBoundary on
+Brier/drift) → ExitBoundary stays the live exit policy. A MODEL-REDESIGN
+brainstorm is underway: a learned model can only beat a time+price curve via a
+SEPARATING FEATURE the curve lacks — candidates: latency/cross-venue lead
+(cross_venue_gap, fast_realized_vol_60s), order-flow/CVD toxicity, counterparty/
+wallet markout, the 1Hz temporal path (vs the current static snapshot), or a
+direct calibrated scalp-vs-hold EV residual. The nightly keeps-learning refit
+loop already exists; the open question is features + architecture.
+
+**DESIGN-PANEL RECOMMENDATION (06-17, 5-thesis panel + adversarial judge):** build a
+HYBRID of thesis A (separating feature) inside thesis E (architecture) — **ONE
+pure-numpy L2 logistic that outputs a bounded additive NUDGE to
+effective_exit_threshold, fed the boundary's own output as a feature so β→0
+reproduces ExitBoundary EXACTLY (provable downside floor — it can never
+underperform the curve in-distribution).** The single NEW (non-price) separating
+feature: the **vol-normalized Coinbase-vs-strike lead residual** =
+`StudentT_CDF(z_lead) − clob_mid_for_side`, where
+`z_lead = (coinbase_price − strike)/(recon_rv·√seconds_remaining)` and `recon_rv`
+is the trailing-60s realized vol of the 1Hz `coinbase_price` series (computed
+CAUSALLY) — i.e. "is the bid rich vs where the resolution venue (Coinbase, what
+Chainlink settles on) already points, before the slower CLOB repriced?" This is
+the one quantity ExitBoundary (time+price only) and the current model (price
+features that just relearn the mid) both structurally lack. **All features are
+reconstructable from `window_paths` TODAY — no schema migration, no data wait.**
+Target (path-free, all 288 windows/day): label = 1 if `bid_now > resolved_payoff`
+(`window_labels.resolved_up`). Nudge applies only in the ITM-patience regime
+(mp≥0.55 — the headroom the audit named), Bayesian-shrunk to 0 on cold/None rows
+(never impute 0). Reuse the existing nightly refit + the `shadow_exit_model.py`
+kill bar (add the hybrid as a 3rd policy). **KILL BAR (all four): positive ITM $
+delta over ≥5 frozen-OOS days; day-clustered t CLEARLY positive; window-level
+block-bootstrap p10>0 (NOT per-row — 165k rows ≈ 1.7k independent windows); and
+the lead_residual coefficient materially non-zero (a cheap pre-gate — if ~0, the
+lead is dead, ship nothing).** Sign discipline: score via actual−cf /
+scalp_was_optimal, NEVER sum stored delta_pnl. **HONEST CEILING (judge, blunt):**
+the most likely outcome is a NULL — it ties the curve and ships nothing — because
+the no-entry-edge theorem implies the price is near-efficient at every instant
+and a persistent observable lead would also be a (disproven) entry edge; the
+exploitable lead is thin/intermittent and may live sub-1Hz where the recorder
+aliases it away. Build it anyway: it's FREE (data + harness already exist), the
+residual floor caps downside at the curve, and a clean null closes the exit-model
+question. Do NOT use cross_venue_gap (Binance) raw — it's a ~57¢ venue basis,
+not signal. This is "keep learning the model" done right: a continuously-refit
+overlay that can only ever match-or-beat the hand-drawn curve, gated so it ships
+only on a real, significance-tested edge.
+
+**BUILD STATUS (06-14 — SUPERSEDED by the 06-17 block above; 416 tests green). HARD DEADLINE: 2026-06-22.**
 The kill-bar-phase builds are done — the two-stage passive exit (now live in
 paper) and all shadow evaluators. Remaining boxes are a verdict (Phase 3 exit
 model, 06-20/21) and genuine builds that surfaced this week: wallet-aware routing
@@ -295,8 +387,8 @@ The goal is complete when all of the following are true:
       mid/10s — both axes clear; execution.passive_exit_enabled:true, effective
       next restart. Rest at _resting_level, conservative prints-through fill,
       timeout → FOK, loss-cut bypass + HOLD-flip cancel intact, 8 unit tests.
-      LIVE-CAPITAL passive exit still UNBUILT — LiveTrader has no GTC subsystem,
-      stays FOK; that remains a real build, not a flag.)
+      LIVE-CAPITAL passive exit (GTC): being BUILT 06-17 (#4) to mirror paper —
+      see the 06-17 block above.)
 - [x] Window-path recorder running continuously; 288 windows/day persisted
       (LIVE since 06-11 10:44 — 1 Hz rows + self-labeling confirmed in DB)
 - [ ] Exit-value model live, replacing ExitBoundary; nightly refit pipeline running; kill bar passed
