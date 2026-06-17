@@ -305,7 +305,9 @@ async def test_open_trade_unmatched_status_cancels_instead_of_retrying(trader, m
 
     assert result.success is False
     assert trader.client.post_order.call_count == 1
-    trader.client.cancel.assert_called_once_with("order-delayed")
+    # cancel via the real py-clob-client-v2 API (cancel_orders(list)); there is no
+    # bare client.cancel — the old assertion passed only against a phantom MagicMock attr.
+    trader.client.cancel_orders.assert_called_once_with(["order-delayed"])
 
 
 # ---------------------------------------------------------------------------

@@ -565,7 +565,9 @@ class LiveTrader(BaseTrader):
                        side, status)
         if order_id:
             try:
-                await asyncio.to_thread(self.client.cancel, order_id)
+                # py-clob-client-v2 exposes cancel_orders(list[id]) — there is no
+                # bare client.cancel (that silently AttributeError'd here before).
+                await asyncio.to_thread(self.client.cancel_orders, [order_id])
             except Exception as e:
                 logger.debug("cancel of unmatched order failed (may have matched): %s", e)
             fill_price = await self._get_fill_price(order_id, 0.0)
