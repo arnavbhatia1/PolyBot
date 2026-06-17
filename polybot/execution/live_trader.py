@@ -16,6 +16,7 @@ from py_clob_client_v2.clob_types import (
     AssetType,
     BalanceAllowanceParams,
     MarketOrderArgs,
+    OrderArgs,
     OrderType,
 )
 from py_clob_client_v2.order_builder.constants import BUY, SELL
@@ -59,6 +60,11 @@ _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 0.03
 _RETRY_JITTER = 0.2  # ±20% jitter on backoff to avoid thundering-herd retry storms
 _MIN_ORDER_USD = 1.0  # Polymarket CLOB rejects marketable orders below $1 notional
+# Passive-exit GTD self-expiry: a safety net so a missed cancel can't orphan the
+# resting SELL. The bot still cancels explicitly at its shorter passive timeout;
+# 120s sits comfortably ABOVE Polymarket's ~60s server-side GTD min-expiry buffer
+# (an expiry at the floor risks rejection) while keeping the orphan window short.
+_GTD_REST_EXPIRY_S = 120
 _NON_RETRYABLE_ERRORS = frozenset({
     "INVALID_ORDER_NOT_ENOUGH_BALANCE",
     "MARKET_NOT_READY",
@@ -402,6 +408,11 @@ class LiveTrader(BaseTrader):
         # non-blocking check per _resolve_bankroll call; the loop retries each
         # tick, never stalling on a redeem poll.
         self._redeem_pending: dict[int, dict[str, float]] = {}
+        # Phase 1 passive exit (parity with PaperTrader.supports_passive_exit): live
+        # GTD resting SELLs in flight, position_id -> {order_id, token_id, shares,
+        # level}. Mirrors the paper passive exit's decision flow with a real order.
+        self.supports_passive_exit = True
+        self._resting: dict[int, dict[str, Any]] = {}
         # Last condition_id whose market-info (tick/neg-risk/fee) we warmed into the
         # py-clob client cache at discovery — dedups prewarm_market_info per window.
         self._prewarmed_condition_id: str = ""
@@ -1276,6 +1287,125 @@ class LiveTrader(BaseTrader):
         return round(mid, 4), "mid"
 
     # -- FOK order submission with retry ------------------------------------
+
+    # -- Phase 1 passive exit: real GTD resting SELL ------------------------
+    # Live analogue of the paper passive exit. main.py drives the SAME decision
+    # flow (rest at _resting_level for the timeout, else FOK); these methods just
+    # place / poll / cancel a real GTD limit order instead of the tape-print sim.
+    # On a fill main.py records via close_trade(maker_fill=True), exactly as paper.
+
+    async def post_resting_sell(self, position: dict[str, Any], token_id: str,
+                                level: float, timeout_s: float) -> bool:
+        """Post a GTD resting SELL of the position's shares at ``level``. The GTD
+        self-expires (~60s) as a safety net; the bot cancels explicitly at the
+        shorter ``timeout_s``. Returns True if an order is resting, False if it
+        could not be posted (caller falls straight to the FOK)."""
+        if self._latched_auth_error is not None:
+            return False
+        pos_id = position.get("id", -1)
+        entry_price = position.get("entry_price") or 0.0
+        fallback_shares = position.get("shares_held") or (
+            position["size"] / entry_price if entry_price else 0.0)
+        sellable = await self._sellable_shares(token_id, fallback_shares)
+        # Same maker headroom close_trade(maker_fill) uses, so the recorded close
+        # matches the rested size.
+        shares = sellable * (1.0 - 0.005)
+        level = round(float(level), 2)
+        if shares <= 0 or shares * level < _MIN_ORDER_USD - 0.01:
+            return False  # nothing sellable / below CLOB min — FOK instead
+        expiration = int(time.time()) + max(_GTD_REST_EXPIRY_S, int(timeout_s) + 50)
+
+        def _sign_and_post() -> dict:
+            args = OrderArgs(token_id=token_id, price=level, size=shares,
+                             side=SELL, expiration=expiration)
+            signed = self.client.create_order(args)
+            return self.client.post_order(signed, OrderType.GTD)
+        try:
+            resp = await asyncio.get_running_loop().run_in_executor(
+                self._sign_executor, _sign_and_post)
+        except Exception as e:
+            logger.warning("Resting SELL post failed (%s) — falling back to FOK", e)
+            return False
+        if not resp.get("success"):
+            err = resp.get("errorMsg", "unknown error")
+            if _looks_like_auth_error(err):
+                self._latched_auth_error = err
+            logger.warning("Resting SELL rejected (%s) — falling back to FOK", err)
+            return False
+        order_id = resp.get("orderID", "")
+        if not order_id:
+            return False
+        self._resting[pos_id] = {"order_id": order_id, "token_id": token_id,
+                                 "shares": shares, "level": level}
+        return True
+
+    async def poll_resting_fill(self, position: dict[str, Any]) -> bool:
+        """True iff the resting GTD SELL has FULLY filled (caller then records the
+        maker close via close_trade(maker_fill=True)). False = still resting or a
+        transient read error (caller keeps waiting; its deadline drives the FOK)."""
+        pos_id = position.get("id", -1)
+        rest = self._resting.get(pos_id)
+        if rest is None:
+            return False
+        try:
+            order = await asyncio.to_thread(self.client.get_order, rest["order_id"])
+        except Exception as e:
+            logger.debug("get_order(%s) failed: %s — keep resting", rest["order_id"], e)
+            return False
+        if self._order_fully_filled(order, rest["shares"]):
+            self._resting.pop(pos_id, None)
+            self._invalidate_balance_cache(rest["token_id"])
+            return True
+        return False
+
+    async def cancel_resting(self, position: dict[str, Any]) -> bool:
+        """Cancel the resting SELL (timeout / HOLD-flip / loss-cut). Returns True
+        if the order had ALREADY filled (cancel/fill race) so the caller records
+        the maker close instead of FOK-ing on already-sold shares (double-sell
+        guard); False if cancelled clean or never resting."""
+        pos_id = position.get("id", -1)
+        rest = self._resting.pop(pos_id, None)
+        if rest is None:
+            return False
+        try:
+            await asyncio.to_thread(self.client.cancel_orders, [rest["order_id"]])
+        except Exception as e:
+            logger.debug("cancel_resting(%s) failed (may have filled): %s", rest["order_id"], e)
+        # A cancel can lose to a fill — confirm via get_order so we never FOK on
+        # top of an already-executed maker sell.
+        filled = False
+        try:
+            order = await asyncio.to_thread(self.client.get_order, rest["order_id"])
+            filled = self._order_fully_filled(order, rest["shares"])
+        except Exception:
+            filled = False
+        self._invalidate_balance_cache(rest["token_id"])
+        if filled:
+            logger.info("Resting SELL filled during cancel (race) — recording maker close")
+        return filled
+
+    @staticmethod
+    def _order_fully_filled(order: Any, expected_shares: float) -> bool:
+        """Defensive parse of a get_order response for a FULL fill. SIZE is
+        authoritative: a 'matched' status can mean a PARTIAL match on some venues,
+        so whenever a matched-size field is present we require it to cover the
+        order (minus dust) and treat the status only as a fallback when no size is
+        given. (Field names not all live-verified — VALIDATE against a real resting
+        fill before relying on live capital; flagged for first-live-trade.)"""
+        if not isinstance(order, dict):
+            return False
+        matched = order.get("size_matched", order.get("matched_amount"))
+        orig = order.get("original_size", order.get("size", order.get("original_amount")))
+        try:
+            if matched is not None:
+                m = float(matched)
+                if orig is not None and float(orig) > 0:
+                    return m >= float(orig) - _DUST_THRESHOLD_SHARES
+                return m >= expected_shares - _DUST_THRESHOLD_SHARES
+        except (TypeError, ValueError):
+            pass
+        # No usable size field — trust the terminal status string.
+        return str(order.get("status", "")).lower() in ("matched", "filled")
 
     async def _submit_fok_order(
         self,

@@ -1647,7 +1647,15 @@ async def _evaluate_and_exit_position(
 
     if action == "HOLD":
         if pos["id"] in _resting_exits:
-            _resting_exits.pop(pos["id"], None)
+            _st_flip = _resting_exits.pop(pos["id"], None)
+            if _st_flip and _st_flip.get("live") and hasattr(trader, "cancel_resting"):
+                # Cancel the live GTD order. A rare cancel/fill race here leaves the
+                # maker proceeds on-chain; the next resolution's absolute balance
+                # sync (and reconcile_open at restart) record it correctly.
+                if await trader.cancel_resting(pos):
+                    logger.warning(
+                        f"  RESTING EXIT raced a fill on HOLD-flip ({pos['side']}) — "
+                        "proceeds on-chain; resolution/reconcile will book it")
             logger.info(f"  RESTING EXIT cancelled — model back to HOLD on {pos['side']}")
         # Log hold status every 30s so the operator knows the bot is alive
         now_ts = time.time()
@@ -1777,10 +1785,22 @@ async def _evaluate_and_exit_position(
         _exec_cfg = config.get("execution", {})
         _is_loss_cut = getattr(signal_engine, "last_loss_cut_event", "") == "fired"
         if _is_loss_cut:
-            _resting_exits.pop(pos["id"], None)
+            _st_lc = _resting_exits.pop(pos["id"], None)
+            if _st_lc and _st_lc.get("live") and hasattr(trader, "cancel_resting"):
+                # Loss-cut bypasses the rest — cancel the live order. If it raced a
+                # fill, record the maker close and skip the FOK (no double-sell).
+                if await trader.cancel_resting(pos):
+                    result = await trader.close_trade(
+                        pos["id"], _st_lc["level"], token_id=sell_token,
+                        position=pos, maker_fill=True)
+                    if result.success:
+                        logger.info(f"  PASSIVE FILL — lifted at {_st_lc['level']:.2f} (maker, no taker fee)")
+                    else:
+                        result = None
         elif (_exec_cfg.get("passive_exit_enabled", False)
                 and getattr(trader, "supports_passive_exit", False)):
             _timeout = float(_exec_cfg.get("passive_exit_timeout_s", 10.0))
+            _real_rest = hasattr(trader, "post_resting_sell")  # live GTD vs paper tape-sim
             _st = _resting_exits.get(pos["id"])
             if _st is None:
                 if ws_ask > ws_bid > 0 and live["seconds_remaining"] > _timeout + 5.0:
@@ -1789,15 +1809,47 @@ async def _evaluate_and_exit_position(
                         _cut = time.time() - 600
                         for _pid in [k for k, v in _resting_exits.items() if v["deadline"] < _cut]:
                             _resting_exits.pop(_pid, None)
-                    _resting_exits[pos["id"]] = {
-                        "token": sell_token, "level": _level,
-                        "posted_ts": time.time(), "deadline": time.time() + _timeout,
-                    }
-                    logger.info(
-                        f"  RESTING EXIT {pos['side']}  @ {_level:.2f} "
-                        f"(bid {ws_bid:.2f}/ask {ws_ask:.2f})  {_timeout:.0f}s then FOK")
-                    return day_wins, day_losses, day_fees
+                            getattr(trader, "_resting", {}).pop(_pid, None)  # keep dicts symmetric
+                    # Live posts a REAL GTD order; paper rests virtually (tape sim).
+                    _posted = True
+                    if _real_rest:
+                        _posted = await trader.post_resting_sell(pos, sell_token, _level, _timeout)
+                    if _posted:
+                        _resting_exits[pos["id"]] = {
+                            "token": sell_token, "level": _level,
+                            "posted_ts": time.time(), "deadline": time.time() + _timeout,
+                            "live": _real_rest,
+                        }
+                        logger.info(
+                            f"  RESTING EXIT {pos['side']}  @ {_level:.2f} "
+                            f"(bid {ws_bid:.2f}/ask {ws_ask:.2f})  {_timeout:.0f}s then FOK")
+                        return day_wins, day_losses, day_fees
+                    # live post failed → straight to FOK (result stays None)
                 # no usable two-sided quote / window too close — straight to FOK
+            elif _st.get("live"):
+                # Live GTD rest: poll the real order; cancel + FOK at the deadline.
+                if await trader.poll_resting_fill(pos):
+                    _resting_exits.pop(pos["id"], None)
+                    result = await trader.close_trade(
+                        pos["id"], _st["level"], token_id=sell_token, position=pos,
+                        maker_fill=True)
+                    if result.success:
+                        logger.info(f"  PASSIVE FILL — lifted at {_st['level']:.2f} (maker, no taker fee)")
+                    else:
+                        result = None
+                elif time.time() >= _st["deadline"]:
+                    _resting_exits.pop(pos["id"], None)
+                    if await trader.cancel_resting(pos):  # raced a fill → record maker close
+                        result = await trader.close_trade(
+                            pos["id"], _st["level"], token_id=sell_token, position=pos,
+                            maker_fill=True)
+                        if result.success:
+                            logger.info(f"  PASSIVE FILL — lifted at {_st['level']:.2f} (maker, no taker fee)")
+                        else:
+                            result = None
+                    # else cancelled clean → FOK below (result stays None)
+                else:
+                    return day_wins, day_losses, day_fees  # still resting
             else:
                 _fill = _resting_fill_price(
                     clob_ws.trades_since(_st["token"], _st["posted_ts"]) if clob_ws else [],

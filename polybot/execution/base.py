@@ -312,9 +312,13 @@ class BaseTrader(ABC):
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
 
         if maker_fill:
-            # No taker leg: fill is the resting level, exit fee is zero.
+            # No taker leg: the resting SELL already lifted at the level, exit fee
+            # is zero. Size off the position's shares (fallback), NOT a fresh
+            # _sellable_shares read — live's on-chain balance is ~0 right after the
+            # maker fill executed, which would zero the recorded close. For paper
+            # _sellable_shares == fallback_shares, so this is a no-op there.
             sell_fee_headroom = 0.005
-            shares = sellable_shares * (1.0 - sell_fee_headroom)
+            shares = fallback_shares * (1.0 - sell_fee_headroom)
             fill_price = exit_price
             exit_fee_rate = 0.0
         else:

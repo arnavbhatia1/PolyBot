@@ -436,6 +436,110 @@ async def test_resolve_position_loser(trader):
 
 
 # ---------------------------------------------------------------------------
+# Phase 1 live passive exit — GTD resting SELL (parity with paper)
+# ---------------------------------------------------------------------------
+
+async def _open_one(trader):
+    _setup_successful_fill(trader, fill_price="0.50", fill_size="100.0")
+    await trader.open_trade(**{**_TRADE_KWARGS, "price": 0.50, "size": 50.0})
+    return (await trader.db.get_open_positions())[0]
+
+
+@pytest.mark.asyncio
+async def test_post_resting_sell_places_gtd_and_tracks(trader, monkeypatch):
+    from py_clob_client_v2.clob_types import OrderType
+    from py_clob_client_v2.order_builder.constants import SELL
+    pos = await _open_one(trader)
+    async def _sellable(token_id, fallback): return 100.0
+    monkeypatch.setattr(trader, "_sellable_shares", _sellable)
+    trader.client.create_order.return_value = {"order": "signed"}
+    trader.client.post_order.return_value = {"success": True, "orderID": "rest-1"}
+
+    ok = await trader.post_resting_sell(pos, "tok-up-123", level=0.60, timeout_s=10)
+    assert ok is True
+    assert trader._resting[pos["id"]]["order_id"] == "rest-1"
+    # A GTD LIMIT order (create_order), not a market FOK, at the level, ~maker-headroom size.
+    oa = trader.client.create_order.call_args[0][0]
+    assert oa.price == 0.60 and oa.side == SELL and oa.size == pytest.approx(100.0 * 0.995)
+    assert trader.client.post_order.call_args[0][1] == OrderType.GTD
+
+
+@pytest.mark.asyncio
+async def test_post_resting_sell_rejected_falls_back_to_fok(trader, monkeypatch):
+    pos = await _open_one(trader)
+    async def _sellable(token_id, fallback): return 100.0
+    monkeypatch.setattr(trader, "_sellable_shares", _sellable)
+    trader.client.create_order.return_value = {"order": "signed"}
+    trader.client.post_order.return_value = {"success": False, "errorMsg": "rejected"}
+
+    ok = await trader.post_resting_sell(pos, "tok-up-123", level=0.60, timeout_s=10)
+    assert ok is False  # caller goes straight to FOK
+    assert pos["id"] not in trader._resting
+
+
+@pytest.mark.asyncio
+async def test_post_resting_sell_below_min_falls_back(trader, monkeypatch):
+    pos = await _open_one(trader)
+    async def _sellable(token_id, fallback): return 1.0  # 1 share * 0.60 = $0.60 < $1
+    monkeypatch.setattr(trader, "_sellable_shares", _sellable)
+    ok = await trader.post_resting_sell(pos, "tok-up-123", level=0.60, timeout_s=10)
+    assert ok is False
+    trader.client.create_order.assert_not_called()  # no GTD limit order signed below min
+    assert pos["id"] not in trader._resting
+
+
+@pytest.mark.asyncio
+async def test_poll_resting_fill_detects_full_fill(trader):
+    pos = await _open_one(trader)
+    trader._resting[pos["id"]] = {"order_id": "rest-1", "token_id": "tok-up-123", "shares": 99.5, "level": 0.60}
+    trader.client.get_order.return_value = {"status": "matched"}
+    assert await trader.poll_resting_fill(pos) is True
+    assert pos["id"] not in trader._resting  # popped on fill
+
+
+@pytest.mark.asyncio
+async def test_poll_resting_fill_still_open(trader):
+    pos = await _open_one(trader)
+    trader._resting[pos["id"]] = {"order_id": "rest-1", "token_id": "tok-up-123", "shares": 99.5, "level": 0.60}
+    trader.client.get_order.return_value = {"status": "live", "size_matched": "0", "original_size": "99.5"}
+    assert await trader.poll_resting_fill(pos) is False
+    assert pos["id"] in trader._resting  # still resting
+
+
+@pytest.mark.asyncio
+async def test_cancel_resting_clean(trader):
+    pos = await _open_one(trader)
+    trader._resting[pos["id"]] = {"order_id": "rest-1", "token_id": "tok-up-123", "shares": 99.5, "level": 0.60}
+    trader.client.get_order.return_value = {"status": "cancelled", "size_matched": "0", "original_size": "99.5"}
+    raced = await trader.cancel_resting(pos)
+    assert raced is False
+    trader.client.cancel_orders.assert_called_once_with(["rest-1"])
+    assert pos["id"] not in trader._resting
+
+
+@pytest.mark.asyncio
+async def test_cancel_resting_race_fill_reported(trader):
+    """Cancel can lose to a fill — must report it so the caller records the maker
+    close instead of FOK-ing on already-sold shares (double-sell guard)."""
+    pos = await _open_one(trader)
+    trader._resting[pos["id"]] = {"order_id": "rest-1", "token_id": "tok-up-123", "shares": 99.5, "level": 0.60}
+    trader.client.get_order.return_value = {"status": "matched"}  # filled in the cancel race
+    raced = await trader.cancel_resting(pos)
+    assert raced is True
+
+
+def test_order_fully_filled_parsing():
+    from polybot.execution.live_trader import LiveTrader as LT
+    assert LT._order_fully_filled({"status": "matched"}, 99.5) is True   # status only (no size) → trust it
+    assert LT._order_fully_filled({"status": "live", "size_matched": "0", "original_size": "99.5"}, 99.5) is False
+    assert LT._order_fully_filled({"size_matched": "99.5", "original_size": "99.5"}, 99.5) is True
+    assert LT._order_fully_filled({"size_matched": "40", "original_size": "99.5"}, 99.5) is False  # partial
+    # SIZE beats status: a 'matched' status that's actually a partial must NOT read as full.
+    assert LT._order_fully_filled({"status": "matched", "size_matched": "40", "original_size": "99.5"}, 99.5) is False
+    assert LT._order_fully_filled(None, 99.5) is False
+
+
+# ---------------------------------------------------------------------------
 # Orphan position detection — verifies the startup safety gate
 # ---------------------------------------------------------------------------
 
