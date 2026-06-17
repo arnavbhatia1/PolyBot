@@ -286,11 +286,17 @@ go-live is off until the strategy improves).
   live-testable; surfacing the stuck winner is the safe completion).
 
 **SCOPE DECISIONS (operator-directed):**
-- **Live GTC passive exit (#4): IN PROGRESS** — build LiveTrader's resting-limit
-  exit to mirror PaperTrader exactly (GTD/GTC rest at _resting_level → poll
-  get_order → cancel/FOK-fallback, zero-taker-fee maker accounting, boot
-  get_open_orders reconcile). Until it ships, live = FOK-only exits (forfeits the
-  ~+$0.05/fill maker uplift the paper book includes).
+- **Live GTC passive exit (#4): DONE 06-17 (commit 76dc76f9, adversarially
+  verified sound, 432 tests green).** LiveTrader rests a real GTD limit SELL at
+  _resting_level → polls get_order → records the maker fill via
+  close_trade(maker_fill=True) (zero taker fee) → cancel + FOK-fallback at the
+  timeout, with HOLD-flip/loss-cut cancels and a cancel/fill-race double-sell
+  guard — same decision flow as paper, real orders instead of the tape sim.
+  FIRST-LIVE-TRADE VALIDATION (un-exercisable in mock): confirm the
+  get_order/post_order response field names + the GTD min-expiry on a real order;
+  partial maker fills are capital-correct (reconciled at resolution) but may
+  under-record per-trade pnl/CF. Takes effect at the next bot restart; until
+  then the running process is still FOK-only.
 - **Never-sleep watchdog + push alerts (#2): DECLINED by operator.** KNOWN
   RESIDUAL RISK carried into live: a host sleep/freeze leaves open LIVE positions
   unmanaged (happened twice in paper via laptop lid-close); --auto-restart only
@@ -387,8 +393,8 @@ The goal is complete when all of the following are true:
       mid/10s — both axes clear; execution.passive_exit_enabled:true, effective
       next restart. Rest at _resting_level, conservative prints-through fill,
       timeout → FOK, loss-cut bypass + HOLD-flip cancel intact, 8 unit tests.
-      LIVE-CAPITAL passive exit (GTC): being BUILT 06-17 (#4) to mirror paper —
-      see the 06-17 block above.)
+      LIVE-CAPITAL passive exit (GTC): BUILT 06-17 (#4, commit 76dc76f9,
+      verified) to mirror paper — see the 06-17 block above.)
 - [x] Window-path recorder running continuously; 288 windows/day persisted
       (LIVE since 06-11 10:44 — 1 Hz rows + self-labeling confirmed in DB)
 - [ ] Exit-value model live, replacing ExitBoundary; nightly refit pipeline running; kill bar passed
