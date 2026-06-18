@@ -166,9 +166,10 @@ if a BUY prints strictly through, else FOK-falls-back; loss-cuts skip resting, a
 HOLD-flip cancels it. PaperTrader simulates this from the tape; LiveTrader mirrors
 it with a real GTD resting SELL (`create_order`/`post_order` GTD, poll `get_order`,
 `cancel_orders` + FOK fallback, cancel/fill-race double-sell guard, 120s GTD
-self-expiry safety net). The nightly-trained exit-value model
-(`polybot/exit_model.py`) replaces the ExitBoundary curve only once it beats the
-curve in counterfactual replay — `deployed` stays False until then.
+self-expiry safety net). The freestanding exit-value model
+(`polybot/exit_model.py`) does not beat ExitBoundary in CF replay, so it stays
+undeployed (`deployed` False) and is being retired for a floored ExitBoundary
+overlay (`tasks/todo.md`).
 
 ## 7. Recorders + learning loop
 
@@ -269,7 +270,7 @@ polybot/
   db/models.py                 SQLite per mode (positions, trade_history, bankroll, peak_bankroll,
                                window_paths, window_labels, wallet_trades, wallet_stats)
 scripts/                       run_polybot.ps1 (daily loop),
-                               shadow_passive_exit.py / shadow_exit_model.py / shadow_wide_quote.py
+                               shadow_passive_exit.py / shadow_exit_model.py
                                (kill-bar evaluators), box_arb_monitor.py (box-arb monitor, log-only,
                                supervised by run_polybot.ps1),
                                sweep_exit_policy.py, diagnose_edge.py (record loader + edge stats),
@@ -296,24 +297,12 @@ box-arb monitor as a supervised child on freshly-pulled code (kills any prior
 instance first), so one launch starts everything. Live pre-flight:
 `python scripts/verify_keys.py`.
 
-**Side-by-side paper + live:** paper and live can run as two processes at once —
-paper keeps generating the edge-gate counterfactuals while live proves the
-execution path. State is isolated per `POLYBOT_MEMORY_DIR` (all memory paths
-derive from it) + per-mode DB. The second instance must run `--no-recorder`
-(`window_paths.db` is a single shared file) and `--no-discord` (one bot token =
-one gateway connection; alerts degrade to logs). The wrapper launches an opt-in
-supervised live sidecar when `POLYBOT_LIVE_SIDECAR=1`
-(`POLYBOT_MEMORY_DIR=polybot/memory_live`, `--mode live --no-recorder
---no-discord`); default is paper-only.
-
 - **UTC for storage; ET (`America/New_York`) only for date-bucketing + trading
   windows. Daily rollups bundle per-trade JSON; readers glob both.**
 - `model_probability` == `model_probability_raw` (L1 uncalibrated) — both keys
   stamped for record-schema continuity.
 - Recordings (`memory/recordings/`) are gitignored — never in the nightly
   commit. `memory/` records + per-mode DB + settings.yaml are committed nightly.
-  The live sidecar's `memory_live/` is gitignored (local dry-run artifact);
-  `polybot_live.db` commits with the paper DB.
 - Kill bars are the deployment authority — no phase ships to live capital
   before its bar passes (`tasks/todo.md` is the open roadmap + kill-bar status).
 

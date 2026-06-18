@@ -19,13 +19,17 @@ wins on *status*; this file wins on *what to test*.
 smaller than the recorded paper edge, and possibly ≤ 0. Reasons:
 
 1. The headline ROI is paper. Confirm provenance in Phase 0 — do not inherit it.
-2. The only kill-bar-passed edge component (passive maker exit, +$0.056/fill,
-   83-87% ITM, `scripts/shadow_passive_exit.py`) is **paper-only**. LiveTrader
-   is FOK. Live forfeits the maker rebate *and* pays the taker fee
-   (`rate*shares*p*(1-p)`, rate 0.07 → ~1.75c/share at p=0.5, one way, each exit).
+2. The kill-bar-passed edge component (passive maker exit, +$0.056/fill, 83-87%
+   ITM, `scripts/shadow_passive_exit.py`) was measured in **paper**. LiveTrader
+   now mirrors it with a real GTD resting SELL (commit 76dc76f9), but that live
+   maker path is **unproven in production** — so the FOK-only number (full taker
+   fee, no maker rebate: `rate*shares*p*(1-p)`, rate 0.07 → ~1.75c/share at p=0.5,
+   one way, each exit) remains the conservative live floor until live maker fills
+   are observed.
 3. The *current* exit edge is the hand-built `ExitBoundary` curve + the −0.10
-   threshold blend, **not** the Phase 3 exit-value model (which has not passed
-   its CF-replay kill bar). Unvalidated curve = possible in-sample artifact.
+   threshold blend, **not** the freestanding exit-value model (which loses to the
+   curve in CF replay and is being retired). Unvalidated curve = possible
+   in-sample artifact.
 4. 3 months is one regime sample. 10k trades are heavily autocorrelated
    (shared windows, repeat wallets) → effective N is far smaller than 10k.
 
@@ -77,7 +81,8 @@ strategy actually pays under live mechanics.
   live? State it explicitly.
 - Decompose realized P&L by exit type: passive maker fill vs FOK-taker fill.
   Use `memory/recordings/` (tape) + outcome records. What share of total P&L
-  came from maker fills that **cannot occur** in the current LiveTrader?
+  came from paper maker fills whose live equivalent (the GTD resting SELL) is
+  still **unproven in production**?
 - Recompute ROI as **FOK-only**: every exit pays the taker fee, no maker rebate,
   filled at the FOK VWAP from the ask/bid ladder (not the resting mid). This is
   the live-path number.

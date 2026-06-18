@@ -34,7 +34,3 @@ Thumbs.db
 polybot/memory/recordings/
 polybot/db/wallet_tape.db*
 polybot/db/window_paths.db*
-# Side-by-side live sidecar's isolated memory tree (POLYBOT_MEMORY_DIR) — a local
-# dry-run artifact kept out of the nightly commit. The live DB (polybot_live.db)
-# still commits with the paper DB as the trade audit trail.
-polybot/memory_live/
