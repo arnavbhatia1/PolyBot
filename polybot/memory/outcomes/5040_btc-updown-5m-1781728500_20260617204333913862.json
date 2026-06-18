@@ -1,0 +1,79 @@
+{
+  "position_id": 5040,
+  "market_id": "btc-updown-5m-1781728500",
+  "question": "Bitcoin Up or Down - June 17, 4:35PM-4:40PM ET",
+  "side": "Down",
+  "signal_score": 0.9572692384129123,
+  "correct": true,
+  "entry_price": 0.8735326984503712,
+  "exit_price": 1.0,
+  "log_return": 0.13520971627880732,
+  "size": 19.85,
+  "pnl": 2.672653170169532,
+  "fees": 0.17572600000000052,
+  "gain_pct": 0.134642,
+  "realized_edge": 0.0837,
+  "fill_slippage": -0.0165,
+  "indicator_snapshot": {
+    "atr": {
+      "atr": 50.1,
+      "passes": true,
+      "reason": "ok",
+      "candle_ts": 1781728740000
+    },
+    "trade_context": {
+      "btc_price": 64324.22,
+      "strike_price": 64360.50972704726,
+      "seconds_remaining": 28.790214,
+      "market_price_up": 0.12,
+      "market_price_down": 0.89,
+      "closes_tail": [
+        64484.12,
+        64382.91
+      ],
+      "model_probability": 0.9572692384129123,
+      "model_probability_raw": 0.9572692384129123,
+      "edge": 0.06726923841291232,
+      "atr": 50.1,
+      "atr_rolling_20": 114.619,
+      "atr_long_term_mean": 114.53068,
+      "size": 19.85,
+      "prev_resolution_margin": -144.06323349211743,
+      "flow_score": -0.2249,
+      "spot_flow_signal": 0.15001718602390296,
+      "regime_autocorr": -0.1952,
+      "regime_direction": -1.0,
+      "entry_phase": "final",
+      "flip_count": 0,
+      "is_flip": false,
+      "depth_usd_top20": 160491.16776280003,
+      "coinbase_cvd_60s": 2.2636,
+      "coinbase_taker_60s": 0.5755,
+      "coinbase_taker_n": 490,
+      "cross_venue_gap": -58.69,
+      "fast_realized_vol_60s": 0.000111,
+      "clob_depth_top5_up_usd": 1988.55,
+      "clob_depth_top5_down_usd": 3695.71,
+      "clob_book_age_s": 0.022,
+      "adverse_rate_at_30s": 0.5,
+      "adverse_kelly_mult": 0.925,
+      "token_id_up": "88005006469051777406941236511275576163047069412191956673820165306440283411638",
+      "token_id_down": "471397785828221888774919489031435264662420000296777065368839779726880165636"
+    }
+  },
+  "exit_reason": "resolution",
+  "seconds_remaining_at_exit": 0.0,
+  "edge_decay": {
+    "midprice_at_fill": 0.86,
+    "deltas": {
+      "5s": 0.035,
+      "10s": 0.025,
+      "15s": 0.07,
+      "30s": 0.135,
+      "60s": null
+    },
+    "resolved_windows": 4
+  },
+  "exit_timestamp": "2026-06-17T20:43:33.913845+00:00",
+  "timestamp": "2026-06-17T20:43:33.913845+00:00"
+}
