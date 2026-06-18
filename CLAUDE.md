@@ -123,7 +123,13 @@ if size < 1.0: skip
 
 FOK via `py-clob-client-v2`, up to 3 attempts with jittered backoff — only
 exchange-confirmed rejections retry; ambiguous outcomes never resubmit
-(double-fill guard). HTTP/2 keepalive ping every 5s. Live boot: key+funder
+(double-fill guard). **Latency floor** (no colo / no WS orders): the hot path is
+one POST RTT (~135ms warm vs ~300ms cold) — signing is presigned off-path (both
+sides), book pre-check + fill VWAP come from the WS feed, and
+tick-size/neg-risk/fee + contract-version caches are prewarmed per window. Orders
+ride a warm pooled HTTP/2 singleton (`keepalive_expiry` 60s > the 5s keepalive
+ping so no cold handshake between orders; `connect` timeout 5s bounds a
+dead-connection reconnect; TCP_NODELAY on by default). Live boot: key+funder
 required, balance/allowance preflight (`max_single × max_concurrent × 10`),
 mid-session allowance recheck every 10 fills (warn only). Per-trade DB writes
 are atomic. `fill.fill_size` is always USDC notional.
@@ -180,7 +186,8 @@ curve in counterfactual replay — `deployed` stays False until then.
   chronological 80/20 metrics (Brier vs the market-mid baseline, MAE vs
   martingale). Nightly refit once ~7 days of labels exist; artifact kept-back
   when metrics degrade >15% vs trailing-7; `deployed` flips only when it beats
-  ExitBoundary in CF replay.
+  ExitBoundary in CF replay — which scores only clean post-fix decisions
+  (≥ `CLEAN_EPOCH`, 06-17 13:19 ET; pre-fix/pre-gut days excluded).
 - **Wallet fingerprints** (`polybot/wallets.py`): nightly data-api ingestion of
   each labeled window's taker tape → per-wallet resolution markout →
   donor/noise/sharp classification (`wallet_stats`). Counterparty information —

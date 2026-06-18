@@ -630,3 +630,41 @@ async def test_detect_orphan_positions_dust_ignored(trader):
     with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(payload=chain)):
         count = await trader.detect_orphan_positions(trader.db, allow_orphans=False)
     assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Order-submission latency infra
+# ---------------------------------------------------------------------------
+
+def test_clob_http_singleton_tuned_for_warm_orders():
+    """The py-clob-client HTTP/2 singleton is replaced with a warm-keepalive +
+    bounded-connect config so order POSTs ride a pooled connection (~135ms warm
+    vs ~300ms cold) and a dead keepalive reconnect fails fast, not after ~20s."""
+    import importlib
+    import polybot.execution.live_trader  # noqa: F401 — ensures the singleton swap ran
+    importlib.reload(polybot.execution.live_trader)
+    from py_clob_client_v2.http_helpers import helpers
+    client = helpers._http_client
+    # keepalive must outlive the 5s ping so the order connection never lapses
+    assert client._transport._pool._keepalive_expiry == 60.0
+    # connect timeout bounded well under the 20s blanket default
+    assert client.timeout.connect == 5.0
+
+
+@pytest.mark.asyncio
+async def test_prewarm_http_warms_version_cache(trader):
+    """prewarm_http resolves the contract version off the hot path so the first
+    order of the process skips the one-time get_version() RTT that
+    create_market_order.__resolve_version would otherwise pay."""
+    await trader.prewarm_http()
+    # the name-mangled private resolver is invoked best-effort during prewarm
+    trader.client._ClobClient__resolve_version.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_prewarm_http_survives_missing_resolver(trader):
+    """If the client lacks the private version resolver (SDK internals changed),
+    prewarm must not raise — getattr(..., None) skips it and the first order pays
+    the one-time RTT instead."""
+    del trader.client._ClobClient__resolve_version
+    await trader.prewarm_http()  # no exception; resolver simply skipped

@@ -1,4 +1,4 @@
-# LIVE_READINESS_STATUS — interim (2026-06-17)
+# LIVE_READINESS_STATUS — interim (updated 2026-06-18)
 
 **This is NOT the verdict file.** `LIVE_READINESS_VERDICT.md` (go/no-go + a
 Phase-0 FOK-only ROI number) cannot be honestly produced yet — the binding gate
@@ -35,6 +35,11 @@ measurement window, not past it.
   clean day is 06-18 → **earliest meaningful re-measurement ~06-27/28**, and
   only deploys if the edge comes back significantly positive. If it doesn't, the
   −$182 was real and go-live stays off.
+- **Progress (06-18): clean day 1 of ~10.** All measurement excludes pre-fix days
+  via `CLEAN_EPOCH` (06-17 13:19 ET) in `shadow_exit_model.py`. Day-1 is healthy
+  operationally (clean restart on the fixed code, recorder + CF stream flowing, no
+  outage); the one-day CF sliver is mildly positive but **noise** (df=0) and leans
+  on favorable ITM hold resolutions, not scalp alpha. Nine clean days to the gate.
 
 ## Can the clock be compressed to read at 6/22? (investigated 06-17) — NO
 
@@ -81,12 +86,15 @@ greenlight early — the binding read still needs 10 days.
 | **5 — live integrity** | dry-run at $1 floor, zero integrity failures | **CODE DONE, dry-run NOT RUN** | double-fill guard, Chainlink-first resolution, safe-pending redeem, live GTC passive exit all in place; the $1-floor live dry-run is the open work |
 | **6 — go/no-go + ramp** | synthesize 0–5 | **PENDING** (verdict gated on Phase 0 clearing) | — |
 
-**Adjacent experiment — exit-value model (gates nothing):** the freestanding
-two-head model competes with ExitBoundary on price-derived features; expected to
-tie-or-lose with no downside floor, `deployed` stays False. Its shadow verdict is
-**not a go-live step.** If a model is pursued it should be the floored
-ExitBoundary overlay (todo.md) — can't hurt, upside not guaranteed — and only
-after the gate clears.
+**Adjacent experiment — exit-value model (gates nothing; being killed early):**
+the freestanding two-head model competes with ExitBoundary on price-derived
+features; `deployed` stays False and its shadow verdict is **not a go-live step.**
+On clean post-fix data it loses every day (first 2 clean days: ExitBoundary +$49
+ALL / +$340 ITM vs model +$1 / +$304 — model behind −$48 ALL, −$35 ITM).
+**Operator decision: abandon it at day 3–4** rather than the full 5-day shadow —
+zero cost, since ExitBoundary is already the live policy. If a model is pursued it
+should be the floored ExitBoundary overlay (todo.md) — can't hurt, upside not
+guaranteed — and only after the gate clears.
 
 ## Single largest unresolved risk (named, per Definition of Done)
 

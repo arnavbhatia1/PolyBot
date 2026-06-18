@@ -52,8 +52,17 @@ exit edge measured on the FIXED code: a positive scalp-vs-hold CF EV over
   robustness, live-integrity dry-run, staged ramp). Phase 0 is the gate above;
   a STOP there is terminal.
 
+All clean-data measurement (the shadow comparison *and* this gate) excludes
+pre-fix/pre-gut days via the `CLEAN_EPOCH` cutoff (06-17 13:19 ET) in
+`shadow_exit_model.py` — decisions made before the fixed code went live are never
+scored.
+
 If the post-fix edge does not come back significantly positive, **go-live is off**
-until the strategy improves — the −$182 stands.
+until the strategy improves — the −$182 stands. **If it clears:** deploy
+ExitBoundary live (it is already the live exit policy), keep paper running side by
+side to feed counterfactuals, and iterate the floored overlay (below) in the
+background through the shadow harness — never flipping an untested change onto
+live capital.
 
 ---
 
@@ -69,8 +78,11 @@ The freestanding two-head model (`polybot/exit_model.py`) is an orthogonal
 nightly experiment, **NOT a go-live dependency** and **gates nothing**: it
 competes with ExitBoundary head-to-head on price-derived features (no information
 the curve lacks → expected to tie-or-lose, and no downside floor). `deployed`
-stays False; its shadow verdict is not a milestone. Treat it as deprecated in
-favor of the overlay below.
+stays False; its shadow verdict is not a milestone. **Operator decision: kill it
+early** — abandon at day 3–4 if it's negative every day rather than waiting the
+full 5-day shadow; killing it costs nothing, and clean post-fix data confirms it
+loses to the curve on every day. Treat it as deprecated in favor of the overlay
+below.
 
 **The design to actually build — a floored overlay** (cannot underperform the
 curve by construction): one pure-numpy L2 logistic that outputs a bounded

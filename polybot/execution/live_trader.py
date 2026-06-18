@@ -28,13 +28,10 @@ from polybot.execution.base import (
 )
 from polybot.core.returns import log_return
 
-# Replace py-clob-client's module-global HTTP/2 singleton with one whose
-# keepalive_expiry (60s) comfortably outlives our 5s keepalive ping. The default
-# httpx keepalive_expiry of 5.0s would let the connection lapse between pings and
-# make roughly half of order POSTs pay a fresh TLS handshake.
+# Every order POST rides a warm, pooled connection
 _clob_helpers._http_client = httpx.Client(
     http2=True,
-    timeout=20.0,
+    timeout=httpx.Timeout(20.0, connect=5.0),
     limits=httpx.Limits(
         max_connections=10,
         max_keepalive_connections=5,
@@ -421,6 +418,10 @@ class LiveTrader(BaseTrader):
     async def prewarm_http(self) -> None:
         try:
             await asyncio.to_thread(self.client.get_sampling_simplified_markets)
+            # Warm the contract-version cache off the hot path
+            resolve_version = getattr(self.client, "_ClobClient__resolve_version", None)
+            if callable(resolve_version):
+                await asyncio.to_thread(resolve_version)
         except Exception as e:
             if _looks_like_auth_error(e):
                 logger.error(
