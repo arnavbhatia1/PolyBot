@@ -285,9 +285,19 @@ scripts/                       run_polybot.ps1 (daily loop),
 `run_polybot.ps1`: starts 12:01 AM ET, stops trading 11:30 PM ET, nightly jobs
 11:45 PM ET, commits + pushes `origin main` on exit, restarts at midnight (or
 immediately if the exit slipped past it). Each cycle it also (re)launches the
-Phase 5 box-arb monitor as a supervised child on freshly-pulled code (kills any
-prior instance first), so one launch starts everything. Live pre-flight:
+box-arb monitor as a supervised child on freshly-pulled code (kills any prior
+instance first), so one launch starts everything. Live pre-flight:
 `python scripts/verify_keys.py`.
+
+**Side-by-side paper + live:** paper and live can run as two processes at once —
+paper keeps generating the edge-gate counterfactuals while live proves the
+execution path. State is isolated per `POLYBOT_MEMORY_DIR` (all memory paths
+derive from it) + per-mode DB. The second instance must run `--no-recorder`
+(`window_paths.db` is a single shared file) and `--no-discord` (one bot token =
+one gateway connection; alerts degrade to logs). The wrapper launches an opt-in
+supervised live sidecar when `POLYBOT_LIVE_SIDECAR=1`
+(`POLYBOT_MEMORY_DIR=polybot/memory_live`, `--mode live --no-recorder
+--no-discord`); default is paper-only.
 
 - **UTC for storage; ET (`America/New_York`) only for date-bucketing + trading
   windows. Daily rollups bundle per-trade JSON; readers glob both.**
@@ -295,6 +305,8 @@ prior instance first), so one launch starts everything. Live pre-flight:
   stamped for record-schema continuity.
 - Recordings (`memory/recordings/`) are gitignored — never in the nightly
   commit. `memory/` records + per-mode DB + settings.yaml are committed nightly.
+  The live sidecar's `memory_live/` is gitignored (local dry-run artifact);
+  `polybot_live.db` commits with the paper DB.
 - Kill bars are the deployment authority — no phase ships to live capital
   before its bar passes (`tasks/todo.md` is the open roadmap + kill-bar status).
 

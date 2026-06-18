@@ -15,7 +15,10 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  PolyBot Auto-Restart Loop" -ForegroundColor Cyan
 Write-Host "  Trading: 12:01 AM - 11:30 PM ET" -ForegroundColor Cyan
 Write-Host "  Pipeline: 11:45 PM ET" -ForegroundColor Cyan
-Write-Host "  + supervised box-arb monitor (Phase 5, log-only)" -ForegroundColor Cyan
+Write-Host "  + supervised box-arb monitor (log-only)" -ForegroundColor Cyan
+if ($env:POLYBOT_LIVE_SIDECAR -eq "1") {
+    Write-Host "  + side-by-side LIVE sidecar (real USDC, isolated memory_live)" -ForegroundColor Magenta
+}
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Phase 5 box-arb monitor (log-only) runs as a supervised child of this wrapper,
@@ -41,6 +44,42 @@ function Start-BoxArbMonitor {
     }
 }
 
+# Optional side-by-side LIVE sidecar (real USDC, $1-floor dry-run) running beside
+# the foreground paper bot. Opt-in: set $env:POLYBOT_LIVE_SIDECAR = "1" (and have
+# keys + a funded wallet + allowance ready) — otherwise this is a no-op and the
+# wrapper stays paper-only. The sidecar is isolated so it can't contaminate the
+# paper edge-gate data: its own POLYBOT_MEMORY_DIR (polybot\memory_live), its own
+# polybot_live.db (per-mode, automatic), --no-recorder (paper owns the single
+# shared window_paths.db) and --no-discord (one bot token = one connection). It
+# runs WITHOUT --auto-restart (continuous; refreshed each cycle on fresh code).
+# Uniquely identified for kill-and-relaunch by the --no-recorder marker.
+function Start-LiveSidecar {
+    param([string]$RepoRoot)
+    if ($env:POLYBOT_LIVE_SIDECAR -ne "1") { return }
+    Get-CimInstance Win32_Process -Filter "name like '%python%'" |
+        Where-Object { $_.CommandLine -like '*polybot.main*' -and $_.CommandLine -like '*--mode live*' -and $_.CommandLine -like '*--no-recorder*' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 500
+    $recDir = Join-Path $RepoRoot "polybot\memory\recordings"
+    if (-not (Test-Path $recDir)) { New-Item -ItemType Directory -Force -Path $recDir | Out-Null }
+    $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $prevMem = $env:POLYBOT_MEMORY_DIR
+    try {
+        $env:POLYBOT_MEMORY_DIR = Join-Path $RepoRoot "polybot\memory_live"
+        $proc = Start-Process -FilePath "python" `
+            -ArgumentList "-m","polybot.main","--mode","live","--no-recorder","--no-discord" `
+            -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput (Join-Path $recDir "live_sidecar.out.log") `
+            -RedirectStandardError  (Join-Path $recDir "live_sidecar.err.log")
+        Write-Host "[$ts] Live sidecar started (PID $($proc.Id), --mode live --no-recorder --no-discord, memory_live)" -ForegroundColor Magenta
+    } catch {
+        Write-Host "[$ts] Live sidecar failed to start: $_" -ForegroundColor Red
+    } finally {
+        if ($null -eq $prevMem) { Remove-Item Env:\POLYBOT_MEMORY_DIR -ErrorAction SilentlyContinue }
+        else { $env:POLYBOT_MEMORY_DIR = $prevMem }
+    }
+}
+
 while ($true) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Write-Host "`n[$timestamp] Pulling latest from remote..." -ForegroundColor Cyan
@@ -48,6 +87,9 @@ while ($true) {
 
     # Refresh the box-arb monitor on the freshly-pulled code (kills any prior one)
     Start-BoxArbMonitor -RepoRoot $RepoRoot
+
+    # Refresh the optional live sidecar (no-op unless POLYBOT_LIVE_SIDECAR=1)
+    Start-LiveSidecar -RepoRoot $RepoRoot
 
     # Read mode from settings.yaml so this is the only place you need to change it
     $settingsPath = Join-Path $RepoRoot "polybot\config\settings.yaml"

@@ -26,7 +26,7 @@ for _stream in (sys.stdout, sys.stderr):
 from polybot.config.loader import load_config, get_secret
 from polybot.config.param_registry import default_for as _d
 from polybot.paths import (
-    PREV_MARGIN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
+    MEMORY_DIR, PREV_MARGIN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
     GATE_STATS_CURRENT_PATH, PRICE_SUM_OUTLIERS_PATH, fold_gate_day,
 )
 from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE, EFFECTIVE_FEE_PEAK, compute_buy_vwap
@@ -2534,6 +2534,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-orphans", action="store_true",
                         help="LIVE ONLY: proceed even if on-chain positions exist that the DB doesn't know about. "
                              "Use only after manual review of memory/state/orphan_positions.json — these shares will not be managed.")
+    parser.add_argument("--no-recorder", action="store_true",
+                        help="Skip the window-path + tape recorders. window_paths.db is a single shared "
+                             "file, so only ONE instance should write it — set this on the second instance "
+                             "when running paper + live side by side (pair with POLYBOT_MEMORY_DIR).")
+    parser.add_argument("--no-discord", action="store_true",
+                        help="Skip the Discord gateway connection. A bot token allows only one active "
+                             "connection, so set this on the second instance when running side by side. "
+                             "Alerts degrade to logs; the trading loop and is_paused default are unaffected.")
     return parser.parse_args()
 
 
@@ -2558,9 +2566,9 @@ async def run_pipeline() -> None:
 
     signal_engine = _build_signal_engine(signal_cfg, config)
 
-    outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
-    counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
-    ghost_tracker = GhostTracker(memory_dir=str(base_dir / "memory"))
+    outcome_reviewer = OutcomeReviewer(outcomes_dir=str(MEMORY_DIR / "outcomes"))
+    counterfactual_tracker = CounterfactualTracker(memory_dir=str(MEMORY_DIR))
+    ghost_tracker = GhostTracker(memory_dir=str(MEMORY_DIR))
 
     # Discord — connect briefly to send pipeline report
     alert_manager = None
@@ -2707,9 +2715,9 @@ async def main() -> None:
         await db.set_peak_bankroll(init_bankroll)
 
     agents_cfg = config["agents"]
-    outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
-    counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))
-    ghost_tracker = GhostTracker(memory_dir=str(base_dir / "memory"))
+    outcome_reviewer = OutcomeReviewer(outcomes_dir=str(MEMORY_DIR / "outcomes"))
+    counterfactual_tracker = CounterfactualTracker(memory_dir=str(MEMORY_DIR))
+    ghost_tracker = GhostTracker(memory_dir=str(MEMORY_DIR))
 
     # Discord (created before scheduler so alert_manager can be passed in)
     discord_bot = create_bot(db, trader, market_scanner, None, config)
@@ -2849,14 +2857,21 @@ async def main() -> None:
     # Recorders (Phases 1-2): window-path stream for the exit-value model +
     # CLOB tape for the passive-exit shadow sim. Write-behind; never block the loop.
     from polybot.recording import TapeRecorder, WindowPathRecorder
+    record_enabled = not args.no_recorder
     tape_recorder = TapeRecorder()
-    clob_ws.on_trade = tape_recorder.on_trade
     window_recorder = WindowPathRecorder(
         db=db, clob_ws=clob_ws, coinbase_feed=coinbase_feed,
         chainlink_feed=chainlink_feed, market_scanner=market_scanner,
         http_client=http_client)
     global _window_recorder
-    _window_recorder = window_recorder
+    if record_enabled:
+        clob_ws.on_trade = tape_recorder.on_trade
+        _window_recorder = window_recorder
+    else:
+        # window_paths.db is a single shared file — a second instance must not write
+        # it. Leaving _window_recorder None also no-ops mark_traded (guarded).
+        _window_recorder = None
+        logger.info("Recorders disabled (--no-recorder) — another instance owns window_paths.db + tape")
 
     # Nightly jobs (Phases 3-4): exit-value model refit (data-gated), window-path
     # retention sweep, wallet-fingerprint ingestion + classification.
@@ -2908,12 +2923,19 @@ async def main() -> None:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 120)
 
-    # Wait for Discord to connect before starting the trading loop
-    discord_task = asyncio.create_task(run_discord())
-    try:
-        await asyncio.wait_for(discord_bot.ready_event.wait(), timeout=15.0)
-    except asyncio.TimeoutError:
-        logger.warning("Discord did not connect within 15s — starting trading loop anyway")
+    # Wait for Discord to connect before starting the trading loop. A bot token
+    # allows only one active gateway connection, so a side-by-side second instance
+    # runs with --no-discord: alerts degrade to logs (AlertManager._get_channel
+    # returns None when bot.guilds is empty), is_paused stays its False default.
+    discord_task = None
+    if not args.no_discord:
+        discord_task = asyncio.create_task(run_discord())
+        try:
+            await asyncio.wait_for(discord_bot.ready_event.wait(), timeout=15.0)
+        except asyncio.TimeoutError:
+            logger.warning("Discord did not connect within 15s — starting trading loop anyway")
+    else:
+        logger.info("Discord disabled (--no-discord) — alerts log-only; another instance owns the bot token")
 
     trading_task = asyncio.create_task(trading_loop(
         binance_feed, market_scanner, indicator_engine, signal_engine,
@@ -2929,9 +2951,11 @@ async def main() -> None:
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(_flush_staleness_loop()),
-        asyncio.create_task(window_recorder.run()),
-        discord_task,
     ]
+    if record_enabled:
+        background_tasks.append(asyncio.create_task(window_recorder.run()))
+    if discord_task is not None:
+        background_tasks.append(discord_task)
     logger.debug("PolyBot started — all systems running (WebSocket + event-driven)")
 
     try:
