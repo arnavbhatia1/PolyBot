@@ -71,6 +71,12 @@ from scripts.diagnose_edge import load_records  # noqa: E402
 
 ET = ZoneInfo("America/New_York")
 RECORDER_EPOCH = datetime(2026, 6, 11, 10, 44, tzinfo=ET)  # recorders went live
+# Clean post-fix epoch: the bot restarted onto the fixed code (commit c7520006 —
+# loss-cut positive-edge HOLD + per-candle ATR dedup) at 2026-06-17 13:19 ET.
+# Decisions before this ran the buggy pre-fix code (and earlier, the pre-gut
+# machine), so both the model-vs-boundary comparison and the go-live gate score
+# ONLY records decided at/after it — never pre-fix/pre-gut days.
+CLEAN_EPOCH = datetime(2026, 6, 17, 13, 19, tzinfo=ET)
 WINDOW_LEN_S = 300.0
 MATCH_TOL_S = 2.0
 KILL_BAR_DAYS = 5
@@ -531,6 +537,12 @@ def main() -> None:
     recs = [r for r in recs if r["window_ts"] > fitted_ts]
     print(f"out-of-sample filter (window starts after fitted_at): kept {len(recs)}, "
           f"dropped {pre - len(recs)} in-sample")
+    # Clean post-fix cutoff: drop any decision made before the fixed code went live
+    # (CLEAN_EPOCH), so the comparison and the gate never count pre-fix/pre-gut days.
+    pre_clean = len(recs)
+    recs = [r for r in recs if r["decision_ts"] >= CLEAN_EPOCH.timestamp()]
+    print(f"clean post-fix filter (decision >= {CLEAN_EPOCH:%Y-%m-%d %H:%M} ET): "
+          f"kept {len(recs)}, dropped {pre_clean - len(recs)} pre-fix")
     if not recs:
         print("WAITING FOR DATA — no out-of-sample counterfactual records after the frozen "
               "baseline's training cutoff yet (these accrue over the shadow days).")

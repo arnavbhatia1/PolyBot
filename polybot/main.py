@@ -1211,7 +1211,7 @@ async def _evaluate_signal_and_enter(
             f"{_slug_to_window(cid)}{'' if phase == 'normal' else f' [{phase}]'}\n"
             f"  {_C.DIM}Why: {_why}{_C.RESET}\n"
             f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}\n"
-            f"{_C.YELLOW}{'=' * 60}{_C.RESET}")
+            f"{_C.YELLOW}{'=' * 69}{_C.RESET}")
         if _adverse_monitor:
             # Baseline must live on the same axis as the post-fill checkpoints
             # (update_prices): the traded token's own mid. Falls back to the
@@ -1908,7 +1908,7 @@ async def _evaluate_and_exit_position(
                 f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
                 f"  {_C.DIM}Why: {reason}{_C.RESET}\n"
                 f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees {_fee_breakdown(result)}{_C.RESET}\n"
-                f"{color}{'=' * 60}{_C.RESET}")
+                f"{color}{'=' * 69}{_C.RESET}")
             if alert_manager:
                 await alert_manager.send_trade_closed(
                     question=pos.get("question", ""), exit_price=exit_fill,
@@ -2038,7 +2038,7 @@ async def _resolve_expired_position(
             f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  "
             f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
             f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees {_fee_breakdown(result)}{_C.RESET}\n"
-            f"{color}{'=' * 60}{_C.RESET}")
+            f"{color}{'=' * 69}{_C.RESET}")
         if alert_manager:
             await alert_manager.send_trade_closed(
                 question=pos.get("question", ""), exit_price=exit_price,
@@ -2176,7 +2176,7 @@ async def _manage_orphaned_position(
             f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']} (orphan){_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  "
             f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
             f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees {_fee_breakdown(result)}{_C.RESET}\n"
-            f"{color}{'=' * 60}{_C.RESET}")
+            f"{color}{'=' * 69}{_C.RESET}")
         if alert_manager:
             await alert_manager.send_trade_closed(
                 question=pos.get("question", ""), exit_price=exit_price,

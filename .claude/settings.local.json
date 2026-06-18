@@ -138,7 +138,8 @@
       "Bash(mv polybot/memory/calibration/platt_params.json polybot/memory/calibration/isotonic_params.json)",
       "Bash(mv polybot/memory/calibration/platt_rejected.json polybot/memory/calibration/isotonic_rejected.json)",
       "Bash(xargs wc -l)",
-      "Bash(PYTHONIOENCODING=utf-8 python *)"
+      "Bash(PYTHONIOENCODING=utf-8 python *)",
+      "PowerShell(git checkout *)"
     ]
   }
 }
