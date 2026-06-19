@@ -1,19 +1,20 @@
 shadow baseline: exit_model_shadow.json  fitted_at 2026-06-16T03:45:48.879319+00:00  windows 1168  brier_oos 0.16869 (market 0.16816)
   reusing the frozen baseline -> C:\Users\abhat\Personal\PolyBot\polybot\memory\exit_model\exit_model_shadow.json
 
-counterfactual records after recorder epoch (2026-06-11 10:44 ET): 2161  skipped {'missing_fields': 0, 'pre_epoch': 2507, 'bad_window_ts': 0}
-out-of-sample filter (window starts after fitted_at): kept 485, dropped 1676 in-sample
+counterfactual records after recorder epoch (2026-06-11 10:44 ET): 2462  skipped {'missing_fields': 0, 'pre_epoch': 2507, 'bad_window_ts': 0}
+out-of-sample filter (window starts after fitted_at): kept 786, dropped 1676 in-sample
+clean post-fix filter (decision >= 2026-06-17 13:19 ET): kept 365, dropped 421 pre-fix
 window_paths source: polybot\db\window_paths.db
-matched to window_paths (Â±2s): 444  skipped {'no_row': 0, 'null_fields': 41}
+matched to window_paths (Â±2s): 326  skipped {'no_row': 0, 'null_fields': 39}
 
 per-ET-day $ (branch-faithful arms on the matched pool):
          day     n  boundary$     model$     delta$
-  2026-06-16   193    -239.21    -267.73     -28.52
-  2026-06-17   251     +12.69     -11.61     -24.30
+  2026-06-17    61     +66.04     +34.48     -31.56
+  2026-06-18   265    -241.19    -274.91     -33.72
 
-ALL: n=444  boundary -226.53  model -279.34  delta -52.82  day-clustered t -12.53
-ITM (mp>=0.5): n=242  boundary +542.73  model +515.53  delta -27.20  day-clustered t -0.53
-fired: boundary 276/444, model 112/444
+ALL: n=326  boundary -175.15  model -240.43  delta -65.28  day-clustered t -30.23
+ITM (mp>=0.5): n=195  boundary +382.55  model +371.55  delta -11.00  day-clustered t -0.24
+fired: boundary 180/326, model 93/326
 
 KILL BAR (Phase 3): positive ITM delta over >= 5 distinct ET days
 -> WAITING FOR DATA (2/5 shadow days)
