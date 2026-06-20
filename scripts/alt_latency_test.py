@@ -4,21 +4,28 @@ The latency exit was statistically REAL on BTC (round 3: +0.09/sh, t_day +2.99) 
 KILLED on executability — BTC's book reprices in <135ms, so the stale-high bid is
 gone before a 135ms-RTT order lands (1.8% fill). The alt thesis: wider-spread alts
 have ~14x quieter books (measured), so the same stale bid plausibly survives the
-RTT window -> the edge may be REACHABLE there. This harness runs that exact test on
-the alt corpus collected by scripts/record_alts.py.
+RTT window -> the edge may be REACHABLE there, AND colocation (sub-15ms RTT) may
+make it reachable where 135ms cannot. This harness runs that exact test on the
+corpus collected by scripts/record_alts.py.
 
 THE TEST (per held side S, causal, no look-ahead):
   trigger: Coinbase moved >= TH bps AGAINST S over the trailing L s, held-side bid
            in [0.10,0.90], depth3_bid_S >= Dmin; first-fire per (window,side).
-  offline edge   = (sell at held-side bid - taker fee) - hold-to-resolution payoff.
-  realistic edge = same, but the fill price/fraction comes from the ms TAPE: a SELL
-                   must print at/through the stale bid within the RTT window for the
-                   maker-less FOK to fill; unfilled remainder rides to resolution.
-  score          = day-clustered t (df=n_days-1) AND window block-bootstrap p10, on
-                   BOTH the offline (upper bound) and realistic (deployable) edge.
+  offline edge   = (sell at held-side bid - taker fee) - hold-to-resolution payoff
+                   (the zero-latency ceiling).
+  realistic edge = offline x fill_frac, where fill_frac is a POINT-IN-TIME check: a
+                   FOK SELL landing at t0+RTT fills iff the stale bid is still >= its
+                   level at arrival. Reprice timing is pinned by the ms TAPE (first
+                   trade through the bid) and, failing a print, bounded by the next
+                   1 Hz BBO sample. Sub-second quote moves 1 Hz cannot time are
+                   reported as a [pess..opt] bracket, not a fake point estimate.
+                   Evaluated at the current RTT (135ms) AND the post-colo RTT (15ms)
+                   so the bar can estimate whether colocation makes it reachable.
+  score          = day-clustered t (df=n_days-1) AND window block-bootstrap p10 on the
+                   realistic edge at the colo RTT (the deployable scenario).
 
-KILL/PASS BAR (mirrors the BTC go-live bar): realistic edge t_day>=2 AND p10>0 over
->= MIN_DAYS clean ET days. Until then the harness reports PRELIMINARY/WAITING.
+KILL/PASS BAR (mirrors the BTC go-live bar): realistic edge at the colo RTT
+t_day>=2 AND p10>0 over >= MIN_DAYS clean ET days. Until then -> PRELIMINARY.
 
   python scripts/alt_latency_test.py            # run on the live alt corpus
   python scripts/alt_latency_test.py --selftest # validate the machinery on a fixture
@@ -42,7 +49,9 @@ LABELS_DB = _ROOT / "polybot" / "db" / "alt_recordings.db"
 TAPE_GLOB = str(_ROOT / "polybot" / "memory" / "recordings" / "alts" / "*.jsonl")
 
 FEE_RATE = 0.07
-RTT_S = 0.135                  # warm POST round-trip; the executability window
+RTT_S = 0.135                  # current warm POST round-trip (Toronto-VPN path)
+RTT_COLO = 0.015               # post-colocation target (Dublin / AWS eu-west-1)
+ASSUMPTIONS = ("pess", "uniform", "opt")  # silent-reprice timing bracket
 MIN_DAYS = 8                   # clean ET days before the bar is readable
 # Trigger grid (mirrors the BTC survivor family; TH in bps of Coinbase spot).
 LAGS = (3.0, 5.0, 10.0)
@@ -90,8 +99,8 @@ def bootstrap_p10(per_window: list[float], b: int = 2000) -> float | None:
 # ── data load ───────────────────────────────────────────────────────────────
 
 def load_windows() -> dict[str, dict]:
-    """window_id -> {rows:[(ts,elapsed,bid_up,ask_up,bid_dn,ask_dn,d3bid_up,d3bid_dn,cb)],
-    resolved_up, strike}. Strike = Coinbase spot at the earliest tick (window open)."""
+    """window_id -> {rows:[Row(ts,elapsed,bid_up,ask_up,bid_dn,ask_dn,d3bid_up,
+    d3bid_dn,cb)], resolved_up, strike}. Strike = Coinbase spot at window open."""
     if not PATHS_DB.exists():
         return {}
     wp = sqlite3.connect(f"file:{PATHS_DB}?mode=ro", uri=True)
@@ -122,8 +131,7 @@ def load_windows() -> dict[str, dict]:
 
 
 def load_tape() -> dict[str, list[tuple]]:
-    """token -> sorted [(ts, price, side)]. (Alt tape has no window/side; the test
-    keys fill checks by the window's token set, matched in score())."""
+    """token -> sorted [(ts, price, side)]."""
     tape: dict[str, list[tuple]] = defaultdict(list)
     for fp in glob.glob(TAPE_GLOB):
         for line in open(fp):
@@ -157,11 +165,70 @@ def cb_return_against(rows, i, lag_s, side):
     return -ret_bps if side == "Up" else ret_bps  # AGAINST S
 
 
-def run_test(windows, tape, lag, th, rtt=RTT_S):
-    """Returns per-(symbol-day) edge lists for offline + realistic, plus counters."""
-    by_day_off, by_day_real = defaultdict(float), defaultdict(float)
-    per_win_off, per_win_real = [], []
-    fires = 0
+def _next_sample_bid(rows, i, bidk, t0):
+    """Held-side bid at the first 1 Hz sample after row i (and its dt from t0)."""
+    for j in range(i + 1, len(rows)):
+        b = rows[j][bidk]
+        if b is not None:
+            return b, rows[j]["ts"] - t0
+    return None, None
+
+
+def _reprice_after(tape, w, side, t0, B, search_end):
+    """Earliest time (s after t0) a held-side trade prints STRICTLY below the stale
+    bid B -> the book traded down through your level. None if no such print. (A print
+    AT B means the bid is still there and is NOT a reprice.)"""
+    toks = w.get("_tokens")
+    tok = toks.get(side) if toks else None
+    if not tok or tok not in tape:
+        return None
+    for ts, px, sd in tape[tok]:
+        if ts <= t0:
+            continue
+        if ts - t0 > search_end:
+            break
+        if px < B - 1e-9:
+            return ts - t0
+    return None
+
+
+def classify_fire(rows, i, tape, w, side, t0, B):
+    """How the stale held-side bid B decays after the trigger:
+      'stable' -> bid still >= B at the next 1 Hz sample (survives any plausible RTT);
+      'trade'  -> a trade printed through B at sub-second time tau (tape-pinned);
+      'silent' -> bid gone by the next sample but no trade pinned WHEN (gap-bracketed,
+                  since 1 Hz BBO cannot resolve a sub-second quote cancel/re-quote)."""
+    bidk = "bid_up" if side == "Up" else "bid_down"
+    B_next, dt_next = _next_sample_bid(rows, i, bidk, t0)
+    if B_next is not None and B_next >= B - 1e-9:
+        return {"kind": "stable", "tau": None, "gap": None}
+    search_end = dt_next if dt_next is not None else 2.0
+    tau = _reprice_after(tape, w, side, t0, B, search_end)
+    if tau is not None:
+        return {"kind": "trade", "tau": tau, "gap": None}
+    return {"kind": "silent", "tau": None, "gap": dt_next if dt_next is not None else 1.0}
+
+
+def fill_frac(fire, rtt, assumption):
+    """Fraction filled if a FOK SELL lands at t0+rtt. Monotone in speed: a lower rtt
+    always fills >= a higher rtt (the correct direction for the colo question)."""
+    k = fire["kind"]
+    if k == "stable":
+        return 1.0
+    if k == "trade":
+        return 1.0 if rtt < fire["tau"] else 0.0
+    gap = fire["gap"] or 1.0           # silent reprice somewhere in (t0, t0+gap]
+    if assumption == "pess":
+        return 0.0
+    if assumption == "opt":
+        return 1.0 if rtt < gap else 0.0
+    return max(0.0, 1.0 - rtt / gap)   # uniform: P(reprice time > rtt)
+
+
+def run_test(windows, tape, lag, th):
+    """Collect per-(window,side) first-fire records: offline edge + reprice class.
+    Realistic edge for any (rtt, assumption) is derived from these via summarize()."""
+    fires = []
     for wid, w in windows.items():
         rows = w["rows"]
         if len(rows) < 30 or w["strike"] is None:
@@ -171,7 +238,6 @@ def run_test(windows, tape, lag, th, rtt=RTT_S):
         for side in ("Up", "Down"):
             bidk = "bid_up" if side == "Up" else "bid_down"
             depthk = "depth3_bid_up" if side == "Up" else "depth3_bid_down"
-            fired = False
             for i, row in enumerate(rows):
                 bid = row[bidk]
                 if bid is None or not (0.10 <= bid <= 0.90):
@@ -181,46 +247,91 @@ def run_test(windows, tape, lag, th, rtt=RTT_S):
                 ag = cb_return_against(rows, i, lag, side)
                 if ag is None or ag < th:
                     continue
-                # FIRE (first per window-side)
-                fired = True
                 won = (w["resolved_up"] == 1) == (side == "Up")
-                hold = 1.0 if won else 0.0
-                # offline: sell whole position at the stale bid, full taker fee (shares=1 unit)
-                off = (bid - taker_fee(1.0, bid)) - hold
-                # realistic: fill only if a SELL prints at/through bid within RTT (tape)
-                fill_frac = _tape_fill_frac(tape, w, side, row["ts"], bid, rtt)
-                real = fill_frac * off  # unfilled rides to resolution (edge 0 vs hold)
-                by_day_off[(sym, day)] += off
-                by_day_real[(sym, day)] += real
-                per_win_off.append(off)
-                per_win_real.append(real)
-                fires += 1
+                off = (bid - taker_fee(1.0, bid)) - (1.0 if won else 0.0)
+                cls = classify_fire(rows, i, tape, w, side, row["ts"], bid)
+                cls.update(sym=sym, day=day, off=off)
+                fires.append(cls)
                 break
-            _ = fired
-    return dict(by_day_off=by_day_off, by_day_real=by_day_real,
-                per_win_off=per_win_off, per_win_real=per_win_real, fires=fires)
+    return fires
 
 
-def _tape_fill_frac(tape, w, side, t0, bid, rtt):
-    """Fraction of a unit order that fills at/through the stale bid within [t0,t0+rtt].
-    A taker SELL hitting the bid prints as side 'SELL' (a seller crossed). We proxy
-    'bid still hittable' by any SELL print at price>=bid in the window; fraction is a
-    coarse hittable-yes(1)/no(0) since alt tape lacks our queue position."""
-    toks = w.get("_tokens")
-    if not toks:
-        return 0.0
-    tok = toks.get(side)
-    if not tok or tok not in tape:
-        return 0.0
-    prints = tape[tok]
-    for ts, px, sd in prints:
-        if ts < t0:
+def summarize(fires, rtt, assumption):
+    """Realistic edge stats for fires at a given (rtt, assumption)."""
+    if not fires:
+        return None
+    by_day = defaultdict(float)
+    per_win_real, per_win_off = [], []
+    for f in fires:
+        real = fill_frac(f, rtt, assumption) * f["off"]
+        by_day[(f["sym"], f["day"])] += real
+        per_win_real.append(real)
+        per_win_off.append(f["off"])
+    return dict(
+        off_m=sum(per_win_off) / len(per_win_off),
+        real_m=sum(per_win_real) / len(per_win_real),
+        t_day=day_clustered_t(list(by_day.values())),
+        p10=bootstrap_p10(per_win_real),
+        fires=len(fires))
+
+
+# ── reporting ──────────────────────────────────────────────────────────────────
+
+def _print_regime(windows, tape):
+    """Where do the reprices land? 'rescued-by-colo' = stale bids that survive past
+    15ms but die before 135ms = exactly the band colocation converts from miss->fill."""
+    fires = run_test(windows, tape, 3.0, 10.0) or run_test(windows, tape, 5.0, 10.0)
+    if not fires:
+        print("reprice regime: no strong-signal fires yet.")
+        return
+    n = len(fires)
+    stable = sum(1 for f in fires if f["kind"] == "stable")
+    trade = [f for f in fires if f["kind"] == "trade"]
+    silent = sum(1 for f in fires if f["kind"] == "silent")
+    band = sum(1 for f in trade if RTT_COLO <= f["tau"] < RTT_S)
+    sub15 = sum(1 for f in trade if f["tau"] < RTT_COLO)
+    survive135 = sum(1 for f in trade if f["tau"] >= RTT_S)
+    print(f"reprice regime (strong-signal trigger, n={n}):")
+    print(f"  stable (bid survives > ~1s, fills at any RTT) = {stable}")
+    print(f"  trade-pinned = {len(trade)}  [gone<15ms={sub15} | RESCUED-BY-COLO(15-135ms)={band} "
+          f"| survive>135ms={survive135}]")
+    print(f"  silent (sub-second quote move, 1 Hz can't time -> bracketed) = {silent}")
+
+
+def _per_symbol(fires):
+    bysym = defaultdict(list)
+    for f in fires:
+        bysym[f["sym"]].append(f)
+    out = {}
+    for sym, fs in bysym.items():
+        out[sym] = (
+            len(fs),
+            sum(x["off"] for x in fs) / len(fs),
+            sum(fill_frac(x, RTT_S, "uniform") * x["off"] for x in fs) / len(fs),
+            sum(fill_frac(x, RTT_COLO, "uniform") * x["off"] for x in fs) / len(fs),
+            sum(1 for x in fs if x["kind"] == "stable"))
+    return out
+
+
+def _print_per_symbol(windows, tape):
+    """The wide-book tell: is the offline edge in DOGE (wide ~6.8c spread — the thesis
+    candidate) or only in SOL (tight ~1.2c — where a real edge is least credible)?
+    Edge in the WIDE book supports the thesis; edge only in tight SOL = likely noise."""
+    print("\nper-symbol tell (spread: sol~1.2c xrp~1.3c doge~6.8c) — want the edge in the "
+          "WIDE book (doge); edge only in tight sol = likely day-noise:")
+    for lag, th in ((3.0, 5.0), (3.0, 10.0), (5.0, 10.0)):
+        fires = run_test(windows, tape, lag, th)
+        if not fires:
             continue
-        if ts > t0 + rtt:
-            break
-        if (sd or "").upper() == "SELL" and px >= bid - 1e-9:
-            return 1.0
-    return 0.0
+        ps = _per_symbol(fires)
+        print(f"  lag{lag:.0f}/TH{th:.0f} ({len(fires)} fires):")
+        for sym in SYMS:
+            if sym not in ps:
+                print(f"    {sym:4}: 0 fires")
+                continue
+            n, off, r135, r15, stable = ps[sym]
+            print(f"    {sym:4}: n={n:3d}  offline={off:>+8.4f}  real@135={r135:>+8.4f}  "
+                  f"real@15={r15:>+8.4f}  stable={stable}/{n}")
 
 
 def report(windows, tape):
@@ -230,44 +341,50 @@ def report(windows, tape):
     if len(days) < MIN_DAYS:
         print(f"-> PRELIMINARY / WAITING FOR DATA ({len(days)}/{MIN_DAYS} clean ET days). "
               f"Directional reads below are NOT significant (df={max(0,len(days)-1)}).")
-    print(f"\n{'lag':>4} {'TH':>4} {'fires':>6} {'off$/win':>9} {'real$/win':>10} "
-          f"{'t_day(real)':>11} {'p10(real)':>10}")
+    print(f"\noffline = zero-latency ceiling | real@135 = today | real@15 = post-colo "
+          f"(uniform); 15ms[pess..opt] = sub-second bracket")
+    print(f"\n{'lag':>4} {'TH':>4} {'fires':>6} {'offline':>8} {'real@135':>9} "
+          f"{'real@15':>8} {'15ms[pess..opt]':>20} {'t_day@15':>9}")
     best = None
     for lag in LAGS:
         for th in THS:
-            res = run_test(windows, tape, lag, th)
-            if res["fires"] == 0:
+            fires = run_test(windows, tape, lag, th)
+            if not fires:
                 continue
-            off_days = list(res["by_day_off"].values())
-            real_days = list(res["by_day_real"].values())
-            off_m = sum(res["per_win_off"]) / len(res["per_win_off"])
-            real_m = sum(res["per_win_real"]) / len(res["per_win_real"])
-            t_real = day_clustered_t(real_days)
-            p10 = bootstrap_p10(res["per_win_real"])
-            ts = f"{t_real:+.2f}" if t_real is not None else "n/a"
-            ps = f"{p10:+.4f}" if p10 is not None else "n/a"
-            print(f"{lag:>4.0f} {th:>4.0f} {res['fires']:>6} {off_m:>+9.4f} {real_m:>+10.4f} "
-                  f"{ts:>11} {ps:>10}")
-            if t_real is not None and p10 is not None and t_real >= 2 and p10 > 0:
-                if best is None or real_m > best[1]:
-                    best = (f"lag{lag:.0f}/TH{th:.0f}", real_m, t_real, p10)
+            cur = summarize(fires, RTT_S, "uniform")
+            colo = summarize(fires, RTT_COLO, "uniform")
+            lo = summarize(fires, RTT_COLO, "pess")
+            hi = summarize(fires, RTT_COLO, "opt")
+            ts = f"{colo['t_day']:+.2f}" if colo["t_day"] is not None else "n/a"
+            bracket = f"[{lo['real_m']:+.4f}..{hi['real_m']:+.4f}]"
+            print(f"{lag:>4.0f} {th:>4.0f} {cur['fires']:>6} {cur['off_m']:>+8.4f} "
+                  f"{cur['real_m']:>+9.4f} {colo['real_m']:>+8.4f} {bracket:>20} {ts:>9}")
+            if (colo["t_day"] is not None and colo["p10"] is not None
+                    and colo["t_day"] >= 2 and colo["p10"] > 0):
+                if best is None or colo["real_m"] > best[1]:
+                    best = (f"lag{lag:.0f}/TH{th:.0f}", colo["real_m"], colo["t_day"], colo["p10"])
     print()
+    _print_per_symbol(windows, tape)
+    _print_regime(windows, tape)
     if len(days) < MIN_DAYS:
-        print("VERDICT: not yet readable — let the corpus mature to >= "
-              f"{MIN_DAYS} clean days (~06-26), then re-run.")
+        print(f"\nVERDICT: not yet readable — mature to >= {MIN_DAYS} clean days (~06-26), "
+              "then re-run. Watch whether 'real@15' lifts toward 'offline' (colo helps) "
+              "and whether DOGE's offline > SOL/XRP's (wide-book edge is real).")
     elif best:
-        print(f"VERDICT: PASS — {best[0]} realistic edge {best[1]:+.4f}/win "
-              f"t_day {best[2]:+.2f} p10 {best[3]:+.4f}. The alt latency edge is REACHABLE.")
+        print(f"\nVERDICT: PASS @colo — {best[0]} realistic edge {best[1]:+.4f}/win "
+              f"t_day {best[2]:+.2f} p10 {best[3]:+.4f} at 15ms RTT. "
+              "Latency edge REACHABLE post-colocation (but check it FAILS at 135ms — "
+              "that's what justifies the colo).")
     else:
-        print("VERDICT: FAIL — no trigger config clears t_day>=2 AND p10>0 on the "
-              "realistic (ms-tape fill) edge. Latency edge unreachable on alts too.")
+        print("\nVERDICT: FAIL — no config clears t_day>=2 AND p10>0 even at 15ms colo RTT. "
+              "Latency edge unreachable on alts even colocated.")
 
 
 def attach_tokens(windows):
     """Populate w['_tokens']={'Up':token_up,'Down':token_down} from record_alts'
-    window_tokens table so the realistic fill-check can find each side's tape.
-    Windows recorded before token-logging landed have no row -> _tokens None ->
-    realistic edge is a conservative 0-fill lower bound there (offline = upper)."""
+    window_tokens table so the fill-check can find each side's tape. Windows recorded
+    before token-logging landed have no row -> _tokens None -> their non-'stable'
+    fires can't be tape-pinned (fall to the silent bracket)."""
     tok: dict[str, dict] = {}
     if LABELS_DB.exists():
         lb = sqlite3.connect(f"file:{LABELS_DB}?mode=ro", uri=True)
@@ -275,7 +392,7 @@ def attach_tokens(windows):
             for r in lb.execute("SELECT window_id,token_up,token_down FROM window_tokens"):
                 tok[r[0]] = {"Up": r[1], "Down": r[2]}
         except sqlite3.OperationalError:
-            pass  # table not created yet (no token-logging run has happened)
+            pass
         lb.close()
     for wid, w in windows.items():
         w["_tokens"] = tok.get(wid)
@@ -284,50 +401,58 @@ def attach_tokens(windows):
 # ── selftest ────────────────────────────────────────────────────────────────
 
 def selftest():
-    """Synthetic 2-window fixture validates trigger detection, signing, edge calc,
-    and tape fill-check — independent of live data."""
+    """Synthetic fixtures validate trigger detection/signing, offline edge, the
+    reprice classification, RTT monotonicity, and the silent bracket."""
     base = 1_000_000_000.0
-    def mkrow(wid, t, el, bu, au, bd, ad, cb):
-        return sqlite3.Row  # placeholder; we use dicts below instead
-    # Build plain-dict rows (Row not constructible); the test funcs only index by key.
+
     class R(dict):
         def __getitem__(self, k): return dict.get(self, k)
+
     def row(t, el, bu, bd, cb, du=500.0, dd=500.0):
-        return R(ts=t, elapsed_s=el, bid_up=bu, ask_up=(bu+0.01) if bu else None,
-                 bid_down=bd, ask_down=(bd+0.01) if bd else None,
+        return R(ts=t, elapsed_s=el, bid_up=bu, ask_up=(bu + 0.01) if bu else None,
+                 bid_down=bd, ask_down=(bd + 0.01) if bd else None,
                  depth3_bid_up=du, depth3_bid_down=dd, coinbase_price=cb)
-    # Window A: Coinbase DROPS 0.6% at t=5s (against Up). Up bid stale-high 0.55, Up
-    # loses. >=30 rows so run_test's partial-window guard doesn't skip it.
-    rowsA = [row(base + i, float(i), 0.55, 0.45, 100.0 * (1 - 0.006 * (i >= 5)))
-             for i in range(35)]
-    # Window B: no Coinbase move. No trigger.
-    rowsB = [row(base + 1000 + i, float(i), 0.50, 0.50, 100.0) for i in range(35)]
-    windows = {
-        "sol-updown-5m-1000000000": {"rows": rowsA, "resolved_up": 0, "strike": 100.0,
-                                     "_tokens": {"Up": "TOKA"}},
-        "sol-updown-5m-1000001000": {"rows": rowsB, "resolved_up": 1, "strike": 100.0,
-                                     "_tokens": {"Up": "TOKB"}},
-    }
-    # cb_return_against: at i=5 (the drop tick) the trailing-5s window spans
-    # cb 100->99.4 = -60bps; AGAINST Up = +60bps >= TH. (At i=10 the whole window
-    # is post-drop at 99.4, so the move there is ~0 — the trigger fires at i=5.)
-    ag = cb_return_against(rowsA, 5, 5.0, "Up")
-    assert ag is not None and ag > 50, f"expected ~+60bps against Up at i=5, got {ag}"
-    assert abs(cb_return_against(rowsB, 5, 5.0, "Up")) < 1e-6
-    # tape: a SELL prints at 0.55 within 135ms of the fire -> fill_frac 1.0
-    tape = {"TOKA": [(base + 5.05, 0.55, "SELL")], "TOKB": []}
-    # find fire index in A (first i with trailing move >= TH and bid in band)
-    res = run_test(windows, tape, 5.0, 10.0)
-    assert res["fires"] == 1, f"expected 1 fire, got {res['fires']}"
-    # Up lost -> hold=0; offline = bid - fee - 0 = 0.55 - 0.07*0.55*0.45 = +0.5327
-    off = res["per_win_off"][0]
-    assert abs(off - (0.55 - 0.07 * 0.55 * 0.45)) < 1e-6, off
-    # realistic: SELL printed at 0.55 within 135ms -> fill 1.0 -> real == off
-    assert abs(res["per_win_real"][0] - off) < 1e-6, res["per_win_real"]
-    # no-fill case: tape SELL at 0.50 (below bid) -> no fill -> real 0
-    res2 = run_test(windows, {"TOKA": [(base + 5.05, 0.50, "SELL")], "TOKB": []}, 5.0, 10.0)
-    assert res2["per_win_real"][0] == 0.0, res2["per_win_real"]
-    print("SELFTEST PASS — trigger signing, edge calc, and ms-tape fill-check all correct.")
+
+    # Coinbase DROPS 0.6% at t=5s (against Up); the trigger fires at i=5. Up loses.
+    def cb(i):
+        return 100.0 * (1 - 0.006 * (i >= 5))
+    # --- signing sanity ---
+    rows_flat = [row(base + i, float(i), 0.55, 0.45, cb(i)) for i in range(35)]
+    assert cb_return_against(rows_flat, 5, 5.0, "Up") > 50, "expected ~+60bps against Up at i=5"
+    rows_none = [row(base + 1000 + i, float(i), 0.50, 0.50, 100.0) for i in range(35)]
+    assert abs(cb_return_against(rows_none, 5, 5.0, "Up")) < 1e-6
+
+    # CASE stable: Up bid stays 0.55 through the next sample -> fills at any RTT.
+    w_stable = {"sol-updown-5m-1": {"rows": rows_flat, "resolved_up": 0, "strike": 100.0,
+                                    "_tokens": {"Up": "TOKA"}}}
+    fs = run_test(w_stable, {"TOKA": []}, 5.0, 10.0)
+    assert len(fs) == 1 and fs[0]["kind"] == "stable", fs
+    off = 0.55 - 0.07 * 0.55 * 0.45            # Up lost -> hold 0
+    assert abs(fs[0]["off"] - off) < 1e-6, fs[0]
+    assert fill_frac(fs[0], RTT_S, "pess") == 1.0, "stable fills at any RTT"
+
+    # CASE trade-pinned: bid drops to 0.40 at the next sample; a SELL prints THROUGH
+    # the stale bid (0.54 < 0.55) 50ms after the fire -> tau=0.05.
+    rows_drop = [row(base + i, float(i), 0.55 if i <= 5 else 0.40, 0.45, cb(i)) for i in range(35)]
+    w_drop = {"sol-updown-5m-1": {"rows": rows_drop, "resolved_up": 0, "strike": 100.0,
+                                  "_tokens": {"Up": "TOKA"}}}
+    ft = run_test(w_drop, {"TOKA": [(base + 5.05, 0.54, "SELL")]}, 5.0, 10.0)
+    assert len(ft) == 1 and ft[0]["kind"] == "trade" and abs(ft[0]["tau"] - 0.05) < 1e-6, ft
+    # MONOTONICITY: fills at 15ms (rtt<tau) but MISSES at 135ms (rtt>tau) -> colo rescues it
+    assert fill_frac(ft[0], RTT_COLO, "uniform") == 1.0, "should fill at 15ms"
+    assert fill_frac(ft[0], RTT_S, "uniform") == 0.0, "should miss at 135ms"
+
+    # CASE silent: bid drops at the next sample, NO trade through it -> gap bracket.
+    fz = run_test(w_drop, {"TOKA": []}, 5.0, 10.0)
+    assert len(fz) == 1 and fz[0]["kind"] == "silent", fz
+    fp = fill_frac(fz[0], RTT_COLO, "pess")
+    fu = fill_frac(fz[0], RTT_COLO, "uniform")
+    fo = fill_frac(fz[0], RTT_COLO, "opt")
+    assert fp <= fu <= fo and fp == 0.0 and fo == 1.0, (fp, fu, fo)
+    # and 15ms uniform fills more than 135ms uniform (monotone) on the silent case too
+    assert fill_frac(fz[0], RTT_COLO, "uniform") > fill_frac(fz[0], RTT_S, "uniform"), "monotone"
+    print("SELFTEST PASS — trigger signing, offline edge, reprice classification, "
+          "RTT monotonicity (colo fills >= current), and silent bracket all correct.")
 
 
 def main():
@@ -344,10 +469,10 @@ def main():
     tape = load_tape()
     attach_tokens(windows)
     report(windows, tape)
-    print("\nNOTE: realistic (ms-tape) fill-check needs per-window Up/Down token ids, "
-          "which alt window_paths does not yet store -> realistic edge is a conservative "
-          "0-fill lower bound until record_alts persists them. The offline column is the "
-          "upper bound; the BTC lesson is the gap between them IS the edge's fate.")
+    print("\nNOTE: the sub-15ms estimate is bracketed, not exact — 1 Hz BBO cannot time a "
+          "sub-second quote cancel/re-quote, so 'silent' fires span [pess..opt]. The "
+          "'trade-pinned' fires ARE ms-exact (real tape), and the regime line shows how "
+          "many of them sit in the 15-135ms band colocation would convert from miss to fill.")
 
 
 if __name__ == "__main__":
