@@ -28,5 +28,11 @@
   "brier_oos": 0.189,
   "drift_mae_oos": 0.152,
   "kept_previous": false
+ },
+ {
+  "at": "2026-06-21T03:45:32.832362+00:00",
+  "brier_oos": 0.18529,
+  "drift_mae_oos": 0.14161,
+  "kept_previous": false
  }
 ]

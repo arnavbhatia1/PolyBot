@@ -1,0 +1,79 @@
+{
+  "position_id": 5842,
+  "market_id": "btc-updown-5m-1781951700",
+  "question": "Bitcoin Up or Down - June 20, 6:35AM-6:40AM ET",
+  "side": "Down",
+  "signal_score": 0.9657870973044544,
+  "correct": true,
+  "entry_price": 0.79,
+  "exit_price": 1.0,
+  "log_return": 0.23572233352106978,
+  "size": 23.92,
+  "pnl": 5.91338734177215,
+  "fees": 0.3516240000000011,
+  "gain_pct": 0.247215,
+  "realized_edge": 0.1758,
+  "fill_slippage": 0.0,
+  "indicator_snapshot": {
+    "atr": {
+      "atr": 11.65,
+      "passes": true,
+      "reason": "ok",
+      "candle_ts": 1781951700000
+    },
+    "trade_context": {
+      "btc_price": 63552.75,
+      "strike_price": 63587.57428988368,
+      "seconds_remaining": 260.180692,
+      "market_price_up": 0.23,
+      "market_price_down": 0.79,
+      "closes_tail": [
+        63649.91,
+        63638.0
+      ],
+      "model_probability": 0.9657870973044544,
+      "model_probability_raw": 0.9657870973044544,
+      "edge": 0.1757870973044544,
+      "atr": 11.65,
+      "atr_rolling_20": 12.8785,
+      "atr_long_term_mean": 19.0148,
+      "size": 23.92,
+      "prev_resolution_margin": -26.361750126525294,
+      "flow_score": 0.1429,
+      "spot_flow_signal": -0.18600982875056463,
+      "regime_autocorr": 0.01,
+      "regime_direction": -1.0,
+      "entry_phase": "normal",
+      "flip_count": 0,
+      "is_flip": false,
+      "depth_usd_top20": 662738.4239581,
+      "coinbase_cvd_60s": -0.7027,
+      "coinbase_taker_60s": 0.1114,
+      "coinbase_taker_n": 117,
+      "cross_venue_gap": -73.51,
+      "fast_realized_vol_60s": 5.9e-05,
+      "clob_depth_top5_up_usd": 21443.84,
+      "clob_depth_top5_down_usd": 24504.68,
+      "clob_book_age_s": 0.018,
+      "adverse_rate_at_30s": 0.47058823529411764,
+      "adverse_kelly_mult": 0.969,
+      "token_id_up": "57729711007062565144512024070383588731119462302791245896115529297207987041211",
+      "token_id_down": "10491758258479866822573617220640950465834135181762286755052886542597153615677"
+    }
+  },
+  "exit_reason": "resolution",
+  "seconds_remaining_at_exit": 0.0,
+  "edge_decay": {
+    "midprice_at_fill": 0.785,
+    "deltas": {
+      "5s": -0.04,
+      "10s": -0.07,
+      "15s": 0.02,
+      "30s": 0.06,
+      "60s": 0.08
+    },
+    "resolved_windows": 5
+  },
+  "exit_timestamp": "2026-06-20T10:45:13.093701+00:00",
+  "timestamp": "2026-06-20T10:45:13.093701+00:00"
+}

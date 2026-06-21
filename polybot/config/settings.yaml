@@ -25,10 +25,11 @@ execution:
   passive_exit_enabled: true
   passive_exit_timeout_s: 10.0
 
-  # Paper mode realism (ignore for live)
+  # Paper mode realism (ignore for live). Latency matched to the measured Canada-VPN
+  # warm POST RTT (~0.135s); retune to the Dublin VPS (~0.04s) when that deploy lands.
   slippage_impact_pct: 0.03
-  paper_latency_mean_s: 0.22
-  paper_latency_jitter_s: 0.12
+  paper_latency_mean_s: 0.16
+  paper_latency_jitter_s: 0.04
   paper_network_fail_rate: 0.18
 
 # =============================================================================
