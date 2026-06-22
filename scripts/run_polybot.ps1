@@ -8,6 +8,20 @@ $ErrorActionPreference = "Continue"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
+# Single-instance guard: refuse to start if another run_polybot.ps1 is already
+# running. This is the root cause of the 06-22 double-launch (two wrappers -> two
+# full stacks writing the same DBs). A stale lock (dead PID) is ignored. The lock
+# lives in TEMP, never the repo, so it is never committed.
+$lockFile = Join-Path $env:TEMP "polybot_run_polybot.lock"
+if (Test-Path $lockFile) {
+    $oldPid = (Get-Content $lockFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($oldPid -and (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {
+        Write-Host "Another run_polybot.ps1 is already running (PID $oldPid). Exiting to avoid a double-launch." -ForegroundColor Red
+        exit 1
+    }
+}
+"$PID" | Out-File -FilePath $lockFile -Encoding ascii -Force
+
 # Prevent machine from sleeping
 powercfg -change -standby-timeout-ac 0
 
@@ -88,6 +102,13 @@ while ($true) {
     }
 
     Write-Host "[$timestamp] Starting PolyBot ($mode mode)..." -ForegroundColor Green
+
+    # Kill any orphaned bot from a previous/crashed cycle so this wrapper's bot is
+    # the only trading instance (the bot also self-guards via a single-instance lock).
+    Get-CimInstance Win32_Process -Filter "name like '%python%'" |
+        Where-Object { $_.CommandLine -like '*polybot.main*' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 500
 
     # Run the bot -- blocks until pipeline completes and bot exits
     python -m polybot.main --mode $mode --auto-restart

@@ -25,8 +25,8 @@ class PaperTrader(BaseTrader):
         )
         # Realism knobs (all overridable via settings.yaml -> execution.*; kwarg
         # defaults apply only when settings omit the keys). settings.yaml sets
-        # mean 0.22s / jitter 0.12s — below the 0.35s floor in _simulate_latency,
-        # so the 4% heavy tail carries the live-like p99.
+        # mean 0.16s / jitter 0.04s over the 0.13s floor in _simulate_latency (the
+        # measured Canada-VPN warm POST RTT); the 4% heavy tail carries the p99.
         self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.77)
         self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.40)
         # Fallback fail rate when the book is unavailable; the i.i.d. baseline
@@ -259,16 +259,16 @@ class PaperTrader(BaseTrader):
     # ------------------------------------------------------------------
 
     async def _simulate_latency(self, speedup_s: float = 0.0) -> None:
-        """Gaussian-jittered sleep, floor 0.35s (live's fastest sign+post), plus
-        a 4% heavy-tail spike (uniform 2-4s, live's p99/max). ``speedup_s``
-        subtracts saved work (warm-SELL signature) but the floor still holds.
+        """Gaussian-jittered sleep, floor 0.13s (measured warm POST RTT through the
+        Canada VPN), plus a 4% heavy-tail spike (uniform 2-4s, the p99/max).
+        ``speedup_s`` subtracts saved work (warm-SELL signature) but the floor holds.
         """
         if random.random() < 0.04:
             latency = random.uniform(2.0, 4.0)
         else:
-            latency = max(0.35, random.gauss(self.latency_mean_s, self.latency_jitter_s))
+            latency = max(0.13, random.gauss(self.latency_mean_s, self.latency_jitter_s))
         if speedup_s > 0:
-            latency = max(0.35, latency - speedup_s)
+            latency = max(0.13, latency - speedup_s)
         await asyncio.sleep(latency)
 
     def _walk_book(self, token_id: str, side: str, requested_price: float,

@@ -2972,12 +2972,39 @@ async def main() -> None:
         logger.info(f"PolyBot stopped — Bankroll ${bankroll:.2f} · Feeds/WS/DB closed")
 
 
+_SINGLE_INSTANCE_SOCK = None
+
+
+def _acquire_single_instance(port: int = 49653) -> bool:
+    """OS-level single-instance lock for the trading process: bind a localhost port
+    (no SO_REUSEADDR, so a second bind fails on Windows and POSIX alike). The OS
+    releases it on exit — even on crash — so there is no stale-lock to clean up.
+    Returns False if another trading instance already holds it. This is the
+    backstop that prevents the 06-22 double-launch (two bots on one paper DB)."""
+    global _SINGLE_INSTANCE_SOCK
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", port))
+    except OSError:
+        s.close()
+        return False
+    s.listen(1)
+    _SINGLE_INSTANCE_SOCK = s  # held for the process lifetime
+    return True
+
+
 if __name__ == "__main__":
     args = parse_args()
     try:
         if args.run_pipeline:
             asyncio.run(run_pipeline())
         else:
+            if not _acquire_single_instance():
+                logging.critical(
+                    "Another PolyBot trading instance is already running — refusing "
+                    "to start a second (single-instance lock). Exiting.")
+                raise SystemExit(1)
             asyncio.run(main())
     except KeyboardInterrupt:
         pass

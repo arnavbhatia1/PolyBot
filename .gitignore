@@ -34,3 +34,4 @@ Thumbs.db
 polybot/memory/recordings/
 polybot/db/wallet_tape.db*
 polybot/db/window_paths.db*
+polybot/db/alt_window_paths.db

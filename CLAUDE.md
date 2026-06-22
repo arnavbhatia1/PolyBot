@@ -294,7 +294,10 @@ scripts/                       run_polybot.ps1 (daily loop),
 11:45 PM ET, commits + pushes `origin main` on exit, restarts at midnight (or
 immediately if the exit slipped past it). Each cycle it also (re)launches the
 box-arb monitor as a supervised child on freshly-pulled code (kills any prior
-instance first), so one launch starts everything. Live pre-flight:
+instance first), so one launch starts everything. **Single-instance guarded**: the
+wrapper refuses to start if another is already running, and `polybot.main` holds an
+OS single-instance lock (localhost-port bind) — so a double-launch (which silently
+doubled every record 06-21/06-22) cannot recur. Live pre-flight:
 `python scripts/verify_keys.py`.
 
 - **UTC for storage; ET (`America/New_York`) only for date-bucketing + trading
