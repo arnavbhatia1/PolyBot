@@ -21,7 +21,7 @@ class ParamSpec:
 # Validated knobs: settings.yaml values must land inside these ranges at load.
 VALIDATED_PARAMS: tuple[ParamSpec, ...] = (
     # ── L1 (the only model) ──────────────────────────────────────────────────
-    ParamSpec("atr_sigma_ratio",         "signal.atr_sigma_ratio",         1.2,   2.5,   float, 1.3,   "L1 aggressiveness — lower = sharper probs"),
+    ParamSpec("atr_sigma_ratio",         "signal.atr_sigma_ratio",         0.2,   2.5,   float, 0.325, "L1 vol calibration — empirically 0.325 makes probs honest (raw 1.3 was +17pp overconfident); higher = more confident"),
     ParamSpec("student_t_df",            "signal.student_t_df",            3,     8,     int,   5,     "L1 tail fatness — lower = fatter tails"),
     ParamSpec("min_atr",                 "signal.min_atr",                 8.0,   25.0,  float, 12.0,  "static ATR floor; runtime uses max(min_atr, 0.3 × rolling_20)"),
     ParamSpec("atr_regime_shift_threshold", "signal.atr_regime_shift_threshold", 0.40, 0.80, float, 0.60,
