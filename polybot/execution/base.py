@@ -37,6 +37,7 @@ class TradeResult:
     fill_price: float = 0.0
     pending: bool = False  # resolution not final yet (e.g. on-chain redeem in flight) — retry next tick
     maker_fill: bool = False  # close filled as a resting maker (zero taker fee) vs a taker FOK
+    maker_rebate_usd: float = 0.0  # expected daily-pUSD maker rebate on a maker_fill close (0 for taker)
 
 @dataclass
 class FillResult:
@@ -58,6 +59,15 @@ DEFAULT_FEE_RATE = 0.07
 # Flat per-share effective-fee proxy (= feeRate x 0.25, the p=0.50 peak). Use ONLY where the fee
 # is a flat additive cost term (spread/exec-cost gates), never inside the p(1-p) formula.
 EFFECTIVE_FEE_PEAK = round(DEFAULT_FEE_RATE * 0.25, 5)  # 0.0175
+
+# Polymarket Maker Rebates Program: makers earn a daily pUSD rebate funded by taker fees —
+# 20% of collected taker fees on Crypto markets (docs.polymarket.com/market-makers/maker-rebates).
+# Automatic on any resting order that gets filled; no scoring/two-sided/dwell requirement (that is
+# the SEPARATE liquidity-rewards program, which excludes short-horizon crypto). This coefficient is
+# the sole-maker CEILING — Polymarket pays it pro-rata by your share of the market's maker
+# fee-equivalent, so the realized live credit is a fraction of it. Not an edge: it is dwarfed by
+# the adverse-selection cost on the same fills; it only trims the cost of maker exits.
+DEFAULT_MAKER_REBATE_RATE = 0.20
 
 
 def slippage_pct(order_size_usd: float, book_depth_usd: float,
@@ -89,6 +99,15 @@ def entry_fee_shares(shares_ordered: float, price: float, fee_rate: float = DEFA
 def exit_fee_usdc(shares: float, price: float, fee_rate: float = DEFAULT_FEE_RATE) -> float:
     """On sells, Polymarket collects fee in USDC. Returns USDC deducted."""
     return taker_fee(shares, price, fee_rate)
+
+
+def maker_rebate(shares: float, price: float,
+                 rebate_rate: float = DEFAULT_MAKER_REBATE_RATE,
+                 fee_rate: float = DEFAULT_FEE_RATE) -> float:
+    """Expected maker rebate on a resting fill = rebate_rate × the taker fee the lifting
+    counterparty pays (taker_fee = feeRate × shares × p × (1-p)). Zero at price extremes,
+    max at p=0.50. Sole-maker ceiling — pro-rata diluted live (see DEFAULT_MAKER_REBATE_RATE)."""
+    return round(rebate_rate * taker_fee(shares, price, fee_rate), 6)
 
 
 def compute_buy_vwap(book: dict[str, Any] | None, size_usd: float) -> float | None:
@@ -195,6 +214,14 @@ class BaseTrader(ABC):
         ``_sweep_residual`` and surfaces in the next absolute balance sync. Paper
         overrides to credit the simulated sweep, since paper bankroll is
         delta-only and would otherwise leak ~2% of exit notional per scalp."""
+        return 0.0
+
+    def _maker_rebate_credit(self, rebate_usd: float) -> float:
+        """USDC to credit the bankroll for the maker rebate on a passive-exit fill.
+        Live returns 0 — Polymarket pays the 20% crypto maker rebate as a SEPARATE daily
+        pUSD credit that surfaces in the next absolute balance sync, so crediting it
+        per-fill would double-count. Paper overrides to credit the simulated rebate, since
+        paper bankroll is delta-only and would otherwise never reflect what live earns."""
         return 0.0
 
     @abstractmethod
@@ -348,6 +375,15 @@ class BaseTrader(ABC):
         pnl = revenue - position["size"]
         gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
 
+        # Maker rebate: the taker who lifted our resting SELL paid taker_fee at the FULL
+        # fee_rate even though our exit fee is 0, so a maker close earns rebate_rate × that
+        # fee back (Polymarket pays makers 20% of crypto taker fees, daily in pUSD). Booked
+        # like the residual credit (paper simulates the daily credit; live returns 0 — the
+        # real pUSD credit lands in the next absolute balance sync, so per-fill crediting
+        # would double-count). Kept OUT of pnl so paper/live records stay comparable and the
+        # counterfactual/go-live-gate pnl is untouched.
+        rebate_usd = maker_rebate(shares, fill_price, fee_rate=fee_rate) if maker_fill else 0.0
+
         # --- Persist to DB (atomic: close + bankroll credit in one transaction) ---
         # Headroom shares held back from the FOK are credited via
         # _scalp_residual_credit (paper simulates the sweep; live returns 0 — its
@@ -356,17 +392,19 @@ class BaseTrader(ABC):
         # trade records stay comparable.
         residual_credit = self._scalp_residual_credit(
             sellable_shares - shares, fill_price, exit_fee_rate)
+        rebate_credit = self._maker_rebate_credit(rebate_usd)
         total_fees = entry_fee_usd + fee_usdc
         await self.db.close_position(
             position_id, exit_price=fill_price,
-            bankroll_delta=revenue + residual_credit, pnl=pnl, fees=total_fees,
-            exit_reason=exit_reason, maker_fill=maker_fill,
+            bankroll_delta=revenue + residual_credit + rebate_credit, pnl=pnl,
+            fees=total_fees, exit_reason=exit_reason, maker_fill=maker_fill,
+            maker_rebate=rebate_usd,
         )
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
                            pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=fee_usdc,
                            gain_pct=gain_pct, shares=shares, fill_price=fill_price,
-                           maker_fill=maker_fill)
+                           maker_fill=maker_fill, maker_rebate_usd=rebate_usd)
 
     # -- resolve_position ------------------------------------------------
 

@@ -246,6 +246,12 @@ class PaperTrader(BaseTrader):
             return 0.0
         return residual_shares * fill_price - exit_fee_usdc(residual_shares, fill_price, fee_rate)
 
+    def _maker_rebate_credit(self, rebate_usd: float) -> float:
+        """Simulate Polymarket's daily maker-rebate pUSD credit: paper bankroll is
+        delta-only, so credit the rebate here (live gets the real credit via the
+        absolute balance sync, so its base-class override returns 0)."""
+        return rebate_usd
+
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
         shares = position.get("shares_held") or position["size"] / position["entry_price"]
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE

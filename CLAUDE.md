@@ -166,7 +166,15 @@ if a BUY prints strictly through, else FOK-falls-back; loss-cuts skip resting, a
 HOLD-flip cancels it. PaperTrader simulates this from the tape; LiveTrader mirrors
 it with a real GTD resting SELL (`create_order`/`post_order` GTD, poll `get_order`,
 `cancel_orders` + FOK fallback, cancel/fill-race double-sell guard, 120s GTD
-self-expiry safety net). The freestanding exit-value model
+self-expiry safety net). Maker fills also book the **maker rebate** (Polymarket
+redistributes 20% of crypto taker fees to makers daily, `DEFAULT_MAKER_REBATE_RATE`;
+`maker_rebate` = `rebate_rate × taker_fee`, the sole-maker ceiling): paper credits
+it to the bankroll (`_maker_rebate_credit`), live returns 0 there and reconciles
+against the actual daily pUSD payout (per-fill crediting would double-count); stored
+in `trade_history.maker_rebate`, kept OUT of `pnl` so paper/live records stay
+comparable and the CF/go-live-gate pnl is untouched. It is a small cost-offset
+(dwarfed by adverse selection on the same fills), never an edge — never a reason to
+rest NEW quotes (that is the §9 symmetric-MM ban). The freestanding exit-value model
 (`polybot/exit_model.py`) does not beat ExitBoundary in CF replay, so it stays
 undeployed (`deployed` False) and is being retired for a floored ExitBoundary
 overlay (`tasks/todo.md`).

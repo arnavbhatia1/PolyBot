@@ -91,11 +91,11 @@ def test_hold_when_model_confident(engine):
 def test_exit_in_profitable_scalp_window(engine):
     """Edge in (-0.05, -0.10) is the empirically profitable scalp zone → EXIT.
 
-    Model ~60% (BTC barely above strike) but market priced at 67% → edge ~-0.08,
+    Model ~59% (BTC $80 above strike) but market priced at 67% → edge ~-0.08,
     which sits inside the scalp-correct zone (-0.10 < edge <= effective threshold).
     """
     action, _prob, edge, _ = engine.evaluate_hold(
-        _make_indicators(atr_value=80), btc_price=66420, strike_price=66400,
+        _make_indicators(atr_value=80), btc_price=66480, strike_price=66400,
         seconds_remaining=180, market_price_for_side=0.67, side="Up", exit_threshold=-0.05)
     assert action == "EXIT"
     assert -0.10 < edge < 0.0
@@ -119,10 +119,10 @@ def test_deep_loss_holds_even_when_model_says_side_is_dead():
     side essentially zero chance, market < entry AND edge < deep_loss_hold_threshold
     → HOLD the binary residual (no calibrator dead-side override exists)."""
     se = SignalEngine(min_edge=0.10, kelly_fraction=0.15)
-    # BTC $200 below strike with 2 min left → model P(Up) ≈ 0; entered at 0.70,
+    # BTC $400 below strike with 2 min left → model P(Up) ≈ 0; entered at 0.70,
     # marked 0.30 → deeply underwater.
     action, prob, edge, reason = se.evaluate_hold(
-        _make_indicators(atr_value=30), btc_price=66200, strike_price=66400,
+        _make_indicators(atr_value=30), btc_price=66000, strike_price=66400,
         seconds_remaining=120, market_price_for_side=0.30, side="Up",
         exit_threshold=-0.05, entry_price=0.70)
     assert prob < 0.05
@@ -201,10 +201,10 @@ def test_hold_down_side(engine):
 def test_loss_cut_fires_when_model_agrees_residual_is_cheap(engine):
     """Deep underwater, <90s, BTC wrong-side by >0.5xATR, AND the model agrees the
     bid is NOT underpricing the residual (holding_edge <= 0) → loss-cut fires."""
-    # Up side, BTC $100 below strike (wrong side, >>0.5xATR) → model P(Up) ≈ 0;
+    # Up side, BTC $200 below strike (wrong side, >>0.5xATR) → model P(Up) ≈ 0;
     # a thin bid at 0.10 sits at/above that residual, so holding_edge <= 0.
     action, _prob, edge, reason = engine.evaluate_hold(
-        _make_indicators(atr_value=30), btc_price=66300, strike_price=66400,
+        _make_indicators(atr_value=30), btc_price=66200, strike_price=66400,
         seconds_remaining=60, market_price_for_side=0.10, side="Up",
         exit_threshold=-0.10, entry_price=0.80)
     assert edge <= 0                       # model values the residual at/below the bid
@@ -420,11 +420,11 @@ def test_skip_signal_carries_the_side_its_prob_refers_to():
     say so. A prob>=0.5 display heuristic would label it as a high-prob Up call
     and read like a sign-inverted model."""
     se = SignalEngine(min_edge=0.04, kelly_fraction=0.15, min_model_probability=0.56)
-    # High ATR keeps P(Up) ≈ 0.29 — a long shot but far from zero. Down overpriced
-    # (0.95) → its edge is negative; Up underpriced (0.05) → the positive edge wins
-    # the edge race carrying the sub-50% long-shot prob.
+    # High ATR + BTC $800 below strike keeps P(Up) ≈ 0.29 — a long shot but far from
+    # zero. Down overpriced (0.95) → its edge is negative; Up underpriced (0.05) → the
+    # positive edge wins the edge race carrying the sub-50% long-shot prob.
     sig = se.evaluate(_make_indicators(atr_value=400), has_position=False, in_entry_window=True,
-                      btc_price=66200, strike_price=66400, seconds_remaining=120,
+                      btc_price=65600, strike_price=66400, seconds_remaining=120,
                       market_price_up=0.05, market_price_down=0.95)
     assert sig.action == "SKIP"
     assert sig.prob < 0.5, "edge-best side here must be the long-shot Up"
@@ -432,7 +432,7 @@ def test_skip_signal_carries_the_side_its_prob_refers_to():
 
     # Symmetric sanity: fair pricing → edge-best side is the model's side.
     sig2 = se.evaluate(_make_indicators(atr_value=400), has_position=False, in_entry_window=True,
-                       btc_price=66200, strike_price=66400, seconds_remaining=120,
+                       btc_price=65600, strike_price=66400, seconds_remaining=120,
                        market_price_up=0.5, market_price_down=0.5)
     assert sig2.side == "Down"
     assert sig2.prob > 0.5
