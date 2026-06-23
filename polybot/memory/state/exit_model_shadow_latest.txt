@@ -1,11 +1,11 @@
 shadow baseline: exit_model_shadow.json  fitted_at 2026-06-16T03:45:48.879319+00:00  windows 1168  brier_oos 0.16869 (market 0.16816)
   reusing the frozen baseline -> C:\Users\abhat\Personal\PolyBot\polybot\memory\exit_model\exit_model_shadow.json
 
-counterfactual records after recorder epoch (2026-06-11 10:44 ET): 3192  skipped {'missing_fields': 0, 'pre_epoch': 2507, 'bad_window_ts': 0}
-out-of-sample filter (window starts after fitted_at): kept 1516, dropped 1676 in-sample
-clean post-fix filter (decision >= 2026-06-17 13:19 ET): kept 1095, dropped 421 pre-fix
+counterfactual records after recorder epoch (2026-06-11 10:44 ET): 3552  skipped {'missing_fields': 0, 'pre_epoch': 2507, 'bad_window_ts': 0}
+out-of-sample filter (window starts after fitted_at): kept 1876, dropped 1676 in-sample
+clean post-fix filter (decision >= 2026-06-17 13:19 ET): kept 1455, dropped 421 pre-fix
 window_paths source: polybot\db\window_paths.db
-matched to window_paths (Â±2s): 961  skipped {'no_row': 0, 'null_fields': 134}
+matched to window_paths (Â±2s): 1255  skipped {'no_row': 0, 'null_fields': 200}
 
 per-ET-day $ (branch-faithful arms on the matched pool):
          day     n  boundary$     model$     delta$
@@ -13,10 +13,12 @@ per-ET-day $ (branch-faithful arms on the matched pool):
   2026-06-18   265    -241.19    -274.91     -33.72
   2026-06-19   310    -319.88    -356.63     -36.75
   2026-06-20   325    -344.84    -287.34     +57.50
+  2026-06-21   165    -154.72    -186.95     -32.24
+  2026-06-22   129   -1636.31   -1862.44    -226.13
 
-ALL: n=961  boundary -839.86  model -884.40  delta -44.54  day-clustered t -0.49
-ITM (mp>=0.5): n=530  boundary +971.89  model +967.70  delta -4.19  day-clustered t -0.04
-fired: boundary 595/961, model 242/961
+ALL: n=1255  boundary -2630.89  model -2933.79  delta -302.90  day-clustered t -1.32
+ITM (mp>=0.5): n=672  boundary +2239.23  model +1880.69  delta -358.54  day-clustered t -1.09
+fired: boundary 794/1255, model 310/1255
 
 KILL BAR (Phase 3): positive ITM delta over >= 5 distinct ET days
--> WAITING FOR DATA (4/5 shadow days)
+-> FAIL (ITM delta -358.54 over 6 days) â€” do not deploy; diagnose
