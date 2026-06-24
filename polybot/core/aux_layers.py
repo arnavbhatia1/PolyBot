@@ -1,7 +1,7 @@
-"""Shared model math for L1 (vol-autocorr scale) and L3/L3b (flow combine).
+"""Shared model math for L1 (Student-t CDF, vol-autocorr scale) and the L3b spot-flow signal.
 
 `signal_engine` and `main.py` (both live, entry + exit paths) call these so the
-L1 probability math has a single implementation.
+math has a single implementation.
 """
 from __future__ import annotations
 
@@ -29,11 +29,6 @@ _VOL_FACTOR_HI = 3.0
 # multiplied by the AR(1) terminal-SD ratio √((1+ρ)/(1−ρ)), ρ clamped here.
 _AC_VOL_CLAMP = 0.5
 
-# Flow-family redundancy: L3/L3b are correlated views of one BTC move. Same-
-# direction corroborators beyond the strongest count at (1 − this). Joint clamp last.
-_FLOW_REDUNDANCY = 0.5
-_FLOW_CLAMP = 0.50
-
 
 def regime_vol_factor(atr: float | None, atr_long_term_mean: float | None) -> float:
     """Current volatility vs its long-run mean (clamped) — the regime scale for L3b.
@@ -56,20 +51,6 @@ def student_t_cdf(t: float, df: float) -> float:
     (`signal_engine`) and replay (`scheduler`) so the two paths can't drift
     across scipy entry points (`special.stdtr` vs `stats.t.cdf`)."""
     return float(_stdtr(df, t))
-
-
-def combine_flow_family(flow_c: float, spot_c: float) -> float:
-    """L3+L3b combined logit. Per direction, keep the strongest contribution at
-    full weight and discount same-direction corroborators by _FLOW_REDUNDANCY (two
-    venues watching one move); opposing signals offset. Clamped to ±_FLOW_CLAMP.
-    """
-    total = 0.0
-    for side in ([c for c in (flow_c, spot_c) if c > 0.0],
-                 [c for c in (flow_c, spot_c) if c < 0.0]):
-        if side:
-            dominant = max(side, key=abs)
-            total += dominant + (1.0 - _FLOW_REDUNDANCY) * (sum(side) - dominant)
-    return max(-_FLOW_CLAMP, min(_FLOW_CLAMP, total))
 
 
 def compute_spot_flow_signal(cvd_60s: float | None,

@@ -91,7 +91,7 @@ schedule:
 
 agents:
   outcome_reviewer_interval_seconds: 3600
-  daily_pipeline_hour: 23     # Nightly jobs (rollups, model refit, wallet tables) at 11:45 PM ET
+  daily_pipeline_hour: 23     # Nightly jobs (rollups, retention sweep, wallet tables) at 11:45 PM ET
   daily_pipeline_minute: 45
 
 # =============================================================================

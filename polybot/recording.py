@@ -348,3 +348,19 @@ class TapeRecorder:
                 f.write("\n".join(buf) + "\n")
         except Exception as e:
             logger.warning(f"tape flush failed ({len(buf)} prints): {e}")
+
+
+def cleanup_job(db: Any, retention_days: int = 90):
+    """Nightly retention sweep on window_paths (the plan's rolling 90 days)."""
+    async def _job() -> dict[str, Any]:
+        import aiosqlite
+        cutoff = time.time() - retention_days * 86400
+        async with aiosqlite.connect(str(PATHS_DB)) as conn:
+            await conn.execute("PRAGMA busy_timeout=15000")
+            try:
+                cur = await conn.execute("DELETE FROM window_paths WHERE ts < ?", (cutoff,))
+                await conn.commit()
+                return {"rows_deleted": cur.rowcount}
+            except aiosqlite.OperationalError:
+                return {"rows_deleted": 0}
+    return _job

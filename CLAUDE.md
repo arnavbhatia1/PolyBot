@@ -174,10 +174,7 @@ against the actual daily pUSD payout (per-fill crediting would double-count); st
 in `trade_history.maker_rebate`, kept OUT of `pnl` so paper/live records stay
 comparable and the CF/go-live-gate pnl is untouched. It is a small cost-offset
 (dwarfed by adverse selection on the same fills), never an edge — never a reason to
-rest NEW quotes (that is the §9 symmetric-MM ban). The freestanding exit-value model
-(`polybot/exit_model.py`) does not beat ExitBoundary in CF replay, so it stays
-undeployed (`deployed` False) and is being retired for a floored ExitBoundary
-overlay (`tasks/todo.md`).
+rest NEW quotes (that is the §9 symmetric-MM ban).
 
 ## 7. Recorders + learning loop
 
@@ -185,18 +182,11 @@ overlay (`tasks/todo.md`).
   both tokens' BBO + top-3 depth, Coinbase mid, strike, elapsed, traded flag,
   for EVERY window (self-discovers contracts via Gamma; labels itself from
   `event_metadata`). Tables `window_paths` / `window_labels` in the per-mode DB;
-  90-day retention sweep nightly. ~288 labeled windows/day — the training
-  stream for the exit-value model.
+  90-day retention sweep nightly. ~288 labeled windows/day — the exit-research
+  corpus (wallet fingerprints + offline exit-policy analysis).
 - **Tape recorder**: every CLOB trade print →
   `memory/recordings/tape_YYYY-MM-DD.jsonl` (gitignored). Input to the
-  exit-policy shadow sims.
-- **Exit-value model** (`polybot/exit_model.py`): two heads — P(resolve Up |
-  state) and E[bid drift 60s] — pure-numpy logistic/ridge, recency-weighted,
-  chronological 80/20 metrics (Brier vs the market-mid baseline, MAE vs
-  martingale). Nightly refit once ~7 days of labels exist; artifact kept-back
-  when metrics degrade >15% vs trailing-7; `deployed` flips only when it beats
-  ExitBoundary in CF replay — which scores only clean post-fix decisions
-  (≥ `CLEAN_EPOCH`, 06-17 13:19 ET; pre-fix/pre-gut days excluded).
+  passive-exit shadow sim.
 - **Wallet fingerprints** (`polybot/wallets.py`): nightly data-api ingestion of
   each labeled window's taker tape → per-wallet resolution markout →
   donor/noise/sharp classification (`wallet_stats`). Counterparty information —
@@ -205,7 +195,7 @@ overlay (`tasks/todo.md`).
   anonymous CLOB book — `tasks/todo.md`).
 - **NightlyScheduler** (`agents/scheduler.py`): 23:45 ET — record rollups
   (outcomes/ghosts/counterfactuals → daily bundles) + registered jobs
-  (exit-model refit, retention sweep, wallet tables).
+  (retention sweep, wallet tables).
 
 ## 8. Evidence stream
 
@@ -213,8 +203,8 @@ Per-decision `trade_context` stamped into outcomes + ghosts: entry facts
 (btc/strike/seconds/prices/closes_tail/ATR fields), `model_probability`
 (= `model_probability_raw`; L1 is uncalibrated), flow/CVD telemetry
 (`flow_score`, `spot_flow_signal`, `coinbase_cvd_60s`, `coinbase_taker_*`,
-`cross_venue_gap`, `fast_realized_vol_60s` — recorded for the exit model, no
-logit consumes them), CLOB book aux (`clob_depth_top5_*`, `clob_book_age_s`),
+`cross_venue_gap`, `fast_realized_vol_60s` — recorded for offline exit research,
+no logit consumes them), CLOB book aux (`clob_depth_top5_*`, `clob_book_age_s`),
 `depth_usd_top20` (Binance BTC depth), adverse-selection audit fields, flip
 fields. **None-vs-0.0 is load-bearing:** signal fields record `None` when their
 feed is cold/stale (never 0.0). `edge_decay.deltas` (post-fill drift at
@@ -262,8 +252,7 @@ polybot/
                                chainlink_feed (strike + resolution), clob_ws (books/tape/on_trade hook),
                                market_scanner, _socket, _staleness, _json
   indicators/                  atr + engine (ATR-only)
-  recording.py                 WindowPathRecorder (1 Hz, all windows) + TapeRecorder (JSONL)
-  exit_model.py                two-head exit-value model (nightly refit, kill-bar-gated deploy)
+  recording.py                 WindowPathRecorder (1 Hz, all windows) + TapeRecorder (JSONL) + window_paths retention
   wallets.py                   wallet fingerprinting (data-api ingestion + classification)
   execution/                   base (BaseTrader, fee math), paper_trader, live_trader,
                                circuit_breaker, correlation
@@ -271,15 +260,15 @@ polybot/
                                counterfactual_tracker, ghost_tracker,
                                pipeline_analytics (ET date helper for rollups)
   memory/                      outcomes/, ghost_outcomes/, counterfactuals/ (+ rollups);
-                               exit_model/ (artifact + metrics); recordings/ (gitignored JSONL);
+                               recordings/ (gitignored JSONL);
                                state/ (gate stats, adverse, staleness, prev margin, ...)
                                Layout in polybot/paths.py (override: POLYBOT_MEMORY_DIR)
   discord_bot/                 monitoring + control commands (§13)
   db/models.py                 SQLite per mode (positions, trade_history, bankroll, peak_bankroll,
                                window_paths, window_labels, wallet_trades, wallet_stats)
 scripts/                       run_polybot.ps1 (daily loop),
-                               shadow_passive_exit.py / shadow_exit_model.py
-                               (kill-bar evaluators), box_arb_monitor.py (box-arb monitor, log-only,
+                               shadow_passive_exit.py (kill-bar evaluator),
+                               box_arb_monitor.py (box-arb monitor, log-only,
                                supervised by run_polybot.ps1),
                                sweep_exit_policy.py, diagnose_edge.py (record loader + edge stats),
                                backfill_wallets.py, topup_paper_bankroll.py, verify_keys.py

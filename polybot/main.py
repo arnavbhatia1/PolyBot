@@ -2858,34 +2858,11 @@ async def main() -> None:
     global _window_recorder
     _window_recorder = window_recorder
 
-    # Nightly jobs (Phases 3-4): exit-value model refit (data-gated), window-path
-    # retention sweep, wallet-fingerprint ingestion + classification.
-    from polybot.exit_model import nightly_refit_job, cleanup_job
+    # Nightly jobs (Phase 4): window-path retention sweep + wallet-fingerprint
+    # ingestion/classification.
+    from polybot.recording import cleanup_job
     from polybot.wallets import nightly_wallet_job
 
-    # Phase 3 shadow evaluation, run autonomously each night so no manual daily run
-    # is needed. Ordered BEFORE the refit so its first run freezes the PRIOR night's
-    # model as the out-of-sample baseline (maximizes distinct OOS days for the
-    # comparison); it reuses that frozen baseline on every later night. Writes
-    # the full report + PASS/FAIL verdict to state/exit_model_shadow_latest.txt.
-    async def _exit_model_shadow_job() -> dict:
-        import subprocess
-        from polybot.paths import STATE_DIR
-        repo_root = Path(__file__).resolve().parent.parent
-        out_path = STATE_DIR / "exit_model_shadow_latest.txt"
-        def _run() -> str:
-            proc = subprocess.run(
-                [sys.executable, "scripts/shadow_exit_model.py", "--db", db.db_path],
-                capture_output=True, text=True, timeout=300, cwd=str(repo_root))
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            out_path.write_text((proc.stdout or "") + (proc.stderr or ""), encoding="utf-8")
-            return proc.stdout or ""
-        output = await asyncio.to_thread(_run)
-        verdict = next((ln.strip() for ln in output.splitlines()
-                        if "->" in ln and any(w in ln for w in ("PASS", "FAIL", "WAITING"))), "")
-        return {"verdict": verdict or "see state/exit_model_shadow_latest.txt"}
-    scheduler.register_job("exit_model_shadow", _exit_model_shadow_job)
-    scheduler.register_job("exit_model_refit", nightly_refit_job(db))
     scheduler.register_job("window_paths_retention", cleanup_job(db))
     scheduler.register_job("wallet_tables", nightly_wallet_job(db, http_client, market_scanner))
 

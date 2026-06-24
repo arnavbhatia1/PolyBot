@@ -36,7 +36,7 @@ measurement window, not past it.
   only deploys if the edge comes back significantly positive. If it doesn't, the
   −$182 was real and go-live stays off.
 - **Progress (06-18): clean day 1 of ~10.** All measurement excludes pre-fix days
-  via `CLEAN_EPOCH` (06-17 13:19 ET) in `shadow_exit_model.py`. Day-1 is healthy
+  via the 06-17 13:19 ET cutoff, applied at analysis time in the CF replay. Day-1 is healthy
   operationally (clean restart on the fixed code, recorder + CF stream flowing, no
   outage); the one-day CF sliver is mildly positive but **noise** (df=0) and leans
   on favorable ITM hold resolutions, not scalp alpha. Nine clean days to the gate.
@@ -47,7 +47,7 @@ Asked: squish the wait so the gate reads at 6/22 instead of ~06-27/28. Two
 independent blockers, both verified (code re-read + 4-agent workflow):
 
 1. **The fix cannot be back-applied to already-recorded data.** The CF replay
-   harnesses (`sweep_exit_policy.py`, `shadow_exit_model.py`) **reuse the
+   harness (`sweep_exit_policy.py`) **reuses the
    `holding_edge`/`model_prob` stamped in each record at decision time** — they
    never recompute the L1 probability (zero `compute_probability`/`evaluate_hold`
    calls in `scripts/`; `window_paths` stores only BBO/depth/coinbase/strike, no
