@@ -1,0 +1,39 @@
+{
+  "position_id": 6620,
+  "market_id": "btc-updown-5m-1782216300",
+  "side": "Down",
+  "timestamp": "2026-06-23T12:13:12.404128+00:00",
+  "actual": {
+    "exit_reason": "hold",
+    "exit_price": 0.0,
+    "pnl": -9.68,
+    "gain_pct": -1.0
+  },
+  "counterfactual": {
+    "exit_reason": "hypothetical_scalp",
+    "exit_price": 0.38,
+    "pnl": -1.996313,
+    "gain_pct": -0.206231
+  },
+  "delta_pnl": -7.683687,
+  "hold_was_optimal": false,
+  "context_at_worst_moment": {
+    "holding_edge": 0.08841827593530549,
+    "model_prob": 0.4684182759353055,
+    "market_price": 0.38,
+    "seconds_remaining": 24.812768,
+    "exit_threshold_used": -0.1,
+    "strike_price": 62394.926603177126,
+    "btc_at_worst": 62397.75,
+    "flow_score": -0.1422,
+    "spot_flow_signal": -0.03937079531937197,
+    "regime": "unknown",
+    "btc_distance_atr": 0.121,
+    "worst_at": 1782216575.1893055,
+    "coinbase_cvd_60s": -0.3871,
+    "coinbase_taker_60s": 0.4449,
+    "coinbase_taker_n": 1147,
+    "cross_venue_gap": -66.26,
+    "fast_realized_vol_60s": 4.1e-05
+  }
+}
