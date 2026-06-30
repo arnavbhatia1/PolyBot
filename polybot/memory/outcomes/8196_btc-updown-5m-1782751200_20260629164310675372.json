@@ -1,0 +1,79 @@
+{
+  "position_id": 8196,
+  "market_id": "btc-updown-5m-1782751200",
+  "question": "Bitcoin Up or Down - June 29, 12:40PM-12:45PM ET",
+  "side": "Down",
+  "signal_score": 0.7041818424212956,
+  "correct": false,
+  "entry_price": 0.57,
+  "exit_price": 0.22,
+  "log_return": -0.9520088144762342,
+  "size": 26.32,
+  "pnl": -16.516441376842103,
+  "fees": 0.7922319999999999,
+  "gain_pct": -0.627524,
+  "realized_edge": 0.1342,
+  "fill_slippage": 0.0,
+  "indicator_snapshot": {
+    "atr": {
+      "atr": 53.71,
+      "passes": true,
+      "reason": "ok",
+      "candle_ts": 1782751140000
+    },
+    "trade_context": {
+      "btc_price": 59701.3,
+      "strike_price": 59734.84360907843,
+      "seconds_remaining": 296.687251,
+      "market_price_up": 0.44,
+      "market_price_down": 0.57,
+      "closes_tail": [
+        59770.0,
+        59832.22
+      ],
+      "model_probability": 0.7041818424212956,
+      "model_probability_raw": 0.7041818424212956,
+      "edge": 0.1341818424212956,
+      "atr": 53.71,
+      "atr_rolling_20": 49.1145,
+      "atr_long_term_mean": 66.636667,
+      "size": 26.32,
+      "prev_resolution_margin": -6.7179372693863115,
+      "flow_score": -0.552,
+      "spot_flow_signal": -0.18829020738513608,
+      "regime_autocorr": -0.1923,
+      "regime_direction": -1.0,
+      "entry_phase": "normal",
+      "flip_count": 0,
+      "is_flip": false,
+      "depth_usd_top20": 416966.4749311001,
+      "coinbase_cvd_60s": -3.3229,
+      "coinbase_taker_60s": 0.3024,
+      "coinbase_taker_n": 665,
+      "cross_venue_gap": -116.71,
+      "fast_realized_vol_60s": 6.1e-05,
+      "clob_depth_top5_up_usd": 22058.8,
+      "clob_depth_top5_down_usd": 22148.98,
+      "clob_book_age_s": 0.108,
+      "adverse_rate_at_30s": 0.4666666666666667,
+      "adverse_kelly_mult": 0.975,
+      "token_id_up": "88920584854945348285930852561824727077148326702523798893766625941428638925619",
+      "token_id_down": "23083237591510861591407967786767626505768583855676656714979971264121833058327"
+    }
+  },
+  "exit_reason": "scalp",
+  "seconds_remaining_at_exit": 110.027352,
+  "edge_decay": {
+    "midprice_at_fill": 0.565,
+    "deltas": {
+      "5s": -0.07,
+      "10s": -0.09,
+      "15s": 0.045,
+      "30s": 0.03,
+      "60s": -0.09
+    },
+    "resolved_windows": 5
+  },
+  "exit_timestamp": "2026-06-29T16:43:10.675354+00:00",
+  "timestamp": "2026-06-29T16:43:10.675354+00:00"
+}

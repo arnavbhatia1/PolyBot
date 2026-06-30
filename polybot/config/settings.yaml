@@ -81,6 +81,33 @@ entry_timing:
                               #     effective premium = base + 0.005 × max(0, flip_count − 2).
 
 # =============================================================================
+#  SECTION 3b: LATE-WINDOW SNIPER (gated — the one bot-formable late-window edge)
+#
+#  Final-seconds entry: a sharp Coinbase move (the resolution venue) pushed price
+#  past strike but the CLOB ask hasn't repriced yet (a stale-book lag in OUR favor).
+#  Buys that side, bypassing ONLY max_edge (-> sniper_max_edge) and the late-window
+#  time penalty; every safety gate (adverse, edge-decay, depth, net-edge, min-size,
+#  pre-submit VWAP, freshness) stays. DISABLED until its kill bar passes AT THE
+#  ACHIEVED RTT: scripts/analyze_late_window.py must show momentum t_day>=2 AND p10>0
+#  over >=8 clean ET days at your host's measured RTT. DO NOT enable on faith.
+# =============================================================================
+late_window:
+  sniper_enabled: true         # PAPER-SHADOW ON (validation). SAFE ONLY because mode==paper above.
+                               # DO NOT set mode: live with this on until the kill bar passes at the
+                               # host's measured RTT + this shadow confirms (tasks/todo.md). Revert to
+                               # false to stop the shadow.
+  sniper_late_start_s: 45.0     # only fire in the final N seconds of the window
+  sniper_move_window_s: 2.0     # Coinbase move lookback (s)
+  sniper_cb_move: 8.0           # $ Coinbase move over the lookback to fire (matches the harness default)
+  sniper_ask_cap: 0.92          # only buy if the chosen side's ask is still <= this (book not yet repriced)
+  sniper_min_edge: 0.04         # stale-cheap floor; set = signal.min_edge so the downstream net-edge /
+                                # pre-submit gates don't silently raise it (one consistent live floor).
+                                # NOTE: the offline harness momentum signal has NO edge floor, so live
+                                # trades the higher-conviction SUBSET (L1 edge >= this) — the kill bar is
+                                # a CONSERVATIVE directional gate; paper-shadow before deploy (tasks/todo.md).
+  sniper_max_edge: 0.50         # sniper's own sanity cap, replacing the bypassed 0.20
+
+# =============================================================================
 #  SECTION 4: SCHEDULE
 # =============================================================================
 schedule:
