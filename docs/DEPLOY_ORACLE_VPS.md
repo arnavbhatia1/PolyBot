@@ -53,8 +53,9 @@ curl -s -o /dev/null -w "ttfb=%{time_starttransfer}s\n" \
 - A **403** on `clob.polymarket.com` → the Oracle IP is burned for order submission.
   **Stop.** Rebuild on Azure North Europe (Dublin) instead. Do not continue on this box.
 
-Once live, re-confirm the order path end-to-end with `python scripts/verify_keys.py`
-(Phase 3) — a raw 200 here is necessary but not sufficient.
+Once live, re-confirm auth/balance with `python scripts/verify_keys.py` (GETs only) and
+the order-POST path with `python scripts/smoke_order_test.py --confirm` (Phase 3) — a
+raw 200 here is necessary but not sufficient.
 
 ---
 
@@ -136,8 +137,9 @@ chmod 600 polybot/config/.env
 git config user.name "Arnav Bhatia" && git config user.email "abhatia@mozeus.com"
 #  (deploy key already grants push; if using a PAT, configure the credential helper)
 
-# definitive order-path + key/balance/allowance check (this is the real Phase 0 confirm)
+# key/balance/allowance check (GET-auth), then the definitive order-POST proof
 python scripts/verify_keys.py
+python scripts/smoke_order_test.py --confirm   # one unfillable $1 FOK through Cloudflare
 ```
 
 Keep `settings.yaml` at **`mode: paper`** for now.
@@ -155,11 +157,11 @@ chmod +x /home/polybot/PolyBot/scripts/run_polybot.sh
 sudo cp /home/polybot/PolyBot/scripts/polybot.service /etc/systemd/system/polybot.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now polybot
-journalctl -u polybot -f          # watch it pull, launch monitors, and start the bot
+journalctl -u polybot -f          # watch it pull, launch the monitor, and start the bot
 ```
 
 `run_polybot.sh` mirrors `run_polybot.ps1`: each cycle it pulls `origin main`, refreshes
-the two log-only monitors, runs `polybot.main` for a full ET day (which runs the 11:45 PM
+the log-only calibration monitor, runs `polybot.main` for a full ET day (which runs the 11:45 PM
 ET pipeline in-process and then exits), commits+pushes the day's records on a clean exit,
 and waits until 12:01 AM ET to loop. systemd's `Restart=always` + `enable` give you
 always-on across crashes and reboots.
@@ -171,10 +173,10 @@ always-on across crashes and reboots.
 Before any live capital, confirm on the box:
 
 - [ ] `systemctl status polybot` is active; `journalctl -u polybot` shows the daily loop.
-- [ ] Both monitors stay up (`polybot/memory/recordings/*_monitor.*.log` growing, no crash loop).
+- [ ] The calibration monitor stays up (`polybot/memory/recordings/calibration_monitor.*.log` growing, no crash loop).
 - [ ] The nightly pipeline runs **without OOM** — check `free -h` during 11:45 PM ET and
       `dmesg | grep -i oom`. On the 1 GB E2 micro this is the top risk; if it OOMs, add
-      more swap or temporarily disable the two monitors (they are log-only research).
+      more swap or temporarily disable the calibration monitor (it is log-only research).
 - [ ] The daily `auto: daily pipeline update` commit lands on `origin main`.
 - [ ] Auto-restart works: `sudo systemctl restart polybot` → bot comes back, resumes positions.
 - [ ] Reboot survival: `sudo reboot` → service auto-starts.
@@ -187,14 +189,19 @@ Before any live capital, confirm on the box:
 
 ## Phase 6 — Cutover to live
 
-Only after **both**: (a) Phase 5 validation passes, and (b) a real edge has cleared its
-kill bar — a significant positive counterfactual edge, `t_day ≥ 2`, ≥ 10 clean days.
-**Paper-complete is not that gate.** Do not change infra and flip to live in the same move.
+Only after **both**: (a) Phase 5 validation passes, and (b) the live edge has cleared its
+kill bar — today that is the **late-window sniper** (`analyze_late_window.py`: momentum
+`t_day ≥ 2` AND `p10 > 0` over ≥ 8 clean ET days at the box's measured RTT, plus the
+paper-shadow comparison; see `tasks/todo.md`). The base strategy's gate failed final on
+2026-07-01 and never deploys — the live recipe is `mode: live` + `sniper_enabled: true` +
+`sniper_only: true`. **Paper-complete is not that gate.** Do not change infra and flip to
+live in the same move.
 
 ```bash
 # on the box, as polybot
-nano polybot/config/settings.yaml      # mode: live
-python scripts/verify_keys.py          # confirm key + funder + balance + allowance + order path
+nano polybot/config/settings.yaml             # mode: live + late_window.sniper_only: true
+python scripts/verify_keys.py                 # key + funder + balance + allowance (GETs)
+python scripts/smoke_order_test.py --confirm  # order-POST path through Cloudflare
 sudo systemctl restart polybot
 journalctl -u polybot -f
 ```

@@ -3,7 +3,7 @@
 This scheduler tunes nothing — entry forecasting has no edge over the CLOB price,
 so there are no parameter/model optimizers or calibrators to run. Nightly it rolls
 per-trade records into daily bundles, then runs whatever jobs are registered
-(exit-value model refit, wallet-markout classification — Phases 3/4 of tasks/todo.md).
+(window-paths retention sweep, wallet-markout classification).
 """
 from __future__ import annotations
 

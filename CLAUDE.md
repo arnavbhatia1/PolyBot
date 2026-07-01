@@ -176,8 +176,7 @@ after ~30 min of Gamma silence. Live redeems settle non-blockingly.
 **Passive exits** (`execution.passive_exit_enabled`, **OFF — measured negative**:
 rest-vs-immediate-FOK including miss cost is −2.1c/sh ≈ −$62/day, t_day −2.03 over
 8 clean days; maker fills at mid are markout-fair, so the earned half-spread comes
-back as adverse selection on the misses. `shadow_passive_exit.py`'s bar is ITM
-fill-RATE only — feasibility, never an EV pass): on a non-loss-cut scalp the
+back as adverse selection on the misses): on a non-loss-cut scalp the
 bot rests a SELL at `_resting_level` (mid, capped at the ask, floored at bid+1
 tick) for `passive_exit_timeout_s` (10s), takes the maker fill (zero taker fee)
 if a BUY prints strictly through, else FOK-falls-back; loss-cuts skip resting, a
@@ -234,9 +233,9 @@ feed is cold/stale (never 0.0). `edge_decay.deltas` (post-fill drift at
 
 **CounterfactualTracker**: every scalp records both arms (actual vs
 hold-to-resolution); every held position records its worst moment (hypothetical
-scalp arm), keyed to the resolving position. This is the ground-truth harness
-for any exit-policy change (`scripts/sweep_exit_policy.py`,
-`scripts/shadow_passive_exit.py`).
+scalp arm), keyed to the resolving position. This is the ground-truth data for
+any exit-policy change — score via `actual − cf` / `scalp_was_optimal`, never a
+naive signed sum of the stored `delta_pnl`.
 
 Gate-skip stats: `state/gate_stats_current.json` (today) folds nightly into
 `state/gate_stats.json` (lifetime). Feed staleness P50/P95/P99 →
@@ -294,18 +293,16 @@ polybot/
 scripts/                       run_polybot.ps1 (daily loop; Linux port run_polybot.sh
                                + polybot.service systemd unit for a VPS — see
                                docs/DEPLOY_ORACLE_VPS.md),
-                               shadow_passive_exit.py (kill-bar evaluator),
-                               sweep_exit_policy.py, diagnose_edge.py (record loader + edge stats),
                                calibration_harness.py (long-horizon calibration CLI:
                                ivcheck|snapshot|label|analyze|monitor; `monitor` runs supervised
                                by run_polybot.ps1, log-only; check anytime with analyze/ivcheck),
-                               backfill_wallets.py, topup_paper_bankroll.py, verify_keys.py
-                               (GET-auth + balance preflight), smoke_order_test.py
-                               (go-live preflight: one unfillable FOK proves order
-                               POSTs clear Cloudflare — verify_keys covers GETs only),
+                               verify_keys.py (GET-auth + balance preflight),
+                               smoke_order_test.py (go-live preflight: one unfillable
+                               FOK proves order POSTs clear Cloudflare — verify_keys
+                               covers GETs only),
                                analyze_late_window.py (RTT-parametric late-window sniper kill-bar),
-                               sniper_shadow_status.py + strategy_compare.py (normal vs sniper vs
-                               combined P&L), reset_paper_clean.py (clean-slate the paper experiment
+                               sniper_shadow_status.py (paper-shadow fills vs the harness),
+                               reset_paper_clean.py (clean-slate the paper experiment
                                — backs up, then resets the ledger to a clean baseline; operator-run
                                with the bot STOPPED)
 ```
@@ -320,7 +317,7 @@ order origin; `paper_network_fail_rate` 0.03 remains an estimate until calibrate
 | Coinbase | `ticker` WS (BTC-USD) | Primary BTC price + per-trade CVD + 1s price history |
 | Binance.com | `kline_1m` / `depth20@100ms` / `aggTrade` WS | Candles, ATR, depth, cross-venue gap |
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/tick-size` | Books, tape, executable prices |
-| Polymarket Gamma | `GET /events?slug=...` | Discovery + resolution + window labels |
+| Polymarket Gamma | `GET /events?slug=...` (deprecated upstream; auto-falls-back to `GET /events/slug/{slug}` — `gamma_events_by_slug`) | Discovery + resolution + window labels |
 | Polymarket data-api | `GET /trades?market=...` | Wallet-tagged taker tape |
 | Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` | Strike capture + resolution price |
 

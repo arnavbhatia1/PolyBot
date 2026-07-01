@@ -16,8 +16,8 @@ WHAT IT DOES (polybot_paper.db only):
   - Does NOT touch window_paths.db / wallet_tape.db (sensor + research corpus).
 
 MUST be run with the trading bot STOPPED (it writes the DB on every trade; a concurrent
-write would corrupt this). Run it at the Denmark relaunch, then start the bot — it boots
-on the clean baseline. The strategy_compare.py report then shows only current-bot data.
+write would corrupt this). Run it before a fresh-baseline relaunch, then start the
+bot — it boots on the clean baseline.
 
   python scripts/reset_paper_clean.py --dry-run          # preview, change nothing
   python scripts/reset_paper_clean.py --start 1000        # prompts, then resets

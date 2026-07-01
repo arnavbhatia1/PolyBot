@@ -35,8 +35,8 @@ class PaperTrader(BaseTrader):
         # otherwise — _compute_fail_rate adds state-dependent terms on top.
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.02)
         # Warm-SELL bookkeeping — mirrors LiveTrader's _sell_warmups (same TTL +
-        # drift thresholds), so paper saves the ~150ms ECDSA-sign cost iff live
-        # would have, rather than at a hardcoded probability.
+        # drift thresholds), so paper applies the warm-SELL latency discount iff
+        # live would have found a presigned order, not at a hardcoded probability.
         self._sell_warmups: dict[str, dict[str, float]] = {}
 
     # Match live's _MAX_RETRIES + _RETRY_BASE_DELAY so paper P&L stays honest:
@@ -45,8 +45,12 @@ class PaperTrader(BaseTrader):
     _PAPER_MAX_RETRIES: int = 3
     _PAPER_RETRY_BASE_DELAY: float = 0.03
 
-    # Warm-SELL parameters mirror LiveTrader exactly; speedup ~150ms = the
-    # ECDSA-sign cost live skips when a valid pre-signed order exists.
+    # Warm-SELL parameters mirror LiveTrader exactly (TTL + drift acceptance).
+    # The speedup models the sign work a presigned order skips; the latency
+    # floor holds, so the effective discount at current settings is <= ~15ms.
+    # Live's measured EIP-712 sign is ~3-5ms warm — retune this only between
+    # measurement regimes, never mid-series (the sniper shadow comparison runs
+    # on the current paper-fill regime).
     _SELL_WARMUP_TTL_S: float = 5.0
     _SELL_WARMUP_SPEEDUP_S: float = 0.15
 
@@ -72,7 +76,7 @@ class PaperTrader(BaseTrader):
         size_usd = shares * price
         if self._precheck_rejects(token_id, side="sell", requested_price=price, size_usd=size_usd):
             return FillResult(filled=False, reason="pre-check: book walk would exceed limit (matches live)")
-        # Consume a valid warm-SELL signature (≈150ms speedup, matching live);
+        # Consume a valid warm-SELL signature (floor-bounded latency discount);
         # otherwise pay full simulated latency just as live would.
         warmup_speedup = self._SELL_WARMUP_SPEEDUP_S if self._take_sell_warmup(
             token_id, shares, price
@@ -88,8 +92,8 @@ class PaperTrader(BaseTrader):
         """Paper analogue of LiveTrader.warm_sell_signature — bookkeeping only.
 
         Records (shares, expected_price, ts); a valid warmup lets _execute_sell
-        skip ~150ms of simulated latency (the ECDSA-sign work live saves).
-        Idempotent within 1.5s when params haven't drifted — matches live.
+        apply the floor-bounded warm-SELL latency discount (the sign work live
+        skips). Idempotent within 1.5s when params haven't drifted — matches live.
         """
         del fee_rate  # paper has no signing work; param kept for API parity
         if not token_id or shares <= 0 or expected_price <= 0:

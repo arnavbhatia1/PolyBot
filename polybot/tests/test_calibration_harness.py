@@ -359,8 +359,10 @@ async def test_store_roundtrip(tmp_path):
 # ───────────────────────── end-to-end with a fake client ─────────────────────────
 
 class _FakeResp:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._p = payload
+        self.status_code = status_code
+        self.is_success = 200 <= status_code < 300
 
     def raise_for_status(self):
         return None

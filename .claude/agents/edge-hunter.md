@@ -75,13 +75,13 @@ t_day +2.99) but unreachable at ~135ms RTT (1.8% fill); colo-gated. (2) deep-ITM
   joined to `window_labels`. The all-windows corpus is the clean discovery surface.
 - **Alt corpus**: `polybot/db/alt_window_paths.db` + `polybot/db/alt_recordings.db`
   (+ `polybot/memory/recordings/alts/*.jsonl` tape, + `window_tokens` map).
-- **Latency-exit harness**: `scripts/alt_latency_test.py` — point-in-time fill model,
-  per-symbol output, evaluates at 135ms (today) and 15ms (colo); `--selftest` to
-  validate. PASS bar = realistic t_day≥2 AND p10>0 over ≥8 clean ET days. The alt
-  experiment matures ~2026-06-26; current lean = noise (signal in tight SOL, not the
-  wide DOGE thesis book).
-- Other tools: `scripts/diagnose_edge.py`, `scripts/sweep_exit_policy.py`,
-  `scripts/shadow_*.py`. CLAUDE.md is the system's source of truth.
+- **Late-window sniper harness**: `scripts/analyze_late_window.py` — RTT-parametric
+  fill model (`--rtt-sweep`, `--max-slip`) against `window_paths.db`. PASS bar =
+  momentum t_day≥2 AND p10>0 over ≥8 clean ET days at the host's measured RTT;
+  `scripts/sniper_shadow_status.py` compares the paper-shadow's realized fills.
+- Retired research harnesses (edge diagnostics, exit-policy sweep, passive-exit
+  shadow, alt-latency) live in git history, not the working tree. CLAUDE.md is
+  the system's source of truth.
 
 ## How to work
 1. **Load context first**: read `MEMORY.md` (the index) and the relevant edge memories

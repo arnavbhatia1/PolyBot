@@ -21,9 +21,7 @@ execution:
   # Passive exits (two-stage: rest SELL at mid for passive_exit_timeout_s, take the
   # maker fill if a BUY prints through, else FOK fallback). OFF — measured honestly
   # on 8 clean days (06-24..07-01, rest-vs-immediate-FOK incl. miss cost + markout):
-  # −2.1c/sh, −$62/day, t_day −2.03, 6/8 days negative. The shadow_passive_exit.py
-  # "kill bar" is ITM fill-RATE only (feasibility, not EV) — its +$/fill uplift is
-  # fill-conditional + circular; never cite it as an EV pass. Maker fills at mid are
+  # −2.1c/sh, −$62/day, t_day −2.03, 6/8 days negative. Maker fills at mid are
   # markout-fair: no harvestable rent, the half-spread comes back as adverse selection
   # on the misses. ~Moot under sniper-only (rests need >15s left; sniper enters <45s).
   passive_exit_enabled: false

@@ -238,3 +238,113 @@ def test_parse_contract_handles_list_outcomes():
     }]
     c = BTCMarketScanner().parse_contract(event)
     assert c["price_up"] == 0.60
+
+
+# --- gamma_events_by_slug (deprecated /events -> /events/slug fallback) ---
+
+def _gamma_resp(payload, status_code=200):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.is_success = 200 <= status_code < 300
+    resp.json.return_value = payload
+    if status_code >= 400:
+        resp.raise_for_status.side_effect = RuntimeError(f"HTTP {status_code}")
+    else:
+        resp.raise_for_status = MagicMock()
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_gamma_events_by_slug_legacy_ok():
+    scanner = BTCMarketScanner()
+    client = AsyncMock()
+    client.get.return_value = _gamma_resp([SAMPLE_EVENT])
+    data = await scanner.gamma_events_by_slug(client, "btc-updown-5m-123")
+    assert data == [SAMPLE_EVENT]
+    client.get.assert_awaited_once_with(
+        f"{scanner.GAMMA_API}/events", params={"slug": "btc-updown-5m-123"})
+
+
+@pytest.mark.asyncio
+async def test_gamma_events_by_slug_legacy_empty():
+    scanner = BTCMarketScanner()
+    client = AsyncMock()
+    client.get.return_value = _gamma_resp([])
+    assert await scanner.gamma_events_by_slug(client, "btc-updown-5m-123") == []
+
+
+@pytest.mark.asyncio
+async def test_gamma_events_by_slug_falls_back_on_http_error():
+    scanner = BTCMarketScanner()
+    client = AsyncMock()
+    client.get.side_effect = [_gamma_resp({}, 410), _gamma_resp(SAMPLE_EVENT)]
+    data = await scanner.gamma_events_by_slug(client, "btc-updown-5m-123")
+    assert data == [SAMPLE_EVENT]  # single dict normalized to legacy list shape
+    assert client.get.await_args_list[1].args == (
+        f"{scanner.GAMMA_API}/events/slug/btc-updown-5m-123",)
+
+
+@pytest.mark.asyncio
+async def test_gamma_events_by_slug_fallback_404_means_no_event():
+    scanner = BTCMarketScanner()
+    client = AsyncMock()
+    client.get.side_effect = [_gamma_resp({}, 410), _gamma_resp({}, 404)]
+    assert await scanner.gamma_events_by_slug(client, "btc-updown-5m-123") == []
+
+
+@pytest.mark.asyncio
+async def test_gamma_events_by_slug_fallback_error_raises():
+    scanner = BTCMarketScanner()
+    client = AsyncMock()
+    client.get.side_effect = [_gamma_resp({}, 410), _gamma_resp({}, 500)]
+    with pytest.raises(RuntimeError):
+        await scanner.gamma_events_by_slug(client, "btc-updown-5m-123")
+
+
+@pytest.mark.asyncio
+async def test_gamma_events_by_slug_redirect_sunset_uses_fallback():
+    """A 301/308-redirect sunset is NOT success (httpx doesn't follow) — must fall back."""
+    scanner = BTCMarketScanner()
+    client = AsyncMock()
+    client.get.side_effect = [_gamma_resp({}, 308), _gamma_resp(SAMPLE_EVENT)]
+    data = await scanner.gamma_events_by_slug(client, "btc-updown-5m-123")
+    assert data == [SAMPLE_EVENT]
+
+
+@pytest.mark.asyncio
+async def test_gamma_events_by_slug_429_fails_fast_without_fallback():
+    scanner = BTCMarketScanner()
+    client = AsyncMock()
+    client.get.return_value = _gamma_resp({}, 429)
+    with pytest.raises(RuntimeError):
+        await scanner.gamma_events_by_slug(client, "btc-updown-5m-123")
+    assert client.get.await_count == 1        # no second request under throttle
+    assert scanner._gamma_events_gone is False  # transient — no latch
+
+
+@pytest.mark.asyncio
+async def test_gamma_events_by_slug_5xx_fails_fast_without_fallback():
+    scanner = BTCMarketScanner()
+    client = AsyncMock()
+    client.get.return_value = _gamma_resp({}, 503)
+    with pytest.raises(RuntimeError):
+        await scanner.gamma_events_by_slug(client, "btc-updown-5m-123")
+    assert client.get.await_count == 1
+    assert scanner._gamma_events_gone is False
+
+
+@pytest.mark.asyncio
+async def test_gamma_events_by_slug_latches_after_enforcement():
+    """After the first enforced 4xx, later calls skip the dead primary entirely."""
+    scanner = BTCMarketScanner()
+    client = AsyncMock()
+    client.get.side_effect = [_gamma_resp({}, 410), _gamma_resp(SAMPLE_EVENT)]
+    await scanner.gamma_events_by_slug(client, "btc-updown-5m-123")
+    assert scanner._gamma_events_gone is True
+
+    client2 = AsyncMock()
+    client2.get.return_value = _gamma_resp(SAMPLE_EVENT)
+    data = await scanner.gamma_events_by_slug(client2, "btc-updown-5m-456")
+    assert data == [SAMPLE_EVENT]
+    client2.get.assert_awaited_once_with(
+        f"{scanner.GAMMA_API}/events/slug/btc-updown-5m-456")

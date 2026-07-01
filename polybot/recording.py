@@ -1,16 +1,16 @@
-"""Window-path + CLOB-tape recorders (Phases 1-2 of tasks/todo.md).
+"""Window-path + CLOB-tape recorders.
 
 WindowPathRecorder: 1 Hz state of EVERY 5-min window — both tokens' BBO + top-3
 depth, Coinbase mid, strike, elapsed — traded or not. Self-discovering (its own
 Gamma slug fetch + CLOB WS subscribe) so coverage is all ~288 windows/day, not
 just the ones the trading loop enters; labels itself from Gamma event_metadata
-after each window closes. This is the training stream for the Phase 3 exit-value
-model: ~288 labeled windows/day instead of ~35 trades/day.
+after each window closes. This is the exit-research corpus and the
+late-window-sniper kill-bar feed: ~288 labeled windows/day instead of ~35
+trades/day.
 
 TapeRecorder: every CLOB trade print to a daily JSONL (gitignored — recordings
-must never enter the nightly memory/ commit). Input to the Phase 1 passive-exit
-shadow sim (a resting order "fills" only when the tape prints through it) and
-the Phase 6 maker-markout study.
+must never enter the nightly memory/ commit). A resting-order shadow "fills"
+only when the tape prints through it.
 
 Both are write-behind: samples buffer in memory and flush in batches, so the
 trading loop never waits on disk.
@@ -189,13 +189,9 @@ class WindowPathRecorder:
 
     async def _fetch_contract(self, slug: str) -> dict | None:
         try:
-            resp = await self.http_client.get(
-                f"{self.market_scanner.GAMMA_API}/events", params={"slug": slug})
-            resp.raise_for_status()
-            data = resp.json()
+            data = await self.market_scanner.gamma_events_by_slug(self.http_client, slug)
             if data:
-                return self.market_scanner.parse_contract(
-                    data[0] if isinstance(data, list) else data)
+                return self.market_scanner.parse_contract(data[0])
         except Exception:
             pass
         return None

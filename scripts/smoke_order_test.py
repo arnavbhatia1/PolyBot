@@ -45,8 +45,13 @@ def _current_contract() -> dict:
             window_ts = int(time.time() // WINDOW_SECONDS) * WINDOW_SECONDS + offset
             slug = f"btc-updown-5m-{window_ts}"
             resp = client.get(f"{GAMMA_API}/events", params={"slug": slug})
-            resp.raise_for_status()
-            events = resp.json()
+            if not resp.is_success:  # deprecated endpoint enforced — undeprecated fallback
+                resp = client.get(f"{GAMMA_API}/events/slug/{slug}")
+                if resp.status_code == 404:
+                    continue
+                resp.raise_for_status()
+            data = resp.json()
+            events = data if isinstance(data, list) else ([data] if data else [])
             if not events:
                 continue
             market = events[0].get("markets", [{}])[0]

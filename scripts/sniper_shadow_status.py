@@ -20,13 +20,19 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.diagnose_edge import load_records  # noqa: E402
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT))
+from polybot.agents.outcome_reviewer import OutcomeReviewer  # noqa: E402
 
 
 def main() -> None:
+    # load_all_outcomes dedups by (position_id, market_id) — a fill present in
+    # both its per-trade file and a partial daily rollup counts once, which the
+    # shadow-vs-harness kill-bar comparison depends on.
+    outcomes = OutcomeReviewer(
+        str(_ROOT / "polybot" / "memory" / "outcomes")).load_all_outcomes()
     snipes = []
-    for t in load_records("outcomes"):
+    for t in outcomes:
         ctx = (t.get("indicator_snapshot") or {}).get("trade_context") or {}
         if ctx.get("entry_phase") != "late_sniper":
             continue

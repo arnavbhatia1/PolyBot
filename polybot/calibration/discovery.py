@@ -137,12 +137,23 @@ def parse_event(event: dict) -> list[MarketRef]:
 
 
 async def fetch_event_by_slug(client: httpx.AsyncClient, slug: str) -> dict | None:
-    """Fetch a single event by slug (used by the label pass to read resolution)."""
+    """Fetch a single event by slug (used by the label pass to read resolution).
+
+    GET /events is deprecated upstream (Sunset header, still tolerated); a
+    non-2xx falls back to the undeprecated GET /events/slug/{slug} so labeling
+    doesn't silently stop the day it's enforced.
+    """
     try:
         resp = await client.get(f"{GAMMA_API}/events", params={"slug": slug})
-        resp.raise_for_status()
+        if not resp.is_success:
+            resp = await client.get(f"{GAMMA_API}/events/slug/{slug}")
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
         data = resp.json()
-        return data[0] if data else None
+        if isinstance(data, list):
+            return data[0] if data else None
+        return data or None
     except Exception:  # noqa: BLE001
         return None
 

@@ -394,8 +394,9 @@ class LiveTrader(BaseTrader):
         self._balance_cache: dict[str, tuple[float, float]] = {}
         self._BALANCE_CACHE_TTL_S: float = 300.0
         # Pre-signed SELL warm-ups, filled in the background when main.py sees
-        # holding_edge in the danger zone — removes the ~150ms ECDSA sign from
-        # the scalp hot path. token_id → {"order", "amount", "price", "ts"}.
+        # holding_edge in the danger zone — keeps the EIP-712 sign (measured
+        # ~3-5ms warm on this host, pure-python eth_account) plus any first-call
+        # jitter off the scalp hot path. token_id → {"order", "amount", "price", "ts"}.
         self._sell_warmups: dict[str, dict] = {}
         self._SELL_WARMUP_TTL_S: float = 5.0
         self._buy_warmups: dict[str, dict] = {}
@@ -791,7 +792,8 @@ class LiveTrader(BaseTrader):
                                   expected_price: float, fee_rate: float = DEFAULT_FEE_RATE) -> None:
         """Pre-sign a SELL FOK in the background (main.py calls this on HOLD
         ticks near the scalp threshold). When PRE-SCALP fires, _submit_fok_order
-        finds the pre-signed order and only POSTs — saves ~150ms of ECDSA sign.
+        finds the pre-signed order and only POSTs — the EIP-712 sign (~3-5ms
+        warm, plus first-call jitter) stays off the hot path.
         Re-running re-signs only when the warmup is stale or params drifted.
         """
         if not token_id or shares <= 0 or expected_price <= 0:

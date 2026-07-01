@@ -59,12 +59,43 @@ class BTCMarketScanner:
         self._last_dns_error_ts: float = 0.0  # throttle DNS-failure log to once per 30s
         self._prewarmed_condition_id: str = ""  # last contract we kicked pre-warm fetches for
         self._prewarm_tasks: set[asyncio.Task[Any]] = set()  # strong refs so GC doesn't kill them
+        self._gamma_events_gone: bool = False  # latched once GET /events is enforced-dead
 
     def _current_window_ts(self) -> int:
         return int(time.time() // self.WINDOW_SECONDS) * self.WINDOW_SECONDS
 
     def _make_slug(self, window_ts: int) -> str:
         return f"{self.symbol}-updown-5m-{window_ts}"
+
+    async def gamma_events_by_slug(self, client: httpx.AsyncClient, slug: str) -> list[dict[str, Any]]:
+        """Single-event Gamma lookup, normalized to a list of event dicts.
+
+        ``GET /events`` carries a Deprecation/Sunset header (sunset 2026-05-01,
+        still tolerated — enforceable any day, possibly via redirect). Any
+        non-2xx other than a transient 429/5xx means the deprecated endpoint is
+        enforced: this call and every later one (latched per scanner) use the
+        undeprecated ``GET /events/slug/{slug}`` instead (one event dict; 404 =
+        no such event -> []). 429/5xx raise immediately without a second
+        request; network errors propagate, matching callers' existing handling.
+        """
+        resp = None
+        if not self._gamma_events_gone:
+            resp = await client.get(f"{self.GAMMA_API}/events", params={"slug": slug})
+            if not resp.is_success:
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    resp.raise_for_status()  # transient throttle/outage — fail fast
+                logger.warning(
+                    f"Gamma GET /events returned {resp.status_code} — deprecated endpoint "
+                    f"treated as enforced; using /events/slug/ from now on")
+                self._gamma_events_gone = True
+                resp = None
+        if resp is None:
+            resp = await client.get(f"{self.GAMMA_API}/events/slug/{slug}")
+            if resp.status_code == 404:
+                return []
+            resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else ([data] if data else [])
 
     def parse_contract(self, event: dict[str, Any]) -> dict[str, Any] | None:
         markets = event.get("markets", [])
@@ -343,14 +374,10 @@ class BTCMarketScanner:
             slug = self._make_slug(ts)
             try:
                 if http_client:
-                    resp = await http_client.get(f"{self.GAMMA_API}/events", params={"slug": slug})
-                    resp.raise_for_status()
-                    data = resp.json()
+                    data = await self.gamma_events_by_slug(http_client, slug)
                 else:
                     async with httpx.AsyncClient(timeout=10) as client:
-                        resp = await client.get(f"{self.GAMMA_API}/events", params={"slug": slug})
-                        resp.raise_for_status()
-                        data = resp.json()
+                        data = await self.gamma_events_by_slug(client, slug)
             except Exception as e:
                 if "getaddrinfo" in str(e).lower() or "dnserror" in type(e).__name__.lower():
                     if now - self._last_dns_error_ts >= 30:
@@ -363,7 +390,7 @@ class BTCMarketScanner:
             if not data:
                 continue
 
-            event = data[0] if isinstance(data, list) else data
+            event = data[0]
             if not event.get("active", False):
                 continue
 

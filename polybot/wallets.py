@@ -1,4 +1,4 @@
-"""Phase 4: wallet fingerprinting — the learning layer that compounds.
+"""Wallet fingerprinting — the learning layer that compounds.
 
 Polymarket's data-api tags every trade with the taker's proxy wallet. The 5-min
 casino has a recurring cast; per-wallet markout against window resolution sorts
@@ -11,8 +11,7 @@ the data-api, score each trade against the resolution, fold into per-wallet
 stats. ``wallet_stats`` is write-only today — the originally-specced routing
 (skip resting exits against sharp counterparties) is infeasible on the live
 anonymous L2 book (no maker/taker identity pre-post), so no decision-time reader
-exists. This remains pure accumulation; see tasks/todo.md Phase 4 for the
-realizable post-fill regime-gate alternative.
+exists. This remains pure accumulation.
 
 Storage is split by size: the per-trade tape (~3k prints/window — millions of
 rows) lives in its own gitignored DB (``polybot/db/wallet_tape.db``); only the
@@ -94,12 +93,10 @@ async def _fetch_window_trades(http_client: Any, market_scanner: Any,
                                window_id: str) -> list[dict[str, Any]]:
     """Taker trades for one window via data-api (resolved by slug → conditionId)."""
     try:
-        resp = await http_client.get(f"{market_scanner.GAMMA_API}/events",
-                                     params={"slug": window_id})
-        resp.raise_for_status()
-        data = resp.json()
-        ev = data[0] if isinstance(data, list) and data else data
-        markets = ev.get("markets") or []
+        data = await market_scanner.gamma_events_by_slug(http_client, window_id)
+        if not data:
+            return []
+        markets = data[0].get("markets") or []
         condition_id = (markets[0] or {}).get("conditionId", "") if markets else ""
         if not condition_id:
             return []

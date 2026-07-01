@@ -583,13 +583,9 @@ async def _get_contract_prices(market_scanner: Any, market_id: str, http_client:
     for ts in [window_ts, window_ts + 300, window_ts - 300]:
         slug = market_scanner._make_slug(ts)
         try:
-            resp = await http_client.get(f"{market_scanner.GAMMA_API}/events",
-                                         params={"slug": slug})
-            resp.raise_for_status()
-            data = resp.json()
+            data = await market_scanner.gamma_events_by_slug(http_client, slug)
             if data:
-                event = data[0] if isinstance(data, list) else data
-                contract = market_scanner.parse_contract(event)
+                contract = market_scanner.parse_contract(data[0])
                 if contract and contract.get("slug", "") == market_id:
                     _contract_price_cache[market_id] = (now, contract)
                     return contract
@@ -601,13 +597,9 @@ async def _get_contract_prices(market_scanner: Any, market_id: str, http_client:
 
     # Fallback: fetch directly by stored slug (handles expired contracts outside ±1 window)
     try:
-        resp = await http_client.get(f"{market_scanner.GAMMA_API}/events",
-                                     params={"slug": market_id})
-        resp.raise_for_status()
-        data = resp.json()
+        data = await market_scanner.gamma_events_by_slug(http_client, market_id)
         if data:
-            event = data[0] if isinstance(data, list) else data
-            contract = market_scanner.parse_contract(event)
+            contract = market_scanner.parse_contract(data[0])
             if contract:
                 _contract_price_cache[market_id] = (now, contract)
                 return contract
@@ -1552,12 +1544,9 @@ async def _check_counterfactuals(counterfactual_tracker: Any, ghost_tracker: Any
         # the current ±1 window, so it returns None for markets from 10+ minutes ago.
         async def _fetch_by_slug(slug: str) -> dict | None:
             try:
-                resp = await http_client.get(
-                    f"{market_scanner.GAMMA_API}/events", params={"slug": slug})
-                resp.raise_for_status()
-                data = resp.json()
+                data = await market_scanner.gamma_events_by_slug(http_client, slug)
                 if data:
-                    return market_scanner.parse_contract(data[0] if isinstance(data, list) else data)
+                    return market_scanner.parse_contract(data[0])
             except Exception:
                 pass
             return None
@@ -1739,8 +1728,8 @@ async def _evaluate_and_exit_position(
                 "btc_distance_atr": round((btc_now - strike_now) / _cf_atr, 3),
             }, aux_signals=_hold_aux)
 
-        # Pre-sign the SELL FOK when a scalp is imminent — saves ~150ms of ECDSA
-        # work from the hot path; hasattr guards a trader without warm_sell_signature.
+        # Pre-sign the SELL FOK when a scalp is imminent — keeps the sign work
+        # off the hot path; hasattr guards a trader without warm_sell_signature.
         if (hasattr(trader, 'warm_sell_signature')
                 and -0.05 < holding_edge < -0.005):
             _sell_token = (live.get("token_id_up", "") if pos["side"] == "Up"
