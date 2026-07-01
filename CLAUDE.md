@@ -24,8 +24,7 @@ python -m polybot.main --mode paper       # paper trading
 python -m polybot.main --mode live        # real USDC (needs allowance)
 python -m polybot.main --run-pipeline     # one nightly cycle, no trading
 python -m pytest polybot/tests/           # full suite
-.\scripts\run_polybot.ps1                 # daily cycle: trade -> nightly jobs -> commit -> restart; also supervises the box-arb monitor
-python scripts/box_arb_monitor.py         # box-arb monitor (log-only); standalone — only needed if NOT running via run_polybot.ps1
+.\scripts\run_polybot.ps1                 # daily cycle: trade -> nightly jobs -> commit -> restart; also supervises the calibration monitor
 ```
 
 ### Secrets
@@ -118,6 +117,21 @@ if size < 1.0: skip
   resets down; persists via the `peak_bankroll` DB row.
 - **Time multiplier** — full Kelly for the first 60% of the window; after,
   penalty scales by (1 − conviction) up to 0.30.
+- **Late-window sniper** (gated; `late_window.sniper_enabled`, **default OFF** —
+  the one bot-formable late-window edge, `tasks/todo.md`). In the final
+  `sniper_late_start_s` (45s), if a Coinbase move over `sniper_move_window_s` ≥
+  `sniper_cb_move` pushed price past strike and the chosen-side ask ≤ `sniper_ask_cap`,
+  `SignalEngine.evaluate_late_sniper` fires a BUY that bypasses ONLY `max_edge`
+  (→ `sniper_max_edge`, at both the edge-cap and pre-submit gates) and the time penalty
+  — every other gate stays; the main loop also wakes on Coinbase ticks when enabled.
+  NOT DEPLOYED: stays OFF until its kill bar passes at the host's measured RTT
+  (`analyze_late_window.py --rtt-sweep`) AND a paper-shadow run confirms it.
+- **Sniper-only mode** (`late_window.sniper_only`, default OFF) — the go-live
+  switch: base-entry BUYs are suppressed and recorded as `sniper_only` ghosts
+  (the base strategy keeps accruing resolution evidence at zero cost); capital
+  deploys only on sniper fires. The live recipe once the kill bar passes is
+  `mode: live` + `sniper_enabled: true` + `sniper_only: true` — the base
+  strategy has no proven edge and never deploys live (`tasks/todo.md`).
 
 ## 5. Orders
 
@@ -159,7 +173,11 @@ Exit price oracle-first (`event_metadata` final_price vs price_to_beat; Gamma's
 coherent resolved prices as fallback; never Binance). Chainlink orphan fallback
 after ~30 min of Gamma silence. Live redeems settle non-blockingly.
 
-**Passive exits** (`execution.passive_exit_enabled`): on a non-loss-cut scalp the
+**Passive exits** (`execution.passive_exit_enabled`, **OFF — measured negative**:
+rest-vs-immediate-FOK including miss cost is −2.1c/sh ≈ −$62/day, t_day −2.03 over
+8 clean days; maker fills at mid are markout-fair, so the earned half-spread comes
+back as adverse selection on the misses. `shadow_passive_exit.py`'s bar is ITM
+fill-RATE only — feasibility, never an EV pass): on a non-loss-cut scalp the
 bot rests a SELL at `_resting_level` (mid, capped at the ask, floored at bid+1
 tick) for `passive_exit_timeout_s` (10s), takes the maker fill (zero taker fee)
 if a BUY prints strictly through, else FOK-falls-back; loss-cuts skip resting, a
@@ -178,12 +196,16 @@ rest NEW quotes (that is the §9 symmetric-MM ban).
 
 ## 7. Recorders + learning loop
 
-- **Window-path recorder** (`polybot/recording.py`, in-process 1 Hz task):
-  both tokens' BBO + top-3 depth, Coinbase mid, strike, elapsed, traded flag,
-  for EVERY window (self-discovers contracts via Gamma; labels itself from
-  `event_metadata`). Tables `window_paths` / `window_labels` in the per-mode DB;
+- **Window-path recorder** (`polybot/recording.py`, in-process; 1 Hz, **5 Hz in
+  the final 45s**): both tokens' BBO + top-3 depth, Coinbase mid, strike, elapsed,
+  traded flag, **+ Binance aggTrade `binance_price`/`binance_cvd_10s`/`binance_cvd_30s`**,
+  **+ the live-L1 stamp `atr`/`model_prob_up`** (dedicated engine instances, same
+  config as live — lets offline harnesses replicate the live `sniper_min_edge`
+  floor exactly; NULL on cold feeds, never 0.0), for EVERY window (self-discovers
+  contracts via Gamma; labels itself from `event_metadata`). Tables
+  `window_paths` (gitignored sidecar DB) / `window_labels`;
   90-day retention sweep nightly. ~288 labeled windows/day — the exit-research
-  corpus (wallet fingerprints + offline exit-policy analysis).
+  corpus + the **late-window-sniper kill-bar** feed (`tasks/todo.md`).
 - **Tape recorder**: every CLOB trade print →
   `memory/recordings/tape_YYYY-MM-DD.jsonl` (gitignored). Input to the
   passive-exit shadow sim.
@@ -254,6 +276,9 @@ polybot/
   indicators/                  atr + engine (ATR-only)
   recording.py                 WindowPathRecorder (1 Hz, all windows) + TapeRecorder (JSONL) + window_paths retention
   wallets.py                   wallet fingerprinting (data-api ingestion + classification)
+  calibration/                 long-horizon edge harness (measurement-only, own gitignored
+                               db/calibration.db): discovery + clob + deribit (one-touch/
+                               digital pricing) + store + analysis (event-clustered kill bar)
   execution/                   base (BaseTrader, fee math), paper_trader, live_trader,
                                circuit_breaker, correlation
   agents/                      scheduler (NightlyScheduler), outcome_reviewer,
@@ -266,13 +291,27 @@ polybot/
   discord_bot/                 monitoring + control commands (§13)
   db/models.py                 SQLite per mode (positions, trade_history, bankroll, peak_bankroll,
                                window_paths, window_labels, wallet_trades, wallet_stats)
-scripts/                       run_polybot.ps1 (daily loop),
+scripts/                       run_polybot.ps1 (daily loop; Linux port run_polybot.sh
+                               + polybot.service systemd unit for a VPS — see
+                               docs/DEPLOY_ORACLE_VPS.md),
                                shadow_passive_exit.py (kill-bar evaluator),
-                               box_arb_monitor.py (box-arb monitor, log-only,
-                               supervised by run_polybot.ps1),
                                sweep_exit_policy.py, diagnose_edge.py (record loader + edge stats),
+                               calibration_harness.py (long-horizon calibration CLI:
+                               ivcheck|snapshot|label|analyze|monitor; `monitor` runs supervised
+                               by run_polybot.ps1, log-only; check anytime with analyze/ivcheck),
                                backfill_wallets.py, topup_paper_bankroll.py, verify_keys.py
+                               (GET-auth + balance preflight), smoke_order_test.py
+                               (go-live preflight: one unfillable FOK proves order
+                               POSTs clear Cloudflare — verify_keys covers GETs only),
+                               analyze_late_window.py (RTT-parametric late-window sniper kill-bar),
+                               sniper_shadow_status.py + strategy_compare.py (normal vs sniper vs
+                               combined P&L), reset_paper_clean.py (clean-slate the paper experiment
+                               — backs up, then resets the ledger to a clean baseline; operator-run
+                               with the bot STOPPED)
 ```
+(Paper realism — `execution.paper_latency_*` / `paper_network_fail_rate` in settings.yaml —
+is calibrated to the **measured Ireland-VPN warm POST RTT** (~0.118–0.138s) to the London
+order origin; `paper_network_fail_rate` 0.03 remains an estimate until calibrated at live launch.)
 
 ## 11. Data sources
 
@@ -289,9 +328,11 @@ scripts/                       run_polybot.ps1 (daily loop),
 
 `run_polybot.ps1`: starts 12:01 AM ET, stops trading 11:30 PM ET, nightly jobs
 11:45 PM ET, commits + pushes `origin main` on exit, restarts at midnight (or
-immediately if the exit slipped past it). Each cycle it also (re)launches the
-box-arb monitor as a supervised child on freshly-pulled code (kills any prior
-instance first), so one launch starts everything. **Single-instance guarded**: the
+immediately if the exit slipped past it). Each cycle it also (re)launches one
+supervised log-only child on freshly-pulled code (kills any prior instance
+first): the calibration monitor (`calibration_harness.py monitor` —
+measurement-only, own gitignored `db/calibration.db`), so one launch starts
+everything. **Single-instance guarded**: the
 wrapper refuses to start if another is already running, and `polybot.main` holds an
 OS single-instance lock (localhost-port bind) — so a double-launch (which silently
 doubled every record 06-21/06-22) cannot recur. Live pre-flight:

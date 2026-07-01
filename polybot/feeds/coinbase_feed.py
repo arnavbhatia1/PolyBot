@@ -50,6 +50,11 @@ class CoinbaseFeed:
         self.product_id = product_id
         self.state = CoinbaseState()
         self.staleness = StalenessTracker("coinbase")
+        # Set on every fresh ticker so a latency-sensitive consumer (the late-window
+        # sniper loop) can wake the instant Coinbase moves — the CLOB book lags it,
+        # so waiting on book updates alone would miss the stale-book window. The
+        # waiter clears it after waking.
+        self.price_event: asyncio.Event = asyncio.Event()
 
         # Per-trade flow: (ts, signed_size). +size = buyer aggressor, -size = seller aggressor.
         self._trade_buffer_s = trade_buffer_s
@@ -113,6 +118,41 @@ class CoinbaseFeed:
         m = sum(rets) / len(rets)
         var = sum((r - m) ** 2 for r in rets) / max(1, len(rets) - 1)
         return math.sqrt(var)
+
+    def cb_move(self, window_s: float = 2.0) -> float | None:
+        """Signed Coinbase price change over exactly the last ``window_s`` — the live
+        form of the offline late-window ``cb_move`` signal. The 1s-bucketed history is
+        spaced >=1s, so the latest bucket at/before (now - window_s) can sit up to ~1s
+        too far back; we therefore INTERPOLATE the ``then`` price at exactly
+        (now - window_s) between the two buckets bracketing it, so the effective lookback
+        stays == window_s. Without this, a sustained move is measured over ~window_s+1s
+        and OVERSTATES the move, firing on sub-threshold moves the harness scored as
+        non-fires. ``now`` is the freshest un-bucketed tick (state.price), so a recent
+        spike is still captured. None if the buffer doesn't continuously span the window
+        (reconnect) so a truncated buffer can't read as a flat move.
+        """
+        cur = self.state.price
+        if cur <= 0 or not self.covers(window_s):
+            return None
+        cutoff = time.time() - window_s
+        j = nxt = None             # j = last bucket at/before cutoff; nxt = first after
+        for ts, p in self._prices:
+            if p <= 0:
+                continue
+            if ts <= cutoff:
+                j = (ts, p)
+            else:
+                nxt = (ts, p)
+                break
+        if j is None:              # nothing older than the cutoff yet
+            return None
+        if nxt is None:            # cutoff is past the newest bucket — use it directly
+            then = j[1]
+        else:                      # interpolate the price at exactly `cutoff`
+            span = nxt[0] - j[0]
+            frac = 0.0 if span <= 0 else (cutoff - j[0]) / span
+            then = j[1] + (nxt[1] - j[1]) * frac
+        return cur - then
 
     def get_taker_ratio(self, window_s: float = 60.0, min_trades: int = 20) -> tuple[float, int]:
         """(buy_fraction, n) over window. Returns (0.5, n) when n < min_trades."""
@@ -204,6 +244,7 @@ class CoinbaseFeed:
 
         self.state.price = price
         self.state.updated_at = now
+        self.price_event.set()
 
         if now - self._last_price_sample >= 1.0:
             self._prices.append((now, price))

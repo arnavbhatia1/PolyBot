@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import logging.handlers
+import os
+import signal
 import sys
 import time
 from datetime import datetime
@@ -35,7 +37,7 @@ from polybot.feeds.binance_feed import BinanceFeed
 from polybot.feeds.market_scanner import BTCMarketScanner
 from polybot.feeds.clob_ws import ClobWebSocket
 from polybot.indicators.engine import IndicatorEngine
-from polybot.core.signal_engine import SignalEngine
+from polybot.core.signal_engine import SignalEngine, TradeSignal
 from polybot.core.order_flow import compute_flow_signal
 from polybot.core.aux_layers import compute_spot_flow_signal, regime_vol_factor
 from polybot.execution.paper_trader import PaperTrader
@@ -829,6 +831,49 @@ async def _evaluate_signal_and_enter(
         fee_rate=fee_rate,
     )
 
+    # --- LATE-WINDOW SNIPER (gated; default OFF until its kill bar passes) --------
+    # The one bot-formable late-window edge: a sharp Coinbase move (the resolution
+    # venue) just pushed price past strike but the CLOB ask hasn't repriced — a
+    # stale-book lag in OUR favor (and L1's own favored side, so it doesn't fight the
+    # model). Fires only when the normal path skipped, in the final seconds, behind
+    # the enable flag. Remaps to a normal BUY so ALL sizing/exec/safety gates run
+    # unchanged; only max_edge (-> sniper_max_edge) and the time penalty are bypassed.
+    is_sniper = False
+    lw_cfg = config.get("late_window", {})
+
+    # Sniper-only mode (the live configuration): the base entry strategy has no
+    # proven edge, so its BUYs never deploy capital — each one is recorded as a
+    # ghost (gate "sniper_only") and resolves at window close, keeping the base
+    # strategy's evidence stream alive at zero cost. Only sniper fires trade.
+    if lw_cfg.get("sniper_only", _d("sniper_only")) and signal.action in ("BUY_YES", "BUY_NO"):
+        _sup_timing = config.get("entry_timing", {})
+        _, phase = compute_time_multiplier(
+            prob=signal.prob, seconds_remaining=contract["seconds_remaining"],
+            normal_fraction=_sup_timing.get("normal_fraction", _d("normal_fraction")),
+            late_max_penalty=_sup_timing.get("late_max_penalty", _d("late_max_penalty")))
+        _ghost("sniper_only", signal, {})
+        signal = TradeSignal("SKIP", signal.prob, signal.edge, 0,
+                             "sniper_only: base entry suppressed (ghosted)",
+                             side=signal.side)
+
+    if (lw_cfg.get("sniper_enabled", _d("sniper_enabled"))
+            and signal.action not in ("BUY_YES", "BUY_NO")
+            and coinbase_feed is not None
+            and contract["seconds_remaining"] <= lw_cfg.get("sniper_late_start_s", _d("sniper_late_start_s"))):
+        _cbm = coinbase_feed.cb_move(lw_cfg.get("sniper_move_window_s", _d("sniper_move_window_s")))
+        _snipe = signal_engine.evaluate_late_sniper(
+            indicators, btc_price, strike, contract["seconds_remaining"],
+            price_up, price_down, _cbm,
+            lw_cfg.get("sniper_cb_move", _d("sniper_cb_move")),
+            lw_cfg.get("sniper_ask_cap", _d("sniper_ask_cap")),
+            lw_cfg.get("sniper_min_edge", _d("sniper_min_edge")),
+            fee_rate=fee_rate, closes=closes)
+        if _snipe.action in ("LATE_SNIPE_YES", "LATE_SNIPE_NO"):
+            _snipe.action = "BUY_YES" if _snipe.action == "LATE_SNIPE_YES" else "BUY_NO"
+            signal = _snipe
+            is_sniper = True
+            logger.info(f"{_C.DIM}LATE-SNIPER fire — {signal.reason}{_C.RESET}")
+
     # Continuous time multiplier: penalizes ATM trades late, barely penalizes high-conviction trades
     timing_cfg = config.get("entry_timing", {})
     time_mult, phase = compute_time_multiplier(
@@ -837,6 +882,8 @@ async def _evaluate_signal_and_enter(
         normal_fraction=timing_cfg.get("normal_fraction", _d("normal_fraction")),
         late_max_penalty=timing_cfg.get("late_max_penalty", _d("late_max_penalty")),
     )
+    if is_sniper:                       # the sniper bypasses the late-window time penalty
+        time_mult, phase = 1.0, "late_sniper"
 
     # Populate eval context for all evaluations. signal.side is the side the
     # prob/edge refer to (the edge-best side can be the sub-50% one); the
@@ -956,7 +1003,12 @@ async def _evaluate_signal_and_enter(
             return None, last_eval_log_window
 
     # --- EDGE CAP GATE ---
+    # The cap dodges stale phantom prices, but can't tell a stale-against-us phantom
+    # (bad) from the sniper's stale-in-our-favor lag (the edge) — so the sniper swaps
+    # in its own wider sanity cap (sniper_max_edge) instead of the 0.20 entry cap.
     max_edge = config.get("signal", {}).get("max_edge", 0.20)
+    if is_sniper:
+        max_edge = lw_cfg.get("sniper_max_edge", _d("sniper_max_edge"))
     if signal.edge > max_edge:
         _record_skip("edge_cap")
         _ghost("edge_cap", signal, {})
@@ -1128,6 +1180,8 @@ async def _evaluate_signal_and_enter(
     # thin → fall back to the BBA-only fresh_ask gate, so this never tightens a
     # path the BBA gate would have passed.
     max_edge_live = config.get("signal", {}).get("max_edge", 0.20)
+    if is_sniper:                       # mirror the EDGE CAP gate — the sniper's high edge is the point
+        max_edge_live = lw_cfg.get("sniper_max_edge", _d("sniper_max_edge"))
     book_for_walk = clob_ws.get_book(token_id) if clob_ws else None
     if book_for_walk:
         _book_ts = float(book_for_walk.get("ts", 0) or 0)
@@ -2337,16 +2391,27 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         if scheduler and getattr(scheduler, '_shutdown_requested', False):
             break
 
+        # Late-window sniper (gated; default OFF): also wake on Coinbase ticks so a
+        # stale-book move is acted on within one tick, not the 100ms housekeeping
+        # fallback. No effect on the loop when the sniper is disabled.
+        _sniper_wake = coinbase_feed is not None and bool(
+            config.get("late_window", {}).get("sniper_enabled", _d("sniper_enabled")))
+
         # Event-driven: react instantly to WebSocket book/resolution updates; short timeout for housekeeping
         if clob_ws:
             try:
                 # Wake on book update OR market resolution — whichever comes first
                 book_task = asyncio.create_task(clob_ws.book_updated.wait())
                 resolve_task = asyncio.create_task(clob_ws.market_resolved.wait())
+                _wait_set = {book_task, resolve_task}
+                if _sniper_wake:
+                    _wait_set.add(asyncio.create_task(coinbase_feed.price_event.wait()))
                 done, pending = await asyncio.wait(
-                    {book_task, resolve_task}, timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
+                    _wait_set, timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
                 for t in pending:
                     t.cancel()
+                if _sniper_wake:
+                    coinbase_feed.price_event.clear()
                 if clob_ws.book_updated.is_set():
                     clob_ws.book_updated.clear()
                 # Resolve adverse-selection checkpoints every loop tick, not only on
@@ -2678,6 +2743,7 @@ async def main() -> None:
             max_concurrent_positions=exec_cfg["max_concurrent_positions"],
             paper_latency_mean_s=exec_cfg.get("paper_latency_mean_s", 1.5),
             paper_latency_jitter_s=exec_cfg.get("paper_latency_jitter_s", 0.8),
+            paper_latency_floor_s=exec_cfg.get("paper_latency_floor_s", 0.118),
             paper_network_fail_rate=exec_cfg.get("paper_network_fail_rate", 0.02))
         logger.debug(
             f"PAPER MODE — simulated trading with live-realistic fills "
@@ -2854,7 +2920,12 @@ async def main() -> None:
     window_recorder = WindowPathRecorder(
         db=db, clob_ws=clob_ws, coinbase_feed=coinbase_feed,
         chainlink_feed=chainlink_feed, market_scanner=market_scanner,
-        http_client=http_client)
+        http_client=http_client, binance_trades=trades_feed,
+        binance_feed=binance_feed,
+        # Dedicated instances (same config as live): compute_probability mutates
+        # engine state, so the recorder must never share the trading loop's engine.
+        indicator_engine=IndicatorEngine(params=indicator_params),
+        signal_engine=_build_signal_engine(signal_cfg, config))
     global _window_recorder
     _window_recorder = window_recorder
 
@@ -2971,6 +3042,32 @@ def _acquire_single_instance(port: int = 49653) -> bool:
     return True
 
 
+def _make_sigint_handler(force_quit=os._exit):
+    """Ctrl+C handler. First press raises KeyboardInterrupt so main()'s finally
+    runs its (time-boxed) teardown; a second press force-quits via os._exit.
+
+    The force-quit exists because an impatient repeat Ctrl+C otherwise lands while
+    the interpreter is joining a lingering non-daemon thread (a feed/websocket
+    worker whose async stop() didn't fully unwind, or aiosqlite's worker) at
+    _thread._shutdown() — producing 'Exception ignored while joining a thread ...
+    KeyboardInterrupt' and hanging the process, which forced a manual taskkill.
+    Exit 130 is non-zero so the run_polybot.ps1 wrapper skips the commit."""
+    state = {"count": 0}
+
+    def _handler(signum=None, frame=None):
+        state["count"] += 1
+        if state["count"] >= 2:
+            sys.stderr.write("\nForce-quitting (second Ctrl+C).\n")
+            sys.stderr.flush()
+            force_quit(130)
+            return
+        sys.stderr.write("\nStopping PolyBot — press Ctrl+C again to force-quit.\n")
+        sys.stderr.flush()
+        raise KeyboardInterrupt
+
+    return _handler
+
+
 if __name__ == "__main__":
     args = parse_args()
     try:
@@ -2982,6 +3079,7 @@ if __name__ == "__main__":
                     "Another PolyBot trading instance is already running — refusing "
                     "to start a second (single-instance lock). Exiting.")
                 raise SystemExit(1)
+            signal.signal(signal.SIGINT, _make_sigint_handler())
             asyncio.run(main())
     except KeyboardInterrupt:
         pass

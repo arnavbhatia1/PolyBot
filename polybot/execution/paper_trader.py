@@ -24,11 +24,13 @@ class PaperTrader(BaseTrader):
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
         # Realism knobs (all overridable via settings.yaml -> execution.*; kwarg
-        # defaults apply only when settings omit the keys). settings.yaml sets
-        # mean 0.16s / jitter 0.04s over the 0.13s floor in _simulate_latency (the
-        # measured Canada-VPN warm POST RTT); the 4% heavy tail carries the p99.
+        # defaults apply only when settings omit the keys). Calibrated to the operator's
+        # MEASURED warm POST RTT to the Polymarket CLOB through the IRELAND VPN
+        # (TTFB ~0.118-0.138s warm, ~0.35s cold); latency_floor_s is the fastest measured
+        # warm RTT and the 4% heavy tail in _simulate_latency carries occasional stalls.
         self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.77)
         self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.40)
+        self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.118)
         # Fallback fail rate when the book is unavailable; the i.i.d. baseline
         # otherwise — _compute_fail_rate adds state-dependent terms on top.
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.02)
@@ -265,16 +267,18 @@ class PaperTrader(BaseTrader):
     # ------------------------------------------------------------------
 
     async def _simulate_latency(self, speedup_s: float = 0.0) -> None:
-        """Gaussian-jittered sleep, floor 0.13s (measured warm POST RTT through the
-        Canada VPN), plus a 4% heavy-tail spike (uniform 2-4s, the p99/max).
-        ``speedup_s`` subtracts saved work (warm-SELL signature) but the floor holds.
+        """Gaussian-jittered sleep, floored at latency_floor_s (the fastest measured warm
+        POST RTT to the CLOB — Ireland VPN ~0.118s), plus a 4% heavy-tail spike (uniform
+        2-4s, the occasional stall/retry p99). ``speedup_s`` subtracts saved work
+        (warm-SELL signature) but the floor holds.
         """
+        floor = self.latency_floor_s
         if random.random() < 0.04:
             latency = random.uniform(2.0, 4.0)
         else:
-            latency = max(0.13, random.gauss(self.latency_mean_s, self.latency_jitter_s))
+            latency = max(floor, random.gauss(self.latency_mean_s, self.latency_jitter_s))
         if speedup_s > 0:
-            latency = max(0.13, latency - speedup_s)
+            latency = max(floor, latency - speedup_s)
         await asyncio.sleep(latency)
 
     def _walk_book(self, token_id: str, side: str, requested_price: float,

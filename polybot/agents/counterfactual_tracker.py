@@ -44,7 +44,7 @@ class CounterfactualTracker:
         self.memory_dir: Path = Path(memory_dir) / "counterfactuals"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self._watchlist: dict[str, dict[str, Any]] = {}
-        self._hold_worst: dict[str, dict[str, Any]] = {}
+        self._hold_worst: dict[int, dict[str, Any]] = {}   # keyed by position_id
         self._watchlist_path: Path = Path(memory_dir) / "state" / "cf_watchlist.json"
         self._load_watchlist()
 
@@ -117,10 +117,9 @@ class CounterfactualTracker:
             "aux_signals": dict(aux_signals or {}),
             "watched_at": time.time(),
         }
-        # This position is no longer held — its worst-moment state must not
-        # survive to be attributed to a later re-entry in the same window.
-        if self._hold_worst.get(market_id, {}).get("position_id") == position_id:
-            self._hold_worst.pop(market_id, None)
+        # This position is no longer held (it scalped) — drop its worst-moment slot
+        # so it can't be mis-attributed. Keyed by position_id.
+        self._hold_worst.pop(position_id, None)
         self._schedule_save_watchlist()
         # Debug-level: the SCALP block already emitted this exit context to the console.
         logger.debug(
@@ -147,17 +146,17 @@ class CounterfactualTracker:
             return
 
         holding_edge = hold_context.get("holding_edge", 0)
-        current = self._hold_worst.get(market_id)
-
-        # A flip re-entry reuses the market_id. A surviving worst-moment from the
-        # previous position would mis-key the resolution record to that position
-        # (wrong id/side/entry/shares), so a position change always starts fresh.
-        if current is not None and current.get("position_id") != pos.get("id", 0):
-            current = None
+        # Keyed by position_id (NOT market_id) so two concurrently-held positions in one
+        # window — the normal entry + a late-window sniper stack — each track their own
+        # worst moment instead of clobbering a single per-window slot (which silently
+        # dropped BOTH positions' hold-counterfactuals). One position per id, so this is
+        # identical to the old per-window behaviour when only one position is held.
+        pid = pos.get("id", 0)
+        current = self._hold_worst.get(pid)
 
         if current is None or holding_edge < current["worst_holding_edge"]:
-            self._hold_worst[market_id] = {
-                "position_id": pos.get("id", 0),
+            self._hold_worst[pid] = {
+                "position_id": pid,
                 "market_id": market_id,
                 "side": pos.get("side", ""),
                 "entry_price": pos.get("entry_price", 0),
@@ -189,17 +188,9 @@ class CounterfactualTracker:
 
         Returns the counterfactual record, or None if no hold data was tracked.
         """
-        ctx = self._hold_worst.pop(market_id, None)
+        # Keyed by position_id so concurrent same-window holds each resolve their own arm.
+        ctx = self._hold_worst.pop(position_id, None)
         if ctx is None:
-            return None
-        # Never mix arms across positions: if the tracked moments belong to a
-        # different position in this window (re-entry that resolved before its
-        # first HOLD tick), there is no valid counterfactual for the resolver.
-        if position_id is not None and ctx.get("position_id") != position_id:
-            logger.debug(
-                f"HOLD CF dropped for {_slug_to_window(market_id)}: tracked position "
-                f"{ctx.get('position_id')} != resolving position {position_id}"
-            )
             return None
 
         # Hypothetical scalp PnL at worst moment

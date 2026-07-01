@@ -8,19 +8,27 @@ $ErrorActionPreference = "Continue"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
-# Single-instance guard: refuse to start if another run_polybot.ps1 is already
-# running. This is the root cause of the 06-22 double-launch (two wrappers -> two
-# full stacks writing the same DBs). A stale lock (dead PID) is ignored. The lock
-# lives in TEMP, never the repo, so it is never committed.
-$lockFile = Join-Path $env:TEMP "polybot_run_polybot.lock"
-if (Test-Path $lockFile) {
-    $oldPid = (Get-Content $lockFile -ErrorAction SilentlyContinue | Select-Object -First 1)
-    if ($oldPid -and (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {
-        Write-Host "Another run_polybot.ps1 is already running (PID $oldPid). Exiting to avoid a double-launch." -ForegroundColor Red
-        exit 1
-    }
+# Single-instance guard: refuse to start only if a PolyBot stack is ACTUALLY
+# running, identified by its live processes rather than a stored PID. The old
+# PID-file guard false-blocked restarts: launched interactively the script runs
+# inside this console's powershell.exe, so the lock held the CONSOLE's PID, which
+# stays alive after Ctrl+C (and PIDs get recycled) -> every restart saw a "live"
+# PID and refused. We instead look for the real artifacts: a running bot
+# (python -m polybot.main) or a separate powershell running this script.
+# main.py's own OS socket lock remains the hard backstop against a double bot.
+$selfPid = $PID
+$botProcs = @(Get-CimInstance Win32_Process -Filter "Name like '%python%'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match 'polybot\.main' })
+$wrapperProcs = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match 'run_polybot\.ps1' -and $_.ProcessId -ne $selfPid })
+if ($botProcs.Count -gt 0 -or $wrapperProcs.Count -gt 0) {
+    $ids = (($botProcs + $wrapperProcs) | ForEach-Object { $_.ProcessId }) -join ', '
+    Write-Host "A PolyBot stack is already running (PID(s): $ids). Exiting to avoid a double-launch." -ForegroundColor Red
+    Write-Host "If you just stopped the bot and it didn't fully exit, kill the lingering process: Stop-Process -Id <PID> -Force" -ForegroundColor DarkYellow
+    exit 1
 }
-"$PID" | Out-File -FilePath $lockFile -Encoding ascii -Force
+# Remove the obsolete PID lock from older versions so it can never false-block again.
+Remove-Item (Join-Path $env:TEMP "polybot_run_polybot.lock") -Force -ErrorAction SilentlyContinue
 
 # Prevent machine from sleeping
 powercfg -change -standby-timeout-ac 0
@@ -29,29 +37,31 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  PolyBot Auto-Restart Loop" -ForegroundColor Cyan
 Write-Host "  Trading: 12:01 AM - 11:30 PM ET" -ForegroundColor Cyan
 Write-Host "  Pipeline: 11:45 PM ET" -ForegroundColor Cyan
-Write-Host "  + supervised box-arb monitor (Phase 5, log-only)" -ForegroundColor Cyan
+Write-Host "  + supervised calibration monitor (measurement-only)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Phase 5 box-arb monitor (log-only) runs as a supervised child of this wrapper,
-# so one launch starts everything and each cycle refreshes it on freshly-pulled
-# code. Kill any prior instance first so repeated loops never stack monitors.
-function Start-BoxArbMonitor {
+# Long-horizon calibration monitor (measurement-only, log-only) runs as a supervised
+# child too: it snapshots open long-horizon crypto markets + the Deribit IV cross-check
+# and labels resolutions into its OWN gitignored db/calibration.db. Same kill-prior +
+# refresh-on-pulled-code pattern. Check it anytime with:
+#   python scripts/calibration_harness.py analyze   (or `ivcheck` for the instant read)
+function Start-CalibrationMonitor {
     param([string]$RepoRoot)
     Get-CimInstance Win32_Process -Filter "name like '%python%'" |
-        Where-Object { $_.CommandLine -like '*box_arb_monitor.py*' } |
+        Where-Object { $_.CommandLine -like '*calibration_harness.py*monitor*' } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 500
     $recDir = Join-Path $RepoRoot "polybot\memory\recordings"
     if (-not (Test-Path $recDir)) { New-Item -ItemType Directory -Force -Path $recDir | Out-Null }
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     try {
-        $proc = Start-Process -FilePath "python" -ArgumentList "scripts/box_arb_monitor.py" `
+        $proc = Start-Process -FilePath "python" -ArgumentList "scripts/calibration_harness.py monitor" `
             -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru `
-            -RedirectStandardOutput (Join-Path $recDir "box_arb_monitor.out.log") `
-            -RedirectStandardError  (Join-Path $recDir "box_arb_monitor.err.log")
-        Write-Host "[$ts] Box-arb monitor started (PID $($proc.Id), log-only)" -ForegroundColor DarkCyan
+            -RedirectStandardOutput (Join-Path $recDir "calibration_monitor.out.log") `
+            -RedirectStandardError  (Join-Path $recDir "calibration_monitor.err.log")
+        Write-Host "[$ts] Calibration monitor started (PID $($proc.Id), measurement-only)" -ForegroundColor DarkCyan
     } catch {
-        Write-Host "[$ts] Box-arb monitor failed to start: $_" -ForegroundColor Red
+        Write-Host "[$ts] Calibration monitor failed to start: $_" -ForegroundColor Red
     }
 }
 
@@ -60,8 +70,8 @@ while ($true) {
     Write-Host "`n[$timestamp] Pulling latest from remote..." -ForegroundColor Cyan
     git pull origin main
 
-    # Refresh the box-arb monitor on the freshly-pulled code (kills any prior one)
-    Start-BoxArbMonitor -RepoRoot $RepoRoot
+    # Refresh the supervised monitor on the freshly-pulled code (kills its prior one)
+    Start-CalibrationMonitor -RepoRoot $RepoRoot
 
     # Read mode from settings.yaml so this is the only place you need to change it
     $settingsPath = Join-Path $RepoRoot "polybot\config\settings.yaml"

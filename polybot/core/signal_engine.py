@@ -358,6 +358,64 @@ class SignalEngine:
                 f"Hold {side}: model={model_prob:.0%} mkt={market_price_for_side:.0%} "
                 f"edge={holding_edge:+.0%}")
 
+    def evaluate_late_sniper(
+            self, indicators: dict[str, dict], btc_price: float, strike_price: float,
+            seconds_remaining: float, market_ask_up: float, market_ask_down: float,
+            cb_move: float | None, cb_move_threshold: float, ask_cap: float,
+            sniper_min_edge: float, fee_rate: float = DEFAULT_FEE_RATE,
+            closes: np.ndarray | None = None) -> TradeSignal:
+        """Final-seconds 'sniper' entry — the one bot-formable late-window edge.
+
+        Mirrors the offline `momentum` signal proven in analyze_late_window.py: a sharp
+        Coinbase move (the resolution venue) just pushed price past the strike, but the
+        CLOB ask on that side has NOT yet repriced (still <= ask_cap) — a stale-book lag
+        in OUR favor. Buy that side. This is L1's own favored side (move past strike =>
+        prob>0.5), so it does NOT fight the model; the only reason the normal path rejects
+        it is the max_edge cap (built to dodge stale phantom prices, which can't tell a
+        stale-against-us phantom from this stale-in-our-favor lag). The caller bypasses
+        max_edge + the late-window time penalty for this action ONLY, and keeps every
+        safety gate (spread, depth, freshness, price-sum, min-size, pre-submit VWAP) plus
+        the whipsaw/loss-cut exit guard.
+
+        Returns LATE_SNIPE_YES / LATE_SNIPE_NO / SKIP. Deliberately does NOT apply
+        min_model_probability (the signal is move-driven, not prob-driven) but DOES keep a
+        stale-cheap floor (`sniper_min_edge`): if the ask already exceeds L1 fair, the book
+        has repriced and there is no lag left to capture.
+        """
+        if btc_price <= 0 or strike_price <= 0 or cb_move is None:
+            return TradeSignal("SKIP", 0.5, 0, 0, "sniper: no price/strike/move")
+        if abs(cb_move) < cb_move_threshold:
+            return TradeSignal("SKIP", 0.5, 0, 0,
+                               f"sniper: move {cb_move:+.1f} < {cb_move_threshold:.1f}")
+        up = cb_move > 0
+        # the move must have pushed Coinbase past the strike toward the chosen side
+        if not ((up and btc_price > strike_price) or ((not up) and btc_price < strike_price)):
+            return TradeSignal("SKIP", 0.5, 0, 0, "sniper: move not past strike")
+        ask = market_ask_up if up else market_ask_down
+        if ask is None or not (0.0 < ask < 1.0):
+            return TradeSignal("SKIP", 0.5, 0, 0, "sniper: no executable ask")
+        if ask > ask_cap:
+            return TradeSignal("SKIP", 0.5, 0, 0,
+                               f"sniper: ask {ask:.2f} > cap {ask_cap:.2f} (book already repriced)")
+        atr = indicators.get("atr", {}).get("atr", 0)
+        prob_up = self.compute_probability(btc_price, strike_price, seconds_remaining, atr,
+                                           closes=closes,
+                                           atr_candle_ts=indicators.get("atr", {}).get("candle_ts"))
+        prob = prob_up if up else 1.0 - prob_up
+        edge = prob - ask
+        if edge < sniper_min_edge:        # ask already at/above L1 fair -> no stale-cheap lag left
+            return TradeSignal("SKIP", prob, edge, 0,
+                               f"sniper: edge {edge:+.0%} < floor {sniper_min_edge:.0%} (book repriced to fair)",
+                               side="Up" if up else "Down")
+        kelly = self._kelly(prob, ask, fee_rate=fee_rate)
+        action = "LATE_SNIPE_YES" if up else "LATE_SNIPE_NO"
+        return TradeSignal(
+            action, prob, edge, kelly,
+            f"late-sniper {'Up' if up else 'Down'}: cb_move={cb_move:+.1f} past strike, "
+            f"ask={ask:.2f}<=cap model={prob:.0%} edge={edge:+.0%} "
+            f"BTC={btc_price:,.0f} strike={strike_price:,.0f}",
+            side="Up" if up else "Down")
+
     def _kelly(self, prob: float, market_price: float, fee_rate: float = DEFAULT_FEE_RATE) -> float:
         """Fee-aware Kelly. Entry fee on shares → net_b = b × (1 - fee_rate).
         Resolution fees collapse to 0 at price 0/1, no exit adjustment needed.

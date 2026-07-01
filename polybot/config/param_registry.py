@@ -21,7 +21,7 @@ class ParamSpec:
 # Validated knobs: settings.yaml values must land inside these ranges at load.
 VALIDATED_PARAMS: tuple[ParamSpec, ...] = (
     # ── L1 (the only model) ──────────────────────────────────────────────────
-    ParamSpec("atr_sigma_ratio",         "signal.atr_sigma_ratio",         1.2,   2.5,   float, 1.3,   "L1 aggressiveness — lower = sharper probs"),
+    ParamSpec("atr_sigma_ratio",         "signal.atr_sigma_ratio",         1.2,   2.5,   float, 1.3,   "L1 vol scale (vol_scaled = ATR/this) — higher = sharper/more confident probs"),
     ParamSpec("student_t_df",            "signal.student_t_df",            3,     8,     int,   5,     "L1 tail fatness — lower = fatter tails"),
     ParamSpec("min_atr",                 "signal.min_atr",                 8.0,   25.0,  float, 12.0,  "static ATR floor; runtime uses max(min_atr, 0.3 × rolling_20)"),
     ParamSpec("atr_regime_shift_threshold", "signal.atr_regime_shift_threshold", 0.40, 0.80, float, 0.60,
@@ -47,6 +47,20 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     "normal_fraction": 0.60,
     "late_max_penalty": 0.30,
     "flip_edge_premium": 0.015,
+    # Late-window sniper (gated; default OFF until its kill bar passes at a reachable
+    # RTT — the one bot-formable late-window edge; see tasks/todo.md + CLAUDE.md §6b).
+    "sniper_enabled": False,        # MASTER KILL — must stay False until the kill bar passes
+    "sniper_only": False,           # live-deploy switch: suppress base-entry BUYs (ghosted, so the
+                                    # base strategy keeps accruing evidence) — capital deploys only
+                                    # on sniper fires. The base strategy has no proven edge; never
+                                    # run it with real capital (tasks/todo.md go-live gate).
+    "sniper_late_start_s": 45.0,    # only fire in the final N seconds of the window
+    "sniper_move_window_s": 2.0,    # Coinbase move lookback (s)
+    "sniper_cb_move": 8.0,          # $ Coinbase move over the lookback to fire
+    "sniper_ask_cap": 0.92,         # only buy if the chosen side's ask is still <= this
+    "sniper_min_edge": 0.04,        # stale-cheap floor (= min_edge so the downstream net-edge/
+                                    # pre-submit gates don't silently raise it; one consistent floor)
+    "sniper_max_edge": 0.50,        # sniper's own sanity cap, replacing the bypassed 0.20
     # Risk caps
     "max_concurrent_positions": 2,
     # Schedule (mirror settings.yaml so a missing key falls back coherently)

@@ -1,0 +1,23 @@
+# PolyBot supervisor unit. Copy to /etc/systemd/system/polybot.service, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now polybot
+#   journalctl -u polybot -f
+# Adjust User= and the two paths if you did not deploy to /home/polybot/PolyBot.
+[Unit]
+Description=PolyBot supervisor (daily trade + nightly pipeline loop)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=polybot
+WorkingDirectory=/home/polybot/PolyBot
+ExecStart=/usr/bin/env bash /home/polybot/PolyBot/scripts/run_polybot.sh
+Restart=always
+RestartSec=15
+TimeoutStopSec=120
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

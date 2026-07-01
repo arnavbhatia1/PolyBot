@@ -49,23 +49,47 @@ def _top3_usd(levels: list[dict[str, Any]]) -> float:
 
 
 class WindowPathRecorder:
-    """Samples the active 5-min window at 1 Hz into the per-mode DB.
+    """Samples the active 5-min window at 1 Hz (5 Hz in the final 45s).
+
+    The late-window burst + Binance columns feed the late-window-sniper kill-bar
+    study (scripts/analyze_late_window.py): the reverse-engineered winning edge is
+    a final-seconds directional fill, and resolving whether a bot-FORMABLE signal
+    survives a realistic 135ms FOK fill needs sub-second ask/Coinbase/Binance data.
 
     Tables (created on first run):
       window_paths (in PATHS_DB, gitignored): window_id, ts, elapsed_s, bid/ask
-                   both sides, top-3 depths, coinbase_price, strike, traded
+                   both sides, top-3 depths, coinbase_price, strike, traded,
+                   binance_price, binance_cvd_10s, binance_cvd_30s,
+                   atr, model_prob_up
       window_labels (in the per-mode DB): window_id PRIMARY KEY, resolved_up,
                    final_price, price_to_beat, labeled_at
+
+    `atr` + `model_prob_up` stamp the live L1 model per sample so the offline
+    sniper harness can replicate the live `sniper_min_edge` floor exactly
+    (without them the harness is only a conservative superset of live fires).
     """
 
     def __init__(self, db: Any, clob_ws: Any, coinbase_feed: Any,
-                 chainlink_feed: Any, market_scanner: Any, http_client: Any) -> None:
+                 chainlink_feed: Any, market_scanner: Any, http_client: Any,
+                 binance_trades: Any = None, binance_feed: Any = None,
+                 indicator_engine: Any = None, signal_engine: Any = None) -> None:
         self.db = db
         self.clob_ws = clob_ws
         self.coinbase_feed = coinbase_feed
         self.chainlink_feed = chainlink_feed
         self.market_scanner = market_scanner
         self.http_client = http_client
+        # Binance aggTrade accumulator (the candidate leading/order-flow feed for the
+        # late-window sniper study). Recorded only so the offline kill-bar analyzer can
+        # test a bot-FORMABLE signal against the resolution venue (Coinbase). None-safe.
+        self.binance_trades = binance_trades
+        # L1 stamping deps. signal_engine/indicator_engine must be DEDICATED
+        # instances (same config as live, but never the trading loop's own —
+        # compute_probability mutates engine state the ghost path reads between
+        # evaluate() and ghost-record time). None-safe: columns stay NULL.
+        self.binance_feed = binance_feed
+        self.indicator_engine = indicator_engine
+        self.signal_engine = signal_engine
         self._window: dict[str, Any] | None = None
         self._discovering: int = 0          # window_ts a discovery task is running for
         self._traded: set[str] = set()
@@ -103,6 +127,7 @@ class WindowPathRecorder:
                 ON window_paths(ts);
         """)
         await self._paths_conn.commit()
+        await self._add_appended_columns()
         await self.db.conn.executescript("""
             CREATE TABLE IF NOT EXISTS window_labels (
                 window_id TEXT PRIMARY KEY,
@@ -115,6 +140,26 @@ class WindowPathRecorder:
         await self.db.conn.commit()
         await self._migrate_paths_out_of_main_db()
 
+    # New columns are APPENDED (schema is immutable truth — columns added at the
+    # end, read order follows DB order). Existing rows get NULL; analyzers filter
+    # on the relevant column being NOT NULL (post-extension data only).
+    _APPENDED_COLUMNS = (
+        ("binance_price", "REAL"),
+        ("binance_cvd_10s", "REAL"),
+        ("binance_cvd_30s", "REAL"),
+        ("atr", "REAL"),
+        ("model_prob_up", "REAL"),
+    )
+
+    async def _add_appended_columns(self) -> None:
+        cur = await self._paths_conn.execute("PRAGMA table_info(window_paths)")
+        have = {r["name"] for r in await cur.fetchall()}
+        for name, decl in self._APPENDED_COLUMNS:
+            if name not in have:
+                await self._paths_conn.execute(
+                    f"ALTER TABLE window_paths ADD COLUMN {name} {decl}")
+        await self._paths_conn.commit()
+
     async def _migrate_paths_out_of_main_db(self) -> None:
         """One-time: move pre-split window_paths rows out of the per-mode DB so
         the nightly git commit stays small."""
@@ -125,7 +170,10 @@ class WindowPathRecorder:
             return
         if rows:
             await self._paths_conn.executemany(
-                "INSERT INTO window_paths VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO window_paths (window_id, ts, elapsed_s, bid_up, ask_up, "
+                "bid_down, ask_down, depth3_bid_up, depth3_ask_up, depth3_bid_down, "
+                "depth3_ask_down, coinbase_price, strike, traded) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [tuple(r) for r in rows])
             await self._paths_conn.commit()
             logger.info(f"window_paths migrated out of per-mode DB: {len(rows)} rows")
@@ -257,6 +305,38 @@ class WindowPathRecorder:
             self.coinbase_feed and self.coinbase_feed.state.age_seconds < 5) else None
         strike = (self.chainlink_feed.get_strike(w["window_ts"])
                   if self.chainlink_feed else None)
+
+        # Binance aggTrade leading/order-flow telemetry (None when the feed is cold —
+        # never 0.0, so the analyzer can distinguish "no flow" from "stale feed").
+        bn_price = bn_cvd10 = bn_cvd30 = None
+        acc = getattr(self.binance_trades, "accumulator", None)
+        if acc is not None:
+            try:
+                if acc.latest_age_s < 5:
+                    bn_price = acc.latest_price or None
+                    bn_cvd10 = acc.get_cvd(10.0)
+                    bn_cvd30 = acc.get_cvd(30.0)
+            except Exception:
+                pass
+
+        # Live-L1 stamp (same math + config as the trading engine, dedicated
+        # instance) so offline harnesses can apply the exact live edge floor.
+        # None when any input is cold — never a 0.0 stand-in.
+        atr_v = prob_up_v = None
+        if (self.binance_feed is not None and self.indicator_engine is not None
+                and cb is not None and strike is not None):
+            try:
+                _atr_d = self.indicator_engine.compute_all(
+                    self.binance_feed.buffer).get("atr", {})
+                atr_v = _atr_d.get("atr") or None
+                if self.signal_engine is not None and atr_v:
+                    prob_up_v = round(self.signal_engine.compute_probability(
+                        cb, strike, max(0.0, 300.0 - elapsed), atr_v,
+                        closes=self.binance_feed.buffer.get_closes(),
+                        atr_candle_ts=_atr_d.get("candle_ts")), 4)
+            except Exception:
+                atr_v = prob_up_v = None
+
         self._rows.append((
             w["market_id"], round(now, 3), round(elapsed, 1),
             _f(bba_up, "best_bid"), _f(bba_up, "best_ask"),
@@ -265,6 +345,8 @@ class WindowPathRecorder:
             _top3_usd(book_dn.get("bids") or []), _top3_usd(book_dn.get("asks") or []),
             cb, strike,
             1 if w["market_id"] in self._traded else 0,
+            bn_price, bn_cvd10, bn_cvd30,
+            atr_v, prob_up_v,
         ))
 
     async def _flush(self) -> None:
@@ -273,7 +355,11 @@ class WindowPathRecorder:
         rows, self._rows = self._rows, []
         try:
             await self._paths_conn.executemany(
-                "INSERT INTO window_paths VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                "INSERT INTO window_paths (window_id, ts, elapsed_s, bid_up, ask_up, "
+                "bid_down, ask_down, depth3_bid_up, depth3_ask_up, depth3_bid_down, "
+                "depth3_ask_down, coinbase_price, strike, traded, "
+                "binance_price, binance_cvd_10s, binance_cvd_30s, atr, model_prob_up) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
             await self._paths_conn.commit()
             self.rows_written += len(rows)
         except Exception as e:
@@ -303,7 +389,12 @@ class WindowPathRecorder:
                     asyncio.create_task(self._label_pass())
             except Exception as e:
                 logger.warning(f"window recorder tick failed: {e}")
-            await asyncio.sleep(1.0)
+            # 1 Hz baseline, burst to ~5 Hz in the final 45s — the late-window sniper
+            # study needs sub-second ask/Coinbase/Binance resolution to model a 135ms
+            # FOK fill; 1 Hz averages the sweep away (the dead-naive-sniper trap).
+            w = self._window
+            late = w is not None and 255 <= (time.time() - w["window_ts"]) <= 300
+            await asyncio.sleep(0.2 if late else 1.0)
 
     async def stop(self) -> None:
         self._running = False

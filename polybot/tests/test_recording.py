@@ -48,6 +48,28 @@ class _FakeChainlink:
         return 60990.0
 
 
+class _FakeBuffer:
+    def get_closes(self):
+        return [60000.0, 60010.0, 60005.0]
+
+
+class _FakeBinanceFeed:
+    def __init__(self):
+        self.buffer = _FakeBuffer()
+
+
+class _FakeIndicatorEngine:
+    def compute_all(self, buffer):
+        return {"atr": {"atr": 25.0, "passes": True, "candle_ts": 7}}
+
+
+class _FakeSignalEngine:
+    def compute_probability(self, btc_price, strike_price, seconds_remaining,
+                            atr, closes=None, atr_candle_ts=None):
+        assert atr == 25.0 and atr_candle_ts == 7
+        return 0.7123
+
+
 def test_top3_usd_sums_first_three_levels():
     levels = [{"price": "0.5", "size": "10"}, {"price": "0.6", "size": "10"},
               {"price": "0.7", "size": "10"}, {"price": "0.9", "size": "1000"}]
@@ -77,6 +99,32 @@ async def test_window_recorder_samples_and_flushes(db, tmp_path, monkeypatch):
     assert r["strike"] == 60990.0 and r["coinbase_price"] == 61000.0
     assert r["traded"] == 1
     assert 0 <= r["elapsed_s"] <= 300
+    # No L1-stamping deps wired -> the appended columns stay NULL (never 0.0).
+    assert r["atr"] is None and r["model_prob_up"] is None
+    await rec.stop()
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_window_recorder_stamps_live_l1(db, tmp_path, monkeypatch):
+    import polybot.recording as recording
+    monkeypatch.setattr(recording, "PATHS_DB", tmp_path / "paths.db")
+    await db.initialize()
+    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), coinbase_feed=_FakeCoinbase(),
+                             chainlink_feed=_FakeChainlink(), market_scanner=None,
+                             http_client=None, binance_feed=_FakeBinanceFeed(),
+                             indicator_engine=_FakeIndicatorEngine(),
+                             signal_engine=_FakeSignalEngine())
+    await rec.ensure_tables()
+    window_ts = int(time.time() // 300) * 300
+    rec._window = {"market_id": f"btc-updown-5m-{window_ts}", "window_ts": window_ts,
+                   "token_up": "tu", "token_down": "td"}
+    rec._sample()
+    await rec._flush()
+    cur = await rec._paths_conn.execute("SELECT atr, model_prob_up FROM window_paths")
+    r = (await cur.fetchall())[0]
+    assert r["atr"] == 25.0
+    assert r["model_prob_up"] == 0.7123
     await rec.stop()
     await db.close()
 

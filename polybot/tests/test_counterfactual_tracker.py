@@ -136,35 +136,36 @@ def _make_hold_ctx(**overrides):
     return base
 
 
-def test_reentry_replaces_prior_positions_worst_moment(tracker):
-    """A flip re-entry must never inherit the previous position's worst moment,
-    even when the prior moment had a deeper holding_edge."""
+def test_concurrent_positions_track_independently(tracker):
+    """Two positions in one window (the normal entry + a late-window sniper stack)
+    each track their OWN worst moment, keyed by position_id — neither clobbers the
+    other (the old market_id keying silently dropped both at resolution)."""
     mid = "btc-updown-5m-1000000"
-    pos1 = _make_pos(market_id=mid)
+    pos1 = _make_pos(market_id=mid)                                  # id=1, Up
     pos2 = _make_pos(market_id=mid, side="Down", entry_price=0.55)
     pos2["id"] = 2
     tracker.track_hold_moment(mid, pos1, _make_hold_ctx(holding_edge=-0.30))
     tracker.track_hold_moment(mid, pos2, _make_hold_ctx(holding_edge=-0.05))
-    worst = tracker._hold_worst[mid]
-    assert worst["position_id"] == 2
-    assert worst["side"] == "Down"
-    assert worst["worst_holding_edge"] == -0.05
+    assert tracker._hold_worst[1]["side"] == "Up"
+    assert tracker._hold_worst[1]["worst_holding_edge"] == -0.30
+    assert tracker._hold_worst[2]["side"] == "Down"
+    assert tracker._hold_worst[2]["worst_holding_edge"] == -0.05
 
 
 def test_watch_clears_scalped_positions_hold_state(tracker):
-    """Scalping a position discards its hold-worst state; a later position's
-    state in the same market is left alone."""
+    """Scalping a position discards ITS hold-worst state (keyed by position_id); a
+    concurrently-held position's state in the same window is left intact."""
     mid = "btc-updown-5m-1000000"
-    pos1 = _make_pos(market_id=mid)
+    pos1 = _make_pos(market_id=mid)                       # id=1
     tracker.track_hold_moment(mid, pos1, _make_hold_ctx(holding_edge=-0.30))
     tracker.watch(pos1, _make_scalp_ctx())
-    assert mid not in tracker._hold_worst
+    assert 1 not in tracker._hold_worst                   # pos1's slot cleared on scalp
 
     pos2 = _make_pos(market_id=mid)
     pos2["id"] = 2
     tracker.track_hold_moment(mid, pos2, _make_hold_ctx(holding_edge=-0.10))
     tracker.watch(pos1, _make_scalp_ctx())  # stale watch for pos1 must not evict pos2
-    assert tracker._hold_worst[mid]["position_id"] == 2
+    assert tracker._hold_worst[2]["position_id"] == 2
 
 
 def test_record_hold_resolution_keys_to_resolving_position(tracker, memory_dir):
