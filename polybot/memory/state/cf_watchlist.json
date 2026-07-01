@@ -1,38 +1,4 @@
 {
-  "saved_at": 1782943219.4561417,
-  "watchlist": [
-    {
-      "position_id": 8808,
-      "market_id": "btc-updown-5m-1782942900",
-      "side": "Down",
-      "entry_price": 0.53,
-      "size": 14.74,
-      "shares_held": 26.896328301886793,
-      "fee_rate": 0.07,
-      "scalp_exit_price": 0.29,
-      "scalp_pnl": -6.9790644684905665,
-      "scalp_gain_pct": -0.4734779150943397,
-      "holding_edge_at_scalp": -0.07023524533550013,
-      "model_prob_at_scalp": 0.21976475466449985,
-      "market_price_at_scalp": 0.29,
-      "seconds_remaining_at_scalp": 279.326438,
-      "exit_threshold_used": -0.1,
-      "effective_exit_threshold": -0.05706536615584942,
-      "loss_cut": false,
-      "strike_price": 60729.14440951378,
-      "btc_at_scalp": 60761.43,
-      "flow_score": 0.0692,
-      "spot_flow_signal": -0.17152125836380638,
-      "regime": "unknown",
-      "btc_distance_atr": 1.043,
-      "aux_signals": {
-        "coinbase_cvd_60s": -3.0226,
-        "coinbase_taker_60s": 0.3076,
-        "coinbase_taker_n": 564,
-        "cross_venue_gap": -62.85,
-        "fast_realized_vol_60s": 0.000123
-      },
-      "watched_at": 1782942921.5906284
-    }
-  ]
+  "saved_at": 1782943791.743573,
+  "watchlist": []
 }
