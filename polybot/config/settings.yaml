@@ -25,12 +25,19 @@ execution:
   passive_exit_enabled: true
   passive_exit_timeout_s: 10.0
 
-  # Paper mode realism (ignore for live). Latency matched to the measured Canada-VPN
-  # warm POST RTT (~0.135s); retune to the Dublin VPS (~0.04s) when that deploy lands.
+  # Paper mode realism (ignore for live). Calibrated to the operator's MEASURED warm POST
+  # RTT to the Polymarket CLOB through the IRELAND VPN: TTFB ~0.118s / 0.138s warm, ~0.352s
+  # cold, 3/3 reads OK (Cloudflare is NOT blocking the Ireland IP — good). This is the live
+  # path, so paper fills now behave like live => the paper->live switch barely changes results.
+  # If the host changes, re-measure and update (a VPS *in* Dublin would roughly halve this to
+  # ~40-60ms and strengthen the latency-sensitive sniper). network_fail_rate is still an
+  # ESTIMATE — no live order-VOLUME sample yet; calibrate from the observed live FOK success
+  # rate, and run verify_keys.py to confirm order POSTs (not just GETs) clear Cloudflare.
   slippage_impact_pct: 0.03
-  paper_latency_mean_s: 0.16
-  paper_latency_jitter_s: 0.04
-  paper_network_fail_rate: 0.18
+  paper_latency_mean_s: 0.13       # Ireland-VPN warm POST RTT (measured ~0.118-0.138)
+  paper_latency_jitter_s: 0.02     # warm spread (gauss std)
+  paper_latency_floor_s: 0.118     # fastest measured warm RTT — the latency floor
+  paper_network_fail_rate: 0.03    # ESTIMATE; calibrate from live FOK success rate
 
 # =============================================================================
 #  SECTION 2: SIGNAL — L1 fair-value anchor + entry gates + exit engine

@@ -1,0 +1,44 @@
+{
+  "position_id": 8466,
+  "market_id": "btc-updown-5m-1782845400",
+  "side": "Up",
+  "timestamp": "2026-06-30T19:05:10.243561+00:00",
+  "actual": {
+    "exit_reason": "scalp",
+    "exit_price": 0.95,
+    "pnl": 23.850413,
+    "gain_pct": 1.019684
+  },
+  "counterfactual": {
+    "resolution_price": 1.0,
+    "pnl": 26.586633,
+    "gain_pct": 1.136667
+  },
+  "delta_pnl": 2.736221,
+  "scalp_was_optimal": false,
+  "context_at_scalp": {
+    "holding_edge": -0.1427449897704237,
+    "model_prob": 0.7972550102295762,
+    "market_price": 0.94,
+    "seconds_remaining": 78.240846,
+    "exit_threshold_used": -0.1,
+    "effective_exit_threshold": -0.1359378206804613,
+    "loss_cut": false,
+    "entry_price": 0.45000000000000007,
+    "fee_rate": 0.07,
+    "strike_price": 58500.884399766226,
+    "btc_at_scalp": 58539.74,
+    "btc_at_expiry": 58544.30113232392,
+    "chainlink_price_to_beat": 58502.889891826,
+    "chainlink_final_price": 58544.30113232392,
+    "flow_score": -0.5249,
+    "spot_flow_signal": 0.007942151248585185,
+    "regime": "unknown",
+    "btc_distance_atr": 0.66,
+    "coinbase_cvd_60s": 0.1949,
+    "coinbase_taker_60s": 0.5252,
+    "coinbase_taker_n": 513,
+    "cross_venue_gap": -107.28,
+    "fast_realized_vol_60s": 5.1e-05
+  }
+}
