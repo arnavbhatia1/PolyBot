@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import random
 import sqlite3
 import statistics
 from collections import defaultdict
@@ -77,18 +78,16 @@ def tstat(xs: list[float]):
 
 def block_bootstrap_p10(daily: list[float], iters: int = 2000) -> float:
     """Resample whole days with replacement; p10 of the resampled day-mean.
-    Deterministic LCG (no Math.random/Date dependency)."""
+    Seeded stdlib RNG, deterministic across runs. (A raw LCG's low bits cycle
+    with period 8: at n_days=8 every draw became a permutation of all 8 days,
+    so p10 degenerated to exactly the mean and the leg checked nothing.)"""
     if len(daily) < 2:
         return float("nan")
     n = len(daily)
-    seed = 12345
+    rng = random.Random(12345)
     means = []
     for _ in range(iters):
-        s = 0.0
-        for _ in range(n):
-            seed = (1103515245 * seed + 12345) & 0x7FFFFFFF
-            s += daily[seed % n]
-        means.append(s / n)
+        means.append(sum(daily[rng.randrange(n)] for _ in range(n)) / n)
     means.sort()
     return means[int(0.10 * len(means))]
 
