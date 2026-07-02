@@ -23,6 +23,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 from polybot.agents.outcome_reviewer import OutcomeReviewer  # noqa: E402
+from polybot.agents.pipeline_analytics import utc_ts_to_et_date  # noqa: E402
 
 
 def main() -> None:
@@ -36,7 +37,10 @@ def main() -> None:
         ctx = (t.get("indicator_snapshot") or {}).get("trade_context") or {}
         if ctx.get("entry_phase") != "late_sniper":
             continue
-        snipes.append(dict(day=(t.get("timestamp") or "")[:10], correct=t.get("correct"),
+        # ET day buckets — must match the harness's ET day-clustering (a UTC
+        # [:10] slice would shift every 20:00-24:00 ET fill into the next day).
+        snipes.append(dict(day=utc_ts_to_et_date(t.get("timestamp") or ""),
+                           correct=t.get("correct"),
                            pnl=t.get("pnl"), gain=t.get("gain_pct"),
                            reason=t.get("exit_reason")))
     if not snipes:

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 from polybot.agents.pipeline_analytics import utc_ts_to_et_date as _utc_ts_to_et_date
-from polybot.execution.base import DEFAULT_FEE_RATE
+from polybot.execution.base import DEFAULT_FEE_RATE, exit_fee_usdc
 
 _ET = ZoneInfo("America/New_York")
 
@@ -197,7 +197,7 @@ class CounterfactualTracker:
         worst_sell_price = ctx["worst_market_price"]
         fee_rate = ctx["fee_rate"]
         shares = ctx["shares_held"]
-        exit_fee = fee_rate * shares * worst_sell_price * (1.0 - worst_sell_price)
+        exit_fee = exit_fee_usdc(shares, worst_sell_price, fee_rate)
         hypo_revenue = shares * worst_sell_price - exit_fee
         hypo_pnl = hypo_revenue - ctx["size"]
         hypo_gain_pct = hypo_pnl / ctx["size"] if ctx["size"] > 0 else 0

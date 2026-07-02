@@ -28,12 +28,13 @@ bar is the latency the host must hit. --max-slip is the FOK limit tolerance (the
 reachability sensitivity; re-run at 0.02 for a strict read).
 
 FIDELITY CAVEAT (live vs this harness): the live sniper (signal_engine.evaluate_late_sniper)
-additionally requires an L1 model edge >= sniper_min_edge, which this momentum() signal does
-NOT (it has no prob/edge floor — L1 prob is not reconstructable from window_paths, which omits
-ATR/closes). So live trades the higher-conviction SUBSET of these fills: this bar is a
-CONSERVATIVE directional gate, and its n_fills overstates live's count. Before any deploy,
-ALSO paper-shadow the sniper (sniper_enabled in PAPER mode) for >= the same span and compare
-the realized fills/edge head-to-head. (Exact match would require recording ATR in window_paths.)
+additionally requires an L1 model edge >= sniper_min_edge, which this momentum() signal
+deliberately does NOT (no prob/edge floor — a conservative directional gate whose n_fills
+overstates live's count; live trades the higher-conviction SUBSET). window_paths now stamps
+the live-L1 `atr` and `model_prob_up` per sample (recording.py appended columns), so an exact
+sniper_min_edge-subset read is possible if ever needed. Before any deploy, ALSO paper-shadow
+the sniper (sniper_enabled in PAPER mode) for >= the same span and compare the realized
+fills/edge head-to-head.
 """
 from __future__ import annotations
 
@@ -42,13 +43,14 @@ import math
 import sqlite3
 import statistics
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 PATHS_DB = ROOT / "polybot" / "db" / "window_paths.db"
 MAIN_DB = ROOT / "polybot" / "db" / "polybot_paper.db"
-ET = timezone(timedelta(hours=-4))
+ET = ZoneInfo("America/New_York")  # DST-correct; a fixed UTC-4 mis-buckets EST days
 FEE_RATE = 0.07
 LATE_START = 255.0          # only the final 45s
 FILL_GAP_MAX = 0.45         # if the next sample is > this many s away, can't model the fill
@@ -309,16 +311,19 @@ def main():
                 print(f"{name:>26}  (no fills)")
                 continue
             passed = (r["t_day"] >= 2.0 and r["p10"] > 0 and r["n_days"] >= 8
-                      and r["n_fills"] >= MIN_FILLS and name.startswith(("momentum", "orderflow", "lead")))
+                      and r["days_pos"] >= 6 and r["n_fills"] >= MIN_FILLS
+                      and name.startswith(("momentum", "orderflow", "lead")))
             bar = "PASS" if passed else ("--" if name.startswith("CONTROL") else "fail")
             print(f"{name:>26} {r['n_fills']:>6} {r['n_days']:>5} {r['win_rate']:>6.1%} "
                   f"{r['avg_fill']:>8.3f} {r['net_per_sh']:>+8.4f} {r['mean_net_day']:>+8.4f} "
                   f"{r['t_day']:>+6.2f} {r['p10']:>+7.4f} {r['days_pos']:>4}/{r['n_days']:<2} [{bar}]")
 
     print("\nKILL BAR: a signal PASSES only with t_day>=2.0 AND p10>0 AND >=8 ET days "
-          f"AND >={MIN_FILLS} fills, AT A REACHABLE RTT. CONTROL should be ~0 (G-M) at every "
-          "RTT. Thresholds are pre-registered; the binding gate is the SAME threshold holding "
-          "FORWARD. The RTT at which momentum first clears the bar = the latency you must hit.")
+          f"AND >=6 positive days AND >={MIN_FILLS} fills, AT A REACHABLE RTT. The one leg "
+          "the print cannot enforce: CONTROL must be ~0 (G-M) at every RTT — check its row "
+          "by eye. Thresholds are pre-registered; the binding gate is the SAME threshold "
+          "holding FORWARD. The RTT at which momentum first clears the bar = the latency "
+          "you must hit.")
 
 
 if __name__ == "__main__":

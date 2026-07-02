@@ -9,7 +9,8 @@ def log_return(entry_price: float, exit_price: float) -> float:
     return math.log(exit_price / entry_price)
 
 def lag1_autocorr(closes: np.ndarray, lookback: int) -> float:
-    """Shared by signal_engine L2 and RegimeDetector — prevents drift between callers."""
+    """Lag-1 autocorrelation of returns over the trailing lookback window
+    (feeds the L1 vol scale via signal_engine.compute_regime_factor)."""
     if len(closes) < lookback + 2:
         return 0.0
     window = closes[-(lookback + 1):]

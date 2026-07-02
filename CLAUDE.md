@@ -64,20 +64,26 @@ reprices.
   `sniper_move_window_s` (2s) ≥ `sniper_cb_move` ($8) pushed price past strike
   AND the chosen side's ask ≤ `sniper_ask_cap` (0.92). The main loop wakes on
   Coinbase ticks when enabled.
-- **What it bypasses**: ONLY `max_edge` (→ `sniper_max_edge` 0.50, at both the
-  edge-cap and pre-submit gates) and the late-window time penalty. Every other
-  gate stays — adverse selection, edge-decay, depth, net-edge, min-size,
-  pre-submit VWAP re-check, feed freshness, and an L1 edge floor
-  (`sniper_min_edge` = `min_edge`).
+- **What it bypasses**: `max_edge` (→ `sniper_max_edge` 0.50, at both the
+  edge-cap and pre-submit gates), the late-window time penalty, and the base
+  signal-level gates `min_model_probability`, `min_kelly`, and the ATR
+  percentile (deliberate and harness-faithful — the signal is move-driven, not
+  prob-driven; `sniper_min_edge` = `min_edge` is the floor and the $1 min-size
+  backstops tiny-Kelly fires). Every execution-quality gate stays — adverse
+  selection, edge-decay, depth, net-edge, min-size, pre-submit VWAP re-check,
+  feed freshness, flip hurdle.
 - **Kill bar** (deployment authority, at the host's measured RTT):
   `analyze_late_window.py` momentum `t_day ≥ 2.0` AND block-bootstrap `p10 > 0`
-  over ≥ 8 clean ET days, ≥ 6 positive, ≥ 40 fills, net of fee, control ~0 —
+  over ≥ 8 clean ET days, ≥ 6 positive, ≥ 40 fills, net of fee (the PASS print
+  enforces all of these; the control-~0 leg is read by eye from its row) —
   PLUS the paper-shadow tracking the harness (`sniper_shadow_status.py`).
   Current status, decision table, and runbook: `tasks/todo.md`.
 - **Sniper-only mode** (`late_window.sniper_only`) — the go-live switch:
   base-entry BUYs are suppressed and recorded as `sniper_only` ghosts (free
-  evidence), capital deploys only on sniper fires. Live recipe: `mode: live` +
-  `sniper_enabled: true` + `sniper_only: true`.
+  evidence), capital deploys only on sniper fires. ON in the paper shadow too,
+  so the shadow trades the same fire population live would (with it off, the
+  base path consumed the high-conviction sniper moments first). Live recipe:
+  `mode: live` + `sniper_enabled: true` + `sniper_only: true`.
 - **Post-live kill rule**: re-run the harness every 2-3 days; trailing-4-day
   lenient mean < +2¢/sh or trailing-8-day t < 2 → set `sniper_enabled: false`.
 
@@ -112,7 +118,7 @@ prob_up    = StudentT_CDF(df, z * sqrt(df/(df-2)))        # df clamped ≥3
 | Chosen-side prob | ≥ `min_model_probability` (0.56) |
 | Edge | ≥ `min_edge` (0.04; flip premium scales it — §6) |
 | Kelly (fee-aware) | ≥ `min_kelly` (0.01); `b_eff = b*(1-fee_rate)` |
-| Spread | `spread/2 + EFFECTIVE_FEE_PEAK ≤ max_spread` (0.10) |
+| Spread | `spread/2 + EFFECTIVE_FEE_PEAK ≤ max_spread` (0.10); both sides unavailable = skip |
 | Book depth | ≥ `min_book_depth_usd` ($50) on the chosen side |
 | Price sum | `price_up + price_down ∈ [0.98, 1.02]` |
 | Book freshness | both sides' WS books ≤ 10s old |
@@ -141,6 +147,9 @@ size  = min(size, side_depth * max_book_fill_pct)      # 0.50
 if size < 1.0: skip
 ```
 
+`kelly` is the fee-aware Kelly already scaled by `math.kelly_fraction` (0.08) —
+fractional Kelly, not full.
+
 - **Circuit breaker**: tier-locked floor at $100/150/200/... milestones
   (floor = tier × 0.85; sqrt Kelly interpolation down to 0.40×; tier never
   resets down; persists via `peak_bankroll`).
@@ -150,10 +159,13 @@ if size < 1.0: skip
 ## 5. Orders
 
 FOK via `py-clob-client-v2`, up to 3 attempts with jittered backoff — only
-exchange-confirmed rejections retry; ambiguous outcomes never resubmit
-(double-fill guard). **Latency is at the floor** (~120ms warm POST RTT,
-measured): presigned signatures off the hot path, WS-only book pre-check + fill
-VWAP, tick-size/neg-risk/fee + contract-version caches prewarmed per window,
+provably-unposted failures retry (exchange-confirmed rejects + pre-POST local
+errors); ambiguous outcomes never resubmit (double-fill guard). **Latency is at
+the floor** (~120ms warm POST RTT, measured): SELL signatures pre-armed on
+prior HOLD ticks (BUY pre-signs concurrently with the submit — a best-effort
+race; inline sign is ~3-5ms), WS-only book pre-check, BUY fill VWAP from WS
+trade events (SELL fill price via REST after the fill, off the latency path),
+tick-size/neg-risk/fee + contract-version caches prewarmed per window,
 warm pooled HTTP/2 singleton (keepalive_expiry 60s > 5s ping, connect timeout
 5s, TCP_NODELAY). The only remaining lever is geographic
 (docs/DEPLOY_ORACLE_VPS.md, ~40ms EU VPS). Live boot: key+funder required,
@@ -170,7 +182,8 @@ value); the blend is stamped so the phantom-bid SELL re-verify gates against
 the same number.
 
 Branches in order: **loss-cut** (market < entry×0.65, <90s left, BTC wrong
-side of strike by >0.5×ATR), **deep-loss hold** (holding_edge < −0.10 and
+side of strike by >0.5×ATR; locks the loss only when holding_edge ≤ 0, else
+HOLDs the residual), **deep-loss hold** (holding_edge < −0.10 and
 market < entry → binary residual beats locking the loss), **scalp**
 (holding_edge ≤ effective threshold, outside the whipsaw cushion), else
 **hold**. No confidence overrides.
@@ -193,13 +206,16 @@ tested but stays off; never a reason to rest new quotes.
 ## 7. Recorders + evidence stream
 
 - **Window-path recorder** (`recording.py`, in-process; 1 Hz, 5 Hz in the final
-  45s): both tokens' BBO + top-3 depth, Coinbase mid, strike, Binance
-  price/CVD, live-L1 ATR + prob stamp (NULL on cold feeds, never 0.0) for
-  EVERY window (~288/day, self-discovering). Tables `window_paths` (gitignored
-  sidecar DB) / `window_labels`; 90-day retention nightly. **This is the sniper
-  kill-bar feed and the post-live kill-rule input.**
-- **Tape recorder**: every CLOB print → `memory/recordings/*.jsonl`
-  (gitignored).
+  45s): both tokens' BBO + touch sizes + top-3 depth + book ages, Coinbase
+  price/BBO/CVD, Chainlink live price + age (the resolution venue), strike,
+  Binance price/CVD/depth20-sides, live-L1 ATR + prob stamp (NULL on cold
+  feeds, never 0.0) for EVERY window (~288/day, self-discovering). Tables
+  `window_paths` (gitignored sidecar DB) / `window_labels`; 90-day retention
+  nightly. **This is the sniper kill-bar feed, the post-live kill-rule input,
+  and the pivot-research corpus — everything already flowing through the
+  process gets persisted.**
+- **Tape recorder**: every CLOB print (incl. the exchange's own timestamp +
+  fee_rate_bps) → `memory/recordings/*.jsonl` (gitignored).
 - **Wallet fingerprints** (`wallets.py`): nightly data-api ingestion →
   per-wallet markout → donor/noise/sharp (`wallet_stats`; write-only, no
   decision-time reader).
@@ -254,7 +270,9 @@ polybot/
                          recordings/ (gitignored); state/. Layout: polybot/paths.py
   discord_bot/           monitoring + control commands (§12)
   db/models.py           SQLite per mode (positions, trade_history, bankroll,
-                         peak_bankroll, window_paths, window_labels, wallet_*)
+                         peak_bankroll; window_labels + wallet_stats live here
+                         too; window_paths + wallet_trades sit in gitignored
+                         sidecar DBs — window_paths.db, wallet_tape.db)
 scripts/
   run_polybot.ps1        daily supervisor (Linux port: run_polybot.sh + polybot.service;
                          VPS runbook: docs/DEPLOY_ORACLE_VPS.md)

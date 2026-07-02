@@ -77,6 +77,17 @@ directional gate).
   fails, no-go at 135ms (re-read the 40ms VPS column before retiring the
   thesis).
 
+**Shadow-population fix (07-02 audit):** with `sniper_only: false`, the base
+path consumed every high-conviction sniper moment first (prob ≥ 0.56 + edge >
+0.20 died as `edge_cap` ghosts; 0.04–0.20 traded as time-penalized base
+entries), so `late_sniper` fills sampled only the prob < 0.56 sliver — the
+shadow could not validate the go-live population. settings.yaml now runs the
+paper shadow with **`sniper_only: true`** (the live recipe minus `mode`),
+effective at the next midnight restart. Interpreting the shadow: fills before
+the 07-03 restart = the starved sliver; from 07-03 on = the true live
+population. Base-strategy evidence continues as ghosts (its gate is closed
+final — nothing is lost).
+
 **Next reads:**
 - [ ] **2026-07-03 (morning, after the 07-02 ET day completes):** re-run
       `python scripts/analyze_late_window.py --rtt-sweep 0.135 --max-slip 0.05`
@@ -84,8 +95,9 @@ directional gate).
       passes and the operator waives/short-cuts the shadow-span leg, go live per
       the runbook below; otherwise
 - [ ] **~2026-07-08:** shadow-span leg (`python scripts/sniper_shadow_status.py`
-      vs the harness at 0.135) — ~10–15 expected shadow fills; fidelity tracking,
-      not an independent t-test. Operator's call on span sufficiency.
+      vs the harness at 0.135) — fidelity tracking, not an independent t-test;
+      weight the post-07-03 (representative-population) fills. Operator's call
+      on span sufficiency.
 
 **Go-live runbook once the bar passes (all operator-run, in order):**
 1. `python scripts/verify_keys.py` — GET-auth + balance/allowance preflight
@@ -121,6 +133,15 @@ directional gate).
 - settings.yaml says "Ireland-VPN" where docs/DEPLOY_ORACLE_VPS.md says "Atlanta
   VPN" for the same measured ~118ms — operator to reconcile the label; the
   measured RTT (warm 119–123ms re-probed 07-01) matches calibration either way.
+- Mid-session stranded-fill residual (accepted): a "delayed" FOK that actually
+  matched + a lost cancel race + 3 failed REST fill-lookups leaves shares
+  on-chain with no DB row until the next boot's orphan/reconcile pass picks
+  them up (live_trader `_settle_unmatched_order`). The orphan machinery is the
+  designed recovery; no mid-session fix planned.
+- Book-walk math is deliberately triplicated (base `compute_buy_vwap` /
+  live `_estimate_fok_walk` / paper `_walk_book`) — the gate↔pre-check pair is
+  now locked by `test_mirror_invariants.py`; consolidate only post-measurement
+  if ever.
 
 ---
 
@@ -138,6 +159,9 @@ directional gate).
 - **VPS option** (`docs/DEPLOY_ORACLE_VPS.md`): Stockholm free box ≈ ~40ms RTT
   (~3× better than the current ~120ms) — strengthens the latency-sensitive
   sniper. Do not change infra and flip to live in the same move.
+- **wallet_tape.db growth:** 3.4 GB and ~200 MB/day with deliberately no
+  retention (accumulation-forever design). Local-only, gitignored; revisit if
+  disk pressure ever matters.
 
 ---
 

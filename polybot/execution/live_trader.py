@@ -1300,9 +1300,10 @@ class LiveTrader(BaseTrader):
     async def post_resting_sell(self, position: dict[str, Any], token_id: str,
                                 level: float, timeout_s: float) -> bool:
         """Post a GTD resting SELL of the position's shares at ``level``. The GTD
-        self-expires (~60s) as a safety net; the bot cancels explicitly at the
-        shorter ``timeout_s``. Returns True if an order is resting, False if it
-        could not be posted (caller falls straight to the FOK)."""
+        self-expires (>= _GTD_REST_EXPIRY_S, 120s) as a safety net; the bot
+        cancels explicitly at the shorter ``timeout_s``. Returns True if an order
+        is resting, False if it could not be posted (caller falls straight to
+        the FOK)."""
         if self._latched_auth_error is not None:
             return False
         pos_id = position.get("id", -1)

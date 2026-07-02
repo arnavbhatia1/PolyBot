@@ -299,6 +299,10 @@ class ClobWebSocket:
             "size": msg.get("size", "0"),
             "side": msg.get("side", ""),
             "timestamp": time.time(),
+            # Exchange-side fields, kept for the tape (sub-second tape-fair
+            # pricing + per-print WS latency need the exchange's own clock).
+            "exchange_ts": msg.get("timestamp", ""),
+            "fee_rate_bps": msg.get("fee_rate_bps", ""),
         }
         self.last_trade[asset_id] = trade
         # Optional tape hook (recording.TapeRecorder.on_trade) — must not raise.

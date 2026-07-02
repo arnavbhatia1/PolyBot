@@ -2,8 +2,8 @@
 
 Two ghost sources:
 - Downstream gate veto: signal fired BUY_YES/BUY_NO but a gate in
-  _evaluate_signal_and_enter blocked entry (adverse selection, edge cap,
-  late-window underdog, pre-submit drift, spread, etc.).
+  _evaluate_signal_and_enter blocked entry (sniper_only suppression, adverse
+  selection, edge-decay, edge cap, flip hurdle, net-edge, pre-submit drift).
 - Sub-threshold-prob SKIP: signal's favored side was below
   min_model_probability — recorded so the pipeline has resolution data on
   the low-confidence region the entry gate filters out.
@@ -11,9 +11,8 @@ Two ghost sources:
 Ghosts give the learning loop 5–10× more resolution data per day — the evidence
 stream for any future gate evaluation. Each ghost resolves at window close
 (winning side → 1, losing → 0) into ghost_outcomes/ and folds into the nightly
-record rollups consumed by the exit-value model refit, wallet-markout
-classification, and the counterfactual replay harness. (No entry-side
-optimizer/calibrator consumes them — entry forecasting has no edge.)
+record rollups. (No entry-side optimizer/calibrator consumes them — entry
+forecasting has no edge.)
 """
 from __future__ import annotations
 

@@ -125,7 +125,8 @@ class BTCMarketScanner:
             logger.warning(
                 f"Gamma market '{slug}' has fewer prices/tokens than outcomes "
                 f"(outcomes={len(outcomes)}, prices={len(prices_raw)}, "
-                f"tokens={len(clob_tokens_raw)}) — trading disabled for this contract"
+                f"tokens={len(clob_tokens_raw)}) — downstream book/spread gates "
+                f"will skip this contract"
             )
 
         for i, outcome in enumerate(outcomes):
@@ -257,64 +258,6 @@ class BTCMarketScanner:
         best_price = float(asks[0]["price"])
         total_depth = sum(float(a["size"]) for a in asks)
         return (best_price, total_depth)
-
-    @staticmethod
-    def clob_best_bid(book: dict[str, Any]) -> tuple[float, float]:
-        """(best_bid_price, total_bid_depth); bids are price-desc. (0.0, 0.0) if empty."""
-        bids = book.get("bids", [])
-        if not bids:
-            return (0.0, 0.0)
-        best_price = float(bids[0]["price"])
-        total_depth = sum(float(b["size"]) for b in bids)
-        return (best_price, total_depth)
-
-    @staticmethod
-    def clob_walk_asks(book: dict[str, Any], shares_needed: float) -> float:
-        """VWAP buy price across price-asc ask levels. FOK: 0.0 if it can't fill 100%."""
-        asks = book.get("asks", [])
-        if not asks or shares_needed <= 0:
-            return 0.0
-        filled = 0.0
-        cost = 0.0
-        for level in asks:
-            available = float(level["size"])
-            take = min(available, shares_needed - filled)
-            cost += take * float(level["price"])
-            filled += take
-            if filled >= shares_needed:
-                break
-        if filled < shares_needed:
-            return 0.0
-        return cost / filled
-
-    @staticmethod
-    def clob_walk_bids(book: dict[str, Any], shares_needed: float) -> float:
-        """VWAP sell price across price-desc bid levels. FOK: 0.0 if it can't fill 100%."""
-        bids = book.get("bids", [])
-        if not bids or shares_needed <= 0:
-            return 0.0
-        filled = 0.0
-        proceeds = 0.0
-        for level in bids:
-            available = float(level["size"])
-            take = min(available, shares_needed - filled)
-            proceeds += take * float(level["price"])
-            filled += take
-            if filled >= shares_needed:
-                break
-        if filled < shares_needed:
-            return 0.0
-        return proceeds / filled
-
-    @staticmethod
-    def clob_ask_depth(book: dict[str, Any]) -> float:
-        """Total shares available on the ask side."""
-        return sum(float(l["size"]) for l in book.get("asks", []))
-
-    @staticmethod
-    def clob_bid_depth(book: dict[str, Any]) -> float:
-        """Total shares available on the bid side."""
-        return sum(float(l["size"]) for l in book.get("bids", []))
 
     # --- NegRisk execution prices (accounts for cross-matching) ---
 

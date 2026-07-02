@@ -34,7 +34,8 @@ execution:
   # If the host changes, re-measure and update (a VPS *in* Dublin would roughly halve this to
   # ~40-60ms and strengthen the latency-sensitive sniper). network_fail_rate is still an
   # ESTIMATE — no live order-VOLUME sample yet; calibrate from the observed live FOK success
-  # rate, and run verify_keys.py to confirm order POSTs (not just GETs) clear Cloudflare.
+  # rate, and run smoke_order_test.py --confirm to prove order POSTs clear Cloudflare
+  # (verify_keys.py covers GETs only).
   slippage_impact_pct: 0.03
   paper_latency_mean_s: 0.13       # Ireland-VPN warm POST RTT (measured ~0.118-0.138)
   paper_latency_jitter_s: 0.02     # warm spread (gauss std)
@@ -44,10 +45,10 @@ execution:
 # =============================================================================
 #  SECTION 2: SIGNAL — L1 fair-value anchor + entry gates + exit engine
 #
-#  Entry is inventory sourcing, not forecasting (the CLOB price beats every
-#  feature stack — tasks/todo.md). L1 exists to anchor the fee/spread/Kelly
-#  gates; the bot's edge is the exit engine. All knobs are operator-owned —
-#  the nightly knob-tuning pipeline was deleted with the entry stack.
+#  The deployable edge is the late-window sniper (SECTION 3b); the base entry
+#  strategy below has no proven edge and runs in paper only as the evidence
+#  engine (the CLOB price beats every feature stack — tasks/todo.md). L1
+#  anchors the fee/spread/Kelly gates. All knobs are operator-owned.
 # =============================================================================
 signal:
   # --- Edge gates ---
@@ -56,9 +57,9 @@ signal:
   min_model_probability: 0.56 # Model must be x% confident in chosen direction
   min_kelly: 0.01             # Kelly fraction must be at least x% (filters near-worthless bets)
 
-  # --- Exit / loss-cut (the edge lives here) ---
-  exit_edge_threshold: -0.10  # Scalp when holding_edge drops below x% (Phase 3 replaces the
-                              # hand curve with the learned exit-value model).
+  # --- Exit / loss-cut ---
+  exit_edge_threshold: -0.10  # Scalp when holding_edge drops below x% (blended with the
+                              # ExitBoundary curve at decision time).
   loss_cut_fraction: 0.65     # Force exit if market < entry × 65% with < loss_cut_time_s remaining.
   loss_cut_time_s: 90.0       # Last X seconds: if position is deeply underwater, cut it.
   deep_loss_hold_threshold: -0.10  # Below this holding_edge → hold to resolution.
@@ -102,14 +103,17 @@ entry_timing:
 # =============================================================================
 late_window:
   sniper_enabled: true         # PAPER-SHADOW ON (validation). SAFE ONLY because mode==paper above.
-                               # DO NOT set mode: live with this on until the kill bar passes at the
-                               # host's measured RTT + this shadow confirms (tasks/todo.md). Revert to
+                               # DO NOT set mode: live until the kill bar passes at the host's
+                               # measured RTT + this shadow confirms (tasks/todo.md). Revert to
                                # false to stop the shadow.
-  sniper_only: false           # GO-LIVE SWITCH. true = base-entry BUYs are suppressed (recorded as
-                               # "sniper_only" ghosts, so the base strategy keeps accruing evidence)
-                               # and capital deploys ONLY on sniper fires. The live recipe, once the
-                               # kill bar passes, is: mode: live + sniper_enabled: true + sniper_only:
-                               # true — never deploy the base strategy live (no proven edge).
+  sniper_only: true            # true = base-entry BUYs are suppressed (recorded as "sniper_only"
+                               # ghosts, so the base strategy keeps accruing evidence at zero cost)
+                               # and capital deploys ONLY on sniper fires. ON in paper so the shadow
+                               # trades the SAME fire population live would (with it off, the base
+                               # path consumed the high-conviction sniper moments first and the
+                               # shadow sampled only the prob<0.56 sliver). The live recipe, once
+                               # the kill bar passes, is: mode: live + sniper_enabled: true +
+                               # sniper_only: true — never deploy the base strategy live (no edge).
   sniper_late_start_s: 45.0     # only fire in the final N seconds of the window
   sniper_move_window_s: 2.0     # Coinbase move lookback (s)
   sniper_cb_move: 8.0           # $ Coinbase move over the lookback to fire (matches the harness default)

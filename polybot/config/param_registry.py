@@ -32,7 +32,7 @@ VALIDATED_PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec("min_edge",                "signal.min_edge",                0.02,  0.10,  float, 0.04,  "minimum model–market edge to enter"),
     ParamSpec("min_kelly",               "signal.min_kelly",               0.005, 0.04,  float, 0.01,  "minimum Kelly fraction to enter"),
     ParamSpec("min_model_probability",   "signal.min_model_probability",   0.52,  0.70,  float, 0.56,  "minimum model probability to enter"),
-    # ── Exit / scalp threshold (the edge — Phase 3 replaces the hand curve) ─
+    # ── Exit / scalp threshold ───────────────────────────────────────────────
     ParamSpec("exit_edge_threshold",     "signal.exit_edge_threshold",     -0.10, -0.03, float, -0.10, "holding_edge floor before scalping; blended with exit_boundary curve"),
 )
 
@@ -48,7 +48,7 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     "late_max_penalty": 0.30,
     "flip_edge_premium": 0.015,
     # Late-window sniper (gated; default OFF until its kill bar passes at a reachable
-    # RTT — the one bot-formable late-window edge; see tasks/todo.md + CLAUDE.md §6b).
+    # RTT — the one bot-formable late-window edge; see tasks/todo.md + CLAUDE.md §2).
     "sniper_enabled": False,        # MASTER KILL — must stay False until the kill bar passes
     "sniper_only": False,           # live-deploy switch: suppress base-entry BUYs (ghosted, so the
                                     # base strategy keeps accruing evidence) — capital deploys only

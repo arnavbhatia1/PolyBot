@@ -11,10 +11,10 @@ from polybot.execution.base import BaseTrader, FillResult, DEFAULT_FEE_RATE, exi
 
 class PaperTrader(BaseTrader):
 
-    # Phase 1 passive exits: paper can honor a maker fill faithfully (the fill is
-    # validated against the real CLOB tape by the conservative prints-through rule
-    # in main, never simulated optimistically). Live stays FOK until a real GTC
-    # order subsystem exists.
+    # Passive exits: paper honors a maker fill faithfully (validated against the
+    # real CLOB tape by the conservative prints-through rule in main, never
+    # simulated optimistically). Live mirrors it with a real GTD resting SELL.
+    # The feature is OFF (execution.passive_exit_enabled — measured negative).
     supports_passive_exit = True
 
     def __init__(self, db: Any, **kwargs: Any) -> None:
@@ -23,17 +23,18 @@ class PaperTrader(BaseTrader):
             max_bankroll_deployed=kwargs.get("max_bankroll_deployed", 0.80),
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
-        # Realism knobs (all overridable via settings.yaml -> execution.*; kwarg
-        # defaults apply only when settings omit the keys). Calibrated to the operator's
-        # MEASURED warm POST RTT to the Polymarket CLOB through the IRELAND VPN
-        # (TTFB ~0.118-0.138s warm, ~0.35s cold); latency_floor_s is the fastest measured
-        # warm RTT and the 4% heavy tail in _simulate_latency carries occasional stalls.
-        self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.77)
-        self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.40)
+        # Realism knobs (all overridable via settings.yaml -> execution.*; the
+        # defaults here equal settings' calibrated values and apply only when
+        # settings omit the keys). Calibrated to the operator's MEASURED warm
+        # POST RTT to the Polymarket CLOB (TTFB ~0.118-0.138s warm, ~0.35s cold);
+        # latency_floor_s is the fastest measured warm RTT and the 4% heavy tail
+        # in _simulate_latency carries occasional stalls.
+        self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.13)
+        self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.02)
         self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.118)
         # Fallback fail rate when the book is unavailable; the i.i.d. baseline
         # otherwise — _compute_fail_rate adds state-dependent terms on top.
-        self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.02)
+        self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.03)
         # Warm-SELL bookkeeping — mirrors LiveTrader's _sell_warmups (same TTL +
         # drift thresholds), so paper applies the warm-SELL latency discount iff
         # live would have found a presigned order, not at a hardcoded probability.
@@ -132,8 +133,8 @@ class PaperTrader(BaseTrader):
     # State-dependent FOK fail rate (live rejects cluster around thin top-of-book
     # + wide spread). Coefficients are estimates pending fill_stats.json cause
     # buckets; two safety properties hold regardless:
-    #   1) Max combined rate <= ~2× the i.i.d. baseline (caps over-rejection if
-    #      the state proxies are wrong).
+    #   1) The absolute cap (0.030) bounds over-rejection if the state proxies
+    #      are wrong.
     #   2) Book unavailable -> constant network_fail_rate (deterministic tests
     #      and degraded-feed startup).
     _STATE_FAIL_RATE_BASE: float = 0.005

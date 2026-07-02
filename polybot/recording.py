@@ -59,8 +59,10 @@ class WindowPathRecorder:
     Tables (created on first run):
       window_paths (in PATHS_DB, gitignored): window_id, ts, elapsed_s, bid/ask
                    both sides, top-3 depths, coinbase_price, strike, traded,
-                   binance_price, binance_cvd_10s, binance_cvd_30s,
-                   atr, model_prob_up
+                   binance_price, binance_cvd_10s/30s, atr, model_prob_up,
+                   + full-capture columns (chainlink price/age, CLOB book ages,
+                   coinbase BBO + CVD, touch sizes, Binance depth20 sides) —
+                   see _APPENDED_COLUMNS
       window_labels (in the per-mode DB): window_id PRIMARY KEY, resolved_up,
                    final_price, price_to_beat, labeled_at
 
@@ -72,7 +74,8 @@ class WindowPathRecorder:
     def __init__(self, db: Any, clob_ws: Any, coinbase_feed: Any,
                  chainlink_feed: Any, market_scanner: Any, http_client: Any,
                  binance_trades: Any = None, binance_feed: Any = None,
-                 indicator_engine: Any = None, signal_engine: Any = None) -> None:
+                 indicator_engine: Any = None, signal_engine: Any = None,
+                 binance_depth: Any = None) -> None:
         self.db = db
         self.clob_ws = clob_ws
         self.coinbase_feed = coinbase_feed
@@ -90,6 +93,7 @@ class WindowPathRecorder:
         self.binance_feed = binance_feed
         self.indicator_engine = indicator_engine
         self.signal_engine = signal_engine
+        self.binance_depth = binance_depth
         self._window: dict[str, Any] | None = None
         self._discovering: int = 0          # window_ts a discovery task is running for
         self._traded: set[str] = set()
@@ -149,6 +153,22 @@ class WindowPathRecorder:
         ("binance_cvd_30s", "REAL"),
         ("atr", "REAL"),
         ("model_prob_up", "REAL"),
+        # Full capture of everything already flowing through the process —
+        # the pivot-research corpus. All None-on-cold, never 0.0 stand-ins.
+        ("chainlink_price", "REAL"),     # the RESOLUTION venue's live price
+        ("chainlink_age_s", "REAL"),
+        ("book_age_up_s", "REAL"),       # CLOB WS book staleness per sample —
+        ("book_age_down_s", "REAL"),     # the sniper's precondition, quantified
+        ("coinbase_bid", "REAL"),
+        ("coinbase_ask", "REAL"),
+        ("coinbase_cvd_10s", "REAL"),    # resolution-venue flow at path cadence
+        ("coinbase_cvd_30s", "REAL"),
+        ("bid_sz_up", "REAL"),           # shares at the touch, both tokens —
+        ("ask_sz_up", "REAL"),           # bounds FOK fillable notional
+        ("bid_sz_down", "REAL"),
+        ("ask_sz_down", "REAL"),
+        ("depth20_bid_usd", "REAL"),     # Binance book pressure, side-split
+        ("depth20_ask_usd", "REAL"),
     )
 
     async def _add_appended_columns(self) -> None:
@@ -297,10 +317,55 @@ class WindowPathRecorder:
             except (ValueError, TypeError):
                 return None
 
-        cb = self.coinbase_feed.state.price if (
-            self.coinbase_feed and self.coinbase_feed.state.age_seconds < 5) else None
+        cb_fresh = self.coinbase_feed is not None and self.coinbase_feed.state.age_seconds < 5
+        cb = self.coinbase_feed.state.price if cb_fresh else None
         strike = (self.chainlink_feed.get_strike(w["window_ts"])
                   if self.chainlink_feed else None)
+
+        # Resolution-venue live price (Chainlink RTDS) + its age.
+        cl_px = cl_age = None
+        if self.chainlink_feed is not None:
+            _age = getattr(self.chainlink_feed, "age_seconds", float("inf"))
+            _px = getattr(self.chainlink_feed, "price", 0.0)
+            if _px > 0 and _age != float("inf"):
+                cl_px = _px
+                cl_age = round(_age, 3)
+
+        # CLOB WS book age per token — makes stale/frozen book rows detectable
+        # offline (the trading loop gates on 10s; the recorder records instead).
+        def _book_age(book: dict) -> float | None:
+            ts = book.get("ts")
+            return round(now - ts, 3) if ts else None
+
+        # Coinbase BBO + resolution-venue flow (fresh-feed gated; CVD 0.0 is a
+        # legitimate balanced-flow value, so it is recorded as-is when fresh).
+        cb_bid = cb_ask = cb_cvd10 = cb_cvd30 = None
+        if cb_fresh:
+            st = self.coinbase_feed.state
+            cb_bid = getattr(st, "best_bid", 0.0) or None
+            cb_ask = getattr(st, "best_ask", 0.0) or None
+            try:
+                cb_cvd10 = self.coinbase_feed.get_cvd(10.0)
+                cb_cvd30 = self.coinbase_feed.get_cvd(30.0)
+            except Exception:
+                pass
+
+        def _touch_sz(levels: Any) -> float | None:
+            try:
+                return float(levels[0]["size"]) if levels else None
+            except (KeyError, IndexError, ValueError, TypeError):
+                return None
+
+        # Binance top-20 book pressure, side-split (compute_depth_usd's single
+        # total destroys direction). None when the depth WS is stale.
+        d20_bid = d20_ask = None
+        bd = self.binance_depth
+        if bd is not None and getattr(bd, "updated_at", 0.0) > 0 and now - bd.updated_at < 5:
+            try:
+                d20_bid = round(sum(float(l[0]) * float(l[1]) for l in bd.top_bids[:20]), 2) or None
+                d20_ask = round(sum(float(l[0]) * float(l[1]) for l in bd.top_asks[:20]), 2) or None
+            except (IndexError, ValueError, TypeError):
+                d20_bid = d20_ask = None
 
         # Binance aggTrade leading/order-flow telemetry (None when the feed is cold —
         # never 0.0, so the analyzer can distinguish "no flow" from "stale feed").
@@ -321,17 +386,23 @@ class WindowPathRecorder:
         atr_v = prob_up_v = None
         if (self.binance_feed is not None and self.indicator_engine is not None
                 and cb is not None and strike is not None):
+            _atr_d: dict[str, Any] = {}
             try:
                 _atr_d = self.indicator_engine.compute_all(
                     self.binance_feed.buffer).get("atr", {})
                 atr_v = _atr_d.get("atr") or None
-                if self.signal_engine is not None and atr_v:
+            except Exception:
+                atr_v = None
+            # Separate guard: a prob-only failure must not null the computed ATR
+            # (that would masquerade as an ATR-feed outage in the corpus).
+            if self.signal_engine is not None and atr_v:
+                try:
                     prob_up_v = round(self.signal_engine.compute_probability(
                         cb, strike, max(0.0, 300.0 - elapsed), atr_v,
                         closes=self.binance_feed.buffer.get_closes(),
                         atr_candle_ts=_atr_d.get("candle_ts")), 4)
-            except Exception:
-                atr_v = prob_up_v = None
+                except Exception:
+                    prob_up_v = None
 
         self._rows.append((
             w["market_id"], round(now, 3), round(elapsed, 1),
@@ -343,6 +414,12 @@ class WindowPathRecorder:
             1 if w["market_id"] in self._traded else 0,
             bn_price, bn_cvd10, bn_cvd30,
             atr_v, prob_up_v,
+            cl_px, cl_age,
+            _book_age(book_up), _book_age(book_dn),
+            cb_bid, cb_ask, cb_cvd10, cb_cvd30,
+            _touch_sz(book_up.get("bids")), _touch_sz(book_up.get("asks")),
+            _touch_sz(book_dn.get("bids")), _touch_sz(book_dn.get("asks")),
+            d20_bid, d20_ask,
         ))
 
     async def _flush(self) -> None:
@@ -354,8 +431,13 @@ class WindowPathRecorder:
                 "INSERT INTO window_paths (window_id, ts, elapsed_s, bid_up, ask_up, "
                 "bid_down, ask_down, depth3_bid_up, depth3_ask_up, depth3_bid_down, "
                 "depth3_ask_down, coinbase_price, strike, traded, "
-                "binance_price, binance_cvd_10s, binance_cvd_30s, atr, model_prob_up) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                "binance_price, binance_cvd_10s, binance_cvd_30s, atr, model_prob_up, "
+                "chainlink_price, chainlink_age_s, book_age_up_s, book_age_down_s, "
+                "coinbase_bid, coinbase_ask, coinbase_cvd_10s, coinbase_cvd_30s, "
+                "bid_sz_up, ask_sz_up, bid_sz_down, ask_sz_down, "
+                "depth20_bid_usd, depth20_ask_usd) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                rows)
             await self._paths_conn.commit()
             self.rows_written += len(rows)
         except Exception as e:

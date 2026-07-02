@@ -671,13 +671,12 @@ async def _evaluate_signal_and_enter(
         contract: dict[str, Any], cid: str, binance_feed: Any, indicator_engine: Any,
         signal_engine: Any, market_scanner: Any, http_client: Any, clob_ws: Any,
         trader: Any, alert_manager: Any, db: Any, config: dict[str, Any], breaker: Any,
-        price_up: float, price_down: float, price_source: str,
+        price_up: float, price_down: float,
         book_up: dict[str, Any], book_down: dict[str, Any],
         depth_usd_up: float, depth_usd_down: float,
         btc_price: float, strike: float, eval_window: int, last_eval_log_window: int,
         token_up: str, token_down: str, signal_config: dict[str, Any],
         max_bankroll_pct: float,
-        now_ts: int,
         bankroll: float = 0.0,
         depth_feed: Any = None,
         trades_feed: Any = None,
@@ -690,6 +689,20 @@ async def _evaluate_signal_and_enter(
     # aux fields are a real value or None — never a 0.0 stand-in.
     aux_signals = _build_aux_signals(coinbase_feed, trades_feed)
     aux_signals.update(_clob_book_aux(clob_ws, token_up, token_down, book_up, book_down))
+
+    # Neutral defaults so ghosts recorded BEFORE the adverse gate (sniper_only,
+    # sub-threshold) still stamp the audit fields; the gate's real values rebind
+    # these before any downstream ghost fires.
+    adverse_kelly_mult = 1.0
+    adverse_rate_at_30s = -1.0
+
+    def _depth_usd_top20() -> float | None:
+        """Binance top-20 depth, None when the feed is absent/stale/empty."""
+        if depth_feed is None or getattr(depth_feed, "updated_at", 0.0) <= 0:
+            return None
+        if time.time() - depth_feed.updated_at >= 5:
+            return None
+        return depth_feed.get_depth_usd() or None
 
     def _ghost(gate: str, signal: Any, snap: dict) -> None:
         """Record a ghost trade when a downstream gate rejects a real BUY signal.
@@ -734,6 +747,9 @@ async def _evaluate_signal_and_enter(
             "entry_phase": phase,
             "flip_count": _ghost_flip_count,
             "is_flip": _ghost_flip_count > 0,
+            "depth_usd_top20": _depth_usd_top20(),
+            "adverse_rate_at_30s": adverse_rate_at_30s if adverse_rate_at_30s >= 0 else 0.5,
+            "adverse_kelly_mult": round(adverse_kelly_mult, 3),
             **aux_signals,
         }
         merged_snap = dict(snap or {})
@@ -952,8 +968,6 @@ async def _evaluate_signal_and_enter(
         return None, last_eval_log_window
 
     # --- ADVERSE SELECTION (sizing penalty + emergency hard-skip) ---
-    adverse_kelly_mult = 1.0
-    adverse_rate_at_30s = -1.0
     if _adverse_monitor is not None:
         adverse_rate_at_30s = _adverse_monitor.get_adverse_rate(30.0)
         sig_cfg = config.get("signal", {})
@@ -1008,7 +1022,6 @@ async def _evaluate_signal_and_enter(
 
     side = "Up" if signal.action == "BUY_YES" else "Down"
     token_id = contract["token_id_up"] if side == "Up" else contract["token_id_down"]
-    cid = contract.get("slug", contract.get("market_id", ""))
 
     flip_state = _window_flip_state.setdefault(cid, {"flip_count": 0})
     flip_count = flip_state["flip_count"]
@@ -1157,7 +1170,7 @@ async def _evaluate_signal_and_enter(
         "is_flip": flip_count > 0,
         # Microstructure aux, stamped from the once-per-evaluation `aux_signals`
         # dict (same schema as ghosts). None means "feed cold/stale", never 0.0.
-        "depth_usd_top20": depth_feed.get_depth_usd() if depth_feed else 0,
+        "depth_usd_top20": _depth_usd_top20(),
         **aux_signals,
         # Adverse-selection diagnostic — 30s is the post-fill checkpoint, not the
         # lookback (that's the monitor's 30-minute window).
@@ -2547,11 +2560,11 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 contract, cid, binance_feed, indicator_engine,
                 signal_engine, market_scanner, http_client, clob_ws,
                 trader, alert_manager, db, config, breaker,
-                price_up, price_down, price_source,
+                price_up, price_down,
                 book_up, book_down, depth_usd_up, depth_usd_down,
                 btc_price, strike, eval_window, last_eval_log_window,
                 token_up, token_down, signal_config, max_bankroll_pct,
-                now_ts, bankroll=current_bankroll,
+                bankroll=current_bankroll,
                 depth_feed=depth_feed, trades_feed=trades_feed,
                 coinbase_feed=coinbase_feed,
                 chainlink_feed=chainlink_feed,
@@ -2727,17 +2740,19 @@ async def main() -> None:
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
             max_concurrent_positions=exec_cfg["max_concurrent_positions"])
     else:
+        # Fallbacks match settings.yaml's calibrated values (one source of truth
+        # for the realism constants; the fallbacks only fire if settings omit keys).
         trader = PaperTrader(db=db,
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
             max_concurrent_positions=exec_cfg["max_concurrent_positions"],
-            paper_latency_mean_s=exec_cfg.get("paper_latency_mean_s", 1.5),
-            paper_latency_jitter_s=exec_cfg.get("paper_latency_jitter_s", 0.8),
+            paper_latency_mean_s=exec_cfg.get("paper_latency_mean_s", 0.13),
+            paper_latency_jitter_s=exec_cfg.get("paper_latency_jitter_s", 0.02),
             paper_latency_floor_s=exec_cfg.get("paper_latency_floor_s", 0.118),
-            paper_network_fail_rate=exec_cfg.get("paper_network_fail_rate", 0.02))
+            paper_network_fail_rate=exec_cfg.get("paper_network_fail_rate", 0.03))
         logger.debug(
             f"PAPER MODE — simulated trading with live-realistic fills "
-            f"(latency={exec_cfg.get('paper_latency_mean_s', 1.5)}±{exec_cfg.get('paper_latency_jitter_s', 0.8)}s, "
-            f"net_fail={exec_cfg.get('paper_network_fail_rate', 0.02):.0%})"
+            f"(latency={exec_cfg.get('paper_latency_mean_s', 0.13)}±{exec_cfg.get('paper_latency_jitter_s', 0.02)}s, "
+            f"net_fail={exec_cfg.get('paper_network_fail_rate', 0.03):.0%})"
         )
 
     # Circuit breaker (drawdown-based Kelly scaling)
@@ -2901,8 +2916,8 @@ async def main() -> None:
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=60),
     )
 
-    # Recorders (Phases 1-2): window-path stream for the exit-value model +
-    # CLOB tape for the passive-exit shadow sim. Write-behind; never block the loop.
+    # Recorders: window-path stream (the kill-bar feed + pivot-research corpus)
+    # + CLOB tape. Write-behind; never block the loop.
     from polybot.recording import TapeRecorder, WindowPathRecorder
     tape_recorder = TapeRecorder()
     clob_ws.on_trade = tape_recorder.on_trade
@@ -2910,7 +2925,7 @@ async def main() -> None:
         db=db, clob_ws=clob_ws, coinbase_feed=coinbase_feed,
         chainlink_feed=chainlink_feed, market_scanner=market_scanner,
         http_client=http_client, binance_trades=trades_feed,
-        binance_feed=binance_feed,
+        binance_feed=binance_feed, binance_depth=depth_feed,
         # Dedicated instances (same config as live): compute_probability mutates
         # engine state, so the recorder must never share the trading loop's engine.
         indicator_engine=IndicatorEngine(params=indicator_params),
@@ -2918,7 +2933,7 @@ async def main() -> None:
     global _window_recorder
     _window_recorder = window_recorder
 
-    # Nightly jobs (Phase 4): window-path retention sweep + wallet-fingerprint
+    # Nightly jobs: window-path retention sweep + wallet-fingerprint
     # ingestion/classification.
     from polybot.recording import cleanup_job
     from polybot.wallets import nightly_wallet_job

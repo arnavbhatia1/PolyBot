@@ -1,4 +1,5 @@
-"""Shared model math for L1 (Student-t CDF, vol-autocorr scale) and the L3b spot-flow signal.
+"""Shared model math for L1 (Student-t CDF, vol-autocorr scale) and the
+spot-flow telemetry signal (recorded only — no decision consumes it).
 
 `signal_engine` and `main.py` (both live, entry + exit paths) call these so the
 math has a single implementation.
