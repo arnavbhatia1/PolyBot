@@ -53,21 +53,29 @@ paper-shadow span whose realized fills track the harness (live trades the
 higher-conviction `sniper_min_edge` subset, so the harness is a conservative
 directional gate).
 
-**Read 2026-07-01 ~18:15 ET (7 ET days 06-25→07-01, 07-01 partial):**
-- Lenient (`--max-slip 0.05`): 416 fills, win 77.9%, net +0.0753/sh,
-  **t_day +3.67, p10 +0.0460**, 6/7 days positive.
-- Strict (`--max-slip 0.005`): 376 fills, win 76.1%, net +0.0561/sh,
-  **t_day +2.26, p10 +0.0233**, 6/7 days positive.
-- Control ~0 both limits. Every statistical leg PASSES; the sole blocker is
-  **n_days = 7 < 8**.
-- Shadow: 3 fills, 3/3 wins, +$82.47; sides agree 3/3 with the harness; fill
-  prices track ≤2¢.
-- **Watch — per-day decay:** lenient +0.0722 → +0.0641 → +0.0453 (declining,
-  decelerating; recent days well below the 06-26/27 peak ~+0.125). The mechanism
-  is publicly documented (Feb–Mar 2026 articles) and the Jun-1 CLOB rate-limit
-  raise lowers the barrier for competing flow — if 07-02 prints below ~+0.03/sh
-  lenient the downtrend is confirmed. Let the bar bind honestly; the answer to a
-  failed bar is "not yet," never "lower the bar."
+**Read 2026-07-02 00:20 ET (7 complete ET days 06-25→07-01; 07-02 just started):**
+- Lenient (`--max-slip 0.05`): 436 fills, win 77.3%, net +0.0690/sh,
+  **t_day +3.25, p10 +0.0409**, 6/7 days positive — passes all legs except
+  n_days.
+- Strict (`--max-slip 0.005`): 395 fills, win 75.4%, net +0.0482/sh,
+  **t_day +1.93 (< 2.0 — strict leg now FAILS), p10 +0.0165**.
+- Control ~0 both limits. Blockers: **n_days = 7 < 8** and the strict-t leg.
+- Shadow: 5 fills, 3W/2L, net −$33.56. The two losses (07-01 ET evening,
+  entries 0.42 / 0.78, both ridden to $0, −$116.03) are FIDELITY-CONFIRMED:
+  the harness fired the same windows, same side, and also lost — the losses
+  are inside the passing aggregate, not a divergence.
+- **Decay CONFIRMED:** complete-day lenient series +0.0886, +0.1263, +0.1240,
+  −0.0233, +0.0722, +0.0641, **+0.0173** (07-01); strict 07-01 = +0.0003.
+  Win% 80→81→84→68→79→76→72. The forward edge is materially below the 7-day
+  headline. Mechanism is publicly documented + Jun-1 rate-limit raise =
+  competition. Let the bar bind honestly; never lower it.
+- **07-03 read sensitivities (lenient daily series + day 8 = x):** lenient
+  t_day ≥ 2 survives down to x ≈ −0.065/sh; strict returns above 2.0 only if
+  x ≳ +0.03/sh. So: 07-02 ≥ ~+0.03 → both limits pass (strong go); 07-02 in
+  (−0.065, +0.03) → formal pass on the primary lenient read with decay
+  confirmed (tiny-pilot or wait — operator's call); 07-02 ≤ ~−0.065 → lenient
+  fails, no-go at 135ms (re-read the 40ms VPS column before retiring the
+  thesis).
 
 **Next reads:**
 - [ ] **2026-07-03 (morning, after the 07-02 ET day completes):** re-run
@@ -121,10 +129,7 @@ directional gate).
 - **Gamma `/events` deprecation:** the endpoint is 2 months past its Sunset
   header; all single-slug lookups auto-fall-back to the undeprecated
   `GET /events/slug/{slug}` (`gamma_events_by_slug`, latched after first
-  enforcement). Open residual: the calibration monitor's offset paging
-  (`calibration/discovery.py::discover`) has no keyset fallback —
-  measurement-only, fails loud in its own log; migrate to `/events/keyset`
-  only if Gamma enforces.
+  enforcement).
 - **CFTC investigation into Polymarket (reported 06-26):** marketing-conduct
   scope, no market-structure implication — but a real custody tail risk. Keep
   on-platform bankroll at a level whose total loss is acceptable.

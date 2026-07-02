@@ -157,14 +157,14 @@ chmod +x /home/polybot/PolyBot/scripts/run_polybot.sh
 sudo cp /home/polybot/PolyBot/scripts/polybot.service /etc/systemd/system/polybot.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now polybot
-journalctl -u polybot -f          # watch it pull, launch the monitor, and start the bot
+journalctl -u polybot -f          # watch it pull and start the bot
 ```
 
-`run_polybot.sh` mirrors `run_polybot.ps1`: each cycle it pulls `origin main`, refreshes
-the log-only calibration monitor, runs `polybot.main` for a full ET day (which runs the 11:45 PM
-ET pipeline in-process and then exits), commits+pushes the day's records on a clean exit,
-and waits until 12:01 AM ET to loop. systemd's `Restart=always` + `enable` give you
-always-on across crashes and reboots.
+`run_polybot.sh` mirrors `run_polybot.ps1`: each cycle it pulls `origin main`, runs
+`polybot.main` for a full ET day (which runs the 11:45 PM ET pipeline in-process and
+then exits), commits+pushes the day's records on a clean exit, and waits until
+12:01 AM ET to loop. systemd's `Restart=always` + `enable` give you always-on across
+crashes and reboots.
 
 ---
 
@@ -173,10 +173,9 @@ always-on across crashes and reboots.
 Before any live capital, confirm on the box:
 
 - [ ] `systemctl status polybot` is active; `journalctl -u polybot` shows the daily loop.
-- [ ] The calibration monitor stays up (`polybot/memory/recordings/calibration_monitor.*.log` growing, no crash loop).
 - [ ] The nightly pipeline runs **without OOM** — check `free -h` during 11:45 PM ET and
       `dmesg | grep -i oom`. On the 1 GB E2 micro this is the top risk; if it OOMs, add
-      more swap or temporarily disable the calibration monitor (it is log-only research).
+      more swap.
 - [ ] The daily `auto: daily pipeline update` commit lands on `origin main`.
 - [ ] Auto-restart works: `sudo systemctl restart polybot` → bot comes back, resumes positions.
 - [ ] Reboot survival: `sudo reboot` → service auto-starts.
