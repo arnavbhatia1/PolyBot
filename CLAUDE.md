@@ -299,10 +299,7 @@ scripts/
 
 `run_polybot.ps1`: starts 12:01 AM ET, stops trading 11:30 PM ET, nightly jobs
 11:45 PM ET, commits + pushes `origin main` on a clean exit, restarts at
-midnight. At launch it also split-tunnels the market-data feeds around the VPN
-(`Ensure-FeedRoutes`: per-IP host routes for Coinbase/Binance websockets via
-the physical gateway — Polymarket traffic stays on the VPN; auto-rollback on
-kill-switch or geoblock; re-checked silently each cycle). **Single-instance guarded**: the wrapper refuses to start if another
+midnight. **Single-instance guarded**: the wrapper refuses to start if another
 is running, and `polybot.main` holds an OS single-instance lock
 (localhost-port bind). Live preflight: `verify_keys.py` then
 `smoke_order_test.py --confirm`.

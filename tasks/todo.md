@@ -151,14 +151,20 @@ final — nothing is lost).
   header; all single-slug lookups auto-fall-back to the undeprecated
   `GET /events/slug/{slug}` (`gamma_events_by_slug`, latched after first
   enforcement).
-- **CFTC investigation into Polymarket (reported 06-26):** marketing-conduct
-  scope, no market-structure implication — but a real custody tail risk. Keep
-  on-platform bankroll at a level whose total loss is acceptable.
 - **Rumored 1-minute windows** (unconfirmed, March press): would shift bot/
   liquidity attention if launched. Watch only.
 - **VPS option** (`docs/DEPLOY_ORACLE_VPS.md`): Stockholm free box ≈ ~40ms RTT
   (~3× better than the current ~120ms) — strengthens the latency-sensitive
   sniper. Do not change infra and flip to live in the same move.
+  **Feed-side finding (07-02, measured):** the Coinbase DECISION feed pays
+  ~110–260ms riding the NordLayer tunnel (tick arrival vs exchange
+  timestamps) — as large as the order leg. Split-tunnel was attempted and
+  REVERTED: NordLayer's kill-switch (WFP) denies non-tunnel egress and the
+  app offers no IP bypass on this plan. Consequence: pick the VPS by the SUM
+  of feed latency (Coinbase US-East, ~90ms from EU) + order RTT (~40ms from
+  Stockholm/Dublin), and know it fixes BOTH legs at once (no consumer
+  kill-switch there). Until then the stack is exactly what the kill bar
+  measured — feed handicap included — so all reads remain valid.
 - **wallet_tape.db growth:** 3.4 GB and ~200 MB/day with deliberately no
   retention (accumulation-forever design). Local-only, gitignored; revisit if
   disk pressure ever matters.

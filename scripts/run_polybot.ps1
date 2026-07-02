@@ -33,76 +33,6 @@ Remove-Item (Join-Path $env:TEMP "polybot_run_polybot.lock") -Force -ErrorAction
 # Prevent machine from sleeping
 powercfg -change -standby-timeout-ac 0
 
-# --- Split-tunnel the MARKET-DATA feeds around the VPN --------------------
-# The decision feed (Coinbase, the venue Chainlink resolves against) pays a
-# ~100-250ms VPN detour if it rides the tunnel. Host routes send it out the
-# physical gateway; ALL Polymarket traffic stays on the VPN (per-IP routes,
-# and any IP shared with a Polymarket hostname is refused — both are
-# Cloudflare-fronted). Routes are non-persistent (reboot clears them); this
-# re-applies at wrapper launch (UAC click) and silently re-checks each cycle.
-# Failure of any kind = feeds fall back to the VPN path; trading never blocks.
-function Ensure-FeedRoutes {
-    param([bool]$AllowUac = $false)
-    $feedHosts = @("ws-feed.exchange.coinbase.com", "stream.binance.com")
-    $pmHosts = @("clob.polymarket.com", "gamma-api.polymarket.com",
-                 "ws-subscriptions-clob.polymarket.com", "ws-live-data.polymarket.com",
-                 "data-api.polymarket.com", "polymarket.com")
-    $feedIps = @(); foreach ($h in $feedHosts) {
-        try { $feedIps += @((Resolve-DnsName $h -Type A -ErrorAction Stop | Where-Object IPAddress).IPAddress) } catch {}
-    }
-    $feedIps = @($feedIps | Sort-Object -Unique)
-    if (-not $feedIps) { Write-Host "[feeds] DNS failed - feeds stay on the VPN path" -ForegroundColor Yellow; return }
-    $pmIps = @(); foreach ($h in $pmHosts) {
-        try { $pmIps += @((Resolve-DnsName $h -Type A -ErrorAction Stop | Where-Object IPAddress).IPAddress) } catch {}
-    }
-    $safe = @($feedIps | Where-Object { $pmIps -notcontains $_ })
-    if (-not $safe) { Write-Host "[feeds] no safe IPs (all shared with Polymarket) - VPN path" -ForegroundColor Yellow; return }
-    $missing = @($safe | Where-Object { -not (Get-NetRoute -DestinationPrefix "$_/32" -ErrorAction SilentlyContinue) })
-    if (-not $missing) { return }  # routes already in place
-    $gw = (Get-NetRoute -DestinationPrefix 0.0.0.0/0 |
-           Where-Object { $_.NextHop -ne "0.0.0.0" } |
-           Sort-Object RouteMetric | Select-Object -First 1).NextHop
-    if (-not $gw) { Write-Host "[feeds] no physical gateway found - VPN path" -ForegroundColor Yellow; return }
-    $isAdmin = (New-Object Security.Principal.WindowsPrincipal(
-        [Security.Principal.WindowsIdentity]::GetCurrent()
-    )).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    $addCmd = ($missing | ForEach-Object { "route add $_ mask 255.255.255.255 $gw metric 1" }) -join "; "
-    $delCmd = ($missing | ForEach-Object { "route delete $_" }) -join "; "
-    if ($isAdmin) {
-        Invoke-Expression $addCmd | Out-Null
-    } elseif ($AllowUac) {
-        Write-Host "[feeds] approve the UAC prompt: market data around the VPN (orders stay ON the VPN)" -ForegroundColor Cyan
-        try { Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-Command', $addCmd }
-        catch { Write-Host "[feeds] elevation declined - feeds stay on the (slower) VPN path" -ForegroundColor Yellow; return }
-    } else {
-        return  # unattended cycle, no UAC - retry at next wrapper launch
-    }
-    $rollback = {
-        if ($isAdmin) { Invoke-Expression $delCmd | Out-Null }
-        else { try { Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-Command', $delCmd } catch {} }
-    }
-    # Kill-switch check: the direct path must answer (HTTP 4xx from the WS
-    # endpoint counts as reachable).
-    $ok = $false
-    try { Invoke-WebRequest -Uri "https://ws-feed.exchange.coinbase.com" -Method Head -TimeoutSec 5 -UseBasicParsing | Out-Null; $ok = $true }
-    catch { if ($_.Exception.Response) { $ok = $true } }
-    if (-not $ok) {
-        Write-Host "[feeds] direct path blocked (VPN kill-switch?) - rolled back to VPN path" -ForegroundColor Yellow
-        & $rollback; return
-    }
-    # Geoblock check: Polymarket must still ride the VPN.
-    try {
-        $geo = Invoke-RestMethod -Uri "https://polymarket.com/api/geoblock" -TimeoutSec 10
-        if ($geo.blocked) {
-            Write-Host "[feeds] Polymarket GEOBLOCKED after routing - rolled back" -ForegroundColor Red
-            & $rollback; return
-        }
-    } catch {}
-    Write-Host "[feeds] market data direct via $gw; Polymarket on VPN (geoblock clear)" -ForegroundColor Green
-}
-
-Ensure-FeedRoutes -AllowUac $true
-
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  PolyBot Auto-Restart Loop" -ForegroundColor Cyan
 Write-Host "  Trading: 12:01 AM - 11:30 PM ET" -ForegroundColor Cyan
@@ -113,10 +43,6 @@ while ($true) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Write-Host "`n[$timestamp] Pulling latest from remote..." -ForegroundColor Cyan
     git pull origin main
-
-    # Re-check feed routes each cycle (silent; no UAC when unattended — DNS can
-    # rotate the feed IPs, and a reboot clears the non-persistent routes).
-    Ensure-FeedRoutes -AllowUac $false
 
     # Read mode from settings.yaml so this is the only place you need to change it
     $settingsPath = Join-Path $RepoRoot "polybot\config\settings.yaml"
