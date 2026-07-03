@@ -73,8 +73,6 @@ t_day +2.99) but unreachable at ~135ms RTT (1.8% fill); colo-gated. (2) deep-ITM
 ## Data sources & harnesses (read before analyzing)
 - **BTC corpus**: `polybot/db/window_paths.db` (1 Hz BBO + depth3 + coinbase + strike)
   joined to `window_labels`. The all-windows corpus is the clean discovery surface.
-- **Alt corpus**: `polybot/db/alt_window_paths.db` + `polybot/db/alt_recordings.db`
-  (+ `polybot/memory/recordings/alts/*.jsonl` tape, + `window_tokens` map).
 - **Late-window sniper harness**: `scripts/analyze_late_window.py` — RTT-parametric
   fill model (`--rtt-sweep`, `--max-slip`) against `window_paths.db`. PASS bar =
   momentum t_day≥2 AND p10>0 over ≥8 clean ET days at the host's measured RTT;

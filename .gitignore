@@ -32,9 +32,5 @@ polybot.log.*
 .DS_Store
 Thumbs.db
 polybot/memory/recordings/
-polybot/db/wallet_tape.db*
 polybot/db/window_paths.db*
-polybot/db/alt_window_paths.db
-polybot/db/alt_recordings.db*
-polybot/db/calibration.db*
 polybot/db/late_window_collect.db*
