@@ -2933,19 +2933,56 @@ async def main() -> None:
     global _window_recorder
     _window_recorder = window_recorder
 
-    # Nightly jobs: window-path retention sweep + wallet-fingerprint
-    # ingestion/classification.
+    # Nightly jobs: window-path retention sweep + price-sum retention + the
+    # sniper-edge health report (runs at 23:45 ET, during the wind-down).
     from polybot.recording import cleanup_job
-    from polybot.wallets import nightly_wallet_job
-
     scheduler.register_job("window_paths_retention", cleanup_job(db))
-    scheduler.register_job("wallet_tables", nightly_wallet_job(db, http_client, market_scanner))
 
     async def _price_sum_retention_job() -> dict:
         from polybot.paths import trim_jsonl_by_age, PRICE_SUM_OUTLIERS_PATH
         dropped = await asyncio.to_thread(trim_jsonl_by_age, PRICE_SUM_OUTLIERS_PATH, 90.0)
         return {"price_sum_lines_dropped": dropped}
     scheduler.register_job("price_sum_retention", _price_sum_retention_job)
+
+    async def _sniper_health_job() -> dict:
+        """Re-run the kill-bar momentum read + post-live kill rule and ping
+        Discord. Deterministic, alert-only — it never flips config (kill bars
+        are operator authority). Skipped when the sniper is disabled."""
+        if not config.get("late_window", {}).get("sniper_enabled", _d("sniper_enabled")):
+            return {"skipped": "sniper disabled"}
+        import importlib.util
+        hp = Path(__file__).resolve().parent.parent / "scripts" / "analyze_late_window.py"
+        spec = importlib.util.spec_from_file_location("analyze_late_window", hp)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        r = await asyncio.to_thread(mod.health_read)   # reads window_paths.db (RO), few seconds
+        if r is None:
+            if alert_manager:
+                await alert_manager.send_health("🎯 Sniper health: corpus not ready (no window_paths data).")
+            return {"health": "no data"}
+        today = datetime.now(ET).strftime("%Y-%m-%d")
+        kt = r["kill_rule_tripped"]
+        status = ("⏳ ACCRUING (<8 days)" if kt is None
+                  else "⚠️ KILL RULE TRIPPED" if kt else "✅ HEALTHY")
+        t4 = "n/a" if r["trailing4_mean"] is None else f"{r['trailing4_mean']*100:+.1f}¢/sh"
+        t8 = "n/a" if r["trailing8_t"] is None else f"{r['trailing8_t']:+.2f}"
+        msg = (
+            f"🎯 **Sniper edge health — {today}**  {status}\n"
+            f"```\n"
+            f"kill bar @135ms:  t_day {r['t_day']:+.2f}   p10 {r['p10']:+.4f}   "
+            f"{r['days_pos']}/{r['n_days']} days+   {r['n_fills']} fills\n"
+            f"edge:             {r['net_per_sh']*100:+.1f}¢/sh   win {r['win_rate']:.0%}\n"
+            f"kill rule:        trailing-4d {t4}   trailing-8d t {t8}\n"
+            f"                  (trip if 4d < +2.0¢/sh OR 8d t < 2.0)\n"
+            f"```"
+        )
+        if kt:
+            msg += "\n**Trailing edge has decayed — consider `sniper_enabled: false`.**"
+        if alert_manager:
+            await alert_manager.send_health(msg)
+        return {"health": status, "t_day": round(r["t_day"], 2),
+                "trailing4_mean": r["trailing4_mean"], "kill_rule_tripped": kt}
+    scheduler.register_job("sniper_health", _sniper_health_job)
 
     async def run_discord():
         backoff = 5

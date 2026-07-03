@@ -247,9 +247,9 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
 
     @bot.command(name="pipeline")
     async def pipeline_status(ctx):
-        # Nightly jobs run 23:45 ET (run_polybot.ps1; CLAUDE.md §7/§12): record
-        # rollups + exit-model shadow/refit, wallet tables, retention sweeps.
-        # No parameter adoption post-gut — entry forecasting has no edge.
+        # Nightly jobs run 23:45 ET (run_polybot.ps1; CLAUDE.md §7): record
+        # rollups, retention sweeps, and the sniper-edge health report.
+        # No parameter adoption — entry forecasting has no edge.
         now_et = datetime.now(_ET)
         next_run = now_et.replace(hour=23, minute=45, second=0, microsecond=0)
         if next_run <= now_et:
@@ -262,8 +262,8 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         await ctx.send(
             "**Nightly Pipeline**\n"
             "```\n"
-            "  Jobs       record rollups, exit-model shadow + refit,\n"
-            "             wallet tables, window-path/price-sum retention\n"
+            "  Jobs       record rollups, window-path/price-sum retention,\n"
+            "             sniper-edge health report\n"
             f"  Next run   {next_str}\n"
             "```"
         )

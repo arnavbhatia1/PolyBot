@@ -12,8 +12,8 @@ WHAT IT DOES (polybot_paper.db only):
     ghost_outcomes) to backups/reset_<ts>/  (reversible — nothing is destroyed).
   - Clears trade_history + positions (the ledger).
   - Sets bankroll and peak_bankroll to --start (default 1000).
-  - KEEPS window_labels (the sniper kill-bar harness needs them) and wallet_stats.
-  - Does NOT touch window_paths.db / wallet_tape.db (sensor + research corpus).
+  - KEEPS window_labels (the sniper kill-bar harness needs them).
+  - Does NOT touch window_paths.db (the recorder sensor / kill-bar corpus).
 
 MUST be run with the trading bot STOPPED (it writes the DB on every trade; a concurrent
 write would corrupt this). Run it before a fresh-baseline relaunch, then start the
@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "polybot" / "db" / "polybot_paper.db"
 MEM = ROOT / "polybot" / "memory"
 ARCHIVE_DIRS = ("outcomes", "counterfactuals", "ghost_outcomes")
-KEEP_TABLES = ("window_labels", "wallet_stats")          # NOT cleared (sensor/research)
+KEEP_TABLES = ("window_labels",)                         # NOT cleared (kill-bar corpus)
 CLEAR_TABLES = ("trade_history", "positions")            # the ledger
 
 

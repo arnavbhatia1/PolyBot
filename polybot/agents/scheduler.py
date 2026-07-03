@@ -3,7 +3,7 @@
 This scheduler tunes nothing — entry forecasting has no edge over the CLOB price,
 so there are no parameter/model optimizers or calibrators to run. Nightly it rolls
 per-trade records into daily bundles, then runs whatever jobs are registered
-(window-paths retention sweep, wallet-markout classification).
+(window-paths retention sweep, sniper-edge health report).
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ class NightlyScheduler:
         self._min_time_remaining: int | None = None
         self._trading_start: tuple[int, int] | None = None
         self._trading_end: tuple[int, int] | None = None
-        # Registered by main at boot (model refit, wallet classification, ...).
+        # Registered by main at boot (retention sweeps, sniper-edge health report).
         self.nightly_jobs: list[tuple[str, NightlyJob]] = []
 
     def register_job(self, name: str, job: NightlyJob) -> None:

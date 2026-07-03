@@ -216,17 +216,17 @@ tested but stays off; never a reason to rest new quotes.
   process gets persisted.**
 - **Tape recorder**: every CLOB print (incl. the exchange's own timestamp +
   fee_rate_bps) → `memory/recordings/*.jsonl` (gitignored).
-- **Wallet fingerprints** (`wallets.py`): nightly data-api ingestion →
-  per-wallet markout → donor/noise/sharp (`wallet_stats`; write-only, no
-  decision-time reader).
 - **Per-decision records**: `trade_context` stamped into outcomes + ghosts
   (entry facts, model prob, flow/CVD telemetry, book aux, adverse audit
   fields). **None-vs-0.0 is load-bearing**: cold feeds record `None`, never
   0.0. `CounterfactualTracker` records both arms of every scalp/hold — the
   ground truth for exit-policy changes (score via `actual − cf`, never a naive
   signed sum of `delta_pnl`).
-- **NightlyScheduler** (23:45 ET): record rollups + retention sweep + wallet
-  tables.
+- **NightlyScheduler** (23:45 ET): record rollups + retention sweep + the
+  **sniper-edge health report** (`_sniper_health_job`) — re-runs the kill-bar
+  momentum read + post-live kill rule and pings Discord `#polybot-daily`
+  (✅ HEALTHY / ⚠️ KILL RULE TRIPPED / ⏳ accruing). Alert-only; never flips
+  config. Skipped when `sniper_enabled` is false.
 
 ## 8. Hard rules
 
@@ -261,7 +261,6 @@ polybot/
                          _socket, _staleness, _json
   indicators/            ATR engine
   recording.py           WindowPathRecorder (all windows) + TapeRecorder + retention
-  wallets.py             wallet fingerprinting (nightly)
   execution/             base (BaseTrader, fee math), paper_trader, live_trader,
                          circuit_breaker, correlation
   agents/                scheduler, outcome_reviewer, counterfactual_tracker,
@@ -270,9 +269,8 @@ polybot/
                          recordings/ (gitignored); state/. Layout: polybot/paths.py
   discord_bot/           monitoring + control commands (§12)
   db/models.py           SQLite per mode (positions, trade_history, bankroll,
-                         peak_bankroll; window_labels + wallet_stats live here
-                         too; window_paths + wallet_trades sit in gitignored
-                         sidecar DBs — window_paths.db, wallet_tape.db)
+                         peak_bankroll; window_labels lives here too; window_paths
+                         sits in a gitignored sidecar DB — window_paths.db)
 scripts/
   run_polybot.ps1        daily supervisor (Linux port: run_polybot.sh + polybot.service;
                          VPS runbook: docs/DEPLOY_ORACLE_VPS.md)
@@ -292,7 +290,6 @@ scripts/
 | Binance.com | `kline_1m` / `depth20@100ms` / `aggTrade` WS | Candles, ATR, depth, cross-venue gap |
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/tick-size` | Books, tape, executable prices |
 | Polymarket Gamma | `GET /events?slug=` (deprecated upstream; auto-fallback `GET /events/slug/{slug}` — `gamma_events_by_slug`) | Discovery + resolution + labels |
-| Polymarket data-api | `GET /trades?market=` | Wallet-tagged taker tape |
 | Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` | Strike + resolution price |
 
 ## 11. Running + invariants

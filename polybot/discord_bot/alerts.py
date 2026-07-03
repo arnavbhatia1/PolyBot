@@ -101,6 +101,11 @@ class AlertManager:
             return
         await self._safe_send(channel, f"**Error**\n```{error_message}```")
 
+    async def send_health(self, message: str) -> None:
+        """Nightly sniper-edge health report → daily channel (posted during the
+        wind-down while the bot isn't trading)."""
+        await self._send_to_channels(message, [self.daily_channel_name])
+
     async def send_session_banner(self, mode: str, bankroll: float) -> None:
         """Send a session start banner to both channels to mark a new bot run."""
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")

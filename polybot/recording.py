@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 RECORDINGS_DIR: Path = MEMORY_DIR / "recordings"
 # 1 Hz path rows (~86k/day) live in their own gitignored DB so the nightly git
 # commit of the per-mode DB stays small; window_labels (tiny, joined by the
-# wallet job and analysis) stay in the per-mode DB.
+# analysis) stay in the per-mode DB.
 PATHS_DB: Path = Path(__file__).resolve().parent / "db" / "window_paths.db"
 
 _FLUSH_EVERY_S = 10.0

@@ -2,8 +2,8 @@
 
 Each resolved or scalped trade writes an outcome record capturing model probability,
 fill quality, realized edge, and indicator context. These feed the nightly record
-rollups consumed by the exit-value model refit, wallet-markout classification, and the
-counterfactual replay harness. Daily rollup keeps the file count manageable for git.
+rollups and the sniper paper-shadow read. Daily rollup keeps the file count
+manageable for git.
 """
 from __future__ import annotations
 

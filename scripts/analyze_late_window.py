@@ -178,6 +178,23 @@ def fill_ask(rows, i, side_up, rtt, max_slip=MAX_SLIP):
     return fa
 
 
+def momentum_signal(rows, i, strike, cb_move_thr=8.0, ask_cap=0.92):
+    """The deployed sniper's directional rule, module-level so the CLI and the
+    nightly health job share ONE implementation: a >= cb_move_thr Coinbase move
+    over 2s that pushed price past strike, on the move side, if its ask <= cap."""
+    mv = cb_move(rows, i, 2.0)
+    cb = rows[i]["coinbase_price"]
+    if mv is None or cb is None or strike is None:
+        return None
+    up = mv > 0
+    if abs(mv) < cb_move_thr:
+        return None
+    if not ((up and cb > strike) or ((not up) and cb < strike)):  # move pushed it past strike
+        return None
+    a = rows[i]["ask_up"] if up else rows[i]["ask_down"]
+    return up if (a is not None and a <= ask_cap) else None
+
+
 def evaluate(rows_by_win, labels, signal_fn, label, rtt, max_slip):
     """signal_fn(rows, i) -> side_up (bool) or None. First fire per window. `rtt` is
     the modeled order round-trip (s); the fill is the ask interpolated at decision+rtt,
@@ -202,7 +219,8 @@ def evaluate(rows_by_win, labels, signal_fn, label, rtt, max_slip):
             break  # one entry per window
     if len(fills) < 2:
         return None
-    daily = [statistics.mean(v) for _, v in sorted(per_day.items())]
+    series = [(day, statistics.mean(v)) for day, v in sorted(per_day.items())]
+    daily = [m for _, m in series]
     m, t, n = tstat(daily)
     p10 = block_bootstrap_p10(daily)
     win_rate = statistics.mean(f[2] for f in fills)
@@ -212,7 +230,30 @@ def evaluate(rows_by_win, labels, signal_fn, label, rtt, max_slip):
     return dict(label=label, n_fills=len(fills), n_days=len(daily), win_rate=win_rate,
                 avg_fill=avg_fill, mean_net_day=m, t_day=t, p10=p10,
                 net_per_sh=statistics.mean(f[0] for f in fills), net_sum=net_sum,
-                days_pos=npos)
+                days_pos=npos, series=series)
+
+
+def health_read(rtt=0.135, max_slip=0.05, cb_move_thr=8.0, ask_cap=0.92):
+    """One-call momentum read for the nightly health job: the kill-bar momentum
+    result plus the post-live kill-rule metrics (trailing-4-day mean, trailing-
+    8-day t). Returns None if the corpus isn't ready. kill_rule_tripped is None
+    until >= 8 ET days exist (not evaluable), then True/False."""
+    rows_by_win, labels = load_windows()
+    if not rows_by_win:
+        return None
+    r = evaluate(rows_by_win, labels,
+                 lambda rows, i, s: momentum_signal(rows, i, s, cb_move_thr, ask_cap),
+                 "momentum(cb_move)", rtt, max_slip)
+    if r is None:
+        return None
+    vals = [m for _, m in r["series"]]
+    r["trailing4_mean"] = statistics.mean(vals[-4:]) if len(vals) >= 4 else None
+    r["trailing8_t"] = tstat(vals[-8:])[1] if len(vals) >= 8 else None
+    if r["trailing8_t"] is None:
+        r["kill_rule_tripped"] = None                      # < 8 days: not evaluable
+    else:
+        r["kill_rule_tripped"] = (r["trailing4_mean"] < 0.02) or (r["trailing8_t"] < 2.0)
+    return r
 
 
 def main():
@@ -254,17 +295,7 @@ def main():
 
     # --- pre-registered candidate signals (held fixed; the gate is holding them FORWARD) ---
     def momentum(rows, i, strike):
-        mv = cb_move(rows, i, 2.0)
-        cb = rows[i]["coinbase_price"]
-        if mv is None or cb is None or strike is None:
-            return None
-        up = mv > 0
-        if abs(mv) < args.cb_move:
-            return None
-        if not ((up and cb > strike) or ((not up) and cb < strike)):  # move pushed it past strike
-            return None
-        a = side_ask(rows, i, up)
-        return up if (a is not None and a <= cap) else None
+        return momentum_signal(rows, i, strike, args.cb_move, cap)
 
     def orderflow(rows, i, strike):
         cvd = rows[i]["binance_cvd_10s"]
