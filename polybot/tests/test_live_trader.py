@@ -589,9 +589,10 @@ async def test_detect_orphan_positions_no_orphans(trader):
 
 @pytest.mark.asyncio
 async def test_detect_orphan_positions_strict_raises(trader):
-    """Chain has a token DB doesn't know about → strict mode raises."""
+    """Chain has an UNRESOLVED token DB doesn't know about → strict mode raises."""
     from polybot.execution.live_trader import OrphanPositionError
-    chain = [{"asset": "tok-UNKNOWN", "size": 50.0, "outcome": "Yes", "title": "Other market"}]
+    chain = [{"asset": "tok-UNKNOWN", "size": 50.0, "outcome": "Yes",
+              "title": "Other market", "redeemable": False}]
     with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(payload=chain)):
         with pytest.raises(OrphanPositionError):
             await trader.detect_orphan_positions(trader.db, allow_orphans=False)
@@ -599,11 +600,50 @@ async def test_detect_orphan_positions_strict_raises(trader):
 
 @pytest.mark.asyncio
 async def test_detect_orphan_positions_lenient_proceeds(trader):
-    """Same orphan but allow_orphans=True → returns count, does not raise."""
-    chain = [{"asset": "tok-UNKNOWN", "size": 50.0, "outcome": "Yes", "title": "x"}]
+    """Same unresolved orphan but allow_orphans=True → returns count, does not raise."""
+    chain = [{"asset": "tok-UNKNOWN", "size": 50.0, "outcome": "Yes", "title": "x",
+              "redeemable": False}]
     with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(payload=chain)):
         count = await trader.detect_orphan_positions(trader.db, allow_orphans=True)
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_resolved_dust_does_not_block(trader):
+    """A RESOLVED unknown position (redeemable=true) is settled dust — strict mode
+    must NOT raise and must NOT count it as an orphan (the live-boot bug fix)."""
+    chain = [{"asset": "tok-RESOLVED", "size": 10.97, "outcome": "Down",
+              "title": "Bitcoin Up or Down - May 12", "redeemable": True,
+              "currentValue": 0.0}]
+    with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(payload=chain)):
+        count = await trader.detect_orphan_positions(trader.db, allow_orphans=False)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_resolved_dust_and_unresolved_orphan_mixed(trader):
+    """Resolved dust is skipped; a co-present UNRESOLVED unknown still fail-closes."""
+    from polybot.execution.live_trader import OrphanPositionError
+    chain = [
+        {"asset": "tok-RESOLVED", "size": 9.0, "outcome": "Down", "title": "May dust",
+         "redeemable": True, "currentValue": 0.0},
+        {"asset": "tok-LIVE-LOST", "size": 20.0, "outcome": "Up", "title": "open window",
+         "redeemable": False},
+    ]
+    with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(payload=chain)):
+        with pytest.raises(OrphanPositionError):
+            await trader.detect_orphan_positions(trader.db, allow_orphans=False)
+
+
+@pytest.mark.asyncio
+async def test_missing_redeemable_fails_closed(trader):
+    """Absent redeemable field is treated as unresolved (fail-closed) — an API
+    schema change can't silently disarm the gate."""
+    from polybot.execution.live_trader import OrphanPositionError
+    chain = [{"asset": "tok-NOFIELD", "size": 15.0, "outcome": "Up", "title": "no redeemable key"}]
+    with patch("httpx.AsyncClient", return_value=_FakeAsyncClient(payload=chain)):
+        with pytest.raises(OrphanPositionError):
+            await trader.detect_orphan_positions(trader.db, allow_orphans=False)
 
 
 @pytest.mark.asyncio

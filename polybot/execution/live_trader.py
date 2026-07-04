@@ -987,11 +987,19 @@ class LiveTrader(BaseTrader):
         open/pending DB row (or one closed within _ORPHAN_LOOKBACK_HOURS —
         sweep may not have finished before restart).
 
-        Strict mode (allow_orphans=False) raises OrphanPositionError on orphans
-        AND on DB-read or data-API failure (can't verify → fail closed). Lenient
-        mode (--allow-orphans) logs CRITICAL but proceeds. Either way, orphan
-        details persist to ``memory/state/orphan_positions.json``. Returns the
-        orphan count.
+        A **resolved** on-chain position (``redeemable`` true — the market has
+        settled, tokens redeem for $0/$1) can neither be double-traded nor needs
+        managing, so it is settled dust and never blocks. Only an **unresolved**
+        unknown position (``redeemable`` false/absent — market still open, i.e. a
+        genuinely-lost live bet the loop can't see) is a true orphan. This is
+        self-sustaining: leftover dust auto-passes forever with no operator
+        action, while the fail-closed guarantee holds for real lost positions.
+
+        Strict mode (allow_orphans=False) raises OrphanPositionError on true
+        orphans AND on DB-read or data-API failure (can't verify → fail closed).
+        Lenient mode (--allow-orphans) logs CRITICAL and proceeds — an ephemeral
+        emergency bypass, no state persisted. Details always persist to
+        ``orphan_positions.json``. Returns the count of true (unresolved) orphans.
         """
         funder = os.environ.get("POLYMARKET_FUNDER", "").strip()
         if not funder:
@@ -1051,9 +1059,15 @@ class LiveTrader(BaseTrader):
                 return 0
             raise OrphanPositionError(msg)
 
-        # 3) Compare
+        # 3) Compare. An unknown token blocks ONLY if its market is unresolved
+        # (redeemable is not True). A resolved position (redeemable True) is
+        # settled dust — can't be double-traded, needs no management — so it is
+        # recorded but never blocks. Missing/None redeemable is treated as
+        # unresolved (fail-closed) so an API schema change can't silently disarm
+        # the gate. `redeemable` is already in the fetched JSON — no extra HTTP.
         non_dust_chain = 0
-        orphans: list[dict[str, Any]] = []
+        orphans: list[dict[str, Any]] = []          # unresolved unknowns → block
+        resolved_dust: list[dict[str, Any]] = []    # resolved unknowns → informational
         for pos in chain_positions:
             if not isinstance(pos, dict):
                 continue
@@ -1065,14 +1079,21 @@ class LiveTrader(BaseTrader):
             if not tok or shares < self._ORPHAN_MIN_SHARES:
                 continue
             non_dust_chain += 1
-            if tok not in known_tokens:
-                orphans.append({
-                    "token_id": tok,
-                    "shares": round(shares, 4),
-                    "outcome": str(pos.get("outcome") or ""),
-                    "title": str(pos.get("title") or "")[:80],
-                    "conditionId": str(pos.get("conditionId") or ""),
-                })
+            if tok in known_tokens:
+                continue
+            entry = {
+                "token_id": tok,
+                "shares": round(shares, 4),
+                "outcome": str(pos.get("outcome") or ""),
+                "title": str(pos.get("title") or "")[:80],
+                "conditionId": str(pos.get("conditionId") or ""),
+                "redeemable": bool(pos.get("redeemable")),
+                "current_value": round(float(pos.get("currentValue") or 0.0), 4),
+            }
+            if pos.get("redeemable") is True:
+                resolved_dust.append(entry)
+            else:
+                orphans.append(entry)
 
         # 4) Persist details for operator review
         try:
@@ -1085,38 +1106,54 @@ class LiveTrader(BaseTrader):
                 "db_known_tokens": len(known_tokens),
                 "orphans_detected": len(orphans),
                 "orphans": orphans,
+                "resolved_dust": resolved_dust,
                 "allow_orphans_flag": allow_orphans,
             }, indent=2))
         except Exception as e:
             logger.debug("Could not persist orphan_positions.json: %s", e)
 
+        # Settled dust never blocks; surface it once, and flag any unredeemed
+        # winnings so the operator can claim them (the bot has no redeem tx path).
+        if resolved_dust:
+            unredeemed = sum(d["current_value"] for d in resolved_dust)
+            logger.info(
+                "Orphan detection: %d resolved leftover position(s) in the funder "
+                "wallet — settled dust, ignored (not blocking).", len(resolved_dust),
+            )
+            if unredeemed > 0.01:
+                logger.critical(
+                    "UNREDEEMED WINNINGS: ~$%.2f in %d resolved position(s) claimable "
+                    "on Polymarket — see memory/state/orphan_positions.json (resolved_dust).",
+                    unredeemed, len(resolved_dust),
+                )
+
         if not orphans:
             logger.info(
-                "Orphan detection: %d non-dust chain position(s), all known to DB",
-                non_dust_chain,
+                "Orphan detection: %d non-dust chain position(s), all known to DB "
+                "or resolved dust — none blocking.", non_dust_chain,
             )
             return 0
 
-        # 5) Surface details and decide
+        # 5) Surface the UNRESOLVED unknowns and decide
         for o in orphans:
             logger.critical(
-                "ORPHAN POSITION DETECTED: token=%s shares=%.2f outcome=%s title=%s",
-                o["token_id"], o["shares"], o["outcome"], o["title"],
+                "ORPHAN POSITION DETECTED (unresolved): token=%s shares=%.2f "
+                "outcome=%s title=%s", o["token_id"], o["shares"], o["outcome"], o["title"],
             )
 
         if allow_orphans:
             logger.critical(
-                "ORPHAN DETECTION: %d orphan(s) — continuing due to --allow-orphans. "
-                "These shares are NOT managed by the trading loop and will not appear "
-                "in the pipeline pool. Sweep / resolve manually if needed.",
+                "ORPHAN DETECTION: %d UNRESOLVED orphan(s) — continuing due to "
+                "--allow-orphans (ephemeral emergency bypass). These shares are NOT "
+                "managed by the trading loop. Investigate before relying on this.",
                 len(orphans),
             )
             return len(orphans)
 
         raise OrphanPositionError(
-            f"{len(orphans)} on-chain position(s) not known to DB. "
-            "See memory/state/orphan_positions.json for details. "
-            "After manual review, re-run with --allow-orphans to proceed."
+            f"{len(orphans)} UNRESOLVED on-chain position(s) not known to DB "
+            "(a resolved position would not block). See "
+            "memory/state/orphan_positions.json. Investigate; --allow-orphans bypasses."
         )
 
     async def reconcile_open(self, db: Database,
