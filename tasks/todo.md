@@ -1,194 +1,39 @@
-# POLYBOT ROADMAP — LEAN KILLING MACHINE (BTC ONLY)
+# TODO — open work only
 
-**Open work only.** Completed phases and dated history live in git + memory, not
-here. This file is the forward roadmap and kill-bar status.
+Completed items get deleted; history lives in git + memory. Kill bars are the
+deployment authority — never relax one to pass it.
 
-**Scope:** BTC 5-min markets only. Multi-asset expansion is the single TODO after
-this goal completes — do not start it early.
-**Constraint:** No phase ships to live capital before its kill bar passes. Zero
-exceptions.
-**Authority:** kill bars are the deployment authority. For exit-policy questions
-the CounterfactualTracker records (both arms per scalp/hold) are ground truth —
-score via `actual − cf` / `scalp_was_optimal`, never a naive signed sum of the
-stored `delta_pnl`.
+## Operator
 
----
+- [ ] Run `python scripts/smoke_order_test.py --confirm` — one unfillable $1 FOK
+      proving order POSTs clear Cloudflare (`verify_keys.py` covered GETs only).
 
-## ESTABLISHED FACTS (constrain all future work)
+## Scheduled reads
 
-1. **No entry-side information advantage EARLY/MID-window.** The CLOB price beats
-   the model at entry (k=0, 44/44 segments, day-clustered t≈3.7–4.4 against).
-   Entry is inventory sourcing; never rebuild early/mid entry prediction. The
-   final-seconds late-window sniper is the one sanctioned exception, gated by its
-   own kill bar.
-2. **The base (entry + exit-engine) strategy has NO proven edge — measured, not
-   pending.** Binding ≥10-clean-day read landed 2026-07-01 and FAILED on every
-   defensible cut (act−cf +$32/day, t_day +1.07; strict 9d t +1.48; per-$ t −0.20;
-   p10 −$4.14; lean concentrated in two adjacent days, drop-best t +0.51). ~35
-   clean days needed at current SNR just to reach t≥2, and the clean series is
-   closed (06-30 mixed-regime; 07-01+ new fill-realism regime). **The base
-   strategy never deploys live** — `sniper_only: true` suppresses it in the live
-   recipe while its evidence stream keeps accruing as ghosts. Realized paper P&L
-   swings are BTC-vol variance, not edge.
-3. **Depth ceiling is real.** Top-5 book is $50–2k/side; per-scalp size caps
-   ~$100–300; bankroll stops mattering past ~$5–10k. The only multiplier is
-   parallel markets (post-goal).
+- [ ] ~07-07 — delta-lead OOS re-read on `late_window_collect.db`
+      (bar: OOS day-clustered t ≥ 2 AND p10 > 0 AND +300ms column positive).
+      The DB exists only for this read — delete it after.
+- [ ] ~07-08 — shadow-span fidelity read: `python scripts/sniper_shadow_status.py`
+      vs the harness at 0.135; weight the post-07-03 (sniper_only) fills.
 
----
+## After the first live fills
 
-## THE BINDING GO-LIVE GATE: the late-window sniper kill bar
+- [ ] Capture one real `get_order` JSON → verify the `_order_fully_filled` field
+      names (resting-exit path only, currently disabled).
+- [ ] Calibrate `paper_network_fail_rate` (0.03) from the live FOK success rate;
+      read the `latency_stats` sign/post percentiles.
+- [ ] Retune paper's warm-SELL 0.15s latency discount toward the measured ~3–5ms
+      sign cost — only after the shadow-span read (never perturb paper realism
+      mid-measurement).
 
-### Late-window directional sniper — BUILT, shadow-validating, blocked ONLY by n_days
+## Later (one change at a time)
 
-The one bot-formable edge: when a Coinbase move over ~2s pushes price past strike
-in the final 45s and the chosen side's ask hasn't repriced (~350ms half-life),
-buy that side before the CLOB reprices. Entry path built + adversarially reviewed
-+ unit-tested; live in PAPER SHADOW since 06-30 (`sniper_enabled: true`,
-`mode: paper`).
+- [ ] VPS move (`docs/DEPLOY_ORACLE_VPS.md`): pick the box by feed + order
+      latency SUM (Coinbase ~90ms from EU + order ~40ms Stockholm/Dublin) — it
+      fixes both legs at once. Never change infra and anything else in the same
+      move.
+- [ ] Post-goal: expand to ETH/SOL/XRP 5-min markets — only after the BTC kill
+      bar has held in production ≥ 7 days.
 
-**Kill bar (all legs, at the host's MEASURED RTT):** momentum `t_day ≥ 2.0` AND
-block-bootstrap `p10 > 0` over **≥ 8 clean ET days, ≥ 6 positive, ≥ 40 fills**,
-net of the 0.07 fee, executable asks, CONTROL (spot-side@ask) ~0. PLUS a
-paper-shadow span whose realized fills track the harness (live trades the
-higher-conviction `sniper_min_edge` subset, so the harness is a conservative
-directional gate).
-
-**Read 2026-07-02 00:20 ET (7 complete ET days 06-25→07-01; 07-02 just started):**
-- Lenient (`--max-slip 0.05`): 436 fills, win 77.3%, net +0.0690/sh,
-  **t_day +3.25, p10 +0.0409**, 6/7 days positive — passes all legs except
-  n_days.
-- Strict (`--max-slip 0.005`): 395 fills, win 75.4%, net +0.0482/sh,
-  **t_day +1.93 (< 2.0 — strict leg now FAILS), p10 +0.0165**.
-- Control ~0 both limits. Blockers: **n_days = 7 < 8** and the strict-t leg.
-- Shadow: 5 fills, 3W/2L, net −$33.56. The two losses (07-01 ET evening,
-  entries 0.42 / 0.78, both ridden to $0, −$116.03) are FIDELITY-CONFIRMED:
-  the harness fired the same windows, same side, and also lost — the losses
-  are inside the passing aggregate, not a divergence.
-- **Decay CONFIRMED:** complete-day lenient series +0.0886, +0.1263, +0.1240,
-  −0.0233, +0.0722, +0.0641, **+0.0173** (07-01); strict 07-01 = +0.0003.
-  Win% 80→81→84→68→79→76→72. The forward edge is materially below the 7-day
-  headline. Mechanism is publicly documented + Jun-1 rate-limit raise =
-  competition. Let the bar bind honestly; never lower it.
-- **07-03 read sensitivities (lenient daily series + day 8 = x):** lenient
-  t_day ≥ 2 survives down to x ≈ −0.065/sh; strict returns above 2.0 only if
-  x ≳ +0.03/sh. So: 07-02 ≥ ~+0.03 → both limits pass (strong go); 07-02 in
-  (−0.065, +0.03) → formal pass on the primary lenient read with decay
-  confirmed (tiny-pilot or wait — operator's call); 07-02 ≤ ~−0.065 → lenient
-  fails, no-go at 135ms (re-read the 40ms VPS column before retiring the
-  thesis).
-
-**Shadow-population fix (07-02 audit):** with `sniper_only: false`, the base
-path consumed every high-conviction sniper moment first (prob ≥ 0.56 + edge >
-0.20 died as `edge_cap` ghosts; 0.04–0.20 traded as time-penalized base
-entries), so `late_sniper` fills sampled only the prob < 0.56 sliver — the
-shadow could not validate the go-live population. settings.yaml now runs the
-paper shadow with **`sniper_only: true`** (the live recipe minus `mode`),
-effective at the next midnight restart. Interpreting the shadow: fills before
-the 07-03 restart = the starved sliver; from 07-03 on = the true live
-population. Base-strategy evidence continues as ghosts (its gate is closed
-final — nothing is lost).
-
-**Next reads:**
-- [ ] **2026-07-03 (morning, after the 07-02 ET day completes):** re-run
-      `python scripts/analyze_late_window.py --rtt-sweep 0.135 --max-slip 0.05`
-      (and `--max-slip 0.005`). First read that can satisfy n_days ≥ 8. If it
-      passes and the operator waives/short-cuts the shadow-span leg, go live per
-      the runbook below; otherwise
-- [ ] **~2026-07-08:** shadow-span leg (`python scripts/sniper_shadow_status.py`
-      vs the harness at 0.135) — fidelity tracking, not an independent t-test;
-      weight the post-07-03 (representative-population) fills. Operator's call
-      on span sufficiency.
-
-**Go-live runbook once the bar passes (all operator-run, in order):**
-1. `python scripts/verify_keys.py` — GET-auth + balance/allowance preflight
-   (07-01 check: authenticated OK, $130.63 USDC, unlimited allowance — top up if
-   a larger live stake is intended).
-2. `python scripts/smoke_order_test.py --confirm` — proves the ORDER-POST path
-   (EIP-712 sign + POST through Cloudflare) with one unfillable $1 FOK;
-   verify_keys covers GETs only. Can be run any day before launch.
-3. Note the smoke test + first live FOK success rate vs the
-   `paper_network_fail_rate` 0.03 estimate (calibrate it from live volume).
-4. Stop the bot. Optional fresh baseline: `python scripts/reset_paper_clean.py`
-   (operator-run, bot STOPPED).
-5. settings.yaml: `mode: live` + `late_window.sniper_only: true`
-   (`sniper_enabled` is already true). That is the complete flip — paper and
-   live share every decision path (verified 07-01: zero mode-conditional
-   decision branches).
-6. Relaunch via `.\scripts\run_polybot.ps1`; watch the first fills vs the
-   harness (`scripts/sniper_shadow_status.py`) and the `latency_stats` sign/post
-   percentiles.
-
-**Known quirks (documented, deliberate non-blockers — revisit only if they bind):**
-- First live boot computes the allowance-preflight floor from the pre-sync DB
-  bankroll (`initial_bankroll` → $160 floor), not the on-chain balance; moot with
-  an unlimited allowance. Same for the circuit-breaker seed (tier ratchets up on
-  the first close; sizing unaffected).
-- Paper lacks live's $1-notional order-time re-check (decision-path $1 gates are
-  shared; only a rare pre-check→order-time race diverges — paper slightly
-  optimistic there).
-- Paper's warm-SELL latency discount constant (0.15s, floor-bounded to ≤ ~15ms
-  effective) overstates live's measured ~3–5ms sign cost — retune only AFTER the
-  shadow-span read (never perturb paper realism mid-measurement; the 06-30
-  mixed-regime day is the standing lesson).
-- settings.yaml says "Ireland-VPN" where docs/DEPLOY_ORACLE_VPS.md says "Atlanta
-  VPN" for the same measured ~118ms — operator to reconcile the label; the
-  measured RTT (warm 119–123ms re-probed 07-01) matches calibration either way.
-- Mid-session stranded-fill residual (accepted): a "delayed" FOK that actually
-  matched + a lost cancel race + 3 failed REST fill-lookups leaves shares
-  on-chain with no DB row until the next boot's orphan/reconcile pass picks
-  them up (live_trader `_settle_unmatched_order`). The orphan machinery is the
-  designed recovery; no mid-session fix planned.
-- Book-walk math is deliberately triplicated (base `compute_buy_vwap` /
-  live `_estimate_fok_walk` / paper `_walk_book`) — the gate↔pre-check pair is
-  now locked by `test_mirror_invariants.py`; consolidate only post-measurement
-  if ever.
-
----
-
-## WATCH ITEMS (no action until they move)
-
-- **Gamma `/events` deprecation:** the endpoint is 2 months past its Sunset
-  header; all single-slug lookups auto-fall-back to the undeprecated
-  `GET /events/slug/{slug}` (`gamma_events_by_slug`, latched after first
-  enforcement).
-- **Rumored 1-minute windows** (unconfirmed, March press): would shift bot/
-  liquidity attention if launched. Watch only.
-- **VPS option** (`docs/DEPLOY_ORACLE_VPS.md`): Stockholm free box ≈ ~40ms RTT
-  (~3× better than the current ~120ms) — strengthens the latency-sensitive
-  sniper. Do not change infra and flip to live in the same move.
-  **Feed-side finding (07-02, measured):** the Coinbase DECISION feed pays
-  ~110–260ms riding the NordLayer tunnel (tick arrival vs exchange
-  timestamps) — as large as the order leg. Split-tunnel was attempted and
-  REVERTED: NordLayer's kill-switch (WFP) denies non-tunnel egress and the
-  app offers no IP bypass on this plan. Consequence: pick the VPS by the SUM
-  of feed latency (Coinbase US-East, ~90ms from EU) + order RTT (~40ms from
-  Stockholm/Dublin), and know it fixes BOTH legs at once (no consumer
-  kill-switch there). Until then the stack is exactly what the kill bar
-  measured — feed handicap included — so all reads remain valid.
-
----
-
-## ONE REMAINING TODO (post-goal)
-
-Expand to ETH, SOL, XRP 5-min markets. Architecture is parameterized; execution
-is a symbol loop. Do not start until the BTC goal is complete and all kill bars
-have held in production ≥7 days.
-
----
-
-## WHAT YOU ARE NOT ALLOWED TO DO
-
-- Add any EARLY/MID-window entry-side prediction logic (ML or rules) — dead, G-M
-  holds. (The final-45s late-window sniper is the one sanctioned exception, and
-  only through its kill bar.)
-- Deploy the base strategy live — its gate FAILED on the binding 07-01 read.
-- Expand to non-BTC markets before this goal is fully complete.
-- Deploy any phase to live capital before its kill bar passes.
-- Relax a kill bar to pass it — the answer to a failed bar is "not yet," never
-  "lower the bar."
-- Preserve deleted code in comments or dead branches.
-- Rebuild symmetric market-making, the wide-quote maker sleeve, or passive-exit
-  resting (measured −$62/day, t_day −2.03), under any name.
-- Treat the oracle cadence or Chainlink heartbeat as a tradeable signal.
-- Fill-weight any analysis where within-window outcomes are correlated — one bet
-  per window, day-clustered.
+Candidate edges ($20/10s move overlay; cbm 5 / cap 0.96 loosening) deploy only
+through their own forward kill bar — never off discovery data.

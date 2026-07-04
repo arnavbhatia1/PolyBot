@@ -1,11 +1,11 @@
 # PolyBot
 
-5-min BTC Up/Down trader for Polymarket. **The deployable strategy is the
-late-window sniper** (§2) — the one edge that survived testing, gated by a
-pre-registered kill bar (`tasks/todo.md` is the live status + go-live runbook).
-The **base strategy** (§3) runs in paper only as the evidence engine; its
-go-live gate failed final on 2026-07-01 and it is barred from real money —
-`sniper_only: true` suppresses it on the live flip.
+5-min BTC Up/Down trader for Polymarket, **LIVE since 2026-07-04** on the
+**late-window sniper** (§2) — the one edge that survived testing; its
+pre-registered kill bar passed on 10 clean days at both slip limits. The **base
+strategy** (§3) has no proven edge and is barred from real money —
+`sniper_only: true` suppresses it live (recorded as ghosts). `tasks/todo.md` =
+open work only.
 
 **This file is the single source of truth — update it in the same commit as any
 behavioral change.**
@@ -26,9 +26,9 @@ python -m pytest polybot/tests/           # full suite
 .\scripts\run_polybot.ps1                 # daily cycle: trade -> nightly jobs -> commit -> restart
 ```
 
-**Go-live flip** (only after the sniper kill bar passes — `tasks/todo.md`):
-`settings.yaml` → `mode: live` + `late_window.sniper_only: true`. That is the
-complete switch; paper and live share every decision path.
+**The live recipe** (current state): `settings.yaml` → `mode: live` +
+`late_window.sniper_only: true`. That is the complete switch; paper and live
+share every decision path.
 
 ### Secrets
 
@@ -77,7 +77,7 @@ reprices.
   over ≥ 8 clean ET days, ≥ 6 positive, ≥ 40 fills, net of fee (the PASS print
   enforces all of these; the control-~0 leg is read by eye from its row) —
   PLUS the paper-shadow tracking the harness (`sniper_shadow_status.py`).
-  Current status, decision table, and runbook: `tasks/todo.md`.
+  Passed 2026-07-04; the nightly health job (§7) re-reads it in production.
 - **Sniper-only mode** (`late_window.sniper_only`) — the go-live switch:
   base-entry BUYs are suppressed and recorded as `sniper_only` ghosts (free
   evidence), capital deploys only on sniper fires. ON in the paper shadow too,
@@ -306,7 +306,7 @@ is running, and `polybot.main` holds an OS single-instance lock
 - Recordings (`memory/recordings/`) are gitignored — never in the nightly
   commit. `memory/` records + per-mode DB + settings.yaml are committed
   nightly.
-- Kill bars are the deployment authority (`tasks/todo.md` = status + runbook).
+- Kill bars are the deployment authority; `tasks/todo.md` = open work only.
 
 ## 12. Discord
 
