@@ -139,7 +139,8 @@
       "Bash(mv polybot/memory/calibration/platt_rejected.json polybot/memory/calibration/isotonic_rejected.json)",
       "Bash(xargs wc -l)",
       "Bash(PYTHONIOENCODING=utf-8 python *)",
-      "PowerShell(git checkout *)"
+      "PowerShell(git checkout *)",
+      "PowerShell(python scripts/sniper_shadow_status.py)"
     ]
   }
 }
