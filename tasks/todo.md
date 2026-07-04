@@ -165,9 +165,6 @@ final — nothing is lost).
   Stockholm/Dublin), and know it fixes BOTH legs at once (no consumer
   kill-switch there). Until then the stack is exactly what the kill bar
   measured — feed handicap included — so all reads remain valid.
-- **wallet_tape.db growth:** 3.4 GB and ~200 MB/day with deliberately no
-  retention (accumulation-forever design). Local-only, gitignored; revisit if
-  disk pressure ever matters.
 
 ---
 

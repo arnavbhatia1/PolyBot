@@ -327,7 +327,7 @@ class BTCMarketScanner:
                         logger.warning("Gamma API: DNS failure — network down? (suppressing for 30s)")
                         self._last_dns_error_ts = now
                 else:
-                    logger.error(f"Gamma API error for {slug}: {e}")
+                    logger.error(f"Gamma API error for {slug}: {type(e).__name__}: {e}")
                 continue
 
             if not data:

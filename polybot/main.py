@@ -82,7 +82,8 @@ class _StripAnsiFormatter(logging.Formatter):
 
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
-_file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=0, mode="a", encoding="utf-8")
+# backupCount must be >= 1: RotatingFileHandler never rolls over when it is 0.
+_file_handler = logging.handlers.RotatingFileHandler("polybot.log", maxBytes=5_000_000, backupCount=2, mode="a", encoding="utf-8")
 _file_handler.setFormatter(_StripAnsiFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
 
 # Async logging: disk writes (1-5ms each) are offloaded to a queue thread, off the hot path.
@@ -503,13 +504,29 @@ async def _get_open_positions_cached(db: Any) -> list:
 
 
 def _invalidate_open_positions_cache() -> None:
-    """Force the next _get_open_positions_cached call to re-read the DB.
-    Call after any successful open/close/resolve so concurrent-position math
-    and entry-gate checks see the new state immediately instead of trailing
-    the 1s TTL.
+    """Force the next _get_open_positions_cached / _get_bankroll_cached call to
+    re-read the DB. Call after any successful open/close/resolve so
+    concurrent-position math and entry-gate checks see the new state
+    immediately instead of trailing the 1s TTL.
     """
-    global _open_positions_cache_ts
+    global _open_positions_cache_ts, _bankroll_cache_ts
     _open_positions_cache_ts = 0.0
+    _bankroll_cache_ts = 0.0
+
+
+# 1-second bankroll cache: bankroll only moves on open/close/resolve, which all
+# call _invalidate_open_positions_cache — the eval tick never needs a fresh read.
+_bankroll_cache: float = 0.0
+_bankroll_cache_ts: float = 0.0
+
+async def _get_bankroll_cached(db: Any) -> float:
+    global _bankroll_cache, _bankroll_cache_ts
+    now = time.time()
+    if now - _bankroll_cache_ts < 1.0:
+        return _bankroll_cache
+    _bankroll_cache = await db.get_bankroll()
+    _bankroll_cache_ts = now
+    return _bankroll_cache
 
 # Rate-limit counterfactual resolution checks (Gamma REST calls, no need every tick).
 _last_cf_check_ts: float = 0.0
@@ -1347,7 +1364,9 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     # Skip if candle data is stale (WebSocket may have disconnected)
     latest_candle_age = binance_feed.buffer.latest_age_s if binance_feed and binance_feed.buffer else float("inf")
     if latest_candle_age > 180:
-        logger.warning(f"Stale Binance candle ({latest_candle_age:.0f}s old) — skipping entry")
+        if eval_window != last_eval_log_window:
+            last_eval_log_window = eval_window
+            logger.warning(f"Stale Binance candle ({latest_candle_age:.0f}s old) — skipping entry")
         return None, None, window_strikes, last_eval_log_window, "none"
 
     return strike, btc_price, window_strikes, last_eval_log_window, _price_source
@@ -2440,7 +2459,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     alert_manager, db, config, breaker)
 
             # --- POSITION MANAGEMENT: resolution check + active re-evaluation ---
-            positions = await db.get_open_positions()
+            positions = await _get_open_positions_cached(db)
             live_results = await asyncio.gather(
                 *[_get_contract_prices(market_scanner, pos["market_id"], http_client) for pos in positions],
                 return_exceptions=True,
@@ -2555,7 +2574,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             if strike is None:
                 continue
 
-            current_bankroll = await db.get_bankroll()
+            current_bankroll = await _get_bankroll_cached(db)
             _, last_eval_log_window = await _evaluate_signal_and_enter(
                 contract, cid, binance_feed, indicator_engine,
                 signal_engine, market_scanner, http_client, clob_ws,

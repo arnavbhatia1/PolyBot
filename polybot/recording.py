@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -483,12 +484,19 @@ class WindowPathRecorder:
 
 
 class TapeRecorder:
-    """CLOB trade prints → memory/recordings/tape_YYYY-MM-DD.jsonl (gitignored)."""
+    """CLOB trade prints → memory/recordings/tape_YYYY-MM-DD.jsonl (gitignored).
+
+    Writes run on a single-thread executor: the flush is triggered from the CLOB
+    WS trade callback (event loop), and print volume peaks in the final seconds
+    of a window — exactly when the sniper fires — so the loop must never carry
+    the disk write. One worker keeps batches ordered and appends non-overlapping.
+    """
 
     def __init__(self, dir_path: Path | None = None) -> None:
         self.dir = dir_path or RECORDINGS_DIR
         self._buf: list[str] = []
         self._last_flush = time.time()
+        self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tape-writer")
 
     def on_trade(self, asset_id: str, trade: dict[str, Any]) -> None:
         """Wired as ClobWebSocket.on_trade — must never raise into the feed."""
@@ -510,6 +518,12 @@ class TapeRecorder:
             return
         buf, self._buf = self._buf, []
         self._last_flush = time.time()
+        try:
+            self._writer.submit(self._write, buf)
+        except RuntimeError:
+            self._write(buf)  # executor gone (interpreter shutdown) — write inline
+
+    def _write(self, buf: list[str]) -> None:
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
             day = datetime.now(timezone.utc).strftime("%Y-%m-%d")

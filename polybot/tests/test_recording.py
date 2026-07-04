@@ -235,6 +235,7 @@ def test_tape_recorder_writes_jsonl(tmp_path):
     rec.on_trade("tok1", {"price": "0.55", "size": "20", "side": "BUY",
                           "timestamp": time.time()})
     rec.flush()
+    rec._writer.shutdown(wait=True)  # writes land on the writer thread — drain first
     files = list(tmp_path.glob("tape_*.jsonl"))
     assert len(files) == 1
     row = json.loads(files[0].read_text().strip())
