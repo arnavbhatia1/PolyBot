@@ -37,10 +37,10 @@ execution:
   # rate, and run smoke_order_test.py --confirm to prove order POSTs clear Cloudflare
   # (verify_keys.py covers GETs only).
   slippage_impact_pct: 0.03
-  paper_latency_mean_s: 0.13       # Ireland-VPN warm POST RTT (measured ~0.118-0.138)
+  paper_latency_mean_s: 0.125      # Ireland-VPN warm POST RTT (measured ~0.111-0.138)
   paper_latency_jitter_s: 0.02     # warm spread (gauss std)
-  paper_latency_floor_s: 0.118     # fastest measured warm RTT — the latency floor
-  paper_network_fail_rate: 0.03    # ESTIMATE; calibrate from live FOK success rate
+  paper_latency_floor_s: 0.111     # fastest measured warm RTT — the latency floor
+  paper_network_fail_rate: 0.03    # 0 network errors in first 29 live POSTs — consistent, keep
 
 # =============================================================================
 #  SECTION 2: SIGNAL — L1 fair-value anchor + entry gates + exit engine

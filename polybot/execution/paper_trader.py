@@ -26,12 +26,12 @@ class PaperTrader(BaseTrader):
         # Realism knobs (all overridable via settings.yaml -> execution.*; the
         # defaults here equal settings' calibrated values and apply only when
         # settings omit the keys). Calibrated to the operator's MEASURED warm
-        # POST RTT to the Polymarket CLOB (TTFB ~0.118-0.138s warm, ~0.35s cold);
+        # POST RTT to the Polymarket CLOB (~0.111-0.138s warm, ~0.35s cold);
         # latency_floor_s is the fastest measured warm RTT and the 4% heavy tail
         # in _simulate_latency carries occasional stalls.
-        self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.13)
+        self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.125)
         self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.02)
-        self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.118)
+        self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.111)
         # Fallback fail rate when the book is unavailable; the i.i.d. baseline
         # otherwise — _compute_fail_rate adds state-dependent terms on top.
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.03)
@@ -47,13 +47,12 @@ class PaperTrader(BaseTrader):
     _PAPER_RETRY_BASE_DELAY: float = 0.03
 
     # Warm-SELL parameters mirror LiveTrader exactly (TTL + drift acceptance).
-    # The speedup models the sign work a presigned order skips; the latency
-    # floor holds, so the effective discount at current settings is <= ~15ms.
-    # Live's measured EIP-712 sign is ~3-5ms warm — retune this only between
-    # measurement regimes, never mid-series (the sniper shadow comparison runs
-    # on the current paper-fill regime).
+    # The speedup is the sign work a presigned order skips — measured live at
+    # ~3-5ms (EIP-712 sign), so 5ms, not a full sign-and-post's worth.
+    # Retuned 2026-07-05 between measurement regimes (bot live, paper idle);
+    # the pre-07-05 paper shadow series was recorded at the old 0.15 value.
     _SELL_WARMUP_TTL_S: float = 5.0
-    _SELL_WARMUP_SPEEDUP_S: float = 0.15
+    _SELL_WARMUP_SPEEDUP_S: float = 0.005
 
     async def _execute_buy(
         self, token_id: str, price: float, size: float,

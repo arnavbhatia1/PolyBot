@@ -20,11 +20,10 @@ deployment authority — never relax one to pass it.
 
 - [ ] Capture one real `get_order` JSON → verify the `_order_fully_filled` field
       names (resting-exit path only, currently disabled).
-- [ ] Calibrate `paper_network_fail_rate` (0.03) from the live FOK success rate;
-      read the `latency_stats` sign/post percentiles.
-- [ ] Retune paper's warm-SELL 0.15s latency discount toward the measured ~3–5ms
-      sign cost — only after the shadow-span read (never perturb paper realism
-      mid-measurement).
+- [ ] Re-read `latency_stats.json` after a day of kill-RTT recording (07-05 fix)
+      and nudge `paper_latency_*` if the live distribution disagrees.
+- [ ] Revisit `paper_network_fail_rate` (0.03) at ~100 live POSTs
+      (0 network errors in the first 29 — consistent so far).
 
 ## Later (one change at a time)
 

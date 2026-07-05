@@ -172,8 +172,9 @@ def _record_submit_latency(total_secs: float, sign_secs: float, post_secs: float
         if sign_secs > 0:
             _SIGN_LATENCY_SAMPLES.append(sign_secs)
         _POST_LATENCY_SAMPLES.append(post_secs)
-        if len(_LATENCY_SAMPLES) < 5:
-            return
+        # Write from the first sample: the daily restart resets these buffers,
+        # and at a handful of POSTs per day a warm-up threshold means the file
+        # never lands on disk at all.
         total_sorted = sorted(_LATENCY_SAMPLES)
         sign_sorted = sorted(_SIGN_LATENCY_SAMPLES)
         post_sorted = sorted(_POST_LATENCY_SAMPLES)
@@ -1781,6 +1782,11 @@ class LiveTrader(BaseTrader):
                     # (ask repriced under us) — a definitive miss, not an
                     # ambiguous POST. No settle wait; the next tick re-fires.
                     # Main logs the OPEN REJECTED line; raw detail at DEBUG only.
+                    # A kill is still a full POST round-trip — record its RTT
+                    # (kills dominate sniper POSTs; without them the latency
+                    # file starves at a few fills/day).
+                    _elapsed = time.perf_counter() - _lat_t0
+                    _record_submit_latency(_elapsed, 0.0, _elapsed)
                     logger.debug("FOK %s kill detail: %s", side, e)
                     _update_fill_stats(filled=False, side=side, reason="fok_killed")
                     return FillResult(
