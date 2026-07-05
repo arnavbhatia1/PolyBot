@@ -240,6 +240,7 @@ def _log_price_sum_outlier(market_id: str, price_up: float, price_down: float,
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 _resolve_oracle_logged: set[str] = set()  # market_id — RESOLVE oracle line printed once
+_SNIPER_ONLY_QUIET = False  # set at boot: sniper_only demotes base-model SKIP lines to DEBUG
 _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, hold to resolution
 
 # Phase 1 passive exits: position_id -> resting SELL state. In-memory by design —
@@ -384,15 +385,17 @@ def _fee_breakdown(result: Any) -> str:
     return f"${total:.2f}  (entry ${entry:.2f} + exit ${exit_:.2f})"
 
 
-def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
+def _emit_gate_skip(cid: str, gate_key: str, reason: str, quiet: bool = False) -> None:
     """Emit one combined SKIP line (signal context + gate reason).
 
     Throttled per (cid, gate_key) — direction is intentionally NOT in the key, so
     rapid Up/Down ping-pong on the same gate emits one SKIP, not 20× in 5 seconds.
+    quiet=True routes to DEBUG (sniper-only mode: base-model skips are unactionable).
     """
+    emit = logger.debug if quiet else logger.info
     ctx = _pending_eval_ctx.get(cid)
     if not ctx:
-        logger.info(f"{_C.DIM}SKIP — {reason}{_C.RESET}")
+        emit(f"{_C.DIM}SKIP — {reason}{_C.RESET}")
         return
     now = time.time()
     key = (cid, gate_key)
@@ -400,7 +403,7 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str) -> None:
     if prev_time is not None and (now - prev_time) < 30:
         return
     _lru_set(_last_gate_skip_state, key, now, _GATE_STATE_MAX)
-    logger.info(
+    emit(
         f"{_C.DIM}SKIP {ctx['direction']} {ctx['window_slug']} | "
         f"model {ctx['prob']:.0%} {ctx['direction']}, BTC {ctx['dist']:+,.0f} vs strike | "
         f"{reason}{_C.RESET}"
@@ -934,7 +937,8 @@ async def _evaluate_signal_and_enter(
     else:
         last_eval_log_window = eval_window
         _reason_type = signal.reason.split(":")[0].strip()
-        _emit_gate_skip(cid, f"model_{_reason_type}", signal.reason)
+        _emit_gate_skip(cid, f"model_{_reason_type}", signal.reason,
+                        quiet=_SNIPER_ONLY_QUIET)
 
     if signal.action not in ("BUY_YES", "BUY_NO"):
         _record_skip(f"model:{signal.reason[:30]}")
@@ -2705,6 +2709,12 @@ async def main() -> None:
     config = load_config()
     mode = args.mode or config.get("mode", "paper")
     config["mode"] = mode
+    # Under sniper_only the base strategy can never trade, so its per-gate model
+    # skips are unactionable — route them to DEBUG and keep the log to windows,
+    # sniper action, positions, and problems. Ghosts/gate-stats are unaffected.
+    global _SNIPER_ONLY_QUIET
+    _SNIPER_ONLY_QUIET = bool(config.get("late_window", {}).get(
+        "sniper_only", _d("sniper_only")))
     base_dir = Path(__file__).parent
 
     # Per-mode DB (polybot_paper.db / polybot_live.db) so flipping paper -> live

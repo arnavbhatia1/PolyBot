@@ -1282,7 +1282,16 @@ class LiveTrader(BaseTrader):
         size_usdc = float(pos.get("size") or 0.0)
         fee_rate = float(pos.get("fee_rate") or DEFAULT_FEE_RATE)
         # --- Best-effort exit_price reconstruction ---
-        exit_price, recovery_label = self._infer_recovery_exit_price(token_id, entry_price)
+        # Gamma first: recovery runs for redeemed (long-resolved) markets, where
+        # Gamma's pinned outcome prices are authoritative. The CLOB-mid inference
+        # only sees a live book, which is gone hours after resolution.
+        gamma_exit = await self._gamma_recovery_exit_price(
+            pos.get("market_id") or "", pos.get("side") or "")
+        if gamma_exit is not None:
+            exit_price = gamma_exit
+            recovery_label = "gamma_win" if gamma_exit >= 0.5 else "gamma_loss"
+        else:
+            exit_price, recovery_label = self._infer_recovery_exit_price(token_id, entry_price)
         # --- Replicate base.close_trade PnL math against the reconstructed price ---
         lr = log_return(entry_price, exit_price)
         fee_usdc = exit_fee_usdc(db_shares, exit_price, fee_rate)
@@ -1349,6 +1358,46 @@ class LiveTrader(BaseTrader):
             )
         except Exception as e:
             logger.debug("Reconcile recovery: outcome JSON write failed for position %d: %s", pos["id"], e)
+
+    async def _gamma_recovery_exit_price(self, market_id: str, side: str) -> float | None:
+        """Resolved exit price ($1/$0) from Gamma for a settled market.
+
+        None unless Gamma answers definitively (event found, outcome prices
+        pinned to 1/0 and summing sane) — callers fall back to book inference.
+        Uses the undeprecated by-slug endpoint; market_id IS the event slug.
+        """
+        if not market_id or side not in ("Up", "Down"):
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http:
+                resp = await http.get(f"https://gamma-api.polymarket.com/events/slug/{market_id}")
+                resp.raise_for_status()
+                event = resp.json()
+            if isinstance(event, list):
+                event = event[0] if event else None
+            markets = (event or {}).get("markets") or []
+            if not markets:
+                return None
+            market = markets[0]
+            outcomes = market.get("outcomes", [])
+            prices_raw = market.get("outcomePrices", [])
+            if isinstance(outcomes, str):
+                outcomes = _json.loads(outcomes)
+            if isinstance(prices_raw, str):
+                prices_raw = _json.loads(prices_raw)
+            prices = {str(o).lower(): float(prices_raw[i])
+                      for i, o in enumerate(outcomes) if i < len(prices_raw)}
+            pu, pd = prices.get("up"), prices.get("down")
+            if pu is None or pd is None or not (0.98 <= pu + pd <= 1.02):
+                return None
+            if pu >= 0.99 or pu <= 0.01:  # pinned = resolved
+                up_won = pu >= 0.5
+                return 1.0 if (side == "Up") == up_won else 0.0
+            return None
+        except Exception as e:
+            logger.warning("Reconcile recovery: Gamma resolution lookup failed for %s: %s",
+                           market_id, e)
+            return None
 
     def _infer_recovery_exit_price(self, token_id: str, entry_price: float) -> tuple[float, str]:
         """Pick a best-effort exit_price for a missed close.
