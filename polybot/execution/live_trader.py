@@ -71,7 +71,8 @@ _ALLOWANCE_RECHECK_EVERY = 10
 _FILL_PRICE_LOOKUP_RETRIES = 3
 _FILL_PRICE_LOOKUP_DELAY = 0.05
 _DUST_THRESHOLD_SHARES = 0.01
-_REDEEM_WAIT_MAX_S = 60.0  # give a winning auto-redeem this long before trusting the raw balance
+_REDEEM_WAIT_MAX_S = 120.0    # winning tokens still on-chain past this → CRITICAL (alert-only)
+_REDEEM_CHECK_EVERY_S = 10.0  # data-API redeem checks are rate-limited to this cadence
 _BALANCE_SETTLE_FLOOR = 0.03  # min chain-settle wait even if WS fires immediately
 _BALANCE_SETTLE_DELAY = 0.15  # max wait — WS-wait ceiling, and the fixed delay when no WS is attached
 # WS trade events for our token typically arrive within 50-150ms of the
@@ -402,8 +403,8 @@ class LiveTrader(BaseTrader):
         self._buy_warmups: dict[str, dict] = {}
         self._BUY_WARMUP_TTL_S: float = 5.0
         # Winning resolutions awaiting on-chain auto-redeem: position_id →
-        # {"pre": balance before redeem, "deadline": give-up ts}. One
-        # non-blocking check per _resolve_bankroll call; the loop retries each
+        # {"deadline": alert ts, "next_check": rate-limit ts}. One non-blocking
+        # data-API check per _resolve_bankroll call; the loop retries each
         # tick, never stalling on a redeem poll.
         self._redeem_pending: dict[int, dict[str, float]] = {}
         # Phase 1 passive exit (parity with PaperTrader.supports_passive_exit): live
@@ -478,8 +479,9 @@ class LiveTrader(BaseTrader):
             pass
 
     async def get_balance(self) -> float:
-        """Fetch USDC balance from Polymarket. Returns float in dollars."""
-        return _get_balance_usd(self.client)
+        """Fetch USDC balance from Polymarket. Returns float in dollars.
+        Runs the REST call on a worker thread — callers sit on the event loop."""
+        return await asyncio.to_thread(_get_balance_usd, self.client)
 
     async def _maybe_recheck_allowance(self) -> None:
         """Re-check USDC allowance every _ALLOWANCE_RECHECK_EVERY submits; warn if revoked mid-session."""
@@ -607,13 +609,21 @@ class LiveTrader(BaseTrader):
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float | None:
         """Sync bankroll with real Polymarket balance.
 
-        Losses settle immediately (no redeem tx). Winning resolutions wait for
-        the auto-redeem USDC to land on-chain, but never block: each call makes
-        one balance check and returns None while the credit is in flight (the
-        trading loop retries next tick, so concurrent positions stay managed).
-        If the auto-redeem never lands, the position stays PENDING — we never
+        Losses settle immediately (no redeem tx). Wins book only once the
+        winning tokens are GONE from the funder wallet on the public data API:
+        redemption burns the tokens and credits the USDC in one atomic tx, so
+        token-absence == payout landed. A balance-delta wait is unusable here —
+        the auto-redeem often credits BEFORE the first balance snapshot, hiding
+        the payout inside the baseline so no delta ever appears (and the CLOB's
+        /balance-allowance is a cache that doesn't see off-exchange transfers
+        until /balance-allowance/update busts it).
+
+        Never blocks: one rate-limited check per call, None while unconfirmed
+        (the loop retries next tick, so concurrent positions stay managed).
+        While the tokens remain on-chain the position stays PENDING — we never
         book an un-redeemed balance (which would silently drop the winner's
-        payout) — and a CRITICAL alert fires once for manual on-chain redemption.
+        payout) — and a CRITICAL fires once past the deadline for a manual
+        redeem; booking still happens automatically whenever the tokens clear.
         """
         if exit_price < 0.99:
             real_balance = await self.get_balance()
@@ -621,42 +631,83 @@ class LiveTrader(BaseTrader):
             return real_balance
 
         pos_id = position.get("id", -1)
+        now = time.time()
         wait = self._redeem_pending.get(pos_id)
         if wait is None:
-            pre_balance = await self.get_balance()
-            self._redeem_pending[pos_id] = {
-                "pre": pre_balance,
-                "deadline": time.time() + _REDEEM_WAIT_MAX_S,
-            }
+            wait = {"deadline": now + _REDEEM_WAIT_MAX_S, "next_check": 0.0}
+            self._redeem_pending[pos_id] = wait
+        if now < wait["next_check"]:
             return None
-        balance = await self.get_balance()
-        expected_gain = position.get("shares_held", 0) * exit_price
-        if balance >= wait["pre"] + expected_gain * 0.95:
+        wait["next_check"] = now + _REDEEM_CHECK_EVERY_S
+
+        held = await self._chain_token_shares(self._winning_token_id(position))
+        if held is None:
+            return None  # can't verify (API/env failure) — retry next interval
+        if held <= _DUST_THRESHOLD_SHARES:
+            # Tokens burned → USDC credited. Bust the CLOB's cached balance
+            # before reading it so the book uses the post-redeem number.
+            try:
+                await asyncio.to_thread(
+                    self.client.update_balance_allowance,
+                    BalanceAllowanceParams(asset_type=AssetType.COLLATERAL),
+                )
+            except Exception as e:
+                logger.warning("Balance cache refresh failed (booking anyway): %s", e)
+            balance = await self.get_balance()
             del self._redeem_pending[pos_id]
             logger.info(
-                "Winning resolution — auto-redeem confirmed: balance %.2f -> %.2f",
-                wait["pre"], balance,
+                "Winning resolution — redeem confirmed on-chain (tokens cleared): "
+                "balance %.2f", balance,
             )
             return balance
-        if time.time() >= wait["deadline"]:
-            # Auto-redeem has NOT landed. Do NOT book the raw (un-redeemed)
-            # balance — that silently drops the winner's payout from the bankroll
-            # and leaves the winning conditional tokens stranded on-chain. Keep
-            # the position pending (return None → the loop retries; a late
-            # auto-redeem is still caught by the confirmed branch above) and
-            # scream ONCE so the operator can redeem manually if it never lands.
-            if not wait.get("alerted"):
-                wait["alerted"] = True
-                logger.critical(
-                    "WINNING REDEEM STUCK: position %s — auto-redeem not detected "
-                    "%.0fs after a winning resolution (pre=%.2f expected_gain=%.2f "
-                    "current=%.2f). NOT booking the un-redeemed balance; the winnings "
-                    "are stranded on-chain and need a manual redeem. Position stays "
-                    "pending until the credit lands.",
-                    pos_id, _REDEEM_WAIT_MAX_S, wait["pre"], expected_gain, balance,
-                )
-            return None
+        if now >= wait["deadline"] and not wait.get("alerted"):
+            wait["alerted"] = True
+            logger.critical(
+                "WINNING REDEEM STUCK: position %s — %.2f winning share(s) still in "
+                "the funder wallet %.0fs after resolution; auto-redeem has not fired. "
+                "The payout needs a manual redeem (Polymarket UI). Position stays "
+                "pending and books automatically once the tokens clear.",
+                pos_id, held, _REDEEM_WAIT_MAX_S,
+            )
         return None
+
+    @staticmethod
+    def _winning_token_id(position: dict[str, Any]) -> str | None:
+        """Token id of the side this position holds, from the entry's trade_context."""
+        try:
+            snap = _json.loads(position.get("indicator_snapshot") or "{}")
+            ctx = snap.get("trade_context", {}) if isinstance(snap, dict) else {}
+            key = "token_id_up" if position.get("side") == "Up" else "token_id_down"
+            tok = ctx.get(key)
+            return str(tok) if tok else None
+        except Exception:
+            return None
+
+    async def _chain_token_shares(self, token_id: str | None) -> float | None:
+        """Shares of `token_id` the funder still holds per the public data API.
+        0.0 when absent (redeemed/burned); None = cannot verify (missing token
+        id or env, API failure, bad payload) — callers must treat as unknown.
+        """
+        funder = os.environ.get("POLYMARKET_FUNDER", "").strip()
+        if not token_id or not funder:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http:
+                # sizeThreshold: the API's default (1.0) hides sub-1-share
+                # positions — a hidden still-held winner would look redeemed.
+                resp = await http.get(self._POSITIONS_API_URL,
+                                      params={"user": funder, "sizeThreshold": 0.01})
+                resp.raise_for_status()
+                chain_positions = resp.json()
+            if not isinstance(chain_positions, list):
+                return None
+            for p in chain_positions:
+                if str(p.get("asset")) == token_id:
+                    return float(p.get("size") or 0.0)
+            return 0.0
+        except Exception as e:
+            logger.warning("Redeem check: chain token lookup failed: %s", e)
+            return None
 
     # -- FOK pre-check + balance/dust helpers --------------------------------
     @staticmethod

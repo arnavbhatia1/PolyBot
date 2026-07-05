@@ -239,6 +239,7 @@ def _log_price_sum_outlier(market_id: str, price_up: float, price_down: float,
 # Throttled logging for hold evaluations and resolution waiting
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
+_resolve_oracle_logged: set[str] = set()  # market_id — RESOLVE oracle line printed once
 _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, hold to resolution
 
 # Phase 1 passive exits: position_id -> resting SELL state. In-memory by design —
@@ -2090,7 +2091,10 @@ async def _resolve_expired_position(
             _last_resolve_wait_log[mid] = now_ts
             logger.info(f"Waiting for resolution — {_slug_to_window(mid)}")
         return False, day_wins, day_losses, day_fees
-    if resolve_log:
+    if resolve_log and pos["market_id"] not in _resolve_oracle_logged:
+        # Log once per market — a pending winning redeem retries this path every
+        # tick and would otherwise repeat the same RESOLVE line for minutes.
+        _resolve_oracle_logged.add(pos["market_id"])
         logger.info(f"RESOLVE {_slug_to_window(pos['market_id'])} | {resolve_log}")
 
     result = await trader.resolve_position(pos["id"], exit_price)

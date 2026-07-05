@@ -354,64 +354,117 @@ async def test_resolve_position_winner(trader):
     open_result = await trader.open_trade(**kwargs)
     assert open_result.success is True
     pos_id = open_result.position_id
+    shares_held = (await trader.db.get_open_positions())[0]["shares_held"]
 
-    # Figure out actual shares held from DB
-    positions = await trader.db.get_open_positions()
-    shares_held = positions[0]["shares_held"]
+    # Tokens still in the funder wallet — redeem hasn't fired: resolve_position
+    # must report pending without closing the position.
+    held = {"shares": shares_held}
 
-    # First tick: auto-redeem hasn't landed — balance still pre-redeem.
-    # resolve_position must report pending without closing the position.
-    trader.client.get_balance_allowance.return_value = {
-        "balance": str(int(50.0 * 1e6))
-    }
+    async def fake_chain_shares(token_id):
+        return held["shares"]
+
+    trader._chain_token_shares = fake_chain_shares
+    trader.client.get_balance_allowance.return_value = {"balance": str(int(50.0 * 1e6))}
     result = await trader.resolve_position(pos_id, exit_price=1.0)
     assert result.success is False
     assert result.pending is True
     assert len(await trader.db.get_open_positions()) == 1
 
-    # Redeem lands: remaining bankroll (50) + shares_held * $1.
+    # Redeem lands: tokens cleared on-chain; balance = remaining 50 + payout.
+    held["shares"] = 0.0
     winning_balance = 50.0 + shares_held
-    trader.client.get_balance_allowance.return_value = {
-        "balance": str(int(winning_balance * 1e6))
-    }
+    trader.client.get_balance_allowance.return_value = {"balance": str(int(winning_balance * 1e6))}
+    trader._redeem_pending[pos_id]["next_check"] = 0.0  # bypass the 10s rate limit
     result = await trader.resolve_position(pos_id, exit_price=1.0)
 
     assert result.success is True
+    trader.client.update_balance_allowance.assert_called()  # CLOB cache busted pre-book
     bankroll = await trader.db.get_bankroll()
     assert bankroll == pytest.approx(winning_balance, rel=1e-4)
 
 
 @pytest.mark.asyncio
+async def test_resolve_position_winner_redeemed_before_first_check(trader):
+    """07-04 live bug: the auto-redeem credited BEFORE the first balance
+    snapshot, so a balance-delta wait hid the payout inside its baseline and
+    spun forever. Token-absence is the authority — already-cleared tokens must
+    book on the FIRST resolve call."""
+    _setup_successful_fill(trader, fill_price="0.50", fill_size="100.0")
+    kwargs = {**_TRADE_KWARGS, "price": 0.50, "size": 50.0, "market_id": "mkt-race"}
+    open_result = await trader.open_trade(**kwargs)
+    pos_id = open_result.position_id
+    shares_held = (await trader.db.get_open_positions())[0]["shares_held"]
+
+    async def fake_chain_shares(token_id):
+        return 0.0  # tokens already burned — redeem landed before we looked
+
+    trader._chain_token_shares = fake_chain_shares
+    winning_balance = 50.0 + shares_held
+    trader.client.get_balance_allowance.return_value = {"balance": str(int(winning_balance * 1e6))}
+
+    result = await trader.resolve_position(pos_id, exit_price=1.0)
+    assert result.success is True
+    assert (await trader.db.get_bankroll()) == pytest.approx(winning_balance, rel=1e-4)
+    assert pos_id not in trader._redeem_pending
+
+
+@pytest.mark.asyncio
 async def test_resolve_position_winner_deadline_stays_pending_not_booked(trader):
-    """06-17 fix: if the auto-redeem never lands, the deadline must NOT book the
-    raw (un-redeemed) balance — that silently drops the winner's payout and
-    strands the tokens on-chain. The position stays PENDING (loop keeps polling /
-    operator can manually redeem), and a late-landing redeem still resolves."""
+    """If the redeem never fires, the deadline must NOT book the un-redeemed
+    balance — that silently drops the winner's payout and strands the tokens
+    on-chain. The position stays PENDING (CRITICAL fires once, operator can
+    redeem manually), and a late-landing redeem still resolves."""
     _setup_successful_fill(trader, fill_price="0.50", fill_size="100.0")
     kwargs = {**_TRADE_KWARGS, "price": 0.50, "size": 50.0, "market_id": "mkt-deadline"}
     open_result = await trader.open_trade(**kwargs)
     pos_id = open_result.position_id
     shares_held = (await trader.db.get_open_positions())[0]["shares_held"]
 
-    # Auto-redeem hasn't landed: balance still pre-redeem.
+    held = {"shares": shares_held}
+
+    async def fake_chain_shares(token_id):
+        return held["shares"]
+
+    trader._chain_token_shares = fake_chain_shares
     trader.client.get_balance_allowance.return_value = {"balance": str(int(50.0 * 1e6))}
     result = await trader.resolve_position(pos_id, exit_price=1.0)
     assert result.pending is True
 
-    # Deadline passes, redeem STILL not landed → must remain pending, NOT book the
+    # Deadline passes, tokens STILL held → must remain pending, NOT book the
     # raw 50.0 (which would lose the winnings). Position stays open.
     trader._redeem_pending[pos_id]["deadline"] = 0.0
+    trader._redeem_pending[pos_id]["next_check"] = 0.0
     result = await trader.resolve_position(pos_id, exit_price=1.0)
     assert result.pending is True
     assert len(await trader.db.get_open_positions()) == 1
+    assert trader._redeem_pending[pos_id]["alerted"] is True
 
     # The redeem finally lands late → resolves correctly to the winning balance.
+    held["shares"] = 0.0
     winning_balance = 50.0 + shares_held
     trader.client.get_balance_allowance.return_value = {"balance": str(int(winning_balance * 1e6))}
+    trader._redeem_pending[pos_id]["next_check"] = 0.0
     result = await trader.resolve_position(pos_id, exit_price=1.0)
     assert result.success is True
     bankroll = await trader.db.get_bankroll()
     assert bankroll == pytest.approx(winning_balance, rel=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_resolve_position_chain_api_failure_stays_pending(trader):
+    """Data API unreachable → redemption unverifiable → stays pending, never books."""
+    _setup_successful_fill(trader, fill_price="0.50", fill_size="100.0")
+    kwargs = {**_TRADE_KWARGS, "price": 0.50, "size": 50.0, "market_id": "mkt-apifail"}
+    open_result = await trader.open_trade(**kwargs)
+    pos_id = open_result.position_id
+
+    async def fake_chain_shares(token_id):
+        return None
+
+    trader._chain_token_shares = fake_chain_shares
+    result = await trader.resolve_position(pos_id, exit_price=1.0)
+    assert result.pending is True
+    assert len(await trader.db.get_open_positions()) == 1
 
 
 @pytest.mark.asyncio
