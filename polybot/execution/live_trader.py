@@ -827,8 +827,9 @@ class LiveTrader(BaseTrader):
             return fallback_shares
         if abs(chain_bal - fallback_shares) > 0.01:
             logger.info(
-                "Sell uses chain balance %.4f (DB had %.4f) for %s",
-                chain_bal, fallback_shares, token_id[:12],
+                "Selling the wallet's actual %.2f shares (DB expected %.2f) — "
+                "difference from an earlier untracked fill or partial settle",
+                chain_bal, fallback_shares,
             )
         return chain_bal
 
@@ -1596,7 +1597,7 @@ class LiveTrader(BaseTrader):
             if book_age <= 5.0:  # only trust very fresh book for pre-check
                 walks = self._estimate_fok_walk(book, side, amount, expected_price)
                 if walks is False:
-                    reason = "pre-check: book walk would exceed limit (would reject in CLOB)"
+                    reason = "not enough shares on the book at our price — skipped before sending (CLOB would reject it)"
                     _update_fill_stats(filled=False, side=side, reason=reason)
                     return FillResult(filled=False, reason=reason)
 
@@ -1779,10 +1780,12 @@ class LiveTrader(BaseTrader):
                     # 4xx from the exchange: the FOK was evaluated and killed
                     # (ask repriced under us) — a definitive miss, not an
                     # ambiguous POST. No settle wait; the next tick re-fires.
-                    reason = f"FOK killed by exchange — {e}"
-                    logger.info("FOK %s killed by exchange (not fully fillable) — no fill", side)
+                    # Main logs the OPEN REJECTED line; raw detail at DEBUG only.
+                    logger.debug("FOK %s kill detail: %s", side, e)
                     _update_fill_stats(filled=False, side=side, reason="fok_killed")
-                    return FillResult(filled=False, reason=reason)
+                    return FillResult(
+                        filled=False,
+                        reason="book moved before our order landed — exchange killed it, nothing filled")
                 if side == BUY:
                     # The POST may have reached the exchange — check the WS trade
                     # feed before declaring a miss, so a real fill can't leave

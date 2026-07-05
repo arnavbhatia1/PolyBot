@@ -405,16 +405,19 @@ class SignalEngine:
         edge = prob - ask
         if edge < sniper_min_edge:        # ask already at/above L1 fair -> no stale-cheap lag left
             return TradeSignal("SKIP", prob, edge, 0,
-                               f"sniper: edge {edge:+.0%} < floor {sniper_min_edge:.0%} (book repriced to fair)",
+                               f"sniper: book already repriced — edge {edge:+.0%} is below the "
+                               f"{sniper_min_edge:.0%} floor",
                                side="Up" if up else "Down")
         kelly = self._kelly(prob, ask, fee_rate=fee_rate)
         action = "LATE_SNIPE_YES" if up else "LATE_SNIPE_NO"
+        side_word = "Up" if up else "Down"
+        move_word = "jumped" if cb_move > 0 else "dropped"
         return TradeSignal(
             action, prob, edge, kelly,
-            f"late-sniper {'Up' if up else 'Down'}: cb_move={cb_move:+.1f} past strike, "
-            f"ask={ask:.2f}<=cap model={prob:.0%} edge={edge:+.0%} "
-            f"BTC={btc_price:,.0f} strike={strike_price:,.0f}",
-            side="Up" if up else "Down")
+            f"Coinbase {move_word} ${abs(cb_move):.0f} across the strike and the {side_word} "
+            f"ask is still {ask:.2f} — buying before the book reprices  "
+            f"(model {prob:.0%}, edge {edge:+.0%}, BTC {btc_price:,.0f} vs strike {strike_price:,.0f})",
+            side=side_word)
 
     def _kelly(self, prob: float, market_price: float, fee_rate: float = DEFAULT_FEE_RATE) -> float:
         """Fee-aware Kelly. Entry fee on shares → net_b = b × (1 - fee_rate).

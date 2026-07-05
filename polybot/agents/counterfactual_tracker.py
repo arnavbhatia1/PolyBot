@@ -243,10 +243,11 @@ class CounterfactualTracker:
 
         self._save(record)
         verdict = "CORRECT" if hold_was_optimal else "SUBOPTIMAL"
-        moment = "scalp@worst" if hold_was_optimal else "scalp@best"
+        moment = "the worst scalp exit" if hold_was_optimal else "the best scalp exit"
         logger.info(
-            f"HOLD {verdict} {_slug_to_window(market_id)} | "
-            f"held=${actual_pnl:+.2f}, {moment}=${hypo_pnl:+.2f} (delta=${delta_pnl:+.2f})"
+            f"HOLD {verdict} (hindsight) {_slug_to_window(market_id)} | "
+            f"holding made ${actual_pnl:+.2f}; {moment} would have made "
+            f"${hypo_pnl:+.2f} — difference ${delta_pnl:+.2f}"
         )
         return record
 
@@ -360,8 +361,9 @@ class CounterfactualTracker:
 
             verdict = "CORRECT" if scalp_was_optimal else "SUBOPTIMAL"
             logger.info(
-                f"SCALP {verdict} {_slug_to_window(market_id)} | "
-                f"got=${ctx['scalp_pnl']:+.2f}, held=${hypothetical_pnl:+.2f} (delta=${delta_pnl:+.2f})"
+                f"SCALP {verdict} (hindsight) {_slug_to_window(market_id)} | "
+                f"scalping made ${ctx['scalp_pnl']:+.2f}; holding to the end would have made "
+                f"${hypothetical_pnl:+.2f} — difference ${delta_pnl:+.2f}"
             )
 
         for mid in to_remove:

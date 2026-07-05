@@ -62,7 +62,7 @@ class PaperTrader(BaseTrader):
         """Simulate a FOK market buy with realistic latency + VWAP + rejects."""
         del fee_rate  # paper applies fee math in base.py via DEFAULT_FEE_RATE
         if self._precheck_rejects(token_id, side="buy", requested_price=price, size_usd=size):
-            return FillResult(filled=False, reason="pre-check: book walk would exceed limit (matches live)")
+            return FillResult(filled=False, reason="not enough shares on the book at our price — skipped before sending (matches live pre-check)")
         await self._simulate_latency()
         if random.random() < self._compute_fail_rate(token_id, side="buy"):
             return FillResult(filled=False, reason="simulated network error")
@@ -76,7 +76,7 @@ class PaperTrader(BaseTrader):
         del fee_rate
         size_usd = shares * price
         if self._precheck_rejects(token_id, side="sell", requested_price=price, size_usd=size_usd):
-            return FillResult(filled=False, reason="pre-check: book walk would exceed limit (matches live)")
+            return FillResult(filled=False, reason="not enough shares on the book at our price — skipped before sending (matches live pre-check)")
         # Consume a valid warm-SELL signature (floor-bounded latency discount);
         # otherwise pay full simulated latency just as live would.
         warmup_speedup = self._SELL_WARMUP_SPEEDUP_S if self._take_sell_warmup(

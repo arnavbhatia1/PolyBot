@@ -2995,22 +2995,27 @@ async def main() -> None:
             return {"health": "no data"}
         today = datetime.now(ET).strftime("%Y-%m-%d")
         kt = r["kill_rule_tripped"]
-        status = ("⏳ ACCRUING (<8 days)" if kt is None
+        status = ("⏳ STILL ACCRUING" if kt is None
                   else "⚠️ KILL RULE TRIPPED" if kt else "✅ HEALTHY")
-        t4 = "n/a" if r["trailing4_mean"] is None else f"{r['trailing4_mean']*100:+.1f}¢/sh"
-        t8 = "n/a" if r["trailing8_t"] is None else f"{r['trailing8_t']:+.2f}"
+        t4 = "not enough days yet" if r["trailing4_mean"] is None else f"{r['trailing4_mean']*100:+.1f}¢ per share"
+        t8 = "not enough days yet" if r["trailing8_t"] is None else f"{r['trailing8_t']:+.2f}"
         msg = (
-            f"🎯 **Sniper edge health — {today}**  {status}\n"
-            f"```\n"
-            f"kill bar @135ms:  t_day {r['t_day']:+.2f}   p10 {r['p10']:+.4f}   "
-            f"{r['days_pos']}/{r['n_days']} days+   {r['n_fills']} fills\n"
-            f"edge:             {r['net_per_sh']*100:+.1f}¢/sh   win {r['win_rate']:.0%}\n"
-            f"kill rule:        trailing-4d {t4}   trailing-8d t {t8}\n"
-            f"                  (trip if 4d < +2.0¢/sh OR 8d t < 2.0)\n"
-            f"```"
+            f"🎯 **Sniper daily check — {today}**   {status}\n"
+            f"Over the last {r['n_days']} days the sniper made "
+            f"**{r['net_per_sh']*100:+.1f}¢ per share** across {r['n_fills']} fills — "
+            f"win rate {r['win_rate']:.0%}, {r['days_pos']} of {r['n_days']} days profitable.\n"
+            f"Statistical confidence t {r['t_day']:+.2f} (healthy is 2.0 or higher); "
+            f"even the unlucky-case estimate (p10) is {r['p10']*100:+.1f}¢ per share.\n"
+            f"Recent form: last 4 days {t4}, last 8 days t {t8} "
+            f"(shut-off line: below +2.0¢ or t under 2.0).\n"
         )
         if kt:
-            msg += "\n**Trailing edge has decayed — consider `sniper_enabled: false`.**"
+            msg += ("**⚠️ The edge has decayed past the shut-off line — "
+                    "set `sniper_enabled: false` in settings.yaml.**")
+        elif kt is None:
+            msg += "Not enough post-launch days for a verdict yet — keep trading."
+        else:
+            msg += "Verdict: edge intact, nothing to do."
         if alert_manager:
             await alert_manager.send_health(msg)
         return {"health": status, "t_day": round(r["t_day"], 2),
