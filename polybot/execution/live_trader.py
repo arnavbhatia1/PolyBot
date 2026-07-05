@@ -112,6 +112,15 @@ def _looks_like_auth_error(err: object) -> bool:
     s = str(err).lower()
     return any(token in s for token in _AUTH_ERR_TOKENS)
 
+
+def _exchange_rejected(err: object) -> bool:
+    """True when post_order failed with an HTTP 4xx from the exchange itself —
+    the order was received, evaluated, and NOT filled (FOK: fully filled or
+    killed → killed). Provably unfilled; only network-layer failures
+    (status_code None: timeout, dropped connection) are genuinely ambiguous."""
+    sc = getattr(err, "status_code", None)
+    return isinstance(sc, int) and 400 <= sc < 500
+
 # ---------------------------------------------------------------------------
 # Fill rate tracking (live mode only)
 # ---------------------------------------------------------------------------
@@ -1766,6 +1775,14 @@ class LiveTrader(BaseTrader):
                     raise AuthError(str(e)) from e
                 if balance_task is not None and not balance_task.done():
                     balance_task.cancel()
+                if _exchange_rejected(e.__cause__):
+                    # 4xx from the exchange: the FOK was evaluated and killed
+                    # (ask repriced under us) — a definitive miss, not an
+                    # ambiguous POST. No settle wait; the next tick re-fires.
+                    reason = f"FOK killed by exchange — {e}"
+                    logger.info("FOK %s killed by exchange (not fully fillable) — no fill", side)
+                    _update_fill_stats(filled=False, side=side, reason="fok_killed")
+                    return FillResult(filled=False, reason=reason)
                 if side == BUY:
                     # The POST may have reached the exchange — check the WS trade
                     # feed before declaring a miss, so a real fill can't leave

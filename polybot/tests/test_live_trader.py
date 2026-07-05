@@ -243,6 +243,27 @@ async def test_open_trade_no_retry_on_balance_error(trader):
 
 
 @pytest.mark.asyncio
+async def test_open_trade_fok_kill_is_definitive_no_fill(trader):
+    """A 4xx from the exchange ("fully filled or killed") is a DEFINITIVE kill —
+    the normal sniper miss when the ask reprices first, not an ambiguous POST:
+    no resubmit, no settle wait, clean no-fill reason."""
+    import httpx as _httpx
+    from py_clob_client_v2.exceptions import PolyApiException
+
+    trader.client.create_market_order.return_value = {"order": "signed-payload"}
+    trader.client.post_order.side_effect = PolyApiException(
+        resp=_httpx.Response(400, json={
+            "error": "order couldn't be fully filled. FOK orders are fully filled or killed.",
+            "orderID": "0xdead"}))
+    result = await trader.open_trade(**_TRADE_KWARGS)
+
+    assert result.success is False
+    assert trader.client.post_order.call_count == 1
+    assert "killed" in result.reason.lower()
+    assert "double fill" not in result.reason
+
+
+@pytest.mark.asyncio
 async def test_open_trade_no_resubmit_on_post_exception(trader, monkeypatch):
     """post_order raising = ambiguous (the order may have reached the exchange).
     The loop must NOT submit a second order — that's the double-fill path."""
