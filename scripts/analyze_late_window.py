@@ -50,7 +50,11 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 PATHS_DB = ROOT / "polybot" / "db" / "window_paths.db"
-MAIN_DB = ROOT / "polybot" / "db" / "polybot_paper.db"
+# window_labels accrue in the ACTIVE mode's DB — paper holds the pre-07-04
+# history, live everything since the flip. Read both or the corpus freezes
+# at the mode switch (and the post-live kill rule can never trip).
+LABEL_DBS = [ROOT / "polybot" / "db" / "polybot_paper.db",
+             ROOT / "polybot" / "db" / "polybot_live.db"]
 ET = ZoneInfo("America/New_York")  # DST-correct; a fixed UTC-4 mis-buckets EST days
 FEE_RATE = 0.07
 LATE_START = 255.0          # only the final 45s
@@ -101,10 +105,19 @@ def load_windows():
     if "binance_price" not in cols:
         pc.close()
         return None, None      # recorder hasn't run the schema migration yet
-    lc = sqlite3.connect(f"file:{MAIN_DB}?mode=ro", uri=True)
-    labels = {r[0]: (r[1], r[2]) for r in lc.execute(
-        "SELECT window_id, resolved_up, price_to_beat FROM window_labels "
-        "WHERE window_id LIKE 'btc%' AND price_to_beat IS NOT NULL")}
+    labels = {}
+    for label_db in LABEL_DBS:
+        if not label_db.exists():
+            continue
+        lc = sqlite3.connect(f"file:{label_db}?mode=ro", uri=True)
+        try:
+            labels.update({r[0]: (r[1], r[2]) for r in lc.execute(
+                "SELECT window_id, resolved_up, price_to_beat FROM window_labels "
+                "WHERE window_id LIKE 'btc%' AND price_to_beat IS NOT NULL")})
+        except sqlite3.OperationalError:
+            pass  # mode DB without a window_labels table yet
+        finally:
+            lc.close()
     rows_by_win = defaultdict(list)
     cur = pc.execute(
         "SELECT window_id, ts, elapsed_s, bid_up, ask_up, bid_down, ask_down, "
@@ -115,7 +128,6 @@ def load_windows():
         if r["window_id"] in labels:
             rows_by_win[r["window_id"]].append(dict(r))
     pc.close()
-    lc.close()
     return rows_by_win, labels
 
 

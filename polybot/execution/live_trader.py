@@ -209,7 +209,7 @@ def _record_submit_latency(total_secs: float, sign_secs: float, post_secs: float
 # from "network error" or "depth" rejects (a defect). Empty/unmatched reasons go to
 # `other` so future failure modes show up rather than getting silently lumped in.
 _FAILURE_BUCKETS: tuple[str, ...] = (
-    "price_moved", "non_retryable", "precheck_depth",
+    "price_moved", "non_retryable", "precheck_depth", "fok_killed",
     "below_min", "network_error", "auth", "other",
 )
 
@@ -219,8 +219,10 @@ def _categorize_failure(reason: str) -> str:
     r = (reason or "").lower()
     if "price moved" in r:
         return "price_moved"
-    if "pre-check" in r or "book walk" in r:
+    if "pre-check" in r or "book walk" in r or "not enough shares" in r:
         return "precheck_depth"
+    if "killed" in r or r == "fok_killed":
+        return "fok_killed"
     if "below" in r and ("minimum" in r or "clob minimum" in r):
         return "below_min"
     if any(kw in r for kw in ("timeout", "network", "connection refused", "rpc")):
