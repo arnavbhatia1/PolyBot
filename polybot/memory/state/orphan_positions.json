@@ -1,8 +1,8 @@
 {
-  "checked_at": "2026-07-05T01:25:51.524934+00:00",
+  "checked_at": "2026-07-05T18:36:42.259596+00:00",
   "funder": "0x863DB57D4a54fA306091D53B4Fe19f1611221Be8",
-  "non_dust_chain_positions": 15,
-  "db_known_tokens": 2,
+  "non_dust_chain_positions": 16,
+  "db_known_tokens": 6,
   "orphans_detected": 0,
   "orphans": [],
   "resolved_dust": [

@@ -1,19 +1,19 @@
 {
-  "total_attempts": 27,
-  "total_fills": 9,
-  "buy_attempts": 26,
-  "buy_fills": 8,
-  "sell_attempts": 1,
+  "total_attempts": 152,
+  "total_fills": 16,
+  "buy_attempts": 150,
+  "buy_fills": 15,
+  "sell_attempts": 2,
   "sell_fills": 1,
   "failure_buckets": {
     "price_moved": 0,
     "non_retryable": 2,
-    "precheck_depth": 12,
+    "precheck_depth": 45,
     "below_min": 0,
     "network_error": 0,
     "auth": 0,
-    "other": 4
+    "other": 89
   },
-  "fill_rate": 0.3333,
-  "last_updated": "2026-07-05T02:54:42.359398+00:00"
+  "fill_rate": 0.1053,
+  "last_updated": "2026-07-06T02:54:56.498409+00:00"
 }
