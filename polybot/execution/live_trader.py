@@ -476,7 +476,7 @@ class LiveTrader(BaseTrader):
                         self._latched_auth_error = str(e)
                         break
         self._keepalive_task = asyncio.create_task(_ping())
-        logger.info("LiveTrader: HTTP keepalive started (ping every 5s)")
+        logger.debug("LiveTrader: HTTP keepalive started (ping every 5s)")
 
     async def stop_keepalive(self) -> None:
         if self._keepalive_task:
@@ -1052,7 +1052,7 @@ class LiveTrader(BaseTrader):
         if swept:
             logger.warning("Dust reconciliation swept %d token(s)", swept)
         else:
-            logger.info("Dust reconciliation: no residuals found in last %dh", max_age_hours)
+            logger.debug("Dust reconciliation: no residuals found in last %dh", max_age_hours)
         return swept
 
     _POSITIONS_API_URL = "https://data-api.polymarket.com/positions"
@@ -1190,14 +1190,10 @@ class LiveTrader(BaseTrader):
         except Exception as e:
             logger.debug("Could not persist orphan_positions.json: %s", e)
 
-        # Settled dust never blocks; surface it once, and flag any unredeemed
-        # winnings so the operator can claim them (the bot has no redeem tx path).
+        # Settled dust never blocks; flag any unredeemed winnings so the
+        # operator can claim them (the bot has no redeem tx path).
         if resolved_dust:
             unredeemed = sum(d["current_value"] for d in resolved_dust)
-            logger.info(
-                "Orphan detection: %d resolved leftover position(s) in the funder "
-                "wallet — settled dust, ignored (not blocking).", len(resolved_dust),
-            )
             if unredeemed > 0.01:
                 logger.critical(
                     "UNREDEEMED WINNINGS: ~$%.2f in %d resolved position(s) claimable "
@@ -1206,9 +1202,15 @@ class LiveTrader(BaseTrader):
                 )
 
         if not orphans:
+            # One plain line on a clean boot; the breakdown goes to DEBUG.
             logger.info(
-                "Orphan detection: %d non-dust chain position(s), all known to DB "
-                "or resolved dust — none blocking.", non_dust_chain,
+                "Wallet check: clean — every position is known%s.",
+                f" ({len(resolved_dust)} worthless leftovers from finished markets ignored)"
+                if resolved_dust else "",
+            )
+            logger.debug(
+                "Orphan detection detail: %d non-dust chain position(s), %d resolved dust.",
+                non_dust_chain, len(resolved_dust),
             )
             return 0
 
@@ -1289,7 +1291,7 @@ class LiveTrader(BaseTrader):
         if changed:
             logger.warning("Reconcile open: %d position(s) synced to chain", changed)
         else:
-            logger.info("Reconcile open: all positions match chain")
+            logger.debug("Reconcile open: all positions match chain")
         return changed
 
     async def _recover_missed_close(self, db: Database, pos: dict, token_id: str,

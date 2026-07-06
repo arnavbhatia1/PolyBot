@@ -2403,7 +2403,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         return "DOWN" if _state is False else "OK"
     logger.info(
         f"PolyBot [{_mode_label}] ready  |  Bankroll ${_bankroll:,.2f}  |  "
-        f"Today: {day_wins}W/{day_losses}L  |  Model: L1-only (entry = inventory sourcing)"
+        f"Today: {day_wins}W/{day_losses}L"
     )
     logger.info(
         f"Feeds: Coinbase {_f(coinbase_feed)} · Binance {_f(binance_feed)} · "

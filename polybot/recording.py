@@ -273,7 +273,7 @@ class WindowPathRecorder:
                 self._pending_label[wid] = end_ts
                 seeded += 1
         if seeded:
-            logger.info(f"orphan-label recovery: re-seeded {seeded} unlabeled window(s) for retry")
+            logger.debug(f"orphan-label recovery: re-seeded {seeded} unlabeled window(s) for retry")
 
     async def _label_pass(self) -> None:
         now = time.time()
@@ -448,7 +448,7 @@ class WindowPathRecorder:
         self._running = True
         await self.ensure_tables()
         await self._recover_orphan_labels()
-        logger.info("Window-path recorder running (1 Hz, all windows, batched flush)")
+        logger.info("Recording every window for research (all day, every market)")
         last_flush = time.time()
         while self._running:
             try:
