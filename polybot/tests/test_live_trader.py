@@ -472,6 +472,38 @@ async def test_resolve_position_winner_deadline_stays_pending_not_booked(trader)
 
 
 @pytest.mark.asyncio
+async def test_reconcile_dust_skips_resolved_markets(trader, monkeypatch):
+    """Leftover shares of a RESOLVED market are worthless loser tokens (or a
+    winner's auto-redeeming shares) — the CLOB rejects orders on closed markets,
+    so the startup sweep must not even attempt them."""
+    import json as _j
+    import time as _t
+    expired_ts = int(_t.time()) - 3600  # window closed an hour ago
+    snap = _j.dumps({"trade_context": {"token_id_up": "tok-resolved-up",
+                                       "token_id_down": "tok-resolved-down"}})
+    await trader.db.conn.execute(
+        "INSERT INTO positions (market_id, question, side, entry_price, size, "
+        "signal_score, status, entry_timestamp, exit_price, exit_timestamp, "
+        "indicator_snapshot, shares_held) "
+        "VALUES (?, 'q', 'Up', 0.5, 5.0, 0.6, 'closed', datetime('now'), 0.0, "
+        "datetime('now'), ?, 10.0)",
+        (f"btc-updown-5m-{expired_ts}", snap),
+    )
+    await trader.db.conn.commit()
+
+    attempted = []
+
+    async def fake_sweep(token_id, ref_price):
+        attempted.append(token_id)
+        return True
+
+    monkeypatch.setattr(trader, "_sweep_residual", fake_sweep)
+    swept = await trader.reconcile_dust(trader.db)
+    assert swept == 0
+    assert attempted == []  # resolved market: no sweep attempt at all
+
+
+@pytest.mark.asyncio
 async def test_resolve_position_chain_api_failure_stays_pending(trader):
     """Data API unreachable → redemption unverifiable → stays pending, never books."""
     _setup_successful_fill(trader, fill_price="0.50", fill_size="100.0")

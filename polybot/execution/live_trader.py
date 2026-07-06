@@ -951,19 +951,20 @@ class LiveTrader(BaseTrader):
             return None
         return entry["order"]
 
-    async def _sweep_residual(self, token_id: str, ref_price: float) -> None:
+    async def _sweep_residual(self, token_id: str, ref_price: float) -> bool:
         """Sell any leftover shares of token_id (FOK fill-price-lookup undercount).
 
         Best-effort: failures are logged but never propagate. Always called as a
-        background task so it doesn't add latency to the originating SELL's return.
+        background task so it doesn't add latency to the originating SELL's
+        return. True only when the sweep order actually matched.
         """
         if not token_id:
-            return
+            return False
         try:
             await asyncio.sleep(_BALANCE_SETTLE_DELAY)
             residual = await self._get_token_balance(token_id)
             if residual <= _DUST_THRESHOLD_SHARES:
-                return
+                return False
             approx_val = residual * (float(ref_price) if ref_price else 0.5)
             logger.warning(
                 "Dust detected: %.2f shares (~$%.2f) — sweeping",
@@ -982,11 +983,12 @@ class LiveTrader(BaseTrader):
             resp = await asyncio.to_thread(_sweep_sign_and_post)
             if resp.get("success") and resp.get("status") == "matched":
                 logger.info("Dust swept: %.2f shares @ $%.2f", residual, safe_price)
-            else:
-                logger.warning(
-                    "Dust sweep didn't match (status=%s) — shares left to resolve at expiry",
-                    resp.get("status"),
-                )
+                return True
+            logger.warning(
+                "Dust sweep didn't match (status=%s) — shares left to resolve at expiry",
+                resp.get("status"),
+            )
+            return False
         except Exception as e:
             msg = str(e)
             if "not enough balance" in msg or "allowance" in msg:
@@ -994,6 +996,7 @@ class LiveTrader(BaseTrader):
             else:
                 short = msg.split("\n")[0][:80]
             logger.warning("Dust sweep failed: %s — leaving as orphaned dust", short)
+            return False
 
     async def reconcile_dust(self, db: Database, max_age_hours: int = 24) -> int:
         """Startup scan: sweep residual on-chain shares of recently-closed
@@ -1015,8 +1018,18 @@ class LiveTrader(BaseTrader):
             return 0
 
         seen: set[str] = set()
+        now_ts = time.time()
         for snap_text, exit_price, side, market_id in rows:
             try:
+                # Sweeping only makes sense while the market is still trading:
+                # after resolution the leftovers are either worthless loser
+                # tokens (the CLOB rejects orders on closed markets) or a
+                # winner's shares that the auto-redeem settles.
+                try:
+                    if now_ts > int(str(market_id).rsplit("-", 1)[-1]) + 300:
+                        continue
+                except ValueError:
+                    pass  # unparseable market_id — attempt the sweep anyway
                 snap = _json.loads(snap_text) if isinstance(snap_text, str) else {}
                 ctx = snap.get("trade_context", {}) if isinstance(snap, dict) else {}
                 tok = ctx.get("token_id_up") if side == "Up" else ctx.get("token_id_down")
@@ -1030,8 +1043,9 @@ class LiveTrader(BaseTrader):
                     "Startup dust: %.4f shares of token %s (market %s, side %s) — sweeping",
                     bal, tok[:12], market_id, side,
                 )
-                await self._sweep_residual(tok, float(exit_price or 0.5))
-                swept += 1
+                ref = float(exit_price) if exit_price is not None else 0.5
+                if await self._sweep_residual(tok, ref):
+                    swept += 1
             except Exception as e:
                 logger.debug("Dust reconciliation row skipped: %s", e)
                 continue

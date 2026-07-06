@@ -42,7 +42,10 @@ Write-Host "========================================" -ForegroundColor Cyan
 while ($true) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Write-Host "`n[$timestamp] Pulling latest from remote..." -ForegroundColor Cyan
-    git pull origin main
+    # --autostash: a mid-day manual restart has uncommitted DB/state churn in the
+    # tree; stash it around the pull instead of failing (remote only advances via
+    # this host's own nightly pushes, so conflicts can't occur).
+    git pull --rebase --autostash origin main
 
     # Read mode from settings.yaml so this is the only place you need to change it
     $settingsPath = Join-Path $RepoRoot "polybot\config\settings.yaml"
