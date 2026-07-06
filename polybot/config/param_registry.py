@@ -61,6 +61,8 @@ _MANUAL_DEFAULTS: dict[str, Any] = {
     "sniper_min_edge": 0.04,        # stale-cheap floor (= min_edge so the downstream net-edge/
                                     # pre-submit gates don't silently raise it; one consistent floor)
     "sniper_max_edge": 0.50,        # sniper's own sanity cap, replacing the bypassed 0.20
+    "sniper_fok_slip": 0.05,        # FOK limit pad above the decision ask — the kill bar's
+                                    # lenient leg (fills up to +0.05) passed at +9.3¢/sh
     # Risk caps
     "max_concurrent_positions": 2,
     # Schedule (mirror settings.yaml so a missing key falls back coherently)

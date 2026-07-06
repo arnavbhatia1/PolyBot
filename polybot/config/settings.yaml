@@ -102,18 +102,12 @@ entry_timing:
 #  over >=8 clean ET days at your host's measured RTT. DO NOT enable on faith.
 # =============================================================================
 late_window:
-  sniper_enabled: true         # PAPER-SHADOW ON (validation). SAFE ONLY because mode==paper above.
-                               # DO NOT set mode: live until the kill bar passes at the host's
-                               # measured RTT + this shadow confirms (tasks/todo.md). Revert to
-                               # false to stop the shadow.
-  sniper_only: true            # true = base-entry BUYs are suppressed (recorded as "sniper_only"
-                               # ghosts, so the base strategy keeps accruing evidence at zero cost)
-                               # and capital deploys ONLY on sniper fires. ON in paper so the shadow
-                               # trades the SAME fire population live would (with it off, the base
-                               # path consumed the high-conviction sniper moments first and the
-                               # shadow sampled only the prob<0.56 sliver). The live recipe, once
-                               # the kill bar passes, is: mode: live + sniper_enabled: true +
-                               # sniper_only: true — never deploy the base strategy live (no edge).
+  sniper_enabled: true         # THE live edge (kill bar passed 2026-07-04). false = stop sniping
+                               # (the post-live kill rule's off switch — see the nightly health report).
+  sniper_only: true            # base-entry BUYs are suppressed (recorded as "sniper_only" ghosts, so
+                               # the base strategy keeps accruing evidence at zero cost); capital
+                               # deploys ONLY on sniper fires. Part of the live recipe — never deploy
+                               # the base strategy live (no edge, gate failed final 2026-07-01).
   sniper_late_start_s: 45.0     # only fire in the final N seconds of the window
   sniper_move_window_s: 2.0     # Coinbase move lookback (s)
   sniper_cb_move: 8.0           # $ Coinbase move over the lookback to fire (matches the harness default)
@@ -124,6 +118,10 @@ late_window:
                                 # trades the higher-conviction SUBSET (L1 edge >= this) — the kill bar is
                                 # a CONSERVATIVE directional gate; paper-shadow before deploy (tasks/todo.md).
   sniper_max_edge: 0.50         # sniper's own sanity cap, replacing the bypassed 0.20
+  sniper_fok_slip: 0.05         # FOK limit pad: chase the stale ask by up to this above the decision
+                                # ask instead of dying as an exchange kill when the book moves in
+                                # flight. 0.05 = the kill bar's LENIENT leg (passed: +9.3¢/sh net of
+                                # fee, win 78%); 0.0 reverts to the old fills-only-at-decision-ask.
 
 # =============================================================================
 #  SECTION 4: SCHEDULE

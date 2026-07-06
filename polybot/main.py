@@ -1140,12 +1140,24 @@ async def _evaluate_signal_and_enter(
                  if _fresh_bba_ts > 0 and (time.time() - _fresh_bba_ts) <= _WS_STALE_S
                  else 0.0)
 
-    # Entries deliberately use a tight slip (no FOK-cross floor): an FOK reject on
-    # adverse movement is a feature — it stops buying post-reversal tops. Exits use
-    # a loose floor instead (see exit_fill) — there we must fill to avoid lockout.
     impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
     slip = slippage_pct(size, side_depth, impact)
-    price = market_scanner.snap_to_tick(price * (1 + slip), tick_size)
+    if is_sniper:
+        # Sniper FOK limit chases the stale ask by up to sniper_fok_slip. The
+        # kill bar's lenient leg measured exactly this tolerance — fills up to
+        # decision+0.05 net +9.3¢/sh at 78% win — while the tight base-entry
+        # limit below collapses to the decision ask and dies as an exchange
+        # kill whenever the book repriced in flight. Gates all ran at the
+        # decision ask (harness-faithful); the pre-submit VWAP re-check still
+        # vetoes fires whose visible book has lost the edge.
+        _fok_slip = lw_cfg.get("sniper_fok_slip", _d("sniper_fok_slip"))
+        price = market_scanner.snap_to_tick(min(price + _fok_slip, 0.99), tick_size)
+    else:
+        # Base entries deliberately use a tight slip (no FOK-cross floor): an FOK
+        # reject on adverse movement is a feature — it stops buying post-reversal
+        # tops. Exits use a loose floor instead (see exit_fill) — there we must
+        # fill to avoid lockout.
+        price = market_scanner.snap_to_tick(price * (1 + slip), tick_size)
 
     if hasattr(trader, "warm_buy_signature"):
         asyncio.create_task(trader.warm_buy_signature(
