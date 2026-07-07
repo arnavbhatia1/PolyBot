@@ -1,11 +1,20 @@
 {
-  "checked_at": "2026-07-05T18:36:42.259596+00:00",
+  "checked_at": "2026-07-06T20:03:58.639043+00:00",
   "funder": "0x863DB57D4a54fA306091D53B4Fe19f1611221Be8",
-  "non_dust_chain_positions": 16,
-  "db_known_tokens": 6,
+  "non_dust_chain_positions": 18,
+  "db_known_tokens": 16,
   "orphans_detected": 0,
   "orphans": [],
   "resolved_dust": [
+    {
+      "token_id": "94579776747425357940013902699990033099675531413253579923737606671996949643584",
+      "shares": 25.7391,
+      "outcome": "Up",
+      "title": "Bitcoin Up or Down - July 5, 5:10AM-5:15AM ET",
+      "conditionId": "0xc7cdcc6a6fede727976348abf31216fa2f9280acb1e2c39302debb3713b3d37e",
+      "redeemable": true,
+      "current_value": 0.0
+    },
     {
       "token_id": "87825780932638917565776593272381723580108293585204912034045065108520649061430",
       "shares": 10.9736,
