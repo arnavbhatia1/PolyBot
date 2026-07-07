@@ -29,6 +29,10 @@ FILL_STATS_PATH: Path = STATE_DIR / "fill_stats.json"
 LATENCY_STATS_PATH: Path = STATE_DIR / "latency_stats.json"
 ORPHAN_POSITIONS_PATH: Path = STATE_DIR / "orphan_positions.json"
 PREV_MARGIN_PATH: Path = STATE_DIR / "prev_resolution_margin.json"
+# ET day's opening bankroll snapshot — mid-day restarts reload it instead of
+# reconstructing from (bankroll − trade sum), which drifts whenever money
+# settles on-chain outside recorded trades.
+DAY_OPEN_PATH: Path = STATE_DIR / "day_open_bankroll.json"
 # E1 recorder: out-of-band price-sum moments the [0.98, 1.02] gate skips (JSONL,
 # append-only) — the cross-book-arb pool the gate otherwise censors unmeasured.
 PRICE_SUM_OUTLIERS_PATH: Path = STATE_DIR / "price_sum_outliers.jsonl"

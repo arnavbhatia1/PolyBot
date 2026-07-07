@@ -130,15 +130,28 @@ class AlertManager:
         await self._send_to_channels(msg, [self.trade_channel_name, self.daily_channel_name])
 
     async def send_day_close(self, bankroll: float, day_pnl: float, wins: int, losses: int,
-                             fees: float = 0.0):
-        """Log end of trading day to trade and daily channels."""
+                             fees: float = 0.0, trades_pnl: float | None = None):
+        """Log end of trading day to trade and daily channels.
+
+        day_pnl is the money truth (close bankroll − open bankroll); trades_pnl
+        is the ledger truth (sum of recorded trades). They differ when money
+        settles on-chain outside recorded trades — show both, labeled.
+        """
         now = datetime.now(ET)
         total = wins + losses
         wr = wins / total if total > 0 else 0
+        gap_line = ""
+        if trades_pnl is not None and abs(day_pnl - trades_pnl) > 0.05:
+            gap_line = (
+                f"Recorded trades: `${trades_pnl:+,.2f}` — the "
+                f"`${day_pnl - trades_pnl:+,.2f}` difference settled on-chain "
+                f"outside recorded trades\n"
+            )
         msg = (
             f"\n{'─' * 38}\n"
             f"**TRADING DAY CLOSE** — {now.strftime('%A, %B %d %Y')}\n"
             f"Bankroll: `${bankroll:,.2f}` | Day P&L: `${day_pnl:+,.2f}`\n"
+            f"{gap_line}"
             f"Trades: `{total}` ({wins}W / {losses}L) | Win Rate: `{wr:.0%}`\n"
             f"Total Fees: `${fees:,.2f}`\n"
             f"{'─' * 38}"

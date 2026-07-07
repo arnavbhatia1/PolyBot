@@ -28,7 +28,7 @@ for _stream in (sys.stdout, sys.stderr):
 from polybot.config.loader import load_config, get_secret
 from polybot.config.param_registry import default_for as _d
 from polybot.paths import (
-    PREV_MARGIN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
+    PREV_MARGIN_PATH, DAY_OPEN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
     GATE_STATS_CURRENT_PATH, PRICE_SUM_OUTLIERS_PATH, fold_gate_day,
 )
 from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE, EFFECTIVE_FEE_PEAK, compute_buy_vwap
@@ -505,6 +505,30 @@ async def _get_open_positions_cached(db: Any) -> list:
     _open_positions_cache = await db.get_open_positions()
     _open_positions_cache_ts = now
     return _open_positions_cache
+
+
+def _persist_day_open(day: str, bankroll: float) -> None:
+    """Snapshot the ET day's opening bankroll (memory/state/day_open_bankroll.json)
+    so a mid-day restart reloads it instead of reconstructing from
+    (bankroll − trade sum) — that difference drifts whenever money settles
+    on-chain outside recorded trades, and the drift poisons the day-close P&L.
+    Best-effort: never raises."""
+    try:
+        DAY_OPEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DAY_OPEN_PATH.write_text(json.dumps({"day": day, "bankroll": bankroll}))
+    except Exception:
+        pass
+
+
+def _load_day_open(day: str) -> float | None:
+    """The persisted opening bankroll for `day`, or None (no/foreign snapshot)."""
+    try:
+        saved = json.loads(DAY_OPEN_PATH.read_text())
+        if saved.get("day") == day:
+            return float(saved["bankroll"])
+    except Exception:
+        pass
+    return None
 
 
 def _invalidate_open_positions_cache() -> None:
@@ -2312,9 +2336,12 @@ async def _check_trading_schedule(
             # Close previous day first (if bot ran overnight)
             bankroll = await db.get_bankroll()
             day_pnl = bankroll - day_open_bankroll
-            await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses, day_fees)
+            _, _, _, _trades_pnl = await db.get_day_stats(current_trading_day)
+            await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses,
+                                               day_fees, trades_pnl=_trades_pnl)
         current_trading_day = today_str
         day_open_bankroll = await db.get_bankroll()
+        _persist_day_open(today_str, day_open_bankroll)
         # Restore from DB in case of mid-day restart (4-tuple: wins, losses, fees, pnl_sum)
         day_wins, day_losses, day_fees, _ = await db.get_day_stats(today_str)
         if breaker:
@@ -2330,7 +2357,9 @@ async def _check_trading_schedule(
             if alert_manager:
                 bankroll = await db.get_bankroll()
                 day_pnl = bankroll - day_open_bankroll
-                await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses, day_fees)
+                _, _, _, _trades_pnl = await db.get_day_stats(current_trading_day)
+                await alert_manager.send_day_close(bankroll, day_pnl, day_wins, day_losses,
+                                                   day_fees, trades_pnl=_trades_pnl)
             current_trading_day = None
 
     return in_trading_hours, current_trading_day, day_open_bankroll, day_wins, day_losses, day_fees
@@ -2395,8 +2424,15 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     else:
         _db_wins, _db_losses, _db_fees, _db_pnl_sum = await db.get_day_stats(_today_et)
         current_trading_day = _today_et if (_db_wins + _db_losses) > 0 else None
-        _current_bankroll = await db.get_bankroll()
-        day_open_bankroll = _current_bankroll - _db_pnl_sum  # Reconstruct opening bankroll from today's net PnL
+        _saved_open = _load_day_open(_today_et)
+        if _saved_open is not None:
+            day_open_bankroll = _saved_open
+        else:
+            # No snapshot for today — reconstruct from the trade ledger and
+            # persist it so later restarts don't re-derive from a bankroll that
+            # has since absorbed money settled outside recorded trades.
+            day_open_bankroll = (await db.get_bankroll()) - _db_pnl_sum
+            _persist_day_open(_today_et, day_open_bankroll)
         day_wins = _db_wins
         day_losses = _db_losses
         day_fees = _db_fees
