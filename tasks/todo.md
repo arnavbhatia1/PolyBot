@@ -5,8 +5,23 @@ deployment authority — never relax one to pass it.
 
 ## Operator
 
+- [ ] **URGENT — restart to clear the Chainlink reconnect storm.** The feed hit an
+      RTDS HTTP 429 loop (stale-connect kept resetting backoff + watchdog force-closed
+      every 15s) → no strike → no trading for ~44 min. FIXED in `chainlink_feed.py`
+      (backoff resets only on real data, watchdog grace window, hard backoff on 429),
+      but the running process needs a **commit + restart** to pick it up. It won't
+      self-heal on the old code.
+- [ ] Same restart also applies the **stale-strike fix** (`_compute_strike_and_btc`
+      prefers Chainlink over drifting Gamma `price_to_beat`) and the **dual sim+live
+      health job** (`_sniper_health_job` + `live_health_read`). Then re-measure the
+      sniper over ≥8 clean live days — the strike fix removes the false cheap-side
+      fires but capturability of the +16¢ sim EV is unproven.
 - [ ] Run `python scripts/smoke_order_test.py --confirm` — one unfillable $1 FOK
       proving order POSTs clear Cloudflare (`verify_keys.py` covered GETs only).
+- [ ] Optional wallet cleanup (the 21 resolved leftovers are $0 losers — they
+      lock nothing): set `POLYGON_RPC_URL` in `.env` + keep a little POL in the
+      EOA, then `python scripts/redeem_positions.py --confirm`. With the RPC set,
+      the nightly sweep then keeps every future window clean automatically.
 
 ## Scheduled reads
 

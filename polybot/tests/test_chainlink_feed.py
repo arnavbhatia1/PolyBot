@@ -117,3 +117,48 @@ class TestChainlinkFeed:
         # extended outage can't hammer RTDS into 429ing us indefinitely.
         assert sleeps[:2] == [5.0, 10.0], f"expected doubling backoff, got {sleeps[:3]}"
         assert f.staleness.connected is False
+
+    @pytest.mark.asyncio
+    async def test_429_backs_off_hard_not_a_storm(self, monkeypatch):
+        """A 429 (rate limit) must jump the backoff toward the cap so we leave the
+        per-IP penalty box instead of hammering it every few seconds — the
+        reconnect-storm bug that stalled the feed (and strike) for ~44 min."""
+        from polybot.feeds import chainlink_feed as cf_mod
+
+        attempts = 0
+
+        class _RateLimited:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                nonlocal attempts
+                attempts += 1
+                raise websockets.InvalidHandshake("server rejected WebSocket connection: HTTP 429")
+
+            async def __aexit__(self, *a):
+                return False
+
+        monkeypatch.setattr(cf_mod.websockets, "connect", _RateLimited)
+
+        _real_sleep = asyncio.sleep
+        sleeps: list[float] = []
+
+        async def _instant_sleep(s):
+            sleeps.append(s)
+            await _real_sleep(0)
+
+        monkeypatch.setattr(cf_mod.asyncio, "sleep", _instant_sleep)
+
+        f = ChainlinkFeed()
+        f._running = True
+
+        async def _stop_after_two():
+            while attempts < 2:
+                await _real_sleep(0)
+            f._running = False
+
+        await asyncio.gather(f._run(), _stop_after_two())
+
+        # First 429 jumps to RECONNECT_MAX_S/2 (30), not the base 5; then doubles to the cap.
+        assert sleeps[0] >= cf_mod.RECONNECT_MAX_S / 2, f"429 must back off hard, got {sleeps[:2]}"

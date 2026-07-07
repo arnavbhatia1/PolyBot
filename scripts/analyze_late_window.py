@@ -50,6 +50,7 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 PATHS_DB = ROOT / "polybot" / "db" / "window_paths.db"
+LIVE_DB = ROOT / "polybot" / "db" / "polybot_live.db"   # real fills for the live kill-rule read
 # window_labels accrue in the ACTIVE mode's DB — paper holds the pre-07-04
 # history, live everything since the flip. Read both or the corpus freezes
 # at the mode switch (and the post-live kill rule can never trip).
@@ -266,6 +267,67 @@ def health_read(rtt=0.135, max_slip=0.05, cb_move_thr=8.0, ask_cap=0.92):
     else:
         r["kill_rule_tripped"] = (r["trailing4_mean"] < 0.02) or (r["trailing8_t"] < 2.0)
     return r
+
+
+def live_health_read():
+    """Post-live kill-rule metrics computed from the REAL fills (polybot_live.db
+    trade_history), the money-side analog of health_read() (which reads the SIM
+    corpus). Same convention as the kill bar so the two are directly comparable:
+    EQUAL-WEIGHT per-fill net $/share, day-clustered by ET.
+
+    Per-fill net = (pnl - fees) / shares_held — pnl is gross (shares*outcome - size),
+    fees is the entry taker fee, shares_held is the audited fill count; this equals
+    the harness's win - fill - fee(fill) (verified on winners and losers) and folds
+    in the live exit engine (scalp / loss-cut outcomes, not just hold-to-resolution).
+    Live runs sniper_only, so every trade_history row is a sniper fire.
+
+    kill_rule_tripped mirrors CLAUDE.md's OR-rule but activates each leg as soon as
+    it has the days: trailing-4-day mean < +0.02 (+2c/sh) once >= 4 ET days, OR
+    trailing-8-day t < 2.0 once >= 8. None until >= 4 live days exist. Alert-only —
+    the caller never flips config (kill bars are operator authority)."""
+    if not LIVE_DB.exists():
+        return None
+    con = sqlite3.connect(f"file:{LIVE_DB}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            "SELECT t.pnl AS pnl, t.fees AS fees, t.exit_timestamp AS ts, "
+            "p.shares_held AS shares FROM trade_history t JOIN positions p ON t.id = p.id "
+            "WHERE t.exit_timestamp IS NOT NULL AND p.shares_held > 0"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        con.close()
+    per_day = defaultdict(list)
+    fills = []
+    for r in rows:
+        try:
+            ts = datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00")).timestamp()
+        except (ValueError, AttributeError):
+            continue
+        nps = (r["pnl"] - (r["fees"] or 0.0)) / r["shares"]   # net $/share, harness-consistent
+        per_day[et_day(ts)].append(nps)
+        fills.append((nps, 1.0 if (r["pnl"] or 0) > 0 else 0.0))
+    if not fills:
+        return None
+    series = [(day, statistics.mean(v)) for day, v in sorted(per_day.items())]
+    daily = [m for _, m in series]
+    m, t, _ = tstat(daily)
+    trailing4 = statistics.mean(daily[-4:]) if len(daily) >= 4 else None
+    trailing8_t = tstat(daily[-8:])[1] if len(daily) >= 8 else None
+    if len(daily) < 4:
+        tripped = None                                        # too few live days to judge
+    else:
+        tripped = (trailing4 < 0.02) or (trailing8_t is not None and trailing8_t < 2.0)
+    return dict(label="live(trade_history)", n_fills=len(fills), n_days=len(daily),
+                win_rate=statistics.mean(f[1] for f in fills), avg_fill=float("nan"),
+                mean_net_day=m, t_day=t, p10=block_bootstrap_p10(daily),
+                net_per_sh=statistics.mean(f[0] for f in fills),
+                net_sum=sum(f[0] for f in fills),
+                days_pos=sum(1 for d in daily if d > 0), series=series,
+                trailing4_mean=trailing4, trailing8_t=trailing8_t,
+                kill_rule_tripped=tripped)
 
 
 def main():
