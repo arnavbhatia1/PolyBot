@@ -30,6 +30,7 @@ class ChainlinkFeed:
     def __init__(self) -> None:
         self._price: float = 0.0
         self._last_update: float = 0.0     # local receipt time
+        self._last_connect: float = 0.0    # when the current WS was established
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
@@ -98,22 +99,28 @@ class ChainlinkFeed:
                     pass
 
     async def _watchdog(self) -> None:
-        """Force WS reconnect when no updates arrive for STALE_TIMEOUT_S."""
+        """Force a WS reconnect when a *connected* socket delivers no updates for
+        STALE_TIMEOUT_S — but give a freshly-opened socket a grace window first.
+        Without the grace, a silent-but-open socket gets force-closed within ~15s
+        and reconnected immediately; against an RTDS 429 limiter that becomes a
+        self-perpetuating reconnect storm (the socket never lives long enough to
+        deliver data, so the run loop's backoff never escapes the penalty box)."""
         while self._running and self._last_update == 0:
             await asyncio.sleep(2)
         while self._running:
             await asyncio.sleep(10)
-            if self._last_update > 0 and (time.time() - self._last_update) > STALE_TIMEOUT_S:
-                if self._ws is not None:
-                    logger.warning(
-                        "ChainlinkFeed: no update in %.0fs — forcing reconnect",
-                        time.time() - self._last_update,
-                    )
-                    try:
-                        await self._ws.close()
-                    except Exception:
-                        pass
-                    self._ws = None
+            stale = self._last_update > 0 and (time.time() - self._last_update) > STALE_TIMEOUT_S
+            fresh_connect = (time.time() - self._last_connect) < STALE_TIMEOUT_S
+            if stale and self._ws is not None and not fresh_connect:
+                logger.warning(
+                    "ChainlinkFeed: no update in %.0fs — forcing reconnect",
+                    time.time() - self._last_update,
+                )
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
+                self._ws = None
                 await asyncio.sleep(5)
 
     async def _app_ping(self, ws: Any) -> None:
@@ -134,6 +141,7 @@ class ChainlinkFeed:
             try:
                 async with websockets.connect(RTDS_WS_URL, ping_interval=PING_INTERVAL_S, compression=None) as ws:
                     self._ws = ws
+                    self._last_connect = time.time()
                     enable_nodelay(ws, "chainlink")
                     self.staleness.reset()
                     self.staleness.mark_connected()
@@ -141,7 +149,10 @@ class ChainlinkFeed:
                         "action": "subscribe",
                         "subscriptions": [{"topic": "crypto_prices_chainlink", "type": "*"}],
                     }))
-                    backoff = RECONNECT_BASE_S
+                    # NB: backoff is reset only when real data arrives (in the loop
+                    # below), NOT on connect — a socket that opens but stays silent
+                    # (RTDS rate-limiting us) must keep escalating so we don't hammer
+                    # the 429 limiter and trap ourselves in a reconnect storm.
                     ping_task = asyncio.create_task(self._app_ping(ws))
 
                     async for raw in ws:
@@ -160,6 +171,7 @@ class ChainlinkFeed:
                             now = time.time()
                             self._price = float(value)
                             self._last_update = now
+                            backoff = RECONNECT_BASE_S      # healthy data — safe to reset
                             # Prefer the RTDS-reported timestamp when present; falls
                             # back to wall-clock so the boundary record is robust to
                             # a missing payload field.
@@ -177,6 +189,10 @@ class ChainlinkFeed:
                 # extended outage doesn't keep us in the 429 penalty box.
                 if not self._running:
                     break
+                # A 429 (rate limit) means back off HARD — jump toward the cap so we
+                # leave the per-IP penalty box instead of immediately re-tripping it.
+                if "429" in str(e):
+                    backoff = max(backoff, RECONNECT_MAX_S / 2)
                 logger.warning("ChainlinkFeed: WS disconnected (%s), reconnecting in %.0fs", e, backoff)
                 self._ws = None
                 await asyncio.sleep(backoff)

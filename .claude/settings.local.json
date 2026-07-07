@@ -140,7 +140,8 @@
       "Bash(xargs wc -l)",
       "Bash(PYTHONIOENCODING=utf-8 python *)",
       "PowerShell(git checkout *)",
-      "PowerShell(python scripts/sniper_shadow_status.py)"
+      "PowerShell(python scripts/sniper_shadow_status.py)",
+      "PowerShell(python -m pytest polybot/tests/ -q 2>$null | Select-Object -Last 2)"
     ]
   }
 }

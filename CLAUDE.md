@@ -37,6 +37,7 @@ share every decision path.
 | `DISCORD_BOT_TOKEN` | Always (monitoring) |
 | `POLYMARKET_PRIVATE_KEY` | Live mode (EIP-712 signing) |
 | `POLYMARKET_FUNDER` | Live mode (USDC funding address) |
+| `POLYGON_RPC_URL` | Optional: on-chain redemption to clear resolved shares (§6) |
 
 ---
 
@@ -47,7 +48,13 @@ share every decision path.
 Every 5 min, Polymarket runs a market: will BTC close higher or lower than at
 the window's start? Up/Down ERC-1155 tokens trade $0-$1; the winning side pays
 $1/share. Chainlink (via Polymarket RTDS, tracking Coinbase) is the resolution
-source; Gamma mirrors it for discovery. Two modes, one engine: **paper**
+source; Gamma mirrors it for discovery. The per-window **decision strike** is
+Chainlink's boundary-captured price (`_compute_strike_and_btc`, matches the
+resolved `price_to_beat` to ~$1); Gamma's mid-window `price_to_beat` only
+bootstraps until Chainlink has it and never overrides it — its intra-window
+value can lag tens of dollars and flip near-strike sniper crossings onto the
+wrong side. (Resolution still settles on `price_to_beat`.) Two modes, one
+engine: **paper**
 (realism shim: real CLOB books, FOK semantics, convex slippage,
 network-fail/latency jitter calibrated to the measured warm POST RTT
 ~0.118-0.138s, $1 min, tick snapping) and **live** (`py-clob-client-v2` FOK
@@ -204,7 +211,20 @@ caps across windows) requires clearing a flip hurdle:
 **Resolution**: Chainlink decides; winner $1/loser $0 credited atomically.
 Exit price is oracle-first (`event_metadata` final_price vs price_to_beat;
 Gamma resolved prices as fallback; never Binance); Chainlink orphan fallback
-after ~30 min of Gamma silence. Live redeems settle non-blockingly.
+after ~30 min of Gamma silence. Winner payouts book via Polymarket auto-redeem
+(the bankroll sync waits for the winning tokens to clear).
+
+**On-chain redemption** (`execution/redeem.py`) clears EVERY resolved position
+off the wallet so no shares sit around — winner → USDC, loser → burned to $0. A
+losing share has no UI redeem (no payout to claim), so this on-chain
+`redeemPositions` through the funder Gnosis Safe is the only way to remove it.
+Runs via the nightly sweep (§7) and the operator script
+(`scripts/redeem_positions.py`); tries pUSD then USDC.e collateral and confirms
+the burn by the on-chain balance dropping to 0. Gated on `POLYGON_RPC_URL`
+(direct Safe `execTransaction`, EOA pays ~$0.001 gas each; reports-only when
+unset). Redemption cannot lose money (it only burns your tokens and pays you; a
+bad tx just reverts). The startup wallet-check reports this honestly — never
+"worthless leftovers ignored".
 
 **Passive exits** (`passive_exit_enabled`): OFF — measured −2.1¢/sh ≈ −$62/day
 (t_day −2.03) over 8 clean days. The code path (paper tape-sim, live GTD rest +
@@ -231,10 +251,15 @@ tested but stays off; never a reason to rest new quotes.
   ground truth for exit-policy changes (score via `actual − cf`, never a naive
   signed sum of `delta_pnl`).
 - **NightlyScheduler** (23:45 ET): record rollups + retention sweep + the
-  **sniper-edge health report** (`_sniper_health_job`) — re-runs the kill-bar
-  momentum read + post-live kill rule and pings Discord `#polybot-daily`
-  (✅ HEALTHY / ⚠️ KILL RULE TRIPPED / ⏳ accruing). Alert-only; never flips
-  config. Skipped when `sniper_enabled` is false.
+  **sniper-edge health report** (`_sniper_health_job`, skipped when
+  `sniper_enabled` is false — reports BOTH the SIM corpus (`health_read`,
+  window_paths) and the REAL live fills (`live_health_read`, polybot_live.db)
+  side by side with their ¢/sh gap, and drives the post-live kill-rule verdict
+  off the LIVE ledger once fills exist; alert-only, never flips config) + the
+  **redeem sweep**
+  (`_redeem_leftovers_job`, live only — redeems every resolved position through
+  the funder Safe when `POLYGON_RPC_URL` is set, else reports the claimable
+  winners). Pings Discord `#polybot-daily` (✅/⚠️/⏳ sniper, 🧹 redeem).
 
 ## 8. Hard rules
 
@@ -270,6 +295,7 @@ polybot/
   indicators/            ATR engine
   recording.py           WindowPathRecorder (all windows) + TapeRecorder + retention
   execution/             base (BaseTrader, fee math), paper_trader, live_trader,
+                         redeem (on-chain redeemPositions via the funder Safe),
                          circuit_breaker, correlation
   agents/                scheduler, outcome_reviewer, counterfactual_tracker,
                          ghost_tracker, pipeline_analytics
@@ -288,6 +314,9 @@ scripts/
   smoke_order_test.py    live preflight: one unfillable FOK proves order POSTs
                          clear Cloudflare (verify_keys covers GETs only)
   reset_paper_clean.py   clean-slate the paper ledger (operator-run, bot STOPPED)
+  redeem_positions.py    operator-run: redeem EVERY resolved position (winner →
+                         USDC, loser → burned to $0). Dry-run lists; --confirm
+                         redeems (needs POLYGON_RPC_URL + a little POL for gas)
 ```
 
 ## 10. Data sources

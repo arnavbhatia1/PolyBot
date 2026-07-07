@@ -1258,27 +1258,40 @@ class LiveTrader(BaseTrader):
         except Exception as e:
             logger.debug("Could not persist orphan_positions.json: %s", e)
 
-        # Settled dust never blocks; flag any unredeemed winnings so the
-        # operator can claim them (the bot has no redeem tx path).
-        if resolved_dust:
-            unredeemed = sum(d["current_value"] for d in resolved_dust)
-            if unredeemed > 0.01:
-                logger.critical(
-                    "UNREDEEMED WINNINGS: ~$%.2f in %d resolved position(s) claimable "
-                    "on Polymarket — see memory/state/orphan_positions.json (resolved_dust).",
-                    unredeemed, len(resolved_dust),
-                )
+        # Settled dust never blocks. Split it into two truthful buckets:
+        #   winners  — resolved, still holding value → REAL money to claim.
+        #   losers   — resolved to $0 → inert tokens; Polymarket has no redeem
+        #              for a losing share, so they sit on-chain locking nothing.
+        winners = [d for d in resolved_dust if d["current_value"] > 0.01]
+        losers = [d for d in resolved_dust if d["current_value"] <= 0.01]
+        if winners:
+            claimable = sum(d["current_value"] for d in winners)
+            logger.critical(
+                "UNREDEEMED WINNINGS: $%.2f in %d resolved window(s) NOT yet claimed - "
+                "redeem at polymarket.com/portfolio (or enable Settings -> Trading -> "
+                "Auto-Redeem, or run scripts/redeem_positions.py). Windows: %s",
+                claimable, len(winners),
+                "; ".join(d["title"] for d in winners[:6])
+                + (" ..." if len(winners) > 6 else ""),
+            )
 
         if not orphans:
-            # One plain line on a clean boot; the breakdown goes to DEBUG.
-            logger.info(
-                "Wallet check: clean — every position is known%s.",
-                f" ({len(resolved_dust)} worthless leftovers from finished markets ignored)"
-                if resolved_dust else "",
-            )
+            # Crystal-clear clean-boot line. Never call the $0 losers "ignored":
+            # they are lost bets that resolved to $0 and have no redeem path at
+            # all, so they linger on-chain worth nothing. State that plainly.
+            if losers:
+                logger.info(
+                    "Wallet check: clean — all tradeable positions tracked; no real "
+                    "money unclaimed. %d finished window(s) hold only losing shares "
+                    "worth $0 (nothing to redeem — a $0 loser has no payout to claim).",
+                    len(losers),
+                )
+            else:
+                logger.info("Wallet check: clean — all positions tracked, nothing unredeemed.")
             logger.debug(
-                "Orphan detection detail: %d non-dust chain position(s), %d resolved dust.",
-                non_dust_chain, len(resolved_dust),
+                "Orphan detection detail: %d non-dust chain position(s), %d unclaimed "
+                "winner(s), %d resolved $0 loser(s).",
+                non_dust_chain, len(winners), len(losers),
             )
             return 0
 

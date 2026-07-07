@@ -1370,23 +1370,25 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     except (ValueError, IndexError):
         contract_window_ts = int(now_ts // 300) * 300  # fallback
 
-    # Gamma's priceToBeat is the authoritative resolution value — override any
-    # cached strike once it appears (often mid-window, after Gamma catches up).
-    ptb = (contract or {}).get("event_metadata") or {}
-    ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
-    if ptb and window_strikes.get(contract_window_ts) != ptb:
-        if contract_window_ts in window_strikes:
-            logger.info(f"STRIKE UPDATE {_slug_to_window(cid)} | ${window_strikes[contract_window_ts]:,.2f} → ${ptb:,.2f} (Polymarket)")
-        else:
-            logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${ptb:,.2f} (Polymarket){_C.RESET}")
-        window_strikes[contract_window_ts] = ptb
-
-    if contract_window_ts not in window_strikes:
-        if chainlink_feed:
-            cl_strike = chainlink_feed.get_strike(contract_window_ts)
-            if cl_strike:
-                window_strikes[contract_window_ts] = cl_strike
-                logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
+    # Strike source: prefer Chainlink (the resolution venue). Its boundary-captured
+    # strike is fixed for the window and matches the resolved price_to_beat to ~$1
+    # (it is what the recorder uses). Gamma's mid-window event_metadata.price_to_beat
+    # can lag/drift by tens of dollars before it settles — trusting it flipped
+    # near-strike sniper crossings onto the wrong (cheap, losing) side — so Gamma
+    # only bootstraps the strike until Chainlink has the boundary, and never
+    # overrides a Chainlink strike. (Resolution still settles on price_to_beat.)
+    cl_strike = chainlink_feed.get_strike(contract_window_ts) if chainlink_feed else None
+    if cl_strike:
+        if contract_window_ts not in window_strikes:
+            logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
+        window_strikes[contract_window_ts] = cl_strike
+    elif contract_window_ts not in window_strikes:
+        ptb = (contract or {}).get("event_metadata") or {}
+        ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
+        if ptb:
+            window_strikes[contract_window_ts] = ptb
+            logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | "
+                        f"Strike ${ptb:,.2f} (Polymarket bootstrap — Chainlink not ready){_C.RESET}")
 
     window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
 
@@ -3032,9 +3034,13 @@ async def main() -> None:
     scheduler.register_job("price_sum_retention", _price_sum_retention_job)
 
     async def _sniper_health_job() -> dict:
-        """Re-run the kill-bar momentum read + post-live kill rule and ping
-        Discord. Deterministic, alert-only — it never flips config (kill bars
-        are operator authority). Skipped when the sniper is disabled."""
+        """Re-run the kill-bar momentum read + post-live kill rule and ping Discord.
+        Deterministic, alert-only — it never flips config (kill bars are operator
+        authority). Reports BOTH the SIM corpus (window_paths harness) and the REAL
+        live fills (polybot_live.db), with their gap, so any execution/selection
+        divergence is visible; the kill-rule VERDICT is driven by the LIVE ledger
+        once fills exist (the sim can't see live execution quality). Skipped when the
+        sniper is disabled."""
         if not config.get("late_window", {}).get("sniper_enabled", _d("sniper_enabled")):
             return {"skipped": "sniper disabled"}
         import importlib.util
@@ -3042,39 +3048,133 @@ async def main() -> None:
         spec = importlib.util.spec_from_file_location("analyze_late_window", hp)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        r = await asyncio.to_thread(mod.health_read)   # reads window_paths.db (RO), few seconds
-        if r is None:
+        sim = await asyncio.to_thread(mod.health_read)         # SIM corpus (window_paths.db, RO)
+        live = await asyncio.to_thread(mod.live_health_read)   # REAL fills (polybot_live.db, RO)
+        if sim is None and live is None:
             if alert_manager:
-                await alert_manager.send_health("🎯 Sniper health: corpus not ready (no window_paths data).")
+                await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
             return {"health": "no data"}
         today = datetime.now(ET).strftime("%Y-%m-%d")
-        kt = r["kill_rule_tripped"]
+        # Kill-rule authority = the LIVE ledger (the money); fall back to the SIM
+        # read only until the first live fills exist.
+        authority = live if (live and live["n_fills"] > 0) else sim
+        kt = authority["kill_rule_tripped"] if authority else None
         status = ("⏳ STILL ACCRUING" if kt is None
                   else "⚠️ KILL RULE TRIPPED" if kt else "✅ HEALTHY")
-        t4 = "not enough days yet" if r["trailing4_mean"] is None else f"{r['trailing4_mean']*100:+.1f}¢ per share"
-        t8 = "not enough days yet" if r["trailing8_t"] is None else f"{r['trailing8_t']:+.2f}"
+
+        def _line(r):
+            if r is None:
+                return "not ready"
+            if r["n_fills"] == 0:
+                return "no fills yet"
+            t4 = "n/a (<4d)" if r["trailing4_mean"] is None else f"{r['trailing4_mean']*100:+.1f}¢/sh"
+            t8 = "n/a (<8d)" if r["trailing8_t"] is None else f"t {r['trailing8_t']:+.2f}"
+            return (f"**{r['net_per_sh']*100:+.1f}¢/sh** over {r['n_fills']} fills / {r['n_days']}d "
+                    f"({r['days_pos']}/{r['n_days']} days+), win {r['win_rate']:.0%}, "
+                    f"t_day {r['t_day']:+.2f}; last-4 {t4}, last-8 {t8}")
+
+        disc = ""
+        if sim and live and live["n_fills"] > 0:
+            gap = (sim["net_per_sh"] - live["net_per_sh"]) * 100
+            tag = ("in line with the sim" if abs(gap) < 3 else
+                   "⚠️ DIVERGENCE — real money is underperforming the sim (execution / selection leak)")
+            disc = f"\n**Sim − live gap: {gap:+.1f}¢/sh** — {tag}."
+
         msg = (
             f"🎯 **Sniper daily check — {today}**   {status}\n"
-            f"Over the last {r['n_days']} days the sniper made "
-            f"**{r['net_per_sh']*100:+.1f}¢ per share** across {r['n_fills']} fills — "
-            f"win rate {r['win_rate']:.0%}, {r['days_pos']} of {r['n_days']} days profitable.\n"
-            f"Statistical confidence t {r['t_day']:+.2f} (healthy is 2.0 or higher); "
-            f"even the unlucky-case estimate (p10) is {r['p10']*100:+.1f}¢ per share.\n"
-            f"Recent form: last 4 days {t4}, last 8 days t {t8} "
-            f"(shut-off line: below +2.0¢ or t under 2.0).\n"
+            f"**LIVE (real fills):** {_line(live)}\n"
+            f"**SIM (harness corpus):** {_line(sim)}\n"
+            f"Both are equal-weight net-of-fee ¢/share, one bet per window. "
+            f"Shut-off line (measured on LIVE): last-4-day below +2.0¢/sh or last-8-day t under 2.0."
+            f"{disc}\n"
         )
         if kt:
-            msg += ("**⚠️ The edge has decayed past the shut-off line — "
+            msg += ("**⚠️ The LIVE edge has decayed past the shut-off line — "
                     "set `sniper_enabled: false` in settings.yaml.**")
         elif kt is None:
-            msg += "Not enough post-launch days for a verdict yet — keep trading."
+            msg += "Not enough post-launch days for a live verdict yet — keep trading; watch the sim−live gap."
         else:
-            msg += "Verdict: edge intact, nothing to do."
+            msg += "Verdict: live edge intact, nothing to do."
         if alert_manager:
             await alert_manager.send_health(msg)
-        return {"health": status, "t_day": round(r["t_day"], 2),
-                "trailing4_mean": r["trailing4_mean"], "kill_rule_tripped": kt}
+
+        def _pick(r):
+            if r is None:
+                return None
+            return {"net_per_sh": r["net_per_sh"], "t_day": round(r["t_day"], 2),
+                    "n_fills": r["n_fills"], "n_days": r["n_days"],
+                    "trailing4_mean": r["trailing4_mean"], "trailing8_t": r["trailing8_t"],
+                    "kill_rule_tripped": r["kill_rule_tripped"]}
+        return {"health": status, "kill_rule_tripped": kt,
+                "live": _pick(live), "sim": _pick(sim)}
     scheduler.register_job("sniper_health", _sniper_health_job)
+
+    async def _redeem_leftovers_job() -> dict:
+        """End-of-day redemption so no shares sit around. Redeems EVERY resolved
+        position through the funder Safe (winner -> USDC, loser -> burned to $0),
+        then pings Discord. Auto-redeems only when POLYGON_RPC_URL is set (the
+        operator's explicit opt-in); otherwise it reports what's claimable —
+        winners are UI-claimable, losers need the RPC (or the redeem script) to
+        burn. Live mode only; best-effort, never blocks the loop."""
+        if config.get("mode") != "live":
+            return {"skipped": "not live"}
+        funder = os.environ.get("POLYMARKET_FUNDER", "").strip()
+        if not funder:
+            return {"skipped": "no funder"}
+        from polybot.execution.redeem import (
+            fetch_redeemable, PolygonRedeemer, RedeemerConfigError)
+        today = datetime.now(ET).strftime("%Y-%m-%d")
+        items = await fetch_redeemable(funder)
+        tradeable = [i for i in items if not i.negative_risk]
+        if not tradeable:
+            if alert_manager:
+                await alert_manager.send_health(
+                    f"🧹 **Redeem check — {today}** — wallet clean, nothing resolved unredeemed.")
+            return {"redeemable": 0}
+        winners = [i for i in tradeable if i.is_winner]
+        losers = [i for i in tradeable if not i.is_winner]
+        claimable = sum(w.value_usd for w in winners)
+        rpc = os.environ.get("POLYGON_RPC_URL", "").strip()
+        if rpc:
+            try:
+                redeemer = PolygonRedeemer(
+                    rpc_url=rpc,
+                    private_key=os.environ.get("POLYMARKET_PRIVATE_KEY", "").strip(),
+                    funder=funder)
+            except RedeemerConfigError as e:
+                if alert_manager:
+                    await alert_manager.send_health(
+                        f"🧹 **Redeem sweep — {today}** — cannot redeem ({e}).")
+                return {"error": str(e)}
+            cleared = failed = 0
+            for it in tradeable:
+                res = await asyncio.to_thread(
+                    redeemer.redeem_condition, it.condition_id, it.token_id, it.title)
+                cleared += res.cleared
+                failed += not res.cleared
+            msg = (f"🧹 **Redeem sweep — {today}**\n"
+                   f"Cleared {cleared} of {len(tradeable)} resolved position(s) "
+                   f"(${claimable:.2f} in winnings claimed, {len(losers)} $0 loser stub(s) burned). ")
+            msg += ("Wallet is clean." if not failed else
+                    f"⚠️ {failed} failed — retrying tomorrow (check the EOA's POL gas balance).")
+            if alert_manager:
+                await alert_manager.send_health(msg)
+            return {"cleared": cleared, "failed": failed}
+        # Report-only — no RPC configured, so no on-chain tx is sent.
+        lines = [f"🧹 **Redeem check — {today}** — {len(tradeable)} resolved position(s) in the wallet."]
+        if winners:
+            lines.append(
+                f"💰 **${claimable:.2f} in {len(winners)} WINNER(s) to CLAIM** at "
+                "polymarket.com/portfolio: " + "; ".join(w.title for w in winners[:5]))
+        if losers:
+            lines.append(
+                f"{len(losers)} are $0 losing stubs (worthless — no UI redeem exists). To auto-burn "
+                "them clean, set POLYGON_RPC_URL in .env, or run "
+                "`python scripts/redeem_positions.py --confirm`.")
+        if alert_manager:
+            await alert_manager.send_health("\n".join(lines))
+        return {"winners": len(winners), "losers": len(losers), "auto_redeem": False}
+    scheduler.register_job("redeem_leftovers", _redeem_leftovers_job)
 
     async def run_discord():
         backoff = 5
