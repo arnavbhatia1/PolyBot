@@ -24,7 +24,7 @@ from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV
 from polybot.db.models import Database
 from polybot.execution.base import (
     BaseTrader, DEFAULT_FEE_RATE, FillResult,
-    exit_fee_usdc, _entry_fee_usd_from_position,
+    entry_fee_shares, exit_fee_usdc, _entry_fee_usd_from_position,
 )
 from polybot.core.returns import log_return
 
@@ -73,6 +73,7 @@ _FILL_PRICE_LOOKUP_DELAY = 0.05
 _DUST_THRESHOLD_SHARES = 0.01
 _REDEEM_WAIT_MAX_S = 120.0    # winning tokens still on-chain past this → CRITICAL (alert-only)
 _REDEEM_CHECK_EVERY_S = 10.0  # data-API redeem checks are rate-limited to this cadence
+_FILL_AUDIT_DELAY_S = 8.0     # let the indexer see the fill before auditing the entry price
 _BALANCE_SETTLE_FLOOR = 0.03  # min chain-settle wait even if WS fires immediately
 _BALANCE_SETTLE_DELAY = 0.15  # max wait — WS-wait ceiling, and the fixed delay when no WS is attached
 # WS trade events for our token typically arrive within 50-150ms of the
@@ -695,31 +696,98 @@ class LiveTrader(BaseTrader):
         except Exception:
             return None
 
+    async def _fetch_wallet_positions(self) -> list | None:
+        """The funder's positions per the public data API, or None on failure.
+        sizeThreshold pinned low: the API's default (1.0) hides sub-1-share
+        positions — a hidden still-held winner would look redeemed."""
+        funder = os.environ.get("POLYMARKET_FUNDER", "").strip()
+        if not funder:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http:
+                resp = await http.get(self._POSITIONS_API_URL,
+                                      params={"user": funder, "sizeThreshold": 0.01})
+                resp.raise_for_status()
+                positions = resp.json()
+            return positions if isinstance(positions, list) else None
+        except Exception as e:
+            logger.warning("Wallet positions lookup failed: %s", e)
+            return None
+
     async def _chain_token_shares(self, token_id: str | None) -> float | None:
         """Shares of `token_id` the funder still holds per the public data API.
         0.0 when absent (redeemed/burned); None = cannot verify (missing token
         id or env, API failure, bad payload) — callers must treat as unknown.
         """
-        funder = os.environ.get("POLYMARKET_FUNDER", "").strip()
-        if not token_id or not funder:
+        if not token_id:
             return None
+        positions = await self._fetch_wallet_positions()
+        if positions is None:
+            return None
+        for p in positions:
+            if str(p.get("asset")) == token_id:
+                return float(p.get("size") or 0.0)
+        return 0.0
+
+    def _schedule_fill_audit(self, pos_id: int, token_id: str, recorded_price: float,
+                             size_usdc: float, fee_rate: float) -> None:
+        """Fire-and-forget audit of a booked BUY entry price (called by
+        base.open_trade after the DB write; paper has no such hook)."""
         try:
-            async with httpx.AsyncClient(timeout=10.0) as http:
-                # sizeThreshold: the API's default (1.0) hides sub-1-share
-                # positions — a hidden still-held winner would look redeemed.
-                resp = await http.get(self._POSITIONS_API_URL,
-                                      params={"user": funder, "sizeThreshold": 0.01})
-                resp.raise_for_status()
-                chain_positions = resp.json()
-            if not isinstance(chain_positions, list):
-                return None
-            for p in chain_positions:
-                if str(p.get("asset")) == token_id:
-                    return float(p.get("size") or 0.0)
-            return 0.0
+            asyncio.create_task(self._audit_entry_fill(
+                pos_id, token_id, recorded_price, size_usdc, fee_rate))
+        except RuntimeError:
+            pass  # no running loop (tests constructing outside asyncio)
+
+    async def _audit_entry_fill(self, pos_id: int, token_id: str,
+                                recorded_price: float, size_usdc: float,
+                                fee_rate: float) -> None:
+        """Correct the recorded entry price to the exchange's actual fill.
+
+        The WS-tape VWAP falls back to the submitted limit when it misses the
+        fill prints, booking the entry up to sniper_fok_slip worse than what
+        the FOK really paid (the exchange fills at book prices; the limit is
+        only a ceiling). The data-API position's avgPrice is the chain truth.
+        Runs seconds after the fill, off the latency path; single-fill
+        positions only — residue from an earlier untracked fill would make the
+        position's average not this order's price. Best-effort: never raises.
+        """
+        try:
+            await asyncio.sleep(_FILL_AUDIT_DELAY_S)
+            if not token_id:
+                return
+            positions = await self._fetch_wallet_positions()
+            if positions is None:
+                return
+            pos = next((p for p in positions
+                        if str(p.get("asset")) == str(token_id)), None)
+            if pos is None:
+                return
+            true_price = float(pos.get("avgPrice") or 0.0)
+            chain_size = float(pos.get("size") or 0.0)
+            if not (0.0 < true_price < 1.0):
+                return
+            if abs(true_price - recorded_price) <= 0.005:
+                return
+            implied_shares = size_usdc / true_price
+            if abs(chain_size - implied_shares) / max(implied_shares, 1e-9) > 0.02:
+                return  # mixed position (older residue) — avgPrice isn't this order's
+            shares_held = implied_shares - entry_fee_shares(
+                implied_shares, true_price, fee_rate)
+            cur = await self.db.conn.execute(
+                "UPDATE positions SET entry_price=?, shares_held=? "
+                "WHERE id=? AND status='open'",
+                (round(true_price, 4), round(shares_held, 6), pos_id),
+            )
+            await self.db.conn.commit()
+            if cur.rowcount:
+                logger.info(
+                    "Entry corrected to the exchange's real fill: %.2f → %.2f "
+                    "(the tape missed the fill, so the limit price had been booked)",
+                    recorded_price, true_price,
+                )
         except Exception as e:
-            logger.warning("Redeem check: chain token lookup failed: %s", e)
-            return None
+            logger.debug("Fill audit skipped for position %s: %s", pos_id, e)
 
     # -- FOK pre-check + balance/dust helpers --------------------------------
     @staticmethod

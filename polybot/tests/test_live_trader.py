@@ -472,6 +472,42 @@ async def test_resolve_position_winner_deadline_stays_pending_not_booked(trader)
 
 
 @pytest.mark.asyncio
+async def test_fill_audit_corrects_entry_to_exchange_price(trader, monkeypatch):
+    """07-07 live finding: the WS-tape VWAP fell back to the padded limit (0.93
+    booked, 0.88 real per the exchange). The post-fill audit must correct
+    entry_price + shares to the chain's avgPrice for single-fill positions."""
+    _setup_successful_fill(trader, fill_price="0.93", fill_size="5.10")
+    kwargs = {**_TRADE_KWARGS, "price": 0.93, "size": 4.74, "market_id": "mkt-audit"}
+    open_result = await trader.open_trade(**kwargs)
+    pos_id = open_result.position_id
+
+    true_price = 0.88
+    chain = [{"asset": _TRADE_KWARGS["token_id"], "size": 4.74 / true_price,
+              "avgPrice": true_price}]
+
+    async def fake_wallet():
+        return chain
+
+    monkeypatch.setattr(trader, "_fetch_wallet_positions", fake_wallet)
+    import polybot.execution.live_trader as lt_mod
+    monkeypatch.setattr(lt_mod, "_FILL_AUDIT_DELAY_S", 0.0)
+    await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.93, 4.74, 0.07)
+
+    row = await (await trader.db.conn.execute(
+        "SELECT entry_price, shares_held FROM positions WHERE id=?", (pos_id,))).fetchone()
+    assert row[0] == pytest.approx(true_price, abs=1e-4)
+    assert row[1] == pytest.approx((4.74 / true_price) * (1 - 0.07 * true_price * (1 - true_price) / true_price),
+                                   rel=0.05)  # shares net of entry fee, loose bound
+
+    # Mixed position (chain size far from this order's implied shares) → untouched.
+    chain[0]["size"] = 25.0
+    await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.93, 4.74, 0.07)
+    row2 = await (await trader.db.conn.execute(
+        "SELECT entry_price FROM positions WHERE id=?", (pos_id,))).fetchone()
+    assert row2[0] == pytest.approx(true_price, abs=1e-4)
+
+
+@pytest.mark.asyncio
 async def test_reconcile_dust_skips_resolved_markets(trader, monkeypatch):
     """Leftover shares of a RESOLVED market are worthless loser tokens (or a
     winner's auto-redeeming shares) — the CLOB rejects orders on closed markets,

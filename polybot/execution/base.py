@@ -305,6 +305,13 @@ class BaseTrader(ABC):
             )
             return TradeResult(success=False, reason=f"DB write failed after fill: {e}")
 
+        # Live audits the booked entry price against the exchange a few seconds
+        # later (the WS-tape VWAP can fall back to the submitted limit); paper
+        # has no such hook.
+        audit = getattr(self, "_schedule_fill_audit", None)
+        if audit is not None:
+            audit(pos_id, token_id, fill.fill_price, fill.fill_size, fee_rate)
+
         return TradeResult(success=True, position_id=pos_id, fill_price=fill.fill_price)
 
     # -- close_trade -----------------------------------------------------

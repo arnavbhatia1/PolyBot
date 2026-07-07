@@ -65,11 +65,13 @@ reprices.
   AND the chosen side's ask ≤ `sniper_ask_cap` (0.92). The main loop wakes on
   Coinbase ticks when enabled.
 - **Fill**: the sniper FOK limit chases the stale ask by up to `sniper_fok_slip`
-  (0.05 — the kill bar's lenient leg: +9.3¢/sh net, 78% win), so an in-flight
-  reprice ≤ 5¢ fills instead of dying as an exchange kill. Base entries keep the
-  tight at-ask limit (a reject on adverse movement is a feature there). All
-  gates run at the decision ask (harness-faithful); the pre-submit VWAP
-  re-check still vetoes books that lost the edge.
+  (0.05 — the kill bar's lenient leg: +9.3¢/sh net, 78% win), capped at
+  `model_prob − min_edge` so a true reprice can never fill below the edge
+  floor. Base entries keep the tight at-ask limit (a reject on adverse movement
+  is a feature there). All gates run at the decision ask (harness-faithful);
+  the pre-submit VWAP re-check still vetoes books that lost the edge. Booked
+  entry prices are audited against the exchange's fill (data-api avgPrice) a
+  few seconds later — the WS-tape VWAP can fall back to the limit price.
 - **What it bypasses**: `max_edge` (→ `sniper_max_edge` 0.50, at both the
   edge-cap and pre-submit gates), the late-window time penalty, and the base
   signal-level gates `min_model_probability`, `min_kelly`, and the ATR

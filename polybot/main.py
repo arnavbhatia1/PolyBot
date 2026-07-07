@@ -1175,7 +1175,13 @@ async def _evaluate_signal_and_enter(
         # decision ask (harness-faithful); the pre-submit VWAP re-check still
         # vetoes fires whose visible book has lost the edge.
         _fok_slip = lw_cfg.get("sniper_fok_slip", _d("sniper_fok_slip"))
-        price = market_scanner.snap_to_tick(min(price + _fok_slip, 0.99), tick_size)
+        # Never chase above model_prob − min_edge: a fill there would carry less
+        # than the pre-registered edge floor (e.g. a 0.93 limit on a 94% model).
+        # The FOK fills at book prices, so the cap binds only when the book has
+        # truly repriced — exactly when the chase should stop.
+        _limit_cap = signal.prob - signal_engine.min_edge
+        price = market_scanner.snap_to_tick(
+            max(price, min(price + _fok_slip, _limit_cap)), tick_size)
     else:
         # Base entries deliberately use a tight slip (no FOK-cross floor): an FOK
         # reject on adverse movement is a feature — it stops buying post-reversal
