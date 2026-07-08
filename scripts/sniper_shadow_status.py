@@ -12,12 +12,24 @@ t_day>=2, p10>0 over >=8 clean ET days at the host's MEASURED RTT, with this sha
 tracking the harness.
 
   python scripts/sniper_shadow_status.py
+  python scripts/sniper_shadow_status.py --since 2026-07-08T17:15:00+00:00
+
+--since scopes the read to fills recorded at/after an epoch (the clean-baseline
+restart). It filters on each fill's resolution timestamp; the sniper resolves within
+45s of entry, so this is the entry epoch to ~1min. Use it to exclude pre-fix fills
+and any live-mode fills that share the outcomes/ directory — outcome files carry no
+mode marker and position_id is NOT unique across modes/time, so a timestamp epoch is
+the only robust cut. It therefore assumes ONE mode is running after the epoch (true
+during a paper re-validation); if you later run live, live fills after --since would
+also be counted.
 """
 from __future__ import annotations
 
+import argparse
 import statistics
 import sys
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -26,25 +38,51 @@ from polybot.agents.outcome_reviewer import OutcomeReviewer  # noqa: E402
 from polybot.agents.pipeline_analytics import utc_ts_to_et_date  # noqa: E402
 
 
+def _parse_since(s: str) -> datetime:
+    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        raise ValueError("--since must include a timezone offset (e.g. +00:00)")
+    return dt
+
+
 def main() -> None:
+    ap = argparse.ArgumentParser(description="Late-window sniper paper-shadow status.")
+    ap.add_argument("--since", type=_parse_since, default=None,
+                    help="ISO timestamp (tz-aware); only count fills resolved at/after it "
+                         "(the clean-baseline restart epoch).")
+    args = ap.parse_args()
+
     # load_all_outcomes dedups by (position_id, market_id) — a fill present in
     # both its per-trade file and a partial daily rollup counts once, which the
     # shadow-vs-harness kill-bar comparison depends on.
     outcomes = OutcomeReviewer(
         str(_ROOT / "polybot" / "memory" / "outcomes")).load_all_outcomes()
     snipes = []
+    skipped_pre_epoch = 0
     for t in outcomes:
         ctx = (t.get("indicator_snapshot") or {}).get("trade_context") or {}
         if ctx.get("entry_phase") != "late_sniper":
             continue
+        ts = t.get("timestamp") or ""
+        if args.since is not None:
+            try:
+                if datetime.fromisoformat(ts.replace("Z", "+00:00")) < args.since:
+                    skipped_pre_epoch += 1
+                    continue
+            except ValueError:
+                skipped_pre_epoch += 1     # unparseable ts can't be proven in-window → drop
+                continue
         # ET day buckets — must match the harness's ET day-clustering (a UTC
         # [:10] slice would shift every 20:00-24:00 ET fill into the next day).
-        snipes.append(dict(day=utc_ts_to_et_date(t.get("timestamp") or ""),
+        snipes.append(dict(day=utc_ts_to_et_date(ts),
                            correct=t.get("correct"),
                            pnl=t.get("pnl"), gain=t.get("gain_pct"),
                            reason=t.get("exit_reason")))
+    if args.since is not None:
+        print(f"epoch: fills resolved >= {args.since.isoformat()} "
+              f"({skipped_pre_epoch} pre-epoch sniper fills excluded)\n")
     if not snipes:
-        print("No sniper paper fills recorded yet. The shadow fires only in the final 45s "
+        print("No sniper paper fills in scope yet. The shadow fires only in the final 45s "
               "on a Coinbase move past strike with a still-cheap ask (a handful/day). Check "
               "the bot log for 'LATE-SNIPER fire' lines to confirm it is active.")
         return
@@ -54,19 +92,23 @@ def main() -> None:
         byday[s["day"]].append(s)
     print(f"{'day':>12} {'fills':>6} {'win%':>6} {'net/sh':>9} {'pnl$':>10}")
     tot_pnl = tot_n = wins = 0
+    all_gains = []
     for d in sorted(byday):
         v = byday[d]
         n = len(v)
         w = sum(1 for s in v if s["correct"])
         pnl = sum(s["pnl"] or 0.0 for s in v)
         gains = [s["gain"] for s in v if s["gain"] is not None]
+        all_gains += gains
         ns = statistics.mean(gains) if gains else float("nan")
         print(f"{d:>12} {n:>6} {w / n:>6.0%} {ns:>+9.4f} {pnl:>+10.2f}")
         tot_pnl += pnl
         tot_n += n
         wins += w
-    print(f"{'TOTAL':>12} {tot_n:>6} {wins / tot_n:>6.0%} {'':>9} {tot_pnl:>+10.2f}")
-    print(f"\n{len(byday)} day(s) of shadow data — kill bar needs >=8 clean days. "
+    pooled = statistics.mean(all_gains) if all_gains else float("nan")
+    print(f"{'TOTAL':>12} {tot_n:>6} {wins / tot_n:>6.0%} {pooled:>+9.4f} {tot_pnl:>+10.2f}")
+    print(f"\n{len(byday)} day(s) of shadow data — kill bar needs >=8 clean days, "
+          f"equal-weight net/sh >= +0.02, t_day>=2, p10>0, shadow-vs-harness gap < 0.03. "
           f"Compare net/sh to analyze_late_window.py --rtt-sweep 0.135 (paper sim latency).")
 
 
