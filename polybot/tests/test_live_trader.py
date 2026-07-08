@@ -259,7 +259,7 @@ async def test_open_trade_fok_kill_is_definitive_no_fill(trader):
 
     assert result.success is False
     assert trader.client.post_order.call_count == 1
-    assert "killed" in result.reason.lower()
+    assert "no fill" in result.reason.lower()
     assert "double fill" not in result.reason
 
 
