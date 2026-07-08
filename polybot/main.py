@@ -244,6 +244,10 @@ _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, 
 # Window-path recorder (recording.WindowPathRecorder) — set by main() at boot.
 _window_recorder = None
 
+# Windows whose strike has been logged — one line per window, at the moment the
+# Chainlink boundary value LOCKS (suppresses the cold-start settle churn).
+_strike_logged: set[int] = set()
+
 # Previous window resolution margin — recorded telemetry (no model layer consumes it)
 _prev_resolution_margin: float = 0.0
 _PREV_MARGIN_PATH = PREV_MARGIN_PATH
@@ -1347,20 +1351,24 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     # the boundary report lands.
     cl_strike = chainlink_feed.get_strike(contract_window_ts) if chainlink_feed else None
     if cl_strike and cl_strike > 0:
-        prev = window_strikes.get(contract_window_ts)
-        if prev is None:
+        window_strikes[contract_window_ts] = cl_strike     # the sniper reads this — set every loop
+        # Log ONE line per window, when the boundary value LOCKS (the first at/after-boundary
+        # report has landed). Before that get_strike serves a cold-start fallback that ticks
+        # with the live price; logging every tick was noisy and the value isn't final yet.
+        locked = chainlink_feed.boundary_captured(contract_window_ts) if chainlink_feed else False
+        if locked and contract_window_ts not in _strike_logged:
             logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
-        elif abs(prev - cl_strike) > 0.005:
-            logger.info(f"{_C.CYAN}STRIKE {_slug_to_window(cid)} | ${prev:,.2f} → ${cl_strike:,.2f} "
-                        f"(Chainlink boundary settled){_C.RESET}")
-        window_strikes[contract_window_ts] = cl_strike
+            _strike_logged.add(contract_window_ts)
+            _strike_logged.difference_update({k for k in _strike_logged if now_ts - k >= 600})
     elif contract_window_ts not in window_strikes:
         ptb = (contract or {}).get("event_metadata") or {}
         ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
         if ptb:
             window_strikes[contract_window_ts] = ptb
-            logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | "
-                        f"Strike ${ptb:,.2f} (Polymarket bootstrap — Chainlink not ready){_C.RESET}")
+            if contract_window_ts not in _strike_logged:
+                logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | "
+                            f"Strike ${ptb:,.2f} (Polymarket bootstrap — Chainlink not ready){_C.RESET}")
+                _strike_logged.add(contract_window_ts)
 
     window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
 

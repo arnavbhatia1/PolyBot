@@ -19,6 +19,9 @@ class _Chainlink:
     def get_strike(self, window_ts):
         return self._strike
 
+    def boundary_captured(self, window_ts):
+        return self._strike is not None
+
 
 class _Binance:
     buffer = None  # only read on the no-strike path

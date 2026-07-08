@@ -59,6 +59,12 @@ class ChainlinkFeed:
             return self._price
         return None
 
+    def boundary_captured(self, window_ts: int) -> bool:
+        """True once the first report at/after ``window_ts`` has landed — i.e. get_strike
+        returns the LOCKED boundary value rather than the live-price cold-start fallback.
+        Never true for the feed's start window (its opening boundary was never observed)."""
+        return window_ts != self._start_window_ts and window_ts in self._boundary_prices
+
     @staticmethod
     def _epoch_seconds(ts: float) -> float:
         """Normalize an epoch timestamp to seconds. RTDS payloads carry

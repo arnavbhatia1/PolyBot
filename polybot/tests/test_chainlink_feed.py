@@ -48,6 +48,17 @@ class TestChainlinkFeed:
         # The first at/after the boundary defines the strike, not the last before the next.
         assert f.get_strike(boundary_ts) == 71000.0
 
+    def test_boundary_captured_flag(self):
+        """boundary_captured flips True only once the first at/after-boundary report
+        lands — the signal that get_strike is returning the LOCKED value, not the fallback."""
+        f = ChainlinkFeed()
+        boundary_ts = ((int(time.time()) // 300) - 1) * 300
+        assert f.boundary_captured(boundary_ts) is False
+        f._price = 71000.0
+        f._record_boundary(boundary_ts + 1)
+        assert f.boundary_captured(boundary_ts) is True
+        assert f.boundary_captured(f._start_window_ts) is False   # start window never captured
+
     def test_epoch_seconds_normalizes_rtds_milliseconds(self):
         """RTDS payload timestamps arrive in epoch ms (e.g. 1781031482000);
         second-space values pass through unchanged."""
