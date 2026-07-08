@@ -1,53 +1,48 @@
 # TODO — open work only
 
-Completed items get deleted; history lives in git + memory. Kill bars are the
-deployment authority — never relax one to pass it.
+Completed items get deleted; history lives in git + memory. The sniper is the
+sole strategy; the BINDING deployment gate is the paper-shadow's realized fills,
+not the harness (CLAUDE.md §2) — never go live on the harness print alone.
 
-## Operator
+## Operator — commit + restart to apply this session's fixes
 
-- [ ] **URGENT — restart to clear the Chainlink reconnect storm.** The feed hit an
-      RTDS HTTP 429 loop (stale-connect kept resetting backoff + watchdog force-closed
-      every 15s) → no strike → no trading for ~44 min. FIXED in `chainlink_feed.py`
-      (backoff resets only on real data, watchdog grace window, hard backoff on 429),
-      but the running process needs a **commit + restart** to pick it up. It won't
-      self-heal on the old code.
-- [ ] Same restart also applies the **stale-strike fix** (`_compute_strike_and_btc`
-      prefers Chainlink over drifting Gamma `price_to_beat`) and the **dual sim+live
-      health job** (`_sniper_health_job` + `live_health_read`). Then re-measure the
-      sniper over ≥8 clean live days — the strike fix removes the false cheap-side
-      fires but capturability of the +16¢ sim EV is unproven.
-- [ ] Run `python scripts/smoke_order_test.py --confirm` — one unfillable $1 FOK
-      proving order POSTs clear Cloudflare (`verify_keys.py` covered GETs only).
-- [ ] Optional wallet cleanup (the 21 resolved leftovers are $0 losers — they
-      lock nothing): set `POLYGON_RPC_URL` in `.env` + keep a little POL in the
-      EOA, then `python scripts/redeem_positions.py --confirm`. With the RPC set,
-      the nightly sweep then keeps every future window clean automatically.
+- [ ] **Commit + restart** to pick up the live booking fix (`live_trader.py`
+      `_FILL_PRICE_LOOKUP_RETRIES` 3→8 / `_DELAY` 0.12 — books the CLOB's true
+      fill VWAP instead of the padded FOK limit; the old ledger ran ~1-3¢/sh
+      pessimistic on sniper fills). Won't self-heal on the old code.
+- [ ] Confirm the earlier restart already applied the **stale-strike fix**
+      (`_compute_strike_and_btc` Chainlink-preferred) and the **Chainlink 429
+      reconnect-storm fix** (`chainlink_feed.py`). Log should show every
+      `NEW WINDOW … (Chainlink)`; if not, restart.
+- [ ] Run `python scripts/smoke_order_test.py --confirm` before any live flip —
+      one unfillable $1 FOK proving order POSTs clear Cloudflare.
 
-## Scheduled reads
+## The re-validation gate (currently `mode: paper`, `sniper_enabled: true`)
 
-- [ ] ~07-07 — delta-lead OOS re-read on `late_window_collect.db`
-      (bar: OOS day-clustered t ≥ 2 AND p10 > 0 AND +300ms column positive).
-      The DB exists only for this read — delete it after.
-- [ ] ~07-08 — shadow-span fidelity read: `python scripts/sniper_shadow_status.py`
-      vs the harness at 0.135; weight the post-07-03 (sniper_only) fills.
+- [ ] Accrue **≥ 8 clean ET days** of paper-shadow sniper fills on the fixed
+      code, then gate on the REALIZED fills (`sniper_shadow_status.py` /
+      `live_health_read`): equal-weight net **≥ +2¢/sh**, `t_day ≥ 2`, `p10 > 0`,
+      ≥ 40 fills, ≥ 6/8 days positive, AND **shadow-vs-harness gap < 3¢**.
+      Only if that clears does live re-deploy. Honest prior: ~break-even with a
+      fat left tail — it may not clear.
+- [ ] **Validate the god-trader config `ask_cap 0.80` + `cb_move 12`** (was 0.92/8) on
+      the paper-shadow's REALIZED fills. It's the SIM robustness PEAK (14d grid): net
+      +15.9¢/sh, t_day 6.10 (highest), p10 +0.124, 14/14 days positive, ~27 fills/day —
+      both changes express one principle (fire only on the biggest, cheapest crossings;
+      expensive favorites win often but bleed on the flip). Confirm the gain materializes
+      live; if paper underperforms, decompose (revert cb_move 12 first, it's the newer
+      change). Don't chase tighter (0.70 / $16) — t falls, days-positive slips = overfit.
+- [ ] Do NOT apply `sniper_fok_slip` 0.05→0.02 (verified: loses net-positive fills,
+      avg_fill flat = no real chase cost to recover). The exit engine is protective —
+      never force hold-to-resolution.
 
-## After the first live fills
+## Optional / later (one change at a time)
 
-- [ ] Capture one real `get_order` JSON → verify the `_order_fully_filled` field
-      names (resting-exit path only, currently disabled).
-- [ ] Re-read `latency_stats.json` after a day of kill-RTT recording (07-05 fix)
-      and nudge `paper_latency_*` if the live distribution disagrees.
-- [ ] Revisit `paper_network_fail_rate` (0.03) at ~100 live POSTs
-      (0 network errors in the first 29 — consistent so far).
-
-## Later (one change at a time)
-
-- [ ] VPS move (`docs/DEPLOY_ORACLE_VPS.md`): pick the box by feed + order
-      latency SUM (Coinbase ~90ms from EU + order ~40ms Stockholm/Dublin) — it
-      fixes both legs at once. Never change infra and anything else in the same
-      move.
-- [ ] Post-goal: expand to ETH/SOL/XRP 5-min markets — only after the BTC kill
-      bar has held in production ≥ 7 days.
-
-Candidate edges ($20/10s move overlay; cbm 5 / cap 0.96 loosening) deploy only
-through their own forward kill bar — never off discovery data.
+- [ ] Wallet cleanup (21 resolved $0 losers lock nothing): set `POLYGON_RPC_URL`
+      + keep a little POL in the EOA, then `python scripts/redeem_positions.py
+      --confirm`; the nightly sweep then keeps future windows clean.
+- [ ] The ONLY speculative upside lever left is geographic latency
+      (`docs/DEPLOY_ORACLE_VPS.md`): pick the box by feed + order latency SUM
+      (~90ms EU feed + ~40ms Dublin/Stockholm order). It fires the sniper earlier,
+      before mean-reversion — the one thing that could lift the adverse-selection
+      leak. Never change infra and anything else in the same move.

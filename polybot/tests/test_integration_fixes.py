@@ -79,7 +79,6 @@ def test_bybit_completely_removed():
         "polybot/core/aux_layers.py",
         "polybot/agents/scheduler.py",
         "polybot/config/settings.yaml",
-        "polybot/config/param_registry.py",
     ):
         src = Path(path).read_text(encoding="utf-8")
         assert "bybit" not in src.lower(), f"{path} still references bybit"

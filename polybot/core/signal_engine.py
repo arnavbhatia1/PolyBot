@@ -13,7 +13,6 @@ from polybot.core.aux_layers import (
     autocorr_vol_scale, student_t_cdf,
     MIN_STUDENT_T_DF as _MIN_STUDENT_T_DF,
 )
-from polybot.config.param_registry import default_for as _d
 from polybot.execution.base import DEFAULT_FEE_RATE
 
 # Dynamic ATR floor: max(static, FRACTION × rolling_mean). When the rolling-20
@@ -49,29 +48,18 @@ class SignalEngine:
     sane fair-value anchor for the fee/spread/Kelly gates.
     """
 
-    def __init__(self, min_edge: float | None = None, kelly_fraction: float | None = None,
-                 min_model_probability: float | None = None,
-                 student_t_df: int | None = None,
-                 regime_lookback: int | None = None,
-                 min_kelly: float | None = None, atr_sigma_ratio: float | None = None,
-                 min_atr: float | None = None,
-                 loss_cut_fraction: float | None = None,
-                 loss_cut_time_s: float | None = None,
-                 deep_loss_hold_threshold: float | None = None,
-                 atr_regime_shift_threshold: float | None = None) -> None:
-        # Defaults resolve from param_registry — settings.yaml drives production via _build_signal_engine.
-        if min_edge is None: min_edge = _d("min_edge")
-        if kelly_fraction is None: kelly_fraction = _d("kelly_fraction")
-        if min_model_probability is None: min_model_probability = _d("min_model_probability")
-        if student_t_df is None: student_t_df = _d("student_t_df")
-        if regime_lookback is None: regime_lookback = _d("regime_lookback")
-        if min_kelly is None: min_kelly = _d("min_kelly")
-        if atr_sigma_ratio is None: atr_sigma_ratio = _d("atr_sigma_ratio")
-        if min_atr is None: min_atr = _d("min_atr")
-        if loss_cut_fraction is None: loss_cut_fraction = _d("loss_cut_fraction")
-        if loss_cut_time_s is None: loss_cut_time_s = _d("loss_cut_time_s")
-        if deep_loss_hold_threshold is None: deep_loss_hold_threshold = _d("deep_loss_hold_threshold")
-        if atr_regime_shift_threshold is None: atr_regime_shift_threshold = _d("atr_regime_shift_threshold")
+    def __init__(self, min_edge: float = 0.04, kelly_fraction: float = 0.08,
+                 min_model_probability: float = 0.56,
+                 student_t_df: int = 5,
+                 regime_lookback: int = 50,
+                 min_kelly: float = 0.01, atr_sigma_ratio: float = 1.3,
+                 min_atr: float = 12.0,
+                 loss_cut_fraction: float = 0.65,
+                 loss_cut_time_s: float = 90.0,
+                 deep_loss_hold_threshold: float = -0.10,
+                 atr_regime_shift_threshold: float = 0.60) -> None:
+        # These are the class's own fallback defaults for direct/test construction;
+        # production overrides every one from settings.yaml via _build_signal_engine.
         self.min_edge: float = min_edge
         self.kelly_fraction: float = kelly_fraction
         self.min_model_probability: float = min_model_probability

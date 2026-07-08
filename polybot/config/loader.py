@@ -50,9 +50,17 @@ def validate_config(config: dict[str, Any]) -> None:
         elif not strict and val < 0:
             errors.append(f"{dotted_key}: must be >= 0, got {val}")
 
-    from polybot.config.param_registry import VALIDATED_PARAMS
-    for _spec in VALIDATED_PARAMS:
-        _check_range(_spec.yaml_key, _spec.lo, _spec.hi, integer=(_spec.cast is int))
+    # Money-critical knobs: settings.yaml values must land inside these ranges at
+    # load (a typo like kelly_fraction: 8.0 for 0.08 is rejected, not deployed).
+    _check_range("signal.atr_sigma_ratio", 1.2, 2.5)
+    _check_range("signal.student_t_df", 3, 8, integer=True)
+    _check_range("signal.min_atr", 8.0, 25.0)
+    _check_range("signal.atr_regime_shift_threshold", 0.40, 0.80)
+    _check_range("math.kelly_fraction", 0.04, 0.18)
+    _check_range("signal.min_edge", 0.02, 0.10)
+    _check_range("signal.min_kelly", 0.005, 0.04)
+    _check_range("signal.min_model_probability", 0.52, 0.70)
+    _check_range("signal.exit_edge_threshold", -0.10, -0.03)
 
     _check_range("signal.max_edge", 0.15, 0.30)
 

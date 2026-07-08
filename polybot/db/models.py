@@ -75,20 +75,8 @@ class Database:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN pnl REAL DEFAULT 0")
         if "fees" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0")
-        if "maker_fill" not in th_cols:
-            # Phase 1 passive-exit observability: 1 = maker (resting) close, 0 = taker
-            # FOK/resolution. Pre-instrumentation rows default 0. Lets the live uplift
-            # be measured straight from the committed DB (GROUP BY maker_fill).
-            await self.conn.execute("ALTER TABLE trade_history ADD COLUMN maker_fill INTEGER DEFAULT 0")
         if "exit_reason" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN exit_reason TEXT NOT NULL DEFAULT 'resolution'")
-        if "maker_rebate" not in th_cols:
-            # Maker Rebates Program: expected 20%-of-crypto-taker-fee rebate booked on
-            # maker_fill closes (paper credits it to bankroll; live reconciles it against the
-            # actual daily pUSD payout). Pre-instrumentation rows default 0. Reconstructable
-            # from maker_fill rows, but stored explicitly so accounting is first-class.
-            await self.conn.execute("ALTER TABLE trade_history ADD COLUMN maker_rebate REAL DEFAULT 0")
-
         # Hot-path indexes — get_open_positions / has_position_for_market run every tick.
         await self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status)"
@@ -167,8 +155,7 @@ class Database:
 
     async def _close_position_and_history(
         self, position_id: int, exit_price: float,
-        pnl: float, fees: float, exit_reason: str, maker_fill: bool = False,
-        maker_rebate: float = 0.0,
+        pnl: float, fees: float, exit_reason: str,
     ) -> None:
         """Mark position closed and write the trade_history row.
 
@@ -187,17 +174,16 @@ class Database:
         await self.conn.execute(
             """INSERT INTO trade_history
             (side, entry_price, exit_price, size,
-             exit_timestamp, pnl, fees, exit_reason, maker_fill, maker_rebate)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             exit_timestamp, pnl, fees, exit_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (pos["side"], pos["entry_price"], exit_price, pos["size"],
-             now, pnl, fees, exit_reason, 1 if maker_fill else 0, maker_rebate),
+             now, pnl, fees, exit_reason),
         )
 
     async def close_position(
         self, position_id: int, exit_price: float,
         pnl: float = 0.0, fees: float = 0.0, exit_reason: str = "resolution",
         new_bankroll: float | None = None, bankroll_delta: float | None = None,
-        maker_fill: bool = False, maker_rebate: float = 0.0,
     ) -> None:
         """Close a position atomically. Pass at most one of new_bankroll / bankroll_delta.
 
@@ -213,7 +199,7 @@ class Database:
             raise ValueError("Pass at most one of new_bankroll / bankroll_delta")
         try:
             await self._close_position_and_history(
-                position_id, exit_price, pnl, fees, exit_reason, maker_fill, maker_rebate,
+                position_id, exit_price, pnl, fees, exit_reason,
             )
             if new_bankroll is not None:
                 await self.conn.execute(

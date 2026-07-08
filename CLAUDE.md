@@ -1,11 +1,16 @@
 # PolyBot
 
-5-min BTC Up/Down trader for Polymarket, **LIVE since 2026-07-04** on the
-**late-window sniper** (§2) — the one edge that survived testing; its
-pre-registered kill bar passed on 10 clean days at both slip limits. The **base
-strategy** (§3) has no proven edge and is barred from real money —
-`sniper_only: true` suppresses it live (recorded as ghosts). `tasks/todo.md` =
-open work only.
+5-min BTC Up/Down trader for Polymarket. The **late-window sniper** (§2) is the
+bot's **only strategy** — base entries are always suppressed (no toggle).
+It passed its SIM kill bar and went live 2026-07-04, but the post-live read
+failed its bar: the +10¢/sh SIM figure is a full-population REPLAY ceiling no
+real bot can reach — a real bot catches only ~1-2 latency-adverse windows/day,
+so honest live is ~break-even with a fat left tail. Now **re-validating in
+paper** (`mode: paper`, `sniper_enabled: true`); the **binding deployment gate is
+the paper-shadow's REALIZED fills, not the harness** (§2). The **base strategy**
+(§3) has no proven edge, never touches real capital, and survives only as the
+zero-capital ghost/counterfactual evidence stream the gate needs. `tasks/todo.md`
+= open work only.
 
 **This file is the single source of truth — update it in the same commit as any
 behavioral change.**
@@ -26,9 +31,9 @@ python -m pytest polybot/tests/           # full suite
 .\scripts\run_polybot.ps1                 # daily cycle: trade -> nightly jobs -> commit -> restart
 ```
 
-**The live recipe** (current state): `settings.yaml` → `mode: live` +
-`late_window.sniper_only: true`. That is the complete switch; paper and live
-share every decision path.
+**The live recipe**: `settings.yaml` → `mode: live` + `late_window.sniper_enabled:
+true`. That is the complete switch; paper and live share every decision path, and
+the sniper is the only strategy either can run.
 
 ### Secrets
 
@@ -68,17 +73,25 @@ In the final `sniper_late_start_s` (45s) of a window, a sharp Coinbase move
 reprices.
 
 - **Fire condition** (`SignalEngine.evaluate_late_sniper`): Coinbase move over
-  `sniper_move_window_s` (2s) ≥ `sniper_cb_move` ($8) pushed price past strike
-  AND the chosen side's ask ≤ `sniper_ask_cap` (0.92). The main loop wakes on
-  Coinbase ticks when enabled.
+  `sniper_move_window_s` (2s) ≥ `sniper_cb_move` ($12) pushed price past strike
+  AND the chosen side's ask ≤ `sniper_ask_cap` (0.80 — LOWER is better: the sim
+  is monotonic, dropping the cap 0.92→0.75 lifts net +10.3→+14.8¢/sh, p10
+  +.077→+.115, days-positive 13/14→14/14, because expensive favorites win often
+  but bleed on the rare flip. Chasing win rate is counterproductive. 0.80
+  balances edge vs fill count; paper-shadow validates [0.75,0.85]). The main
+  loop wakes on Coinbase ticks when enabled.
 - **Fill**: the sniper FOK limit chases the stale ask by up to `sniper_fok_slip`
   (0.05 — the kill bar's lenient leg: +9.3¢/sh net, 78% win), capped at
   `model_prob − min_edge` so a true reprice can never fill below the edge
   floor. Base entries keep the tight at-ask limit (a reject on adverse movement
   is a feature there). All gates run at the decision ask (harness-faithful);
-  the pre-submit VWAP re-check still vetoes books that lost the edge. Booked
-  entry prices are audited against the exchange's fill (data-api avgPrice) a
-  few seconds later — the WS-tape VWAP can fall back to the limit price.
+  the pre-submit VWAP re-check still vetoes books that lost the edge. The booked
+  entry is the CLOB's TRUE fill VWAP — resolved WS-tape → balance-delta →
+  `associate_trades` REST, whose retry budget now covers the ~100-300ms indexer
+  lag so it no longer falls back to the padded FOK limit. (That fallback biased
+  the recorded entry worse than the real fill, and the 8s data-api audit can't
+  correct a <45s sniper position before it resolves — so the ledger, and the
+  post-live kill read off it, ran pessimistic.)
 - **What it bypasses**: `max_edge` (→ `sniper_max_edge` 0.50, at both the
   edge-cap and pre-submit gates), the late-window time penalty, and the base
   signal-level gates `min_model_probability`, `min_kelly`, and the ATR
@@ -87,18 +100,24 @@ reprices.
   backstops tiny-Kelly fires). Every execution-quality gate stays — adverse
   selection, edge-decay, depth, net-edge, min-size, pre-submit VWAP re-check,
   feed freshness, flip hurdle.
-- **Kill bar** (deployment authority, at the host's measured RTT):
-  `analyze_late_window.py` momentum `t_day ≥ 2.0` AND block-bootstrap `p10 > 0`
-  over ≥ 8 clean ET days, ≥ 6 positive, ≥ 40 fills, net of fee (the PASS print
-  enforces all of these; the control-~0 leg is read by eye from its row) —
-  PLUS the paper-shadow tracking the harness (`sniper_shadow_status.py`).
-  Passed 2026-07-04; the nightly health job (§7) re-reads it in production.
-- **Sniper-only mode** (`late_window.sniper_only`) — the go-live switch:
-  base-entry BUYs are suppressed and recorded as `sniper_only` ghosts (free
-  evidence), capital deploys only on sniper fires. ON in the paper shadow too,
-  so the shadow trades the same fire population live would (with it off, the
-  base path consumed the high-conviction sniper moments first). Live recipe:
-  `mode: live` + `sniper_enabled: true` + `sniper_only: true`.
+- **Kill bar — two gates; the harness is only the first.** (1) The
+  `analyze_late_window.py` momentum read (`t_day ≥ 2.0` AND block-bootstrap
+  `p10 > 0` over ≥ 8 clean ET days, ≥ 6 positive, ≥ 40 fills, net of fee,
+  control ~0 by eye) is a full-population REPLAY CEILING — it fires on all
+  ~58 windows/day and is BLIND to the latency-driven adverse selection that
+  leaked ~16¢ live, so it is NECESSARY BUT NOT SUFFICIENT (the go-live that
+  failed trusted it alone). (2) The BINDING gate is the **paper-shadow's
+  realized fills** (`sniper_shadow_status.py` / `live_health_read`): ≥ 8 clean
+  ET days, equal-weight net ≥ +2¢/sh, `t_day ≥ 2`, `p10 > 0`, AND a
+  shadow-vs-harness gap < 3¢. Never deploy real capital on the harness print
+  alone. The nightly health job (§7) re-reads both in production.
+- **The sniper is the ONLY strategy** — not a toggle. Base-entry BUYs are
+  ALWAYS suppressed (unconditional in `main.py`; recorded as `sniper_only`
+  ghosts — free zero-capital evidence for the gate). There is no `sniper_only`
+  lever any more; capital only ever deploys on sniper fires, in paper and live
+  alike. `sniper_enabled` (default `false`) is the separate kill-bar SAFETY —
+  the emergency brake, not a strategy choice. Recipe: `mode: live` +
+  `sniper_enabled: true`.
 - **Post-live kill rule**: re-run the harness every 2-3 days; trailing-4-day
   lenient mean < +2¢/sh or trailing-8-day t < 2 → set `sniper_enabled: false`.
 
@@ -226,10 +245,9 @@ unset). Redemption cannot lose money (it only burns your tokens and pays you; a
 bad tx just reverts). The startup wallet-check reports this honestly — never
 "worthless leftovers ignored".
 
-**Passive exits** (`passive_exit_enabled`): OFF — measured −2.1¢/sh ≈ −$62/day
-(t_day −2.03) over 8 clean days. The code path (paper tape-sim, live GTD rest +
-FOK fallback, maker-rebate accounting kept OUT of pnl) remains implemented and
-tested but stays off; never a reason to rest new quotes.
+Exits are always taker FOK — no passive/maker/resting path exists (it was
+measured −2.1¢/sh ≈ −$62/day over 8 clean days and moot under the <45s sniper, so
+it was removed). Never re-add resting quotes.
 
 ## 7. Recorders + evidence stream
 
@@ -285,7 +303,7 @@ tested but stays off; never a reason to rest new quotes.
 ```
 polybot/
   main.py                Trading loop; entry/exit/sizing orchestration; sniper hook
-  config/                settings.yaml, loader.py, param_registry.py (defaults + ranges)
+  config/                settings.yaml (THE single config source), loader.py (loads + range-validates it)
   core/                  signal_engine (L1 + exit engine + sniper), exit_boundary,
                          returns, adverse_selection, order_flow, aux_layers
   feeds/                 coinbase_feed (primary BTC + CVD), binance_feed (candles/ATR),

@@ -93,13 +93,14 @@ def test_does_not_apply_min_model_probability():
     assert sig.edge > 0.02
 
 
-def test_sniper_flags_default_off():
-    # sniper_enabled gates the paper shadow; sniper_only is the live-deploy
-    # suppressor of base entries. Both must default OFF — a registry edit that
-    # flips either silently changes what trades.
-    from polybot.config.param_registry import default_for
-    assert default_for("sniper_enabled") is False
-    assert default_for("sniper_only") is False
+def test_sniper_enabled_wired_from_settings():
+    # The sniper is the bot's only strategy; sniper_enabled is the kill-bar SAFETY
+    # (emergency brake), read straight from settings.yaml — the single config source
+    # (there is no param_registry default any more). This also smoke-tests that the
+    # loader validates and surfaces the live config end-to-end.
+    from polybot.config.loader import load_config
+    cfg = load_config()
+    assert isinstance(cfg["late_window"]["sniper_enabled"], bool)
 
 
 # ───────────────────────────── cb_move accessor ──────────────────────────────

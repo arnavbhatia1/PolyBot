@@ -11,12 +11,6 @@ from polybot.execution.base import BaseTrader, FillResult, DEFAULT_FEE_RATE, exi
 
 class PaperTrader(BaseTrader):
 
-    # Passive exits: paper honors a maker fill faithfully (validated against the
-    # real CLOB tape by the conservative prints-through rule in main, never
-    # simulated optimistically). Live mirrors it with a real GTD resting SELL.
-    # The feature is OFF (execution.passive_exit_enabled — measured negative).
-    supports_passive_exit = True
-
     def __init__(self, db: Any, **kwargs: Any) -> None:
         super().__init__(
             db=db,
@@ -249,12 +243,6 @@ class PaperTrader(BaseTrader):
         if residual_shares <= 0 or fill_price <= 0:
             return 0.0
         return residual_shares * fill_price - exit_fee_usdc(residual_shares, fill_price, fee_rate)
-
-    def _maker_rebate_credit(self, rebate_usd: float) -> float:
-        """Simulate Polymarket's daily maker-rebate pUSD credit: paper bankroll is
-        delta-only, so credit the rebate here (live gets the real credit via the
-        absolute balance sync, so its base-class override returns 0)."""
-        return rebate_usd
 
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
         shares = position.get("shares_held") or position["size"] / position["entry_price"]

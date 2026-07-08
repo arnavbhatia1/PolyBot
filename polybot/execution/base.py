@@ -36,8 +36,6 @@ class TradeResult:
     shares: float = 0.0
     fill_price: float = 0.0
     pending: bool = False  # resolution not final yet (e.g. on-chain redeem in flight) — retry next tick
-    maker_fill: bool = False  # close filled as a resting maker (zero taker fee) vs a taker FOK
-    maker_rebate_usd: float = 0.0  # expected daily-pUSD maker rebate on a maker_fill close (0 for taker)
 
 @dataclass
 class FillResult:
@@ -59,16 +57,6 @@ DEFAULT_FEE_RATE = 0.07
 # Flat per-share effective-fee proxy (= feeRate x 0.25, the p=0.50 peak). Use ONLY where the fee
 # is a flat additive cost term (spread/exec-cost gates), never inside the p(1-p) formula.
 EFFECTIVE_FEE_PEAK = round(DEFAULT_FEE_RATE * 0.25, 5)  # 0.0175
-
-# Polymarket Maker Rebates Program: makers earn a daily pUSD rebate funded by taker fees —
-# 20% of collected taker fees on Crypto markets (docs.polymarket.com/market-makers/maker-rebates).
-# Automatic on any resting order that gets filled; no scoring/two-sided/dwell requirement (that is
-# the SEPARATE liquidity-rewards program, which excludes short-horizon crypto). This coefficient is
-# the sole-maker CEILING — Polymarket pays it pro-rata by your share of the market's maker
-# fee-equivalent, so the realized live credit is a fraction of it. Not an edge: it is dwarfed by
-# the adverse-selection cost on the same fills; it only trims the cost of maker exits.
-DEFAULT_MAKER_REBATE_RATE = 0.20
-
 
 def slippage_pct(order_size_usd: float, book_depth_usd: float,
                  impact_factor: float = 0.03) -> float:
@@ -99,15 +87,6 @@ def entry_fee_shares(shares_ordered: float, price: float, fee_rate: float = DEFA
 def exit_fee_usdc(shares: float, price: float, fee_rate: float = DEFAULT_FEE_RATE) -> float:
     """On sells, Polymarket collects fee in USDC. Returns USDC deducted."""
     return taker_fee(shares, price, fee_rate)
-
-
-def maker_rebate(shares: float, price: float,
-                 rebate_rate: float = DEFAULT_MAKER_REBATE_RATE,
-                 fee_rate: float = DEFAULT_FEE_RATE) -> float:
-    """Expected maker rebate on a resting fill = rebate_rate × the taker fee the lifting
-    counterparty pays (taker_fee = feeRate × shares × p × (1-p)). Zero at price extremes,
-    max at p=0.50. Sole-maker ceiling — pro-rata diluted live (see DEFAULT_MAKER_REBATE_RATE)."""
-    return round(rebate_rate * taker_fee(shares, price, fee_rate), 6)
 
 
 def compute_buy_vwap(book: dict[str, Any] | None, size_usd: float) -> float | None:
@@ -216,14 +195,6 @@ class BaseTrader(ABC):
         delta-only and would otherwise leak ~2% of exit notional per scalp."""
         return 0.0
 
-    def _maker_rebate_credit(self, rebate_usd: float) -> float:
-        """USDC to credit the bankroll for the maker rebate on a passive-exit fill.
-        Live returns 0 — Polymarket pays the 20% crypto maker rebate as a SEPARATE daily
-        pUSD credit that surfaces in the next absolute balance sync, so crediting it
-        per-fill would double-count. Paper overrides to credit the simulated rebate, since
-        paper bankroll is delta-only and would otherwise never reflect what live earns."""
-        return 0.0
-
     @abstractmethod
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float | None:
         """New bankroll after resolution (does NOT route through _execute_sell/
@@ -323,11 +294,7 @@ class BaseTrader(ABC):
         token_id: str = "",
         position: dict[str, Any] | None = None,
         exit_reason: str = "scalp",
-        maker_fill: bool = False,
     ) -> TradeResult:
-        """``maker_fill=True`` (Phase 1 passive exit): the resting SELL was
-        already lifted at ``exit_price`` (a tape print strictly through the
-        level), so there is no taker leg to execute and no taker fee."""
         # --- Lookup position ---
         if position is None:
             positions = await self.db.get_open_positions()
@@ -345,51 +312,30 @@ class BaseTrader(ABC):
         sellable_shares = await self._sellable_shares(token_id, fallback_shares)
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
 
-        if maker_fill:
-            # No taker leg: the resting SELL already lifted at the level, exit fee
-            # is zero. Size off the position's shares (fallback), NOT a fresh
-            # _sellable_shares read — live's on-chain balance is ~0 right after the
-            # maker fill executed, which would zero the recorded close. For paper
-            # _sellable_shares == fallback_shares, so this is a no-op there.
-            sell_fee_headroom = 0.005
-            shares = fallback_shares * (1.0 - sell_fee_headroom)
-            fill_price = exit_price
-            exit_fee_rate = 0.0
-        else:
-            # Share buffer so Polymarket's per-share fee deduction (fee_rate × shares
-            # × p × (1-p), peak fee_rate × 0.25) doesn't push the FOK above available
-            # balance; the 0.005 floor also covers 1-tick mismatches at zero fee_rate.
-            sell_fee_headroom = max(fee_rate * 0.25, 0.0) + 0.002
-            sell_fee_headroom = max(sell_fee_headroom, 0.005)
-            shares = sellable_shares * (1.0 - sell_fee_headroom)
+        # Share buffer so Polymarket's per-share fee deduction (fee_rate × shares
+        # × p × (1-p), peak fee_rate × 0.25) doesn't push the FOK above available
+        # balance; the 0.005 floor also covers 1-tick mismatches at zero fee_rate.
+        sell_fee_headroom = max(fee_rate * 0.25, 0.0) + 0.002
+        sell_fee_headroom = max(sell_fee_headroom, 0.005)
+        shares = sellable_shares * (1.0 - sell_fee_headroom)
 
-            # --- Execute sell ---
-            fill = await self._execute_sell(token_id, shares, exit_price, fee_rate=fee_rate)
-            if not fill.filled:
-                return TradeResult(success=False, reason=fill.reason or "Sell not filled")
-            fill_price = fill.fill_price
-            exit_fee_rate = fee_rate
+        # --- Execute sell ---
+        fill = await self._execute_sell(token_id, shares, exit_price, fee_rate=fee_rate)
+        if not fill.filled:
+            return TradeResult(success=False, reason=fill.reason or "Sell not filled")
+        fill_price = fill.fill_price
 
         # --- Fee math and revenue ---
         lr = log_return(position["entry_price"], fill_price)
-        fee_usdc = exit_fee_usdc(shares, fill_price, exit_fee_rate)
+        fee_usdc = exit_fee_usdc(shares, fill_price, fee_rate)
         revenue = shares * fill_price - fee_usdc
         # Entry fee = the at-open share haircut; derive it from the entry-held shares
-        # (fallback_shares), not the headroom-reduced sell qty, so held-back maker
+        # (fallback_shares), not the headroom-reduced sell qty, so held-back
         # headroom (credited back via _scalp_residual_credit) isn't booked as fee.
         # Mirrors resolve_position.
         entry_fee_usd = _entry_fee_usd_from_position(position, fallback_shares)
         pnl = revenue - position["size"]
         gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
-
-        # Maker rebate: the taker who lifted our resting SELL paid taker_fee at the FULL
-        # fee_rate even though our exit fee is 0, so a maker close earns rebate_rate × that
-        # fee back (Polymarket pays makers 20% of crypto taker fees, daily in pUSD). Booked
-        # like the residual credit (paper simulates the daily credit; live returns 0 — the
-        # real pUSD credit lands in the next absolute balance sync, so per-fill crediting
-        # would double-count). Kept OUT of pnl so paper/live records stay comparable and the
-        # counterfactual/go-live-gate pnl is untouched.
-        rebate_usd = maker_rebate(shares, fill_price, fee_rate=fee_rate) if maker_fill else 0.0
 
         # --- Persist to DB (atomic: close + bankroll credit in one transaction) ---
         # Headroom shares held back from the FOK are credited via
@@ -398,20 +344,17 @@ class BaseTrader(ABC):
         # pnl: live's recorded pnl excludes the swept residual too, so paper/live
         # trade records stay comparable.
         residual_credit = self._scalp_residual_credit(
-            sellable_shares - shares, fill_price, exit_fee_rate)
-        rebate_credit = self._maker_rebate_credit(rebate_usd)
+            sellable_shares - shares, fill_price, fee_rate)
         total_fees = entry_fee_usd + fee_usdc
         await self.db.close_position(
             position_id, exit_price=fill_price,
-            bankroll_delta=revenue + residual_credit + rebate_credit, pnl=pnl,
-            fees=total_fees, exit_reason=exit_reason, maker_fill=maker_fill,
-            maker_rebate=rebate_usd,
+            bankroll_delta=revenue + residual_credit, pnl=pnl,
+            fees=total_fees, exit_reason=exit_reason,
         )
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
                            pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=fee_usdc,
-                           gain_pct=gain_pct, shares=shares, fill_price=fill_price,
-                           maker_fill=maker_fill, maker_rebate_usd=rebate_usd)
+                           gain_pct=gain_pct, shares=shares, fill_price=fill_price)
 
     # -- resolve_position ------------------------------------------------
 

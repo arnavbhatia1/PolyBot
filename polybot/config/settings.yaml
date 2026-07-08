@@ -18,15 +18,6 @@ execution:
   max_book_fill_pct: 0.5      # Never fill more than 50% of the visible book depth (avoids moving market)
   initial_bankroll: 100.0     # Starting bankroll for paper mode
 
-  # Passive exits (two-stage: rest SELL at mid for passive_exit_timeout_s, take the
-  # maker fill if a BUY prints through, else FOK fallback). OFF — measured honestly
-  # on 8 clean days (06-24..07-01, rest-vs-immediate-FOK incl. miss cost + markout):
-  # −2.1c/sh, −$62/day, t_day −2.03, 6/8 days negative. Maker fills at mid are
-  # markout-fair: no harvestable rent, the half-spread comes back as adverse selection
-  # on the misses. ~Moot under sniper-only (rests need >15s left; sniper enters <45s).
-  passive_exit_enabled: false
-  passive_exit_timeout_s: 10.0
-
   # Paper mode realism (ignore for live). Calibrated to the operator's MEASURED warm POST
   # RTT to the Polymarket CLOB through the IRELAND VPN: TTFB ~0.118s / 0.138s warm, ~0.352s
   # cold, 3/3 reads OK (Cloudflare is NOT blocking the Ireland IP — good). This is the live
@@ -102,16 +93,21 @@ entry_timing:
 #  over >=8 clean ET days at your host's measured RTT. DO NOT enable on faith.
 # =============================================================================
 late_window:
-  sniper_enabled: true         # THE live edge (kill bar passed 2026-07-04). false = stop sniping
-                               # (the post-live kill rule's off switch — see the nightly health report).
-  sniper_only: true            # base-entry BUYs are suppressed (recorded as "sniper_only" ghosts, so
-                               # the base strategy keeps accruing evidence at zero cost); capital
-                               # deploys ONLY on sniper fires. Part of the live recipe — never deploy
-                               # the base strategy live (no edge, gate failed final 2026-07-01).
+  sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
+                               # false = stop sniping when the post-live kill rule trips. The sniper
+                               # is the bot's ONLY strategy — base entries are always suppressed.
   sniper_late_start_s: 45.0     # only fire in the final N seconds of the window
   sniper_move_window_s: 2.0     # Coinbase move lookback (s)
-  sniper_cb_move: 8.0           # $ Coinbase move over the lookback to fire (matches the harness default)
-  sniper_ask_cap: 0.92          # only buy if the chosen side's ask is still <= this (book not yet repriced)
+  sniper_cb_move: 12.0          # $ Coinbase move over the 2s lookback to fire. With ask_cap 0.80 this is the
+                                # robustness PEAK of the sim grid: net +15.9¢/sh, t_day 6.10 (the highest),
+                                # p10 +0.124, 14/14 days positive (~27 fills/day). Bigger moves = more genuine
+                                # mispricing, less revert. $16 makes more per bet but t drops + loses a day
+                                # (thinning into noise). Validate on the paper-shadow's realized fills.
+  sniper_ask_cap: 0.80          # only buy if the chosen side's ask is <= this. LOWER is better, not higher:
+                                # the sim (14d) is monotonic — 0.92→0.85→0.75 lifts net +10.3→+12.3→+14.8¢/sh,
+                                # p10 +.077→+.115, days-positive 13/14→14/14, because expensive favorites
+                                # win often but bleed on the rare flip. 0.80 balances edge vs fill count
+                                # (~570 fills/14d); the paper-shadow validates the exact value in [0.75,0.85].
   sniper_min_edge: 0.04         # stale-cheap floor; set = signal.min_edge so the downstream net-edge /
                                 # pre-submit gates don't silently raise it (one consistent live floor).
                                 # NOTE: the offline harness momentum signal has NO edge floor, so live

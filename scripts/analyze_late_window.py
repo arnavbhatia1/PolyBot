@@ -429,6 +429,18 @@ def main():
           "holding FORWARD. The RTT at which momentum first clears the bar = the latency "
           "you must hit.")
 
+    print("\n*** CEILING, NOT AUTHORITY ***  This harness is a FULL-POPULATION REPLAY: it "
+          "fires on EVERY qualifying window (~58/day), fills instantly at the trigger tick, "
+          "and resolves perfectly. No real bot can do that — latency caps a live/paper bot at "
+          "~1-2 fires/day, and those caught windows are ADVERSELY selected (the bot is slow "
+          "enough to catch moves already reverting), so within-bucket win% collapses vs this "
+          "replay. The 2026-07 live read proved it: harness ~+10c/sh, live ~-3 to -6c/sh — a "
+          "~16c gap that is real latency-driven selection, NOT a bug. So this PASS is NECESSARY "
+          "BUT NOT SUFFICIENT. The BINDING deployment gate is the PAPER-SHADOW REALIZED FILLS "
+          "(sniper_shadow_status.py / live_health_read): >=8 clean ET days, equal-weight net "
+          ">=+2c/sh, t_day>=2, p10>0, AND shadow-vs-harness gap <3c. Never go live on this print "
+          "alone.")
+
 
 if __name__ == "__main__":
     import sys

@@ -26,7 +26,6 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 from polybot.config.loader import load_config, get_secret
-from polybot.config.param_registry import default_for as _d
 from polybot.paths import (
     PREV_MARGIN_PATH, DAY_OPEN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
     GATE_STATS_CURRENT_PATH, PRICE_SUM_OUTLIERS_PATH, fold_gate_day,
@@ -239,33 +238,8 @@ def _log_price_sum_outlier(market_id: str, price_up: float, price_down: float,
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 _resolve_oracle_logged: set[str] = set()  # market_id — RESOLVE oracle line printed once
-_SNIPER_ONLY_QUIET = False  # set at boot: sniper_only demotes base-model SKIP lines to DEBUG
+_SNIPER_ONLY_QUIET = True  # base entries are always suppressed (sniper-only), so their per-gate SKIP lines are noise -> DEBUG
 _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, hold to resolution
-
-# Phase 1 passive exits: position_id -> resting SELL state. In-memory by design —
-# a restart simply re-evaluates the position and falls back to FOK.
-_resting_exits: dict[int, dict[str, Any]] = {}
-
-
-def _resting_fill_price(prints: list[dict[str, Any]], level: float, posted_ts: float) -> float | None:
-    """Conservative passive-fill rule (same as the shadow sim): a resting SELL at
-    ``level`` fills only when a BUY-side print lands STRICTLY above it after
-    posting — queue position is unknowable, so at-level prints don't count."""
-    for t in prints:
-        if float(t.get("timestamp", 0) or 0) <= posted_ts:
-            continue
-        if (str(t.get("side", "")).upper() == "BUY"
-                and float(t.get("price", 0) or 0) > level):
-            return level
-    return None
-
-
-def _resting_level(market_mid: float, ws_bid: float, ws_ask: float) -> float:
-    """Resting SELL price for the passive exit: post at mid, capped at the ask
-    (never above the touch) and floored at bid + 1 tick (never give up the whole
-    spread). Snapped to the cent grid."""
-    level = min(round(market_mid + 1e-9, 2), round(ws_ask, 2))
-    return max(level, round(ws_bid + 0.01, 2))
 
 # Window-path recorder (recording.WindowPathRecorder) — set by main() at boot.
 _window_recorder = None
@@ -379,8 +353,6 @@ def _fee_breakdown(result: Any) -> str:
     misread as a single charge. Flags the zero-fee maker leg explicitly."""
     entry, exit_ = result.entry_fee_usd, result.exit_fee_usd
     total = entry + exit_
-    if getattr(result, "maker_fill", False):
-        return f"${total:.2f}  (entry ${entry:.2f} + exit ${exit_:.2f}, maker — no taker fee)"
     return f"${total:.2f}  (entry ${entry:.2f} + exit ${exit_:.2f})"
 
 
@@ -563,18 +535,18 @@ _CF_CHECK_INTERVAL = 30.0  # seconds
 def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
     """Construct SignalEngine from config — shared between pipeline and main."""
     return SignalEngine(
-        min_edge=signal_cfg.get("min_edge", _d("min_edge")),
-        kelly_fraction=config["math"].get("kelly_fraction", _d("kelly_fraction")),
-        min_model_probability=signal_cfg.get("min_model_probability", _d("min_model_probability")),
-        student_t_df=signal_cfg.get("student_t_df", _d("student_t_df")),
-        regime_lookback=signal_cfg.get("regime_lookback", _d("regime_lookback")),
-        min_kelly=signal_cfg.get("min_kelly", _d("min_kelly")),
-        atr_sigma_ratio=signal_cfg.get("atr_sigma_ratio", _d("atr_sigma_ratio")),
-        min_atr=signal_cfg.get("min_atr", _d("min_atr")),
-        loss_cut_fraction=signal_cfg.get("loss_cut_fraction", _d("loss_cut_fraction")),
-        loss_cut_time_s=signal_cfg.get("loss_cut_time_s", _d("loss_cut_time_s")),
-        deep_loss_hold_threshold=signal_cfg.get("deep_loss_hold_threshold", _d("deep_loss_hold_threshold")),
-        atr_regime_shift_threshold=signal_cfg.get("atr_regime_shift_threshold", _d("atr_regime_shift_threshold")),
+        min_edge=signal_cfg["min_edge"],
+        kelly_fraction=config["math"]["kelly_fraction"],
+        min_model_probability=signal_cfg["min_model_probability"],
+        student_t_df=signal_cfg["student_t_df"],
+        regime_lookback=signal_cfg["regime_lookback"],
+        min_kelly=signal_cfg["min_kelly"],
+        atr_sigma_ratio=signal_cfg["atr_sigma_ratio"],
+        min_atr=signal_cfg["min_atr"],
+        loss_cut_fraction=signal_cfg["loss_cut_fraction"],
+        loss_cut_time_s=signal_cfg["loss_cut_time_s"],
+        deep_loss_hold_threshold=signal_cfg["deep_loss_hold_threshold"],
+        atr_regime_shift_threshold=signal_cfg["atr_regime_shift_threshold"],
     )
 
 
@@ -893,32 +865,27 @@ async def _evaluate_signal_and_enter(
     is_sniper = False
     lw_cfg = config.get("late_window", {})
 
-    # Sniper-only mode (the live configuration): the base entry strategy has no
-    # proven edge, so its BUYs never deploy capital — each one is recorded as a
-    # ghost (gate "sniper_only") and resolves at window close, keeping the base
-    # strategy's evidence stream alive at zero cost. Only sniper fires trade.
-    if lw_cfg.get("sniper_only", _d("sniper_only")) and signal.action in ("BUY_YES", "BUY_NO"):
-        _sup_timing = config.get("entry_timing", {})
-        _, phase = compute_time_multiplier(
-            prob=signal.prob, seconds_remaining=contract["seconds_remaining"],
-            normal_fraction=_sup_timing.get("normal_fraction", _d("normal_fraction")),
-            late_max_penalty=_sup_timing.get("late_max_penalty", _d("late_max_penalty")))
+    # The sniper is the bot's SOLE capital-deploying strategy. The base L1 signal
+    # is still evaluated, but its BUYs never trade — each is recorded as a ghost
+    # (gate "sniper_only") that resolves at window close, keeping the base
+    # strategy's zero-cost evidence stream alive for the deployment gate.
+    if signal.action in ("BUY_YES", "BUY_NO"):
         _ghost("sniper_only", signal, {})
         signal = TradeSignal("SKIP", signal.prob, signal.edge, 0,
-                             "sniper_only: base entry suppressed (ghosted)",
+                             "base entry suppressed — sniper is the only strategy (ghosted)",
                              side=signal.side)
 
-    if (lw_cfg.get("sniper_enabled", _d("sniper_enabled"))
+    if (lw_cfg["sniper_enabled"]
             and signal.action not in ("BUY_YES", "BUY_NO")
             and coinbase_feed is not None
-            and contract["seconds_remaining"] <= lw_cfg.get("sniper_late_start_s", _d("sniper_late_start_s"))):
-        _cbm = coinbase_feed.cb_move(lw_cfg.get("sniper_move_window_s", _d("sniper_move_window_s")))
+            and contract["seconds_remaining"] <= lw_cfg["sniper_late_start_s"]):
+        _cbm = coinbase_feed.cb_move(lw_cfg["sniper_move_window_s"])
         _snipe = signal_engine.evaluate_late_sniper(
             indicators, btc_price, strike, contract["seconds_remaining"],
             price_up, price_down, _cbm,
-            lw_cfg.get("sniper_cb_move", _d("sniper_cb_move")),
-            lw_cfg.get("sniper_ask_cap", _d("sniper_ask_cap")),
-            lw_cfg.get("sniper_min_edge", _d("sniper_min_edge")),
+            lw_cfg["sniper_cb_move"],
+            lw_cfg["sniper_ask_cap"],
+            lw_cfg["sniper_min_edge"],
             fee_rate=fee_rate, closes=closes)
         if _snipe.action in ("LATE_SNIPE_YES", "LATE_SNIPE_NO"):
             _snipe.action = "BUY_YES" if _snipe.action == "LATE_SNIPE_YES" else "BUY_NO"
@@ -932,8 +899,8 @@ async def _evaluate_signal_and_enter(
     time_mult, phase = compute_time_multiplier(
         prob=signal.prob,
         seconds_remaining=contract["seconds_remaining"],
-        normal_fraction=timing_cfg.get("normal_fraction", _d("normal_fraction")),
-        late_max_penalty=timing_cfg.get("late_max_penalty", _d("late_max_penalty")),
+        normal_fraction=timing_cfg["normal_fraction"],
+        late_max_penalty=timing_cfg["late_max_penalty"],
     )
     if is_sniper:                       # the sniper bypasses the late-window time penalty
         time_mult, phase = 1.0, "late_sniper"
@@ -1017,7 +984,7 @@ async def _evaluate_signal_and_enter(
     if _adverse_monitor is not None:
         adverse_rate_at_30s = _adverse_monitor.get_adverse_rate(30.0)
         sig_cfg = config.get("signal", {})
-        hard_skip_at = float(sig_cfg.get("adverse_selection_threshold", _d("adverse_selection_threshold")))
+        hard_skip_at = float(sig_cfg["adverse_selection_threshold"])
         penalty_floor = float(sig_cfg.get("adverse_penalty_floor", 0.45))
         penalty_slope = float(sig_cfg.get("adverse_penalty_slope", 1.5))
         penalty_min = float(sig_cfg.get("adverse_penalty_min", 0.30))
@@ -1060,7 +1027,7 @@ async def _evaluate_signal_and_enter(
     # in its own wider sanity cap (sniper_max_edge) instead of the 0.20 entry cap.
     max_edge = config.get("signal", {}).get("max_edge", 0.20)
     if is_sniper:
-        max_edge = lw_cfg.get("sniper_max_edge", _d("sniper_max_edge"))
+        max_edge = lw_cfg["sniper_max_edge"]
     if signal.edge > max_edge:
         _record_skip("edge_cap")
         _ghost("edge_cap", signal, {})
@@ -1073,7 +1040,7 @@ async def _evaluate_signal_and_enter(
     flip_count = flip_state["flip_count"]
     if flip_count >= 1:
         # Flips 1–2 pay the base premium; +0.5pp per flip beyond the 2nd, unbounded.
-        flip_premium_base = config.get("entry_timing", {}).get("flip_edge_premium", _d("flip_edge_premium"))
+        flip_premium_base = config.get("entry_timing", {})["flip_edge_premium"]
         flip_premium = flip_premium_base + 0.005 * max(0, flip_count - 2)
         spread_est = -1.0
         if clob_ws:
@@ -1175,7 +1142,7 @@ async def _evaluate_signal_and_enter(
         # kill whenever the book repriced in flight. Gates all ran at the
         # decision ask (harness-faithful); the pre-submit VWAP re-check still
         # vetoes fires whose visible book has lost the edge.
-        _fok_slip = lw_cfg.get("sniper_fok_slip", _d("sniper_fok_slip"))
+        _fok_slip = lw_cfg["sniper_fok_slip"]
         # Never chase above model_prob − min_edge: a fill there would carry less
         # than the pre-registered edge floor (e.g. a 0.93 limit on a 94% model).
         # The FOK fills at book prices, so the cap binds only when the book has
@@ -1251,7 +1218,7 @@ async def _evaluate_signal_and_enter(
     # path the BBA gate would have passed.
     max_edge_live = config.get("signal", {}).get("max_edge", 0.20)
     if is_sniper:                       # mirror the EDGE CAP gate — the sniper's high edge is the point
-        max_edge_live = lw_cfg.get("sniper_max_edge", _d("sniper_max_edge"))
+        max_edge_live = lw_cfg["sniper_max_edge"]
     book_for_walk = clob_ws.get_book(token_id) if clob_ws else None
     if book_for_walk:
         _book_ts = float(book_for_walk.get("ts", 0) or 0)
@@ -1764,17 +1731,6 @@ async def _evaluate_and_exit_position(
     mid = pos["market_id"]
 
     if action == "HOLD":
-        if pos["id"] in _resting_exits:
-            _st_flip = _resting_exits.pop(pos["id"], None)
-            if _st_flip and _st_flip.get("live") and hasattr(trader, "cancel_resting"):
-                # Cancel the live GTD order. A rare cancel/fill race here leaves the
-                # maker proceeds on-chain; the next resolution's absolute balance
-                # sync (and reconcile_open at restart) record it correctly.
-                if await trader.cancel_resting(pos):
-                    logger.warning(
-                        f"  RESTING EXIT raced a fill on HOLD-flip ({pos['side']}) — "
-                        "proceeds on-chain; resolution/reconcile will book it")
-            logger.info(f"  RESTING EXIT cancelled — model back to HOLD on {pos['side']}")
         # Log hold status every 30s so the operator knows the bot is alive
         now_ts = time.time()
         if now_ts - _last_hold_log.get(mid, 0) >= 30:
@@ -1895,96 +1851,7 @@ async def _evaluate_and_exit_position(
                 f"attempting exit"
             )
 
-        # Phase 1 passive exit (two-stage, kill-bar-gated by config): rest a SELL
-        # at mid for a few seconds — the late chasers who'd otherwise be our FOK
-        # counterparty lift us instead (no taker fee, no half-spread crossed) —
-        # then fall back to the FOK. Loss-cuts always go straight to FOK.
         result = None
-        _exec_cfg = config.get("execution", {})
-        _is_loss_cut = getattr(signal_engine, "last_loss_cut_event", "") == "fired"
-        if _is_loss_cut:
-            _st_lc = _resting_exits.pop(pos["id"], None)
-            if _st_lc and _st_lc.get("live") and hasattr(trader, "cancel_resting"):
-                # Loss-cut bypasses the rest — cancel the live order. If it raced a
-                # fill, record the maker close and skip the FOK (no double-sell).
-                if await trader.cancel_resting(pos):
-                    result = await trader.close_trade(
-                        pos["id"], _st_lc["level"], token_id=sell_token,
-                        position=pos, maker_fill=True)
-                    if result.success:
-                        logger.info(f"  PASSIVE FILL — lifted at {_st_lc['level']:.2f} (maker, no taker fee)")
-                    else:
-                        result = None
-        elif (_exec_cfg.get("passive_exit_enabled", False)
-                and getattr(trader, "supports_passive_exit", False)):
-            _timeout = float(_exec_cfg.get("passive_exit_timeout_s", 10.0))
-            _real_rest = hasattr(trader, "post_resting_sell")  # live GTD vs paper tape-sim
-            _st = _resting_exits.get(pos["id"])
-            if _st is None:
-                if ws_ask > ws_bid > 0 and live["seconds_remaining"] > _timeout + 5.0:
-                    _level = _resting_level(market_mid, ws_bid, ws_ask)
-                    if len(_resting_exits) > 50:  # lazy sweep of long-dead entries
-                        _cut = time.time() - 600
-                        for _pid in [k for k, v in _resting_exits.items() if v["deadline"] < _cut]:
-                            _resting_exits.pop(_pid, None)
-                            getattr(trader, "_resting", {}).pop(_pid, None)  # keep dicts symmetric
-                    # Live posts a REAL GTD order; paper rests virtually (tape sim).
-                    _posted = True
-                    if _real_rest:
-                        _posted = await trader.post_resting_sell(pos, sell_token, _level, _timeout)
-                    if _posted:
-                        _resting_exits[pos["id"]] = {
-                            "token": sell_token, "level": _level,
-                            "posted_ts": time.time(), "deadline": time.time() + _timeout,
-                            "live": _real_rest,
-                        }
-                        logger.info(
-                            f"  RESTING EXIT {pos['side']}  @ {_level:.2f} "
-                            f"(bid {ws_bid:.2f}/ask {ws_ask:.2f})  {_timeout:.0f}s then FOK")
-                        return day_wins, day_losses, day_fees
-                    # live post failed → straight to FOK (result stays None)
-                # no usable two-sided quote / window too close — straight to FOK
-            elif _st.get("live"):
-                # Live GTD rest: poll the real order; cancel + FOK at the deadline.
-                if await trader.poll_resting_fill(pos):
-                    _resting_exits.pop(pos["id"], None)
-                    result = await trader.close_trade(
-                        pos["id"], _st["level"], token_id=sell_token, position=pos,
-                        maker_fill=True)
-                    if result.success:
-                        logger.info(f"  PASSIVE FILL — lifted at {_st['level']:.2f} (maker, no taker fee)")
-                    else:
-                        result = None
-                elif time.time() >= _st["deadline"]:
-                    _resting_exits.pop(pos["id"], None)
-                    if await trader.cancel_resting(pos):  # raced a fill → record maker close
-                        result = await trader.close_trade(
-                            pos["id"], _st["level"], token_id=sell_token, position=pos,
-                            maker_fill=True)
-                        if result.success:
-                            logger.info(f"  PASSIVE FILL — lifted at {_st['level']:.2f} (maker, no taker fee)")
-                        else:
-                            result = None
-                    # else cancelled clean → FOK below (result stays None)
-                else:
-                    return day_wins, day_losses, day_fees  # still resting
-            else:
-                _fill = _resting_fill_price(
-                    clob_ws.trades_since(_st["token"], _st["posted_ts"]) if clob_ws else [],
-                    _st["level"], _st["posted_ts"])
-                if _fill is not None:
-                    _resting_exits.pop(pos["id"], None)
-                    result = await trader.close_trade(
-                        pos["id"], _fill, token_id=sell_token, position=pos,
-                        maker_fill=True)
-                    if result.success:
-                        logger.info(f"  PASSIVE FILL — lifted at {_fill:.2f} (maker, no taker fee)")
-                    else:
-                        result = None  # fall back to FOK below
-                elif time.time() >= _st["deadline"]:
-                    _resting_exits.pop(pos["id"], None)  # timeout -> FOK below
-                else:
-                    return day_wins, day_losses, day_fees  # still resting
 
         if result is None:
             # Emit the pre-scalp snapshot here (after size guard) so the price the
@@ -2394,8 +2261,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
     # Trading schedule in ET (handles EST/EDT automatically)
     sched = config.get("schedule", {})
-    sched_start_et = (sched.get("trading_start_hour_et", _d("trading_start_hour_et")), sched.get("trading_start_minute", _d("trading_start_minute")))
-    sched_end_et = (sched.get("trading_end_hour_et", _d("trading_end_hour_et")), sched.get("trading_end_minute", _d("trading_end_minute")))
+    sched_start_et = (sched["trading_start_hour_et"], sched["trading_start_minute"])
+    sched_end_et = (sched["trading_end_hour_et"], sched["trading_end_minute"])
 
     window_strikes: dict[int, float] = {}      # window_ts -> BTC price at window open
     ws_subscribed_tokens: list[str] = []       # currently subscribed token_ids
@@ -2474,7 +2341,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         # stale-book move is acted on within one tick, not the 100ms housekeeping
         # fallback. No effect on the loop when the sniper is disabled.
         _sniper_wake = coinbase_feed is not None and bool(
-            config.get("late_window", {}).get("sniper_enabled", _d("sniper_enabled")))
+            config.get("late_window", {})["sniper_enabled"])
 
         # Event-driven: react instantly to WebSocket book/resolution updates; short timeout for housekeeping
         if clob_ws:
@@ -2743,12 +2610,6 @@ async def main() -> None:
     config = load_config()
     mode = args.mode or config.get("mode", "paper")
     config["mode"] = mode
-    # Under sniper_only the base strategy can never trade, so its per-gate model
-    # skips are unactionable — route them to DEBUG and keep the log to windows,
-    # sniper action, positions, and problems. Ghosts/gate-stats are unaffected.
-    global _SNIPER_ONLY_QUIET
-    _SNIPER_ONLY_QUIET = bool(config.get("late_window", {}).get(
-        "sniper_only", _d("sniper_only")))
     base_dir = Path(__file__).parent
 
     # Per-mode DB (polybot_paper.db / polybot_live.db) so flipping paper -> live
@@ -2794,9 +2655,9 @@ async def main() -> None:
         # Allowance floor: cover at least 10 rounds of max-sized concurrent positions so a
         # revoked or run-down allowance is caught before it silently kills order fills.
         _preflight_bankroll = await db.get_bankroll()
-        _kelly_fraction = config.get("math", {}).get("kelly_fraction", _d("kelly_fraction"))
+        _kelly_fraction = config.get("math", {})["kelly_fraction"]
         _max_single = _preflight_bankroll * _kelly_fraction
-        _max_concurrent = exec_cfg.get("max_concurrent_positions", _d("max_concurrent_positions"))
+        _max_concurrent = exec_cfg["max_concurrent_positions"]
         _min_allowance = _max_single * _max_concurrent * 10.0
         ok, msg, live_balance = verify_auth(min_allowance_usd=_min_allowance)
         if not ok:
@@ -2827,8 +2688,8 @@ async def main() -> None:
     init_bankroll = await db.get_bankroll()
     breaker = CircuitBreaker(
         initial_bankroll=init_bankroll,
-        floor_pct=cb_cfg.get("floor_pct", _d("circuit_breaker.floor_pct")),
-        min_multiplier=cb_cfg.get("min_multiplier", _d("circuit_breaker.min_multiplier")),
+        floor_pct=cb_cfg["floor_pct"],
+        min_multiplier=cb_cfg["min_multiplier"],
         losses_to_reduce=cb_cfg.get("losses_to_reduce", 3),
         wins_to_restore=cb_cfg.get("wins_to_restore", 3),
     )
@@ -2866,7 +2727,7 @@ async def main() -> None:
         daily_pipeline_minute=agents_cfg.get("daily_pipeline_minute", 0),
         config=config,
     )
-    scheduler._exit_edge_threshold = signal_cfg.get("exit_edge_threshold", _d("exit_edge_threshold"))
+    scheduler._exit_edge_threshold = signal_cfg["exit_edge_threshold"]
     scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
     scheduler._auto_shutdown = args.auto_restart
     discord_bot.scheduler = scheduler
@@ -3019,14 +2880,19 @@ async def main() -> None:
         divergence is visible; the kill-rule VERDICT is driven by the LIVE ledger
         once fills exist (the sim can't see live execution quality). Skipped when the
         sniper is disabled."""
-        if not config.get("late_window", {}).get("sniper_enabled", _d("sniper_enabled")):
+        if not config.get("late_window", {})["sniper_enabled"]:
             return {"skipped": "sniper disabled"}
         import importlib.util
         hp = Path(__file__).resolve().parent.parent / "scripts" / "analyze_late_window.py"
         spec = importlib.util.spec_from_file_location("analyze_late_window", hp)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        sim = await asyncio.to_thread(mod.health_read)         # SIM corpus (window_paths.db, RO)
+        # Read the SIM ceiling at the DEPLOYED config (settings.yaml) so it is
+        # apples-to-apples with the live fills — not the harness's research defaults.
+        _lw = config.get("late_window", {})
+        sim = await asyncio.to_thread(
+            mod.health_read, 0.135, _lw["sniper_fok_slip"],
+            _lw["sniper_cb_move"], _lw["sniper_ask_cap"])   # SIM corpus (window_paths.db, RO)
         live = await asyncio.to_thread(mod.live_health_read)   # REAL fills (polybot_live.db, RO)
         if sim is None and live is None:
             if alert_manager:
