@@ -9,8 +9,7 @@ so honest live is ~break-even with a fat left tail. Now **re-validating in
 paper** (`mode: paper`, `sniper_enabled: true`); the **binding deployment gate is
 the paper-shadow's REALIZED fills, not the harness** (§2). The **base strategy**
 (§3) has no proven edge, never touches real capital, and survives only as the
-zero-capital ghost/counterfactual evidence stream the gate needs. `tasks/todo.md`
-= open work only.
+zero-capital ghost/counterfactual evidence stream the gate needs.
 
 **This file is the single source of truth — update it in the same commit as any
 behavioral change.**
@@ -53,11 +52,16 @@ Every 5 min, Polymarket runs a market: will BTC close higher or lower than at
 the window's start? Up/Down ERC-1155 tokens trade $0-$1; the winning side pays
 $1/share. Chainlink (via Polymarket RTDS, tracking Coinbase) is the resolution
 source; Gamma mirrors it for discovery. The per-window **decision strike** is
-Chainlink's boundary-captured price (`_compute_strike_and_btc`, matches the
-resolved `price_to_beat` to ~$1); Gamma's mid-window `price_to_beat` only
-bootstraps until Chainlink has it and never overrides it — its intra-window
-value can lag tens of dollars and flip near-strike sniper crossings onto the
-wrong side. (Resolution still settles on `price_to_beat`.) Two modes, one
+the **previous window's resolved close** (`_compute_strike_and_btc`): the 5-min
+windows chain, so `price_to_beat[N]` == `final_price[N-1]` to the penny (verified
+6335/6335) — exactly what Polymarket resolves on. The recorder supplies it ~30s
+in, long before the final-45s sniper. Fallbacks, in order: Chainlink's
+boundary-captured strike (its last-tick-before-boundary capture misses the
+official round by >$8 in a fast open — ~1% of windows flip side — so it only
+covers the cold start before the prior window resolves), then Gamma's live
+`event_metadata.price_to_beat` (bootstrap only; can lag tens of dollars). The
+strike self-heals to the exact prev-close the moment it lands. (Resolution
+settles on `price_to_beat`.) Two modes, one
 engine: **paper**
 (realism shim: real CLOB books, FOK semantics, convex slippage,
 network-fail/latency jitter calibrated to the measured warm POST RTT
@@ -280,7 +284,7 @@ it was removed). Never re-add resting quotes.
 - The base strategy never deploys live. No deployment before a kill bar passes;
   never relax a bar to pass it.
 - No symmetric market-making, no oracle-cadence trading, no expansion past BTC
-  until the goal completes (`tasks/todo.md`).
+  until the goal completes.
 - No Gaussian, no Binance resolution, no mid-price edge math (executable CLOB
   BBO only). Never skip the fee: `rate*shares*p*(1-p)`, rate 0.07
   (`DEFAULT_FEE_RATE`); flat-additive gates use `EFFECTIVE_FEE_PEAK` 0.0175 —
@@ -351,7 +355,7 @@ is running, and `polybot.main` holds an OS single-instance lock
 - Recordings (`memory/recordings/`) are gitignored — never in the nightly
   commit. `memory/` records + per-mode DB + settings.yaml are committed
   nightly.
-- Kill bars are the deployment authority; `tasks/todo.md` = open work only.
+- Kill bars are the deployment authority.
 
 ## 12. Discord
 

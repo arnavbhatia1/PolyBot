@@ -1,12 +1,13 @@
 """_compute_strike_and_btc strike source (polybot/main.py).
 
-Regression guard for the live-strike bug: the decision strike must prefer
-Chainlink (the resolution venue, whose boundary-captured strike matches the
-resolved price_to_beat to ~$1 and is what the recorder uses). Gamma's mid-window
-event_metadata.price_to_beat can lag/drift by tens of dollars before it settles;
-trusting it flipped near-strike sniper crossings onto the wrong (cheap) side.
-Gamma may only BOOTSTRAP the strike until Chainlink has it, and must never
-override a Chainlink strike.
+Regression guard for the strike source. Priority: (1) the PREVIOUS window's
+resolved close — windows chain so price_to_beat[N] == final_price[N-1] exactly,
+which is what Polymarket resolves on; (2) Chainlink's boundary-captured strike as
+a fallback until the prior window resolves (its last-tick-before-boundary capture
+misses the official round by >$8 in a fast open); (3) Gamma's live
+event_metadata.price_to_beat as a last-resort cold-start bootstrap (its intra-window
+value can lag/drift tens of dollars). The prev-close self-heals over any fallback the
+moment it lands, and Gamma must never override a Chainlink strike.
 """
 import time
 
@@ -19,6 +20,15 @@ class _Chainlink:
 
     def get_strike(self, window_ts):
         return self._strike
+
+
+class _Recorder:
+    """Fake WindowPathRecorder exposing only window_final()."""
+    def __init__(self, prev_final):
+        self._pf = prev_final
+
+    def window_final(self, window_ts):
+        return self._pf
 
 
 class _Binance:
@@ -79,3 +89,40 @@ def test_chainlink_upgrades_a_gamma_bootstrap():
 def test_no_strike_when_neither_source_has_it():
     strike, _ = _call(_Chainlink(None), gamma_ptb=None)
     assert strike is None
+
+
+def test_prev_close_preferred_over_chainlink():
+    # The prior window's resolved close IS this window's price_to_beat — it must
+    # win over the Chainlink boundary capture (which can miss the official round).
+    cid, ts = _cid()
+    ws = {}
+    _compute_strike_and_btc(cid, _Binance(), ws, ts, -1,
+                            chainlink_feed=_Chainlink(63405.83), coinbase_feed=None,
+                            contract={}, window_recorder=_Recorder(63390.00))
+    assert ws[ts] == 63390.00
+
+
+def test_prev_close_upgrades_a_chainlink_strike():
+    # Cold start: prior window not labeled yet -> Chainlink fallback. Once the prior
+    # window resolves, the strike self-heals to the exact price_to_beat.
+    cid, ts = _cid()
+    ws = {}
+    _compute_strike_and_btc(cid, _Binance(), ws, ts, -1,
+                            chainlink_feed=_Chainlink(63405.83), coinbase_feed=None,
+                            contract={}, window_recorder=_Recorder(None))
+    assert ws[ts] == 63405.83
+    _compute_strike_and_btc(cid, _Binance(), ws, ts, -1,
+                            chainlink_feed=_Chainlink(63405.83), coinbase_feed=None,
+                            contract={}, window_recorder=_Recorder(63390.00))
+    assert ws[ts] == 63390.00
+
+
+def test_chainlink_fallback_when_prev_close_absent():
+    # No recorder / prior window unresolved -> existing Chainlink-first behavior holds.
+    cid, ts = _cid()
+    ws = {}
+    _compute_strike_and_btc(cid, _Binance(), ws, ts, -1,
+                            chainlink_feed=_Chainlink(63405.83), coinbase_feed=None,
+                            contract={"event_metadata": {"price_to_beat": 63446.18}},
+                            window_recorder=_Recorder(None))
+    assert ws[ts] == 63405.83

@@ -119,10 +119,15 @@ def load_windows():
             pass  # mode DB without a window_labels table yet
         finally:
             lc.close()
+    # NOTE: the decision strike used by every signal is window_labels.price_to_beat
+    # (the authoritative value Polymarket resolves on = the prior window's close, and
+    # exactly what the live bot now uses). window_paths.strike is the recorder's
+    # Chainlink boundary capture — a diagnostic sensor that can miss price_to_beat by
+    # >$8 in a fast open, so it is deliberately NOT loaded here.
     rows_by_win = defaultdict(list)
     cur = pc.execute(
         "SELECT window_id, ts, elapsed_s, bid_up, ask_up, bid_down, ask_down, "
-        "coinbase_price, strike, binance_price, binance_cvd_10s, binance_cvd_30s "
+        "coinbase_price, binance_price, binance_cvd_10s, binance_cvd_30s "
         "FROM window_paths WHERE elapsed_s >= ? AND binance_price IS NOT NULL "
         "ORDER BY window_id, ts", (LATE_START - 8,))
     for r in cur:
@@ -215,7 +220,7 @@ def evaluate(rows_by_win, labels, signal_fn, label, rtt, max_slip):
     per_day = defaultdict(list)
     fills = []
     for wid, rows in rows_by_win.items():
-        resolved_up, strike = labels[wid]
+        resolved_up, strike = labels[wid]   # strike = authoritative price_to_beat (== prev-window close)
         for i in range(len(rows)):
             if rows[i]["elapsed_s"] < LATE_START:
                 continue
