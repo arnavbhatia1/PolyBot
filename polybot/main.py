@@ -924,7 +924,8 @@ async def _evaluate_signal_and_enter(
             _snipe.action = "BUY_YES" if _snipe.action == "LATE_SNIPE_YES" else "BUY_NO"
             signal = _snipe
             is_sniper = True
-            logger.info(f"{_C.DIM}LATE-SNIPER fire — {signal.reason}{_C.RESET}")
+            logger.info(f"{_C.DIM}SNIPE {signal.side} — coinbase {_cbm:+.0f} past strike · "
+                        f"model {signal.prob:.0%} edge {signal.edge:+.0%}{_C.RESET}")
 
     # Continuous time multiplier: penalizes ATM trades late, barely penalizes high-conviction trades
     timing_cfg = config.get("entry_timing", {})
@@ -1098,6 +1099,7 @@ async def _evaluate_signal_and_enter(
             return None, last_eval_log_window
 
     price = price_up if side == "Up" else price_down
+    signal_ask = price   # executable ask the model decided on, before the FOK-limit chase pad
     if not bankroll:
         bankroll = await db.get_bankroll()
     kelly_mult = breaker.kelly_multiplier if breaker else 1.0
@@ -1302,37 +1304,30 @@ async def _evaluate_signal_and_enter(
             _window_recorder.mark_traded(cid)
         # Actual fill price (paper latency/book-walk or live FOK slippage may differ).
         fill_price = result.fill_price if result.fill_price > 0 else price
-        slip_note = f"  [filled @ {fill_price:.3f} vs signal {price:.3f}]" if abs(fill_price - price) > 0.001 else ""
+        # signal = the ask the model decided on; posted = the (padded) FOK limit we
+        # sent to the CLOB; filled = the realized fill. signal->posted is the chase
+        # bubble (sniper_fok_slip / base slip pad); posted->filled is realized slippage.
+        # (Live may book the limit here and correct to the exchange's true fill a few
+        # seconds later — see LiveTrader._audit_entry_fill.)
+        chase = price - signal_ask
+        if abs(chase) > 0.001 or abs(fill_price - signal_ask) > 0.001:
+            slip_note = (f"  [signal {signal_ask:.3f} → posted {price:.3f} "
+                         f"(+{chase:.3f}) → filled {fill_price:.3f}]")
+        else:
+            slip_note = ""
 
         shares_ordered = size / fill_price
         fee_shares = entry_fee_shares(shares_ordered, fill_price, fee_rate)
         fee_usd = fee_shares * fill_price
         bankroll_now = await db.get_bankroll()
         _dist = btc_price - strike
-        _why_parts = []
-        if side == "Up":
-            _why_parts.append(f"BTC ${abs(_dist):,.0f} {'above' if _dist > 0 else 'below'} strike — {'Favors Up' if _dist > 0 else 'fighting strike'}")
-        else:
-            _why_parts.append(f"BTC ${abs(_dist):,.0f} {'below' if _dist < 0 else 'above'} strike — {'Favors Down' if _dist < 0 else 'fighting strike'}")
-        if flow_score > 0.1:
-            _why_parts.append(f"Strong buy pressure in book (flow {flow_score:+.2f})")
-        elif flow_score < -0.1:
-            _why_parts.append(f"Strong sell pressure in book (flow {flow_score:+.2f})")
-        else:
-            _why_parts.append(f"neutral book flow ({flow_score:+.2f})")
-        if spot_flow_signal > 0.05:
-            _why_parts.append(f"Buyers dominating on Binance (cvd {spot_flow_signal:+.2f})")
-        elif spot_flow_signal < -0.05:
-            _why_parts.append(f"Sellers dominating on Binance (cvd {spot_flow_signal:+.2f})")
-        else:
-            _why_parts.append(f"Neutral CVD ({spot_flow_signal:+.2f})")
-        _why = ", ".join(_why_parts)
         logger.info(
             f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
-            f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET}  @ {fill_price:.3f}  |  ${size:.2f}  |  entry fee ${fee_usd:.2f}{slip_note}  |  "
-            f"{_slug_to_window(cid)}{'' if phase == 'normal' else f' [{phase}]'}\n"
-            f"  {_C.DIM}Why: {_why}{_C.RESET}\n"
-            f"  {_C.DIM}Bankroll ${bankroll_now:.2f}  |  {signal.reason}{_C.RESET}\n"
+            f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET} @{fill_price:.2f}  ${size:.2f}  fee ${fee_usd:.2f}  |  "
+            f"{_slug_to_window(cid)}{'' if phase == 'normal' else f' [{phase}]'}{slip_note}\n"
+            f"  {_C.DIM}BTC {btc_price:,.0f} ({_dist:+.0f} vs strike) · model {signal.prob:.0%} "
+            f"edge {signal.edge:+.0%} · flow {flow_score:+.2f} cvd {spot_flow_signal:+.2f} · "
+            f"bank ${bankroll_now:.2f}{_C.RESET}\n"
             f"{_C.YELLOW}{'=' * 69}{_C.RESET}")
         if _adverse_monitor:
             # Baseline must live on the same axis as the post-fill checkpoints
@@ -2027,10 +2022,10 @@ async def _evaluate_and_exit_position(
             bankroll_after = await db.get_bankroll()
             logger.info(
                 f"{color}{'=' * 60}{_C.RESET}\n"
-                f"  {color}{_C.BOLD}SCALP {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_fill:.3f}  |  "
-                f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
-                f"  {_C.DIM}Why: {reason}{_C.RESET}\n"
-                f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees {_fee_breakdown(result)}{_C.RESET}\n"
+                f"  {color}{_C.BOLD}SCALP {won} {pos['side']}{_C.RESET} {pos['entry_price']:.2f}→{exit_fill:.2f}  "
+                f"{gain_pct:+.0%}  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
+                f"  {_C.DIM}{reason} · day {day_wins}W/{day_losses}L · bank ${bankroll_after:.2f} · "
+                f"fees {_fee_breakdown(result)}{_C.RESET}\n"
                 f"{color}{'=' * 69}{_C.RESET}")
             if alert_manager:
                 await alert_manager.send_trade_closed(
@@ -2161,9 +2156,9 @@ async def _resolve_expired_position(
         bankroll_after = await db.get_bankroll()
         logger.info(
             f"{color}{'=' * 60}{_C.RESET}\n"
-            f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']}{_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  "
-            f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
-            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees {_fee_breakdown(result)}{_C.RESET}\n"
+            f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']}{_C.RESET} {pos['entry_price']:.2f}→{exit_price:.2f}  "
+            f"{gain_pct:+.0%}  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
+            f"  {_C.DIM}day {day_wins}W/{day_losses}L · bank ${bankroll_after:.2f} · fees {_fee_breakdown(result)}{_C.RESET}\n"
             f"{color}{'=' * 69}{_C.RESET}")
         if alert_manager:
             await alert_manager.send_trade_closed(
@@ -2299,9 +2294,9 @@ async def _manage_orphaned_position(
         bankroll_after = await db.get_bankroll()
         logger.info(
             f"{color}{'=' * 60}{_C.RESET}\n"
-            f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']} (orphan){_C.RESET}  |  {pos['entry_price']:.3f} -> {exit_price:.3f}  |  "
-            f"{gain_pct:+.1%}  |  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
-            f"  {_C.DIM}Day: {day_wins}W/{day_losses}L  |  Bankroll ${bankroll_after:.2f}  |  fees {_fee_breakdown(result)}{_C.RESET}\n"
+            f"  {color}{_C.BOLD}RESOLVED {won} {pos['side']} (orphan){_C.RESET} {pos['entry_price']:.2f}→{exit_price:.2f}  "
+            f"{gain_pct:+.0%}  {color}${pnl:+.2f}{_C.RESET}  |  {_slug_to_window(pos['market_id'])}\n"
+            f"  {_C.DIM}day {day_wins}W/{day_losses}L · bank ${bankroll_after:.2f} · fees {_fee_breakdown(result)}{_C.RESET}\n"
             f"{color}{'=' * 69}{_C.RESET}")
         if alert_manager:
             await alert_manager.send_trade_closed(

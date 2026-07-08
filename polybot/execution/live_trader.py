@@ -755,23 +755,36 @@ class LiveTrader(BaseTrader):
         try:
             await asyncio.sleep(_FILL_AUDIT_DELAY_S)
             if not token_id:
+                logger.info("Fill audit pos %s: no token_id — skipped", pos_id)
                 return
             positions = await self._fetch_wallet_positions()
             if positions is None:
+                logger.info("Fill audit pos %s: wallet-positions fetch failed — "
+                            "entry left at booked %.3f", pos_id, recorded_price)
                 return
             pos = next((p for p in positions
                         if str(p.get("asset")) == str(token_id)), None)
             if pos is None:
+                logger.info("Fill audit pos %s: token not in wallet yet (indexer lag or "
+                            "already resolved) — entry left at booked %.3f", pos_id, recorded_price)
                 return
             true_price = float(pos.get("avgPrice") or 0.0)
             chain_size = float(pos.get("size") or 0.0)
             if not (0.0 < true_price < 1.0):
+                logger.info("Fill audit pos %s: avgPrice %.4f out of range — skipped",
+                            pos_id, true_price)
                 return
             if abs(true_price - recorded_price) <= 0.005:
+                logger.info("Fill audit pos %s: booked %.3f matches exchange %.3f (≤0.5c)",
+                            pos_id, recorded_price, true_price)
                 return
             implied_shares = size_usdc / true_price
             if abs(chain_size - implied_shares) / max(implied_shares, 1e-9) > 0.02:
-                return  # mixed position (older residue) — avgPrice isn't this order's
+                # mixed position (older residue) — avgPrice isn't this order's
+                logger.info("Fill audit pos %s: chain shares %.2f vs implied %.2f mismatch "
+                            "(mixed position) — entry left at booked %.3f",
+                            pos_id, chain_size, implied_shares, recorded_price)
+                return
             shares_held = implied_shares - entry_fee_shares(
                 implied_shares, true_price, fee_rate)
             cur = await self.db.conn.execute(
@@ -786,8 +799,13 @@ class LiveTrader(BaseTrader):
                     "(the tape missed the fill, so the limit price had been booked)",
                     recorded_price, true_price,
                 )
+            else:
+                logger.info("Fill audit pos %s: exchange fill %.3f vs booked %.3f, but the "
+                            "position is no longer 'open' (resolved before the %.0fs audit) — "
+                            "entry left uncorrected", pos_id, true_price, recorded_price,
+                            _FILL_AUDIT_DELAY_S)
         except Exception as e:
-            logger.debug("Fill audit skipped for position %s: %s", pos_id, e)
+            logger.warning("Fill audit failed for position %s: %s", pos_id, e)
 
     # -- FOK pre-check + balance/dust helpers --------------------------------
     @staticmethod
@@ -1287,7 +1305,7 @@ class LiveTrader(BaseTrader):
                     len(losers),
                 )
             else:
-                logger.info("Wallet check: clean — all positions tracked, nothing unredeemed.")
+                logger.info("Wallet check: clean - all positions tracked")
             logger.debug(
                 "Orphan detection detail: %d non-dust chain position(s), %d unclaimed "
                 "winner(s), %d resolved $0 loser(s).",
@@ -1890,7 +1908,7 @@ class LiveTrader(BaseTrader):
                     _update_fill_stats(filled=False, side=side, reason="fok_killed")
                     return FillResult(
                         filled=False,
-                        reason="book moved before our order landed — exchange killed it, nothing filled")
+                        reason="book moved so no fill")
                 if side == BUY:
                     # The POST may have reached the exchange — check the WS trade
                     # feed before declaring a miss, so a real fill can't leave

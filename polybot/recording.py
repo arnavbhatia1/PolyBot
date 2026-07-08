@@ -448,7 +448,7 @@ class WindowPathRecorder:
         self._running = True
         await self.ensure_tables()
         await self._recover_orphan_labels()
-        logger.info("Recording every window for research (all day, every market)")
+        logger.info("Recording every window for research")
         last_flush = time.time()
         while self._running:
             try:
