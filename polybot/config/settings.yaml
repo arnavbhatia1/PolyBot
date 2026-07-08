@@ -98,26 +98,31 @@ late_window:
                                # is the bot's ONLY strategy — base entries are always suppressed.
   sniper_late_start_s: 45.0     # only fire in the final N seconds of the window
   sniper_move_window_s: 2.0     # Coinbase move lookback (s)
-  sniper_cb_move: 12.0          # $ Coinbase move over the 2s lookback to fire. With ask_cap 0.80 this is the
-                                # robustness PEAK of the sim grid: net +15.9¢/sh, t_day 6.10 (the highest),
-                                # p10 +0.124, 14/14 days positive (~27 fills/day). Bigger moves = more genuine
-                                # mispricing, less revert. $16 makes more per bet but t drops + loses a day
-                                # (thinning into noise). Validate on the paper-shadow's realized fills.
-  sniper_ask_cap: 0.80          # only buy if the chosen side's ask is <= this. LOWER is better, not higher:
-                                # the sim (14d) is monotonic — 0.92→0.85→0.75 lifts net +10.3→+12.3→+14.8¢/sh,
-                                # p10 +.077→+.115, days-positive 13/14→14/14, because expensive favorites
-                                # win often but bleed on the rare flip. 0.80 balances edge vs fill count
-                                # (~570 fills/14d); the paper-shadow validates the exact value in [0.75,0.85].
+  sniper_cb_move: 8.0           # $ Coinbase move over the 2s lookback to fire. The value the realized-
+                                # profitable paper ran (07-03..07-05: 81/75/86% win, net positive). The sim
+                                # grid favored $12 but the sim is a full-population REPLAY CEILING that did
+                                # not translate to realized fills — trust realized. The sniper_fok_slip
+                                # filter (below), not this threshold, is what removes reverting fires.
+  sniper_ask_cap: 0.92          # only buy if the chosen side's ask is <= this. The realized-profitable
+                                # 07-03..07-05 value; the sim grid favored 0.80 but that is the same
+                                # untrustworthy ceiling. The fok_slip filter (not this cap) is the
+                                # adverse-selection defense — it dies on a reverting book regardless of
+                                # how favored the side looks, so the cap only bounds phantom-price fires.
   sniper_min_edge: 0.04         # stale-cheap floor; set = signal.min_edge so the downstream net-edge /
                                 # pre-submit gates don't silently raise it (one consistent live floor).
                                 # NOTE: the offline harness momentum signal has NO edge floor, so live
                                 # trades the higher-conviction SUBSET (L1 edge >= this) — the kill bar is
                                 # a CONSERVATIVE directional gate; paper-shadow before deploy (tasks/todo.md).
   sniper_max_edge: 0.50         # sniper's own sanity cap, replacing the bypassed 0.20
-  sniper_fok_slip: 0.05         # FOK limit pad: chase the stale ask by up to this above the decision
-                                # ask instead of dying as an exchange kill when the book moves in
-                                # flight. 0.05 = the kill bar's LENIENT leg (passed: +9.3¢/sh net of
-                                # fee, win 78%); 0.0 reverts to the old fills-only-at-decision-ask.
+  sniper_fok_slip: 0.01         # FOK limit pad: fill only within ~one tick of the decision ask, else
+                                # let the order DIE. This kill is the sniper's adverse-selection filter:
+                                # a genuine stale-book move fills clean, but a move already REVERTING
+                                # reprices the ask away, the FOK dies, and the bot sits out that window.
+                                # Realized paper (96 fills, 9 ET days): clean fills (slip<=one tick) net
+                                # +9.1¢/sh at 70% win; fills that only landed by chasing further reprice
+                                # (slip>0.005) were -15.8¢/sh — pure adverse selection. A wide pad (0.05)
+                                # DEFEATS the filter by forcing fills into reverting books (it turned the
+                                # 07-07 −15¢/sh day into an all-day chase; one tick sits it out).
 
 # =============================================================================
 #  SECTION 4: SCHEDULE

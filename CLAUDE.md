@@ -42,7 +42,6 @@ the sniper is the only strategy either can run.
 | `DISCORD_BOT_TOKEN` | Always (monitoring) |
 | `POLYMARKET_PRIVATE_KEY` | Live mode (EIP-712 signing) |
 | `POLYMARKET_FUNDER` | Live mode (USDC funding address) |
-| `POLYGON_RPC_URL` | Optional: on-chain redemption to clear resolved shares (§6) |
 
 ---
 
@@ -73,17 +72,20 @@ In the final `sniper_late_start_s` (45s) of a window, a sharp Coinbase move
 reprices.
 
 - **Fire condition** (`SignalEngine.evaluate_late_sniper`): Coinbase move over
-  `sniper_move_window_s` (2s) ≥ `sniper_cb_move` ($12) pushed price past strike
-  AND the chosen side's ask ≤ `sniper_ask_cap` (0.80 — LOWER is better: the sim
-  is monotonic, dropping the cap 0.92→0.75 lifts net +10.3→+14.8¢/sh, p10
-  +.077→+.115, days-positive 13/14→14/14, because expensive favorites win often
-  but bleed on the rare flip. Chasing win rate is counterproductive. 0.80
-  balances edge vs fill count; paper-shadow validates [0.75,0.85]). The main
-  loop wakes on Coinbase ticks when enabled.
-- **Fill**: the sniper FOK limit chases the stale ask by up to `sniper_fok_slip`
-  (0.05 — the kill bar's lenient leg: +9.3¢/sh net, 78% win), capped at
-  `model_prob − min_edge` so a true reprice can never fill below the edge
-  floor. Base entries keep the tight at-ask limit (a reject on adverse movement
+  `sniper_move_window_s` (2s) ≥ `sniper_cb_move` ($8) pushed price past strike
+  AND the chosen side's ask ≤ `sniper_ask_cap` (0.92). Both are the realized-
+  profitable 07-03..07-05 values; the sim grid favored $12 / 0.80 but the sim is
+  a full-population ceiling that did not translate (see the Fill bullet). The
+  real adverse-selection defense is `sniper_fok_slip`, not these two knobs. The
+  main loop wakes on Coinbase ticks when enabled.
+- **Fill**: the sniper FOK limit pads the decision ask by only `sniper_fok_slip`
+  (0.01, ~one tick) then dies — the pad absorbs benign jitter, but a genuine
+  reprice KILLS the order, and that kill IS the adverse-selection filter (a book
+  repricing away = the move is reverting → sit out). Capped at `model_prob −
+  min_edge` so a true reprice can never fill below the edge floor. Realized paper
+  fixed the pad size (96 fills / 9 ET days): clean fills (slip ≤ one tick) net
+  +9¢/sh at 70% win; a wider pad admits reverting-move fills measured −16¢/sh —
+  it turned 07-07's −15¢/sh into an all-day chase where one tick sits it out. Base entries keep the tight at-ask limit (a reject on adverse movement
   is a feature there). All gates run at the decision ask (harness-faithful);
   the pre-submit VWAP re-check still vetoes books that lost the edge. The booked
   entry is the CLOB's TRUE fill VWAP — resolved WS-tape → balance-delta →
@@ -233,17 +235,12 @@ Gamma resolved prices as fallback; never Binance); Chainlink orphan fallback
 after ~30 min of Gamma silence. Winner payouts book via Polymarket auto-redeem
 (the bankroll sync waits for the winning tokens to clear).
 
-**On-chain redemption** (`execution/redeem.py`) clears EVERY resolved position
-off the wallet so no shares sit around — winner → USDC, loser → burned to $0. A
-losing share has no UI redeem (no payout to claim), so this on-chain
-`redeemPositions` through the funder Gnosis Safe is the only way to remove it.
-Runs via the nightly sweep (§7) and the operator script
-(`scripts/redeem_positions.py`); tries pUSD then USDC.e collateral and confirms
-the burn by the on-chain balance dropping to 0. Gated on `POLYGON_RPC_URL`
-(direct Safe `execTransaction`, EOA pays ~$0.001 gas each; reports-only when
-unset). Redemption cannot lose money (it only burns your tokens and pays you; a
-bad tx just reverts). The startup wallet-check reports this honestly — never
-"worthless leftovers ignored".
+Resolved shares are not swept on-chain — winners are claimed manually at
+polymarket.com/portfolio (or via Polymarket's Auto-Redeem), and losing $0 stubs
+have no UI redeem so they sit inert on the wallet, locking nothing. The startup
+wallet-check reports any unclaimed winners honestly (never "worthless leftovers
+ignored"); the redeemable-aware orphan gate lets resolved dust through and
+fail-closes only on genuinely unresolved positions.
 
 Exits are always taker FOK — no passive/maker/resting path exists (it was
 measured −2.1¢/sh ≈ −$62/day over 8 clean days and moot under the <45s sniper, so
@@ -273,11 +270,8 @@ it was removed). Never re-add resting quotes.
   `sniper_enabled` is false — reports BOTH the SIM corpus (`health_read`,
   window_paths) and the REAL live fills (`live_health_read`, polybot_live.db)
   side by side with their ¢/sh gap, and drives the post-live kill-rule verdict
-  off the LIVE ledger once fills exist; alert-only, never flips config) + the
-  **redeem sweep**
-  (`_redeem_leftovers_job`, live only — redeems every resolved position through
-  the funder Safe when `POLYGON_RPC_URL` is set, else reports the claimable
-  winners). Pings Discord `#polybot-daily` (✅/⚠️/⏳ sniper, 🧹 redeem).
+  off the LIVE ledger once fills exist; alert-only, never flips config). Pings
+  Discord `#polybot-daily` (✅/⚠️/⏳ sniper).
 
 ## 8. Hard rules
 
@@ -313,7 +307,6 @@ polybot/
   indicators/            ATR engine
   recording.py           WindowPathRecorder (all windows) + TapeRecorder + retention
   execution/             base (BaseTrader, fee math), paper_trader, live_trader,
-                         redeem (on-chain redeemPositions via the funder Safe),
                          circuit_breaker, correlation
   agents/                scheduler, outcome_reviewer, counterfactual_tracker,
                          ghost_tracker, pipeline_analytics
@@ -332,9 +325,6 @@ scripts/
   smoke_order_test.py    live preflight: one unfillable FOK proves order POSTs
                          clear Cloudflare (verify_keys covers GETs only)
   reset_paper_clean.py   clean-slate the paper ledger (operator-run, bot STOPPED)
-  redeem_positions.py    operator-run: redeem EVERY resolved position (winner →
-                         USDC, loser → burned to $0). Dry-run lists; --confirm
-                         redeems (needs POLYGON_RPC_URL + a little POL for gas)
 ```
 
 ## 10. Data sources

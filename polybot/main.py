@@ -1138,13 +1138,15 @@ async def _evaluate_signal_and_enter(
     impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
     slip = slippage_pct(size, side_depth, impact)
     if is_sniper:
-        # Sniper FOK limit chases the stale ask by up to sniper_fok_slip. The
-        # kill bar's lenient leg measured exactly this tolerance — fills up to
-        # decision+0.05 net +9.3¢/sh at 78% win — while the tight base-entry
-        # limit below collapses to the decision ask and dies as an exchange
-        # kill whenever the book repriced in flight. Gates all ran at the
-        # decision ask (harness-faithful); the pre-submit VWAP re-check still
-        # vetoes fires whose visible book has lost the edge.
+        # Sniper FOK limit pads the decision ask by only sniper_fok_slip (~one
+        # tick), then dies. The pad absorbs benign book jitter; a genuine
+        # reprice KILLS the order, and that kill IS the adverse-selection filter
+        # — a book repricing away means the move is reverting, so sitting out is
+        # correct. Realized paper: clean fills (slip ≤ one tick) net +9¢/sh at
+        # 70% win; fills that only landed by chasing further reprice were −16¢/sh.
+        # A wide pad defeats the filter by forcing fills into reverting books.
+        # Gates all ran at the decision ask (harness-faithful); the pre-submit
+        # VWAP re-check still vetoes fires whose visible book has lost the edge.
         _fok_slip = lw_cfg["sniper_fok_slip"]
         # Never chase above model_prob − min_edge: a fill there would carry less
         # than the pre-registered edge floor (e.g. a 0.93 limit on a 94% model).
@@ -2952,73 +2954,6 @@ async def main() -> None:
         return {"health": status, "kill_rule_tripped": kt,
                 "live": _pick(live), "sim": _pick(sim)}
     scheduler.register_job("sniper_health", _sniper_health_job)
-
-    async def _redeem_leftovers_job() -> dict:
-        """End-of-day redemption so no shares sit around. Redeems EVERY resolved
-        position through the funder Safe (winner -> USDC, loser -> burned to $0),
-        then pings Discord. Auto-redeems only when POLYGON_RPC_URL is set (the
-        operator's explicit opt-in); otherwise it reports what's claimable —
-        winners are UI-claimable, losers need the RPC (or the redeem script) to
-        burn. Live mode only; best-effort, never blocks the loop."""
-        if config.get("mode") != "live":
-            return {"skipped": "not live"}
-        funder = os.environ.get("POLYMARKET_FUNDER", "").strip()
-        if not funder:
-            return {"skipped": "no funder"}
-        from polybot.execution.redeem import (
-            fetch_redeemable, PolygonRedeemer, RedeemerConfigError)
-        today = datetime.now(ET).strftime("%Y-%m-%d")
-        items = await fetch_redeemable(funder)
-        tradeable = [i for i in items if not i.negative_risk]
-        if not tradeable:
-            if alert_manager:
-                await alert_manager.send_health(
-                    f"🧹 **Redeem check — {today}** — wallet clean, nothing resolved unredeemed.")
-            return {"redeemable": 0}
-        winners = [i for i in tradeable if i.is_winner]
-        losers = [i for i in tradeable if not i.is_winner]
-        claimable = sum(w.value_usd for w in winners)
-        rpc = os.environ.get("POLYGON_RPC_URL", "").strip()
-        if rpc:
-            try:
-                redeemer = PolygonRedeemer(
-                    rpc_url=rpc,
-                    private_key=os.environ.get("POLYMARKET_PRIVATE_KEY", "").strip(),
-                    funder=funder)
-            except RedeemerConfigError as e:
-                if alert_manager:
-                    await alert_manager.send_health(
-                        f"🧹 **Redeem sweep — {today}** — cannot redeem ({e}).")
-                return {"error": str(e)}
-            cleared = failed = 0
-            for it in tradeable:
-                res = await asyncio.to_thread(
-                    redeemer.redeem_condition, it.condition_id, it.token_id, it.title)
-                cleared += res.cleared
-                failed += not res.cleared
-            msg = (f"🧹 **Redeem sweep — {today}**\n"
-                   f"Cleared {cleared} of {len(tradeable)} resolved position(s) "
-                   f"(${claimable:.2f} in winnings claimed, {len(losers)} $0 loser stub(s) burned). ")
-            msg += ("Wallet is clean." if not failed else
-                    f"⚠️ {failed} failed — retrying tomorrow (check the EOA's POL gas balance).")
-            if alert_manager:
-                await alert_manager.send_health(msg)
-            return {"cleared": cleared, "failed": failed}
-        # Report-only — no RPC configured, so no on-chain tx is sent.
-        lines = [f"🧹 **Redeem check — {today}** — {len(tradeable)} resolved position(s) in the wallet."]
-        if winners:
-            lines.append(
-                f"💰 **${claimable:.2f} in {len(winners)} WINNER(s) to CLAIM** at "
-                "polymarket.com/portfolio: " + "; ".join(w.title for w in winners[:5]))
-        if losers:
-            lines.append(
-                f"{len(losers)} are $0 losing stubs (worthless — no UI redeem exists). To auto-burn "
-                "them clean, set POLYGON_RPC_URL in .env, or run "
-                "`python scripts/redeem_positions.py --confirm`.")
-        if alert_manager:
-            await alert_manager.send_health("\n".join(lines))
-        return {"winners": len(winners), "losers": len(losers), "auto_redeem": False}
-    scheduler.register_job("redeem_leftovers", _redeem_leftovers_job)
 
     async def run_discord():
         backoff = 5

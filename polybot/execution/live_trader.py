@@ -1284,8 +1284,8 @@ class LiveTrader(BaseTrader):
             claimable = sum(d["current_value"] for d in winners)
             logger.critical(
                 "UNREDEEMED WINNINGS: $%.2f in %d resolved window(s) NOT yet claimed - "
-                "redeem at polymarket.com/portfolio (or enable Settings -> Trading -> "
-                "Auto-Redeem, or run scripts/redeem_positions.py). Windows: %s",
+                "claim at polymarket.com/portfolio (or enable Settings -> Trading -> "
+                "Auto-Redeem). Windows: %s",
                 claimable, len(winners),
                 "; ".join(d["title"] for d in winners[:6])
                 + (" ..." if len(winners) > 6 else ""),
