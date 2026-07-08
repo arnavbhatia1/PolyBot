@@ -865,6 +865,17 @@ async def _evaluate_signal_and_enter(
     is_sniper = False
     lw_cfg = config.get("late_window", {})
 
+    # Time multiplier (phase penalizes ATM trades late, barely penalizes high
+    # conviction). Computed here — before the ghost below — so a suppressed base
+    # entry records its true entry_phase; the sniper overrides it to late_sniper.
+    timing_cfg = config.get("entry_timing", {})
+    time_mult, phase = compute_time_multiplier(
+        prob=signal.prob,
+        seconds_remaining=contract["seconds_remaining"],
+        normal_fraction=timing_cfg["normal_fraction"],
+        late_max_penalty=timing_cfg["late_max_penalty"],
+    )
+
     # The sniper is the bot's SOLE capital-deploying strategy. The base L1 signal
     # is still evaluated, but its BUYs never trade — each is recorded as a ghost
     # (gate "sniper_only") that resolves at window close, keeping the base
@@ -894,14 +905,6 @@ async def _evaluate_signal_and_enter(
             logger.info(f"{_C.DIM}SNIPE {signal.side} — coinbase {_cbm:+.0f} past strike · "
                         f"model {signal.prob:.0%} edge {signal.edge:+.0%}{_C.RESET}")
 
-    # Continuous time multiplier: penalizes ATM trades late, barely penalizes high-conviction trades
-    timing_cfg = config.get("entry_timing", {})
-    time_mult, phase = compute_time_multiplier(
-        prob=signal.prob,
-        seconds_remaining=contract["seconds_remaining"],
-        normal_fraction=timing_cfg["normal_fraction"],
-        late_max_penalty=timing_cfg["late_max_penalty"],
-    )
     if is_sniper:                       # the sniper bypasses the late-window time penalty
         time_mult, phase = 1.0, "late_sniper"
 

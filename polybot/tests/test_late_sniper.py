@@ -5,12 +5,44 @@ gated OFF by default and exercised by the integration review). The signal mirror
 the offline `momentum` signal in scripts/analyze_late_window.py exactly: a Coinbase
 move past strike with a still-cheap chosen-side ask.
 """
+import ast
 import time
+from pathlib import Path
 
 import pytest
 
 from polybot.core.signal_engine import SignalEngine
 from polybot.feeds.coinbase_feed import CoinbaseFeed
+
+
+def test_phase_assigned_before_any_ghost_call():
+    """Regression: _evaluate_signal_and_enter's nested _ghost() reads `phase` (and
+    other enclosing free vars) from base_ctx. A sniper_only suppression ghost fires
+    early, so `phase` MUST be assigned before the first _ghost() call — a NameError
+    here crashed every live tick when the assignment was accidentally removed.
+    Static guard: no mocking, catches the free-var-before-use regardless of runtime
+    path. Extend the checked set if base_ctx gains more enclosing vars."""
+    src = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "_evaluate_signal_and_enter")
+
+    # First _ghost(...) call inside the function.
+    ghost_lines = [n.lineno for n in ast.walk(fn)
+                   if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_ghost"]
+    assert ghost_lines, "no _ghost() call found — test is stale"
+    first_ghost = min(ghost_lines)
+
+    # Enclosing free vars that _ghost's base_ctx reads; each must be bound before the ghost.
+    # (raw_prob_side / _closes_tail / _ghost_flip_count are local to _ghost, not checked here.)
+    for var in ("aux_signals", "adverse_kelly_mult", "adverse_rate_at_30s",
+                "spot_flow_rec", "flow_score_rec", "phase"):
+        assigns = [t.lineno
+                   for node in ast.walk(fn) if isinstance(node, ast.Assign)
+                   for t in ast.walk(node)
+                   if isinstance(t, ast.Name) and t.id == var and isinstance(t.ctx, ast.Store)]
+        assigns = [ln for ln in assigns if ln < first_ghost]
+        assert assigns, f"'{var}' is read by _ghost's base_ctx but never assigned before the first _ghost() call (line {first_ghost}) — free-var-before-use"
 
 # Healthy ATR so compute_probability runs against a real vol scale.
 IND = {"atr": {"atr": 40.0, "passes": True, "candle_ts": 1}}
