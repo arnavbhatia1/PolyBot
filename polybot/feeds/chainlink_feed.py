@@ -69,8 +69,15 @@ class ChainlinkFeed:
     def _record_boundary(self, observed_ts: float) -> None:
         if self._price <= 0:
             return
-        next_boundary_ts = int(observed_ts // 300) * 300 + 300
-        self._boundary_prices[next_boundary_ts] = self._price
+        # Polymarket's price_to_beat is the FIRST btc/usd report AT/AFTER the window
+        # boundary timestamp (the same Chainlink data stream it resolves on, matched at
+        # +0ms). So the strike for the window that OPENS at `boundary_ts` is the first
+        # report whose timestamp lands at/after it — record once, first write wins
+        # (reports arrive in time order); later in-window ticks must NOT overwrite it.
+        # (Recording the last tick BEFORE the boundary instead missed the official round
+        # by >$8 in a fast open — ~1% of windows flipped side.)
+        boundary_ts = int(observed_ts // 300) * 300
+        self._boundary_prices.setdefault(boundary_ts, self._price)
         cutoff = int(observed_ts) - 7200
         while self._boundary_prices:
             k = next(iter(self._boundary_prices))

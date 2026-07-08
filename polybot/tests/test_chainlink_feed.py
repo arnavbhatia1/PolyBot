@@ -27,25 +27,26 @@ class TestChainlinkFeed:
 
     def test_boundary_capture(self):
         f = ChainlinkFeed()
-        boundary_ts = (int(time.time()) // 300) * 300
+        boundary_ts = ((int(time.time()) // 300) - 1) * 300   # a past boundary (not the start window)
         f._price = 71234.56
-        f._record_boundary(boundary_ts)
-        assert f.get_strike(boundary_ts + 300) == 71234.56
+        f._record_boundary(boundary_ts + 1)                   # first report just after the boundary
+        assert f.get_strike(boundary_ts) == 71234.56
 
-    def test_boundary_last_update_wins(self):
-        """The last observation before the next boundary defines the strike,
-        matching Polymarket's on-chain latestRoundData() at the boundary block."""
+    def test_boundary_first_at_or_after_wins(self):
+        """The FIRST report AT/AFTER a boundary defines that window's strike —
+        Polymarket's price_to_beat is the first Chainlink btc/usd report at/after the
+        window-boundary timestamp (matched at +0ms). Later in-window reports must NOT
+        overwrite it."""
         f = ChainlinkFeed()
-        boundary_ts = (int(time.time()) // 300) * 300
-        # Three observations within the 5-min window leading up to next_boundary.
+        boundary_ts = ((int(time.time()) // 300) - 1) * 300
         f._price = 71000.0
-        f._record_boundary(boundary_ts + 60)
+        f._record_boundary(boundary_ts + 1)      # first report at/after the boundary
         f._price = 72000.0
-        f._record_boundary(boundary_ts + 180)
+        f._record_boundary(boundary_ts + 120)    # later ticks in the same window
         f._price = 73000.0
         f._record_boundary(boundary_ts + 290)
-        # The latest update before next_boundary defines the strike.
-        assert f.get_strike(boundary_ts + 300) == 73000.0
+        # The first at/after the boundary defines the strike, not the last before the next.
+        assert f.get_strike(boundary_ts) == 71000.0
 
     def test_epoch_seconds_normalizes_rtds_milliseconds(self):
         """RTDS payload timestamps arrive in epoch ms (e.g. 1781031482000);
@@ -57,14 +58,14 @@ class TestChainlinkFeed:
         """A boundary recorded from a normalized ms timestamp must be retrievable
         by a second-space get_strike lookup — un-normalized ms keys never match."""
         f = ChainlinkFeed()
-        boundary_ts = (int(time.time()) // 300) * 300
+        boundary_ts = ((int(time.time()) // 300) - 1) * 300
         f._price = 71234.56
         f._record_boundary(ChainlinkFeed._epoch_seconds((boundary_ts + 10) * 1000.0))
         # Fresh-price fallback must not mask the captured boundary: change the
         # live price after capture and require the boundary value back.
         f._price = 99999.0
         f._last_update = time.time()
-        assert f.get_strike(boundary_ts + 300) == 71234.56
+        assert f.get_strike(boundary_ts) == 71234.56
 
     @pytest.mark.asyncio
     async def test_handshake_rejection_is_reconnectable_not_error(self, monkeypatch, caplog):

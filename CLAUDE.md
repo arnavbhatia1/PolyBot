@@ -52,17 +52,15 @@ Every 5 min, Polymarket runs a market: will BTC close higher or lower than at
 the window's start? Up/Down ERC-1155 tokens trade $0-$1; the winning side pays
 $1/share. Chainlink (via Polymarket RTDS, tracking Coinbase) is the resolution
 source; Gamma mirrors it for discovery. The per-window **decision strike** is
-Polymarket's `event_metadata.price_to_beat` (`_compute_strike_and_btc`) — the exact
-value it resolves on (== the prior window's close; the 5-min windows chain, so
-`price_to_beat[N]` == `final_price[N-1]` to the penny, verified 6335/6335) and the
-number the UI shows. It is set at window open, served through the active window, and
-**refreshed every loop**, so any not-yet-final value at the open self-corrects (logged
-as a strike change) before the final-45s sniper fires. Chainlink's boundary-captured
-strike is only a **cold-start fallback** until `price_to_beat` is served — its
-last-tick-before-boundary capture misses the official round by >$8 in a fast open
-(~1% of windows flip side), so it never leads or locks in. (`final_price`, the resolved
-close, posts minutes late — usable for resolution, never fast enough for the live
-strike.) Two modes, one
+Chainlink's **first btc/usd report at/after the window-boundary timestamp**
+(`chainlink_feed.get_strike`, via RTDS; `_compute_strike_and_btc`) — the exact rule
+Polymarket's `price_to_beat` uses (the same data stream it resolves on, matched at
++0ms), captured live and available ~ms into the window. Recording the last tick
+*before* the boundary instead missed the official round by >$8 in a fast open
+(~1% of windows flipped side). Gamma's `event_metadata.price_to_beat` is the same
+value but served late/unreliably in-window (whole windows never get it), so it is only
+a cold-start bootstrap until the boundary report lands; the settle to the captured
+value is logged. Two modes, one
 engine: **paper**
 (realism shim: real CLOB books, FOK semantics, convex slippage,
 network-fail/latency jitter calibrated to the measured warm POST RTT

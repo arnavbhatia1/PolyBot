@@ -1328,9 +1328,9 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
                             coinbase_feed: Any = None,
                             contract: Any = None,
                             **kwargs) -> tuple[float | None, float | None, dict[int, float], int, str]:
-    """Derive strike and BTC price. Strike = event_metadata.price_to_beat (the value
-    Polymarket resolves on and the UI shows), refreshed each loop; Chainlink's boundary
-    capture is only a cold-start fallback until price_to_beat is served."""
+    """Derive strike and BTC price. Strike = Chainlink's first-report-at/after-the-boundary
+    (get_strike) — the exact rule Polymarket's price_to_beat uses; Gamma price_to_beat is a
+    cold-start fallback."""
     now_ts = int(time.time())
 
     try:
@@ -1338,32 +1338,29 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     except (ValueError, IndexError):
         contract_window_ts = int(now_ts // 300) * 300  # fallback
 
-    # Decision strike = Polymarket's event_metadata.price_to_beat — the exact value it
-    # RESOLVES on (== the prior window's close, verified 6335/6335) and the number the UI
-    # shows. It is set at window open, served throughout the active window, and REFRESHED
-    # here every loop, so a not-yet-finalized value at the very open self-corrects long
-    # before the final-45s sniper fires; every change is logged so drift is never silent.
-    # Chainlink's boundary capture is only a cold-start fallback until price_to_beat is
-    # served — its last-tick-before-boundary value misses the official round by >$8 in a
-    # fast open (~1% of windows flip side), so it must never be primary or lock in.
-    ptb = (contract or {}).get("event_metadata") or {}
-    ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
-    if ptb and ptb > 0:
+    # Decision strike = Chainlink's first-report-AT/AFTER-the-boundary (get_strike) — the
+    # exact rule Polymarket's price_to_beat uses (same btc/usd data stream it resolves on,
+    # matched at +0ms), captured live from RTDS and available ~ms into the window. Any
+    # settle from the cold-start fallback to the captured value is logged so it's visible.
+    # Gamma's event_metadata.price_to_beat is the SAME value but served late/unreliably
+    # in-window (whole windows never get it), so it is only a cold-start bootstrap until
+    # the boundary report lands.
+    cl_strike = chainlink_feed.get_strike(contract_window_ts) if chainlink_feed else None
+    if cl_strike and cl_strike > 0:
         prev = window_strikes.get(contract_window_ts)
         if prev is None:
+            logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
+        elif abs(prev - cl_strike) > 0.005:
+            logger.info(f"{_C.CYAN}STRIKE {_slug_to_window(cid)} | ${prev:,.2f} → ${cl_strike:,.2f} "
+                        f"(Chainlink boundary settled){_C.RESET}")
+        window_strikes[contract_window_ts] = cl_strike
+    elif contract_window_ts not in window_strikes:
+        ptb = (contract or {}).get("event_metadata") or {}
+        ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
+        if ptb:
+            window_strikes[contract_window_ts] = ptb
             logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | "
-                        f"Strike ${ptb:,.2f} (price_to_beat){_C.RESET}")
-        elif abs(prev - ptb) > 0.005:
-            logger.info(f"{_C.CYAN}STRIKE {_slug_to_window(cid)} | ${prev:,.2f} → ${ptb:,.2f} "
-                        f"(price_to_beat){_C.RESET}")
-        window_strikes[contract_window_ts] = ptb
-    else:
-        cl_strike = chainlink_feed.get_strike(contract_window_ts) if chainlink_feed else None
-        if cl_strike and cl_strike > 0:
-            if contract_window_ts not in window_strikes:
-                logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | "
-                            f"Strike ${cl_strike:,.2f} (Chainlink fallback — price_to_beat not ready){_C.RESET}")
-            window_strikes[contract_window_ts] = cl_strike
+                        f"Strike ${ptb:,.2f} (Polymarket bootstrap — Chainlink not ready){_C.RESET}")
 
     window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
 
