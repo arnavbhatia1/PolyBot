@@ -350,7 +350,7 @@ def _fmt_secs(s: float) -> str:
 
 def _fee_breakdown(result: Any) -> str:
     """Close-summary fee string: total with an entry/exit split so the line can't be
-    misread as a single charge. Flags the zero-fee maker leg explicitly."""
+    misread as a single charge."""
     entry, exit_ = result.entry_fee_usd, result.exit_fee_usd
     total = entry + exit_
     return f"${total:.2f}  (entry ${entry:.2f} + exit ${exit_:.2f})"
@@ -1854,18 +1854,15 @@ async def _evaluate_and_exit_position(
                 f"attempting exit"
             )
 
-        result = None
+        # Emit the pre-scalp snapshot here (after size guard) so the price the
+        # scalp triggers on is always visible, without spamming on deferred ticks.
+        logger.info(
+            f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
+            f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
+            f"BTC ${btc_now:,.0f} [{_btc_src}]  mkt {market_price:.2f}"
+        )
 
-        if result is None:
-            # Emit the pre-scalp snapshot here (after size guard) so the price the
-            # scalp triggers on is always visible, without spamming on deferred ticks.
-            logger.info(
-                f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
-                f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
-                f"BTC ${btc_now:,.0f} [{_btc_src}]  mkt {market_price:.2f}"
-            )
-
-            result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token, position=pos)
+        result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token, position=pos)
         if not result.success:
             if "CLOB minimum" in (result.reason or ""):
                 # Race: size was >= $1 at the pre-check but dropped by order time —
