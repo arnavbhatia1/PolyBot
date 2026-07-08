@@ -1,5 +1,4 @@
 """Window-path recorder + tape recorder units."""
-import asyncio
 import json
 import time
 

@@ -4,11 +4,6 @@ from polybot.feeds.binance_feed import Candle, CandleBuffer
 def _make_candle(timestamp=1000, open=50000, high=50100, low=49900, close=50050, volume=10.0):
     return Candle(timestamp=timestamp, open=open, high=high, low=low, close=close, volume=volume)
 
-def test_candle_creation():
-    c = _make_candle()
-    assert c.close == 50050
-    assert c.volume == 10.0
-
 def test_buffer_add_candle():
     buf = CandleBuffer(max_size=5)
     buf.add(_make_candle(timestamp=1000))

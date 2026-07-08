@@ -39,7 +39,7 @@ class CircuitBreaker:
 
     When bankroll crosses a higher tier the floor ratchets up. It never resets down.
 
-    Streak tracking is kept for Discord alerts but does NOT drive sizing.
+    Streak tracking feeds Discord alerts only; it does NOT drive sizing.
     """
 
     def __init__(
@@ -59,7 +59,7 @@ class CircuitBreaker:
         self.locked_tier: float = _locked_tier(initial_bankroll)
         self.floor: float = round(self.locked_tier * self.floor_pct, 2)
 
-        # Peak still tracked for logging (high-water mark)
+        # Peak tracked for logging (high-water mark)
         self.peak_bankroll: float = initial_bankroll
 
         # Streak tracking (for Discord alerts only)

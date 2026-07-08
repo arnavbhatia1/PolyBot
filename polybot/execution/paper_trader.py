@@ -49,8 +49,6 @@ class PaperTrader(BaseTrader):
     # Warm-SELL parameters mirror LiveTrader exactly (TTL + drift acceptance).
     # The speedup is the sign work a presigned order skips — measured live at
     # ~3-5ms (EIP-712 sign), so 5ms, not a full sign-and-post's worth.
-    # Retuned 2026-07-05 between measurement regimes (bot live, paper idle);
-    # the pre-07-05 paper shadow series was recorded at the old 0.15 value.
     _SELL_WARMUP_TTL_S: float = 5.0
     _SELL_WARMUP_SPEEDUP_S: float = 0.005
 

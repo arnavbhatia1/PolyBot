@@ -10,12 +10,7 @@ DEFAULT_PARAMS = {
 
 
 class IndicatorEngine:
-    """ATR from the candle buffer — L1's vol input + the low-vol entry gate.
-
-    The momentum-indicator committee this used to compute (RSI/MACD/Stoch/EMA/
-    OBV/VWAP) was deleted with the entry-side prediction stack: nothing it fed
-    survived the no-entry-edge verdict.
-    """
+    """ATR from the candle buffer — L1's vol input + the low-vol entry gate."""
 
     def __init__(self, params: dict[str, dict[str, Any]] | None = None) -> None:
         p = params or DEFAULT_PARAMS

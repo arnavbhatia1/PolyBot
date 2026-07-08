@@ -136,7 +136,7 @@ def test_evaluate_hold_stamps_effective_exit_threshold(engine):
     deep-loss-floor/ExitBoundary value) — main.py's phantom-bid SELL re-verify
     reads it instead of the raw config threshold. It must be populated and vary
     with market price (deep-ITM blends toward the more patient floor)."""
-    atm = engine.evaluate_hold(
+    engine.evaluate_hold(
         _make_indicators(atr_value=80), btc_price=66420, strike_price=66400,
         seconds_remaining=180, market_price_for_side=0.55, side="Up", exit_threshold=-0.05)
     atm_thr = engine.last_effective_exit_threshold

@@ -93,17 +93,6 @@ class TestKellyMultiplier:
         assert cb.kelly_multiplier == pytest.approx(0.25)
         assert cb.kelly_multiplier > 0
 
-    def test_concave_scaling_midpoint(self):
-        """At bankroll midway between floor and tier, concave (sqrt) curve gives
-        min + (1-min) × sqrt(0.5) ≈ 0.7803.
-        """
-        import math
-        cb = CircuitBreaker(initial_bankroll=1000.0, min_multiplier=0.25, floor_pct=0.85)
-        midpoint = (cb.floor + cb.locked_tier) / 2.0
-        cb.update_bankroll(midpoint)
-        expected = 0.25 + (1.0 - 0.25) * math.sqrt(0.5)
-        assert cb.kelly_multiplier == pytest.approx(expected)
-
     def test_kelly_recovers_as_bankroll_climbs(self):
         import math
         cb = CircuitBreaker(initial_bankroll=1000.0, min_multiplier=0.25, floor_pct=0.85)

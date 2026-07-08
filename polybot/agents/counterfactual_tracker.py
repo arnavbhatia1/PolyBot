@@ -7,7 +7,8 @@ Hold counterfactuals: when the bot holds to resolution, record the worst
 moment during the hold (lowest holding_edge) and compute whether scalping
 at that moment would have been better.
 
-Data feeds into the daily learning pipeline to tune exit_edge_threshold.
+Both arms are the ground-truth evidence for any exit-policy change, scored
+as actual − counterfactual (never a naive sum of stored delta_pnl).
 """
 from __future__ import annotations
 
@@ -148,9 +149,8 @@ class CounterfactualTracker:
         holding_edge = hold_context.get("holding_edge", 0)
         # Keyed by position_id (NOT market_id) so two concurrently-held positions in one
         # window — the normal entry + a late-window sniper stack — each track their own
-        # worst moment instead of clobbering a single per-window slot (which silently
-        # dropped BOTH positions' hold-counterfactuals). One position per id, so this is
-        # identical to the old per-window behaviour when only one position is held.
+        # worst moment instead of sharing a single per-window slot (which would silently
+        # drop BOTH positions' hold-counterfactuals).
         pid = pos.get("id", 0)
         current = self._hold_worst.get(pid)
 

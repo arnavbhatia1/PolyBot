@@ -50,7 +50,6 @@ from polybot.discord_bot.bot import create_bot
 from polybot.discord_bot.alerts import AlertManager
 from polybot.execution.circuit_breaker import CircuitBreaker
 from polybot.execution.correlation import concurrent_multiplier
-import math
 from polybot.feeds.binance_depth import BinanceDepthFeed
 from polybot.feeds.binance_trades import BinanceTradesFeed, BinanceTradeAccumulator
 from polybot.feeds.coinbase_feed import CoinbaseFeed
@@ -2609,7 +2608,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             if any(p["market_id"] == cid and p["status"] == "open" for p in positions):
                 continue
 
-            now_ts = int(time.time())
             token_up = contract["token_id_up"]
             token_down = contract["token_id_down"]
 
@@ -2621,7 +2619,6 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
             price_up = prices["price_up"]
             price_down = prices["price_down"]
-            price_source = prices["price_source"]
             book_up = prices["book_up"]
             book_down = prices["book_down"]
             depth_usd_up = prices["depth_usd_up"]
@@ -2693,20 +2690,6 @@ async def run_pipeline() -> None:
     base_dir = Path(__file__).parent
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-
-    signal_cfg = config.get("signal", {})
-    market_cfg = config.get("market", {})
-    sched_cfg = config.get("schedule", {})
-    ind_cfg = config.get("indicators", {})
-
-    indicator_params = {
-        "atr": {"period": ind_cfg.get("atr", {}).get("period", 14),
-                "low_pct": ind_cfg.get("atr", {}).get("low_percentile", 5),
-                "history": ind_cfg.get("atr", {}).get("history_periods", 100)},
-    }
-    indicator_engine = IndicatorEngine(params=indicator_params)
-
-    signal_engine = _build_signal_engine(signal_cfg, config)
 
     outcome_reviewer = OutcomeReviewer(outcomes_dir=str(base_dir / "memory" / "outcomes"))
     counterfactual_tracker = CounterfactualTracker(memory_dir=str(base_dir / "memory"))

@@ -5,7 +5,6 @@ signature recover to the signing EOA (ecrecover), so the Safe will accept it.
 Network I/O is mocked — no real RPC or chain is touched.
 """
 import pytest
-import pytest_asyncio
 from eth_abi import decode as abi_decode
 from eth_account import Account
 from eth_keys.datatypes import Signature
@@ -13,7 +12,7 @@ from eth_utils import to_checksum_address
 
 from polybot.execution import redeem as R
 from polybot.execution.redeem import (
-    PolygonRedeemer, RedeemerConfigError, Redeemable, fetch_redeemable,
+    PolygonRedeemer, RedeemerConfigError, fetch_redeemable,
     redeem_positions_calldata, balance_of_calldata, encode_exec_transaction,
     safe_tx_digest, sign_safe_digest, PUSD, USDC_E, CONDITIONAL_TOKENS,
 )

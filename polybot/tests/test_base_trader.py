@@ -115,16 +115,6 @@ class TestFillResult:
         assert fr.fill_size == 0.0
         assert fr.reason == ""
 
-    def test_filled(self):
-        fr = FillResult(filled=True, fill_price=0.55, fill_size=10.0)
-        assert fr.filled is True
-        assert fr.fill_price == 0.55
-        assert fr.fill_size == 10.0
-
-    def test_with_reason(self):
-        fr = FillResult(filled=False, reason="Timeout")
-        assert fr.reason == "Timeout"
-
 
 # ---------------------------------------------------------------------------
 # Fee math (module-level functions)

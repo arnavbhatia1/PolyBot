@@ -59,8 +59,7 @@ class CoinbaseFeed:
         # Per-trade flow: (ts, signed_size). +size = buyer aggressor, -size = seller aggressor.
         self._trade_buffer_s = trade_buffer_s
         self._trades: deque[tuple[float, float]] = deque()
-        # 1s-bucketed (ts, price) history for realized_vol — same sampling the
-        # old 1s-kline fast vol used, so the metric definition is unchanged.
+        # 1s-bucketed (ts, price) history for realized_vol.
         self._prices: deque[tuple[float, float]] = deque()
         self._last_price_sample: float = 0.0
         # When the current contiguous trade window began (reset on every

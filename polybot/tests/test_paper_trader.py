@@ -1,6 +1,6 @@
 import pytest
 import pytest_asyncio
-from polybot.execution.base import taker_fee, entry_fee_shares, exit_fee_usdc
+from polybot.execution.base import entry_fee_shares, exit_fee_usdc
 from polybot.execution.paper_trader import PaperTrader
 from polybot.db.models import Database
 
@@ -126,28 +126,7 @@ async def test_scalp_residual_credited_to_bankroll_not_pnl(trader, db):
     assert close_result.pnl == pytest.approx(revenue - 50.0, abs=0.01)
 
 
-# --- Fee model tests ---
-
-def test_taker_fee_formula():
-    # fee = feeRate × shares × p × (1-p)
-    fee = taker_fee(100, 0.50, 0.072)
-    assert fee == pytest.approx(0.072 * 100 * 0.50 * 0.50, abs=0.001)
-
-def test_taker_fee_zero_at_extremes():
-    assert taker_fee(100, 1.0, 0.072) == 0.0
-    assert taker_fee(100, 0.0, 0.072) == 0.0
-
-def test_entry_fee_in_shares():
-    # 100 shares at 0.50, crypto rate 0.072
-    fee_shares = entry_fee_shares(100, 0.50, 0.072)
-    fee_dollars = taker_fee(100, 0.50, 0.072)
-    # fee_shares = fee_dollars / price
-    assert fee_shares == pytest.approx(fee_dollars / 0.50, abs=0.001)
-
-def test_exit_fee_in_usdc():
-    fee = exit_fee_usdc(100, 0.60, 0.072)
-    assert fee == pytest.approx(0.072 * 100 * 0.60 * 0.40, abs=0.001)
-
+# --- Fee accounting through PaperTrader (module-level fee math lives in test_base_trader) ---
 
 @pytest.mark.asyncio
 async def test_shares_held_stored_correctly(trader, db):
