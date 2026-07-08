@@ -99,7 +99,6 @@ class WindowPathRecorder:
         self._discovering: int = 0          # window_ts a discovery task is running for
         self._traded: set[str] = set()
         self._pending_label: dict[str, float] = {}  # window_id -> window_end_ts
-        self._window_finals: dict[int, float] = {}   # window_ts -> resolved final_price
         self._last_label_run = 0.0
         self._rows: list[tuple] = []
         self._running = False
@@ -290,16 +289,6 @@ class WindowPathRecorder:
             if fp is None or ptb is None:
                 continue
             self._pending_label.pop(market_id, None)
-            # Cache the resolved close so the trading loop can use it as the NEXT
-            # window's decision strike (chained: price_to_beat[N] == final_price[N-1]).
-            try:
-                wts = int(market_id.rsplit("-", 1)[-1])
-                self._window_finals[wts] = fp
-                cutoff = now - 7200
-                for k in [k for k in self._window_finals if k < cutoff]:
-                    self._window_finals.pop(k, None)
-            except (ValueError, IndexError):
-                pass
             try:
                 await self.db.conn.execute(
                     "INSERT OR REPLACE INTO window_labels VALUES (?, ?, ?, ?, ?)",
@@ -308,17 +297,6 @@ class WindowPathRecorder:
                 self.labels_written += 1
             except Exception as e:
                 logger.warning(f"window label write failed for {market_id}: {e}")
-
-    def window_final(self, window_ts: int) -> float | None:
-        """Resolved final_price of the window that STARTED at ``window_ts``.
-
-        Windows chain: price_to_beat[N] == final_price[N-1] exactly, so the trading
-        loop uses ``window_final(N_ts - 300)`` as window N's decision strike (what
-        Polymarket resolves on), sidestepping the Chainlink boundary-capture miss.
-        None until the prior window is labeled (~30s after it closes — well before
-        the final-45s sniper fires)."""
-        fp = self._window_finals.get(int(window_ts))
-        return fp if fp and fp > 0 else None
 
     def _sample(self) -> None:
         w = self._window
