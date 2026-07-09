@@ -202,3 +202,20 @@ def test_cb_move_interpolates_between_buckets_no_overstatement():
     # interpolated then ~= 60010 -> move ~= 40 (NOT the overstated 50 from using 60000)
     assert mv == pytest.approx(40.0, abs=0.6)
     assert mv < 50.0   # the bug would have returned ~50
+
+
+def test_kelly_sized_on_market_anchored_prob_not_l1():
+    """Sniper sizing must use ask + sniper_min_edge (the defended edge at market
+    odds), never raw L1 prob — L1 is ~+17pp overconfident conditional on firing,
+    and Kelly on the phantom edge upsizes the losing fires."""
+    eng = _eng()
+    sig = eng.evaluate_late_sniper(
+        IND, btc_price=60050.0, strike_price=60000.0, seconds_remaining=20.0,
+        market_ask_up=0.70, market_ask_down=0.31, cb_move=12.0,
+        cb_move_threshold=8.0, ask_cap=0.92, sniper_min_edge=0.04)
+    assert sig.action == "LATE_SNIPE_YES"
+    anchored = eng._kelly(0.70 + 0.04, 0.70)
+    l1 = eng._kelly(sig.prob, 0.70)
+    assert sig.kelly_size == pytest.approx(anchored)
+    assert sig.prob > 0.74          # L1 genuinely more confident here...
+    assert anchored < l1            # ...so the anchor is the conservative branch

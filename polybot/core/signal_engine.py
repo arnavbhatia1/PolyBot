@@ -401,7 +401,16 @@ class SignalEngine:
                                f"sniper: book already repriced — edge {edge:+.0%} is below the "
                                f"{sniper_min_edge:.0%} floor",
                                side="Up" if up else "Down")
-        kelly = self._kelly(prob, ask, fee_rate=fee_rate)
+        # SIZE on the edge we can DEFEND (the min_edge floor at these odds), not on
+        # raw L1 prob: L1 is measured ~+17pp overconfident conditional on firing
+        # (calm-vol ATR input during the very burst that fires it + winner's-curse
+        # selection), and Kelly on that phantom edge upsizes exactly the losing
+        # fires (live losers ran share-weighted bigger than winners). The market
+        # price is the calibrated estimate (realized win% tracks price), so the
+        # sizing prob is anchored to it. Entry floor and exit engine still use L1;
+        # the entry gate guarantees prob >= ask + sniper_min_edge, so this is
+        # always the conservative branch.
+        kelly = self._kelly(ask + sniper_min_edge, ask, fee_rate=fee_rate)
         action = "LATE_SNIPE_YES" if up else "LATE_SNIPE_NO"
         side_word = "Up" if up else "Down"
         move_word = "jumped" if cb_move > 0 else "dropped"

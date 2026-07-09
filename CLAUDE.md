@@ -119,7 +119,12 @@ reprices.
   prob-driven; `sniper_min_edge` = `min_edge` is the floor and the $1 min-size
   backstops tiny-Kelly fires). Every execution-quality gate stays — adverse
   selection, edge-decay, depth, net-edge, min-size, pre-submit VWAP re-check,
-  feed freshness, flip hurdle.
+  feed freshness, flip hurdle. **Sizing is market-anchored**: sniper Kelly is
+  computed on `ask + sniper_min_edge` (the defended edge at market odds), never
+  on raw L1 prob — L1 is ~+17pp overconfident conditional on firing (calm-vol
+  ATR during the burst + winner's-curse selection) and Kelly on the phantom
+  edge upsized exactly the losing fires. Entry floor and exit engine still use
+  L1; the FOK-limit cap stays on L1 (anchoring it would zero the pad).
 - **Kill bar — two gates; the harness is only the first.** (1) The
   `analyze_late_window.py` momentum read (`t_day ≥ 2.0` AND block-bootstrap
   `p10 > 0` over ≥ 8 clean ET days, ≥ 6 positive, ≥ 40 fills, net of fee,
