@@ -67,7 +67,6 @@ class BinanceDepthFeed:
                 async with websockets.connect(stream, ping_interval=20, ping_timeout=30, compression=None) as ws:
                     self._ws = ws
                     enable_nodelay(ws, "binance_depth")
-                    backoff = 1
                     self.staleness.reset()
                     self.staleness.mark_connected()
                     logger.debug("Binance depth WS connected: %s", stream)
@@ -88,6 +87,7 @@ class BinanceDepthFeed:
                             self.top_asks = asks
                             self.updated_at = time.time()
                             self.staleness.observe(self.updated_at)
+                            backoff = 1   # healthy DATA — safe to reset
             except asyncio.CancelledError:
                 break
             except Exception as e:

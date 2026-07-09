@@ -51,11 +51,11 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parent.parent
 PATHS_DB = ROOT / "polybot" / "db" / "window_paths.db"
 LIVE_DB = ROOT / "polybot" / "db" / "polybot_live.db"   # real fills for the live kill-rule read
+PAPER_DB = ROOT / "polybot" / "db" / "polybot_paper.db" # paper-shadow fills (the binding gate in paper mode)
 # window_labels accrue in the ACTIVE mode's DB — paper holds the pre-07-04
 # history, live everything since the flip. Read both or the corpus freezes
 # at the mode switch (and the post-live kill rule can never trip).
-LABEL_DBS = [ROOT / "polybot" / "db" / "polybot_paper.db",
-             ROOT / "polybot" / "db" / "polybot_live.db"]
+LABEL_DBS = [PAPER_DB, LIVE_DB]
 ET = ZoneInfo("America/New_York")  # DST-correct; a fixed UTC-4 mis-buckets EST days
 FEE_RATE = 0.07
 LATE_START = 255.0          # only the final 45s
@@ -274,10 +274,13 @@ def health_read(rtt=0.135, max_slip=0.05, cb_move_thr=8.0, ask_cap=0.92):
     return r
 
 
-def live_health_read():
-    """Post-live kill-rule metrics computed from the REAL fills (polybot_live.db
-    trade_history), the money-side analog of health_read() (which reads the SIM
-    corpus). Same convention as the kill bar so the two are directly comparable:
+def live_health_read(db_path=None, since_iso=None):
+    """Post-live kill-rule metrics computed from REALIZED fills (trade_history),
+    the money-side analog of health_read() (which reads the SIM corpus). Defaults
+    to polybot_live.db; pass db_path=PAPER_DB + since_iso=<validation epoch> for
+    the paper-shadow read (the BINDING gate while re-validating in paper mode —
+    fills before the epoch ran different code/config and are excluded). Same
+    convention as the kill bar so the reads are directly comparable:
     EQUAL-WEIGHT per-fill net $/share, day-clustered by ET.
 
     Per-fill net = (pnl - fees) / shares_held — pnl is gross (shares*outcome - size),
@@ -290,16 +293,20 @@ def live_health_read():
     it has the days: trailing-4-day mean < +0.02 (+2c/sh) once >= 4 ET days, OR
     trailing-8-day t < 2.0 once >= 8. None until >= 4 live days exist. Alert-only —
     the caller never flips config (kill bars are operator authority)."""
-    if not LIVE_DB.exists():
+    db = Path(db_path) if db_path else LIVE_DB
+    if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{LIVE_DB}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     try:
-        rows = con.execute(
-            "SELECT t.pnl AS pnl, t.fees AS fees, t.exit_timestamp AS ts, "
-            "p.shares_held AS shares FROM trade_history t JOIN positions p ON t.id = p.id "
-            "WHERE t.exit_timestamp IS NOT NULL AND p.shares_held > 0"
-        ).fetchall()
+        q = ("SELECT t.pnl AS pnl, t.fees AS fees, t.exit_timestamp AS ts, "
+             "p.shares_held AS shares FROM trade_history t JOIN positions p ON t.id = p.id "
+             "WHERE t.exit_timestamp IS NOT NULL AND p.shares_held > 0")
+        args = ()
+        if since_iso:
+            q += " AND t.exit_timestamp >= ?"
+            args = (since_iso,)
+        rows = con.execute(q, args).fetchall()
     except sqlite3.OperationalError:
         return None
     finally:
@@ -325,7 +332,8 @@ def live_health_read():
         tripped = None                                        # too few live days to judge
     else:
         tripped = (trailing4 < 0.02) or (trailing8_t is not None and trailing8_t < 2.0)
-    return dict(label="live(trade_history)", n_fills=len(fills), n_days=len(daily),
+    return dict(label=f"{db.stem}(trade_history{' since ' + since_iso if since_iso else ''})",
+                n_fills=len(fills), n_days=len(daily),
                 win_rate=statistics.mean(f[1] for f in fills), avg_fill=float("nan"),
                 mean_net_day=m, t_day=t, p10=block_bootstrap_p10(daily),
                 net_per_sh=statistics.mean(f[0] for f in fills),

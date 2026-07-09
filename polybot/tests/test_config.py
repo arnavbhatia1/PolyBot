@@ -134,11 +134,32 @@ class TestKellyFloor:
 # sections; per-key exhaustion was redundant churn for the validator framework.
 # ---------------------------------------------------------------------------
 
+class TestValidateSniperKnobs:
+    """The sniper is the ONLY capital-deploying strategy — a fat-fingered knob
+    must be rejected at load, not deployed."""
+
+    @pytest.mark.parametrize("key,bad", [
+        ("late_window.sniper_fok_slip", 0.10),   # 10x the calibrated pad
+        ("late_window.sniper_ask_cap", 0.99),    # above the deep-favorite line
+        ("late_window.sniper_cb_move", 0.5),     # fires on noise
+        ("late_window.sniper_late_start_s", 300.0),  # whole-window "late" start
+    ])
+    def test_out_of_range_sniper_knob_rejected(self, key, bad):
+        cfg = _valid_config()
+        _set_nested(cfg, key, bad)
+        with pytest.raises(ValueError, match=key.replace(".", r"\.")):
+            validate_config(cfg)
+
+    def test_production_values_pass(self):
+        validate_config(_valid_config())  # conftest mirrors settings.yaml
+
+
 class TestValidateConfigMissing:
     @pytest.mark.parametrize("key", [
         "math.kelly_fraction",       # registry-driven check
         "signal.max_edge",            # loader-specific check outside the registry
         "execution.initial_bankroll", # execution section
+        "late_window.sniper_fok_slip",  # sniper knobs are money-critical too
     ])
     def test_missing_field_is_reported(self, key):
         cfg = _valid_config()

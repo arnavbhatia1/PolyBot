@@ -248,6 +248,13 @@ _window_recorder = None
 # Chainlink boundary value LOCKS (suppresses the cold-start settle churn).
 _strike_logged: set[int] = set()
 
+# Windows whose strike is TRUSTED for capital deployment: sourced from Gamma's
+# price_to_beat (the resolved truth) or from a Chainlink boundary capture with no
+# delivery hole around the boundary (strike_reliable). The sniper only fires on a
+# trusted strike — an RTDS gap can lock a value $35+ off Polymarket's (measured
+# ~1-2% of windows), and a sniper firing on the wrong strike is trading noise.
+_strike_trusted: dict[int, bool] = {}
+
 # Previous window resolution margin — recorded telemetry (no model layer consumes it)
 _prev_resolution_margin: float = 0.0
 _PREV_MARGIN_PATH = PREV_MARGIN_PATH
@@ -894,14 +901,28 @@ async def _evaluate_signal_and_enter(
             and signal.action not in ("BUY_YES", "BUY_NO")
             and coinbase_feed is not None
             and contract["seconds_remaining"] <= lw_cfg["sniper_late_start_s"]):
-        _cbm = coinbase_feed.cb_move(lw_cfg["sniper_move_window_s"])
-        _snipe = signal_engine.evaluate_late_sniper(
-            indicators, btc_price, strike, contract["seconds_remaining"],
-            price_up, price_down, _cbm,
-            lw_cfg["sniper_cb_move"],
-            lw_cfg["sniper_ask_cap"],
-            lw_cfg["sniper_min_edge"],
-            fee_rate=fee_rate, closes=closes)
+        # Capital only deploys on a TRUSTED strike (Gamma price_to_beat, or a
+        # Chainlink boundary capture with no delivery hole). An untrusted strike
+        # can be $35+ off Polymarket's, making move-past-strike a coin flip.
+        try:
+            _w_ts = int(cid.rsplit("-", 1)[-1])
+        except (ValueError, IndexError):
+            _w_ts = -1
+        if not _strike_trusted.get(_w_ts, False):
+            _emit_gate_skip(cid, "sniper_strike_unverified",
+                            "sniper: strike unverified (RTDS boundary gap — value may differ "
+                            "from Polymarket's price_to_beat)", quiet=_SNIPER_ONLY_QUIET)
+            _snipe = TradeSignal("SKIP", signal.prob, signal.edge, 0,
+                                 "sniper: strike unverified", side=signal.side)
+        else:
+            _cbm = coinbase_feed.cb_move(lw_cfg["sniper_move_window_s"])
+            _snipe = signal_engine.evaluate_late_sniper(
+                indicators, btc_price, strike, contract["seconds_remaining"],
+                price_up, price_down, _cbm,
+                lw_cfg["sniper_cb_move"],
+                lw_cfg["sniper_ask_cap"],
+                lw_cfg["sniper_min_edge"],
+                fee_rate=fee_rate, closes=closes)
         if _snipe.action in ("LATE_SNIPE_YES", "LATE_SNIPE_NO"):
             _snipe.action = "BUY_YES" if _snipe.action == "LATE_SNIPE_YES" else "BUY_NO"
             signal = _snipe
@@ -1350,8 +1371,27 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     # in-window (whole windows never get it), so it is only a cold-start bootstrap until
     # the boundary report lands.
     cl_strike = chainlink_feed.get_strike(contract_window_ts) if chainlink_feed else None
-    if cl_strike and cl_strike > 0:
+    ptb = (contract or {}).get("event_metadata") or {}
+    ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
+    if ptb and ptb > 0:
+        # Gamma's price_to_beat is the RESOLVED truth (the value the market settles
+        # against — verified bit-exact with the Chainlink boundary report). It is
+        # served late/unreliably in-window, but once present it wins over our own
+        # capture: an RTDS delivery hole can lock a first-received report that is
+        # NOT Polymarket's first report (measured ~1-2% of windows, $35+ off).
+        prev = window_strikes.get(contract_window_ts)
+        if prev is not None and abs(prev - ptb) > 0.005:
+            logger.warning(f"Strike settle {_slug_to_window(cid)}: captured ${prev:,.2f} -> "
+                           f"Polymarket price_to_beat ${ptb:,.2f} (RTDS boundary gap)")
+        window_strikes[contract_window_ts] = ptb
+        _strike_trusted[contract_window_ts] = True
+        if contract_window_ts not in _strike_logged:
+            logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${ptb:,.2f} (Polymarket){_C.RESET}")
+            _strike_logged.add(contract_window_ts)
+    elif cl_strike and cl_strike > 0:
         window_strikes[contract_window_ts] = cl_strike     # the sniper reads this — set every loop
+        _strike_trusted[contract_window_ts] = (
+            chainlink_feed.strike_reliable(contract_window_ts) if chainlink_feed else False)
         # Log ONE line per window, when the boundary value LOCKS (the first at/after-boundary
         # report has landed). Before that get_strike serves a cold-start fallback that ticks
         # with the live price; logging every tick was noisy and the value isn't final yet.
@@ -1360,17 +1400,10 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
             _strike_logged.add(contract_window_ts)
             _strike_logged.difference_update({k for k in _strike_logged if now_ts - k >= 600})
-    elif contract_window_ts not in window_strikes:
-        ptb = (contract or {}).get("event_metadata") or {}
-        ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
-        if ptb:
-            window_strikes[contract_window_ts] = ptb
-            if contract_window_ts not in _strike_logged:
-                logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | "
-                            f"Strike ${ptb:,.2f} (Polymarket bootstrap — Chainlink not ready){_C.RESET}")
-                _strike_logged.add(contract_window_ts)
 
     window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
+    for k in [k for k in _strike_trusted if now_ts - k >= 600]:
+        del _strike_trusted[k]
 
     strike = window_strikes.get(contract_window_ts, 0)
     if strike <= 0:
@@ -2904,12 +2937,24 @@ async def main() -> None:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         # Read the SIM ceiling at the DEPLOYED config (settings.yaml) so it is
-        # apples-to-apples with the live fills — not the harness's research defaults.
+        # apples-to-apples with the realized fills — not the harness's research
+        # defaults. RTT 0.44 = the live ledger's measured POST p50 (latency_stats:
+        # p50 436ms, zero samples <= 250ms — the old 0.135 modeled a speed the
+        # production path never achieved and flattered the SIM read).
         _lw = config.get("late_window", {})
         sim = await asyncio.to_thread(
-            mod.health_read, 0.135, _lw["sniper_fok_slip"],
+            mod.health_read, 0.44, _lw["sniper_fok_slip"],
             _lw["sniper_cb_move"], _lw["sniper_ask_cap"])   # SIM corpus (window_paths.db, RO)
-        live = await asyncio.to_thread(mod.live_health_read)   # REAL fills (polybot_live.db, RO)
+        # The realized-fill read tracks the BINDING population for the current mode:
+        # live -> the live ledger; paper (re-validation) -> the paper-shadow fills
+        # since the validation epoch (pre-epoch fills ran different code/config).
+        if mode == "live":
+            live = await asyncio.to_thread(mod.live_health_read)   # REAL fills (polybot_live.db, RO)
+            real_label = "LIVE (real fills)"
+        else:
+            live = await asyncio.to_thread(
+                mod.live_health_read, mod.PAPER_DB, _lw.get("validation_epoch"))
+            real_label = "PAPER-SHADOW (realized paper fills — the binding gate)"
         if sim is None and live is None:
             if alert_manager:
                 await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
@@ -2942,10 +2987,10 @@ async def main() -> None:
 
         msg = (
             f"🎯 **Sniper daily check — {today}**   {status}\n"
-            f"**LIVE (real fills):** {_line(live)}\n"
+            f"**{real_label}:** {_line(live)}\n"
             f"**SIM (harness corpus):** {_line(sim)}\n"
             f"Both are equal-weight net-of-fee ¢/share, one bet per window. "
-            f"Shut-off line (measured on LIVE): last-4-day below +2.0¢/sh or last-8-day t under 2.0."
+            f"Shut-off line (measured on realized fills): last-4-day below +2.0¢/sh or last-8-day t under 2.0."
             f"{disc}\n"
         )
         if kt:

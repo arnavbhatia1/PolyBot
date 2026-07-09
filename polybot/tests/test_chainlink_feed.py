@@ -59,6 +59,38 @@ class TestChainlinkFeed:
         assert f.boundary_captured(boundary_ts) is True
         assert f.boundary_captured(f._start_window_ts) is False   # start window never captured
 
+    def test_strike_reliable_tight_gap(self):
+        """A boundary report landing right after the previous report (~1Hz cadence)
+        is trustworthy — no delivery hole, our capture == Polymarket's first report."""
+        f = ChainlinkFeed()
+        boundary_ts = ((int(time.time()) // 300) - 1) * 300
+        f._price = 70990.0
+        f._record_boundary(boundary_ts - 1)      # last report before the boundary
+        f._price = 71000.0
+        f._record_boundary(boundary_ts + 1)      # first at/after — 2s gap
+        assert f.strike_reliable(boundary_ts) is True
+
+    def test_strike_reliable_delivery_hole(self):
+        """A 38s+ hole around the boundary (measured live: strike locked $35 off
+        Polymarket's price_to_beat) means our first-received report is likely NOT
+        Polymarket's first — untrusted for sniper capital."""
+        f = ChainlinkFeed()
+        boundary_ts = ((int(time.time()) // 300) - 1) * 300
+        f._price = 62853.77
+        f._record_boundary(boundary_ts - 38)
+        f._price = 62803.25
+        f._record_boundary(boundary_ts + 40)     # 78s hole spanning the boundary
+        assert f.boundary_captured(boundary_ts) is True   # still locked...
+        assert f.strike_reliable(boundary_ts) is False    # ...but not trusted
+
+    def test_strike_reliable_requires_capture_and_history(self):
+        f = ChainlinkFeed()
+        boundary_ts = ((int(time.time()) // 300) - 1) * 300
+        assert f.strike_reliable(boundary_ts) is False    # nothing captured
+        f._price = 71000.0
+        f._record_boundary(boundary_ts + 1)               # feed's FIRST-ever report
+        assert f.strike_reliable(boundary_ts) is False    # no prev report to bound the hole
+
     def test_epoch_seconds_normalizes_rtds_milliseconds(self):
         """RTDS payload timestamps arrive in epoch ms (e.g. 1781031482000);
         second-space values pass through unchanged."""

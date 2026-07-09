@@ -103,6 +103,19 @@ def test_skips_when_no_stale_cheap_edge_left():
     assert sig.action == "SKIP"
 
 
+def test_skips_when_atr_not_ready():
+    """The sniper bypasses the ATR gate, so a cold ATR buffer (atr<=0) must SKIP
+    here — compute_probability's 0.5 fallback would otherwise let it fire on a
+    garbage edge (0.5 - ask) at boot."""
+    for cold in ({"atr": {"atr": 0, "passes": False, "candle_ts": 1}}, {}):
+        sig = _eng().evaluate_late_sniper(
+            cold, btc_price=60050.0, strike_price=60000.0, seconds_remaining=20.0,
+            market_ask_up=0.30, market_ask_down=0.69, cb_move=12.0,
+            cb_move_threshold=8.0, ask_cap=0.92, sniper_min_edge=0.02)
+        assert sig.action == "SKIP"
+        assert "ATR" in sig.reason
+
+
 def test_skips_on_none_move():
     sig = _eng().evaluate_late_sniper(
         IND, 60050.0, 60000.0, 20.0, 0.70, 0.31, cb_move=None,

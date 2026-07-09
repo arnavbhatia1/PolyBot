@@ -386,6 +386,11 @@ class SignalEngine:
             return TradeSignal("SKIP", 0.5, 0, 0,
                                f"sniper: ask {ask:.2f} > cap {ask_cap:.2f} (book already repriced)")
         atr = indicators.get("atr", {}).get("atr", 0)
+        if atr is None or atr <= 0:
+            # compute_probability would anchor on its 0.5 fallback — the sniper
+            # bypasses the ATR gate, so guard here or a cold ATR buffer lets it
+            # fire on a garbage edge (0.5 - ask) at boot.
+            return TradeSignal("SKIP", 0.5, 0, 0, "sniper: ATR not ready")
         prob_up = self.compute_probability(btc_price, strike_price, seconds_remaining, atr,
                                            closes=closes,
                                            atr_candle_ts=indicators.get("atr", {}).get("candle_ts"))

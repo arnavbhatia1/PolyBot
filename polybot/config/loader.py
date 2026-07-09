@@ -64,6 +64,15 @@ def validate_config(config: dict[str, Any]) -> None:
 
     _check_range("signal.max_edge", 0.15, 0.30)
 
+    # Sniper knobs — the ONLY capital-deploying strategy, so a typo here deploys.
+    _check_range("late_window.sniper_late_start_s", 10.0, 60.0)
+    _check_range("late_window.sniper_move_window_s", 0.5, 10.0)
+    _check_range("late_window.sniper_cb_move", 3.0, 50.0)
+    _check_range("late_window.sniper_ask_cap", 0.50, 0.97)
+    _check_range("late_window.sniper_min_edge", 0.02, 0.10)
+    _check_range("late_window.sniper_max_edge", 0.20, 0.60)
+    _check_range("late_window.sniper_fok_slip", 0.0, 0.05)
+
     _check_positive("execution.max_concurrent_positions", integer=True)
     _check_range("execution.max_bankroll_deployed", 0.0, 1.0)
     _check_range("execution.max_book_fill_pct", 0.0, 1.0)

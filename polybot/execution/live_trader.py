@@ -768,17 +768,41 @@ class LiveTrader(BaseTrader):
                 return
             true_price = float(pos.get("avgPrice") or 0.0)
             chain_size = float(pos.get("size") or 0.0)
+            derived_from_shares = False
             if not (0.0 < true_price < 1.0):
-                logger.info("Fill audit pos %s: avgPrice %.4f out of range — skipped",
-                            pos_id, true_price)
-                return
+                # The data-API often serves avgPrice 0.0000 for a fresh position
+                # (5/7 audits on 07-08) — but its `size` is the chain-true NET
+                # share count, so recover the gross VWAP from it instead:
+                # net = gross - rate*gross*p*(1-p), p = notional/gross; two
+                # fixed-point steps converge for rate=0.07.
+                if chain_size <= 0:
+                    logger.info("Fill audit pos %s: avgPrice %.4f out of range and no "
+                                "chain size — skipped", pos_id, true_price)
+                    return
+                p_est = min(max(size_usdc / chain_size, 0.01), 0.99)
+                for _ in range(2):
+                    fee_frac = fee_rate * p_est * (1.0 - p_est)
+                    gross_shares = chain_size / max(1.0 - fee_frac, 1e-6)
+                    p_est = size_usdc / gross_shares
+                true_price = p_est
+                derived_from_shares = True
+                if not (0.0 < true_price < 1.0) or true_price > recorded_price + 0.01:
+                    # A FOK can never fill ABOVE its limit (recorded is at most the
+                    # limit) — a higher derived price means an older residue is
+                    # inflating the wallet balance; not this order's fill.
+                    logger.info("Fill audit pos %s: chain-share-derived price %.4f "
+                                "implausible vs booked %.3f — skipped",
+                                pos_id, true_price, recorded_price)
+                    return
             if abs(true_price - recorded_price) <= 0.005:
                 logger.info("Fill audit pos %s: booked %.3f matches exchange %.3f (≤0.5c)",
                             pos_id, recorded_price, true_price)
                 return
             implied_shares = size_usdc / true_price
-            if abs(chain_size - implied_shares) / max(implied_shares, 1e-9) > 0.02:
+            if not derived_from_shares and \
+                    abs(chain_size - implied_shares) / max(implied_shares, 1e-9) > 0.02:
                 # mixed position (older residue) — avgPrice isn't this order's
+                # (the derived path already guarded via the FOK-limit ceiling)
                 logger.info("Fill audit pos %s: chain shares %.2f vs implied %.2f mismatch "
                             "(mixed position) — entry left at booked %.3f",
                             pos_id, chain_size, implied_shares, recorded_price)
@@ -1845,6 +1869,11 @@ class LiveTrader(BaseTrader):
                     if attempt < _FILL_PRICE_LOOKUP_RETRIES - 1:
                         await asyncio.sleep(_FILL_PRICE_LOOKUP_DELAY)
                         continue
+                    logger.warning(
+                        "Fill price lookup for %s: get_order returned None on every "
+                        "attempt — BOOKING THE LIMIT %.4f (the real fill may be better; "
+                        "the +%.0fs audit is the corrector)",
+                        order_id, fallback_price, _FILL_AUDIT_DELAY_S)
                     return fallback_price
                 trades = order.get("associate_trades", [])
                 trades = [t for t in trades if isinstance(t, dict)]
@@ -1852,6 +1881,12 @@ class LiveTrader(BaseTrader):
                     if attempt < _FILL_PRICE_LOOKUP_RETRIES - 1:
                         await asyncio.sleep(_FILL_PRICE_LOOKUP_DELAY)
                         continue
+                    logger.warning(
+                        "Fill price lookup for %s: associate_trades still empty after "
+                        "%d tries — BOOKING THE LIMIT %.4f (indexer lag; this booked "
+                        "entry is pessimistic until the +%.0fs audit corrects it)",
+                        order_id, _FILL_PRICE_LOOKUP_RETRIES, fallback_price,
+                        _FILL_AUDIT_DELAY_S)
                     return fallback_price
                 total_shares = sum(float(t["size"]) for t in trades)
                 if total_shares == 0:

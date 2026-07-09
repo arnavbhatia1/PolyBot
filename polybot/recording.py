@@ -346,8 +346,10 @@ class WindowPathRecorder:
             cb_bid = getattr(st, "best_bid", 0.0) or None
             cb_ask = getattr(st, "best_ask", 0.0) or None
             try:
-                cb_cvd10 = self.coinbase_feed.get_cvd(10.0)
-                cb_cvd30 = self.coinbase_feed.get_cvd(30.0)
+                # covers() gates a reconnect-truncated window: an understated CVD
+                # recorded as real poisons the corpus — stamp None instead.
+                cb_cvd10 = self.coinbase_feed.get_cvd(10.0) if self.coinbase_feed.covers(10.0) else None
+                cb_cvd30 = self.coinbase_feed.get_cvd(30.0) if self.coinbase_feed.covers(30.0) else None
             except Exception:
                 pass
 
@@ -376,8 +378,9 @@ class WindowPathRecorder:
             try:
                 if acc.latest_age_s < 5:
                     bn_price = acc.latest_price or None
-                    bn_cvd10 = acc.get_cvd(10.0)
-                    bn_cvd30 = acc.get_cvd(30.0)
+                    # covers() gates a reconnect-truncated window (see Coinbase above)
+                    bn_cvd10 = acc.get_cvd(10.0) if acc.covers(10.0) else None
+                    bn_cvd30 = acc.get_cvd(30.0) if acc.covers(30.0) else None
             except Exception:
                 pass
 

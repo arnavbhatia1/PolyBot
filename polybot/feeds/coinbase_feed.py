@@ -185,7 +185,6 @@ class CoinbaseFeed:
                 ) as ws:
                     self._ws = ws
                     enable_nodelay(ws, "coinbase")
-                    backoff = RECONNECT_BASE
                     self.staleness.reset()
                     self.staleness.mark_connected()
                     self._trades.clear()
@@ -210,6 +209,8 @@ class CoinbaseFeed:
                         except ValueError:
                             continue
                         self._handle_message(data)
+                        backoff = RECONNECT_BASE   # healthy DATA — safe to reset (an
+                                                   # accept-then-drop server must keep escalating)
 
             except asyncio.CancelledError:
                 break

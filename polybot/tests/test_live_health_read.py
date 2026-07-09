@@ -135,3 +135,24 @@ def test_shares_held_null_or_zero_rows_skipped(tmp_path):
         (2, 5.0, 0.0, 0.0, _ts("07-05")),   # shares_held 0 -> skipped
     ])
     assert r["n_fills"] == 1
+
+
+def test_db_path_and_since_iso_scope_the_read(tmp_path):
+    """Paper re-validation: db_path targets the paper DB and since_iso excludes
+    pre-epoch fills (they ran different code/config) — the BINDING-gate scope."""
+    mod = _load()
+    db = tmp_path / "paper.db"
+    _make_db(str(db), [
+        (1, -5.0, 0.5, 10.0, _ts("07-05")),   # pre-epoch: must be excluded
+        (2, 4.0, 0.4, 10.0, _ts("07-09")),
+        (3, 2.0, 0.2, 10.0, _ts("07-09")),
+    ])
+    r = mod.live_health_read(db, "2026-07-08T17:15:00+00:00")
+    assert r["n_fills"] == 2
+    assert r["n_days"] == 1
+    assert r["net_per_sh"] == pytest.approx(((4.0 - 0.4) / 10 + (2.0 - 0.2) / 10) / 2)
+    assert "since 2026-07-08T17:15:00+00:00" in r["label"]
+
+    # unscoped default keeps everything
+    r_all = mod.live_health_read(db)
+    assert r_all["n_fills"] == 3 and r_all["n_days"] == 2

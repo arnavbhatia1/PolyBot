@@ -3,11 +3,19 @@
 5-min BTC Up/Down trader for Polymarket. The **late-window sniper** (§2) is the
 bot's **only strategy** — base entries are always suppressed (no toggle).
 It passed its SIM kill bar and went live 2026-07-04, but the post-live read
-failed its bar: the +10¢/sh SIM figure is a full-population REPLAY ceiling no
-real bot can reach — a real bot catches only ~1-2 latency-adverse windows/day,
-so honest live is ~break-even with a fat left tail. Now **re-validating in
-paper** (`mode: paper`, `sniper_enabled: true`); the **binding deployment gate is
-the paper-shadow's REALIZED fills, not the harness** (§2). The **base strategy**
+failed its bar: the +9-10¢/sh SIM figure is a full-population REPLAY ceiling no
+real bot can reach (the CONTROL — buy spot-side at ask — nets ~0, so G-M holds
+and the whole apparent edge is stale-ask capture). The bot fires ~9-16×/day
+(catches ~17-20% of the ~56 qualifying windows), and that caught subset is
+ADVERSELY selected: realized is **measured NEGATIVE and degrading** — live
+−4¢/sh (t −0.6, trailing-4d −7¢, days +7/+13/−1/−13/−28¢), paper-shadow
+trailing-4d −5¢. The corrected-to-the-cent strike (2026-07-08) did NOT change
+this — a 16-agent walk-forward re-analysis on the correct strike found no config
+or selection filter beats current out-of-sample, and "only profitable/never-lose"
+is mathematically impossible (irreducible terminal-flip floor 2.6-8%). Now
+**re-validating in paper** (`mode: paper`, `sniper_enabled: true`) on the
+post-fix code (no realized corrected-strike fills exist yet); the **binding
+deployment gate is the paper-shadow's REALIZED fills, not the harness** (§2). The **base strategy**
 (§3) has no proven edge, never touches real capital, and survives only as the
 zero-capital ghost/counterfactual evidence stream the gate needs.
 
@@ -55,16 +63,21 @@ source; Gamma mirrors it for discovery. The per-window **decision strike** is
 Chainlink's **first btc/usd report at/after the window-boundary timestamp**
 (`chainlink_feed.get_strike`, via RTDS; `_compute_strike_and_btc`) — the exact rule
 Polymarket's `price_to_beat` uses (the same data stream it resolves on, matched at
-+0ms), captured live and available ~ms into the window. Recording the last tick
-*before* the boundary instead missed the official round by >$8 in a fast open
-(~1% of windows flipped side). Gamma's `event_metadata.price_to_beat` is the same
-value but served late/unreliably in-window (whole windows never get it), so it is only
-a cold-start bootstrap until the boundary report lands; the settle to the captured
-value is logged. Two modes, one
++0ms; verified bit-exact against Gamma's served value), captured live and available
+~ms into the window. Recording the last tick *before* the boundary instead missed
+the official round by >$8 in a fast open (~1% of windows flipped side). Gamma's
+`event_metadata.price_to_beat` is the RESOLVED truth, but served late/unreliably
+in-window (whole windows never get it): when present it WINS (it covers RTDS
+delivery holes, where our first-received at/after-boundary report is not
+Polymarket's — measured ~1-2% of windows, up to $35+ off); otherwise the Chainlink
+capture carries. A capture across a delivery hole (`strike_reliable`, prev→first
+report gap > 15s) still serves the base path but is UNTRUSTED — the sniper never
+deploys capital on it (`_strike_trusted`). Two modes, one
 engine: **paper**
 (realism shim: real CLOB books, FOK semantics, convex slippage,
-network-fail/latency jitter calibrated to the measured warm POST RTT
-~0.118-0.138s, $1 min, tick snapping) and **live** (`py-clob-client-v2` FOK
+network-fail/latency jitter calibrated to the LIVE ledger's measured order-path
+POST RTT — p25 0.410 / p50 0.436 / p75 0.679s, zero ≤0.25s (latency_stats.json);
+$1 min, tick snapping) and **live** (`py-clob-client-v2` FOK
 against the real CLOB; USDC balance + allowance verified at boot).
 
 ## 2. The late-window sniper — the deployable edge
@@ -92,11 +105,13 @@ reprices.
   is a feature there). All gates run at the decision ask (harness-faithful);
   the pre-submit VWAP re-check still vetoes books that lost the edge. The booked
   entry is the CLOB's TRUE fill VWAP — resolved WS-tape → balance-delta →
-  `associate_trades` REST, whose retry budget now covers the ~100-300ms indexer
-  lag so it no longer falls back to the padded FOK limit. (That fallback biased
-  the recorded entry worse than the real fill, and the 8s data-api audit can't
-  correct a <45s sniper position before it resolves — so the ledger, and the
-  post-live kill read off it, ran pessimistic.)
+  `associate_trades` REST (retry budget covers the ~100-300ms indexer lag) →
+  loudly-logged limit fallback, corrected by the +8s audit, which recovers the
+  gross VWAP from the wallet's chain-true net shares when the data-API serves
+  `avgPrice 0.0` (it did for 5/7 fresh positions). CAVEAT on the pre-07-08 live
+  ledger: those 46 fills booked the padded limit (silent fallback + a defeated
+  audit) — chain-truth reconstruction puts them ≈ breakeven, ~4.4¢/sh better
+  than the ledger's −4.3¢/sh; read that era's kill-rule prints accordingly.
 - **What it bypasses**: `max_edge` (→ `sniper_max_edge` 0.50, at both the
   edge-cap and pre-submit gates), the late-window time penalty, and the base
   signal-level gates `min_model_probability`, `min_kelly`, and the ATR
@@ -199,8 +214,13 @@ fractional Kelly, not full.
 
 FOK via `py-clob-client-v2`, up to 3 attempts with jittered backoff — only
 provably-unposted failures retry (exchange-confirmed rejects + pre-POST local
-errors); ambiguous outcomes never resubmit (double-fill guard). **Latency is at
-the floor** (~120ms warm POST RTT, measured): SELL signatures pre-armed on
+errors); ambiguous outcomes never resubmit (double-fill guard). **The software
+path is at the floor (~20-35ms incl. sign). Order-POST RTT measured p50 0.436s
+/ p75 0.679s (latency_stats.json, 80 samples, zero ≤0.25s) — but probed warm
+GETs AND unauth POSTs to /order run ~125-130ms from this host, so ~310ms of a
+real order's RTT is Polymarket's SERVER-SIDE pipeline (auth/risk/FOK matching),
+irreducible client-side; an EU VPS shaves only the ~130ms network leg to ~40ms.**
+SELL signatures pre-armed on
 prior HOLD ticks (BUY pre-signs concurrently with the submit — a best-effort
 race; inline sign is ~3-5ms), WS-only book pre-check, BUY fill VWAP from WS
 trade events (SELL fill price via REST after the fill, off the latency path),
@@ -271,9 +291,12 @@ it was removed). Never re-add resting quotes.
 - **NightlyScheduler** (23:45 ET): record rollups + retention sweep + the
   **sniper-edge health report** (`_sniper_health_job`, skipped when
   `sniper_enabled` is false — reports BOTH the SIM corpus (`health_read`,
-  window_paths) and the REAL live fills (`live_health_read`, polybot_live.db)
-  side by side with their ¢/sh gap, and drives the post-live kill-rule verdict
-  off the LIVE ledger once fills exist; alert-only, never flips config). Pings
+  window_paths, modeled at the measured 0.44s RTT) and the REALIZED fills for
+  the current mode (`live_health_read`: live → polybot_live.db; paper →
+  polybot_paper.db scoped to `late_window.validation_epoch`, the BINDING
+  paper-shadow gate) side by side with their ¢/sh gap, and drives the kill-rule
+  verdict off the realized ledger once fills exist; alert-only, never flips
+  config). Pings
   Discord `#polybot-daily` (✅/⚠️/⏳ sniper).
 
 ## 8. Hard rules

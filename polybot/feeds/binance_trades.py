@@ -34,6 +34,7 @@ class BinanceTradeAccumulator:
         self._trades: deque[AggTrade] = deque()
         self._cache: dict[tuple, tuple[tuple, float]] = {}
         self._last_received_at: float = 0.0
+        self._window_start: float = 0.0
 
     def clear(self) -> None:
         """Wipe rolling state. Call after any WS reconnect so windowed analytics
@@ -42,9 +43,18 @@ class BinanceTradeAccumulator:
         self._trades.clear()
         self._cache.clear()
         self._last_received_at = 0.0
+        self._window_start = 0.0
+
+    def covers(self, window_s: float) -> bool:
+        """True iff the trade window continuously spans the last window_s seconds
+        (no reconnect cleared it mid-window). Consumers stamp None instead of
+        reading a truncated window as a real near-zero CVD."""
+        return self._window_start > 0 and (time.time() - self._window_start) >= window_s
 
     def add_trade(self, price: float, qty: float, is_buyer_maker: bool,
                   ts: float) -> None:
+        if self._window_start <= 0:
+            self._window_start = time.time()
         self._trades.append(AggTrade(price, qty, is_buyer_maker, ts))
         self._last_received_at = time.time()
         self._prune()
@@ -163,7 +173,6 @@ class BinanceTradesFeed:
                 async with websockets.connect(stream, ping_interval=20, ping_timeout=30, compression=None) as ws:
                     self._ws = ws
                     enable_nodelay(ws, "binance_trades")
-                    backoff = 1
                     # Windowed analytics must not bridge the gap.
                     self.accumulator.clear()
                     self.staleness.reset()
@@ -180,6 +189,7 @@ class BinanceTradesFeed:
                         except ValueError:
                             continue
                         self._handle_message(data)
+                        backoff = 1   # healthy DATA — safe to reset
             except Exception as e:
                 if not self._running:
                     break

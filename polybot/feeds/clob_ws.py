@@ -165,7 +165,6 @@ class ClobWebSocket:
                     enable_nodelay(ws, "clob_ws")
                     self.connected = True
                     self.staleness.mark_connected()
-                    backoff = RECONNECT_BASE
                     self.staleness.reset()
                     self._reset_per_token_state()
 
@@ -184,6 +183,7 @@ class ClobWebSocket:
                         if self._closing:
                             break
                         self._handle_message(raw)
+                        backoff = RECONNECT_BASE   # healthy DATA — safe to reset
 
             except asyncio.CancelledError:
                 break

@@ -772,3 +772,60 @@ async def test_prewarm_http_survives_missing_resolver(trader):
     the one-time RTT instead."""
     del trader.client._ClobClient__resolve_version
     await trader.prewarm_http()  # no exception; resolver simply skipped
+
+
+@pytest.mark.asyncio
+async def test_fill_audit_derives_price_from_chain_shares_when_avgprice_zero(trader, monkeypatch):
+    """07-08 live finding: the data-API served avgPrice 0.0000 for 5/7 fresh
+    positions, defeating the audit entirely. The wallet `size` (chain-true NET
+    shares) is in the same response — the audit must recover the gross VWAP from
+    it: net = gross - rate*gross*p*(1-p), p = notional/gross."""
+    _setup_successful_fill(trader, fill_price="0.93", fill_size="5.10")
+    kwargs = {**_TRADE_KWARGS, "price": 0.93, "size": 4.74, "fee_rate": 0.07,
+              "market_id": "mkt-audit-derive"}
+    open_result = await trader.open_trade(**kwargs)
+    pos_id = open_result.position_id
+
+    true_price, fee_rate = 0.88, 0.07
+    gross = 4.74 / true_price
+    net = gross - fee_rate * gross * true_price * (1 - true_price)
+    chain = [{"asset": _TRADE_KWARGS["token_id"], "size": net, "avgPrice": 0.0}]
+
+    async def fake_wallet():
+        return chain
+
+    monkeypatch.setattr(trader, "_fetch_wallet_positions", fake_wallet)
+    import polybot.execution.live_trader as lt_mod
+    monkeypatch.setattr(lt_mod, "_FILL_AUDIT_DELAY_S", 0.0)
+    await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.93, 4.74, fee_rate)
+
+    row = await (await trader.db.conn.execute(
+        "SELECT entry_price FROM positions WHERE id=?", (pos_id,))).fetchone()
+    assert row[0] == pytest.approx(true_price, abs=2e-3)
+
+
+@pytest.mark.asyncio
+async def test_fill_audit_share_derivation_rejects_residue(trader, monkeypatch):
+    """A FOK can never fill ABOVE its limit — a chain-share-derived price higher
+    than the booked one means an older residue inflates the balance; the audit
+    must leave the booking untouched."""
+    _setup_successful_fill(trader, fill_price="0.93", fill_size="5.10")
+    kwargs = {**_TRADE_KWARGS, "price": 0.93, "size": 4.74, "fee_rate": 0.07,
+              "market_id": "mkt-audit-residue"}
+    open_result = await trader.open_trade(**kwargs)
+    pos_id = open_result.position_id
+
+    # chain size too SMALL -> derived price above booked (impossible for this FOK)
+    chain = [{"asset": _TRADE_KWARGS["token_id"], "size": 4.74 / 0.99, "avgPrice": 0.0}]
+
+    async def fake_wallet():
+        return chain
+
+    monkeypatch.setattr(trader, "_fetch_wallet_positions", fake_wallet)
+    import polybot.execution.live_trader as lt_mod
+    monkeypatch.setattr(lt_mod, "_FILL_AUDIT_DELAY_S", 0.0)
+    await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.93, 4.74, 0.07)
+
+    row = await (await trader.db.conn.execute(
+        "SELECT entry_price FROM positions WHERE id=?", (pos_id,))).fetchone()
+    assert row[0] == pytest.approx(0.93, abs=1e-6)   # untouched

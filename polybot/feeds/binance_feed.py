@@ -57,6 +57,14 @@ class CandleBuffer:
         self.version += 1
         self._last_received_at = time.time()
 
+    def clear(self) -> None:
+        """Empty the buffer (pre-rebuild). Consumers fail closed on an empty/stale
+        buffer, so a cleared buffer skips decisions instead of feeding a gap."""
+        self._candles.clear()
+        self._invalidate_caches()
+        self.version += 1
+        self._last_received_at = 0.0
+
     def update_current(self, close: float, high: float, low: float, volume: float) -> None:
         if self._candles:
             c = self._candles[-1]
@@ -157,12 +165,22 @@ class BinanceFeed:
             raise ValueError(f"BinanceFeed.ws_url must end with '/ws' (got: {self.ws_url})")
         stream = f"{self.ws_url[:-3]}/stream?streams={self.symbol}@kline_1m"
         backoff = 1
+        first_connect = True
         while self._running:
             try:
                 async with websockets.connect(stream, ping_interval=20, ping_timeout=30, compression=None) as ws:
                     self._ws = ws
                     enable_nodelay(ws, "binance_kline")
-                    backoff = 1
+                    if not first_connect:
+                        # A dropped WS can span 1-min candle closes; the buffer then
+                        # holds a gap-adjacent candle pair that poisons ATR true-range
+                        # and lag1-autocorr for up to ~20min (the sniper's prob/edge
+                        # consume that ATR). Rebuild from REST before trusting the
+                        # stream again; on backfill failure the buffer stays empty
+                        # and decisions fail closed until the WS re-warms it.
+                        self.buffer.clear()
+                        await self.backfill()
+                    first_connect = False
                     self.staleness.reset()
                     self.staleness.mark_connected()
                     logger.debug("Binance kline WS connected: %s", stream)
@@ -180,6 +198,7 @@ class BinanceFeed:
                         # non-{stream,data} control frames are skipped.
                         if "stream" in envelope and "data" in envelope:
                             self._route(envelope["stream"], envelope["data"])
+                            backoff = 1   # healthy DATA — safe to reset
             except Exception as e:
                 if not self._running:
                     break

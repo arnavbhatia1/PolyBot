@@ -19,13 +19,14 @@ class PaperTrader(BaseTrader):
         )
         # Realism knobs (all overridable via settings.yaml -> execution.*; the
         # defaults here equal settings' calibrated values and apply only when
-        # settings omit the keys). Calibrated to the operator's MEASURED warm
-        # POST RTT to the Polymarket CLOB (~0.111-0.138s warm, ~0.35s cold);
-        # latency_floor_s is the fastest measured warm RTT and the 4% heavy tail
-        # in _simulate_latency carries occasional stalls.
-        self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.125)
-        self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.02)
-        self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.111)
+        # settings omit the keys). Calibrated to the LIVE ledger's measured
+        # order-path POST RTT (latency_stats.json: p25 0.410 / p50 0.436 /
+        # p75 0.679, zero samples <= 0.250 across 4 live days); latency_floor_s
+        # is the fastest measured live POST and the 4% heavy tail in
+        # _simulate_latency carries occasional stalls (live p99 1.65s).
+        self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.47)
+        self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.13)
+        self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.41)
         # Fallback fail rate when the book is unavailable; the i.i.d. baseline
         # otherwise — _compute_fail_rate adds state-dependent terms on top.
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.03)

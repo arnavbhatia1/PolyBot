@@ -142,6 +142,9 @@ class _FakeCoinbaseFull(_FakeCoinbase):
     def get_cvd(self, window_s):
         return 3.5 if window_s == 10.0 else 7.25
 
+    def covers(self, window_s):
+        return True  # buffer continuously spans the window (no reconnect)
+
 
 class _FakeDepthFeed:
     def __init__(self):

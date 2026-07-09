@@ -22,6 +22,9 @@ APP_PING_INTERVAL_S = 10       # Application-level PING to keep RTDS subscriptio
 STALE_TIMEOUT_S = 60           # Chainlink mainnet can be quiet for >20s in low-vol; 60s is a true dead-feed signal
 RECONNECT_BASE_S = 5.0         # first retry delay; doubles per consecutive failure
 RECONNECT_MAX_S = 60.0         # cap — a flat fast retry during an RTDS outage trips their per-IP 429 limiter
+RELIABLE_GAP_S = 15.0          # report cadence is ~1Hz with natural quiet spells to ~8s; a bigger
+                               # hole around a boundary means WE likely missed the true first
+                               # at/after report (measured ~1-2% of windows, strike off by $35+)
 
 
 class ChainlinkFeed:
@@ -36,6 +39,10 @@ class ChainlinkFeed:
         self._watchdog_task: asyncio.Task | None = None
         self._running: bool = False
         self._boundary_prices: "OrderedDict[int, float]" = OrderedDict()
+        # boundary_ts -> (first at/after report ts, previous report ts) — the gap
+        # between the two is the delivery-hole detector behind strike_reliable().
+        self._boundary_meta: dict[int, tuple[float, float | None]] = {}
+        self._last_report_ts: float | None = None
         self._start_window_ts: int = int(time.time() // 300) * 300
         self.staleness = StalenessTracker("chainlink")
 
@@ -65,6 +72,23 @@ class ChainlinkFeed:
         Never true for the feed's start window (its opening boundary was never observed)."""
         return window_ts != self._start_window_ts and window_ts in self._boundary_prices
 
+    def strike_reliable(self, window_ts: int) -> bool:
+        """True when the locked boundary value can be trusted to equal Polymarket's
+        price_to_beat: our first at/after-boundary report arrived with no delivery
+        hole around the boundary (prev-report -> first-report gap <= RELIABLE_GAP_S).
+        A bigger hole means Polymarket's true first report may never have reached us
+        — its price_to_beat would then differ from our capture, and a sniper firing
+        on the wrong strike is trading noise. False until the boundary is captured."""
+        if not self.boundary_captured(window_ts):
+            return False
+        meta = self._boundary_meta.get(window_ts)
+        if meta is None:
+            return False
+        first_ts, prev_ts = meta
+        if prev_ts is None:          # boundary was the feed's first-ever report
+            return False
+        return (first_ts - prev_ts) <= RELIABLE_GAP_S
+
     @staticmethod
     def _epoch_seconds(ts: float) -> float:
         """Normalize an epoch timestamp to seconds. RTDS payloads carry
@@ -83,13 +107,18 @@ class ChainlinkFeed:
         # (Recording the last tick BEFORE the boundary instead missed the official round
         # by >$8 in a fast open — ~1% of windows flipped side.)
         boundary_ts = int(observed_ts // 300) * 300
-        self._boundary_prices.setdefault(boundary_ts, self._price)
+        if boundary_ts not in self._boundary_prices:
+            self._boundary_prices[boundary_ts] = self._price
+            self._boundary_meta[boundary_ts] = (observed_ts, self._last_report_ts)
+        self._last_report_ts = observed_ts
         cutoff = int(observed_ts) - 7200
         while self._boundary_prices:
             k = next(iter(self._boundary_prices))
             if k > cutoff:
                 break
             self._boundary_prices.popitem(last=False)
+        for k in [k for k in self._boundary_meta if k <= cutoff]:
+            del self._boundary_meta[k]
 
     async def start(self) -> None:
         self._running = True
