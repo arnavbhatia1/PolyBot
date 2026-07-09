@@ -44,8 +44,7 @@ def test_paper_realism_defaults_track_settings():
     # main.py fallbacks in the same commit.
     t = PaperTrader(db=None)
     exec_cfg = _SETTINGS["execution"]
-    assert t.latency_mean_s == exec_cfg["paper_latency_mean_s"]
-    assert t.latency_jitter_s == exec_cfg["paper_latency_jitter_s"]
+    assert t.latency_scale == exec_cfg["paper_latency_scale"]
     assert t.latency_floor_s == exec_cfg["paper_latency_floor_s"]
     assert t.network_fail_rate == exec_cfg["paper_network_fail_rate"]
 

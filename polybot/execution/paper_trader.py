@@ -6,7 +6,11 @@ import random
 import time
 from typing import Any
 
-from polybot.execution.base import BaseTrader, FillResult, DEFAULT_FEE_RATE, exit_fee_usdc
+from polybot.execution.base import (
+    BaseTrader, FillResult, DEFAULT_FEE_RATE, exit_fee_usdc,
+    update_fill_stats as _update_fill_stats,
+)
+from polybot.paths import FILL_STATS_PAPER_PATH
 
 
 class PaperTrader(BaseTrader):
@@ -19,13 +23,12 @@ class PaperTrader(BaseTrader):
         )
         # Realism knobs (all overridable via settings.yaml -> execution.*; the
         # defaults here equal settings' calibrated values and apply only when
-        # settings omit the keys). Calibrated to the LIVE ledger's measured
-        # order-path POST RTT (latency_stats.json: p25 0.410 / p50 0.436 /
-        # p75 0.679, zero samples <= 0.250 across 4 live days); latency_floor_s
-        # is the fastest measured live POST and the 4% heavy tail in
-        # _simulate_latency carries occasional stalls (live p99 1.65s).
-        self.latency_mean_s: float = kwargs.get("paper_latency_mean_s", 0.47)
-        self.latency_jitter_s: float = kwargs.get("paper_latency_jitter_s", 0.13)
+        # settings omit the keys). Latency is sampled from the LIVE ledger's
+        # measured order-path POST-RTT distribution (_LATENCY_QUANTILES, from
+        # latency_stats.json); latency_scale multiplies the draw (1.0 = live-
+        # faithful, 0 = instant for deterministic tests) and latency_floor_s is
+        # the fastest measured live POST.
+        self.latency_scale: float = kwargs.get("paper_latency_scale", 1.0)
         self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.41)
         # Fallback fail rate when the book is unavailable; the i.i.d. baseline
         # otherwise — _compute_fail_rate adds state-dependent terms on top.
@@ -54,9 +57,11 @@ class PaperTrader(BaseTrader):
         """Simulate a FOK market buy with realistic latency + VWAP + rejects."""
         del fee_rate  # paper applies fee math in base.py via DEFAULT_FEE_RATE
         if self._precheck_rejects(token_id, side="buy", requested_price=price, size_usd=size):
+            self._record_stats(filled=False, side="buy", reason="not enough shares (pre-check)")
             return FillResult(filled=False, reason="not enough shares on the book at our price — skipped before sending (matches live pre-check)")
         await self._simulate_latency()
         if random.random() < self._compute_fail_rate(token_id, side="buy"):
+            self._record_stats(filled=False, side="buy", reason="simulated network error")
             return FillResult(filled=False, reason="simulated network error")
         return await self._retry_walk(token_id, side="buy", requested_price=price, size_usd=size)
 
@@ -68,6 +73,7 @@ class PaperTrader(BaseTrader):
         del fee_rate
         size_usd = shares * price
         if self._precheck_rejects(token_id, side="sell", requested_price=price, size_usd=size_usd):
+            self._record_stats(filled=False, side="sell", reason="not enough shares (pre-check)")
             return FillResult(filled=False, reason="not enough shares on the book at our price — skipped before sending (matches live pre-check)")
         # Consume a valid warm-SELL signature (floor-bounded latency discount);
         # otherwise pay full simulated latency just as live would.
@@ -76,6 +82,7 @@ class PaperTrader(BaseTrader):
         ) else 0.0
         await self._simulate_latency(speedup_s=warmup_speedup)
         if random.random() < self._compute_fail_rate(token_id, side="sell"):
+            self._record_stats(filled=False, side="sell", reason="simulated network error")
             return FillResult(filled=False, reason="simulated network error")
         return await self._retry_walk(token_id, side="sell", requested_price=price, size_usd=size_usd)
 
@@ -225,6 +232,9 @@ class PaperTrader(BaseTrader):
         for attempt in range(1, self._PAPER_MAX_RETRIES + 1):
             last = self._walk_book(token_id, side=side, requested_price=requested_price,
                                    size_usd=size_usd)
+            # Per-ATTEMPT stats, matching live's per-POST counting, so the paper
+            # kill rate in fill_stats_paper.json is comparable to live's.
+            self._record_stats(filled=last.filled, side=side, reason=last.reason or "")
             if last.filled:
                 return last
             # Only retry the rejection class live retries: FOK "price moved".
@@ -236,6 +246,10 @@ class PaperTrader(BaseTrader):
                 base = self._PAPER_RETRY_BASE_DELAY * (2 ** (attempt - 1))
                 await asyncio.sleep(base * random.uniform(0.8, 1.2))
         return last or FillResult(filled=False, reason="retry exhausted")
+
+    @staticmethod
+    def _record_stats(filled: bool, side: str, reason: str = "") -> None:
+        _update_fill_stats(FILL_STATS_PAPER_PATH, filled, side, reason)
 
     def _scalp_residual_credit(self, residual_shares: float, fill_price: float,
                                fee_rate: float) -> float:
@@ -257,17 +271,34 @@ class PaperTrader(BaseTrader):
     # Internals
     # ------------------------------------------------------------------
 
+    # The LIVE ledger's order-path POST RTT distribution (latency_stats.json, 80
+    # samples across the 4 live days: fills + FOK kills). Sampled by inverse-CDF
+    # interpolation so paper experiences the same right-skewed shape live did —
+    # a gaussian under-served the 0.5-1.6s slow fills, which are exactly the
+    # ones most likely to land on a repriced book. Re-derive from the ledger if
+    # the route ever changes; not a tunable.
+    _LATENCY_QUANTILES: tuple[tuple[float, float], ...] = (
+        (0.00, 0.405), (0.25, 0.410), (0.50, 0.436),
+        (0.75, 0.679), (0.99, 1.646), (1.00, 2.222),
+    )
+
+    def _draw_latency(self) -> float:
+        """One inverse-CDF sample from the measured live POST-RTT distribution."""
+        u = random.random()
+        qs = self._LATENCY_QUANTILES
+        for (q0, v0), (q1, v1) in zip(qs[:-1], qs[1:]):
+            if u <= q1:
+                return v0 + (v1 - v0) * (u - q0) / (q1 - q0)
+        return qs[-1][1]
+
     async def _simulate_latency(self, speedup_s: float = 0.0) -> None:
-        """Gaussian-jittered sleep, floored at latency_floor_s (the fastest measured warm
-        POST RTT to the CLOB — Ireland VPN ~0.118s), plus a 4% heavy-tail spike (uniform
-        2-4s, the occasional stall/retry p99). ``speedup_s`` subtracts saved work
-        (warm-SELL signature) but the floor holds.
+        """Sleep drawn from the empirical LIVE POST-RTT distribution, scaled by
+        latency_scale (tests set 0 for determinism) and floored at
+        latency_floor_s (the fastest measured live POST). ``speedup_s``
+        subtracts saved work (warm-SELL signature) but the floor holds.
         """
         floor = self.latency_floor_s
-        if random.random() < 0.04:
-            latency = random.uniform(2.0, 4.0)
-        else:
-            latency = max(floor, random.gauss(self.latency_mean_s, self.latency_jitter_s))
+        latency = max(floor, self.latency_scale * self._draw_latency())
         if speedup_s > 0:
             latency = max(floor, latency - speedup_s)
         await asyncio.sleep(latency)

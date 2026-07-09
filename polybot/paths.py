@@ -26,6 +26,7 @@ STATE_DIR: Path = MEMORY_DIR / "state"
 ADVERSE_STATE_PATH: Path = STATE_DIR / "adverse_state.json"
 FEED_STALENESS_PATH: Path = STATE_DIR / "feed_staleness.json"
 FILL_STATS_PATH: Path = STATE_DIR / "fill_stats.json"
+FILL_STATS_PAPER_PATH: Path = STATE_DIR / "fill_stats_paper.json"  # paper's FOK kill/fill parity ledger
 LATENCY_STATS_PATH: Path = STATE_DIR / "latency_stats.json"
 ORPHAN_POSITIONS_PATH: Path = STATE_DIR / "orphan_positions.json"
 PREV_MARGIN_PATH: Path = STATE_DIR / "prev_resolution_margin.json"

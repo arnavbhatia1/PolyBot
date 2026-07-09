@@ -74,10 +74,13 @@ capture carries. A capture across a delivery hole (`strike_reliable`, prev→fir
 report gap > 15s) still serves the base path but is UNTRUSTED — the sniper never
 deploys capital on it (`_strike_trusted`). Two modes, one
 engine: **paper**
-(realism shim: real CLOB books, FOK semantics, convex slippage,
-network-fail/latency jitter calibrated to the LIVE ledger's measured order-path
-POST RTT — p25 0.410 / p50 0.436 / p75 0.679s, zero ≤0.25s (latency_stats.json);
-$1 min, tick snapping) and **live** (`py-clob-client-v2` FOK
+(realism shim: real CLOB books, FOK semantics, convex slippage, latency
+SAMPLED inverse-CDF from the LIVE ledger's measured order-path POST-RTT
+distribution — p25 0.410 / p50 0.436 / p75 0.679 / p99 1.65s, zero ≤0.25s
+(latency_stats.json → `_LATENCY_QUANTILES`); network-fail sim; $1 min, tick
+snapping; FOK kill/fill stats recorded to `fill_stats_paper.json` in live's
+schema so paper-vs-live kill rates are directly comparable) and **live**
+(`py-clob-client-v2` FOK
 against the real CLOB; USDC balance + allowance verified at boot).
 
 ## 2. The late-window sniper — the deployable edge

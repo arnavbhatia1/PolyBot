@@ -2722,13 +2722,12 @@ async def main() -> None:
         trader = PaperTrader(db=db,
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
             max_concurrent_positions=exec_cfg["max_concurrent_positions"],
-            paper_latency_mean_s=exec_cfg.get("paper_latency_mean_s", 0.13),
-            paper_latency_jitter_s=exec_cfg.get("paper_latency_jitter_s", 0.02),
-            paper_latency_floor_s=exec_cfg.get("paper_latency_floor_s", 0.118),
+            paper_latency_scale=exec_cfg.get("paper_latency_scale", 1.0),
+            paper_latency_floor_s=exec_cfg.get("paper_latency_floor_s", 0.41),
             paper_network_fail_rate=exec_cfg.get("paper_network_fail_rate", 0.03))
         logger.debug(
             f"PAPER MODE — simulated trading with live-realistic fills "
-            f"(latency={exec_cfg.get('paper_latency_mean_s', 0.13)}±{exec_cfg.get('paper_latency_jitter_s', 0.02)}s, "
+            f"(latency=empirical live POST dist ×{exec_cfg.get('paper_latency_scale', 1.0)}, "
             f"net_fail={exec_cfg.get('paper_network_fail_rate', 0.03):.0%})"
         )
 

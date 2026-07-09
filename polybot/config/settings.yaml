@@ -28,13 +28,12 @@ execution:
   # rate, and run smoke_order_test.py --confirm to prove order POSTs clear Cloudflare
   # (verify_keys.py covers GETs only).
   slippage_impact_pct: 0.03
-  # Calibrated to the LIVE ledger's measured order-path POST RTT (latency_stats.json,
-  # 80 samples over 4 live days: p25 0.410 / p50 0.436 / p75 0.679, ZERO <= 0.250).
-  # The old 0.125 figure came from a standalone probe the production path never
-  # reproduced; simulating it made paper fill ~310ms faster than live reality.
-  paper_latency_mean_s: 0.47       # gauss center — slightly above live p50 to offset the
-                                   # un-modeled fat right tail (p75 0.679, p99 1.65)
-  paper_latency_jitter_s: 0.13     # warm spread (gauss std, matches p25..p75 width)
+  # Latency is SAMPLED from the LIVE ledger's measured order-path POST-RTT
+  # distribution (latency_stats.json, 80 samples over 4 live days: p25 0.410 /
+  # p50 0.436 / p75 0.679 / p99 1.65, ZERO <= 0.250) via inverse-CDF — the
+  # quantile table lives in paper_trader._LATENCY_QUANTILES (a measurement,
+  # not a tunable). scale multiplies the draw (1.0 = live-faithful).
+  paper_latency_scale: 1.0
   paper_latency_floor_s: 0.41      # fastest measured live POST RTT — the latency floor
   paper_network_fail_rate: 0.03    # 0 network errors in first 29 live POSTs — consistent, keep
 

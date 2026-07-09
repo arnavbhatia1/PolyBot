@@ -22,8 +22,8 @@ async def trader(db):
         db=db,
         max_bankroll_deployed=0.80,
         max_concurrent_positions=5,
-        paper_latency_mean_s=0.0,
-        paper_latency_jitter_s=0.0,
+        paper_latency_scale=0.0,
+        paper_latency_floor_s=0.0,
         paper_network_fail_rate=0.0,
     )
 
@@ -246,3 +246,36 @@ async def test_walk_book_none_book_rejects_without_raising(trader):
     result = trader._walk_book("tok", side="buy", requested_price=0.55, size_usd=10.0)
     assert result.filled is False
     assert "stale" in result.reason
+
+
+class TestRealismShim:
+    def test_latency_drawn_from_live_empirical_distribution(self):
+        """Draws must follow the recorded live POST-RTT quantiles (inverse-CDF),
+        not a gaussian — the right tail (p75 0.679 / p99 1.65) is where fills
+        land on repriced books."""
+        t = PaperTrader(db=None)
+        import random as _r
+        _r.seed(7)
+        draws = sorted(t._draw_latency() for _ in range(4000))
+        assert draws[0] >= 0.405 and draws[-1] <= 2.222
+        med = draws[len(draws)//2]
+        p75 = draws[int(len(draws)*0.75)]
+        assert abs(med - 0.436) < 0.03
+        assert abs(p75 - 0.679) < 0.06
+
+    def test_paper_writes_fill_stats_same_schema_as_live(self, tmp_path, monkeypatch):
+        """Kill-rate parity must be a measurement: paper records the identical
+        fill_stats schema to its own file so live-vs-paper kill rates compare."""
+        import polybot.execution.paper_trader as pt
+        import json
+        f = tmp_path / "fill_stats_paper.json"
+        monkeypatch.setattr(pt, "FILL_STATS_PAPER_PATH", f)
+        PaperTrader._record_stats(filled=False, side="buy", reason="price moved")
+        PaperTrader._record_stats(filled=True, side="buy")
+        PaperTrader._record_stats(filled=False, side="sell", reason="not enough shares (pre-check)")
+        s = json.loads(f.read_text())
+        assert s["total_attempts"] == 3 and s["total_fills"] == 1
+        assert s["buy_attempts"] == 2 and s["buy_fills"] == 1
+        assert s["failure_buckets"]["price_moved"] == 1
+        assert s["failure_buckets"]["precheck_depth"] == 1
+        assert s["fill_rate"] == 0.3333

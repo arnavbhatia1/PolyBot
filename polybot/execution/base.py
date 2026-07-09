@@ -20,6 +20,87 @@ except ImportError:
         return _json.dumps(obj)
 
 # ---------------------------------------------------------------------------
+# FOK fill/kill stats (shared by live + paper so kill rates are COMPARABLE —
+# "paper kills at the live rate" must be a measurement, not an assumption)
+# ---------------------------------------------------------------------------
+
+# Failure-cause buckets — lets the pipeline distinguish "price moved" rejects
+# (a feature) from "network error" or "depth" rejects (a defect). Empty or
+# unmatched reasons go to `other` so future failure modes show up rather than
+# getting silently lumped in.
+FAILURE_BUCKETS: tuple[str, ...] = (
+    "price_moved", "non_retryable", "precheck_depth", "fok_killed",
+    "below_min", "network_error", "auth", "other",
+)
+
+
+def categorize_failure(reason: str) -> str:
+    """Map a FillResult.reason or last_error string to a failure-cause bucket."""
+    r = (reason or "").lower()
+    if "price moved" in r:
+        return "price_moved"
+    if "pre-check" in r or "book walk" in r or "not enough shares" in r:
+        return "precheck_depth"
+    if "killed" in r or r == "fok_killed":
+        return "fok_killed"
+    if "below" in r and ("minimum" in r or "clob minimum" in r):
+        return "below_min"
+    if any(kw in r for kw in ("timeout", "network", "connection refused", "rpc")):
+        return "network_error"
+    if "auth" in r:
+        return "auth"
+    if "non-retryable" in r or "not retryable" in r:
+        return "non_retryable"
+    return "other"
+
+
+def update_fill_stats(path: Any, filled: bool, side: str, reason: str = "") -> None:
+    """Atomically update FOK fill-rate stats at ``path``. Silent on I/O errors.
+
+    ``reason`` is bucketed into FAILURE_BUCKETS when filled=False so the
+    pipeline can stratify retryable rejects (price_moved — a feature) from
+    network/depth errors (a defect). New fields are additive; scheduler.py
+    reads fill_rate and buy/sell counts the same way. ``side`` accepts either
+    trader's convention ("BUY"/"buy").
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    try:
+        stats = {"total_attempts": 0, "total_fills": 0,
+                 "buy_attempts": 0, "buy_fills": 0,
+                 "sell_attempts": 0, "sell_fills": 0,
+                 "failure_buckets": {b: 0 for b in FAILURE_BUCKETS}}
+        if path.exists():
+            try:
+                stats.update(_json.loads(path.read_text()))
+            except Exception:
+                pass
+        if "failure_buckets" not in stats or not isinstance(stats["failure_buckets"], dict):
+            stats["failure_buckets"] = {b: 0 for b in FAILURE_BUCKETS}
+        for b in FAILURE_BUCKETS:
+            stats["failure_buckets"].setdefault(b, 0)
+        stats["total_attempts"] += 1
+        if filled:
+            stats["total_fills"] += 1
+        else:
+            bucket = categorize_failure(reason)
+            stats["failure_buckets"][bucket] = stats["failure_buckets"].get(bucket, 0) + 1
+        if str(side).lower().startswith("b"):
+            stats["buy_attempts"] += 1
+            if filled:
+                stats["buy_fills"] += 1
+        else:
+            stats["sell_attempts"] += 1
+            if filled:
+                stats["sell_fills"] += 1
+        stats["fill_rate"] = round(stats["total_fills"] / max(stats["total_attempts"], 1), 4)
+        stats["last_updated"] = _dt.now(_tz.utc).isoformat()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_json.dumps(stats, indent=2))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
 
