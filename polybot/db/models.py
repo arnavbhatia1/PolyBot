@@ -77,6 +77,12 @@ class Database:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0")
         if "exit_reason" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN exit_reason TEXT NOT NULL DEFAULT 'resolution'")
+        if "position_id" not in th_cols:
+            # The true link to positions. The historical implicit join (t.id = p.id)
+            # only held while both AUTOINCREMENT sequences happened to run in
+            # lockstep — any drift (unclosed positions, a ledger reset) silently
+            # mispairs rows. Legacy rows keep NULL; readers COALESCE to t.id.
+            await self.conn.execute("ALTER TABLE trade_history ADD COLUMN position_id INTEGER")
         # Hot-path indexes — get_open_positions / has_position_for_market run every tick.
         await self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status)"
@@ -174,10 +180,10 @@ class Database:
         await self.conn.execute(
             """INSERT INTO trade_history
             (side, entry_price, exit_price, size,
-             exit_timestamp, pnl, fees, exit_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+             exit_timestamp, pnl, fees, exit_reason, position_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (pos["side"], pos["entry_price"], exit_price, pos["size"],
-             now, pnl, fees, exit_reason),
+             now, pnl, fees, exit_reason, position_id),
         )
 
     async def close_position(

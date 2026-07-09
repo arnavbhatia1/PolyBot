@@ -81,3 +81,22 @@ async def test_update_bankroll(db):
     assert await db.get_bankroll() == 100.0
     await db.set_bankroll(95.50)
     assert await db.get_bankroll() == 95.50
+
+
+@pytest.mark.asyncio
+async def test_close_position_writes_position_id_link(db):
+    """trade_history.position_id must carry the true link to positions — the
+    implicit id pairing breaks whenever the two AUTOINCREMENT sequences drift."""
+    await db.set_bankroll(100.0)
+    pos_id = await db.open_position_and_debit_bankroll(new_bankroll=90.0, **_POS_KWARGS)
+    # drift the trade_history sequence ahead of positions (a decoy row with a
+    # high explicit id bumps the AUTOINCREMENT high-water mark)
+    await db.conn.execute(
+        "INSERT INTO trade_history (id, side, entry_price, exit_price, size, "
+        "exit_timestamp) VALUES (?, 'Up', 0.5, 0.5, 1.0, '2026-01-01T00:00:00')",
+        (pos_id + 100,))
+    await db.close_position(pos_id, exit_price=0.7)
+    row = await (await db.conn.execute(
+        "SELECT id, position_id FROM trade_history ORDER BY id DESC LIMIT 1")).fetchone()
+    assert row[1] == pos_id
+    assert row[0] != pos_id  # the drift is real, and the link survives it

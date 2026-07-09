@@ -156,3 +156,27 @@ def test_db_path_and_since_iso_scope_the_read(tmp_path):
     # unscoped default keeps everything
     r_all = mod.live_health_read(db)
     assert r_all["n_fills"] == 3 and r_all["n_days"] == 2
+
+
+def test_join_uses_position_id_when_sequences_drift(tmp_path):
+    """trade_history ids drift from position ids whenever the AUTOINCREMENT
+    sequences diverge (unclosed positions, a ledger reset — observed offset 101
+    after the 07-09 reset). With position_id present, the read must pair rows
+    by the TRUE link, not the implicit id coincidence."""
+    mod = _load()
+    db = tmp_path / "drift.db"
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE positions (id INTEGER PRIMARY KEY, shares_held REAL)")
+    con.execute("CREATE TABLE trade_history (id INTEGER PRIMARY KEY, pnl REAL, "
+                "fees REAL, exit_timestamp TEXT, position_id INTEGER)")
+    con.execute("INSERT INTO positions (id, shares_held) VALUES (8982, 5.0)")
+    # trade id 9083 (drifted) but position_id links correctly
+    con.execute("INSERT INTO trade_history (id, pnl, fees, exit_timestamp, position_id) "
+                "VALUES (9083, 2.0, 0.5, ?, 8982)", (_ts("07-09"),))
+    # legacy row: NULL position_id falls back to id pairing (id 8982 == position)
+    con.execute("INSERT INTO trade_history (id, pnl, fees, exit_timestamp, position_id) "
+                "VALUES (8982, 1.0, 0.0, ?, NULL)", (_ts("07-09"),))
+    con.commit(); con.close()
+    r = mod.live_health_read(db)
+    assert r["n_fills"] == 2
+    assert r["net_per_sh"] == pytest.approx(((2.0-0.5)/5.0 + (1.0-0.0)/5.0) / 2)

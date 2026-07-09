@@ -299,8 +299,15 @@ def live_health_read(db_path=None, since_iso=None):
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     try:
+        # position_id is the true link (the historical implicit t.id = p.id pairing
+        # only held while both AUTOINCREMENT sequences ran in lockstep). Legacy rows
+        # / un-migrated DBs fall back to the id pairing.
+        has_pid = any(r[1] == "position_id"
+                      for r in con.execute("PRAGMA table_info(trade_history)"))
+        join_key = "COALESCE(t.position_id, t.id)" if has_pid else "t.id"
         q = ("SELECT t.pnl AS pnl, t.fees AS fees, t.exit_timestamp AS ts, "
-             "p.shares_held AS shares FROM trade_history t JOIN positions p ON t.id = p.id "
+             "p.shares_held AS shares FROM trade_history t "
+             f"JOIN positions p ON {join_key} = p.id "
              "WHERE t.exit_timestamp IS NOT NULL AND p.shares_held > 0")
         args = ()
         if since_iso:
