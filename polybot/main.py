@@ -1148,6 +1148,11 @@ async def _evaluate_signal_and_enter(
     # $1 notional. Paper mirrors the floor so paper and live behave identically.
     if size < 1.0:
         _record_skip("min_size")
+        # Ghost it like every other downstream gate — at live-scale bankrolls this
+        # is the most active sniper veto (anchored Kelly on cheap asks lands under
+        # $1), and the resolved ghosts are the evidence for any future sizing-
+        # anchor change.
+        _ghost("min_size", signal, {})
         _emit_gate_skip(cid, "min_size", f"size ${size:.2f} < $1 min")
         return None, last_eval_log_window
 
