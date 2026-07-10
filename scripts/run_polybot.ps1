@@ -102,6 +102,19 @@ while ($true) {
         }
     }
 
+    # A crash (exit != 0) during trading hours restarts after a short backoff --
+    # waiting for 12:01 AM would forfeit the rest of the trading day (and the
+    # validation gate's evidence accrual) over a transient fault. The nightly
+    # 12:01 wait below is only the NORMAL (exit 0, post-pipeline) cycle.
+    if ($exitCode -ne 0) {
+        $nowEt = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), "Eastern Standard Time")
+        if ($nowEt.Hour -lt 23 -or ($nowEt.Hour -eq 23 -and $nowEt.Minute -lt 30)) {
+            Write-Host "[$timestamp] Crash during trading hours -- restarting in 60s (check polybot.log / crash_native.log for the cause)" -ForegroundColor Yellow
+            Start-Sleep -Seconds 60
+            continue
+        }
+    }
+
     # Wait until 12:01 AM ET to restart. A wait over 23 hours means the pipeline
     # overran past midnight -- start immediately instead of losing a trading day.
     $now = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), "Eastern Standard Time")

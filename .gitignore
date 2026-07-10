@@ -34,3 +34,4 @@ Thumbs.db
 polybot/memory/recordings/
 polybot/db/window_paths.db*
 polybot/db/late_window_collect.db*
+crash_native.log

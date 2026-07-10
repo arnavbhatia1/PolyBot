@@ -3150,6 +3150,15 @@ def _make_sigint_handler(force_quit=os._exit):
 
 
 if __name__ == "__main__":
+    # Last-breath instrumentation: a hard/native fault (C extension, stack
+    # overflow) dumps every thread to crash_native.log, and any exception that
+    # escapes main() is written to polybot.log before the process dies — the
+    # cause of an exit must never depend on someone watching the console.
+    import faulthandler
+    try:
+        faulthandler.enable(file=open("crash_native.log", "a"))
+    except OSError:
+        pass
     args = parse_args()
     try:
         if args.run_pipeline:
@@ -3181,3 +3190,8 @@ if __name__ == "__main__":
             + "=" * 70 + "\n"
         )
         _sys.exit(2)
+    except SystemExit:
+        raise
+    except BaseException:
+        logging.critical("FATAL: unhandled exception escaped main()", exc_info=True)
+        raise
