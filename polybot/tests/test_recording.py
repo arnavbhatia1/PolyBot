@@ -248,3 +248,52 @@ def test_tape_recorder_never_raises():
     rec = TapeRecorder(dir_path=None)
     rec.dir = None  # force an internal failure path
     rec.on_trade("tok", {"price": "x"})  # swallowed
+
+
+class TestMicroTape:
+    def _tape(self, tmp_path):
+        from polybot.recording import MicroTape
+        return MicroTape(dir_path=tmp_path)
+
+    def test_late_phase_gating(self, tmp_path, monkeypatch):
+        """b/c events record only in the final 90s of a window (elapsed >= 210);
+        l (chainlink) events record always — boundary-adjacent reports are the
+        strike-research corpus."""
+        import polybot.recording as rec
+        t = self._tape(tmp_path)
+        t.flush = lambda: None   # keep events in _buf for counting
+        early = (int(time.time() // 300)) * 300 + 100.0   # elapsed 100s
+        late = (int(time.time() // 300)) * 300 + 250.0    # elapsed 250s
+        monkeypatch.setattr(rec.time, "time", lambda: early)
+        t.on_cb_tick(early, 60000.0)
+        t.on_bba("tok", {"bid": "0.5", "ask": "0.52"})
+        assert t._buf == []
+        monkeypatch.setattr(rec.time, "time", lambda: late)
+        t.on_cb_tick(late, 60010.0)
+        t.on_bba("tok", {"bid": "0.5", "ask": "0.52"})
+        t.on_cl_report(late, 60005.0)
+        assert len(t._buf) == 3
+
+    def test_schema_and_flush(self, tmp_path):
+        import json as _j
+        t = self._tape(tmp_path)
+        late = (int(time.time() // 300)) * 300 + 250.0
+        t.on_cb_tick(late, 60010.0)
+        t.on_cl_report(1783600000.0, 60005.0)
+        t.flush()
+        t._writer.shutdown(wait=True)
+        files = list(tmp_path.glob("micro_*.jsonl"))
+        assert len(files) == 1
+        rows = [_j.loads(l) for l in files[0].read_text().splitlines()]
+        kinds = {r["k"] for r in rows}
+        assert kinds == {"c", "l"}
+        l_row = next(r for r in rows if r["k"] == "l")
+        assert l_row["ts"] == 1783600000.0 and "rx" in l_row and l_row["p"] == 60005.0
+
+    def test_hooks_never_raise(self, tmp_path):
+        """Feed callbacks must be crash-proof — a tape bug can't touch the money path."""
+        t = self._tape(tmp_path)
+        t._buf = None  # force internal failure
+        t.on_cb_tick(time.time(), 60000.0)   # must not raise
+        t.on_bba("tok", {})                  # must not raise
+        t.on_cl_report(time.time(), 1.0)     # must not raise

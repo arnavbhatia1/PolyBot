@@ -536,6 +536,97 @@ class TapeRecorder:
             logger.warning(f"tape flush failed ({len(buf)} prints): {e}")
 
 
+class MicroTape:
+    """Event-driven micro-structure tape → memory/recordings/micro_YYYY-MM-DD.jsonl
+    (gitignored). Fixes the 5Hz recorder's blind spot: the WindowPathRecorder
+    SAMPLES the book 5×/s, but fills/kills are decided by the book's exact
+    trajectory between samples. This records the events themselves:
+
+      k="b"  every CLOB best-bid/ask CHANGE for subscribed tokens
+      k="c"  every Coinbase tick (the sniper's exact fire-condition input)
+      k="l"  every Chainlink RTDS report (resolution + boundary-gap research)
+
+    b/c rows are kept only in the DECISIVE phase (window elapsed >= 210s, i.e.
+    the final 90s) to bound volume; l rows are kept always (~1Hz, tiny) since
+    boundary-adjacent reports are the strike-research corpus. Same off-loop
+    single-writer pattern as TapeRecorder — the event-loop callbacks only
+    append to a list; the disk write never rides the money path.
+    """
+
+    _LATE_ELAPSED_S = 210.0
+
+    def __init__(self, dir_path: Path | None = None) -> None:
+        self.dir = dir_path or RECORDINGS_DIR
+        self._buf: list[str] = []
+        self._last_flush = time.time()
+        self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="micro-writer")
+
+    @classmethod
+    def _late(cls, ts: float) -> bool:
+        return (ts % 300.0) >= cls._LATE_ELAPSED_S
+
+    def on_bba(self, asset_id: str, entry: dict[str, Any]) -> None:
+        """Wired as ClobWebSocket.on_bba — must never raise into the feed."""
+        try:
+            now = time.time()
+            if not self._late(now):
+                return
+            self._buf.append(json.dumps({
+                "k": "b", "ts": round(now, 3), "token": asset_id,
+                "bid": entry.get("bid"), "ask": entry.get("ask"),
+                "bid_sz": entry.get("bid_size"), "ask_sz": entry.get("ask_size"),
+            }))
+            self._maybe_flush(now)
+        except Exception:
+            pass
+
+    def on_cb_tick(self, ts: float, price: float) -> None:
+        """Wired as CoinbaseFeed.on_tick."""
+        try:
+            if not self._late(ts):
+                return
+            self._buf.append(json.dumps({"k": "c", "ts": round(ts, 3), "p": price}))
+            self._maybe_flush(ts)
+        except Exception:
+            pass
+
+    def on_cl_report(self, payload_ts: float, price: float) -> None:
+        """Wired as ChainlinkFeed.on_report. payload_ts = the report's own
+        timestamp (seconds); receipt time is stamped alongside so delivery
+        lag/holes are measurable offline."""
+        try:
+            now = time.time()
+            self._buf.append(json.dumps({
+                "k": "l", "ts": round(payload_ts, 3), "rx": round(now, 3), "p": price,
+            }))
+            self._maybe_flush(now)
+        except Exception:
+            pass
+
+    def _maybe_flush(self, now: float) -> None:
+        if len(self._buf) >= _TAPE_FLUSH_ROWS or now - self._last_flush > _FLUSH_EVERY_S:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._buf:
+            return
+        buf, self._buf = self._buf, []
+        self._last_flush = time.time()
+        try:
+            self._writer.submit(self._write, buf)
+        except RuntimeError:
+            self._write(buf)  # executor gone (interpreter shutdown) — write inline
+
+    def _write(self, buf: list[str]) -> None:
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            with (self.dir / f"micro_{day}.jsonl").open("a", encoding="utf-8") as f:
+                f.write("\n".join(buf) + "\n")
+        except Exception as e:
+            logger.warning(f"micro-tape flush failed ({len(buf)} events): {e}")
+
+
 def cleanup_job(db: Any, retention_days: int = 90):
     """Nightly retention sweep on window_paths (the plan's rolling 90 days)."""
     async def _job() -> dict[str, Any]:

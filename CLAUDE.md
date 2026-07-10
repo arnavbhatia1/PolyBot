@@ -290,6 +290,12 @@ it was removed). Never re-add resting quotes.
   process gets persisted.**
 - **Tape recorder**: every CLOB print (incl. the exchange's own timestamp +
   fee_rate_bps) → `memory/recordings/*.jsonl` (gitignored).
+- **Micro-tape** (`MicroTape`): event-true streams the 5Hz sampler can't see —
+  every CLOB best-bid/ask CHANGE + every Coinbase tick (final 90s of each
+  window) and every Chainlink RTDS report (always; payload + receipt ts, so
+  delivery holes are measurable) → `memory/recordings/micro_*.jsonl`
+  (gitignored). This is what lets future replays model FOK reachability
+  against the true book trajectory instead of a sampled ceiling.
 - **Per-decision records**: `trade_context` stamped into outcomes + ghosts
   (entry facts, model prob, flow/CVD telemetry, book aux, adverse audit
   fields). **None-vs-0.0 is load-bearing**: cold feeds record `None`, never

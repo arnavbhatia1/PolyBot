@@ -38,6 +38,7 @@ class ChainlinkFeed:
         self._task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
         self._running: bool = False
+        self.on_report = None  # micro-tape hook: every RTDS report (recording.MicroTape)
         self._boundary_prices: "OrderedDict[int, float]" = OrderedDict()
         # boundary_ts -> (first at/after report ts, previous report ts) — the gap
         # between the two is the delivery-hole detector behind strike_reliable().
@@ -221,6 +222,12 @@ class ChainlinkFeed:
                             observed_ts = self._epoch_seconds(float(payload_ts)) if payload_ts is not None else now
                             self.staleness.observe(now)
                             self._record_boundary(observed_ts)
+                            # Optional micro-tape hook — must not raise into the feed.
+                            if self.on_report is not None:
+                                try:
+                                    self.on_report(observed_ts, self._price)
+                                except Exception:
+                                    pass
                         except (ValueError, TypeError):
                             pass
             except (websockets.ConnectionClosed, websockets.InvalidHandshake,

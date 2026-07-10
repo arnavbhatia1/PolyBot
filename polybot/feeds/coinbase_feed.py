@@ -55,6 +55,7 @@ class CoinbaseFeed:
         # so waiting on book updates alone would miss the stale-book window. The
         # waiter clears it after waking.
         self.price_event: asyncio.Event = asyncio.Event()
+        self.on_tick = None   # micro-tape hook: every raw tick (recording.MicroTape)
 
         # Per-trade flow: (ts, signed_size). +size = buyer aggressor, -size = seller aggressor.
         self._trade_buffer_s = trade_buffer_s
@@ -245,6 +246,12 @@ class CoinbaseFeed:
         self.state.price = price
         self.state.updated_at = now
         self.price_event.set()
+        # Optional micro-tape hook (recording.MicroTape.on_cb_tick) — must not raise.
+        if self.on_tick is not None:
+            try:
+                self.on_tick(now, price)
+            except Exception:
+                pass
 
         if now - self._last_price_sample >= 1.0:
             self._prices.append((now, price))

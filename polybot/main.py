@@ -2898,10 +2898,15 @@ async def main() -> None:
     )
 
     # Recorders: window-path stream (the kill-bar feed + pivot-research corpus)
-    # + CLOB tape. Write-behind; never block the loop.
-    from polybot.recording import TapeRecorder, WindowPathRecorder
+    # + CLOB tape + micro-tape (event-true BBO/tick/report stream — the sub-5Hz
+    # resolution the sampled recorder can't see). Write-behind; never block the loop.
+    from polybot.recording import MicroTape, TapeRecorder, WindowPathRecorder
     tape_recorder = TapeRecorder()
     clob_ws.on_trade = tape_recorder.on_trade
+    micro_tape = MicroTape()
+    clob_ws.on_bba = micro_tape.on_bba
+    coinbase_feed.on_tick = micro_tape.on_cb_tick
+    chainlink_feed.on_report = micro_tape.on_cl_report
     window_recorder = WindowPathRecorder(
         db=db, clob_ws=clob_ws, coinbase_feed=coinbase_feed,
         chainlink_feed=chainlink_feed, market_scanner=market_scanner,
@@ -3076,6 +3081,7 @@ async def main() -> None:
             asyncio.gather(*background_tasks, return_exceptions=True), timeout=5.0)
         await _stop_rec(window_recorder.stop())
         tape_recorder.flush()
+        micro_tape.flush()
         await _stop_rec(http_client.aclose())
         async def _stop(coro):
             try: await asyncio.wait_for(coro, timeout=2.0)
