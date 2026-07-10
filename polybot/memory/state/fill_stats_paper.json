@@ -1,0 +1,20 @@
+{
+  "total_attempts": 32,
+  "total_fills": 7,
+  "buy_attempts": 32,
+  "buy_fills": 7,
+  "sell_attempts": 0,
+  "sell_fills": 0,
+  "failure_buckets": {
+    "price_moved": 21,
+    "non_retryable": 0,
+    "precheck_depth": 4,
+    "fok_killed": 0,
+    "below_min": 0,
+    "network_error": 0,
+    "auth": 0,
+    "other": 0
+  },
+  "fill_rate": 0.2188,
+  "last_updated": "2026-07-10T03:04:36.061997+00:00"
+}
