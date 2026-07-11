@@ -3170,6 +3170,11 @@ if __name__ == "__main__":
                     "to start a second (single-instance lock). Exiting.")
                 raise SystemExit(1)
             signal.signal(signal.SIGINT, _make_sigint_handler())
+            if hasattr(signal, "SIGTERM") and os.name == "posix":
+                # systemd's `systemctl stop` sends SIGTERM — route it through the
+                # same graceful teardown as Ctrl+C, else the unit gets SIGKILLed
+                # at TimeoutStopSec with no shutdown/commit parity.
+                signal.signal(signal.SIGTERM, _make_sigint_handler())
             asyncio.run(main())
     except KeyboardInterrupt:
         pass

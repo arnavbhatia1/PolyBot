@@ -15,9 +15,11 @@ decides whether an Oracle box can trade at all.
 - **Region = Stockholm (Sweden), *not* Ireland.** Oracle has no Ireland region, and its
   free regions nearest Dublin (Amsterdam / London / Frankfurt) are all Polymarket-blocked.
   Stockholm is the only *legal* free Oracle region. Expect **~40 ms** to Polymarket's
-  Dublin origin — vs ~118 ms from an Atlanta VPN, so still ~3× better. The ~30 ms it
-  concedes to a paid Dublin box buys no edge (oracle-bound finding), so free-forever is
-  the right call.
+  AWS eu-west-2 (London) order origin — vs ~130 ms from this host today. NOTE: the
+  07-10 tick-true measurement made arrival latency the #1 EV multiplier (still-stale
+  asks: 21% reachable at 0.44 s total RTT -> ~28% at ~0.35 s) — a paid Amsterdam box
+  ~25-35 ms closer than Stockholm is worth re-pricing against that curve once live;
+  UK regions are out regardless (geoblocked jurisdiction).
 - **The risk that can sink it (Phase 0 tests it):** Oracle IP ranges have the **worst
   Cloudflare reputation** of the major clouds. Polymarket fronts order submission through
   Cloudflare, so an Oracle box is the most likely to get **403'd at order time**, which
@@ -179,10 +181,13 @@ Before any live capital, confirm on the box:
 - [ ] The daily `auto: daily pipeline update` commit lands on `origin main`.
 - [ ] Auto-restart works: `sudo systemctl restart polybot` → bot comes back, resumes positions.
 - [ ] Reboot survival: `sudo reboot` → service auto-starts.
-- [ ] **Recalibrate paper realism to the box.** `execution.paper_latency_*` /
-      `paper_network_fail_rate` in `settings.yaml` are set to a *host RTT estimate*.
-      Measure the real warm POST RTT from Stockholm (the Phase 0 curl, ~40 ms) and update
-      them so paper matches this box before trusting paper results.
+- [ ] **Recalibrate paper realism to the box.** The shim samples the LIVE ledger's
+      order-POST RTT distribution (`paper_trader._LATENCY_QUANTILES`; knobs are
+      `paper_latency_scale` / `paper_latency_floor_s`). The Phase 0 curl (~40 ms) is a
+      GET's network leg only — a real order POST from the EU will still run
+      ~0.31-0.35 s because ~310 ms is Polymarket's server-side matching. Interim:
+      `paper_latency_scale: 0.80` (≈0.35/0.44); definitive: re-derive the quantiles
+      from the box's own live fills once they exist.
 
 ---
 
@@ -191,14 +196,15 @@ Before any live capital, confirm on the box:
 Only after **both**: (a) Phase 5 validation passes, and (b) the live edge has cleared its
 kill bar — today that is the **late-window sniper** (`analyze_late_window.py`: momentum
 `t_day ≥ 2` AND `p10 > 0` over ≥ 8 clean ET days at the box's measured RTT, plus the
-paper-shadow comparison; see `tasks/todo.md`). The base strategy's gate failed final on
-2026-07-01 and never deploys — the live recipe is `mode: live` + `sniper_enabled: true` +
-`sniper_only: true`. **Paper-complete is not that gate.** Do not change infra and flip to
-live in the same move.
+paper-shadow comparison — the BINDING gate is the paper-shadow's realized fills, per
+CLAUDE.md §2). The base strategy's gate failed final on 2026-07-01 and never deploys;
+base entries are unconditionally suppressed (there is no `sniper_only` key any more) —
+the complete live recipe is `mode: live` + `late_window.sniper_enabled: true`.
+**Paper-complete is not that gate.** Do not change infra and flip to live in the same move.
 
 ```bash
 # on the box, as polybot
-nano polybot/config/settings.yaml             # mode: live + late_window.sniper_only: true
+nano polybot/config/settings.yaml             # mode: live + late_window.sniper_enabled: true
 python scripts/verify_keys.py                 # key + funder + balance + allowance (GETs)
 python scripts/smoke_order_test.py --confirm  # order-POST path through Cloudflare
 sudo systemctl restart polybot
@@ -220,10 +226,8 @@ ambiguous outcome (never resubmit — the double-fill guard depends on this) and
 Phase 0 curl. A newly-flagged IP means fall back to Azure.
 
 **Parity note vs the Windows wrapper.** `run_polybot.sh` is a faithful translation of
-`run_polybot.ps1`, including that a hard *mid-day* crash waits until the next 12:01 AM ET
-before restarting (same as today on Windows). If you later want crash-fast intra-day
-restart, that is a deliberate change to the wait logic — raise it separately, don't
-silently diverge the two wrappers.
+`run_polybot.ps1`, including the mid-day crash-backoff (exit != 0 before 23:30 ET →
+restart in 60 s; both wrappers, since 07-10) and `git pull --rebase --autostash`.
 
 **Security.** The live private key now lives on a cloud box: keep password auth off, the
 firewall at SSH-from-your-IP only, `.env` at `chmod 600`, and never commit secrets.

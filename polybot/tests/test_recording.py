@@ -223,11 +223,16 @@ async def test_window_recorder_label_write(db, tmp_path, monkeypatch):
                              chainlink_feed=None, market_scanner=None, http_client=None)
     await rec.ensure_tables()
     await db.conn.execute(
-        "INSERT OR REPLACE INTO window_labels VALUES (?, ?, ?, ?, ?)",
-        ("btc-updown-5m-1", 1, 61010.0, 60990.0, time.time()))
+        "INSERT OR REPLACE INTO window_labels "
+        "(window_id, resolved_up, final_price, price_to_beat, labeled_at, token_up, token_down) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("btc-updown-5m-1", 1, 61010.0, 60990.0, time.time(), "tok-u", "tok-d"))
     await db.conn.commit()
-    cur = await db.conn.execute("SELECT resolved_up FROM window_labels")
-    assert (await cur.fetchone())["resolved_up"] == 1
+    cur = await db.conn.execute("SELECT resolved_up, token_up, token_down FROM window_labels")
+    row = await cur.fetchone()
+    assert row["resolved_up"] == 1
+    # token map persisted with the label — the join key for tape/micro research
+    assert row["token_up"] == "tok-u" and row["token_down"] == "tok-d"
     await rec.stop()
     await db.close()
 

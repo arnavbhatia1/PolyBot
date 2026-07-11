@@ -99,6 +99,7 @@ class WindowPathRecorder:
         self._discovering: int = 0          # window_ts a discovery task is running for
         self._traded: set[str] = set()
         self._pending_label: dict[str, float] = {}  # window_id -> window_end_ts
+        self._window_tokens: dict[str, tuple[str, str]] = {}  # window_id -> (token_up, token_down)
         self._last_label_run = 0.0
         self._rows: list[tuple] = []
         self._running = False
@@ -142,6 +143,16 @@ class WindowPathRecorder:
                 labeled_at REAL NOT NULL
             );
         """)
+        # Additive migration: persist the window's token ids with its label. The
+        # tape/micro-tape record by TOKEN — without this map, offline research can
+        # only join the ~subset of windows that produced fills/ghosts (the 07-11
+        # tape-flow scan was crippled to n=18 by exactly this gap).
+        cur = await self.db.conn.execute("PRAGMA table_info(window_labels)")
+        cols = {row[1] for row in await cur.fetchall()}
+        if "token_up" not in cols:
+            await self.db.conn.execute("ALTER TABLE window_labels ADD COLUMN token_up TEXT")
+        if "token_down" not in cols:
+            await self.db.conn.execute("ALTER TABLE window_labels ADD COLUMN token_down TEXT")
         await self.db.conn.commit()
         await self._migrate_paths_out_of_main_db()
 
@@ -236,6 +247,13 @@ class WindowPathRecorder:
             "token_up": token_up,
             "token_down": token_down,
         }
+        # Remembered past rotation so the (post-close) label write can persist the
+        # token map; pruned alongside the label queue.
+        self._window_tokens[contract.get("slug", slug)] = (token_up, token_down)
+        if len(self._window_tokens) > 50:
+            for k in list(self._window_tokens)[:-25]:
+                if k not in self._pending_label and (self._window is None or k != self._window["market_id"]):
+                    self._window_tokens.pop(k, None)
         try:
             await self.clob_ws.subscribe([token_up, token_down])
         except Exception as e:
@@ -289,10 +307,13 @@ class WindowPathRecorder:
             if fp is None or ptb is None:
                 continue
             self._pending_label.pop(market_id, None)
+            tok_up, tok_down = self._window_tokens.pop(market_id, (None, None))
             try:
                 await self.db.conn.execute(
-                    "INSERT OR REPLACE INTO window_labels VALUES (?, ?, ?, ?, ?)",
-                    (market_id, 1 if fp >= ptb else 0, fp, ptb, now))
+                    "INSERT OR REPLACE INTO window_labels "
+                    "(window_id, resolved_up, final_price, price_to_beat, labeled_at, "
+                    "token_up, token_down) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (market_id, 1 if fp >= ptb else 0, fp, ptb, now, tok_up, tok_down))
                 await self.db.conn.commit()
                 self.labels_written += 1
             except Exception as e:

@@ -14,7 +14,9 @@ source "$REPO/.venv/bin/activate"
 
 while true; do
     echo "[$(date '+%F %T %Z')] pull origin main"
-    git pull origin main
+    # --autostash: mid-day restarts have uncommitted DB/state churn; stash it
+    # around the pull instead of failing and running stale code.
+    git pull --rebase --autostash origin main
 
     # mode lives in settings.yaml — the one place to flip paper <-> live
     mode="$(grep -E '^mode:' polybot/config/settings.yaml | head -1 | awk '{print $2}')"
@@ -42,6 +44,18 @@ while true; do
         fi
     else
         echo "nonzero exit — skipping commit"
+    fi
+
+    # a crash (exit != 0) during trading hours restarts after a short backoff —
+    # waiting for 12:01 AM would forfeit the rest of the trading day (parity with
+    # run_polybot.ps1's 07-10 crash-backoff).
+    if [ "$code" -ne 0 ]; then
+        et_hm="$(TZ='America/New_York' date +%H%M)"
+        if [ "$((10#$et_hm))" -lt 2330 ]; then
+            echo "[$(date '+%F %T %Z')] crash during trading hours — restarting in 60s (check polybot.log / crash_native.log)"
+            sleep 60
+            continue
+        fi
     fi
 
     # wait until the next 12:01 AM ET; if the pipeline overran past midnight
