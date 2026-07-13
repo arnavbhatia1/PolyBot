@@ -2930,6 +2930,9 @@ async def main() -> None:
         return {"price_sum_lines_dropped": dropped}
     scheduler.register_job("price_sum_retention", _price_sum_retention_job)
 
+    from polybot.recording import recordings_cleanup_job
+    scheduler.register_job("recordings_retention", recordings_cleanup_job())
+
     async def _sniper_health_job() -> dict:
         """Re-run the kill-bar momentum read + post-live kill rule and ping Discord.
         Deterministic, alert-only — it never flips config (kill bars are operator

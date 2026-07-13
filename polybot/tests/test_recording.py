@@ -302,3 +302,21 @@ class TestMicroTape:
         t.on_cb_tick(time.time(), 60000.0)   # must not raise
         t.on_bba("tok", {})                  # must not raise
         t.on_cl_report(time.time(), 1.0)     # must not raise
+
+
+@pytest.mark.asyncio
+async def test_recordings_cleanup_job_prunes_old_files(tmp_path, monkeypatch):
+    """Nightly sweep deletes recordings past retention (the only unbounded-growth
+    files on the host) and leaves fresh ones."""
+    import os
+    import polybot.recording as recording
+    monkeypatch.setattr(recording, "RECORDINGS_DIR", tmp_path)
+    old = tmp_path / "micro_2026-01-01.jsonl"; old.write_text("x")
+    os.utime(old, (time.time() - 40 * 86400,) * 2)
+    fresh = tmp_path / "tape_2026-07-12.jsonl"; fresh.write_text("x")
+    keepme = tmp_path / "notes.txt"; keepme.write_text("x")   # non-jsonl untouched
+    os.utime(keepme, (time.time() - 400 * 86400,) * 2)
+    job = recording.recordings_cleanup_job(retention_days=30)
+    out = await job()
+    assert out["recordings_deleted"] == 1
+    assert not old.exists() and fresh.exists() and keepme.exists()

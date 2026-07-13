@@ -648,6 +648,31 @@ class MicroTape:
             logger.warning(f"micro-tape flush failed ({len(buf)} events): {e}")
 
 
+def recordings_cleanup_job(retention_days: int = 30):
+    """Nightly retention sweep on memory/recordings/*.jsonl (tape + micro-tape).
+    These are the only unbounded-growth files on the host (~100-200MB/day
+    combined); 30 days keeps a research corpus at a ~4-6GB steady state instead
+    of filling the disk in months."""
+    async def _job() -> dict[str, Any]:
+        import asyncio as _aio
+        def _sweep() -> int:
+            cutoff = time.time() - retention_days * 86400
+            n = 0
+            try:
+                for f in RECORDINGS_DIR.glob("*.jsonl"):
+                    try:
+                        if f.stat().st_mtime < cutoff:
+                            f.unlink()
+                            n += 1
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            return n
+        return {"recordings_deleted": await _aio.to_thread(_sweep)}
+    return _job
+
+
 def cleanup_job(db: Any, retention_days: int = 90):
     """Nightly retention sweep on window_paths (the plan's rolling 90 days)."""
     async def _job() -> dict[str, Any]:
