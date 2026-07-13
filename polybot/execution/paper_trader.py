@@ -25,12 +25,12 @@ class PaperTrader(BaseTrader):
         # defaults here equal settings' calibrated values and apply only when
         # settings omit the keys). Latency is sampled from the LIVE ledger's
         # measured order-path POST-RTT distribution (_LATENCY_QUANTILES, from
-        # latency_stats.json); latency_scale multiplies the draw (0.80 = the
-        # Stockholm box: 44ms net leg vs the 130ms leg the quantiles carry;
-        # 0 = instant for deterministic tests). latency_floor_s scales the same
-        # way. Re-derive the quantiles from box-live fills at go-live.
-        self.latency_scale: float = kwargs.get("paper_latency_scale", 0.80)
-        self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.33)
+        # latency_stats.json); latency_scale multiplies the draw (0.70 = the
+        # Stockholm box, MEASURED: warm signed FOK smoke orders p50 304ms vs
+        # the table's 436ms; 0 = instant for deterministic tests).
+        # Re-derive the quantiles from box-live fills at go-live.
+        self.latency_scale: float = kwargs.get("paper_latency_scale", 0.70)
+        self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.30)
         # Fallback fail rate when the book is unavailable; the i.i.d. baseline
         # otherwise — _compute_fail_rate adds state-dependent terms on top.
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.03)
