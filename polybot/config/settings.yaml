@@ -104,7 +104,7 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-07-13T00:34:46+00:00"  # paper re-validation baseline: the nightly
+  validation_epoch: "2026-07-13T03:04:34+00:00"  # paper re-validation baseline: the nightly
                                # health job scores only paper-shadow fills at/after this instant
                                # (earlier fills ran different code/config). Reset when a new
                                # validation epoch starts; ignored in live mode.
