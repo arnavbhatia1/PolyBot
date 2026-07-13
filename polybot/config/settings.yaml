@@ -28,6 +28,7 @@ execution:
   # rate, and run smoke_order_test.py --confirm to prove order POSTs clear Cloudflare
   # (verify_keys.py covers GETs only).
   slippage_impact_pct: 0.03
+  fok_spread_cross_floor: 0.08     # scalp-exit slippage floor (min assumed FOK spread-cross)
   # Latency is SAMPLED from the LIVE ledger's measured order-path POST-RTT
   # distribution (latency_stats.json, 80 samples over 4 live days: p25 0.410 /
   # p50 0.436 / p75 0.679 / p99 1.65, ZERO <= 0.250) via inverse-CDF — the
@@ -40,6 +41,9 @@ execution:
                                    # true quantiles once box-live fills exist.
   paper_latency_floor_s: 0.30      # fastest measured signed POST from the box
   paper_network_fail_rate: 0.03    # 0 network errors in first 29 live POSTs — consistent, keep
+
+binance_trades:
+  max_age_s: 300              # aggTrade rolling-buffer horizon (s)
 
 # =============================================================================
 #  SECTION 2: SIGNAL — L1 fair-value anchor + entry gates + exit engine

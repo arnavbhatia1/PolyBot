@@ -59,9 +59,10 @@ def update_fill_stats(path: Any, filled: bool, side: str, reason: str = "") -> N
 
     ``reason`` is bucketed into FAILURE_BUCKETS when filled=False so the
     pipeline can stratify retryable rejects (price_moved — a feature) from
-    network/depth errors (a defect). New fields are additive; scheduler.py
-    reads fill_rate and buy/sell counts the same way. ``side`` accepts either
-    trader's convention ("BUY"/"buy").
+    network/depth errors (a defect). The files are operator/offline-read
+    calibration ledgers (kill-rate parity, RTT re-derivation at go-live) —
+    no runtime consumer. ``side`` accepts either trader's convention
+    ("BUY"/"buy").
     """
     from datetime import datetime as _dt, timezone as _tz
     try:

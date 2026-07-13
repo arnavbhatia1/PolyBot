@@ -45,11 +45,23 @@ def _parse_since(s: str) -> datetime:
     return dt
 
 
+def _config_epoch() -> datetime | None:
+    """Default --since to late_window.validation_epoch from settings.yaml, so the
+    manual read and the nightly health job scope to the same binding population.
+    Pre-parsed: argparse applies ``type=`` only to CLI-provided values."""
+    try:
+        from polybot.config.loader import load_config
+        epoch = load_config().get("late_window", {}).get("validation_epoch")
+        return _parse_since(epoch) if epoch else None
+    except Exception:
+        return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Late-window sniper paper-shadow status.")
-    ap.add_argument("--since", type=_parse_since, default=None,
-                    help="ISO timestamp (tz-aware); only count fills resolved at/after it "
-                         "(the clean-baseline restart epoch).")
+    ap.add_argument("--since", type=_parse_since, default=_config_epoch(),
+                    help="ISO timestamp (tz-aware); only count fills resolved at/after it. "
+                         "Defaults to late_window.validation_epoch from settings.yaml.")
     args = ap.parse_args()
 
     # load_all_outcomes dedups by (position_id, market_id) — a fill present in
