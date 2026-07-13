@@ -357,7 +357,7 @@ polybot/
                          peak_bankroll; window_labels lives here too; window_paths
                          sits in a gitignored sidecar DB — window_paths.db)
 scripts/
-  run_polybot.ps1        daily supervisor (Linux port: run_polybot.sh + polybot.service;
+  run_polybot.sh         THE daily supervisor (systemd unit: polybot.service;
                          VPS runbook: docs/DEPLOY_ORACLE_VPS.md)
   analyze_late_window.py sniper kill-bar harness (RTT-parametric; --rtt-sweep --max-slip)
   sniper_shadow_status.py  paper-shadow fills vs the harness
@@ -379,11 +379,12 @@ scripts/
 
 ## 11. Running + invariants
 
-`run_polybot.ps1`: starts 12:01 AM ET, stops trading 11:30 PM ET, nightly jobs
-11:45 PM ET, commits + pushes `origin main` on a clean exit, restarts at
-midnight. **Single-instance guarded**: the wrapper refuses to start if another
-is running, and `polybot.main` holds an OS single-instance lock
-(localhost-port bind). Live preflight: `verify_keys.py` then
+The bot runs ONLY on the VPS (Oracle Stockholm, systemd unit `polybot` →
+`run_polybot.sh`): starts 12:01 AM ET, stops trading 11:30 PM ET, nightly jobs
+11:45 PM ET, commits + pushes `origin main` on a clean exit, pulls + restarts
+at midnight; a mid-day crash restarts after 60s. **Never run the bot on a
+workstation** — there is no cross-host lock (`polybot.main`'s localhost-port
+lock guards one host only). Live preflight: `verify_keys.py` then
 `smoke_order_test.py --confirm`.
 
 - UTC for storage; ET (`America/New_York`) only for date-bucketing + trading

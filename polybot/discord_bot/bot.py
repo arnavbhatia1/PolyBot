@@ -247,7 +247,7 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
 
     @bot.command(name="pipeline")
     async def pipeline_status(ctx):
-        # Nightly jobs run 23:45 ET (run_polybot.ps1; CLAUDE.md §7): record
+        # Nightly jobs run 23:45 ET (run_polybot.sh; CLAUDE.md §7): record
         # rollups, retention sweeps, and the sniper-edge health report.
         # No parameter adoption — entry forecasting has no edge.
         now_et = datetime.now(_ET)

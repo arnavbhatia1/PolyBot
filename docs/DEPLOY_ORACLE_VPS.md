@@ -162,7 +162,7 @@ sudo systemctl enable --now polybot
 journalctl -u polybot -f          # watch it pull and start the bot
 ```
 
-`run_polybot.sh` mirrors `run_polybot.ps1`: each cycle it pulls `origin main`, runs
+`run_polybot.sh` is the supervisor: each cycle it pulls `origin main`, runs
 `polybot.main` for a full ET day (which runs the 11:45 PM ET pipeline in-process and
 then exits), commits+pushes the day's records on a clean exit, and waits until
 12:01 AM ET to loop. systemd's `Restart=always` + `enable` give you always-on across
@@ -225,9 +225,8 @@ days). A 24/7 trading bot is never idle, so this does not apply — no keep-aliv
 ambiguous outcome (never resubmit — the double-fill guard depends on this) and re-run the
 Phase 0 curl. A newly-flagged IP means fall back to Azure.
 
-**Parity note vs the Windows wrapper.** `run_polybot.sh` is a faithful translation of
-`run_polybot.ps1`, including the mid-day crash-backoff (exit != 0 before 23:30 ET →
-restart in 60 s; both wrappers, since 07-10) and `git pull --rebase --autostash`.
+**Supervisor behavior.** `run_polybot.sh` restarts a mid-day crash after 60 s
+(exit != 0 before 23:30 ET) and pulls with `--rebase --autostash` each cycle.
 
 **Security.** The live private key now lives on a cloud box: keep password auth off, the
 firewall at SSH-from-your-IP only, `.env` at `chmod 600`, and never commit secrets.

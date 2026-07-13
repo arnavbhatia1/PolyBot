@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PolyBot supervisor (Linux) — daily trade + nightly-pipeline loop.
-# Linux counterpart of run_polybot.ps1; run under systemd (see scripts/polybot.service).
+# THE supervisor (bot runs on the VPS under systemd — see scripts/polybot.service).
 # Each cycle: pull code -> run the bot for a full ET trading day (blocks until the
 # 11:45 PM ET pipeline finishes and it exits) -> commit+push the day's records on a
 # clean exit -> wait until 12:01 AM ET -> repeat.
@@ -47,8 +47,7 @@ while true; do
     fi
 
     # a crash (exit != 0) during trading hours restarts after a short backoff —
-    # waiting for 12:01 AM would forfeit the rest of the trading day (parity with
-    # run_polybot.ps1's 07-10 crash-backoff).
+    # waiting for 12:01 AM would forfeit the rest of the trading day.
     if [ "$code" -ne 0 ]; then
         et_hm="$(TZ='America/New_York' date +%H%M)"
         if [ "$((10#$et_hm))" -lt 2330 ]; then

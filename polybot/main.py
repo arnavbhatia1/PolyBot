@@ -2568,7 +2568,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
         except AuthError as e:
             # Every subsequent order would fail identically — bail loudly rather than
-            # silently skipping entries for hours. run_polybot.ps1 keeps looping but
+            # silently skipping entries for hours. The run_polybot.sh loop keeps going but
             # won't retry until the next 12:01 AM ET start — fix creds before then.
             logger.error("AUTH FAILURE — stopping trading loop: %s", e)
             if alert_manager:
@@ -3135,7 +3135,7 @@ def _make_sigint_handler(force_quit=os._exit):
     worker whose async stop() didn't fully unwind, or aiosqlite's worker) at
     _thread._shutdown() — producing 'Exception ignored while joining a thread ...
     KeyboardInterrupt' and hanging the process, which forced a manual taskkill.
-    Exit 130 is non-zero so the run_polybot.ps1 wrapper skips the commit."""
+    Exit 130 is non-zero so the run_polybot.sh wrapper skips the commit."""
     state = {"count": 0}
 
     def _handler(signum=None, frame=None):
@@ -3184,7 +3184,7 @@ if __name__ == "__main__":
     except OrphanPositionError as e:
         # Operator-actionable, not a code bug — remediation hint, no stack trace.
         # The orphan gate trips again at every boot until reconciled, so trading
-        # stays down even though run_polybot.ps1 restarts at the next 12:01 AM ET.
+        # stays down even though the supervisor loop restarts at the next 12:01 AM ET.
         import sys as _sys
         _sys.stderr.write(
             "\n" + "=" * 70 + "\n"
