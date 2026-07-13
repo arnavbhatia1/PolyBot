@@ -33,8 +33,11 @@ execution:
   # p50 0.436 / p75 0.679 / p99 1.65, ZERO <= 0.250) via inverse-CDF — the
   # quantile table lives in paper_trader._LATENCY_QUANTILES (a measurement,
   # not a tunable). scale multiplies the draw (1.0 = live-faithful).
-  paper_latency_scale: 1.0
-  paper_latency_floor_s: 0.41      # fastest measured live POST RTT — the latency floor
+  paper_latency_scale: 0.80        # STOCKHOLM interim: warm POST net leg measured 44ms from
+                                   # the box vs 130ms where the quantiles were recorded ->
+                                   # (310ms server + 44ms) / 436ms = 0.80. Re-derive the
+                                   # quantile table from the box's own live fills at go-live.
+  paper_latency_floor_s: 0.33      # scaled floor (0.80 x 0.41)
   paper_network_fail_rate: 0.03    # 0 network errors in first 29 live POSTs — consistent, keep
 
 # =============================================================================
