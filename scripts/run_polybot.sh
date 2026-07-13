@@ -15,8 +15,13 @@ source "$REPO/.venv/bin/activate"
 while true; do
     echo "[$(date '+%F %T %Z')] pull origin main"
     # --autostash: mid-day restarts have uncommitted DB/state churn; stash it
-    # around the pull instead of failing and running stale code.
-    git pull --rebase --autostash origin main
+    # around the pull instead of failing and running stale code. A failed pull
+    # (conflict) must never leave the repo mid-rebase — abort and run what we
+    # have; every later nightly commit would otherwise fail silently.
+    if ! git pull --rebase --autostash origin main; then
+        git rebase --abort 2>/dev/null || true
+        echo "[$(date '+%F %T %Z')] PULL FAILED — continuing on existing code"
+    fi
 
     # mode lives in settings.yaml — the one place to flip paper <-> live
     mode="$(grep -E '^mode:' polybot/config/settings.yaml | head -1 | awk '{print $2}')"
@@ -37,7 +42,7 @@ while true; do
         git add polybot/config/settings.yaml polybot/memory polybot/db
         if ! git diff --cached --quiet; then
             if git commit -m "auto: daily pipeline update $(date '+%F')"; then
-                git push origin main && echo "pushed" || echo "push failed (retry tomorrow)"
+                git push origin main && echo "pushed" || { sleep 10; git push origin main && echo "pushed (retry)" || echo "PUSH FAILED twice — records unpushed; check deploy key"; }
             fi
         else
             echo "no config changes to commit"
