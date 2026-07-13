@@ -308,6 +308,11 @@ class WindowPathRecorder:
                 continue
             self._pending_label.pop(market_id, None)
             tok_up, tok_down = self._window_tokens.pop(market_id, (None, None))
+            if tok_up is None:
+                # restart-orphaned window: the in-memory map is gone, but the
+                # contract we just fetched carries the ids
+                tok_up = contract.get("token_id_up") or None
+                tok_down = contract.get("token_id_down") or None
             try:
                 await self.db.conn.execute(
                     "INSERT OR REPLACE INTO window_labels "
@@ -595,7 +600,6 @@ class MicroTape:
             self._buf.append(json.dumps({
                 "k": "b", "ts": round(now, 3), "token": asset_id,
                 "bid": entry.get("bid"), "ask": entry.get("ask"),
-                "bid_sz": entry.get("bid_size"), "ask_sz": entry.get("ask_size"),
             }))
             self._maybe_flush(now)
         except Exception:

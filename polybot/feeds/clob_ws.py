@@ -277,6 +277,14 @@ class ClobWebSocket:
                 "side": change.get("side", ""),
                 "ts": now,
             }
+            # Micro-tape hook — price_change events move the touch too; without
+            # this the tape under-records BBA changes. Must not raise.
+            if self.on_bba is not None:
+                try:
+                    self.on_bba(asset_id, {"bid": change.get("best_bid"),
+                                           "ask": change.get("best_ask")})
+                except Exception:
+                    pass
         self.book_updated.set()
 
     def _on_best_bid_ask(self, msg: dict[str, Any]) -> None:

@@ -76,8 +76,9 @@ deploys capital on it (`_strike_trusted`). Two modes, one
 engine: **paper**
 (realism shim: real CLOB books, FOK semantics, convex slippage, latency
 SAMPLED inverse-CDF from the LIVE ledger's measured order-path POST-RTT
-distribution — p25 0.410 / p50 0.436 / p75 0.679 / p99 1.65s, zero ≤0.25s
-(latency_stats.json → `_LATENCY_QUANTILES`); network-fail sim; $1 min, tick
+distribution (latency_stats.json → `_LATENCY_QUANTILES`) × `paper_latency_scale`
+0.70 — the VPS's MEASURED warm signed-order RTT, p50 304ms from six smoke FOKs;
+network-fail sim; $1 min, tick
 snapping; FOK kill/fill stats recorded to `fill_stats_paper.json` in live's
 schema so paper-vs-live kill rates are directly comparable) and **live**
 (`py-clob-client-v2` FOK

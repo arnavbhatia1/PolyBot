@@ -72,6 +72,23 @@ def validate_config(config: dict[str, Any]) -> None:
     _check_range("late_window.sniper_min_edge", 0.02, 0.10)
     _check_range("late_window.sniper_max_edge", 0.20, 0.60)
     _check_range("late_window.sniper_fok_slip", 0.0, 0.05)
+    val, found = _get_nested(config, "late_window.sniper_enabled")
+    if not found or not isinstance(val, bool):
+        errors.append("late_window.sniper_enabled: missing or not a boolean")
+    epoch, found = _get_nested(config, "late_window.validation_epoch")
+    if found and epoch is not None:
+        from datetime import datetime as _dt
+        try:
+            parsed = _dt.fromisoformat(str(epoch).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError
+            if str(epoch).endswith("Z"):
+                # readers string-compare against '+00:00' ISO timestamps; a 'Z'
+                # suffix sorts above them and silently excludes every fill
+                raise ValueError
+        except ValueError:
+            errors.append("late_window.validation_epoch: must be tz-aware ISO with "
+                          "+00:00 offset (not 'Z')")
 
     _check_positive("execution.max_concurrent_positions", integer=True)
     _check_range("execution.max_bankroll_deployed", 0.0, 1.0)

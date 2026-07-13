@@ -96,7 +96,9 @@ def update_fill_stats(path: Any, filled: bool, side: str, reason: str = "") -> N
         stats["fill_rate"] = round(stats["total_fills"] / max(stats["total_attempts"], 1), 4)
         stats["last_updated"] = _dt.now(_tz.utc).isoformat()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_json.dumps(stats, indent=2))
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(_json.dumps(stats, indent=2))
+        tmp.replace(path)   # atomic on POSIX — a crash mid-write can't zero the ledger
     except Exception:
         pass
 

@@ -2961,7 +2961,11 @@ async def main() -> None:
         # live -> the live ledger; paper (re-validation) -> the paper-shadow fills
         # since the validation epoch (pre-epoch fills ran different code/config).
         if mode == "live":
-            live = await asyncio.to_thread(mod.live_health_read)   # REAL fills (polybot_live.db, RO)
+            # Scoped to the epoch too: without it, day 1 of a live run scores the
+            # PREVIOUS live era (mis-booked pre-07-08 fills) and false-trips the
+            # kill rule the first night. Pin validation_epoch at every go-live.
+            live = await asyncio.to_thread(
+                mod.live_health_read, None, _lw.get("validation_epoch"))
             real_label = "LIVE (real fills)"
         else:
             live = await asyncio.to_thread(
