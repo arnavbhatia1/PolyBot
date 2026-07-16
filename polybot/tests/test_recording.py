@@ -307,16 +307,24 @@ class TestMicroTape:
 @pytest.mark.asyncio
 async def test_recordings_cleanup_job_prunes_old_files(tmp_path, monkeypatch):
     """Nightly sweep deletes recordings past retention (the only unbounded-growth
-    files on the host) and leaves fresh ones."""
+    files on the host) and leaves fresh ones. Micro-tape ages out on its own
+    shorter clock (~2.6GB/day would fill the 45GB host under tape's window)."""
     import os
     import polybot.recording as recording
     monkeypatch.setattr(recording, "RECORDINGS_DIR", tmp_path)
     old = tmp_path / "micro_2026-01-01.jsonl"; old.write_text("x")
     os.utime(old, (time.time() - 40 * 86400,) * 2)
+    micro_aged = tmp_path / "micro_2026-07-01.jsonl"; micro_aged.write_text("x")
+    os.utime(micro_aged, (time.time() - 10 * 86400,) * 2)   # > micro window, < tape window
+    micro_fresh = tmp_path / "micro_2026-07-12.jsonl"; micro_fresh.write_text("x")
+    os.utime(micro_fresh, (time.time() - 2 * 86400,) * 2)
+    tape_aged = tmp_path / "tape_2026-07-01.jsonl"; tape_aged.write_text("x")
+    os.utime(tape_aged, (time.time() - 10 * 86400,) * 2)    # tape keeps the long window
     fresh = tmp_path / "tape_2026-07-12.jsonl"; fresh.write_text("x")
     keepme = tmp_path / "notes.txt"; keepme.write_text("x")   # non-jsonl untouched
     os.utime(keepme, (time.time() - 400 * 86400,) * 2)
-    job = recording.recordings_cleanup_job(retention_days=30)
+    job = recording.recordings_cleanup_job(retention_days=30, micro_retention_days=7)
     out = await job()
-    assert out["recordings_deleted"] == 1
-    assert not old.exists() and fresh.exists() and keepme.exists()
+    assert out["recordings_deleted"] == 2
+    assert not old.exists() and not micro_aged.exists()
+    assert micro_fresh.exists() and tape_aged.exists() and fresh.exists() and keepme.exists()

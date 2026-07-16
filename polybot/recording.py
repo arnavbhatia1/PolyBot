@@ -652,20 +652,24 @@ class MicroTape:
             logger.warning(f"micro-tape flush failed ({len(buf)} events): {e}")
 
 
-def recordings_cleanup_job(retention_days: int = 30):
-    """Nightly retention sweep on memory/recordings/*.jsonl (tape + micro-tape).
-    These are the only unbounded-growth files on the host (~100-200MB/day
-    combined); 30 days keeps a research corpus at a ~4-6GB steady state instead
-    of filling the disk in months."""
+def recordings_cleanup_job(retention_days: int = 30, micro_retention_days: int = 7):
+    """Nightly retention sweep on memory/recordings/*.jsonl. Tape keeps
+    `retention_days`; micro-tape (micro_*.jsonl) keeps the shorter
+    `micro_retention_days` — the event-true BBA hook writes ~2.6GB/day, so 7
+    days (~18GB) is what the 45GB host can hold alongside tape (~100MB/day)
+    and the DBs. Older research corpora are pulled off-host before they age out."""
     async def _job() -> dict[str, Any]:
         import asyncio as _aio
         def _sweep() -> int:
-            cutoff = time.time() - retention_days * 86400
+            now = time.time()
+            cutoff = now - retention_days * 86400
+            micro_cutoff = now - micro_retention_days * 86400
             n = 0
             try:
                 for f in RECORDINGS_DIR.glob("*.jsonl"):
+                    limit = micro_cutoff if f.name.startswith("micro_") else cutoff
                     try:
-                        if f.stat().st_mtime < cutoff:
+                        if f.stat().st_mtime < limit:
                             f.unlink()
                             n += 1
                     except OSError:
