@@ -1,23 +1,24 @@
 """Late-window sniper KILL BAR — does a bot-FORMABLE final-seconds signal survive
-a realistic 135ms FOK fill, net of fee?
+a realistic FOK fill at the host's measured order RTT (Stockholm p50 ~0.44s), net of fee?
 
 The winning wallets (e.g. 0x565ca5, +33c/$1) make their entire edge in the final
 ~60s by buying a directional side the CLOB hasn't fully repriced. The open question
 the offline 1Hz corpus could NOT answer: is there a signal the BOT can form from its
 OWN feeds (Coinbase = resolution venue, Binance aggTrade = order flow) that, hit with
-a 135ms FOK, nets positive? This needs the 5 Hz late-window samples + Binance columns
+a realistic-RTT FOK, nets positive? This needs the 5 Hz late-window samples + Binance columns
 the extended WindowPathRecorder now writes (recording.py). Run AFTER >= ~8 clean ET
 days of post-extension recording.
 
 Method (lookahead-safe): for each window, at the FIRST late-window instant a signal
 fires (decision row i, using only info <= t_i), model the FOK fill at the ask one
-sample later (~0.2s >= the 135ms RTT — conservative), settle at resolution (window_
+sample later (~0.2s, interpolated to the swept RTT — conservative), settle at resolution (window_
 labels), net of the dynamic taker fee. Day-cluster + block-bootstrap. Pre-registered
 thresholds (not swept-then-cherry-picked); the binding gate is holding them FORWARD.
 
 KILL BAR (all): realistic-fill day-clustered t_day >= 2.0 AND block-bootstrap p10 > 0
 (net of fee, executable asks) over >= 8 clean ET days, >= 6 positive. A control
-(buy spot-side at ask, no filter) must stay ~0 (G-M sanity); oracle = upper bound.
+(buy spot-side at ask, no momentum/flow filter — ask-cap still applied) must stay
+~0 (G-M sanity); oracle = upper bound.
 
   python scripts/analyze_late_window.py [--cb-move 8] [--ask-cap 0.92] \
       [--rtt-sweep 0.04,0.08,0.135,0.20] [--max-slip 0.05]
@@ -283,11 +284,16 @@ def live_health_read(db_path=None, since_iso=None):
     convention as the kill bar so the reads are directly comparable:
     EQUAL-WEIGHT per-fill net $/share, day-clustered by ET.
 
-    Per-fill net = (pnl - fees) / shares_held — pnl is gross (shares*outcome - size),
-    fees is the entry taker fee, shares_held is the audited fill count; this equals
-    the harness's win - fill - fee(fill) (verified on winners and losers) and folds
-    in the live exit engine (scalp / loss-cut outcomes, not just hold-to-resolution).
-    Live runs sniper_only, so every trade_history row is a sniper fire.
+    Per-fill net = pnl / shares_held. pnl is ALREADY net of fees: the entry taker
+    fee is folded into `size` (size = shares_held*entry + entry_fee), and
+    resolve_position/close_trade set pnl = revenue - size (base.py), so the fee is
+    subtracted once inside pnl; scalp exits net the exit fee into revenue too.
+    Therefore pnl/shares_held == the harness's win - fill - fee(fill) (verified to
+    <1e-3 on all 52 real resolutions) — subtracting the stored `fees` a SECOND time
+    (the pre-2026-07-13 formula) DOUBLE-COUNTED it, understating net by ~1.3c/sh.
+    shares_held is the audited fill count. Folds in the live exit engine (scalp /
+    loss-cut outcomes, not just hold-to-resolution). Live runs sniper_only, so every
+    trade_history row is a sniper fire.
 
     kill_rule_tripped mirrors CLAUDE.md's OR-rule but activates each leg as soon as
     it has the days: trailing-4-day mean < +0.02 (+2c/sh) once >= 4 ET days, OR
@@ -305,7 +311,7 @@ def live_health_read(db_path=None, since_iso=None):
         has_pid = any(r[1] == "position_id"
                       for r in con.execute("PRAGMA table_info(trade_history)"))
         join_key = "COALESCE(t.position_id, t.id)" if has_pid else "t.id"
-        q = ("SELECT t.pnl AS pnl, t.fees AS fees, t.exit_timestamp AS ts, "
+        q = ("SELECT t.pnl AS pnl, t.exit_timestamp AS ts, "
              "p.shares_held AS shares FROM trade_history t "
              f"JOIN positions p ON {join_key} = p.id "
              "WHERE t.exit_timestamp IS NOT NULL AND p.shares_held > 0")
@@ -318,19 +324,22 @@ def live_health_read(db_path=None, since_iso=None):
         return None
     finally:
         con.close()
-    per_day = defaultdict(list)
-    fills = []
+    per_day = defaultdict(list)     # ET day -> list of (net_per_sh, win, pnl$)
     for r in rows:
         try:
             ts = datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00")).timestamp()
         except (ValueError, AttributeError):
             continue
-        nps = (r["pnl"] - (r["fees"] or 0.0)) / r["shares"]   # net $/share, harness-consistent
-        per_day[et_day(ts)].append(nps)
-        fills.append((nps, 1.0 if (r["pnl"] or 0) > 0 else 0.0))
-    if not fills:
+        nps = r["pnl"] / r["shares"]        # pnl already nets all fees (size includes the entry fee)
+        per_day[et_day(ts)].append((nps, 1.0 if (r["pnl"] or 0) > 0 else 0.0, r["pnl"] or 0.0))
+    if not per_day:
         return None
-    series = [(day, statistics.mean(v)) for day, v in sorted(per_day.items())]
+    fills = [x for v in per_day.values() for x in v]
+    series = [(day, statistics.mean(n for n, _, _ in v)) for day, v in sorted(per_day.items())]
+    # per-day rollup for the manual shadow table (one source of truth for both reads)
+    day_detail = [(day, len(v), statistics.mean(w for _, w, _ in v),
+                   statistics.mean(n for n, _, _ in v), sum(p for _, _, p in v))
+                  for day, v in sorted(per_day.items())]
     daily = [m for _, m in series]
     m, t, _ = tstat(daily)
     trailing4 = statistics.mean(daily[-4:]) if len(daily) >= 4 else None
@@ -341,11 +350,11 @@ def live_health_read(db_path=None, since_iso=None):
         tripped = (trailing4 < 0.02) or (trailing8_t is not None and trailing8_t < 2.0)
     return dict(label=f"{db.stem}(trade_history{' since ' + since_iso if since_iso else ''})",
                 n_fills=len(fills), n_days=len(daily),
-                win_rate=statistics.mean(f[1] for f in fills), avg_fill=float("nan"),
+                win_rate=statistics.mean(w for _, w, _ in fills), avg_fill=float("nan"),
                 mean_net_day=m, t_day=t, p10=block_bootstrap_p10(daily),
-                net_per_sh=statistics.mean(f[0] for f in fills),
-                net_sum=sum(f[0] for f in fills),
-                days_pos=sum(1 for d in daily if d > 0), series=series,
+                net_per_sh=statistics.mean(n for n, _, _ in fills),
+                net_sum=sum(n for n, _, _ in fills),
+                days_pos=sum(1 for d in daily if d > 0), series=series, day_detail=day_detail,
                 trailing4_mean=trailing4, trailing8_t=trailing8_t,
                 kill_rule_tripped=tripped)
 
@@ -410,7 +419,7 @@ def main():
         a = side_ask(rows, i, up)
         return up if (a is not None and a <= cap) else None
 
-    def control_spotside(rows, i, strike):     # G-M sanity: buy spot-side at ask, no filter
+    def control_spotside(rows, i, strike):     # G-M sanity: spot-side at ask, no momentum/flow filter (ask-cap still applied)
         cb = rows[i]["coinbase_price"]
         if cb is None or strike is None:
             return None

@@ -1,9 +1,10 @@
 """live_health_read() — the money-side post-live kill-rule read (scripts/analyze_late_window.py).
 
 Locks the two things that make it a faithful analog of the SIM health_read():
-per-fill net = (pnl - fees) / shares_held == the harness's win - fill - fee(fill),
-equal-weight and day-clustered; and the kill-rule OR-legs (trailing-4d < +2c/sh,
-trailing-8d t < 2.0) activate as soon as they have the ET days.
+per-fill net = pnl / shares_held (pnl is ALREADY net of fees — size includes the
+entry fee, so pnl = payout - size subtracts it once) == the harness's
+win - fill - fee(fill), equal-weight and day-clustered; and the kill-rule OR-legs
+(trailing-4d < +2c/sh, trailing-8d t < 2.0) activate as soon as they have the ET days.
 """
 import importlib.util
 import sqlite3
@@ -59,19 +60,24 @@ def test_none_when_no_fills(tmp_path):
     assert _read(tmp_path, []) is None
 
 
-def test_per_share_is_pnl_minus_fees_over_shares(tmp_path):
-    # Reproduces the real winner id4 (Down 0.568 -> $1) and loser id2 (Up 0.295 -> $0):
-    # net = (pnl - fees)/shares_held == the harness win - fill - fee(fill).
+def test_per_share_is_pnl_over_shares_fee_already_netted(tmp_path):
+    # pnl is ALREADY net of fees (size = shares*entry + entry_fee; pnl = payout - size),
+    # so net/sh = pnl/shares == the harness win - fill - fee(fill). Subtracting the
+    # stored `fees` again (the pre-2026-07-13 bug) double-counts it. Fixtures follow the
+    # production write convention: a winner filled at 0.55 -> $1 and a loser at 0.30 -> $0.
     r = _read(tmp_path, [
-        (1, 6.939, 0.287, 16.0595, _ts("07-04")),   # winner
-        (2, -5.920, 0.298, 20.0773, _ts("07-05")),  # loser
+        (1, 6.9486, 0.2782, 16.0595, _ts("07-04")),  # 16.0595 sh @0.55 -> $1: pnl = 16.0595 - (8.8327+0.2782)
+        (2, -6.294, 0.294, 20.0, _ts("07-05")),      # 20 sh @0.30 -> $0: pnl = -(6.0+0.294)
     ])
-    win = (6.939 - 0.287) / 16.0595
-    loss = (-5.920 - 0.298) / 20.0773
+    win = 6.9486 / 16.0595
+    loss = -6.294 / 20.0
     assert r["n_fills"] == 2
     assert r["net_per_sh"] == pytest.approx((win + loss) / 2, abs=1e-9)
-    assert r["win_rate"] == pytest.approx(0.5)          # 1 of 2 pnl>0
-    assert win == pytest.approx(0.4142, abs=1e-3)       # matches win-fill-fee to the penny
+    assert r["win_rate"] == pytest.approx(0.5)                          # 1 of 2 pnl>0
+    assert win == pytest.approx(1 - 0.55 - 0.07 * 0.55 * 0.45, abs=1e-3)  # == harness win-fill-fee
+    # the fee must NOT be subtracted a second time (that was the double-count bug)
+    buggy = ((6.9486 - 0.2782) / 16.0595 + (-6.294 - 0.294) / 20.0) / 2
+    assert r["net_per_sh"] != pytest.approx(buggy, abs=1e-4)
 
 
 def test_equal_weight_within_day_then_daily_clustered(tmp_path):
@@ -150,7 +156,7 @@ def test_db_path_and_since_iso_scope_the_read(tmp_path):
     r = mod.live_health_read(db, "2026-07-08T17:15:00+00:00")
     assert r["n_fills"] == 2
     assert r["n_days"] == 1
-    assert r["net_per_sh"] == pytest.approx(((4.0 - 0.4) / 10 + (2.0 - 0.2) / 10) / 2)
+    assert r["net_per_sh"] == pytest.approx((4.0 / 10 + 2.0 / 10) / 2)   # pnl/shares (fee already netted)
     assert "since 2026-07-08T17:15:00+00:00" in r["label"]
 
     # unscoped default keeps everything
@@ -179,4 +185,4 @@ def test_join_uses_position_id_when_sequences_drift(tmp_path):
     con.commit(); con.close()
     r = mod.live_health_read(db)
     assert r["n_fills"] == 2
-    assert r["net_per_sh"] == pytest.approx(((2.0-0.5)/5.0 + (1.0-0.0)/5.0) / 2)
+    assert r["net_per_sh"] == pytest.approx((2.0/5.0 + 1.0/5.0) / 2)   # pnl/shares (fee already netted)
