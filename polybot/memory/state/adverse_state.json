@@ -1,62 +1,20 @@
 {
   "schema": 2,
-  "saved_at": 1784170163.3536186,
+  "saved_at": 1784258067.98324,
   "fills": [
     {
-      "timestamp": 1784167780.7129095,
+      "timestamp": 1784258067.9813468,
       "side": "Down",
-      "fill_price": 0.69,
-      "token_id": "114095971935633680487244129469528248795707809160326404403109586195177572929936",
-      "midprice_at_fill": 0.685,
-      "midprice_5s": 0.765,
-      "midprice_10s": 0.895,
-      "midprice_15s": 0.995,
-      "midprice_30s": null,
-      "midprice_60s": null,
-      "resolved": false,
-      "position_id": 9135
-    },
-    {
-      "timestamp": 1784168965.3562386,
-      "side": "Down",
-      "fill_price": 0.62,
-      "token_id": "75749338360088822682257970354709477062880417667711603903027848482813308018799",
-      "midprice_at_fill": 0.615,
-      "midprice_5s": 0.655,
-      "midprice_10s": 0.605,
-      "midprice_15s": 0.665,
-      "midprice_30s": 0.96,
-      "midprice_60s": null,
-      "resolved": false,
-      "position_id": 9136
-    },
-    {
-      "timestamp": 1784169560.8520439,
-      "side": "Up",
-      "fill_price": 0.6,
-      "token_id": "26266440775041927548669124258769623043890504876850248697787153240636171743329",
-      "midprice_at_fill": 0.595,
-      "midprice_5s": 0.445,
-      "midprice_10s": 0.575,
-      "midprice_15s": 0.385,
-      "midprice_30s": 0.24000000000000002,
-      "midprice_60s": null,
-      "resolved": false,
-      "position_id": 9137
-    },
-    {
-      "timestamp": 1784170163.3518255,
-      "side": "Up",
-      "fill_price": 0.5,
-      "token_id": "112885784019788059718293333691831663479085821495784831719881295929024190026917",
-      "midprice_at_fill": 0.495,
+      "fill_price": 0.5900000000000001,
+      "token_id": "59245722339521939449749340584849876430216582178282953844833563289972080837573",
+      "midprice_at_fill": 0.585,
       "midprice_5s": null,
       "midprice_10s": null,
       "midprice_15s": null,
       "midprice_30s": null,
       "midprice_60s": null,
       "resolved": false,
-      "position_id": 9138
+      "position_id": 9178
     }
   ]
 }
