@@ -1,20 +1,48 @@
 {
   "schema": 2,
-  "saved_at": 1784258067.98324,
+  "saved_at": 1784344497.4872558,
   "fills": [
     {
-      "timestamp": 1784258067.9813468,
+      "timestamp": 1784342370.1535444,
       "side": "Down",
-      "fill_price": 0.5900000000000001,
-      "token_id": "59245722339521939449749340584849876430216582178282953844833563289972080837573",
-      "midprice_at_fill": 0.585,
+      "fill_price": 0.5,
+      "token_id": "21547732071605287702645333796034383857613752703673667955017836778251886967218",
+      "midprice_at_fill": 0.495,
+      "midprice_5s": 0.385,
+      "midprice_10s": 0.315,
+      "midprice_15s": 0.20500000000000002,
+      "midprice_30s": null,
+      "midprice_60s": null,
+      "resolved": false,
+      "position_id": 9208
+    },
+    {
+      "timestamp": 1784342979.9183683,
+      "side": "Up",
+      "fill_price": 0.85168699133458,
+      "token_id": "92103713433397555597533174975262895176349186078743708826681723682145728772142",
+      "midprice_at_fill": 0.845,
+      "midprice_5s": 0.945,
+      "midprice_10s": 0.975,
+      "midprice_15s": 0.985,
+      "midprice_30s": 0.895,
+      "midprice_60s": null,
+      "resolved": false,
+      "position_id": 9209
+    },
+    {
+      "timestamp": 1784344497.4863715,
+      "side": "Up",
+      "fill_price": 0.6,
+      "token_id": "104649644237989602677984208845481960478997492411376943418152534586462485217207",
+      "midprice_at_fill": 0.595,
       "midprice_5s": null,
       "midprice_10s": null,
       "midprice_15s": null,
       "midprice_30s": null,
       "midprice_60s": null,
       "resolved": false,
-      "position_id": 9178
+      "position_id": 9210
     }
   ]
 }
