@@ -2,22 +2,22 @@
 
 5-min BTC Up/Down trader for Polymarket. The **late-window sniper** (§2) is the
 bot's **only strategy** — base entries are always suppressed (no toggle).
-It passed its SIM kill bar and went live 2026-07-04, but the post-live read
-failed its bar: the +9-10¢/sh SIM figure is a full-population REPLAY ceiling no
-real bot can reach (the CONTROL — buy spot-side at ask — nets ~0, so G-M holds
-and the whole apparent edge is stale-ask capture). The bot fires ~9-16×/day
-(catches ~17-20% of the ~56 qualifying windows), and that caught subset is
-ADVERSELY selected: realized is **measured NEGATIVE and degrading** — live
-−4¢/sh (t −0.6, trailing-4d −7¢, days +7/+13/−1/−13/−28¢), paper-shadow
-trailing-4d −5¢. The corrected-to-the-cent strike (2026-07-08) did NOT change
-this — a 16-agent walk-forward re-analysis on the correct strike found no config
-or selection filter beats current out-of-sample, and "only profitable/never-lose"
-is mathematically impossible (irreducible terminal-flip floor 2.6-8%). Now
-**re-validating in paper** (`mode: paper`, `sniper_enabled: true`) on the
-post-fix code (no realized corrected-strike fills exist yet); the **binding
-deployment gate is the paper-shadow's REALIZED fills, not the harness** (§2). The **base strategy**
-(§3) has no proven edge, never touches real capital, and survives only as the
-zero-capital ghost/counterfactual evidence stream the gate needs.
+**LIVE since 2026-07-19**: the binding paper-shadow gate PASSED that day on 6
+clean ET days from the Stockholm VPS (194 fills, EW +8.55¢/sh, 6/6 days
+positive, t_day 3.27, day-bootstrap p10 +6.06¢ — pre-registered 07-15 as a
+deadline-shortened but leg-identical form of the 8-day bar). The edge is
+mechanism-verified, not just measured: an event-true micro-tape replay at the
+bot's actual fire ticks reproduces the realized net to 0.1¢, the G-M control
+(buy spot-side at ask) nets ~0 at every RTT, and the two levers that create it
+are quantified — the 304ms box RTT (the same replay at the old 436ms host is
+NEGATIVE; ceiling +14.7¢ at 0ms) and the L1 edge floor (floor-pass fires
++16.7¢/sh vs floor-fail −3.6¢; it prunes the reverting-move fires that are
+~85% of the loss bill). Expect regression from +8.5¢ (4-day CIs are wide;
+reverting moves and a ~2.4% terminal-flip floor are permanent costs); the
+**post-live kill rule** (§2) is armed and the nightly health job re-reads the
+realized ledger daily. The **base strategy** (§3) has no proven edge, never
+touches real capital, and survives only as the zero-capital ghost/
+counterfactual evidence stream the gate machinery needs.
 
 **This file is the single source of truth — update it in the same commit as any
 behavioral change.**

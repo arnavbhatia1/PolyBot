@@ -1,4 +1,4 @@
-mode: paper   # paper | live
+mode: live   # paper | live
 
 # =============================================================================
 #  SECTION 1: MONEY / RISK - how much to bet and when to stop
@@ -108,10 +108,12 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-07-13T04:01:00+00:00"  # paper re-validation baseline: the nightly
-                               # health job scores only paper-shadow fills at/after this instant
-                               # (earlier fills ran different code/config). Reset when a new
-                               # validation epoch starts; ignored in live mode.
+  validation_epoch: "2026-07-19T22:54:00+00:00"  # the live deployment epoch (gate PASSED
+                               # 2026-07-19 on 6 clean paper days: +8.55c/sh, t_day 3.27,
+                               # boot p10 +6.06). The nightly health job scores only the
+                               # current mode's fills at/after this instant in BOTH modes
+                               # (earlier fills ran different code/config/mode). Reset when
+                               # a new validation epoch starts.
   sniper_late_start_s: 45.0     # only fire in the final N seconds of the window
   sniper_move_window_s: 2.0     # Coinbase move lookback (s)
   sniper_cb_move: 8.0           # $ Coinbase move over the 2s lookback to fire. The value the realized-
