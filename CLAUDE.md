@@ -70,8 +70,10 @@ the official round by >$8 in a fast open (~1% of windows flipped side). Gamma's
 in-window (whole windows never get it): when present it WINS (it covers RTDS
 delivery holes, where our first-received at/after-boundary report is not
 Polymarket's — measured ~1-2% of windows, up to $35+ off); otherwise the Chainlink
-capture carries. A capture across a delivery hole (`strike_reliable`, prev→first
-report gap > 15s) still serves the base path but is UNTRUSTED — the sniper never
+capture carries. A capture landing > 2s past the boundary (`strike_reliable`,
+own-report basis: the ~1Hz RTDS heartbeat puts the true report inside
+[boundary, boundary+1s], so a later capture means it was missed; pre-boundary
+gaps don't veto) still serves the base path but is UNTRUSTED — the sniper never
 deploys capital on it (`_strike_trusted`). Two modes, one
 engine: **paper**
 (realism shim: real CLOB books, FOK semantics, convex slippage, latency

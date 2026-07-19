@@ -106,6 +106,18 @@ class CoinbaseFeed:
             total += sz
         return total
 
+    def trade_count(self, window_s: float) -> int:
+        """Number of trades in the last window_s seconds — the burst-intensity
+        counter (tick rate vs its baseline). Gate on covers(window_s) so a
+        reconnect-truncated buffer stamps None, not a fake near-zero."""
+        cutoff = time.time() - window_s
+        n = 0
+        for ts, _ in reversed(self._trades):
+            if ts < cutoff:
+                break
+            n += 1
+        return n
+
     def realized_vol(self, window_s: float = 60.0) -> float:
         """Sample stdev of log returns over the 1s-bucketed price history in the
         window. 0.0 when fewer than 3 samples; gate on covers(window_s) to avoid

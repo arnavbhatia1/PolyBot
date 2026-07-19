@@ -25,6 +25,9 @@ class _FakeCoinbase:
     def get_taker_ratio(self, _w):
         return 0.61, 250
 
+    def trade_count(self, w):
+        return 9 if w <= 1.0 else 84
+
     def realized_vol(self, _w):
         return self._rv
 
@@ -57,6 +60,18 @@ class TestBuildAuxSignals:
         aux = _build_aux_signals(_FakeCoinbase(covers=False), _FakeTrades())
         assert aux["fast_realized_vol_60s"] is None
         assert aux["coinbase_cvd_60s"] is None
+
+    def test_burst_counters_stamped_fresh(self):
+        """n_ticks_1s/30s ride every trade_context (burst shadow-tag evidence)."""
+        aux = _build_aux_signals(_FakeCoinbase(), _FakeTrades())
+        assert aux["n_ticks_1s"] == 9
+        assert aux["n_ticks_30s"] == 84
+
+    def test_burst_counters_none_when_not_covered(self):
+        """Reconnect-truncated buffer stamps None, never a fake near-zero."""
+        aux = _build_aux_signals(_FakeCoinbase(covers=False), _FakeTrades())
+        assert aux["n_ticks_1s"] is None
+        assert aux["n_ticks_30s"] is None
 
 
 def _book(asks, ts=None):

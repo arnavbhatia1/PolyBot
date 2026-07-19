@@ -60,28 +60,52 @@ class TestChainlinkFeed:
         assert f.boundary_captured(f._start_window_ts) is False   # start window never captured
 
     def test_strike_reliable_tight_gap(self):
-        """A boundary report landing right after the previous report (~1Hz cadence)
-        is trustworthy — no delivery hole, our capture == Polymarket's first report."""
+        """A boundary report landing on the ~1Hz heartbeat (within 2s of the
+        boundary) is trustworthy — our capture == Polymarket's first report."""
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300
         f._price = 70990.0
         f._record_boundary(boundary_ts - 1)      # last report before the boundary
         f._price = 71000.0
-        f._record_boundary(boundary_ts + 1)      # first at/after — 2s gap
+        f._record_boundary(boundary_ts + 1)      # first at/after — 1s past boundary
         assert f.strike_reliable(boundary_ts) is True
 
     def test_strike_reliable_delivery_hole(self):
-        """A 38s+ hole around the boundary (measured live: strike locked $35 off
-        Polymarket's price_to_beat) means our first-received report is likely NOT
-        Polymarket's first — untrusted for sniper capital."""
+        """A capture landing long after the boundary (measured live: strike locked
+        $35+ off Polymarket's price_to_beat) means the true first at/after report
+        never reached us — untrusted for sniper capital."""
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300
         f._price = 62853.77
         f._record_boundary(boundary_ts - 38)
         f._price = 62803.25
-        f._record_boundary(boundary_ts + 40)     # 78s hole spanning the boundary
+        f._record_boundary(boundary_ts + 40)     # capture 40s past the boundary
         assert f.boundary_captured(boundary_ts) is True   # still locked...
         assert f.strike_reliable(boundary_ts) is False    # ...but not trusted
+
+    def test_strike_reliable_short_hole_past_boundary_vetoes(self):
+        """The trusted-wrong class the 07-16 audit caught: a small (3-8s) delivery
+        hole whose capture lands a few seconds past the boundary skipped 1-Hz
+        reports that included the true price_to_beat (one was $143.62 off,
+        flipping the resolved side). Must veto."""
+        f = ChainlinkFeed()
+        boundary_ts = ((int(time.time()) // 300) - 1) * 300
+        f._price = 64600.0
+        f._record_boundary(boundary_ts - 0.5)    # heartbeat healthy pre-boundary
+        f._price = 64731.0
+        f._record_boundary(boundary_ts + 3.5)    # capture 3.5s late — missed ~3 reports
+        assert f.strike_reliable(boundary_ts) is False
+
+    def test_strike_reliable_pre_boundary_gap_is_harmless(self):
+        """Missed reports BEFORE the boundary don't invalidate the capture: if the
+        first at/after report lands on the heartbeat, it IS Polymarket's first."""
+        f = ChainlinkFeed()
+        boundary_ts = ((int(time.time()) // 300) - 1) * 300
+        f._price = 70990.0
+        f._record_boundary(boundary_ts - 10)     # quiet spell before the boundary
+        f._price = 71000.0
+        f._record_boundary(boundary_ts + 0.5)    # on-heartbeat capture
+        assert f.strike_reliable(boundary_ts) is True
 
     def test_strike_reliable_requires_capture_and_history(self):
         f = ChainlinkFeed()
@@ -89,7 +113,7 @@ class TestChainlinkFeed:
         assert f.strike_reliable(boundary_ts) is False    # nothing captured
         f._price = 71000.0
         f._record_boundary(boundary_ts + 1)               # feed's FIRST-ever report
-        assert f.strike_reliable(boundary_ts) is False    # no prev report to bound the hole
+        assert f.strike_reliable(boundary_ts) is False    # no delivery history yet
 
     def test_epoch_seconds_normalizes_rtds_milliseconds(self):
         """RTDS payload timestamps arrive in epoch ms (e.g. 1781031482000);

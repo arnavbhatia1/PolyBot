@@ -22,9 +22,13 @@ APP_PING_INTERVAL_S = 10       # Application-level PING to keep RTDS subscriptio
 STALE_TIMEOUT_S = 60           # Chainlink mainnet can be quiet for >20s in low-vol; 60s is a true dead-feed signal
 RECONNECT_BASE_S = 5.0         # first retry delay; doubles per consecutive failure
 RECONNECT_MAX_S = 60.0         # cap — a flat fast retry during an RTDS outage trips their per-IP 429 limiter
-RELIABLE_GAP_S = 15.0          # report cadence is ~1Hz with natural quiet spells to ~8s; a bigger
-                               # hole around a boundary means WE likely missed the true first
-                               # at/after report (measured ~1-2% of windows, strike off by $35+)
+STRIKE_TRUST_GAP_S = 2.0       # RTDS reports ~1Hz, so Polymarket's true price_to_beat report has
+                               # a payload timestamp inside [boundary, boundary+1s]; a first
+                               # at/after-boundary capture arriving later than this means the true
+                               # report likely never reached us (delivery hole — event-true audit:
+                               # own-report basis catches 21/21 wrong strikes incl. two
+                               # side-flippers at 0/1002 false vetoes; gaps BEFORE the boundary
+                               # are harmless and don't veto)
 
 
 class ChainlinkFeed:
@@ -40,8 +44,9 @@ class ChainlinkFeed:
         self._running: bool = False
         self.on_report = None  # micro-tape hook: every RTDS report (recording.MicroTape)
         self._boundary_prices: "OrderedDict[int, float]" = OrderedDict()
-        # boundary_ts -> (first at/after report ts, previous report ts) — the gap
-        # between the two is the delivery-hole detector behind strike_reliable().
+        # boundary_ts -> (first at/after report ts, previous report ts). The first
+        # report's distance from the boundary drives strike_reliable(); prev only
+        # marks whether any delivery history exists (first-ever report = untrusted).
         self._boundary_meta: dict[int, tuple[float, float | None]] = {}
         self._last_report_ts: float | None = None
         self._start_window_ts: int = int(time.time() // 300) * 300
@@ -75,11 +80,14 @@ class ChainlinkFeed:
 
     def strike_reliable(self, window_ts: int) -> bool:
         """True when the locked boundary value can be trusted to equal Polymarket's
-        price_to_beat: our first at/after-boundary report arrived with no delivery
-        hole around the boundary (prev-report -> first-report gap <= RELIABLE_GAP_S).
-        A bigger hole means Polymarket's true first report may never have reached us
-        — its price_to_beat would then differ from our capture, and a sniper firing
-        on the wrong strike is trading noise. False until the boundary is captured."""
+        price_to_beat: our first at/after-boundary report's own payload timestamp
+        landed within STRIKE_TRUST_GAP_S of the boundary. On the ~1Hz RTDS heartbeat
+        the true price_to_beat report sits inside [boundary, boundary+1s], so a later
+        capture means that report likely never reached us — our value can be $35+ off
+        Polymarket's (side-flipping in fast opens), and a sniper firing on the wrong
+        strike is trading noise. Missed reports BEFORE the boundary don't veto: the
+        capture is still the true first at/after report. False until the boundary is
+        captured, and false for the feed's first-ever report (no delivery history)."""
         if not self.boundary_captured(window_ts):
             return False
         meta = self._boundary_meta.get(window_ts)
@@ -88,7 +96,7 @@ class ChainlinkFeed:
         first_ts, prev_ts = meta
         if prev_ts is None:          # boundary was the feed's first-ever report
             return False
-        return (first_ts - prev_ts) <= RELIABLE_GAP_S
+        return (first_ts - window_ts) <= STRIKE_TRUST_GAP_S
 
     @staticmethod
     def _epoch_seconds(ts: float) -> float:

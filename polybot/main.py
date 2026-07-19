@@ -163,6 +163,15 @@ def _build_aux_signals(coinbase_feed: Any, trades_feed: Any = None) -> dict[str,
     gap = (cb_price - bn_price) if (cb_price and bn_price) else None
     fast_rv = coinbase_feed.realized_vol(60.0) if cb_fresh else None
 
+    # Burst-intensity counters (pre-registered HOT/COLD shadow-tag: HOT when the
+    # 1s tick rate runs >= 2x its 30s baseline at fire). Stratification evidence
+    # only — nothing in the decision path consumes these.
+    cb_burst_fresh = (coinbase_feed is not None
+                      and coinbase_feed.state.age_seconds < _AUX_FRESH_S_COINBASE
+                      and coinbase_feed.covers(30.0))
+    n_ticks_1s = coinbase_feed.trade_count(1.0) if cb_burst_fresh else None
+    n_ticks_30s = coinbase_feed.trade_count(30.0) if cb_burst_fresh else None
+
     def _r(v: float | None, ndigits: int) -> float | None:
         return None if v is None else round(v, ndigits)
 
@@ -172,6 +181,8 @@ def _build_aux_signals(coinbase_feed: Any, trades_feed: Any = None) -> dict[str,
         "coinbase_taker_n": cb_taker_n,
         "cross_venue_gap": _r(gap, 2),
         "fast_realized_vol_60s": _r(fast_rv, 6),
+        "n_ticks_1s": n_ticks_1s,
+        "n_ticks_30s": n_ticks_30s,
     }
 
 def _clob_book_aux(clob_ws: Any, token_up: str, token_down: str,
@@ -2997,8 +3008,15 @@ async def main() -> None:
         disc = ""
         if sim and live and live["n_fills"] > 0:
             gap = (sim["net_per_sh"] - live["net_per_sh"]) * 100
-            tag = ("in line with the sim" if abs(gap) < 3 else
-                   "⚠️ DIVERGENCE — real money is underperforming the sim (execution / selection leak)")
+            if abs(gap) < 3:
+                tag = "in line with the sim"
+            elif gap > 0:
+                tag = ("⚠️ DIVERGENCE — real fills are underperforming the sim "
+                       "(execution / selection leak)")
+            else:
+                tag = ("real fills are outrunning the sim — expected: the harness "
+                       "replays the raw fire condition without the L1 edge floor "
+                       "(floor-blind reads run ~3-10¢/sh low)")
             disc = f"\n**Sim − live gap: {gap:+.1f}¢/sh** — {tag}."
 
         msg = (
