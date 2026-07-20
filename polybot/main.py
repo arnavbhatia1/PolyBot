@@ -2987,10 +2987,11 @@ async def main() -> None:
                 await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
             return {"health": "no data"}
         today = datetime.now(ET).strftime("%Y-%m-%d")
-        # Kill-rule authority = the LIVE ledger (the money); fall back to the SIM
-        # read only until the first live fills exist.
-        authority = live if (live and live["n_fills"] > 0) else sim
-        kt = authority["kill_rule_tripped"] if authority else None
+        # Kill-rule authority = the REALIZED ledger ONLY — the rule is defined on
+        # realized fills, and the floor-blind SIM read (no L1 edge floor, mixed-era
+        # corpus) must never trip it. An empty realized ledger is "still accruing",
+        # not a verdict; the SIM line stays in the ping as context.
+        kt = live["kill_rule_tripped"] if (live and live["n_fills"] > 0) else None
         status = ("⏳ STILL ACCRUING" if kt is None
                   else "⚠️ KILL RULE TRIPPED" if kt else "✅ HEALTHY")
 
