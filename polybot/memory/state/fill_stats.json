@@ -1,7 +1,7 @@
 {
-  "total_attempts": 409,
+  "total_attempts": 410,
   "total_fills": 58,
-  "buy_attempts": 394,
+  "buy_attempts": 395,
   "buy_fills": 53,
   "sell_attempts": 15,
   "sell_fills": 5,
@@ -13,8 +13,8 @@
     "network_error": 0,
     "auth": 0,
     "other": 188,
-    "fok_killed": 89
+    "fok_killed": 90
   },
-  "fill_rate": 0.1418,
-  "last_updated": "2026-07-08T13:39:29.664600+00:00"
+  "fill_rate": 0.1415,
+  "last_updated": "2026-07-20T01:34:21.382977+00:00"
 }

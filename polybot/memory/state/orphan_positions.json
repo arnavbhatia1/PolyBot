@@ -1,10 +1,56 @@
 {
-  "checked_at": "2026-07-08T04:01:05.917654+00:00",
+  "checked_at": "2026-07-19T23:32:23.042433+00:00",
   "funder": "0x863DB57D4a54fA306091D53B4Fe19f1611221Be8",
-  "non_dust_chain_positions": 2,
-  "db_known_tokens": 8,
+  "non_dust_chain_positions": 5,
+  "db_known_tokens": 0,
   "orphans_detected": 0,
   "orphans": [],
-  "resolved_dust": [],
+  "resolved_dust": [
+    {
+      "token_id": "98277311978697484293447550877969911273286688570872948872632721700947094290345",
+      "shares": 12.1375,
+      "outcome": "Up",
+      "title": "Bitcoin Up or Down - July 7, 8:50PM-8:55PM ET",
+      "conditionId": "0xc0048d7f309dc19c874fa22d12b5445f03a70cd6cefb701a37b03199b27e9ae7",
+      "redeemable": true,
+      "current_value": 0.0
+    },
+    {
+      "token_id": "54016271038337196126484473755564454975864504670396057120366691132503058753589",
+      "shares": 8.25,
+      "outcome": "Up",
+      "title": "Bitcoin Up or Down - July 8, 9:35AM-9:40AM ET",
+      "conditionId": "0x6fc00337f6919e8ea8bfd56d95bd658c94cd53318d11bcb685f5e2c48afc1f0b",
+      "redeemable": true,
+      "current_value": 0.0
+    },
+    {
+      "token_id": "693465471053202158263137389218791849115299032574489441147080054954305747630",
+      "shares": 3.5238,
+      "outcome": "Up",
+      "title": "Bitcoin Up or Down - July 8, 7:35AM-7:40AM ET",
+      "conditionId": "0x8301fe696979d9cd534b984cef9db8ae3bf46edba6f6ca21874124af423f4e91",
+      "redeemable": true,
+      "current_value": 0.0
+    },
+    {
+      "token_id": "19095844105389132631495466533941563439947255768140332992839053986451410338489",
+      "shares": 2.7555,
+      "outcome": "Up",
+      "title": "Bitcoin Up or Down - July 8, 8:35AM-8:40AM ET",
+      "conditionId": "0x8ec104797a438e6c90e66f6a9bfb2da9e4a1af6f9077aee1bff4ae627615399a",
+      "redeemable": true,
+      "current_value": 0.0
+    },
+    {
+      "token_id": "17976074264807216118824644408569814172530975832550212246252900068563173999207",
+      "shares": 1.7377,
+      "outcome": "Up",
+      "title": "Bitcoin Up or Down - July 7, 10:15PM-10:20PM ET",
+      "conditionId": "0x34c5ad6e5ad95d5f5016637cd4da07236c335c6c1b3d14492a597a4f7a018ce0",
+      "redeemable": true,
+      "current_value": 0.0
+    }
+  ],
   "allow_orphans_flag": false
 }
