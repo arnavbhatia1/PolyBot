@@ -522,8 +522,9 @@ async def test_fill_audit_corrects_entry_to_exchange_price(trader, monkeypatch):
     row = await (await trader.db.conn.execute(
         "SELECT entry_price, shares_held FROM positions WHERE id=?", (pos_id,))).fetchone()
     assert row[0] == pytest.approx(true_price, abs=1e-4)
-    assert row[1] == pytest.approx((4.74 / true_price) * (1 - 0.07 * true_price * (1 - true_price) / true_price),
-                                   rel=0.05)  # shares net of entry fee, loose bound
+    # shares_held syncs to the wallet's actual share count (no share-fee is
+    # deducted on-chain; the fee model lives in the fees column only)
+    assert row[1] == pytest.approx(4.74 / true_price, rel=1e-4)
 
     # Mixed position (chain size far from this order's implied shares) → untouched.
     chain[0]["size"] = 25.0
@@ -776,20 +777,20 @@ async def test_prewarm_http_survives_missing_resolver(trader):
 
 @pytest.mark.asyncio
 async def test_fill_audit_derives_price_from_chain_shares_when_avgprice_zero(trader, monkeypatch):
-    """07-08 live finding: the data-API served avgPrice 0.0000 for 5/7 fresh
-    positions, defeating the audit entirely. The wallet `size` (chain-true NET
-    shares) is in the same response — the audit must recover the gross VWAP from
-    it: net = gross - rate*gross*p*(1-p), p = notional/gross."""
+    """The data-API often serves avgPrice 0.0000 for a fresh position. The
+    wallet `size` in the same response is the true share count — the wallet
+    holds exactly notional/VWAP shares (07-21: 32/32 live fills; no
+    share-denominated fee on-chain), so the gross VWAP is notional/shares
+    with NO fee unwinding (the old unwind booked entries ~0.7c too low)."""
     _setup_successful_fill(trader, fill_price="0.93", fill_size="5.10")
     kwargs = {**_TRADE_KWARGS, "price": 0.93, "size": 4.74, "fee_rate": 0.07,
               "market_id": "mkt-audit-derive"}
     open_result = await trader.open_trade(**kwargs)
     pos_id = open_result.position_id
 
-    true_price, fee_rate = 0.88, 0.07
-    gross = 4.74 / true_price
-    net = gross - fee_rate * gross * true_price * (1 - true_price)
-    chain = [{"asset": _TRADE_KWARGS["token_id"], "size": net, "avgPrice": 0.0}]
+    true_price = 0.88
+    chain = [{"asset": _TRADE_KWARGS["token_id"], "size": 4.74 / true_price,
+              "avgPrice": 0.0}]
 
     async def fake_wallet():
         return chain
@@ -797,11 +798,60 @@ async def test_fill_audit_derives_price_from_chain_shares_when_avgprice_zero(tra
     monkeypatch.setattr(trader, "_fetch_wallet_positions", fake_wallet)
     import polybot.execution.live_trader as lt_mod
     monkeypatch.setattr(lt_mod, "_FILL_AUDIT_DELAY_S", 0.0)
-    await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.93, 4.74, fee_rate)
+    await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.93, 4.74, 0.07)
 
     row = await (await trader.db.conn.execute(
+        "SELECT entry_price, shares_held FROM positions WHERE id=?", (pos_id,))).fetchone()
+    assert row[0] == pytest.approx(true_price, abs=1e-4)
+    assert row[1] == pytest.approx(4.74 / true_price, rel=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_fill_audit_corrects_closed_but_unbooked_position(trader, monkeypatch):
+    """07-21 live finding (pos 78): a fill 1.6s before window close left the
+    position no longer 'open' when the +8s audit ran, so a 12c-pessimistic
+    limit booking stuck. The audit must correct any position whose
+    trade_history row hasn't been booked yet — resolution booking reads
+    positions.shares_held afterwards — and must leave one that IS booked."""
+    _setup_successful_fill(trader, fill_price="0.79", fill_size="1.49")
+    kwargs = {**_TRADE_KWARGS, "price": 0.79, "size": 1.18, "fee_rate": 0.07,
+              "market_id": "mkt-audit-closed"}
+    open_result = await trader.open_trade(**kwargs)
+    pos_id = open_result.position_id
+    await trader.db.conn.execute(
+        "UPDATE positions SET status='closed' WHERE id=?", (pos_id,))
+    await trader.db.conn.commit()
+
+    true_price = 0.67
+    chain = [{"asset": _TRADE_KWARGS["token_id"], "size": 1.18 / true_price,
+              "avgPrice": true_price}]
+
+    async def fake_wallet():
+        return chain
+
+    monkeypatch.setattr(trader, "_fetch_wallet_positions", fake_wallet)
+    import polybot.execution.live_trader as lt_mod
+    monkeypatch.setattr(lt_mod, "_FILL_AUDIT_DELAY_S", 0.0)
+    await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.79, 1.18, 0.07)
+
+    row = await (await trader.db.conn.execute(
+        "SELECT entry_price, shares_held FROM positions WHERE id=?", (pos_id,))).fetchone()
+    assert row[0] == pytest.approx(true_price, abs=1e-4)
+    assert row[1] == pytest.approx(1.18 / true_price, rel=1e-4)
+
+    # Once the trade IS booked to history, the audit must not touch anything.
+    await trader.db.conn.execute(
+        "INSERT INTO trade_history (side, entry_price, exit_price, size, "
+        "exit_timestamp, exit_reason, pnl, fees, position_id) "
+        "VALUES ('Up', 0.67, 1.0, 1.18, '2026-07-21T12:30:00+00:00', "
+        "'resolution', 0.58, 0.017, ?)", (pos_id,))
+    await trader.db.conn.commit()
+    chain[0]["avgPrice"] = 0.60  # would imply a further correction
+    chain[0]["size"] = 1.18 / 0.60
+    await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.79, 1.18, 0.07)
+    row2 = await (await trader.db.conn.execute(
         "SELECT entry_price FROM positions WHERE id=?", (pos_id,))).fetchone()
-    assert row[0] == pytest.approx(true_price, abs=2e-3)
+    assert row2[0] == pytest.approx(true_price, abs=1e-4)  # untouched
 
 
 @pytest.mark.asyncio

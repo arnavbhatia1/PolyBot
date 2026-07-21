@@ -111,10 +111,14 @@ reprices.
   is a feature there). All gates run at the decision ask (harness-faithful);
   the pre-submit VWAP re-check still vetoes books that lost the edge. The booked
   entry is the CLOB's TRUE fill VWAP — resolved WS-tape → balance-delta →
-  `associate_trades` REST (retry budget covers the ~100-300ms indexer lag) →
-  loudly-logged limit fallback, corrected by the +8s audit, which recovers the
-  gross VWAP from the wallet's chain-true net shares when the data-API serves
-  `avgPrice 0.0` (it did for 5/7 fresh positions). CAVEAT on the pre-07-08 live
+  `associate_trades` REST → loudly-logged limit fallback; in production the
+  lookups lose the indexer race on nearly every fill, so the **+8s audit is
+  the de-facto booking authority**: it syncs entry + shares_held to the
+  wallet's chain truth (avgPrice when served, else notional/wallet-shares —
+  the wallet holds exactly notional/VWAP shares, NO share-denominated fee
+  on-chain; the fee model lives in the `fees` column only) for any position
+  whose trade_history row isn't booked yet, so last-seconds fills that close
+  the window before the audit still book chain-true. CAVEAT on the pre-07-08 live
   ledger: those 46 fills booked the padded limit (silent fallback + a defeated
   audit) — chain-truth reconstruction puts them ≈ breakeven, ~4.4¢/sh better
   than the ledger's −4.3¢/sh; read that era's kill-rule prints accordingly.

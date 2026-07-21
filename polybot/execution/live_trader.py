@@ -24,7 +24,7 @@ from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV
 from polybot.db.models import Database
 from polybot.execution.base import (
     BaseTrader, DEFAULT_FEE_RATE, FillResult,
-    entry_fee_shares, exit_fee_usdc, _entry_fee_usd_from_position,
+    exit_fee_usdc, _entry_fee_usd_from_position,
     FAILURE_BUCKETS as _base_failure_buckets,
     categorize_failure as _base_categorize_failure,
     update_fill_stats as _base_update_fill_stats,
@@ -680,15 +680,19 @@ class LiveTrader(BaseTrader):
     async def _audit_entry_fill(self, pos_id: int, token_id: str,
                                 recorded_price: float, size_usdc: float,
                                 fee_rate: float) -> None:
-        """Correct the recorded entry price to the exchange's actual fill.
+        """Sync the booked BUY entry to the wallet's chain truth.
 
-        The WS-tape VWAP falls back to the submitted limit when it misses the
-        fill prints, booking the entry up to sniper_fok_slip worse than what
-        the FOK really paid (the exchange fills at book prices; the limit is
-        only a ceiling). The data-API position's avgPrice is the chain truth.
-        Runs seconds after the fill, off the latency path; single-fill
-        positions only — residue from an earlier untracked fill would make the
-        position's average not this order's price. Best-effort: never raises.
+        Production fills book the submitted limit almost every time (the WS
+        tape and associate_trades both lose the indexer race), so this audit
+        is the de-facto booking authority. The data-API position is the chain
+        truth: `avgPrice` when served, else gross VWAP = size_usdc / wallet
+        shares — the wallet holds exactly notional/VWAP shares (verified on
+        32/32 live fills 07-21: no share-denominated fee is deducted on-chain;
+        the fee model lives in the `fees` column only). Corrects any position
+        whose trade_history row hasn't been booked yet — resolution booking
+        reads positions.shares_held afterwards, so a fill seconds before the
+        window close still books chain-true. Single-fill positions only;
+        best-effort: never raises.
         """
         try:
             await asyncio.sleep(_FILL_AUDIT_DELAY_S)
@@ -708,64 +712,51 @@ class LiveTrader(BaseTrader):
                 return
             true_price = float(pos.get("avgPrice") or 0.0)
             chain_size = float(pos.get("size") or 0.0)
-            derived_from_shares = False
+            if chain_size <= 0:
+                logger.info("Fill audit pos %s: no chain size — skipped", pos_id)
+                return
             if not (0.0 < true_price < 1.0):
                 # The data-API often serves avgPrice 0.0000 for a fresh position
-                # (5/7 audits on 07-08) — but its `size` is the chain-true NET
-                # share count, so recover the gross VWAP from it instead:
-                # net = gross - rate*gross*p*(1-p), p = notional/gross; two
-                # fixed-point steps converge for rate=0.07.
-                if chain_size <= 0:
-                    logger.info("Fill audit pos %s: avgPrice %.4f out of range and no "
-                                "chain size — skipped", pos_id, true_price)
-                    return
-                p_est = min(max(size_usdc / chain_size, 0.01), 0.99)
-                for _ in range(2):
-                    fee_frac = fee_rate * p_est * (1.0 - p_est)
-                    gross_shares = chain_size / max(1.0 - fee_frac, 1e-6)
-                    p_est = size_usdc / gross_shares
-                true_price = p_est
-                derived_from_shares = True
-                if not (0.0 < true_price < 1.0) or true_price > recorded_price + 0.01:
-                    # A FOK can never fill ABOVE its limit (recorded is at most the
-                    # limit) — a higher derived price means an older residue is
-                    # inflating the wallet balance; not this order's fill.
-                    logger.info("Fill audit pos %s: chain-share-derived price %.4f "
-                                "implausible vs booked %.3f — skipped",
-                                pos_id, true_price, recorded_price)
-                    return
-            if abs(true_price - recorded_price) <= 0.005:
-                logger.info("Fill audit pos %s: booked %.3f matches exchange %.3f (≤0.5c)",
-                            pos_id, recorded_price, true_price)
+                # — but its `size` is the wallet's true share count, so the
+                # gross VWAP is simply notional / shares.
+                true_price = size_usdc / chain_size
+            if not (0.0 < true_price < 1.0) or true_price > recorded_price + 0.01:
+                # A FOK can never fill ABOVE its limit (recorded is at most the
+                # limit) — a higher price means an older residue is inflating
+                # the wallet balance; not this order's fill.
+                logger.info("Fill audit pos %s: chain price %.4f implausible vs "
+                            "booked %.3f — skipped", pos_id, true_price, recorded_price)
                 return
             implied_shares = size_usdc / true_price
-            if not derived_from_shares and \
-                    abs(chain_size - implied_shares) / max(implied_shares, 1e-9) > 0.02:
-                # mixed position (older residue) — avgPrice isn't this order's
-                # (the derived path already guarded via the FOK-limit ceiling)
+            if abs(chain_size - implied_shares) / max(implied_shares, 1e-9) > 0.02:
+                # mixed position (older residue) — the wallet average isn't this
+                # order's fill
                 logger.info("Fill audit pos %s: chain shares %.2f vs implied %.2f mismatch "
                             "(mixed position) — entry left at booked %.3f",
                             pos_id, chain_size, implied_shares, recorded_price)
                 return
-            shares_held = implied_shares - entry_fee_shares(
-                implied_shares, true_price, fee_rate)
-            cur = await self.db.conn.execute(
-                "UPDATE positions SET entry_price=?, shares_held=? "
-                "WHERE id=? AND status='open'",
-                (round(true_price, 4), round(shares_held, 6), pos_id),
+            booked = await (await self.db.conn.execute(
+                "SELECT 1 FROM trade_history WHERE position_id=?", (pos_id,))).fetchone()
+            if booked:
+                logger.info("Fill audit pos %s: trade already booked to history — "
+                            "entry left at %.3f (chain says %.4f)",
+                            pos_id, recorded_price, true_price)
+                return
+            await self.db.conn.execute(
+                "UPDATE positions SET entry_price=?, shares_held=? WHERE id=?",
+                (round(true_price, 4), round(chain_size, 6), pos_id),
             )
             await self.db.conn.commit()
-            if cur.rowcount:
+            if abs(true_price - recorded_price) > 0.005:
                 logger.info(
                     "Entry corrected to the exchange's real fill: %.2f → %.2f "
                     "(the tape missed the fill, so the limit price had been booked)",
                     recorded_price, true_price,
                 )
             else:
-                logger.info("Fill audit pos %s: exchange fill %.3f vs booked %.3f, but the "
-                            "position is no longer 'open' (resolved before the %.0fs audit) — "
-                            "entry left uncorrected", pos_id, true_price, recorded_price,
-                            _FILL_AUDIT_DELAY_S)
+                logger.info("Fill audit pos %s: booked %.3f matches exchange %.4f — "
+                            "shares synced to wallet (%.4f)",
+                            pos_id, recorded_price, true_price, chain_size)
         except Exception as e:
             logger.warning("Fill audit failed for position %s: %s", pos_id, e)
 
