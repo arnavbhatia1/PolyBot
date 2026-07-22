@@ -118,7 +118,13 @@ reprices.
   the wallet holds exactly notional/VWAP shares, NO share-denominated fee
   on-chain; the fee model lives in the `fees` column only) for any position
   whose trade_history row isn't booked yet, so last-seconds fills that close
-  the window before the audit still book chain-true. CAVEAT on the pre-07-08 live
+  the window before the audit still book chain-true. Logging follows the audit
+  (log-only; engine/DB unchanged): live prints a short FILLED line at fill time
+  and the full OPEN banner ONCE, from the audit's `on_entry_settled` callback,
+  with the settled entry (flagged provisional if the chain lookup failed);
+  paper banners stay instant. The banner's "fee buffer (modeled, not charged)"
+  is the gate's conservative fee model — no taker fee is currently charged
+  on-chain on this series. CAVEAT on the pre-07-08 live
   ledger: those 46 fills booked the padded limit (silent fallback + a defeated
   audit) — chain-truth reconstruction puts them ≈ breakeven, ~4.4¢/sh better
   than the ledger's −4.3¢/sh; read that era's kill-rule prints accordingly.
@@ -229,20 +235,30 @@ fractional Kelly, not full.
 
 FOK via `py-clob-client-v2`, up to 3 attempts with jittered backoff — only
 provably-unposted failures retry (exchange-confirmed rejects + pre-POST local
-errors); ambiguous outcomes never resubmit (double-fill guard). **The software
-path is at the floor (~20-35ms incl. sign). Order-POST RTT measured p50 0.436s
-/ p75 0.679s (latency_stats.json, 80 samples, zero ≤0.25s) — but probed warm
-GETs AND unauth POSTs to /order run ~125-130ms from this host, so ~310ms of a
-real order's RTT is Polymarket's SERVER-SIDE pipeline (auth/risk/FOK matching),
-irreducible client-side; an EU VPS shaves only the ~130ms network leg to ~40ms.**
-SELL signatures pre-armed on
-prior HOLD ticks (BUY pre-signs concurrently with the submit — a best-effort
-race; inline sign is ~3-5ms), WS-only book pre-check, BUY fill VWAP from WS
+errors); ambiguous outcomes never resubmit (double-fill guard). **Order-POST
+RTT from the box: p50 356ms (latency_stats.json). ~250ms of that is
+Polymarket's DELIBERATE taker delay on crypto up/down markets (`itode: true`
+in the market's `/clob-markets` config, verified live 07-22): a marketable
+order is validated, HELD 250ms, then re-validated and matched-or-killed — the
+post-hold re-validation is mechanically what kills our FOK when the book
+reprices (the adverse-selection filter working as designed). It is a policy
+floor every taker on these markets pays; no host placement or code beats it.
+Client side, the EIP-712 sign runs pure-python without coincurve (p50 17.5ms
+on the box) — requirements installs coincurve on Linux (~10× faster sign; no
+Windows wheel, dev boxes skip it) — and the rest of the software path is at
+the floor (~2-6ms).** py-clob is pinned <1.1.0: 1.1.0 wraps post_order in a
+blocking transaction-hash poll (0.25s×30s) that goes live with Polymarket's
+2026-07-24 async-commit rollout; the bot reads none of the fields it resolves.
+SELL signatures pre-armed on prior HOLD ticks; BUY pre-signs concurrently with
+the submit and the submit AWAITS a param-matching in-flight sign (never
+double-signs against it — two concurrent pure-python signs contend on the
+GIL). WS-only book pre-check, BUY fill VWAP from WS
 trade events (SELL fill price via REST after the fill, off the latency path),
 tick-size/neg-risk/fee + contract-version caches prewarmed per window,
 warm pooled HTTP/2 singleton (keepalive_expiry 60s > 5s ping, connect timeout
-5s, TCP_NODELAY). The only remaining lever is geographic
-(docs/DEPLOY_ORACLE_VPS.md, ~40ms EU VPS). Live boot: key+funder required,
+5s, TCP_NODELAY), gc.freeze() post-boot (full-GC pauses off the fire path).
+`cb_tick_to_submit_ms` in trade_context measures tick→submit decision latency
+per fill. Live boot: key+funder required,
 balance/allowance preflight, allowance recheck every 10 fills. Per-trade DB
 writes are atomic. `fill.fill_size` is always USDC notional.
 
@@ -305,7 +321,11 @@ it was removed). Never re-add resting quotes.
   against the true book trajectory instead of a sampled ceiling.
 - **Per-decision records**: `trade_context` stamped into outcomes + ghosts
   (entry facts, model prob, flow/CVD telemetry, book aux, adverse audit
-  fields). **None-vs-0.0 is load-bearing**: cold feeds record `None`, never
+  fields, `cb_tick_to_submit_ms` decision latency, and the regime-Kelly
+  SHADOW stamps — `regime_buckets` at frozen cuts, `regime_kelly_mult` (burst
+  HOT 1.15 / COLD 0.80, clamped [0.5, 1.5]), `size_flat`/`size_regime` —
+  report-only inputs; sizing never reads them). **None-vs-0.0 is
+  load-bearing**: cold feeds record `None`, never
   0.0. `CounterfactualTracker` records both arms of every scalp/hold — the
   ground truth for exit-policy changes (score via `actual − cf`, never a naive
   signed sum of `delta_pnl`).
@@ -317,7 +337,13 @@ it was removed). Never re-add resting quotes.
   polybot_paper.db scoped to `late_window.validation_epoch`, the BINDING
   paper-shadow gate) side by side with their ¢/sh gap, and drives the kill-rule
   verdict off the realized ledger once fills exist; alert-only, never flips
-  config). Pings
+  config). The same ping carries the **burst-alive SPRT** state
+  (`polybot/core/sprt.py` + `burst_sprt_read`: Wald test, μ₁ +6¢/sh,
+  α 0.05 / β 0.23, accept ≥ +2.73 / reject ≤ −1.42, no decision before day 3,
+  truncate at 16; σ frozen write-once to `state/sprt_burst.json` from the
+  first 6 qualifying days, which never score — SPRT turns things ON, the kill
+  rule turns things OFF) and the **regime-shadow counterfactual D** accrual
+  (`regime_shadow_read`; its own SPRT starts only after burst accepts). Pings
   Discord `#polybot-daily` (✅/⚠️/⏳ sniper).
 
 ## 8. Hard rules

@@ -358,6 +358,11 @@ class LiveTrader(BaseTrader):
         self._SELL_WARMUP_TTL_S: float = 5.0
         self._buy_warmups: dict[str, dict] = {}
         self._BUY_WARMUP_TTL_S: float = 5.0
+        # In-flight BUY warmup signs: token_id → {"amount", "price", "event"}.
+        # The submit path AWAITS a param-matching in-flight sign instead of
+        # dispatching a second one — two concurrent pure-python EIP-712 signs
+        # contend on the GIL (one weak core) and slow the money-path sign.
+        self._buy_warmup_inflight: dict[str, dict] = {}
         # Winning resolutions awaiting on-chain auto-redeem: position_id →
         # {"deadline": alert ts, "next_check": rate-limit ts}. One non-blocking
         # data-API check per _resolve_bankroll call; the loop retries each
@@ -366,6 +371,11 @@ class LiveTrader(BaseTrader):
         # Last condition_id whose market-info (tick/neg-risk/fee) we warmed into the
         # py-clob client cache at discovery — dedups prewarm_market_info per window.
         self._prewarmed_condition_id: str = ""
+        # Settled-entry hook: fn(pos_id, final_price, source) invoked by the +8s
+        # fill audit with the chain-confirmed entry ("chain") or the booked
+        # fallback ("provisional"). main.py prints the OPEN banner from it —
+        # log-only plumbing; the trade engine never waits on this.
+        self.on_entry_settled = None
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
     async def prewarm_http(self) -> None:
@@ -680,7 +690,32 @@ class LiveTrader(BaseTrader):
     async def _audit_entry_fill(self, pos_id: int, token_id: str,
                                 recorded_price: float, size_usdc: float,
                                 fee_rate: float) -> None:
-        """Sync the booked BUY entry to the wallet's chain truth.
+        """Sync the booked BUY entry to the wallet's chain truth, then report
+        the settled entry through ``on_entry_settled`` (main prints the full
+        OPEN banner from it — the fill-time number is usually the padded limit,
+        not the real fill). The callback ALWAYS fires: source "chain" when the
+        wallet confirmed the price, "provisional" when the lookup failed and
+        the booked number stands. Best-effort: never raises.
+        """
+        final_price, source = recorded_price, "provisional"
+        try:
+            await asyncio.sleep(_FILL_AUDIT_DELAY_S)
+            final_price, source = await self._audit_entry_fill_inner(
+                pos_id, token_id, recorded_price, size_usdc)
+        except Exception as e:
+            logger.warning("Fill audit failed for position %s: %s", pos_id, e)
+        finally:
+            cb = self.on_entry_settled
+            if cb is not None:
+                try:
+                    cb(pos_id, final_price, source)
+                except Exception:
+                    pass
+
+    async def _audit_entry_fill_inner(self, pos_id: int, token_id: str,
+                                      recorded_price: float,
+                                      size_usdc: float) -> tuple[float, str]:
+        """The audit body → (settled_price, "chain" | "provisional").
 
         Production fills book the submitted limit almost every time (the WS
         tape and associate_trades both lose the indexer race), so this audit
@@ -691,74 +726,64 @@ class LiveTrader(BaseTrader):
         the fee model lives in the `fees` column only). Corrects any position
         whose trade_history row hasn't been booked yet — resolution booking
         reads positions.shares_held afterwards, so a fill seconds before the
-        window close still books chain-true. Single-fill positions only;
-        best-effort: never raises.
+        window close still books chain-true. Single-fill positions only.
         """
-        try:
-            await asyncio.sleep(_FILL_AUDIT_DELAY_S)
-            if not token_id:
-                logger.info("Fill audit pos %s: no token_id — skipped", pos_id)
-                return
-            positions = await self._fetch_wallet_positions()
-            if positions is None:
-                logger.info("Fill audit pos %s: wallet-positions fetch failed — "
-                            "entry left at booked %.3f", pos_id, recorded_price)
-                return
-            pos = next((p for p in positions
-                        if str(p.get("asset")) == str(token_id)), None)
-            if pos is None:
-                logger.info("Fill audit pos %s: token not in wallet yet (indexer lag or "
-                            "already resolved) — entry left at booked %.3f", pos_id, recorded_price)
-                return
-            true_price = float(pos.get("avgPrice") or 0.0)
-            chain_size = float(pos.get("size") or 0.0)
-            if chain_size <= 0:
-                logger.info("Fill audit pos %s: no chain size — skipped", pos_id)
-                return
-            if not (0.0 < true_price < 1.0):
-                # The data-API often serves avgPrice 0.0000 for a fresh position
-                # — but its `size` is the wallet's true share count, so the
-                # gross VWAP is simply notional / shares.
-                true_price = size_usdc / chain_size
-            if not (0.0 < true_price < 1.0) or true_price > recorded_price + 0.01:
-                # A FOK can never fill ABOVE its limit (recorded is at most the
-                # limit) — a higher price means an older residue is inflating
-                # the wallet balance; not this order's fill.
-                logger.info("Fill audit pos %s: chain price %.4f implausible vs "
-                            "booked %.3f — skipped", pos_id, true_price, recorded_price)
-                return
-            implied_shares = size_usdc / true_price
-            if abs(chain_size - implied_shares) / max(implied_shares, 1e-9) > 0.02:
-                # mixed position (older residue) — the wallet average isn't this
-                # order's fill
-                logger.info("Fill audit pos %s: chain shares %.2f vs implied %.2f mismatch "
-                            "(mixed position) — entry left at booked %.3f",
-                            pos_id, chain_size, implied_shares, recorded_price)
-                return
-            booked = await (await self.db.conn.execute(
-                "SELECT 1 FROM trade_history WHERE position_id=?", (pos_id,))).fetchone()
-            if booked:
-                logger.info("Fill audit pos %s: trade already booked to history — "
-                            "entry left at %.3f (chain says %.4f)",
-                            pos_id, recorded_price, true_price)
-                return
-            await self.db.conn.execute(
-                "UPDATE positions SET entry_price=?, shares_held=? WHERE id=?",
-                (round(true_price, 4), round(chain_size, 6), pos_id),
-            )
-            await self.db.conn.commit()
-            if abs(true_price - recorded_price) > 0.005:
-                logger.info(
-                    "Entry corrected to the exchange's real fill: %.2f → %.2f "
-                    "(the tape missed the fill, so the limit price had been booked)",
-                    recorded_price, true_price,
-                )
-            else:
-                logger.info("Fill audit pos %s: booked %.3f matches exchange %.4f — "
-                            "shares synced to wallet (%.4f)",
-                            pos_id, recorded_price, true_price, chain_size)
-        except Exception as e:
-            logger.warning("Fill audit failed for position %s: %s", pos_id, e)
+        if not token_id:
+            logger.debug("Fill audit pos %s: no token_id — skipped", pos_id)
+            return recorded_price, "provisional"
+        positions = await self._fetch_wallet_positions()
+        if positions is None:
+            logger.debug("Fill audit pos %s: wallet-positions fetch failed — "
+                         "entry left at booked %.3f", pos_id, recorded_price)
+            return recorded_price, "provisional"
+        pos = next((p for p in positions
+                    if str(p.get("asset")) == str(token_id)), None)
+        if pos is None:
+            logger.debug("Fill audit pos %s: token not in wallet yet (indexer lag or "
+                         "already resolved) — entry left at booked %.3f", pos_id, recorded_price)
+            return recorded_price, "provisional"
+        true_price = float(pos.get("avgPrice") or 0.0)
+        chain_size = float(pos.get("size") or 0.0)
+        if chain_size <= 0:
+            logger.debug("Fill audit pos %s: no chain size — skipped", pos_id)
+            return recorded_price, "provisional"
+        if not (0.0 < true_price < 1.0):
+            # The data-API often serves avgPrice 0.0000 for a fresh position
+            # — but its `size` is the wallet's true share count, so the
+            # gross VWAP is simply notional / shares.
+            true_price = size_usdc / chain_size
+        if not (0.0 < true_price < 1.0) or true_price > recorded_price + 0.01:
+            # A FOK can never fill ABOVE its limit (recorded is at most the
+            # limit) — a higher price means an older residue is inflating
+            # the wallet balance; not this order's fill.
+            logger.debug("Fill audit pos %s: chain price %.4f implausible vs "
+                         "booked %.3f — skipped", pos_id, true_price, recorded_price)
+            return recorded_price, "provisional"
+        implied_shares = size_usdc / true_price
+        if abs(chain_size - implied_shares) / max(implied_shares, 1e-9) > 0.02:
+            # mixed position (older residue) — the wallet average isn't this
+            # order's fill
+            logger.debug("Fill audit pos %s: chain shares %.2f vs implied %.2f mismatch "
+                         "(mixed position) — entry left at booked %.3f",
+                         pos_id, chain_size, implied_shares, recorded_price)
+            return recorded_price, "provisional"
+        booked = await (await self.db.conn.execute(
+            "SELECT 1 FROM trade_history WHERE position_id=?", (pos_id,))).fetchone()
+        if booked:
+            # Resolved before the audit ran — the row is history's; report the
+            # chain truth for the banner without touching the books.
+            logger.debug("Fill audit pos %s: trade already booked to history — "
+                         "entry left at %.3f (chain says %.4f)",
+                         pos_id, recorded_price, true_price)
+            return true_price, "chain"
+        await self.db.conn.execute(
+            "UPDATE positions SET entry_price=?, shares_held=? WHERE id=?",
+            (round(true_price, 4), round(chain_size, 6), pos_id),
+        )
+        await self.db.conn.commit()
+        logger.debug("Fill audit pos %s: entry %.3f → chain %.4f, shares synced "
+                     "to wallet (%.4f)", pos_id, recorded_price, true_price, chain_size)
+        return true_price, "chain"
 
     # -- FOK pre-check + balance/dust helpers --------------------------------
     @staticmethod
@@ -939,6 +964,11 @@ class LiveTrader(BaseTrader):
             size_drift = abs(existing["amount"] - size_usdc) / max(size_usdc, 1e-6)
             if age < 1.5 and price_drift < 0.005 and size_drift < 0.02:
                 return
+        # Advertise the sign in flight so a submit racing this warmup can await
+        # it (one sign total) instead of racing a duplicate against it.
+        inflight = {"amount": size_usdc, "price": expected_price,
+                    "event": asyncio.Event()}
+        self._buy_warmup_inflight[token_id] = inflight
         try:
             mo = MarketOrderArgs(
                 token_id=token_id, amount=size_usdc, side=BUY, price=expected_price,
@@ -955,6 +985,29 @@ class LiveTrader(BaseTrader):
             }
         except Exception as e:
             logger.debug("warm_buy_signature failed: %s", e)
+        finally:
+            inflight["event"].set()
+            if self._buy_warmup_inflight.get(token_id) is inflight:
+                self._buy_warmup_inflight.pop(token_id, None)
+
+    async def _await_buy_warmup_inflight(self, token_id: str, size_usdc: float,
+                                         expected_price: float) -> None:
+        """Wait (bounded) for a param-matching warmup sign already in flight —
+        it finishes in one sign-time and _take_buy_warmup can then POST it
+        directly. Params outside the reuse gates mean the result would be
+        discarded anyway, so don't wait: sign inline. Drift gates mirror
+        _take_buy_warmup's."""
+        inflight = self._buy_warmup_inflight.get(token_id)
+        if inflight is None:
+            return
+        if abs(inflight["price"] - expected_price) > 0.01:
+            return
+        if abs(inflight["amount"] - size_usdc) / max(size_usdc, 1e-6) > 0.05:
+            return
+        try:
+            await asyncio.wait_for(inflight["event"].wait(), timeout=0.25)
+        except asyncio.TimeoutError:
+            pass
 
     def _take_buy_warmup(self, token_id: str, size_usdc: float,
                          expected_price: float) -> dict | None:
@@ -1571,6 +1624,7 @@ class LiveTrader(BaseTrader):
         if side == SELL:
             presigned = self._take_sell_warmup(token_id, amount, expected_price)
         else:
+            await self._await_buy_warmup_inflight(token_id, amount, expected_price)
             presigned = self._take_buy_warmup(token_id, amount, expected_price)
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
@@ -1754,8 +1808,13 @@ class LiveTrader(BaseTrader):
                         _update_fill_stats(filled=True, side=side)
                         asyncio.create_task(self._cache_post_buy_balance(token_id))
                         return FillResult(filled=True, fill_price=vwap, fill_size=amount)
-                reason = f"POST outcome unknown ({e}) — not retried to avoid double fill"
-                logger.warning("FOK %s %s", side, reason)
+                reason = "POST outcome unknown — not retried to avoid double fill"
+                logger.warning(
+                    "FOK %s: the exchange never answered (network drop mid-request), so the "
+                    "order MAY have gone through — deliberately not resubmitting (a blind retry "
+                    "is the double-fill path). No fill was detected on the trade feed; if one "
+                    "settled anyway, the startup wallet check reports it.", side)
+                logger.debug("FOK %s ambiguous-POST detail: %s", side, e)
                 _update_fill_stats(filled=False, side=side, reason="ambiguous post — not retried")
                 return FillResult(filled=False, reason=reason)
             except Exception as e:
@@ -1800,11 +1859,11 @@ class LiveTrader(BaseTrader):
                     if attempt < _FILL_PRICE_LOOKUP_RETRIES - 1:
                         await asyncio.sleep(_FILL_PRICE_LOOKUP_DELAY)
                         continue
-                    logger.warning(
-                        "Fill price lookup for %s: get_order returned None on every "
-                        "attempt — BOOKING THE LIMIT %.4f (the real fill may be better; "
-                        "the +%.0fs audit is the corrector)",
-                        order_id, fallback_price, _FILL_AUDIT_DELAY_S)
+                    logger.info(
+                        "Fill confirmed — exact price pending the +%.0fs chain audit "
+                        "(exchange order lookup unavailable; %.4f booked provisionally).",
+                        _FILL_AUDIT_DELAY_S, fallback_price)
+                    logger.debug("Fill price lookup %s: get_order None on every attempt", order_id)
                     return fallback_price
                 trades = order.get("associate_trades", [])
                 trades = [t for t in trades if isinstance(t, dict)]
@@ -1812,12 +1871,13 @@ class LiveTrader(BaseTrader):
                     if attempt < _FILL_PRICE_LOOKUP_RETRIES - 1:
                         await asyncio.sleep(_FILL_PRICE_LOOKUP_DELAY)
                         continue
-                    logger.warning(
-                        "Fill price lookup for %s: associate_trades still empty after "
-                        "%d tries — BOOKING THE LIMIT %.4f (indexer lag; this booked "
-                        "entry is pessimistic until the +%.0fs audit corrects it)",
-                        order_id, _FILL_PRICE_LOOKUP_RETRIES, fallback_price,
-                        _FILL_AUDIT_DELAY_S)
+                    logger.info(
+                        "Fill confirmed — exact price pending the +%.0fs chain audit "
+                        "(the exchange's trade indexer hasn't caught up; %.4f booked "
+                        "provisionally, usually a touch pessimistic).",
+                        _FILL_AUDIT_DELAY_S, fallback_price)
+                    logger.debug("Fill price lookup %s: associate_trades empty after %d tries",
+                                 order_id, _FILL_PRICE_LOOKUP_RETRIES)
                     return fallback_price
                 total_shares = sum(float(t["size"]) for t in trades)
                 if total_shares == 0:

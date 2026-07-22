@@ -879,3 +879,59 @@ async def test_fill_audit_share_derivation_rejects_residue(trader, monkeypatch):
     row = await (await trader.db.conn.execute(
         "SELECT entry_price FROM positions WHERE id=?", (pos_id,))).fetchone()
     assert row[0] == pytest.approx(0.93, abs=1e-6)   # untouched
+
+
+@pytest.mark.asyncio
+async def test_fill_audit_reports_settled_entry_via_callback(trader, monkeypatch):
+    """The +8s audit ALWAYS reports the settled entry through on_entry_settled:
+    source "chain" when the wallet confirmed the price, "provisional" when the
+    lookup failed — main prints the single OPEN banner from this."""
+    _setup_successful_fill(trader, fill_price="0.93", fill_size="5.10")
+    kwargs = {**_TRADE_KWARGS, "price": 0.93, "size": 4.74, "market_id": "mkt-settle"}
+    open_result = await trader.open_trade(**kwargs)
+    pos_id = open_result.position_id
+
+    settled = []
+    trader.on_entry_settled = lambda pid, price, src: settled.append((pid, price, src))
+    import polybot.execution.live_trader as lt_mod
+    monkeypatch.setattr(lt_mod, "_FILL_AUDIT_DELAY_S", 0.0)
+
+    chain = [{"asset": _TRADE_KWARGS["token_id"], "size": 4.74 / 0.88, "avgPrice": 0.88}]
+
+    async def fake_wallet():
+        return chain
+
+    monkeypatch.setattr(trader, "_fetch_wallet_positions", fake_wallet)
+    await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.93, 4.74, 0.07)
+    assert settled == [(pos_id, pytest.approx(0.88, abs=1e-4), "chain")]
+
+    # Chain lookup failure → the booked price is reported, flagged provisional.
+    async def broken_wallet():
+        return None
+
+    monkeypatch.setattr(trader, "_fetch_wallet_positions", broken_wallet)
+    await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.93, 4.74, 0.07)
+    assert settled[-1] == (pos_id, 0.93, "provisional")
+
+
+@pytest.mark.asyncio
+async def test_submit_awaits_inflight_warmup_instead_of_double_signing(trader):
+    """A warmup sign already in flight must be AWAITED by the submit path —
+    exactly one create_market_order call total (two concurrent pure-python
+    signs contend on the GIL and slow the money-path one down)."""
+    import asyncio
+    import time as _time
+    _setup_successful_fill(trader, fill_price="0.81", fill_size="2.0")
+
+    def slow_sign(mo):
+        _time.sleep(0.05)
+        return {"order": "signed-payload"}
+
+    trader.client.create_market_order = MagicMock(side_effect=slow_sign)
+    warm = asyncio.create_task(trader.warm_buy_signature("tok-up-123", 1.61, 0.81))
+    await asyncio.sleep(0.01)          # warmup dispatched, sign still in flight
+    assert "tok-up-123" in trader._buy_warmup_inflight
+    result = await trader._submit_fok_order("tok-up-123", "BUY", 1.61, 0.81)
+    await warm
+    assert result.filled is True
+    assert trader.client.create_market_order.call_count == 1

@@ -40,16 +40,23 @@ fills/edge head-to-head.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import random
 import sqlite3
 import statistics
+import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
+# The SPRT/shadow reads import polybot.core.sprt + polybot.paths; make that work
+# when the script runs standalone from anywhere (main.py's exec-by-path already
+# runs with the package importable).
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 PATHS_DB = ROOT / "polybot" / "db" / "window_paths.db"
 LIVE_DB = ROOT / "polybot" / "db" / "polybot_live.db"   # real fills for the live kill-rule read
 PAPER_DB = ROOT / "polybot" / "db" / "polybot_paper.db" # paper-shadow fills (the binding gate in paper mode)
@@ -357,6 +364,140 @@ def live_health_read(db_path=None, since_iso=None):
                 days_pos=sum(1 for d in daily if d > 0), series=series, day_detail=day_detail,
                 trailing4_mean=trailing4, trailing8_t=trailing8_t,
                 kill_rule_tripped=tripped)
+
+
+def _realized_fill_contexts(db_path, since_iso):
+    """(et_day, net_per_share_$, pnl_$, size_$, trade_context) per realized fill —
+    the shared loader for the SPRT / regime-shadow reads. Same join + net
+    convention as live_health_read (pnl is already net of all fees)."""
+    db = Path(db_path) if db_path else LIVE_DB
+    if not db.exists():
+        return []
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        has_pid = any(r[1] == "position_id"
+                      for r in con.execute("PRAGMA table_info(trade_history)"))
+        join_key = "COALESCE(t.position_id, t.id)" if has_pid else "t.id"
+        q = ("SELECT t.pnl AS pnl, t.size AS size, t.exit_timestamp AS ts, "
+             "p.shares_held AS shares, p.indicator_snapshot AS snap "
+             "FROM trade_history t "
+             f"JOIN positions p ON {join_key} = p.id "
+             "WHERE t.exit_timestamp IS NOT NULL AND p.shares_held > 0")
+        args = ()
+        if since_iso:
+            q += " AND t.exit_timestamp >= ?"
+            args = (since_iso,)
+        rows = con.execute(q, args).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+    out = []
+    for r in rows:
+        try:
+            ts = datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00")).timestamp()
+            ctx = json.loads(r["snap"] or "{}").get("trade_context", {}) or {}
+        except (ValueError, AttributeError, json.JSONDecodeError):
+            continue
+        out.append((et_day(ts), r["pnl"] / r["shares"], r["pnl"] or 0.0,
+                    r["size"] or 0.0, ctx))
+    return out
+
+
+# ── Burst-alive SPRT (pre-registered application #1, SPRT_DESIGN 07-19) ───────
+# HOT ⇔ n_ticks_1s / (n_ticks_30s/30) ≥ 2.0 at the fill's decision tick; unit =
+# per-ET-day (mean HOT net − mean COLD net) in ¢/sh, days with ≥ 2 fills on EACH
+# arm. H1 μ₁ = +6¢/sh (the refuter's realized-train delta). σ is estimated on
+# the FIRST 6 qualifying days, frozen write-once (memory/state/sprt_burst.json),
+# and those estimation days never score — scoring starts on qualifying day 7
+# (same independence convention as the full-strategy design, whose σ came from
+# the prior validation's days). Deleting the state file restarts the test.
+BURST_SPRT_MU1 = 6.0
+BURST_SPRT_ALPHA = 0.05
+BURST_SPRT_BETA = 0.23
+BURST_SPRT_SIGMA_DAYS = 6
+BURST_MIN_ARM_FILLS = 2
+BURST_HOT_RATIO = 2.0
+
+
+def _burst_arm(ctx: dict):
+    """'HOT' / 'COLD' from the stamped tick counters; None when the feed was
+    cold at fire time (fill scores on neither arm)."""
+    n1, n30 = ctx.get("n_ticks_1s"), ctx.get("n_ticks_30s")
+    if n1 is None or n30 is None or not n30:
+        return None
+    return "HOT" if (n1 / (n30 / 30.0)) >= BURST_HOT_RATIO else "COLD"
+
+
+def burst_sprt_read(db_path=None, since_iso=None, state_path=None):
+    """Nightly burst-alive SPRT state from the realized ledger. Alert-only:
+    accept-H1 graduates burst into the regime-Kelly framework (its own shadow
+    gate); accept-H0 parks it. Never touches sizing or entries."""
+    from polybot.core.sprt import run_sprt
+    from polybot.paths import SPRT_BURST_PATH
+    sp = Path(state_path) if state_path else SPRT_BURST_PATH
+    per_day = defaultdict(lambda: {"HOT": [], "COLD": []})
+    for day, nps, _pnl, _size, ctx in _realized_fill_contexts(db_path, since_iso):
+        arm = _burst_arm(ctx)
+        if arm is not None:
+            per_day[day][arm].append(nps * 100.0)          # ¢/sh
+    qualifying = [
+        (day, statistics.mean(v["HOT"]) - statistics.mean(v["COLD"]))
+        for day, v in sorted(per_day.items())
+        if len(v["HOT"]) >= BURST_MIN_ARM_FILLS and len(v["COLD"]) >= BURST_MIN_ARM_FILLS
+    ]
+    state = None
+    if sp.exists():
+        try:
+            state = json.loads(sp.read_text())
+        except (json.JSONDecodeError, OSError):
+            state = None
+    if state is None:
+        if len(qualifying) < BURST_SPRT_SIGMA_DAYS:
+            return dict(state="accruing_sigma", n_qualifying=len(qualifying),
+                        need=BURST_SPRT_SIGMA_DAYS, frozen_sigma=None,
+                        lam=None, n_scored=0, day_diffs=[d for _, d in qualifying])
+        est = qualifying[:BURST_SPRT_SIGMA_DAYS]
+        sigma = statistics.stdev([d for _, d in est])
+        state = {"frozen_sigma": round(sigma, 4),
+                 "sigma_days": [day for day, _ in est],
+                 "mu1": BURST_SPRT_MU1,
+                 "frozen_at": datetime.now(ET).isoformat()}
+        try:
+            sp.parent.mkdir(parents=True, exist_ok=True)
+            sp.write_text(json.dumps(state, indent=2))      # write-once freeze
+        except OSError:
+            pass
+    sigma_days = set(state.get("sigma_days", []))
+    scored = [(day, d) for day, d in qualifying if day not in sigma_days]
+    r = run_sprt([d for _, d in scored], state.get("mu1", BURST_SPRT_MU1),
+                 float(state.get("frozen_sigma") or 0.0),
+                 BURST_SPRT_ALPHA, BURST_SPRT_BETA)
+    return dict(state=r.state, lam=r.lam, upper=r.upper, lower=r.lower,
+                n_qualifying=len(qualifying), n_scored=r.n_days,
+                frozen_sigma=state.get("frozen_sigma"),
+                day_diffs=[d for _, d in scored])
+
+
+# ── Regime-Kelly shadow counterfactual (REGIME_KELLY_DESIGN §4) ────────────────
+def regime_shadow_read(db_path=None, since_iso=None):
+    """Per-ET-day counterfactual D = regime-sized $P&L − flat $P&L over fills
+    carrying the regime shadow stamps (size_flat/size_regime, shipped 07-24).
+    Report-only accrual: the D-level SPRT may not START until the burst SPRT
+    accepts H1 (its μ₁/σ freeze by amendment then). size_regime == 0 means the
+    regime arm skipped the fill (sub-$1) — it earns nothing there."""
+    per_day = defaultdict(lambda: [0.0, 0])                 # day -> [D$, n_stamped]
+    for day, _nps, pnl, _size, ctx in _realized_fill_contexts(db_path, since_iso):
+        sf, sr = ctx.get("size_flat"), ctx.get("size_regime")
+        if sf is None or sr is None or not sf:
+            continue
+        per_day[day][0] += (pnl / sf) * sr - pnl
+        per_day[day][1] += 1
+    scored = [(day, v[0], v[1]) for day, v in sorted(per_day.items()) if v[1] >= 3]
+    return dict(n_days=len(scored),
+                total_d=sum(d for _, d, _ in scored),
+                day_detail=scored)
 
 
 def main():

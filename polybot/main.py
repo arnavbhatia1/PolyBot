@@ -218,6 +218,109 @@ def _clob_book_aux(clob_ws: Any, token_up: str, token_down: str,
     }
 
 
+# ── Regime-Kelly SHADOW stamps (REGIME_KELLY_DESIGN §4, frozen 2026-07-20) ────
+# Bucket cuts are FROZEN from the 192-window validation population — never
+# re-fit during the shadow. The single pre-registered multiplier candidate is
+# burst-only (the f* ratios, clamped [0.5, 1.5]); every other variable rides at
+# 1.0 pending day-t ≥ 2 separation. Stamps + nightly arithmetic ONLY — nothing
+# here touches sizing, entries, or vetoes; deployment needs the burst SPRT and
+# the counterfactual-D SPRT to both accept (SPRT_DESIGN).
+_REGIME_CUTS_ATR_REGIME = (0.694, 1.041)   # atr / atr_long_term_mean
+_REGIME_CUTS_ATR_SHORT = (0.789, 1.004)    # atr / atr_rolling_20
+_REGIME_CUTS_FRV = (4.1e-5, 6.9e-5)        # fast_realized_vol_60s
+_REGIME_BURST_HOT_RATIO = 2.0              # n_ticks_1s / (n_ticks_30s/30)
+_REGIME_MULT_TABLE = {"HOT": 1.15, "COLD": 0.80}
+_REGIME_MULT_CLAMP = (0.5, 1.5)
+
+
+def _tercile(value: float | None, cuts: tuple[float, float]) -> str | None:
+    if value is None:
+        return None
+    return "LO" if value < cuts[0] else ("MID" if value < cuts[1] else "HI")
+
+
+def _regime_shadow_fields(atr: float, atr_long: float, atr_short_mean: float,
+                          aux_signals: dict[str, Any], size: float,
+                          bankroll: float, max_bankroll_pct: float) -> dict[str, Any]:
+    """The shadow stamp block for a fill's trade_context. None buckets mean the
+    input feed was cold at fire time (never 0.0 stand-ins); size_regime == 0
+    means the regime-sized arm would have skipped the fill ($1 CLOB floor)."""
+    n1, n30 = aux_signals.get("n_ticks_1s"), aux_signals.get("n_ticks_30s")
+    burst = None
+    if n1 is not None and n30:
+        burst = "HOT" if (n1 / (n30 / 30.0)) >= _REGIME_BURST_HOT_RATIO else "COLD"
+    lo, hi = _REGIME_MULT_CLAMP
+    mult = max(lo, min(hi, _REGIME_MULT_TABLE.get(burst, 1.0)))
+    size_regime = round(min(size * mult, bankroll * max_bankroll_pct), 2)
+    if size_regime < 1.0:
+        size_regime = 0.0
+    return {
+        "regime_buckets": {
+            "atr_regime": _tercile(atr / atr_long if (atr > 0 and atr_long > 0) else None,
+                                   _REGIME_CUTS_ATR_REGIME),
+            "atr_short": _tercile(atr / atr_short_mean if (atr > 0 and atr_short_mean > 0) else None,
+                                  _REGIME_CUTS_ATR_SHORT),
+            "frv": _tercile(aux_signals.get("fast_realized_vol_60s"), _REGIME_CUTS_FRV),
+            "session": ("ON", "DAY", "EVE")[datetime.now(ET).hour // 8],
+            "burst": burst,
+        },
+        "regime_kelly_mult": mult,
+        "size_flat": round(size, 2),
+        "size_regime": size_regime,
+    }
+
+
+# ── Single settled OPEN banner ────────────────────────────────────────────────
+# Live fills print one short FILLED line at fill time and the full OPEN banner
+# ONCE, from the +8s chain audit, with the settled entry — the fill-time number
+# is usually the padded FOK limit, not the real fill, and the old provisional
+# banner + "Entry corrected" pair read as a scary discrepancy. Log-only: the
+# trade engine, DB booking, and exit engine run on the booked numbers exactly
+# as before. Paper prints the full banner at fill time (its fills are exact).
+from collections import OrderedDict as _OrderedDict
+
+_pending_settled_banners: _OrderedDict = _OrderedDict()
+_PENDING_BANNERS_MAX = 32
+
+
+def _log_open_banner(ctx: dict[str, Any], entry_price: float, settled: str) -> None:
+    """The yellow OPEN banner. settled: "paper" (fill-time, exact), "chain"
+    (audit-confirmed), or "provisional" (chain lookup failed — flagged)."""
+    shares = ctx["size"] / entry_price if entry_price > 0 else 0.0
+    fee_usd = entry_fee_shares(shares, entry_price, ctx["fee_rate"]) * entry_price
+    chase = ctx["posted"] - ctx["signal_ask"]
+    if abs(chase) > 0.001 or abs(entry_price - ctx["signal_ask"]) > 0.001:
+        slip_note = (f"  [signal {ctx['signal_ask']:.3f} → posted {ctx['posted']:.3f} "
+                     f"(+{chase:.3f}) → filled {entry_price:.3f}]")
+    else:
+        slip_note = ""
+    prov = ("  ⚠ provisional — the chain lookup failed, this is the booked price"
+            if settled == "provisional" else "")
+    _dist = ctx["btc_price"] - ctx["strike"]
+    _phase = ctx["phase"]
+    logger.info(
+        f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
+        f"  {_C.YELLOW}{_C.BOLD}OPEN {ctx['side']}{_C.RESET} @{entry_price:.2f}  ${ctx['size']:.2f}  "
+        f"fee buffer ${fee_usd:.2f} (modeled, not charged)  |  "
+        f"{_slug_to_window(ctx['cid'])}{'' if _phase == 'normal' else f' [{_phase}]'}{slip_note}{prov}\n"
+        f"  {_C.DIM}BTC {ctx['btc_price']:,.0f} ({_dist:+.0f} vs strike) · model {ctx['prob']:.0%} "
+        f"edge {ctx['edge']:+.0%} · flow {ctx['flow']:+.2f} cvd {ctx['cvd']:+.2f} · "
+        f"bank ${ctx['bankroll']:.2f}{_C.RESET}\n"
+        f"{_C.YELLOW}{'=' * 69}{_C.RESET}")
+
+
+def _on_entry_settled(pos_id: int, final_price: float, source: str) -> None:
+    """LiveTrader.on_entry_settled hook — must never raise into the audit."""
+    try:
+        ctx = _pending_settled_banners.pop(int(pos_id), None)
+        if ctx is None:
+            return
+        _log_open_banner(ctx, final_price,
+                         settled=("chain" if source == "chain" else "provisional"))
+    except Exception:
+        pass
+
+
 # E1 recorder throttle: one line per market per second, so a stuck out-of-band
 # window can't grow the JSONL unboundedly at tick rate.
 _last_price_sum_log: dict[str, float] = {}
@@ -723,6 +826,13 @@ async def _evaluate_signal_and_enter(
         ghost_tracker: Any = None) -> tuple[str | None, int]:
     """Compute indicators/flow/signal, check for entry, size the trade, execute."""
 
+    # The Coinbase tick this evaluation is deciding on — the delta to the
+    # pre-submit moment is stamped as cb_tick_to_submit_ms so decision latency
+    # is a measured number per fill, not an inference. (Ticks arriving mid-
+    # evaluation refresh updated_at, so this is the freshest input the decision
+    # actually used; sign + POST legs are recorded separately in latency_stats.)
+    _eval_tick_ts = coinbase_feed.state.updated_at if coinbase_feed is not None else 0.0
+
     # Stamped once per evaluation so ghosts and filled outcomes share one schema;
     # aux fields are a real value or None — never a 0.0 stand-in.
     aux_signals = _build_aux_signals(coinbase_feed, trades_feed)
@@ -1203,11 +1313,6 @@ async def _evaluate_signal_and_enter(
         # fill to avoid lockout.
         price = market_scanner.snap_to_tick(price * (1 + slip), tick_size)
 
-    if hasattr(trader, "warm_buy_signature"):
-        asyncio.create_task(trader.warm_buy_signature(
-            token_id, size, price, fee_rate=fee_rate,
-        ))
-
     snapshot = indicator_engine.get_snapshot(indicators)
     # Last two closes recorded for the exit-value model / counterfactual replay
     # (record-schema continuity; kept as an entry fact in the trade_context).
@@ -1254,6 +1359,14 @@ async def _evaluate_signal_and_enter(
         # lookback (that's the monitor's 30-minute window).
         "adverse_rate_at_30s": adverse_rate_at_30s if adverse_rate_at_30s >= 0 else 0.5,
         "adverse_kelly_mult": round(adverse_kelly_mult, 3),
+        "cb_tick_to_submit_ms": (round((time.time() - _eval_tick_ts) * 1000.0, 1)
+                                 if _eval_tick_ts > 0 else None),
+        # Regime-Kelly SHADOW stamps (frozen cuts; sizing untouched) — the
+        # nightly counterfactual-D read and its gated SPRT consume these.
+        **_regime_shadow_fields(
+            indicators.get("atr", {}).get("atr", 0) or 0.0,
+            signal_engine.last_atr_long_term_mean, signal_engine.last_atr_rolling_20,
+            aux_signals, size, bankroll, max_bankroll_pct),
         # Token IDs for both outcomes — required for startup reconciliation and dust sweeping.
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
@@ -1289,6 +1402,16 @@ async def _evaluate_signal_and_enter(
                             f"ask drifted {price:.3f}→{fresh_ask:.3f}, net edge {fresh_net_edge:+.1%}")
             return None, last_eval_log_window
 
+    # Pre-sign concurrently with the submit's preflight. Spawned only after the
+    # last veto gate (the task can't start before the next await regardless, so
+    # this placement is scheduling-identical — but a vetoed tick no longer burns
+    # a doomed sign on the shared core). The submit path awaits this in-flight
+    # sign instead of racing a duplicate against it.
+    if hasattr(trader, "warm_buy_signature"):
+        asyncio.create_task(trader.warm_buy_signature(
+            token_id, size, price, fee_rate=fee_rate,
+        ))
+
     result = await trader.open_trade(
         market_id=cid,
         question=contract["question"],
@@ -1317,31 +1440,33 @@ async def _evaluate_signal_and_enter(
             _window_recorder.mark_traded(cid)
         # Actual fill price (paper latency/book-walk or live FOK slippage may differ).
         fill_price = result.fill_price if result.fill_price > 0 else price
-        # signal = the ask the model decided on; posted = the (padded) FOK limit we
-        # sent to the CLOB; filled = the realized fill. signal->posted is the chase
-        # bubble (sniper_fok_slip / base slip pad); posted->filled is realized slippage.
-        # (Live may book the limit here and correct to the exchange's true fill a few
-        # seconds later — see LiveTrader._audit_entry_fill.)
-        chase = price - signal_ask
-        if abs(chase) > 0.001 or abs(fill_price - signal_ask) > 0.001:
-            slip_note = (f"  [signal {signal_ask:.3f} → posted {price:.3f} "
-                         f"(+{chase:.3f}) → filled {fill_price:.3f}]")
-        else:
-            slip_note = ""
-
         shares_ordered = size / fill_price
         fee_shares = entry_fee_shares(shares_ordered, fill_price, fee_rate)
         fee_usd = fee_shares * fill_price
         bankroll_now = await db.get_bankroll()
-        _dist = btc_price - strike
-        logger.info(
-            f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
-            f"  {_C.YELLOW}{_C.BOLD}OPEN {side}{_C.RESET} @{fill_price:.2f}  ${size:.2f}  fee ${fee_usd:.2f}  |  "
-            f"{_slug_to_window(cid)}{'' if phase == 'normal' else f' [{phase}]'}{slip_note}\n"
-            f"  {_C.DIM}BTC {btc_price:,.0f} ({_dist:+.0f} vs strike) · model {signal.prob:.0%} "
-            f"edge {signal.edge:+.0%} · flow {flow_score:+.2f} cvd {spot_flow_signal:+.2f} · "
-            f"bank ${bankroll_now:.2f}{_C.RESET}\n"
-            f"{_C.YELLOW}{'=' * 69}{_C.RESET}")
+        # signal = the ask the model decided on; posted = the (padded) FOK limit we
+        # sent to the CLOB; filled = the realized fill. signal->posted is the chase
+        # bubble (sniper_fok_slip / base slip pad); posted->filled is realized slippage.
+        _banner_ctx = {
+            "side": side, "size": size, "cid": cid, "phase": phase,
+            "signal_ask": signal_ask, "posted": price,
+            "btc_price": btc_price, "strike": strike,
+            "prob": signal.prob, "edge": signal.edge,
+            "flow": flow_score, "cvd": spot_flow_signal,
+            "fee_rate": fee_rate, "bankroll": bankroll_now,
+        }
+        if getattr(trader, "on_entry_settled", None) is not None and result.position_id:
+            # LIVE: the fill-time price is usually the padded limit (the tape
+            # loses the indexer race) — print one short line now; the full OPEN
+            # banner prints once from the +8s chain audit with the settled entry.
+            _lru_set(_pending_settled_banners, int(result.position_id),
+                     _banner_ctx, _PENDING_BANNERS_MAX)
+            logger.info(
+                f"{_C.YELLOW}{_C.BOLD}FILLED {side}{_C.RESET}{_C.YELLOW}  ${size:.2f}  |  "
+                f"{_slug_to_window(cid)} — price settling… (full entry prints at the "
+                f"+8s chain audit){_C.RESET}")
+        else:
+            _log_open_banner(_banner_ctx, fill_price, settled="paper")
         if _adverse_monitor:
             # Baseline must live on the same axis as the post-fill checkpoints
             # (update_prices): the traded token's own mid. Falls back to the
@@ -2732,6 +2857,9 @@ async def main() -> None:
         trader = LiveTrader(db=db,
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
             max_concurrent_positions=exec_cfg["max_concurrent_positions"])
+        # The +8s chain audit reports the settled entry here → the OPEN banner
+        # prints once, with the real fill (see _log_open_banner).
+        trader.on_entry_settled = _on_entry_settled
     else:
         # Fallbacks match settings.yaml's calibrated values (one source of truth
         # for the realism constants; the fallbacks only fire if settings omit keys).
@@ -2982,6 +3110,18 @@ async def main() -> None:
             live = await asyncio.to_thread(
                 mod.live_health_read, mod.PAPER_DB, _lw.get("validation_epoch"))
             real_label = "PAPER-SHADOW (realized paper fills — the binding gate)"
+        # SPRT #1 (burst-alive) + regime-Kelly shadow accrual — both alert-only
+        # reads over the same realized ledger the kill rule uses. SPRT turns
+        # things ON; the kill rule turns things OFF (SPRT_DESIGN, frozen 07-19).
+        _real_db = None if mode == "live" else mod.PAPER_DB
+        try:
+            sprt_burst = await asyncio.to_thread(
+                mod.burst_sprt_read, _real_db, _lw.get("validation_epoch"))
+            regime_d = await asyncio.to_thread(
+                mod.regime_shadow_read, _real_db, _lw.get("validation_epoch"))
+        except Exception as e:
+            logger.debug("SPRT/regime shadow read failed: %s", e)
+            sprt_burst, regime_d = None, None
         if sim is None and live is None:
             if alert_manager:
                 await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
@@ -3020,13 +3160,32 @@ async def main() -> None:
                        "(floor-blind reads run ~3-10¢/sh low)")
             disc = f"\n**Sim − live gap: {gap:+.1f}¢/sh** — {tag}."
 
+        def _sprt_line(s) -> str:
+            if s is None:
+                return ""
+            if s["state"] == "accruing_sigma":
+                return (f"\nSPRT burst-alive: freezing σ — {s['n_qualifying']}/{s['need']} "
+                        f"qualifying days (≥2 fills each arm) accrued.")
+            tag = {"continue": "accruing", "accept_h1": "✅ ACCEPTED — burst graduates to the regime-Kelly shadow",
+                   "accept_h0": "❌ REJECTED — burst parked", "truncated": "⏱ truncated → fixed-horizon read",
+                   "void": "⚠️ VOID — σ regime changed; restart the test"}[s["state"]]
+            return (f"\nSPRT burst-alive: {tag} — Λ {s['lam']:+.2f} "
+                    f"(accept ≥{s['upper']:+.2f} / reject ≤{s['lower']:+.2f}), "
+                    f"{s['n_scored']} scored day(s), σ frozen {s['frozen_sigma']}¢.")
+
+        def _regime_line(r) -> str:
+            if r is None or r["n_days"] == 0:
+                return ""
+            return (f"\nRegime-Kelly shadow: counterfactual D {r['total_d']:+.2f}$ over "
+                    f"{r['n_days']} scored day(s) — accrual only (its SPRT starts after burst accepts).")
+
         msg = (
             f"🎯 **Sniper daily check — {today}**   {status}\n"
             f"**{real_label}:** {_line(live)}\n"
             f"**SIM (harness corpus):** {_line(sim)}\n"
             f"Both are equal-weight net-of-fee ¢/share, one bet per window. "
             f"Shut-off line (measured on realized fills): last-4-day below +2.0¢/sh or last-8-day t under 2.0."
-            f"{disc}\n"
+            f"{disc}{_sprt_line(sprt_burst)}{_regime_line(regime_d)}\n"
         )
         if kt:
             msg += ("**⚠️ The LIVE edge has decayed past the shut-off line — "
@@ -3046,7 +3205,8 @@ async def main() -> None:
                     "trailing4_mean": r["trailing4_mean"], "trailing8_t": r["trailing8_t"],
                     "kill_rule_tripped": r["kill_rule_tripped"]}
         return {"health": status, "kill_rule_tripped": kt,
-                "live": _pick(live), "sim": _pick(sim)}
+                "live": _pick(live), "sim": _pick(sim),
+                "sprt_burst": sprt_burst, "regime_shadow": regime_d}
     scheduler.register_job("sniper_health", _sniper_health_job)
 
     async def run_discord():
@@ -3068,6 +3228,16 @@ async def main() -> None:
         await asyncio.wait_for(discord_bot.ready_event.wait(), timeout=15.0)
     except asyncio.TimeoutError:
         logger.warning("Discord did not connect within 15s — starting trading loop anyway")
+
+    # Everything long-lived is constructed: move it to the GC's permanent
+    # generation and raise the gen-0 threshold. Full (gen-2) collections
+    # otherwise rescan every boot object on a schedule and their multi-ms
+    # pauses can land mid-fire on the 1-core box; freezing shrinks them to the
+    # (small) post-boot heap. Thresholds stay modest — the box has 1 GB.
+    import gc
+    gc.collect()
+    gc.freeze()
+    gc.set_threshold(10_000, 20, 20)
 
     trading_task = asyncio.create_task(trading_loop(
         binance_feed, market_scanner, indicator_engine, signal_engine,

@@ -9,5 +9,13 @@ pyyaml>=6.0.0
 websockets>=13.0
 pytest>=8.0.0
 pytest-asyncio>=0.24.0
-py_clob_client_v2>=1.0.0
+# Pin below 1.1.0: 1.1.0 wraps post_order in a blocking transaction-hash poll
+# (0.25s interval / 30s timeout) that goes live with Polymarket's 2026-07-24
+# async-commit rollout — it would stall every matched FOK and pollute the
+# measured POST RTT ledger. The bot reads none of the fields 1.1.0 resolves.
+py_clob_client_v2>=1.0.0,<1.1.0
+# C secp256k1 backend: eth_keys auto-selects it, cutting the per-order EIP-712
+# sign ~10x vs the pure-python fallback. Linux-only marker — no Windows wheel
+# exists for the dev workstation's Python, and tests don't need the speed.
+coincurve>=19.0; sys_platform == "linux"
 tzdata>=2024.1; sys_platform == "win32"
