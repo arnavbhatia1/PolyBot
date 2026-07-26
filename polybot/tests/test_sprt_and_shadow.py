@@ -200,3 +200,72 @@ def test_settled_banner_flags_provisional_when_chain_lookup_fails(caplog):
     with caplog.at_level(logging.INFO, logger="polybot"):
         _on_entry_settled(7, 0.81, "provisional")
     assert "provisional" in caplog.text
+
+
+# ── Discord OPEN ping follows the settled entry (the UI must match the books) ─
+
+class _FakeAlerts:
+    def __init__(self):
+        self.sent = []
+
+    async def send_trade_opened(self, **kw):
+        self.sent.append(kw)
+
+
+@pytest.mark.asyncio
+async def test_settled_callback_sends_discord_ping_with_chain_price():
+    import asyncio
+    _pending_settled_banners.clear()
+    am = _FakeAlerts()
+    ctx = dict(_CTX, alert_manager=am, question="Bitcoin Up or Down - July 26, 1AM ET",
+               mkt_price=0.76)
+    _lru_set(_pending_settled_banners, 11, ctx, 32)
+    _on_entry_settled(11, 0.57, "chain")     # audit settled 0.77 → 0.57
+    await asyncio.sleep(0)                   # let the create_task'd send run
+    assert len(am.sent) == 1
+    kw = am.sent[0]
+    assert kw["entry_price"] == pytest.approx(0.57)
+    assert kw["provisional"] is False
+    # fee buffer recomputed at the settled price: rate·size·(1−entry)
+    assert kw["fee"] == pytest.approx(0.07 * 1.61 * (1 - 0.57), rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_settled_callback_flags_provisional_ping_on_lookup_failure():
+    import asyncio
+    _pending_settled_banners.clear()
+    am = _FakeAlerts()
+    ctx = dict(_CTX, alert_manager=am, question="q", mkt_price=0.76)
+    _lru_set(_pending_settled_banners, 12, ctx, 32)
+    _on_entry_settled(12, 0.81, "provisional")
+    await asyncio.sleep(0)
+    assert am.sent and am.sent[0]["provisional"] is True
+    assert am.sent[0]["entry_price"] == pytest.approx(0.81)
+
+
+@pytest.mark.asyncio
+async def test_day_stats_fees_are_the_modeled_buffer_sum():
+    """Day-close fee figure = Σ per-trade modeled entry buffer (rate·size·(1−e))
+    + recorded exit-fee models — the same quantity the OPEN pings display, so
+    the day total finally matches what was shown through the day."""
+    from polybot.db.models import Database
+    db = Database(":memory:")
+    await db.initialize()
+    try:
+        await db.conn.execute(
+            "INSERT INTO positions (id, market_id, question, side, entry_price, size, "
+            "signal_score, entry_timestamp, status, fee_rate, shares_held) "
+            "VALUES (1, 'm', 'q', 'Up', 0.57, 1.26, 0.9, "
+            "'2026-07-26T04:58:00+00:00', 'closed', 0.07, 2.21)")
+        await db.conn.execute(
+            "INSERT INTO trade_history (side, entry_price, exit_price, size, "
+            "exit_timestamp, exit_reason, pnl, fees, position_id) "
+            "VALUES ('Up', 0.57, 1.0, 1.26, '2026-07-26T05:00:00+00:00', "
+            "'resolution', 0.95, 0.0, 1)")
+        await db.conn.commit()
+        wins, losses, fees, pnl = await db.get_day_stats("2026-07-26")
+        assert (wins, losses) == (1, 0)
+        assert pnl == pytest.approx(0.95)
+        assert fees == pytest.approx(0.07 * 1.26 * (1 - 0.57), rel=1e-6)
+    finally:
+        await db.close()   # a stranded aiosqlite worker thread blocks pytest exit

@@ -48,19 +48,27 @@ class AlertManager:
                                 ev: float,
                                 model_prob: float = 0.0, market_price: float = 0.0,
                                 fee: float = 0.0, flow: float = 0.0,
-                                bankroll: float = 0.0) -> None:
+                                bankroll: float = 0.0,
+                                provisional: bool = False) -> None:
+        """Live sends this from the +8s chain audit with the SETTLED entry (the
+        fill-time number is usually the padded FOK limit, not the real fill —
+        the ping must agree with the RESOLVED ping and the books). Paper sends
+        at fill time (its fills are exact). `provisional` flags the rare fill
+        whose chain lookup failed — the booked price is shown, labeled."""
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
         window = question.replace("Bitcoin Up or Down - ", "") if question else ""
         bankroll_str = f"  Bankroll  ${bankroll:,.2f}\n" if bankroll > 0 else ""
+        prov_str = ("  ⚠ price provisional — chain lookup failed, showing the booked price\n"
+                    if provisional else "")
         await self._safe_send(channel,
             f"**OPEN {side}**  {window}\n"
             f"```\n"
             f"  Price     {entry_price:.3f}  |  ${size:.2f}\n"
-            f"  Edge      {ev:+.0%}  (model {model_prob:.0%} vs mkt {market_price:.0%})\n"
-            f"  Fee       ${fee:.2f}\n"
-            f"{bankroll_str}```")
+            f"  Edge      {ev:+.0%}  (model {model_prob:.0%} vs mkt {market_price:.0%} at decision)\n"
+            f"  Fee       ${fee:.2f} buffer (modeled, not charged)\n"
+            f"{prov_str}{bankroll_str}```")
 
     async def send_trade_closed(self, question: str, exit_price: float,
                                 side: str = "", entry_price: float = 0.0, pnl: float = 0.0,
@@ -153,7 +161,7 @@ class AlertManager:
             f"Bankroll: `${bankroll:,.2f}` | Day P&L: `${day_pnl:+,.2f}`\n"
             f"{gap_line}"
             f"Trades: `{total}` ({wins}W / {losses}L) | Win Rate: `{wr:.0%}`\n"
-            f"Total Fees: `${fees:,.2f}`\n"
+            f"Fees charged on-chain: `$0.00` · modeled buffer: `${fees:,.2f}`\n"
             f"{'─' * 38}"
         )
         await self._send_to_channels(msg, [self.trade_channel_name, self.daily_channel_name])

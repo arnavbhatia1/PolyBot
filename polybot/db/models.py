@@ -265,10 +265,14 @@ class Database:
         return [dict(row) for row in rows]
 
     async def get_day_stats(self, date_str: str) -> tuple[int, int, float, float]:
-        """Return (wins, losses, fees, pnl_sum) for a given trading day (ET date string).
+        """Return (wins, losses, modeled_fees, pnl_sum) for a trading day (ET date).
 
         Converts the ET date to a UTC range so trades timestamped in UTC are
-        correctly bucketed into the Eastern trading day.
+        correctly bucketed into the Eastern trading day. `modeled_fees` is the
+        day's total MODELED fee (the per-trade entry buffer rate·size·(1−entry)
+        plus recorded exit-fee models) — the same quantity each OPEN ping shows,
+        so the day-close sum matches what was displayed through the day. No fee
+        is currently charged on-chain on this series; nothing here is money.
         """
         day_start_et = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=_ET)
         day_end_et = day_start_et + timedelta(days=1)
@@ -276,8 +280,10 @@ class Database:
         utc_end = day_end_et.astimezone(timezone.utc).isoformat()
 
         cursor = await self.conn.execute(
-            "SELECT pnl, fees, exit_price, entry_price FROM trade_history "
-            "WHERE exit_timestamp >= ? AND exit_timestamp < ?",
+            "SELECT t.pnl, t.fees, t.exit_price, t.entry_price, t.size, p.fee_rate "
+            "FROM trade_history t "
+            "LEFT JOIN positions p ON COALESCE(t.position_id, t.id) = p.id "
+            "WHERE t.exit_timestamp >= ? AND t.exit_timestamp < ?",
             (utc_start, utc_end),
         )
         rows = await cursor.fetchall()
@@ -289,6 +295,11 @@ class Database:
             fee_val = row[1] or 0.0
             exit_p = row[2]
             entry_p = row[3]
+            size_val = row[4] or 0.0
+            rate = row[5] if row[5] is not None else 0.07  # DEFAULT_FEE_RATE (base.py)
+            # Entry buffer in USD: rate·shares·e·(1−e) shares × e == rate·size·(1−e).
+            if entry_p and 0.0 < entry_p < 1.0:
+                total_fees += rate * size_val * (1.0 - entry_p)
             total_fees += fee_val
             total_pnl += (pnl_val or 0.0)
             # Use stored pnl when available; fall back to price comparison for old rows

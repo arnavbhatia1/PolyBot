@@ -310,13 +310,27 @@ def _log_open_banner(ctx: dict[str, Any], entry_price: float, settled: str) -> N
 
 
 def _on_entry_settled(pos_id: int, final_price: float, source: str) -> None:
-    """LiveTrader.on_entry_settled hook — must never raise into the audit."""
+    """LiveTrader.on_entry_settled hook — prints the OPEN banner and sends the
+    Discord OPEN ping, both with the settled entry (Discord previously showed
+    the fill-time provisional, which disagreed with the RESOLVED ping once the
+    audit corrected the books). Must never raise into the audit."""
     try:
         ctx = _pending_settled_banners.pop(int(pos_id), None)
         if ctx is None:
             return
+        provisional = source != "chain"
         _log_open_banner(ctx, final_price,
-                         settled=("chain" if source == "chain" else "provisional"))
+                         settled=("provisional" if provisional else "chain"))
+        am = ctx.get("alert_manager")
+        if am is not None:
+            shares = ctx["size"] / final_price if final_price > 0 else 0.0
+            fee_usd = entry_fee_shares(shares, final_price, ctx["fee_rate"]) * final_price
+            asyncio.create_task(am.send_trade_opened(
+                question=ctx.get("question", ""), side=ctx["side"], size=ctx["size"],
+                entry_price=final_price, ev=ctx["edge"], model_prob=ctx["prob"],
+                market_price=ctx.get("mkt_price", 0.0), fee=fee_usd,
+                flow=ctx["flow"], bankroll=ctx["bankroll"],
+                provisional=provisional))
     except Exception:
         pass
 
@@ -1454,11 +1468,16 @@ async def _evaluate_signal_and_enter(
             "prob": signal.prob, "edge": signal.edge,
             "flow": flow_score, "cvd": spot_flow_signal,
             "fee_rate": fee_rate, "bankroll": bankroll_now,
+            "question": contract["question"],
+            "mkt_price": price_up if side == "Up" else price_down,
+            "alert_manager": alert_manager,
         }
         if getattr(trader, "on_entry_settled", None) is not None and result.position_id:
             # LIVE: the fill-time price is usually the padded limit (the tape
             # loses the indexer race) — print one short line now; the full OPEN
-            # banner prints once from the +8s chain audit with the settled entry.
+            # banner AND the Discord OPEN ping both come from the +8s chain
+            # audit with the settled entry, so every surface agrees with the
+            # books (and with the eventual RESOLVED ping).
             _lru_set(_pending_settled_banners, int(result.position_id),
                      _banner_ctx, _PENDING_BANNERS_MAX)
             logger.info(
@@ -1467,6 +1486,12 @@ async def _evaluate_signal_and_enter(
                 f"+8s chain audit){_C.RESET}")
         else:
             _log_open_banner(_banner_ctx, fill_price, settled="paper")
+            if alert_manager:
+                await alert_manager.send_trade_opened(
+                    question=contract["question"], side=side, size=size,
+                    entry_price=fill_price, ev=signal.edge,
+                    model_prob=signal.prob, market_price=_banner_ctx["mkt_price"],
+                    fee=fee_usd, flow=flow_score, bankroll=bankroll_now)
         if _adverse_monitor:
             # Baseline must live on the same axis as the post-fill checkpoints
             # (update_prices): the traded token's own mid. Falls back to the
@@ -1475,13 +1500,6 @@ async def _evaluate_signal_and_enter(
             _adverse_monitor.record_fill(side=side, fill_price=fill_price, token_id=token_id,
                                          midprice=token_mid or fill_price,
                                          position_id=result.position_id)
-        if alert_manager:
-            mkt_price = price_up if side == "Up" else price_down
-            await alert_manager.send_trade_opened(
-                question=contract["question"], side=side, size=size,
-                entry_price=fill_price, ev=signal.edge,
-                model_prob=signal.prob, market_price=mkt_price,
-                fee=fee_usd, flow=flow_score, bankroll=bankroll_now)
         return cid, last_eval_log_window
 
     return None, last_eval_log_window
