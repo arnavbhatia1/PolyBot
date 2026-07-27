@@ -3153,65 +3153,76 @@ async def main() -> None:
         status = ("⏳ STILL ACCRUING" if kt is None
                   else "⚠️ KILL RULE TRIPPED" if kt else "✅ HEALTHY")
 
-        def _line(r):
-            if r is None:
-                return "not ready"
-            if r["n_fills"] == 0:
-                return "no fills yet"
-            t4 = "n/a (<4d)" if r["trailing4_mean"] is None else f"{r['trailing4_mean']*100:+.1f}¢/sh"
-            t8 = "n/a (<8d)" if r["trailing8_t"] is None else f"t {r['trailing8_t']:+.2f}"
-            return (f"**{r['net_per_sh']*100:+.1f}¢/sh** over {r['n_fills']} fills / {r['n_days']}d "
-                    f"({r['days_pos']}/{r['n_days']} days+), win {r['win_rate']:.0%}, "
-                    f"t_day {r['t_day']:+.2f}; last-4 {t4}, last-8 {t8}")
+        # ── Human-first daily ping: verdict up top, one line per fact, no
+        # jargon the operator has to decode. The returned dict (below) keeps
+        # the full numbers for tests/automation.
+        def _money_line(r) -> str:
+            if r is None or r["n_fills"] == 0:
+                return "no realized fills yet"
+            return (f"**{r['net_per_sh']*100:+.1f}¢/share** over {r['n_fills']} fills, "
+                    f"{r['n_days']} days ({r['days_pos']} profitable) · wins {r['win_rate']:.0%}")
 
-        disc = ""
-        if sim and live and live["n_fills"] > 0:
-            gap = (sim["net_per_sh"] - live["net_per_sh"]) * 100
-            if abs(gap) < 3:
-                tag = "in line with the sim"
-            elif gap > 0:
-                tag = ("⚠️ DIVERGENCE — real fills are underperforming the sim "
-                       "(execution / selection leak)")
-            else:
-                tag = ("real fills are outrunning the sim — expected: the harness "
-                       "replays the raw fire condition without the L1 edge floor "
-                       "(floor-blind reads run ~3-10¢/sh low)")
-            disc = f"\n**Sim − live gap: {gap:+.1f}¢/sh** — {tag}."
-
-        def _sprt_line(s) -> str:
-            if s is None:
+        def _shutoff_line(r) -> str:
+            if r is None or r["n_fills"] == 0:
                 return ""
-            if s["state"] == "accruing_sigma":
-                return (f"\nSPRT burst-alive: freezing σ — {s['n_qualifying']}/{s['need']} "
-                        f"qualifying days (≥2 fills each arm) accrued.")
-            tag = {"continue": "accruing", "accept_h1": "✅ ACCEPTED — burst graduates to the regime-Kelly shadow",
-                   "accept_h0": "❌ REJECTED — burst parked", "truncated": "⏱ truncated → fixed-horizon read",
-                   "void": "⚠️ VOID — σ regime changed; restart the test"}[s["state"]]
-            return (f"\nSPRT burst-alive: {tag} — Λ {s['lam']:+.2f} "
-                    f"(accept ≥{s['upper']:+.2f} / reject ≤{s['lower']:+.2f}), "
-                    f"{s['n_scored']} scored day(s), σ frozen {s['frozen_sigma']}¢.")
+            t4 = ("n/a — needs 4 days" if r["trailing4_mean"] is None
+                  else f"{r['trailing4_mean']*100:+.1f}¢")
+            t8 = ("n/a — needs 8 days" if r["trailing8_t"] is None
+                  else f"{r['trailing8_t']:+.2f}")
+            return (f"Shut-off line: last-4-days {t4} (must stay ≥ +2.0¢) · "
+                    f"8-day consistency {t8} (must stay ≥ 2.0)\n")
 
-        def _regime_line(r) -> str:
-            if r is None or r["n_days"] == 0:
+        def _context_line() -> str:
+            if sim is None or sim["n_fills"] == 0:
                 return ""
-            return (f"\nRegime-Kelly shadow: counterfactual D {r['total_d']:+.2f}$ over "
-                    f"{r['n_days']} scored day(s) — accrual only (its SPRT starts after burst accepts).")
+            base = f"Research sim (no capital): {sim['net_per_sh']*100:+.1f}¢/share"
+            if live and live["n_fills"] > 0:
+                gap = (sim["net_per_sh"] - live["net_per_sh"]) * 100
+                if abs(gap) < 3:
+                    base += " — real fills in line with it"
+                elif gap > 0:
+                    base += f" — real fills LAGGING it by {gap:.1f}¢ (possible execution leak)"
+                else:
+                    base += f" — real fills ahead of it by {-gap:.1f}¢ (normal: the sim reads low)"
+            return base + "\n"
+
+        def _experiments_line() -> str:
+            parts = []
+            if sprt_burst is not None:
+                s = sprt_burst
+                if s["state"] == "accruing_sigma":
+                    parts.append(f"burst test warming up ({s['n_qualifying']}/{s['need']} baseline days)")
+                elif s["state"] == "continue":
+                    parts.append(f"burst test running (score {s['lam']:+.2f}; "
+                                 f"graduates at +2.73, dies at −1.42)")
+                elif s["state"] == "accept_h1":
+                    parts.append("burst test ✅ GRADUATED — regime sizing unlocks its own trial")
+                elif s["state"] == "accept_h0":
+                    parts.append("burst test ❌ rejected — idea parked")
+                elif s["state"] == "void":
+                    parts.append("burst test ⚠️ voided (market regime shifted under it) — restarts")
+                else:
+                    parts.append("burst test hit its time limit — falling back to the fixed read")
+            if regime_d is not None and regime_d["n_days"] > 0:
+                parts.append(f"sizing shadow would have made {regime_d['total_d']:+.2f}$ vs flat")
+            return ("Experiments: " + " · ".join(parts) + "\n") if parts else ""
+
+        if kt:
+            action = ("**→ ACTION: the pre-registered shut-off line is crossed. "
+                      "Set `sniper_enabled: false` in settings.yaml and restart.**")
+        elif kt is None:
+            action = "→ Too few live days for a verdict yet — nothing to do."
+        else:
+            action = "→ Nothing for you to do today."
 
         msg = (
-            f"🎯 **Sniper daily check — {today}**   {status}\n"
-            f"**{real_label}:** {_line(live)}\n"
-            f"**SIM (harness corpus):** {_line(sim)}\n"
-            f"Both are equal-weight net-of-fee ¢/share, one bet per window. "
-            f"Shut-off line (measured on realized fills): last-4-day below +2.0¢/sh or last-8-day t under 2.0."
-            f"{disc}{_sprt_line(sprt_burst)}{_regime_line(regime_d)}\n"
+            f"🎯 **Sniper daily — {today}**   {status}\n"
+            f"Real money: {_money_line(live)}\n"
+            f"{_shutoff_line(live)}"
+            f"{_context_line()}"
+            f"{_experiments_line()}"
+            f"{action}"
         )
-        if kt:
-            msg += ("**⚠️ The LIVE edge has decayed past the shut-off line — "
-                    "set `sniper_enabled: false` in settings.yaml.**")
-        elif kt is None:
-            msg += "Not enough post-launch days for a live verdict yet — keep trading; watch the sim−live gap."
-        else:
-            msg += "Verdict: live edge intact, nothing to do."
         if alert_manager:
             await alert_manager.send_health(msg)
 
