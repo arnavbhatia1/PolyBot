@@ -3107,12 +3107,12 @@ async def main() -> None:
         spec.loader.exec_module(mod)
         # Read the SIM ceiling at the DEPLOYED config (settings.yaml) so it is
         # apples-to-apples with the realized fills — not the harness's research
-        # defaults. RTT 0.44 = the live ledger's measured POST p50 (latency_stats:
-        # p50 436ms, zero samples <= 250ms — the old 0.135 modeled a speed the
-        # production path never achieved and flattered the SIM read).
+        # defaults. RTT 0.34 = the box's measured POST p50 pooled over the three
+        # full days after Polymarket's 07-24 async-commit rollout (375/312/314ms,
+        # n=100; the 250ms crypto taker delay is the floor — zero samples below it).
         _lw = config.get("late_window", {})
         sim = await asyncio.to_thread(
-            mod.health_read, 0.44, _lw["sniper_fok_slip"],
+            mod.health_read, 0.34, _lw["sniper_fok_slip"],
             _lw["sniper_cb_move"], _lw["sniper_ask_cap"])   # SIM corpus (window_paths.db, RO)
         # The realized-fill read tracks the BINDING population for the current mode:
         # live -> the live ledger; paper (re-validation) -> the paper-shadow fills

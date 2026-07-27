@@ -335,7 +335,8 @@ it was removed). Never re-add resting quotes.
 - **NightlyScheduler** (23:45 ET): record rollups + retention sweep + the
   **sniper-edge health report** (`_sniper_health_job`, skipped when
   `sniper_enabled` is false — reports BOTH the SIM corpus (`health_read`,
-  window_paths, modeled at the measured 0.44s RTT) and the REALIZED fills for
+  window_paths, modeled at the measured post-rollout 0.34s POST p50) and the
+  REALIZED fills for
   the current mode (`live_health_read`: live → polybot_live.db; paper →
   polybot_paper.db scoped to `late_window.validation_epoch`, the BINDING
   paper-shadow gate) side by side with their ¢/sh gap, and drives the kill-rule
