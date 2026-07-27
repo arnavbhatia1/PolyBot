@@ -1,5 +1,5 @@
 """Late-window sniper KILL BAR — does a bot-FORMABLE final-seconds signal survive
-a realistic FOK fill at the host's measured order RTT (Stockholm p50 ~0.44s), net of fee?
+a realistic FOK fill at the host's measured order RTT (box POST p50 ~0.34s), net of fee?
 
 The winning wallets (e.g. 0x565ca5, +33c/$1) make their entire edge in the final
 ~60s by buying a directional side the CLOB hasn't fully repriced. The open question

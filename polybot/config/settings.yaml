@@ -50,7 +50,7 @@ binance_trades:
 #
 #  The deployable edge is the late-window sniper (SECTION 3b); the base entry
 #  strategy below has no proven edge and runs in paper only as the evidence
-#  engine (the CLOB price beats every feature stack — tasks/todo.md). L1
+#  engine (the CLOB price beats every feature stack). L1
 #  anchors the fee/spread/Kelly gates. All knobs are operator-owned.
 # =============================================================================
 signal:
@@ -130,7 +130,7 @@ late_window:
                                 # pre-submit gates don't silently raise it (one consistent live floor).
                                 # NOTE: the offline harness momentum signal has NO edge floor, so live
                                 # trades the higher-conviction SUBSET (L1 edge >= this) — the kill bar is
-                                # a CONSERVATIVE directional gate; paper-shadow before deploy (tasks/todo.md).
+                                # a CONSERVATIVE directional gate; the paper-shadow gate is the binding one.
   sniper_max_edge: 0.50         # sniper's own sanity cap, replacing the bypassed 0.20
   scar_enforce: []              # learned-veto switch (core/scar_scan.py): gate names from
                                 # memory/state/scar_gates.json whose veto is LIVE. Only add a name

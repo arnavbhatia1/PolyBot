@@ -743,8 +743,8 @@ async def test_detect_orphan_positions_dust_ignored(trader):
 
 def test_clob_http_singleton_tuned_for_warm_orders():
     """The py-clob-client HTTP/2 singleton is replaced with a warm-keepalive +
-    bounded-connect config so order POSTs ride a pooled connection (~135ms warm
-    vs ~300ms cold) and a dead keepalive reconnect fails fast, not after ~20s."""
+    bounded-connect config so order POSTs ride a pooled connection (warm beats
+    a cold TLS handshake) and a dead keepalive reconnect fails fast, not after ~20s."""
     import importlib
     import polybot.execution.live_trader  # noqa: F401 — ensures the singleton swap ran
     importlib.reload(polybot.execution.live_trader)

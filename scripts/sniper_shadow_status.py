@@ -15,8 +15,8 @@ scope alone isolates the shadow population.
 
 These are PAPER fills at the box's MEASURED order latency (paper_trader shim, p50
 ~0.30s after scale), so the right harness comparison is
-`python scripts/analyze_late_window.py --rtt-sweep 0.44` (the Stockholm ledger's
-measured POST RTT), NOT the optimistic 40ms read. Go-live still requires the full
+`python scripts/analyze_late_window.py --rtt-sweep 0.34` (the box's measured
+POST RTT), NOT the optimistic 40ms read. Go-live still requires the full
 kill bar: t_day>=2, p10>0 over >=8 clean ET days, with this shadow tracking the
 harness to <3c/sh.
 
@@ -99,7 +99,7 @@ def main() -> None:
           f"last-4 {t4}, last-8 {t8}.")
     print(f"\n{r['n_days']} day(s) of shadow data -- kill bar needs >=8 clean days, "
           f"equal-weight net/sh >= +0.02, t_day>=2, p10>0, AND shadow-vs-harness gap < 0.03. "
-          f"Compare net/sh to `analyze_late_window.py --rtt-sweep 0.44` (the box's measured RTT).")
+          f"Compare net/sh to `analyze_late_window.py --rtt-sweep 0.34` (the box's measured RTT).")
 
 
 if __name__ == "__main__":

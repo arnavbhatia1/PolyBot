@@ -55,7 +55,7 @@ class WindowPathRecorder:
     The late-window burst + Binance columns feed the late-window-sniper kill-bar
     study (scripts/analyze_late_window.py): the reverse-engineered winning edge is
     a final-seconds directional fill, and resolving whether a bot-FORMABLE signal
-    survives a realistic 135ms FOK fill needs sub-second ask/Coinbase/Binance data.
+    survives a realistic ~340ms FOK fill needs sub-second ask/Coinbase/Binance data.
 
     Tables (created on first run):
       window_paths (in PATHS_DB, gitignored): window_id, ts, elapsed_s, bid/ask
@@ -498,7 +498,7 @@ class WindowPathRecorder:
             except Exception as e:
                 logger.warning(f"window recorder tick failed: {e}")
             # 1 Hz baseline, burst to ~5 Hz in the final 45s — the late-window sniper
-            # study needs sub-second ask/Coinbase/Binance resolution to model a 135ms
+            # study needs sub-second ask/Coinbase/Binance resolution to model a ~340ms
             # FOK fill; 1 Hz averages the sweep away (the dead-naive-sniper trap).
             w = self._window
             late = w is not None and 255 <= (time.time() - w["window_ts"]) <= 300

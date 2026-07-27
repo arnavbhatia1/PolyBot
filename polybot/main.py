@@ -317,10 +317,10 @@ def _scar_fields(cid: str, side: str, ask: float,
 # ── Single settled OPEN banner ────────────────────────────────────────────────
 # Live fills print one short FILLED line at fill time and the full OPEN banner
 # ONCE, from the +8s chain audit, with the settled entry — the fill-time number
-# is usually the padded FOK limit, not the real fill, and the old provisional
-# banner + "Entry corrected" pair read as a scary discrepancy. Log-only: the
-# trade engine, DB booking, and exit engine run on the booked numbers exactly
-# as before. Paper prints the full banner at fill time (its fills are exact).
+# is usually the padded FOK limit, not the real fill, and a provisional banner
+# would disagree with the settled books. Log-only: the trade engine, DB
+# booking, and exit engine run on the booked numbers unchanged. Paper prints
+# the full banner at fill time (its fills are exact).
 from collections import OrderedDict as _OrderedDict
 
 _pending_settled_banners: _OrderedDict = _OrderedDict()
@@ -355,9 +355,9 @@ def _log_open_banner(ctx: dict[str, Any], entry_price: float, settled: str) -> N
 
 def _on_entry_settled(pos_id: int, final_price: float, source: str) -> None:
     """LiveTrader.on_entry_settled hook — prints the OPEN banner and sends the
-    Discord OPEN ping, both with the settled entry (Discord previously showed
-    the fill-time provisional, which disagreed with the RESOLVED ping once the
-    audit corrected the books). Must never raise into the audit."""
+    Discord OPEN ping, both with the settled entry, so the OPEN surfaces always
+    agree with the RESOLVED ping and the books. Must never raise into the
+    audit."""
     try:
         ctx = _pending_settled_banners.pop(int(pos_id), None)
         if ctx is None:
@@ -3236,11 +3236,9 @@ async def main() -> None:
             # kill rule the first night. Pin validation_epoch at every go-live.
             live = await asyncio.to_thread(
                 mod.live_health_read, None, _lw.get("validation_epoch"))
-            real_label = "LIVE (real fills)"
         else:
             live = await asyncio.to_thread(
                 mod.live_health_read, mod.PAPER_DB, _lw.get("validation_epoch"))
-            real_label = "PAPER-SHADOW (realized paper fills — the binding gate)"
         # SPRT #1 (burst-alive) + regime-Kelly shadow accrual — both alert-only
         # reads over the same realized ledger the kill rule uses. SPRT turns
         # things ON; the kill rule turns things OFF (SPRT_DESIGN, frozen 07-19).

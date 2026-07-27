@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from polybot.core import scar_scan
 from polybot.core.scar_scan import (
     FIRE_TIME_DIMS, derive_dims, fire_time_matches, load_registry,
     record_veto, resolve_vetoes, save_registry, scan,

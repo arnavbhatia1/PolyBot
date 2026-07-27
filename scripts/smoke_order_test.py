@@ -1,7 +1,7 @@
 """One-shot live ORDER-POST smoke test — proves the signed-order path clears Cloudflare.
 
 `verify_keys.py` exercises only GET-authenticated endpoints (key derivation,
-balance/allowance). The go-live runbook (tasks/todo.md) additionally requires
+balance/allowance). The go-live runbook additionally requires
 proof that an EIP-712-signed order POST from this host reaches the exchange —
 Cloudflare treats POSTs differently and a 403 there would brick the first live
 window. This posts ONE deliberately unfillable FOK BUY on the current 5-min BTC

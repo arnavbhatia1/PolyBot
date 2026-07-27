@@ -16,7 +16,6 @@ from py_clob_client_v2.clob_types import (
     AssetType,
     BalanceAllowanceParams,
     MarketOrderArgs,
-    OrderArgs,
     OrderType,
 )
 from py_clob_client_v2.order_builder.constants import BUY, SELL
@@ -25,8 +24,6 @@ from polybot.db.models import Database
 from polybot.execution.base import (
     BaseTrader, DEFAULT_FEE_RATE, FillResult,
     exit_fee_usdc, _entry_fee_usd_from_position,
-    FAILURE_BUCKETS as _base_failure_buckets,
-    categorize_failure as _base_categorize_failure,
     update_fill_stats as _base_update_fill_stats,
 )
 from polybot.core.returns import log_return
@@ -212,13 +209,9 @@ def _record_submit_latency(total_secs: float, sign_secs: float, post_secs: float
         pass
 
 
-# Failure buckets + the stats writer live in execution.base so paper records
-# the SAME schema to its own file (fill_stats_paper.json) and kill rates are
-# directly comparable across modes.
-_FAILURE_BUCKETS = _base_failure_buckets
-_categorize_failure = _base_categorize_failure
-
-
+# The stats writer lives in execution.base so paper records the SAME schema
+# to its own file (fill_stats_paper.json) and kill rates are directly
+# comparable across modes.
 def _update_fill_stats(filled: bool, side: str, reason: str = "") -> None:
     _base_update_fill_stats(_FILL_STATS_PATH, filled, side, reason)
 
