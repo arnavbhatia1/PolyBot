@@ -1,0 +1,92 @@
+{
+  "position_id": 162,
+  "market_id": "btc-updown-5m-1785106500",
+  "question": "Bitcoin Up or Down - July 26, 6:55PM-7:00PM ET",
+  "side": "Down",
+  "signal_score": 0.9671346730382528,
+  "correct": true,
+  "entry_price": 0.88,
+  "exit_price": 1.0,
+  "log_return": 0.127833371509885,
+  "size": 2.84,
+  "pnl": 0.3872,
+  "fees": 6.399999999995743e-05,
+  "gain_pct": 0.136338,
+  "realized_edge": 0.0871,
+  "fill_slippage": 0.0,
+  "indicator_snapshot": {
+    "atr": {
+      "atr": 25.21,
+      "passes": true,
+      "reason": "ok",
+      "candle_ts": 1785106740000
+    },
+    "trade_context": {
+      "btc_price": 65342.02,
+      "strike_price": 65365.27690403081,
+      "seconds_remaining": 28.124462,
+      "market_price_up": 0.13,
+      "market_price_down": 0.88,
+      "closes_tail": [
+        65394.95,
+        65417.98
+      ],
+      "model_probability": 0.9671346730382528,
+      "model_probability_raw": 0.9671346730382528,
+      "edge": 0.08713467303825284,
+      "atr": 25.21,
+      "atr_rolling_20": 38.2045,
+      "atr_long_term_mean": 20.64415,
+      "size": 2.84,
+      "prev_resolution_margin": 15.708913357761048,
+      "flow_score": -0.4,
+      "spot_flow_signal": -0.059109563777471945,
+      "regime_autocorr": -0.0375,
+      "regime_direction": -1.0,
+      "entry_phase": "late_sniper",
+      "flip_count": 0,
+      "is_flip": false,
+      "depth_usd_top20": 1176818.3279064,
+      "coinbase_cvd_60s": -0.4355,
+      "coinbase_taker_60s": 0.376,
+      "coinbase_taker_n": 517,
+      "cross_venue_gap": -71.99,
+      "fast_realized_vol_60s": 4.3e-05,
+      "n_ticks_1s": 53,
+      "n_ticks_30s": 327,
+      "clob_depth_top5_up_usd": 22040.76,
+      "clob_depth_top5_down_usd": 16416.03,
+      "clob_book_age_s": 0.006,
+      "adverse_rate_at_30s": 0.5454545454545454,
+      "adverse_kelly_mult": 0.857,
+      "cb_tick_to_submit_ms": 239.8,
+      "regime_buckets": {
+        "atr_regime": "HI",
+        "atr_short": "LO",
+        "frv": "MID",
+        "session": "EVE",
+        "burst": "HOT"
+      },
+      "regime_kelly_mult": 1.15,
+      "size_flat": 2.84,
+      "size_regime": 3.27,
+      "token_id_up": "214152533058900959402364747141902386706479995480808333461929910756941919786",
+      "token_id_down": "14911501256994377410069042543102934892393755175039132518597604653428360832815"
+    }
+  },
+  "exit_reason": "resolution",
+  "seconds_remaining_at_exit": 0.0,
+  "edge_decay": {
+    "midprice_at_fill": 0.905,
+    "deltas": {
+      "5s": -0.04,
+      "10s": -0.03,
+      "15s": 0.03,
+      "30s": 0.09,
+      "60s": null
+    },
+    "resolved_windows": 4
+  },
+  "exit_timestamp": "2026-07-26T23:05:01.022992+00:00",
+  "timestamp": "2026-07-26T23:05:01.022992+00:00"
+}
