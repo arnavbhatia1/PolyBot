@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "gates": [
+    {
+      "name": "atr_regime=LO",
+      "dim": "atr_regime",
+      "bucket": "LO",
+      "discovered": "2026-07-27",
+      "status": "shadow",
+      "mode": "live",
+      "source": "07-27 census (pre-registered): calm-regime fires bleed while same-day non-LO fills win — within-day contrast on all 4 stamped days (07-24 LO −8.9 vs rest +15.0; 07-25 −16.7 vs +16.5)",
+      "in_sample": {
+        "n": 18,
+        "ew_cs": -14.96,
+        "days": 4,
+        "t_day": -1.89,
+        "win": 0.67
+      },
+      "sprt": {
+        "mu1": 6.0,
+        "frozen_sigma": null,
+        "sigma_days": []
+      }
+    }
+  ]
+}

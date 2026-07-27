@@ -28,8 +28,10 @@ for _stream in (sys.stdout, sys.stderr):
 from polybot.config.loader import load_config, get_secret
 from polybot.paths import (
     PREV_MARGIN_PATH, DAY_OPEN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
-    GATE_STATS_CURRENT_PATH, PRICE_SUM_OUTLIERS_PATH, fold_gate_day,
+    GATE_STATS_CURRENT_PATH, PRICE_SUM_OUTLIERS_PATH, SCAR_GATES_PATH,
+    SCAR_VETOES_PATH, fold_gate_day,
 )
+from polybot.core import scar_scan
 from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE, EFFECTIVE_FEE_PEAK, compute_buy_vwap
 from polybot.db.models import Database
 from polybot.feeds.binance_feed import BinanceFeed
@@ -267,6 +269,48 @@ def _regime_shadow_fields(atr: float, atr_long: float, atr_short_mean: float,
         "regime_kelly_mult": mult,
         "size_flat": round(size, 2),
         "size_regime": size_regime,
+    }
+
+
+# ── Scar stamps + registry (core/scar_scan.py — the nightly learning loop) ───
+# mtime-cached so the fire path never re-reads an unchanged registry; the file
+# only changes when the nightly scan (or a git pull) rewrites it.
+_scar_registry_cache: tuple[float, dict] = (-1.0, {"version": 1, "gates": []})
+
+def _scar_registry() -> dict:
+    global _scar_registry_cache
+    try:
+        mtime = SCAR_GATES_PATH.stat().st_mtime
+    except OSError:
+        return _scar_registry_cache[1]
+    if mtime != _scar_registry_cache[0]:
+        _scar_registry_cache = (mtime, scar_scan.load_registry(SCAR_GATES_PATH))
+    return _scar_registry_cache[1]
+
+
+def _scar_fields(cid: str, side: str, ask: float,
+                 cb_move: float | None) -> dict[str, Any]:
+    """Fire-time facts the scar dimensions need that nothing else stamps.
+    refire_class: a kill earlier this window means the book repriced away —
+    re-firing at/below that killed price means it came back down (the census
+    join that needed these facts post-hoc was irreducibly ambiguous; stamping
+    at fire time is the only clean measurement)."""
+    kills: list[float] = []
+    try:
+        kills = _window_killed_asks.get(int(cid.rsplit("-", 1)[-1]), {}).get(side, [])
+    except (ValueError, IndexError):
+        pass
+    if not kills:
+        refire = "first_fire"
+    elif ask <= min(kills) + 1e-9:
+        refire = "refire_leq_kill"
+    else:
+        refire = "refire_above_kill"
+    return {
+        "scar_refire_class": refire,
+        "scar_killed_n": len(kills),
+        "scar_kill_min_ask": min(kills) if kills else None,
+        "scar_cb_move": round(abs(cb_move), 2) if cb_move is not None else None,
     }
 
 
@@ -602,6 +646,26 @@ def flush_gate_stats() -> None:
     _write_gate_current(_gate_skip_counts)
 # Per-window flip state: tracks flip count and last side
 _window_flip_state: dict[str, dict] = {}  # window_id -> {flip_count}
+
+# Killed sniper FOKs this window: window_ts -> side -> [decision asks]. Feeds
+# the scar_refire_class stamp (was this fire a re-attempt at/below a price the
+# book already repriced away from?). Swept with the _strike_trusted 600s idiom.
+_window_killed_asks: dict[int, dict[str, list[float]]] = {}
+
+# Enforced scar vetoes already journaled this window: window_ts -> gate names.
+# One journal line per (window, gate) — the veto repeats every evaluation tick,
+# the evidence record must not.
+_scar_vetoed: dict[int, set] = {}
+
+def _record_killed_ask(cid: str, side: str, ask: float) -> None:
+    try:
+        wts = int(cid.rsplit("-", 1)[-1])
+    except (ValueError, IndexError):
+        return
+    now_ts = int(time.time())
+    for k in [k for k in _window_killed_asks if now_ts - k >= 600]:
+        del _window_killed_asks[k]
+    _window_killed_asks.setdefault(wts, {}).setdefault(side, []).append(ask)
 
 # 1-second open-positions cache: avoids repeated SQLite round-trips in the hot path.
 _open_positions_cache: list = []
@@ -1381,10 +1445,51 @@ async def _evaluate_signal_and_enter(
             indicators.get("atr", {}).get("atr", 0) or 0.0,
             signal_engine.last_atr_long_term_mean, signal_engine.last_atr_rolling_20,
             aux_signals, size, bankroll, max_bankroll_pct),
+        # Scar stamps (fire-time facts for the nightly scan's dimensions), on
+        # the DECISION ask (signal_ask) — `price` is already the padded FOK
+        # limit here, and the limit cap binding would poison ask-vs-ask
+        # comparisons. _cbm exists whenever is_sniper is True.
+        **_scar_fields(cid, side, signal_ask, _cbm if is_sniper else None),
         # Token IDs for both outcomes — required for startup reconciliation and dust sweeping.
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
     }
+    # Scar-gate enforcement — learned vetoes, OFF by default. A gate only works
+    # here if it GRADUATED its OOS SPRT (statuses filter — a shadow gate in the
+    # config list is ignored) AND the operator added its name to
+    # late_window.scar_enforce (never automatic). The veto journals ONCE per
+    # (window, gate) to scar_vetoes.jsonl — the sniper re-evaluates every tick
+    # while the move holds, and duplicate lines would tick-weight the nightly
+    # resolution exactly the way the methodology rules forbid. Fail-OPEN: a
+    # scar-machinery error must never block the trading loop (the kill rule
+    # owns turning the strategy off, not this).
+    _scar_enforce = lw_cfg.get("scar_enforce") or []
+    if _scar_enforce:
+        try:
+            _scar_hits = [g for g in scar_scan.fire_time_matches(
+                snapshot["trade_context"], side, datetime.now(ET).strftime("%a"),
+                _scar_registry(), statuses=("graduated",)) if g in _scar_enforce]
+        except Exception as e:
+            logger.warning("scar enforce check failed (fail-open): %s", e)
+            _scar_hits = []
+        if _scar_hits:
+            _gate = f"scar:{_scar_hits[0]}"
+            _record_skip(_gate)
+            try:
+                _sw = int(cid.rsplit("-", 1)[-1])
+            except (ValueError, IndexError):
+                _sw = -1
+            if _scar_hits[0] not in _scar_vetoed.get(_sw, set()):
+                _now_ts = int(time.time())
+                for k in [k for k in _scar_vetoed if _now_ts - k >= 600]:
+                    del _scar_vetoed[k]
+                _scar_vetoed.setdefault(_sw, set()).add(_scar_hits[0])
+                _ghost(_gate, signal, snapshot)
+                _emit_gate_skip(cid, _gate,
+                                f"learned veto — {_scar_hits[0]} (SPRT-graduated scar gate)")
+                scar_scan.record_veto(SCAR_VETOES_PATH, _scar_hits[0], cid, side,
+                                      signal_ask, size)
+            return None, last_eval_log_window
     # Pre-submit edge re-check: walk the ask ladder for the actual expected FOK
     # VWAP (the book is ground truth vs the modeled slip). Book unavailable/too
     # thin → fall back to the BBA-only fresh_ask gate, so this never tightens a
@@ -1440,6 +1545,14 @@ async def _evaluate_signal_and_enter(
 
     if not result.success:
         reason = result.reason or "unknown"
+        # FOK killed by a repricing book — remember the DECISION ask (not the
+        # padded limit in `price`) so a later fire this window can stamp its
+        # scar_refire_class against it. Reason shapes: live "book moved so no
+        # fill" / "price moved before fill after N attempts" / "unmatched
+        # status … — cancelled, no fill"; paper "Price moved before fill".
+        _rl = reason.lower()
+        if is_sniper and ("no fill" in _rl or _rl.startswith("price moved")):
+            _record_killed_ask(cid, side, signal_ask)
         _log_skip_once(
             cid, f"open_rejected_{reason}",
             f"{_C.DIM}OPEN {side} REJECTED  ${size:.2f} @ {price:.3f}  |  "
@@ -3140,6 +3253,17 @@ async def main() -> None:
         except Exception as e:
             logger.debug("SPRT/regime shadow read failed: %s", e)
             sprt_burst, regime_d = None, None
+        # The scar scan — the nightly learning loop (core/scar_scan.py): mines
+        # the realized ledger for toxic cells, shadow-registers them, scores
+        # each registered gate's OOS SPRT, resolves enforced vetoes. Alert-only
+        # like everything here: enforcement is the operator's config flip.
+        try:
+            scars = await asyncio.to_thread(
+                mod.scar_scan_read, _real_db, _lw.get("validation_epoch"),
+                _lw.get("scar_enforce") or [], None, None, mode)
+        except Exception as e:
+            logger.debug("scar scan failed: %s", e)
+            scars = None
         if sim is None and live is None:
             if alert_manager:
                 await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
@@ -3207,6 +3331,53 @@ async def main() -> None:
                 parts.append(f"sizing shadow would have made {regime_d['total_d']:+.2f}$ vs flat")
             return ("Experiments: " + " · ".join(parts) + "\n") if parts else ""
 
+        def _scars_line() -> str:
+            if not scars:
+                return ""
+            parts = []
+            for name in scars.get("registered", []):
+                parts.append(f"🩹 new pocket quarantined: **{name}**")
+            per_gate = (scars.get("vetoes") or {}).get("per_gate") or {}
+            for g in scars.get("gates", []):
+                if g["status"] == "retired":
+                    # must precede the enforced branch: a retired gate no
+                    # longer vetoes even if settings still lists it
+                    parts.append(f"{g['name']} cleared by fresh data — retired"
+                                 + (" — **REMOVE it from `scar_enforce`, its veto is dead**"
+                                    if g.get("enforced") else ""))
+                elif g.get("enforced"):
+                    v = per_gate.get(g["name"]) or {}
+                    avoided = (f", vetoes avoided {v['avoided_cs']:+.1f}¢/sh × "
+                               f"{v['resolved']} (upper-bound, assumes fill)"
+                               if v.get("avoided_cs") is not None else "")
+                    parts.append(f"{g['name']} ENFORCED{avoided}")
+                elif g["status"] == "graduated":
+                    parts.append(f"{g['name']} ✅ PROVEN toxic — add it to "
+                                 f"`late_window.scar_enforce` to switch the veto on")
+                elif g["sprt_state"] == "paused_other_mode":
+                    parts.append(f"{g['name']} paused (evidence from the other mode)")
+                elif g["sprt_state"] == "accruing_sigma":
+                    parts.append(f"{g['name']} shadow-tracking "
+                                 f"({g['n_oos']} fills since discovery, baseline forming)")
+                elif g["sprt_state"] == "continue":
+                    parts.append(f"{g['name']} shadow score {g['lam']:+.2f} "
+                                 f"(proves at +2.73, clears at −1.42)")
+                elif g["sprt_state"] == "truncated":
+                    oe = f"{g['oos_ew']:+.1f}¢/sh" if g.get("oos_ew") is not None else "n/a"
+                    parts.append(f"{g['name']} ⏱ 16 scored days, no verdict "
+                                 f"(OOS {oe} over {g['n_oos']} fills) — operator call")
+                elif g["sprt_state"] == "void":
+                    parts.append(f"{g['name']} ⚠️ test voided (regime shifted) — "
+                                 f"σ re-freezes on fresh days")
+            # settings hygiene: an enforce entry with no live graduated gate is dead
+            active = {g["name"] for g in scars.get("gates", [])
+                      if g["status"] in ("graduated",)}
+            for name in (_lw.get("scar_enforce") or []):
+                if name not in active:
+                    parts.append(f"⚠️ `scar_enforce` lists **{name}** but no graduated "
+                                 f"gate matches — remove it")
+            return ("Learned scars: " + " · ".join(parts) + "\n") if parts else ""
+
         if kt:
             action = ("**→ ACTION: the pre-registered shut-off line is crossed. "
                       "Set `sniper_enabled: false` in settings.yaml and restart.**")
@@ -3221,6 +3392,7 @@ async def main() -> None:
             f"{_shutoff_line(live)}"
             f"{_context_line()}"
             f"{_experiments_line()}"
+            f"{_scars_line()}"
             f"{action}"
         )
         if alert_manager:
@@ -3235,7 +3407,8 @@ async def main() -> None:
                     "kill_rule_tripped": r["kill_rule_tripped"]}
         return {"health": status, "kill_rule_tripped": kt,
                 "live": _pick(live), "sim": _pick(sim),
-                "sprt_burst": sprt_burst, "regime_shadow": regime_d}
+                "sprt_burst": sprt_burst, "regime_shadow": regime_d,
+                "scars": scars}
     scheduler.register_job("sniper_health", _sniper_health_job)
 
     async def run_discord():

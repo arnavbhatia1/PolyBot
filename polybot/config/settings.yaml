@@ -132,6 +132,10 @@ late_window:
                                 # trades the higher-conviction SUBSET (L1 edge >= this) — the kill bar is
                                 # a CONSERVATIVE directional gate; paper-shadow before deploy (tasks/todo.md).
   sniper_max_edge: 0.50         # sniper's own sanity cap, replacing the bypassed 0.20
+  scar_enforce: []              # learned-veto switch (core/scar_scan.py): gate names from
+                                # memory/state/scar_gates.json whose veto is LIVE. Only add a name
+                                # after the nightly ping reports it ✅ PROVEN (its OOS SPRT accepted);
+                                # empty = all scar gates are shadow-only (stamps, never vetoes).
   sniper_fok_slip: 0.01         # FOK limit pad: fill only within ~one tick of the decision ask, else
                                 # let the order DIE. This kill is the sniper's adverse-selection filter:
                                 # a genuine stale-book move fills clean, but a move already REVERTING

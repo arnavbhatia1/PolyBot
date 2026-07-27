@@ -46,6 +46,11 @@ GATE_STATS_CURRENT_PATH: Path = STATE_DIR / "gate_stats_current.json"  # today o
 # qualifying-day keys it was estimated on. Deleting this file restarts the test
 # (a VOIDed test is restarted by design, never patched mid-run).
 SPRT_BURST_PATH: Path = STATE_DIR / "sprt_burst.json"
+# Scar-gate registry (nightly learning loop, core/scar_scan.py): auto-discovered
+# toxic cells as shadow gates + their per-gate frozen-σ SPRT state. Enforced
+# vetoes journal to the JSONL and resolve nightly against window_labels.
+SCAR_GATES_PATH: Path = STATE_DIR / "scar_gates.json"
+SCAR_VETOES_PATH: Path = STATE_DIR / "scar_vetoes.jsonl"
 
 def trim_jsonl_by_age(path: Path, max_age_days: float) -> int:
     """Drop lines from an append-only JSONL whose `ts` is older than max_age_days,

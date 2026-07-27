@@ -347,7 +347,37 @@ it was removed). Never re-add resting quotes.
   truncate at 16; σ frozen write-once to `state/sprt_burst.json` from the
   first 6 qualifying days, which never score — SPRT turns things ON, the kill
   rule turns things OFF) and the **regime-shadow counterfactual D** accrual
-  (`regime_shadow_read`; its own SPRT starts only after burst accepts). Pings
+  (`regime_shadow_read`; its own SPRT starts only after burst accepts), and the
+  **scar scan** (`polybot/core/scar_scan.py` via `scar_scan_read`) — the
+  nightly learning loop: every realized fill for the current mode is sliced
+  along a FROZEN dimension library (ask/edge/prob buckets, time-remaining,
+  side, DoW, regime buckets, refire class, cb-move; booked slip + submit
+  latency are observational-only — you can't veto on information the fill
+  created); any cell passing the pre-registered flag rule (n ≥ 8, ≥ 3 ET days,
+  EW ≤ −5¢/sh, day-clustered t ≤ −1.5, ≤ 50% ledger coverage, fire-time dims
+  only, ≤ 2 new/night, ≤ 6 active) auto-registers as a zero-capital SHADOW
+  gate in `memory/state/scar_gates.json`, then each gate runs its own
+  frozen-σ SPRT (μ₁ +6¢/sh, σ from its first 4 qualifying days, which never
+  score) STRICTLY on post-discovery fills — the OOS test IS the
+  multiple-comparisons control, backed by one-active-gate-per-dimension and a
+  sibling-overlap veto (a noise cluster gets ONE SPRT, not K correlated
+  shots), and gates are mode-stamped (a mode flip PAUSES foreign-mode gates
+  rather than splicing ledgers into one frozen-σ test; a VOID restarts the
+  gate's test on fresh days per the SPRT doctrine). Accept-H1 ⇒ the ping says
+  add the gate name to `late_window.scar_enforce` (enforcement is always a
+  manual config flip, and the fire path independently requires status
+  `graduated` — a shadow gate in the list is ignored); accept-H0 ⇒
+  auto-retired, can never re-register. Enforced vetoes ghost the attempt,
+  journal ONCE per (window, gate) to `state/scar_vetoes.jsonl`, and resolve
+  nightly per-gate against `window_labels` — an UPPER-BOUND read (assumes a
+  clean fill at the decision ask) that keeps a live veto proving its keep.
+  The fire path stamps `scar_refire_class`/`scar_kill_min_ask` (from the
+  per-window killed-FOK tracker, decision-ask basis — never the padded FOK
+  limit) + `scar_cb_move` into `trade_context`; with `scar_enforce` empty
+  (default) the fire path only stamps, never vetoes, and the whole enforce
+  hook fails OPEN (a scar-machinery error can never block trading). Flag-rule
+  and SPRT constants are design-frozen — tuning them to make a pocket flag
+  (or stop flagging) is relaxing a bar. Pings
   Discord `#polybot-daily` (✅/⚠️/⏳ sniper).
 
 ## 8. Hard rules

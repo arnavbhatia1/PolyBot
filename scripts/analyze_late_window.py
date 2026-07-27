@@ -500,6 +500,23 @@ def regime_shadow_read(db_path=None, since_iso=None):
                 day_detail=scored)
 
 
+# ── Scar scan (nightly learning loop — polybot/core/scar_scan.py) ─────────────
+def scar_scan_read(db_path=None, since_iso=None, enforce=None,
+                   registry_path=None, vetoes_path=None, mode=None):
+    """Discovery + per-gate OOS SPRT over the realized ledger for the current
+    mode, plus enforced-veto resolution. Registry persists to
+    memory/state/scar_gates.json (committed nightly). Alert-only. `mode`
+    stamps registrations and pauses foreign-mode gates on a mode flip."""
+    from polybot.core.scar_scan import scan, resolve_vetoes
+    from polybot.paths import SCAR_GATES_PATH, SCAR_VETOES_PATH
+    db = Path(db_path) if db_path else LIVE_DB
+    reg = Path(registry_path) if registry_path else SCAR_GATES_PATH
+    vet = Path(vetoes_path) if vetoes_path else SCAR_VETOES_PATH
+    rep = scan(db, since_iso, reg, enforce or [], mode)
+    rep["vetoes"] = resolve_vetoes(vet, db)
+    return rep
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cb-move", type=float, default=8.0, help="$ Coinbase move over ~2s to fire momentum")
