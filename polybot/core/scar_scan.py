@@ -66,6 +66,8 @@ SPRT_SIGMA_DAYS = 4       # σ frozen on the first 4 qualifying OOS days
 FIRE_TIME_DIMS = frozenset({
     "ask_bucket", "tremain", "side", "dow", "refire", "session",
     "atr_regime", "burst", "edge_bucket", "prob_bucket", "cb_move_bucket",
+    "strike_dist", "autocorr", "cvd_side", "xgap", "frv", "atr_short",
+    "depth_side", "vig", "killed_n", "flip",
 })
 
 
@@ -87,6 +89,17 @@ def derive_dims(ctx: dict[str, Any], side: str, dow: str,
     rb = ctx.get("regime_buckets") or {}
     ask = ctx.get("market_price_up" if side == "Up" else "market_price_down")
     slip = (entry_price - ask) if (entry_price is not None and ask is not None) else None
+    btc, strike = ctx.get("btc_price"), ctx.get("strike_price")
+    dist = abs(btc - strike) if (btc and strike) else None
+    pu, pd = ctx.get("market_price_up"), ctx.get("market_price_down")
+    vig = (pu + pd) if (pu is not None and pd is not None) else None
+    cvd = ctx.get("coinbase_cvd_60s")
+    cvd_signed = None if cvd is None else (cvd if side == "Up" else -cvd)
+    depth = ctx.get("clob_depth_top5_up_usd" if side == "Up"
+                    else "clob_depth_top5_down_usd")
+    xgap = ctx.get("cross_venue_gap")
+    killed_n = ctx.get("scar_killed_n")
+    is_flip = ctx.get("is_flip")
     return {
         "ask_bucket": _bucket(ask, (0.60, 0.75, 0.85),
                               ("<0.60", "0.60-0.75", "0.75-0.85", "0.85+")),
@@ -104,6 +117,26 @@ def derive_dims(ctx: dict[str, Any], side: str, dow: str,
                                ("<0.75", "0.75-0.90", ">0.90")),
         "cb_move_bucket": _bucket(ctx.get("scar_cb_move"), (12.0, 20.0),
                                   ("8-12", "12-20", "20+")),
+        # Reversion-mechanism dims (all from existing stamps — retroactive):
+        # how far past the strike, in what micro-regime, with what flow behind
+        # it, into what book. Each has a prior tied to the measured loss
+        # mechanism (moves that fire the signal then come back).
+        "strike_dist": _bucket(dist, (12.0, 25.0), ("<12", "12-25", "25+")),
+        "autocorr": _bucket(ctx.get("regime_autocorr"), (-0.05, 0.05),
+                            ("reverting", "neutral", "trending")),
+        "cvd_side": (None if cvd_signed is None else
+                     ("confirm" if cvd_signed > 0 else
+                      "contradict" if cvd_signed < 0 else "flat")),
+        "xgap": _bucket(abs(xgap) if xgap is not None else None, (5.0, 15.0),
+                        ("<5", "5-15", "15+")),
+        "frv": rb.get("frv"),
+        "atr_short": rb.get("atr_short"),
+        "depth_side": _bucket(depth, (100.0, 500.0),
+                              ("<$100", "$100-500", "$500+")),
+        "vig": _bucket(vig, (1.0, 1.0101), ("<1.00", "1.00-1.01", ">1.01")),
+        "killed_n": (None if killed_n is None else
+                     ("0" if killed_n == 0 else "1" if killed_n == 1 else "2+")),
+        "flip": (None if is_flip is None else ("flip" if is_flip else "first")),
         # observational (fill-created information — never enforceable)
         "slip": _bucket(slip, (-0.005, 0.0101),
                         ("improved", "clean", "padded")),

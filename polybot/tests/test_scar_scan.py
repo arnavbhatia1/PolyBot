@@ -68,10 +68,30 @@ def test_derive_dims_fire_time_and_observational():
     assert derive_dims(_ctx(), "Up", "Mon", entry_price=0.86)["slip"] == "improved"
 
 
+def test_derive_dims_reversion_mechanism_dims():
+    ctx = _ctx(btc_price=64520.0, strike_price=64500.0, regime_autocorr=-0.12,
+               coinbase_cvd_60s=-2.5, cross_venue_gap=-7.0,
+               clob_depth_top5_up_usd=250.0, market_price_down=0.13,
+               scar_killed_n=2, is_flip=False)
+    d = derive_dims(ctx, "Up", "Mon")
+    assert d["strike_dist"] == "12-25"
+    assert d["autocorr"] == "reverting"
+    assert d["cvd_side"] == "contradict"          # negative CVD against an Up fire
+    assert d["xgap"] == "5-15"
+    assert d["depth_side"] == "$100-500"
+    assert d["vig"] == "1.00-1.01"                # 0.88 + 0.13
+    assert d["killed_n"] == "2+"
+    assert d["flip"] == "first"
+    # a Down fire flips the CVD sign convention
+    assert derive_dims(ctx, "Down", "Mon")["cvd_side"] == "confirm"
+
+
 def test_derive_dims_cold_feeds_are_none_never_binned():
     d = derive_dims({"market_price_up": None, "regime_buckets": {}}, "Up", "Tue")
     for k in ("ask_bucket", "tremain", "refire", "atr_regime", "burst",
-              "edge_bucket", "cb_move_bucket", "latency"):
+              "edge_bucket", "cb_move_bucket", "latency", "strike_dist",
+              "autocorr", "cvd_side", "xgap", "frv", "atr_short",
+              "depth_side", "vig", "killed_n", "flip"):
         assert d[k] is None
 
 

@@ -351,7 +351,9 @@ it was removed). Never re-add resting quotes.
   **scar scan** (`polybot/core/scar_scan.py` via `scar_scan_read`) — the
   nightly learning loop: every realized fill for the current mode is sliced
   along a FROZEN dimension library (ask/edge/prob buckets, time-remaining,
-  side, DoW, regime buckets, refire class, cb-move; booked slip + submit
+  side, DoW, regime buckets incl. frv/atr_short, refire class, cb-move,
+  strike displacement, micro-autocorr, CVD-side agreement, cross-venue gap,
+  chosen-side depth, vig, in-window kill count, flip; booked slip + submit
   latency are observational-only — you can't veto on information the fill
   created); any cell passing the pre-registered flag rule (n ≥ 8, ≥ 3 ET days,
   EW ≤ −5¢/sh, day-clustered t ≤ −1.5, ≤ 50% ledger coverage, fire-time dims
