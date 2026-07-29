@@ -1,62 +1,26 @@
 {
-  "checked_at": "2026-07-27T04:01:07.854717+00:00",
+  "checked_at": "2026-07-28T06:58:59.895832+00:00",
   "funder": "0x863DB57D4a54fA306091D53B4Fe19f1611221Be8",
-  "non_dust_chain_positions": 6,
-  "db_known_tokens": 0,
+  "non_dust_chain_positions": 3,
+  "db_known_tokens": 4,
   "orphans_detected": 0,
   "orphans": [],
   "resolved_dust": [
     {
-      "token_id": "12830901791341381424992615214886257239171688339125610565772044352099775267538",
-      "shares": 4.1444,
+      "token_id": "5541278839558355627484114360621328611961392034834118192764761349110561211018",
+      "shares": 2.6046,
       "outcome": "Down",
-      "title": "Bitcoin Up or Down - July 24, 3:20PM-3:25PM ET",
-      "conditionId": "0x1fed991c7ee321d7e0289f8089e12558cb1a64f51ec9061d0f8485ac8cfbdeed",
+      "title": "Bitcoin Up or Down - July 27, 5:40PM-5:45PM ET",
+      "conditionId": "0x48931f2b19ab4cae5495dca9b3b346763f1d596637065cb92cd4d8e34b7be09d",
       "redeemable": true,
       "current_value": 0.0
     },
     {
-      "token_id": "14931105096555077751538858663689479044755348511505083521715484704947453969670",
-      "shares": 3.2873,
+      "token_id": "25746020477087462204653021376025570599385029696077354349700127920067214906760",
+      "shares": 1.6538,
       "outcome": "Down",
-      "title": "Bitcoin Up or Down - July 24, 2:00PM-2:05PM ET",
-      "conditionId": "0xf123eb9e2ab83206384ccbe71c8bce43597101e5bd2c8f94d6da6e2ed15a37e8",
-      "redeemable": true,
-      "current_value": 0.0
-    },
-    {
-      "token_id": "113233910774790134234161047054330494546659496102150647828637193827777180982797",
-      "shares": 1.7837,
-      "outcome": "Up",
-      "title": "Bitcoin Up or Down - July 24, 7:00PM-7:05PM ET",
-      "conditionId": "0x3ae47bb593649272a5fafeed81e08c1167e65d9d623d9a43918e8df7f9bf0ea8",
-      "redeemable": true,
-      "current_value": 0.0
-    },
-    {
-      "token_id": "19002140588074882340801812393636355199190134398049943686184402477545818456233",
-      "shares": 1.6164,
-      "outcome": "Down",
-      "title": "Bitcoin Up or Down - July 26, 6:45PM-6:50PM ET",
-      "conditionId": "0x8be27a421c58fe46184e74a806cb7e16808bf3a6d54773e5095f1e885bcd5fd7",
-      "redeemable": true,
-      "current_value": 0.0
-    },
-    {
-      "token_id": "4615898955340645627544103061103053190036245202571011604929894856258064758912",
-      "shares": 1.554,
-      "outcome": "Down",
-      "title": "Bitcoin Up or Down - July 26, 6:40AM-6:45AM ET",
-      "conditionId": "0x7d5a460ab23d884a2c6ac3bd2dfe5f0b69e21b1ed0a7cfe05d253080e2d831e0",
-      "redeemable": true,
-      "current_value": 0.0
-    },
-    {
-      "token_id": "12565315133379453827704447330045926469171673547549350523128390710774450978703",
-      "shares": 1.4927,
-      "outcome": "Down",
-      "title": "Bitcoin Up or Down - July 25, 7:55PM-8:00PM ET",
-      "conditionId": "0xdea84ab5fe9883ddbd842d0859ad1ca6fe2509e7bd4f49a7fb75f51685bd3361",
+      "title": "Bitcoin Up or Down - July 27, 7:45PM-7:50PM ET",
+      "conditionId": "0x4abe5165fcbb05c7c83c98651fd9ef194506701f48ec81d390c4cc6938fcbfa6",
       "redeemable": true,
       "current_value": 0.0
     }
