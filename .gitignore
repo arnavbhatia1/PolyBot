@@ -32,6 +32,7 @@ polybot.log.*
 .DS_Store
 Thumbs.db
 polybot/memory/recordings/
+polybot/memory/state/price_sum_outliers.jsonl
 polybot/db/window_paths.db*
 polybot/db/late_window_collect.db*
 crash_native.log
