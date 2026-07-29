@@ -61,6 +61,17 @@ def test_sprt_void_on_sigma_blowup_or_unset():
     assert "SPRT[x]" in format_status("x", run_sprt([], mu1=6.0, sigma=7.0))
 
 
+def test_sprt_decided_test_cannot_be_retro_voided():
+    # Stop-on-boundary: observations after the stopping point were never
+    # "under" the test — appending a volatile stretch to a decided test's
+    # day list must replay the same decision, never flip it to void.
+    decided = run_sprt([30.0, 30.0, 30.0], mu1=6.0, sigma=7.0)
+    assert decided.state == "accept_h1" and decided.n_days == 3
+    replay = run_sprt([30.0, 30.0, 30.0, 90.0, -90.0, 80.0], mu1=6.0, sigma=7.0)
+    assert replay.state == "accept_h1" and replay.n_days == 3
+    assert replay.lam == decided.lam
+
+
 # ── Regime shadow stamps ──────────────────────────────────────────────────────
 
 _AUX_HOT = {"n_ticks_1s": 4, "n_ticks_30s": 30, "fast_realized_vol_60s": 5e-5}

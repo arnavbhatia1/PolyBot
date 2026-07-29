@@ -16,6 +16,17 @@ from pathlib import Path
 POLYBOT_DIR: Path = Path(__file__).resolve().parent
 MEMORY_DIR: Path = Path(os.environ.get("POLYBOT_MEMORY_DIR") or (POLYBOT_DIR / "memory"))
 
+
+def write_json_atomic(path: Path, obj, indent: int = 2) -> None:
+    """tmp + replace (atomic on POSIX) — a crash or full disk mid-write must
+    never leave truncated JSON: every state reader falls back to a fresh
+    default on a parse failure, so a torn file silently erases its history."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=indent))
+    tmp.replace(p)
+
 # ── Per-event record directories ──────────────────────────────────────────────
 OUTCOMES_DIR: Path = MEMORY_DIR / "outcomes"
 GHOSTS_DIR: Path = MEMORY_DIR / "ghost_outcomes"
@@ -108,8 +119,7 @@ def fold_gate_day(acc_path: Path, counts: dict, day_key: str) -> dict | None:
                              if isinstance(v, (int, float)) and not isinstance(v, bool))
     acc["updated_at"] = datetime.now(timezone.utc).isoformat()
     try:
-        acc_path.parent.mkdir(parents=True, exist_ok=True)
-        acc_path.write_text(json.dumps(acc, indent=2))
+        write_json_atomic(acc_path, acc)
     except Exception:
         pass
     return acc

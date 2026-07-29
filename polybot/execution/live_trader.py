@@ -131,7 +131,8 @@ def _exchange_rejected(err: object) -> bool:
 import json as _json
 from datetime import datetime as _dt, timezone as _tz
 
-from polybot.paths import FILL_STATS_PATH, LATENCY_STATS_PATH, ORPHAN_POSITIONS_PATH
+from polybot.paths import (FILL_STATS_PATH, LATENCY_STATS_PATH,
+                           ORPHAN_POSITIONS_PATH, write_json_atomic)
 
 _FILL_STATS_PATH = FILL_STATS_PATH
 _LATENCY_STATS_PATH = LATENCY_STATS_PATH
@@ -203,8 +204,7 @@ def _record_submit_latency(total_secs: float, sign_secs: float, post_secs: float
             },
             "last_updated": _dt.now(_tz.utc).isoformat(),
         }
-        _LATENCY_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _LATENCY_STATS_PATH.write_text(_json.dumps(stats, indent=2))
+        write_json_atomic(_LATENCY_STATS_PATH, stats)
     except Exception:
         pass
 
@@ -523,22 +523,41 @@ class LiveTrader(BaseTrader):
         return gross_vwap
 
     async def _settle_unmatched_order(self, resp: dict, token_id: str, side: str,
-                                      amount: float, expected_price: float) -> FillResult:
+                                      amount: float, expected_price: float,
+                                      submit_ts: float = 0.0,
+                                      ws_settle_event: asyncio.Event | None = None,
+                                      ) -> FillResult:
         """Resolve an accepted-but-unmatched FOK (e.g. status "delayed") without
         resubmitting — the order exists at the exchange and may still fill, so a
-        fresh submit is the double-fill path. Cancels best-effort, then trusts
-        the order's trade record: filled iff associated trades exist."""
+        fresh submit is the double-fill path. Three-way settle: an exchange-
+        CONFIRMED cancel of a FOK is a proven no-fill (kill-or-fill can't
+        partially match); associated trades are a fill; anything else is
+        AMBIGUOUS — the trade indexer loses the race on nearly every fill, so
+        "no trades visible" without a confirmed cancel must never be booked as
+        a definitive miss."""
         status = resp.get("status")
         order_id = resp.get("orderID", "")
         logger.warning("FOK %s status=%r — cancelling and checking trades instead of retrying",
                        side, status)
         if order_id:
+            cancel_confirmed = False
             try:
                 # py-clob-client-v2 exposes cancel_orders(list[id]) — there is no
                 # bare client.cancel.
-                await asyncio.to_thread(self.client.cancel_orders, [order_id])
+                c = await asyncio.to_thread(self.client.cancel_orders, [order_id])
+                cancel_confirmed = (isinstance(c, dict)
+                                    and order_id in (c.get("canceled") or []))
+                refused = (c.get("not_canceled") or {}).get(order_id) \
+                    if isinstance(c, dict) else None
+                if refused:
+                    logger.warning("FOK %s cancel refused (%s) — order likely matched",
+                                   side, refused)
             except Exception as e:
                 logger.debug("cancel of unmatched order failed (may have matched): %s", e)
+            if cancel_confirmed:
+                reason = f"unmatched status {status!r} — cancel confirmed, no fill"
+                _update_fill_stats(filled=False, side=side, reason=reason)
+                return FillResult(filled=False, reason=reason)
             fill_price = await self._get_fill_price(order_id, 0.0)
             if fill_price > 0:
                 _update_fill_stats(filled=True, side=side)
@@ -549,7 +568,27 @@ class LiveTrader(BaseTrader):
                     asyncio.create_task(self._sweep_residual(token_id, fill_price))
                 notional = amount if side == BUY else amount * fill_price
                 return FillResult(filled=True, fill_price=fill_price, fill_size=notional)
-        reason = f"unmatched status {status!r} — cancelled, no fill"
+            # No confirmed cancel and no trades in the REST record — check the
+            # WS tape like the ambiguous-POST path before giving up (BUY only;
+            # a phantom-filled SELL reconciles via _sellable_shares + the
+            # resolution balance sync).
+            if side == BUY:
+                await self._await_buy_settle(ws_settle_event)
+                vwap = self._ws_vwap_since(token_id, submit_ts, expected_price, amount)
+                if vwap is not None:
+                    _update_fill_stats(filled=True, side=side)
+                    asyncio.create_task(self._cache_post_buy_balance(token_id))
+                    return FillResult(filled=True, fill_price=vwap, fill_size=amount)
+            reason = (f"unmatched status {status!r} — cancel unconfirmed, "
+                      "outcome unknown; not retried to avoid double fill")
+            logger.warning(
+                "FOK %s: unmatched order could not be cancel-confirmed and no trade "
+                "was found — it MAY have matched; deliberately not resubmitting (a "
+                "blind retry is the double-fill path). If a fill settled anyway, "
+                "the startup wallet check reports it.", side)
+            _update_fill_stats(filled=False, side=side, reason=reason)
+            return FillResult(filled=False, reason=reason)
+        reason = f"unmatched status {status!r} — no order id, no fill"
         _update_fill_stats(filled=False, side=side, reason=reason)
         return FillResult(filled=False, reason=reason)
 
@@ -596,7 +635,21 @@ class LiveTrader(BaseTrader):
 
         held = await self._chain_token_shares(self._winning_token_id(position))
         if held is None:
-            return None  # can't verify (API/env failure) — retry next interval
+            # Can't verify (missing token id in the snapshot, or data-API
+            # failure) — retry next interval, but the deadline CRITICAL must
+            # still fire: a permanently unverifiable win would otherwise stay
+            # pending forever with no alert, silently withholding the payout.
+            if now >= wait["deadline"] and not wait.get("alerted"):
+                wait["alerted"] = True
+                logger.critical(
+                    "WINNING REDEEM UNVERIFIABLE: position %s — the winning-token "
+                    "balance could not be read once in %.0fs after resolution "
+                    "(token id missing from the entry snapshot, or the data API is "
+                    "down). Check the wallet at polymarket.com/portfolio and redeem "
+                    "manually; the position books automatically if a read succeeds.",
+                    pos_id, _REDEEM_WAIT_MAX_S,
+                )
+            return None
         if held <= _DUST_THRESHOLD_SHARES:
             # Tokens burned → USDC credited. Bust the CLOB's cached balance
             # before reading it so the book uses the post-redeem number.
@@ -760,20 +813,15 @@ class LiveTrader(BaseTrader):
                          "(mixed position) — entry left at booked %.3f",
                          pos_id, chain_size, implied_shares, recorded_price)
             return recorded_price, "provisional"
-        booked = await (await self.db.conn.execute(
-            "SELECT 1 FROM trade_history WHERE position_id=?", (pos_id,))).fetchone()
-        if booked:
+        synced = await self.db.sync_entry_booking(
+            pos_id, round(true_price, 4), round(chain_size, 6))
+        if not synced:
             # Resolved before the audit ran — the row is history's; report the
             # chain truth for the banner without touching the books.
             logger.debug("Fill audit pos %s: trade already booked to history — "
                          "entry left at %.3f (chain says %.4f)",
                          pos_id, recorded_price, true_price)
             return true_price, "chain"
-        await self.db.conn.execute(
-            "UPDATE positions SET entry_price=?, shares_held=? WHERE id=?",
-            (round(true_price, 4), round(chain_size, 6), pos_id),
-        )
-        await self.db.conn.commit()
         logger.debug("Fill audit pos %s: entry %.3f → chain %.4f, shares synced "
                      "to wallet (%.4f)", pos_id, recorded_price, true_price, chain_size)
         return true_price, "chain"
@@ -1260,9 +1308,7 @@ class LiveTrader(BaseTrader):
 
         # 4) Persist details for operator review
         try:
-            orphan_path = ORPHAN_POSITIONS_PATH
-            orphan_path.parent.mkdir(parents=True, exist_ok=True)
-            orphan_path.write_text(_json.dumps({
+            write_json_atomic(ORPHAN_POSITIONS_PATH, {
                 "checked_at": _dt.now(_tz.utc).isoformat(),
                 "funder": funder,
                 "non_dust_chain_positions": non_dust_chain,
@@ -1271,7 +1317,7 @@ class LiveTrader(BaseTrader):
                 "orphans": orphans,
                 "resolved_dust": resolved_dust,
                 "allow_orphans_flag": allow_orphans,
-            }, indent=2))
+            })
         except Exception as e:
             logger.debug("Could not persist orphan_positions.json: %s", e)
 
@@ -1703,20 +1749,19 @@ class LiveTrader(BaseTrader):
                                     balance_after = await self._get_token_balance(token_id)
                                     delta = balance_after - balance_before
                                     if delta > _DUST_THRESHOLD_SHARES:
-                                        # delta is net_shares (post-fee chain balance change). We
-                                        # need gross_vwap = amount / gross_shares so base.py can
-                                        # apply the fee correctly. Solve via 2 fixed-point steps:
-                                        #   gross_shares ≈ delta / (1 - fee_rate * p * (1-p))
-                                        # Converges in 1-2 iterations for fee_rate=0.07, p≈0.5.
-                                        p_est = amount / delta
-                                        for _ in range(2):
-                                            fee_frac = fee_rate * p_est * (1.0 - p_est)
-                                            gross_shares = delta / max(1.0 - fee_frac, 1e-6)
-                                            p_est = amount / gross_shares
-                                        fill_price = p_est
+                                        # delta IS gross shares: no share-denominated
+                                        # fee is deducted on-chain on this series (the
+                                        # wallet holds exactly notional/VWAP shares —
+                                        # verified 32/32 live fills 07-21; the fee model
+                                        # lives in the books only). Grossing delta up by
+                                        # the modeled fee booked entries ~0.5-1¢ LOW and,
+                                        # for fills in ~[0.60, 0.73], pushed the true
+                                        # price past the +8s audit's +0.01 plausibility
+                                        # guard so the deflation was never corrected.
+                                        fill_price = amount / delta
                                         logger.debug(
-                                            "BUY balance-delta VWAP fallback: net=%.4f -> "
-                                            "gross_vwap=%.4f (before=%.4f after=%.4f notional=%.2f)",
+                                            "BUY balance-delta VWAP fallback: shares=%.4f -> "
+                                            "vwap=%.4f (before=%.4f after=%.4f notional=%.2f)",
                                             delta, fill_price, balance_before, balance_after, amount,
                                         )
                         if fill_price is None:
@@ -1764,7 +1809,8 @@ class LiveTrader(BaseTrader):
                 if balance_task is not None and not balance_task.done():
                     balance_task.cancel()
                 return await self._settle_unmatched_order(
-                    resp, token_id, side, amount, expected_price)
+                    resp, token_id, side, amount, expected_price,
+                    submit_ts=submit_ts, ws_settle_event=ws_settle_event)
 
             except AuthError:
                 raise

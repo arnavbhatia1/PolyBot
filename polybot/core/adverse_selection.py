@@ -22,7 +22,7 @@ from collections import deque
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-from polybot.paths import ADVERSE_STATE_PATH
+from polybot.paths import ADVERSE_STATE_PATH, write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +104,12 @@ class AdverseSelectionMonitor:
         """Persist a pre-built fill snapshot to disk. Silent on I/O errors —
         don't crash trading."""
         try:
-            self._state_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "schema": _STATE_SCHEMA,
                 "saved_at": time.time(),
                 "fills": fills_snapshot,
             }
-            self._state_path.write_text(json.dumps(payload, indent=2))
+            write_json_atomic(self._state_path, payload)
         except Exception as e:
             logger.warning(f"AdverseSelectionMonitor save failed: {e}")
 

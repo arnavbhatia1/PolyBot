@@ -99,7 +99,13 @@ class NightlyScheduler:
                 except Exception as e:
                     logger.error(f"Nightly pipeline error: {e}")
                     if self.alert_manager:
-                        await self.alert_manager.send_error(f"Nightly pipeline failed: {e}")
+                        try:
+                            await self.alert_manager.send_error(
+                                f"Nightly pipeline failed: {e}")
+                        except Exception:
+                            # Discord down too — the daily loop must survive
+                            # a failed failure-alert.
+                            pass
                 if self._auto_shutdown:
                     logger.info("Pipeline complete")
                     self._shutdown_requested = True

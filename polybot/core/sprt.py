@@ -50,28 +50,36 @@ def run_sprt(day_means: list[float], mu1: float, sigma: float,
     if sigma <= 0 or mu1 == 0:
         return SprtResult("void", 0.0, 0, upper, lower)
 
-    # σ-blowup void check runs on the whole scored sample before boundary
-    # logic: a test whose realized variance regime changed must not be
-    # allowed to "decide" on the corrupted likelihood.
-    if len(day_means) >= 2:
-        m = sum(day_means) / len(day_means)
-        sd = math.sqrt(sum((x - m) ** 2 for x in day_means) / (len(day_means) - 1))
-        if sd > SIGMA_VOID_RATIO * sigma:
-            return SprtResult("void", 0.0, len(day_means), upper, lower)
-
     lam = 0.0
     lambdas: list[float] = []
+    state = "continue"
     for i, x in enumerate(day_means, 1):
         lam += (x * mu1 - mu1 * mu1 / 2.0) / (sigma * sigma)
         lambdas.append(lam)
         if i >= min_days:
             if lam >= upper:
-                return SprtResult("accept_h1", lam, i, upper, lower, lambdas)
+                state = "accept_h1"
+                break
             if lam <= lower:
-                return SprtResult("accept_h0", lam, i, upper, lower, lambdas)
+                state = "accept_h0"
+                break
         if i >= max_days:
-            return SprtResult("truncated", lam, i, upper, lower, lambdas)
-    return SprtResult("continue", lam, len(day_means), upper, lower, lambdas)
+            state = "truncated"
+            break
+
+    # σ-blowup void check over exactly the observations the test CONSUMED —
+    # a test whose variance regime changed under it must not decide on the
+    # corrupted likelihood, but observations after the stopping point were
+    # never "under" the test, so they can neither re-open nor retro-void a
+    # decision already reached (stop-on-boundary; a decided test replays
+    # deterministically forever).
+    consumed = day_means[:len(lambdas)]
+    if len(consumed) >= 2:
+        m = sum(consumed) / len(consumed)
+        sd = math.sqrt(sum((x - m) ** 2 for x in consumed) / (len(consumed) - 1))
+        if sd > SIGMA_VOID_RATIO * sigma:
+            return SprtResult("void", lam, len(consumed), upper, lower, lambdas)
+    return SprtResult(state, lam, len(consumed), upper, lower, lambdas)
 
 
 def format_status(name: str, r: SprtResult) -> str:

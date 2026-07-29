@@ -353,8 +353,12 @@ it was removed). Never re-add resting quotes.
   along a FROZEN dimension library (ask/edge/prob buckets, time-remaining,
   side, DoW, regime buckets incl. frv/atr_short, refire class, cb-move,
   strike displacement, micro-autocorr, CVD-side agreement, cross-venue gap,
-  chosen-side depth, vig, in-window kill count, flip; booked slip + submit
-  latency are observational-only — you can't veto on information the fill
+  chosen-side depth, vig, in-window kill count, flip, CLOB book age at fire,
+  drift-agreement (fired side vs 1-min drift sign), live adverse-fade regime,
+  2s-vs-10s move shape (isolated spike vs extending), and Chainlink-confirms-
+  cross (the resolution venue's own fresh report past the strike vs a
+  Coinbase-only premise); booked slip + submit latency are
+  observational-only — you can't veto on information the fill
   created); any cell passing the pre-registered flag rule (n ≥ 8, ≥ 3 ET days,
   EW ≤ −5¢/sh, day-clustered t ≤ −1.5, ≤ 50% ledger coverage, fire-time dims
   only, ≤ 2 new/night, ≤ 6 active) auto-registers as a zero-capital SHADOW

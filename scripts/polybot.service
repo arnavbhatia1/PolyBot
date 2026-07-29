@@ -17,7 +17,12 @@ ExecStart=/usr/bin/env bash /home/polybot/PolyBot/scripts/run_polybot.sh
 Restart=always
 RestartSec=15
 TimeoutStopSec=120
-KillMode=mixed
+# control-group: `systemctl stop` SIGTERMs the whole cgroup, so the python bot
+# (a child of the bash supervisor, which does not forward signals) gets the
+# SIGTERM its graceful-teardown handler expects — with mixed, only bash got it
+# and python was SIGKILLed after the timeout, losing buffered tape/micro-tape
+# flushes. Re-copy + `systemctl daemon-reload` on the box to apply.
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target

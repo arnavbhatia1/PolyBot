@@ -156,8 +156,23 @@ class ChainlinkFeed:
         and reconnected immediately; against an RTDS 429 limiter that becomes a
         self-perpetuating reconnect storm (the socket never lives long enough to
         deliver data, so the run loop's backoff never escapes the penalty box)."""
+        # Warm-up is BOUNDED: a socket that connects, answers protocol pings,
+        # but never delivers a report (silent subscribe rejection, topic
+        # rename) would otherwise idle as a permanent zombie — every other
+        # feed's idle-recv timeout covers this case; this loop is chainlink's.
         while self._running and self._last_update == 0:
             await asyncio.sleep(2)
+            connected_for = time.time() - self._last_connect
+            if self._ws is not None and connected_for > 2 * STALE_TIMEOUT_S:
+                logger.warning(
+                    "ChainlinkFeed: connected %.0fs with zero reports — forcing "
+                    "reconnect", connected_for)
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
+                self._ws = None
+                await asyncio.sleep(5)
         while self._running:
             await asyncio.sleep(10)
             stale = self._last_update > 0 and (time.time() - self._last_update) > STALE_TIMEOUT_S

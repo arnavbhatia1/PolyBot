@@ -43,6 +43,7 @@ execution:
   paper_network_fail_rate: 0.03    # 0 network errors in first 29 live POSTs — consistent, keep
 
 binance_trades:
+  ws_url: wss://stream.binance.com:9443/ws
   max_age_s: 300              # aggTrade rolling-buffer horizon (s)
 
 # =============================================================================
@@ -187,9 +188,6 @@ binance:
   candle_buffer_size: 200
 
 binance_depth:
-  ws_url: wss://stream.binance.com:9443/ws
-
-binance_trades:
   ws_url: wss://stream.binance.com:9443/ws
 
 coinbase:

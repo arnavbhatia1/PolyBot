@@ -39,12 +39,6 @@ class PaperTrader(BaseTrader):
         # live would have found a presigned order, not at a hardcoded probability.
         self._sell_warmups: dict[str, dict[str, float]] = {}
 
-    # Match live's _MAX_RETRIES + _RETRY_BASE_DELAY so paper P&L stays honest:
-    # in live a transient "ask moved up" often clears within 50-100ms and the
-    # 2nd attempt fills.
-    _PAPER_MAX_RETRIES: int = 3
-    _PAPER_RETRY_BASE_DELAY: float = 0.03
-
     # Warm-SELL parameters mirror LiveTrader exactly (TTL + drift acceptance).
     # The speedup is the sign work a presigned order skips — measured live at
     # ~3-5ms (EIP-712 sign), so 5ms, not a full sign-and-post's worth.
@@ -226,27 +220,17 @@ class PaperTrader(BaseTrader):
 
     async def _retry_walk(self, token_id: str, side: str, requested_price: float,
                           size_usd: float) -> FillResult:
-        """Run _walk_book up to _PAPER_MAX_RETRIES times with exponential backoff,
-        re-reading the book each pass — like live, the 2nd attempt sees a
-        post-recoil snapshot."""
-        last: FillResult | None = None
-        for attempt in range(1, self._PAPER_MAX_RETRIES + 1):
-            last = self._walk_book(token_id, side=side, requested_price=requested_price,
-                                   size_usd=size_usd)
-            # Per-ATTEMPT stats, matching live's per-POST counting, so the paper
-            # kill rate in fill_stats_paper.json is comparable to live's.
-            self._record_stats(filled=last.filled, side=side, reason=last.reason or "")
-            if last.filled:
-                return last
-            # Only retry the rejection class live retries: FOK "price moved".
-            # Depth exhaustion / book-empty won't recover in 30ms.
-            if "price moved" not in (last.reason or "").lower():
-                return last
-            if attempt < self._PAPER_MAX_RETRIES:
-                # Exponential backoff with jitter, same shape as live's _retry_sleep.
-                base = self._PAPER_RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                await asyncio.sleep(base * random.uniform(0.8, 1.2))
-        return last or FillResult(filled=False, reason="retry exhausted")
+        """One walk against the current book. A simulated reprice kill is
+        ONE-SHOT: live's reprice kill arrives as an exchange 4xx and returns
+        without an in-submit retry (the adverse-selection filter; kills
+        dominate sniper POSTs, verified live 07-22) — the tick loop is the
+        retry, in paper and live alike. In-submit re-walks gave paper second
+        chances live never takes, filling reverting-move fires live sits out
+        and triple-counting kill stats per submit."""
+        result = self._walk_book(token_id, side=side, requested_price=requested_price,
+                                 size_usd=size_usd)
+        self._record_stats(filled=result.filled, side=side, reason=result.reason or "")
+        return result
 
     @staticmethod
     def _record_stats(filled: bool, side: str, reason: str = "") -> None:

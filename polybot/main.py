@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import logging.handlers
+import math
 import os
 import signal
 import sys
@@ -29,7 +30,7 @@ from polybot.config.loader import load_config, get_secret
 from polybot.paths import (
     PREV_MARGIN_PATH, DAY_OPEN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
     GATE_STATS_CURRENT_PATH, PRICE_SUM_OUTLIERS_PATH, SCAR_GATES_PATH,
-    SCAR_VETOES_PATH, fold_gate_day,
+    SCAR_VETOES_PATH, fold_gate_day, write_json_atomic,
 )
 from polybot.core import scar_scan
 from polybot.execution.base import entry_fee_shares, slippage_pct, DEFAULT_FEE_RATE, EFFECTIVE_FEE_PEAK, compute_buy_vwap
@@ -427,31 +428,34 @@ _strike_logged: set[int] = set()
 # ~1-2% of windows), and a sniper firing on the wrong strike is trading noise.
 _strike_trusted: dict[int, bool] = {}
 
-# Previous window resolution margin — recorded telemetry (no model layer consumes it)
-_prev_resolution_margin: float = 0.0
+# Previous window resolution margin — recorded telemetry (no model layer
+# consumes it). None until a resolution has been observed this session —
+# never 0.0, which would read as a genuine hairline resolution downstream.
+_prev_resolution_margin: float | None = None
 _PREV_MARGIN_PATH = PREV_MARGIN_PATH
 # Beyond this many seconds the margin is no longer adjacent to the current
-# window and stamps as zero.
+# window and stamps as unknown.
 _PREV_MARGIN_STALE_S = 1800  # 30 min ≈ six 5-min windows
 
-def _load_prev_resolution_margin() -> float:
+def _load_prev_resolution_margin() -> float | None:
     """Restore margin from last session iff written within _PREV_MARGIN_STALE_S."""
     try:
         if _PREV_MARGIN_PATH.exists():
             data = json.loads(_PREV_MARGIN_PATH.read_text())
-            margin = float(data.get("margin", 0.0))
+            if data.get("margin") is None:
+                return None
+            margin = float(data["margin"])
             saved_at = float(data.get("saved_at", 0.0))
             if saved_at > 0 and (time.time() - saved_at) > _PREV_MARGIN_STALE_S:
-                return 0.0
+                return None
             return margin
     except Exception:
         pass
-    return 0.0
+    return None
 
 def _save_prev_resolution_margin(margin: float) -> None:
     try:
-        _PREV_MARGIN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _PREV_MARGIN_PATH.write_text(json.dumps({"margin": margin, "saved_at": time.time()}))
+        write_json_atomic(_PREV_MARGIN_PATH, {"margin": margin, "saved_at": time.time()})
     except Exception:
         pass
 
@@ -586,13 +590,12 @@ def _write_gate_current(counts: dict) -> None:
     """Persist today's live counts to GATE_STATS_CURRENT_PATH (restart-safe)."""
     from datetime import datetime, timezone
     try:
-        GATE_STATS_CURRENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        GATE_STATS_CURRENT_PATH.write_text(json.dumps({
+        write_json_atomic(GATE_STATS_CURRENT_PATH, {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "et_date": _et_date_key(),
             "counts": dict(counts),
             "total_skips": sum(counts.values()),
-        }, indent=2))
+        })
     except Exception:
         pass
 
@@ -688,8 +691,7 @@ def _persist_day_open(day: str, bankroll: float) -> None:
     on-chain outside recorded trades, and the drift poisons the day-close P&L.
     Best-effort: never raises."""
     try:
-        DAY_OPEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        DAY_OPEN_PATH.write_text(json.dumps({"day": day, "bankroll": bankroll}))
+        write_json_atomic(DAY_OPEN_PATH, {"day": day, "bankroll": bankroll})
     except Exception:
         pass
 
@@ -974,7 +976,7 @@ async def _evaluate_signal_and_enter(
             "flip_count": _ghost_flip_count,
             "is_flip": _ghost_flip_count > 0,
             "depth_usd_top20": _depth_usd_top20(),
-            "adverse_rate_at_30s": adverse_rate_at_30s if adverse_rate_at_30s >= 0 else 0.5,
+            "adverse_rate_at_30s": adverse_rate_at_30s if adverse_rate_at_30s >= 0 else None,
             "adverse_kelly_mult": round(adverse_kelly_mult, 3),
             **aux_signals,
         }
@@ -1282,7 +1284,9 @@ async def _evaluate_signal_and_enter(
         # fee impact on both legs (fee_rate × p × (1-p), max ~1.75% at ATM).
         side_price = price_up if side == "Up" else price_down
         if spread_est >= 0:
-            fee_impact_one_leg = DEFAULT_FEE_RATE * side_price * (1.0 - side_price)
+            # Same per-evaluation fee_rate as the Kelly gate and the booking —
+            # this hurdle must price the round trip at the rate the trade pays.
+            fee_impact_one_leg = fee_rate * side_price * (1.0 - side_price)
             spread_cost = spread_est + 2.0 * fee_impact_one_leg
         else:
             spread_cost = flip_premium
@@ -1324,6 +1328,10 @@ async def _evaluate_signal_and_enter(
     min_side_depth = market_scanner.min_book_depth_usd
     if side_depth < min_side_depth:
         _record_skip("thin_book_depth")
+        # Ghost like every other downstream gate — the upstream depth gate
+        # passes on EITHER side ≥ $50, so a one-sided book lands here and the
+        # thin-side fire population needs its resolved evidence too.
+        _ghost("thin_book_depth", signal, {})
         _emit_gate_skip(cid, "thin_book_depth",
                         f"chosen side {side} depth ${side_depth:.0f} < ${min_side_depth:.0f}")
         return None, last_eval_log_window
@@ -1400,6 +1408,17 @@ async def _evaluate_signal_and_enter(
         if len(_closes_buf) >= 2 else None
     )
 
+    _cl_age_at_fire = None
+    _cl_px_at_fire = None
+    if chainlink_feed is not None:
+        _cl_age = getattr(chainlink_feed, "age_seconds", None)
+        if _cl_age is not None and math.isfinite(_cl_age):
+            _cl_age_at_fire = round(_cl_age, 3)
+            _cl_px = getattr(chainlink_feed, "price", 0.0)
+            # ≤5s fresh: staleness gates already passed at ≤60s, but a cross-
+            # confirm read needs the report to be from the burst itself.
+            if _cl_px > 0 and _cl_age <= 5.0:
+                _cl_px_at_fire = _cl_px
     snapshot["trade_context"] = {
         # Entry-time facts — recorded for the counterfactual replay harness and exit-value model
         "btc_price": btc_price,
@@ -1425,7 +1444,8 @@ async def _evaluate_signal_and_enter(
         "spot_flow_signal": spot_flow_rec,
         "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
         "regime_direction": round(signal_engine.last_regime_direction, 4),
-        # Time-of-window classification (used by bias_detector time_patterns + flip analysis)
+        # Time-of-window classification (recorded telemetry; constant
+        # "late_sniper" on every sniper fill by construction)
         "entry_phase": phase,
         "flip_count": flip_count,
         "is_flip": flip_count > 0,
@@ -1434,8 +1454,9 @@ async def _evaluate_signal_and_enter(
         "depth_usd_top20": _depth_usd_top20(),
         **aux_signals,
         # Adverse-selection diagnostic — 30s is the post-fill checkpoint, not the
-        # lookback (that's the monitor's 30-minute window).
-        "adverse_rate_at_30s": adverse_rate_at_30s if adverse_rate_at_30s >= 0 else 0.5,
+        # lookback (that's the monitor's 30-minute window). None when this
+        # evaluation never computed it (never a 0.5 stand-in — the rule).
+        "adverse_rate_at_30s": adverse_rate_at_30s if adverse_rate_at_30s >= 0 else None,
         "adverse_kelly_mult": round(adverse_kelly_mult, 3),
         "cb_tick_to_submit_ms": (round((time.time() - _eval_tick_ts) * 1000.0, 1)
                                  if _eval_tick_ts > 0 else None),
@@ -1450,6 +1471,16 @@ async def _evaluate_signal_and_enter(
         # limit here, and the limit cap binding would poison ask-vs-ask
         # comparisons. _cbm exists whenever is_sniper is True.
         **_scar_fields(cid, side, signal_ask, _cbm if is_sniper else None),
+        # Burst-shape + oracle-confirm stamps (discovery-only scar dims; None
+        # on cold, never a 0.0 stand-in): the 10s Coinbase move brackets the
+        # 2s burst (isolated spike vs extending trend — reverting spikes are
+        # the measured bleed), and the RESOLUTION venue's own live report
+        # either confirms the strike cross or the fire's premise rests on
+        # Coinbase alone (RTDS ~1Hz lag = thinner true cushion).
+        "scar_cb_move_10s": (coinbase_feed.cb_move(10.0)
+                             if is_sniper and coinbase_feed else None),
+        "chainlink_price_at_fire": _cl_px_at_fire,
+        "chainlink_age_s_at_fire": _cl_age_at_fire,
         # Token IDs for both outcomes — required for startup reconciliation and dust sweeping.
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
@@ -1479,15 +1510,24 @@ async def _evaluate_signal_and_enter(
                 _sw = int(cid.rsplit("-", 1)[-1])
             except (ValueError, IndexError):
                 _sw = -1
-            if _scar_hits[0] not in _scar_vetoed.get(_sw, set()):
-                _now_ts = int(time.time())
-                for k in [k for k in _scar_vetoed if _now_ts - k >= 600]:
-                    del _scar_vetoed[k]
-                _scar_vetoed.setdefault(_sw, set()).add(_scar_hits[0])
-                _ghost(_gate, signal, snapshot)
-                _emit_gate_skip(cid, _gate,
-                                f"learned veto — {_scar_hits[0]} (SPRT-graduated scar gate)")
-                scar_scan.record_veto(SCAR_VETOES_PATH, _scar_hits[0], cid, side,
+            _now_ts = int(time.time())
+            for k in [k for k in _scar_vetoed if _now_ts - k >= 600]:
+                del _scar_vetoed[k]
+            # EVERY matching gate journals (one ghost/skip for the window is
+            # enough, but the per-gate resolution ledger needs each gate's
+            # line — a co-firing gate whose vetoes only ever count when it
+            # fires alone would read better than reality).
+            _first_new = True
+            for _hit in _scar_hits:
+                if _hit in _scar_vetoed.get(_sw, set()):
+                    continue
+                _scar_vetoed.setdefault(_sw, set()).add(_hit)
+                if _first_new:
+                    _ghost(_gate, signal, snapshot)
+                    _emit_gate_skip(cid, _gate,
+                                    f"learned veto — {_scar_hits[0]} (SPRT-graduated scar gate)")
+                    _first_new = False
+                scar_scan.record_veto(SCAR_VETOES_PATH, _hit, cid, side,
                                       signal_ask, size)
             return None, last_eval_log_window
     # Pre-submit edge re-check: walk the ask ladder for the actual expected FOK
@@ -2091,12 +2131,19 @@ async def _evaluate_and_exit_position(
                            else live.get("token_id_down", ""))
             if _sell_token:
                 _shares = pos.get("shares_held") or pos["size"] / pos["entry_price"]
+                _wfee = pos.get("fee_rate") or DEFAULT_FEE_RATE
+                # Sign for the same headroom-reduced quantity close_trade will
+                # submit (base.py sell_fee_headroom) — a full-size signature is
+                # immutable, passes the 5% drift gate, and would POST more
+                # shares than the fee buffer authorizes.
+                _headroom = max(max(_wfee * 0.25, 0.0) + 0.002, 0.005)
+                _shares *= (1.0 - _headroom)
                 # Approximate exit_fill = market_price × (1 − 8% cross floor);
                 # _take_sell_warmup tolerates ±1¢ drift vs the actual exit_fill.
                 _warm_price = round(market_price * 0.92, 4)
                 asyncio.create_task(trader.warm_sell_signature(
                     _sell_token, _shares, _warm_price,
-                    fee_rate=pos.get("fee_rate") or DEFAULT_FEE_RATE,
+                    fee_rate=_wfee,
                 ))
 
     if action == "EXIT":
@@ -3224,21 +3271,33 @@ async def main() -> None:
         # full days after Polymarket's 07-24 async-commit rollout (375/312/314ms,
         # n=100; the 250ms crypto taker delay is the floor — zero samples below it).
         _lw = config.get("late_window", {})
-        sim = await asyncio.to_thread(
-            mod.health_read, 0.34, _lw["sniper_fok_slip"],
-            _lw["sniper_cb_move"], _lw["sniper_ask_cap"])   # SIM corpus (window_paths.db, RO)
+        # Each read individually guarded: the SIM corpus lives in a gitignored
+        # sidecar DB that can be missing/corrupt while the realized ledger is
+        # perfectly healthy — a dead sidecar must degrade the ping, never
+        # suppress the kill-rule readout for live money (and vice versa).
+        try:
+            sim = await asyncio.to_thread(
+                mod.health_read, 0.34, _lw["sniper_fok_slip"],
+                _lw["sniper_cb_move"], _lw["sniper_ask_cap"])   # SIM corpus (window_paths.db, RO)
+        except Exception as e:
+            logger.warning("sniper health SIM read failed: %s", e)
+            sim = None
         # The realized-fill read tracks the BINDING population for the current mode:
         # live -> the live ledger; paper (re-validation) -> the paper-shadow fills
         # since the validation epoch (pre-epoch fills ran different code/config).
-        if mode == "live":
-            # Scoped to the epoch too: without it, day 1 of a live run scores the
-            # PREVIOUS live era (mis-booked pre-07-08 fills) and false-trips the
-            # kill rule the first night. Pin validation_epoch at every go-live.
-            live = await asyncio.to_thread(
-                mod.live_health_read, None, _lw.get("validation_epoch"))
-        else:
-            live = await asyncio.to_thread(
-                mod.live_health_read, mod.PAPER_DB, _lw.get("validation_epoch"))
+        try:
+            if mode == "live":
+                # Scoped to the epoch too: without it, day 1 of a live run scores the
+                # PREVIOUS live era (mis-booked pre-07-08 fills) and false-trips the
+                # kill rule the first night. Pin validation_epoch at every go-live.
+                live = await asyncio.to_thread(
+                    mod.live_health_read, None, _lw.get("validation_epoch"))
+            else:
+                live = await asyncio.to_thread(
+                    mod.live_health_read, mod.PAPER_DB, _lw.get("validation_epoch"))
+        except Exception as e:
+            logger.warning("sniper health realized-ledger read failed: %s", e)
+            live = None
         # SPRT #1 (burst-alive) + regime-Kelly shadow accrual — both alert-only
         # reads over the same realized ledger the kill rule uses. SPRT turns
         # things ON; the kill rule turns things OFF (SPRT_DESIGN, frozen 07-19).
@@ -3260,7 +3319,7 @@ async def main() -> None:
                 mod.scar_scan_read, _real_db, _lw.get("validation_epoch"),
                 _lw.get("scar_enforce") or [], None, None, mode)
         except Exception as e:
-            logger.debug("scar scan failed: %s", e)
+            logger.warning("scar scan failed: %s", e)
             scars = None
         if sim is None and live is None:
             if alert_manager:
@@ -3349,11 +3408,14 @@ async def main() -> None:
                                f"{v['resolved']} (upper-bound, assumes fill)"
                                if v.get("avoided_cs") is not None else "")
                     parts.append(f"{g['name']} ENFORCED{avoided}")
+                elif g["sprt_state"] == "paused_other_mode":
+                    # must precede the graduated branch: a gate proven on the
+                    # OTHER mode's ledger must never be advertised for
+                    # enforcement in this one
+                    parts.append(f"{g['name']} paused (evidence from the other mode)")
                 elif g["status"] == "graduated":
                     parts.append(f"{g['name']} ✅ PROVEN toxic — add it to "
                                  f"`late_window.scar_enforce` to switch the veto on")
-                elif g["sprt_state"] == "paused_other_mode":
-                    parts.append(f"{g['name']} paused (evidence from the other mode)")
                 elif g["sprt_state"] == "accruing_sigma":
                     parts.append(f"{g['name']} shadow-tracking "
                                  f"({g['n_oos']} fills since discovery, baseline forming)")

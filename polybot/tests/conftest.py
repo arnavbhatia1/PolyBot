@@ -18,6 +18,7 @@ SAMPLE_CONFIG = {
     },
     "circuit_breaker": {
         "max_drawdown_pct": 0.15,
+        "floor_pct": 0.85,
         "min_multiplier": 0.25,
         "losses_to_reduce": 3,
         "wins_to_restore": 2,
@@ -27,6 +28,7 @@ SAMPLE_CONFIG = {
         "max_concurrent_positions": 1,
         "max_book_fill_pct": 0.50,
         "slippage_impact_pct": 0.03,
+        "fok_spread_cross_floor": 0.08,
         "initial_bankroll": 1000.0,
     },
     "agents": {
@@ -49,6 +51,14 @@ SAMPLE_CONFIG = {
         "min_atr": 8.0,
         "deep_loss_hold_threshold": -0.10,
         "atr_regime_shift_threshold": 0.60,
+        "loss_cut_fraction": 0.65,
+        "loss_cut_time_s": 90.0,
+        "regime_lookback": 50,
+        "adverse_selection_threshold": 0.80,
+        "adverse_penalty_floor": 0.45,
+        "adverse_penalty_slope": 1.5,
+        "adverse_penalty_min": 0.30,
+        "edge_decay_threshold": -0.05,
     },
     "entry_timing": {
         "normal_fraction": 0.6,

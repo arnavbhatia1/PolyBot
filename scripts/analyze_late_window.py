@@ -47,7 +47,7 @@ import sqlite3
 import statistics
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -463,7 +463,7 @@ def burst_sprt_read(db_path=None, since_iso=None, state_path=None):
         state = {"frozen_sigma": round(sigma, 4),
                  "sigma_days": [day for day, _ in est],
                  "mu1": BURST_SPRT_MU1,
-                 "frozen_at": datetime.now(ET).isoformat()}
+                 "frozen_at": datetime.now(timezone.utc).isoformat()}
         try:
             sp.parent.mkdir(parents=True, exist_ok=True)
             sp.write_text(json.dumps(state, indent=2))      # write-once freeze

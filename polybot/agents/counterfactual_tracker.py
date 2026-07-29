@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 from polybot.agents.pipeline_analytics import utc_ts_to_et_date as _utc_ts_to_et_date
 from polybot.execution.base import DEFAULT_FEE_RATE, exit_fee_usdc
+from polybot.paths import write_json_atomic
 
 _ET = ZoneInfo("America/New_York")
 
@@ -47,6 +49,7 @@ class CounterfactualTracker:
         self._watchlist: dict[str, dict[str, Any]] = {}
         self._hold_worst: dict[int, dict[str, Any]] = {}   # keyed by position_id
         self._watchlist_path: Path = Path(memory_dir) / "state" / "cf_watchlist.json"
+        self._watchlist_write_lock = threading.Lock()
         self._load_watchlist()
 
     def _load_watchlist(self) -> None:
@@ -65,12 +68,16 @@ class CounterfactualTracker:
                     self._watchlist[pid] = entry
 
     def _save_watchlist(self) -> None:
-        try:
-            self._watchlist_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"saved_at": time.time(), "watchlist": list(self._watchlist.values())}
-            self._watchlist_path.write_text(json.dumps(payload, indent=2))
-        except Exception as e:
-            logger.warning(f"CF watchlist save failed: {e}")
+        # threading.Lock: saves run via asyncio.to_thread, and two scalps
+        # resolving seconds apart would otherwise interleave writes to the
+        # same file; atomic replace keeps a crash from tearing it.
+        with self._watchlist_write_lock:
+            try:
+                payload = {"saved_at": time.time(),
+                           "watchlist": list(self._watchlist.values())}
+                write_json_atomic(self._watchlist_path, payload)
+            except Exception as e:
+                logger.warning(f"CF watchlist save failed: {e}")
 
     def _schedule_save_watchlist(self) -> None:
         try:

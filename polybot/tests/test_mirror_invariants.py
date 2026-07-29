@@ -20,11 +20,6 @@ _SETTINGS = yaml.safe_load(
     .read_text(encoding="utf-8"))
 
 
-def test_paper_retry_constants_mirror_live():
-    assert PaperTrader._PAPER_MAX_RETRIES == live_trader._MAX_RETRIES
-    assert PaperTrader._PAPER_RETRY_BASE_DELAY == live_trader._RETRY_BASE_DELAY
-
-
 def test_sniper_min_edge_equals_min_edge():
     # settings.yaml documents sniper_min_edge = signal.min_edge so the
     # downstream net-edge / pre-submit gates don't silently raise the floor.

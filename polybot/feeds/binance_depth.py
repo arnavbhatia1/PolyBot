@@ -75,6 +75,7 @@ class BinanceDepthFeed:
                             msg = await asyncio.wait_for(ws.recv(), timeout=60.0)
                         except asyncio.TimeoutError:
                             logger.warning("depth WS idle >60s, forcing reconnect")
+                            self.staleness.mark_disconnected()
                             break
                         try:
                             data = _loads(msg)

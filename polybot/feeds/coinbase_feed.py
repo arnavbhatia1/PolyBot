@@ -216,6 +216,7 @@ class CoinbaseFeed:
                             msg = await asyncio.wait_for(ws.recv(), timeout=25.0)
                         except asyncio.TimeoutError:
                             logger.warning("Coinbase WS idle >25s, forcing reconnect")
+                            self.staleness.mark_disconnected()
                             break
                         try:
                             data = _loads(msg)

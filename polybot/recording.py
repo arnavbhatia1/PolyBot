@@ -42,11 +42,15 @@ _LABEL_RETRY_S = 60.0
 _LABEL_GIVE_UP_S = 2400.0  # stop asking Gamma 40 min after window end
 
 
-def _top3_usd(levels: list[dict[str, Any]]) -> float:
+def _top3_usd(levels: list[dict[str, Any]]) -> float | None:
+    """None for a missing/unparseable book (cold WS, pre-subscribe gap) — the
+    None-vs-0.0 rule: 0.0 would read as real zero liquidity downstream."""
+    if not levels:
+        return None
     try:
         return round(sum(float(l["price"]) * float(l["size"]) for l in levels[:3]), 2)
     except (KeyError, ValueError, TypeError):
-        return 0.0
+        return None
 
 
 class WindowPathRecorder:
@@ -97,7 +101,8 @@ class WindowPathRecorder:
         self.binance_depth = binance_depth
         self._window: dict[str, Any] | None = None
         self._discovering: int = 0          # window_ts a discovery task is running for
-        self._traded: set[str] = set()
+        self._tasks: set[asyncio.Task] = set()  # strong refs so GC can't drop a
+        self._traded: set[str] = set()          # mid-await discovery/label pass
         self._pending_label: dict[str, float] = {}  # window_id -> window_end_ts
         self._window_tokens: dict[str, tuple[str, str]] = {}  # window_id -> (token_up, token_down)
         self._last_label_run = 0.0
@@ -227,6 +232,14 @@ class WindowPathRecorder:
         except Exception:
             pass
         return None
+
+    def _spawn(self, coro) -> None:
+        """create_task with a strong ref (event loops hold tasks weakly; an
+        unreferenced task can be GC'd mid-await and silently drop a window's
+        discovery or a label pass)."""
+        t = asyncio.create_task(coro)
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
 
     async def _discover(self, window_ts: int) -> None:
         slug = f"{self.market_scanner.symbol}-updown-5m-{window_ts}"
@@ -486,7 +499,7 @@ class WindowPathRecorder:
                 if ((cur is None or cur["window_ts"] != window_ts)
                         and self._discovering != window_ts):
                     self._discovering = window_ts
-                    asyncio.create_task(self._discover(window_ts))
+                    self._spawn(self._discover(window_ts))
                 self._sample()
                 now = time.time()
                 if now - last_flush >= _FLUSH_EVERY_S:
@@ -494,7 +507,7 @@ class WindowPathRecorder:
                     last_flush = now
                 if now - self._last_label_run >= _LABEL_RETRY_S and self._pending_label:
                     self._last_label_run = now
-                    asyncio.create_task(self._label_pass())
+                    self._spawn(self._label_pass())
             except Exception as e:
                 logger.warning(f"window recorder tick failed: {e}")
             # 1 Hz baseline, burst to ~5 Hz in the final 45s — the late-window sniper
@@ -536,6 +549,11 @@ class TapeRecorder:
                 "price": trade.get("price"),
                 "size": trade.get("size"),
                 "side": trade.get("side"),
+                # Exchange-side fields clob_ws carries for the tape: the
+                # exchange's own clock (per-print WS delivery latency,
+                # sub-second tape-fair pricing) + the served fee rate.
+                "ets": trade.get("exchange_ts") or None,
+                "fee_bps": trade.get("fee_rate_bps") or None,
             }))
             if len(self._buf) >= _TAPE_FLUSH_ROWS or time.time() - self._last_flush > _FLUSH_EVERY_S:
                 self.flush()

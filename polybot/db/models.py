@@ -5,6 +5,7 @@ Bankroll is the single source of truth for capital — never reconstruct it from
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -17,6 +18,11 @@ class Database:
     def __init__(self, db_path: str) -> None:
         self.db_path: str = db_path
         self.conn: aiosqlite.Connection | None = None
+        # One connection, many coroutines: a commit issued by any other task
+        # while a multi-statement transaction is mid-flight would persist the
+        # half-done write (SQLite commits the CONNECTION's open transaction).
+        # Every commit-bearing method serializes through this lock.
+        self._write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         self.conn = await aiosqlite.connect(self.db_path)
@@ -114,34 +120,35 @@ class Database:
         bankroll value to set after the debit.
         """
         now = datetime.now(timezone.utc).isoformat()
-        try:
-            cursor = await self.conn.execute(
-                """INSERT INTO positions
-                (market_id, question, side, entry_price, size, signal_score,
-                 entry_timestamp, status, indicator_snapshot,
-                 fee_rate, shares_held)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
-                (position_kwargs["market_id"], position_kwargs["question"],
-                 position_kwargs["side"], position_kwargs["entry_price"],
-                 position_kwargs["size"], position_kwargs["signal_score"],
-                 now,
-                 position_kwargs.get("indicator_snapshot", ""),
-                 position_kwargs.get("fee_rate"), position_kwargs.get("shares_held")),
-            )
-            pos_id = cursor.lastrowid
-            await self.conn.execute(
-                "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
-                "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
-                (new_bankroll,),
-            )
-            await self.conn.commit()
-            return pos_id
-        except BaseException:
-            # BaseException: a Ctrl+C/cancel landing mid-transaction must roll
-            # back too — the connection is shared, and a later commit from any
-            # other coroutine would otherwise persist the half-done write.
-            await self.conn.rollback()
-            raise
+        async with self._write_lock:
+            try:
+                cursor = await self.conn.execute(
+                    """INSERT INTO positions
+                    (market_id, question, side, entry_price, size, signal_score,
+                     entry_timestamp, status, indicator_snapshot,
+                     fee_rate, shares_held)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
+                    (position_kwargs["market_id"], position_kwargs["question"],
+                     position_kwargs["side"], position_kwargs["entry_price"],
+                     position_kwargs["size"], position_kwargs["signal_score"],
+                     now,
+                     position_kwargs.get("indicator_snapshot", ""),
+                     position_kwargs.get("fee_rate"), position_kwargs.get("shares_held")),
+                )
+                pos_id = cursor.lastrowid
+                await self.conn.execute(
+                    "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
+                    (new_bankroll,),
+                )
+                await self.conn.commit()
+                return pos_id
+            except BaseException:
+                # BaseException: a Ctrl+C/cancel landing mid-transaction must roll
+                # back too — the connection is shared, and a later commit from any
+                # other coroutine would otherwise persist the half-done write.
+                await self.conn.rollback()
+                raise
 
     async def get_open_positions(self) -> list[dict[str, Any]]:
         """Returns positions that need management: both 'open' (active) and 'pending_resolution' (expired, awaiting Gamma)."""
@@ -153,11 +160,12 @@ class Database:
 
     async def mark_pending_resolution(self, position_id: int) -> None:
         """Mark an expired position as pending resolution — doesn't count against max_concurrent_positions."""
-        await self.conn.execute(
-            "UPDATE positions SET status='pending_resolution' WHERE id=?",
-            (position_id,),
-        )
-        await self.conn.commit()
+        async with self._write_lock:
+            await self.conn.execute(
+                "UPDATE positions SET status='pending_resolution' WHERE id=?",
+                (position_id,),
+            )
+            await self.conn.commit()
 
     async def _close_position_and_history(
         self, position_id: int, exit_price: float,
@@ -203,27 +211,50 @@ class Database:
         """
         if new_bankroll is not None and bankroll_delta is not None:
             raise ValueError("Pass at most one of new_bankroll / bankroll_delta")
-        try:
-            await self._close_position_and_history(
-                position_id, exit_price, pnl, fees, exit_reason,
+        async with self._write_lock:
+            try:
+                await self._close_position_and_history(
+                    position_id, exit_price, pnl, fees, exit_reason,
+                )
+                if new_bankroll is not None:
+                    await self.conn.execute(
+                        "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
+                        "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
+                        (new_bankroll,),
+                    )
+                elif bankroll_delta is not None:
+                    await self.conn.execute(
+                        "UPDATE bankroll SET amount = amount + ? WHERE id = 1",
+                        (bankroll_delta,),
+                    )
+                await self.conn.commit()
+            except BaseException:
+                # Same rationale as open_position_and_debit_bankroll: roll back on
+                # cancellation too, or a foreign commit persists the half-done close.
+                await self.conn.rollback()
+                raise
+
+    async def sync_entry_booking(
+        self, position_id: int, entry_price: float, shares_held: float,
+    ) -> bool:
+        """Fill-audit write path: sync a position's entry to chain truth.
+
+        Returns False without writing when the trade already reached history
+        (resolved before the audit ran) — the check and the UPDATE run under
+        the write lock so a concurrent close can't slip between them.
+        """
+        async with self._write_lock:
+            booked = await (await self.conn.execute(
+                "SELECT 1 FROM trade_history WHERE position_id=?", (position_id,)
+            )).fetchone()
+            if booked:
+                return False
+            await self.conn.execute(
+                "UPDATE positions SET entry_price=?, shares_held=? WHERE id=?",
+                (entry_price, shares_held, position_id),
             )
-            if new_bankroll is not None:
-                await self.conn.execute(
-                    "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
-                    "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
-                    (new_bankroll,),
-                )
-            elif bankroll_delta is not None:
-                await self.conn.execute(
-                    "UPDATE bankroll SET amount = amount + ? WHERE id = 1",
-                    (bankroll_delta,),
-                )
             await self.conn.commit()
-        except BaseException:
-            # Same rationale as open_position_and_debit_bankroll: roll back on
-            # cancellation too, or a foreign commit persists the half-done close.
-            await self.conn.rollback()
-            raise
+            return True
 
     async def has_position_for_market(self, market_id: str) -> bool:
         cursor = await self.conn.execute(
@@ -280,7 +311,8 @@ class Database:
         utc_end = day_end_et.astimezone(timezone.utc).isoformat()
 
         cursor = await self.conn.execute(
-            "SELECT t.pnl, t.fees, t.exit_price, t.entry_price, t.size, p.fee_rate "
+            "SELECT t.pnl, t.fees, t.exit_price, t.entry_price, t.size, p.fee_rate, "
+            "p.shares_held "
             "FROM trade_history t "
             "LEFT JOIN positions p ON COALESCE(t.position_id, t.id) = p.id "
             "WHERE t.exit_timestamp >= ? AND t.exit_timestamp < ?",
@@ -297,9 +329,17 @@ class Database:
             entry_p = row[3]
             size_val = row[4] or 0.0
             rate = row[5] if row[5] is not None else 0.07  # DEFAULT_FEE_RATE (base.py)
-            # Entry buffer in USD: rate·shares·e·(1−e) shares × e == rate·size·(1−e).
+            shares_val = row[6]
+            # Entry buffer in USD: rate·size·(1−e) == the taker-fee model at entry.
+            # The stored `fees` value already contains an entry component of
+            # size − shares_held·entry (zero for chain-audited live fills, the
+            # full buffer for paper/unaudited fills) — swap it out for the
+            # modeled buffer so the entry fee counts exactly once either way.
             if entry_p and 0.0 < entry_p < 1.0:
                 total_fees += rate * size_val * (1.0 - entry_p)
+                if shares_val is not None:
+                    stored_entry = max(0.0, size_val - shares_val * entry_p)
+                    total_fees -= min(stored_entry, fee_val)
             total_fees += fee_val
             total_pnl += (pnl_val or 0.0)
             # Use stored pnl when available; fall back to price comparison for old rows
@@ -314,12 +354,13 @@ class Database:
         return wins, losses, total_fees, total_pnl
 
     async def set_bankroll(self, amount: float) -> None:
-        await self.conn.execute(
-            "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
-            "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
-            (amount,),
-        )
-        await self.conn.commit()
+        async with self._write_lock:
+            await self.conn.execute(
+                "INSERT INTO bankroll (id, amount) VALUES (1, ?) "
+                "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
+                (amount,),
+            )
+            await self.conn.commit()
 
     async def get_bankroll(self) -> float:
         cursor = await self.conn.execute("SELECT amount FROM bankroll WHERE id=1")
@@ -327,12 +368,13 @@ class Database:
         return row[0] if row else 0.0
 
     async def set_peak_bankroll(self, amount: float) -> None:
-        await self.conn.execute(
-            "INSERT INTO peak_bankroll (id, amount) VALUES (1, ?) "
-            "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
-            (amount,),
-        )
-        await self.conn.commit()
+        async with self._write_lock:
+            await self.conn.execute(
+                "INSERT INTO peak_bankroll (id, amount) VALUES (1, ?) "
+                "ON CONFLICT(id) DO UPDATE SET amount=excluded.amount",
+                (amount,),
+            )
+            await self.conn.commit()
 
     async def get_peak_bankroll(self) -> float | None:
         cursor = await self.conn.execute("SELECT amount FROM peak_bankroll WHERE id=1")

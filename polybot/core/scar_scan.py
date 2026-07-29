@@ -68,6 +68,7 @@ FIRE_TIME_DIMS = frozenset({
     "atr_regime", "burst", "edge_bucket", "prob_bucket", "cb_move_bucket",
     "strike_dist", "autocorr", "cvd_side", "xgap", "frv", "atr_short",
     "depth_side", "vig", "killed_n", "flip",
+    "book_age", "dir_agree", "adverse_regime", "move_shape", "cl_confirm",
 })
 
 
@@ -78,6 +79,38 @@ def _bucket(v: float | None, cuts: tuple, labels: tuple) -> str | None:
         if v < c:
             return lab
     return labels[-1]
+
+
+def _dir_agree(direction: float | None, side: str) -> str | None:
+    """Fired side vs the prevailing 1-min drift sign (last_regime_direction:
+    +1 up / −1 down / 0 flat). A burst COUNTER to the drift is the reverting-
+    spike prior; extending it is continuation."""
+    if direction is None:
+        return None
+    if direction == 0:
+        return "flat"
+    with_drift = (direction > 0) == (side == "Up")
+    return "with_drift" if with_drift else "against_drift"
+
+
+def _move_shape(m2: float | None, m10: float | None) -> str | None:
+    """The 2s fire burst inside the 10s move: same sign and |10s| ≥ 1.5×|2s|
+    = the burst extends a sustained move; otherwise the burst IS the move —
+    an isolated spike, the revert-prone class."""
+    if m2 is None or m10 is None or m2 == 0:
+        return None
+    extending = (m2 * m10 > 0) and abs(m10) >= 1.5 * abs(m2)
+    return "extending" if extending else "spike"
+
+
+def _cl_confirm(cl_px: float | None, strike: float | None, side: str) -> str | None:
+    """Has the resolution venue's own (fresh, ≤5s) report crossed the strike
+    in the fired direction? Not-crossed = the move-past-strike premise rests
+    on Coinbase alone — thinner true cushion, the terminal-flip population."""
+    if cl_px is None or not strike:
+        return None
+    crossed = (cl_px > strike) if side == "Up" else (cl_px < strike)
+    return "cl_crossed" if crossed else "cl_not_crossed"
 
 
 def derive_dims(ctx: dict[str, Any], side: str, dow: str,
@@ -137,6 +170,24 @@ def derive_dims(ctx: dict[str, Any], side: str, dow: str,
         "killed_n": (None if killed_n is None else
                      ("0" if killed_n == 0 else "1" if killed_n == 1 else "2+")),
         "flip": (None if is_flip is None else ("flip" if is_flip else "first")),
+        # Stale-ask + oracle-confirm dims (07-29 census): each keys directly
+        # on a named mechanism — book_age IS the stale-ask window being
+        # harvested (a fresh book = the MM already repriced, informed-against
+        # bait); dir_agree separates counter-drift spikes (revert-prone) from
+        # continuation; adverse_regime is the live post-fill fade rate;
+        # move_shape brackets the 2s burst inside the 10s move (isolated
+        # spike vs extending trend); cl_confirm asks whether the RESOLUTION
+        # venue's own report crossed the strike or the premise rests on
+        # Coinbase alone.
+        "book_age": _bucket(ctx.get("clob_book_age_s"), (1.0, 5.0),
+                            ("<1s", "1-5s", "5s+")),
+        "dir_agree": _dir_agree(ctx.get("regime_direction"), side),
+        "adverse_regime": _bucket(ctx.get("adverse_rate_at_30s"), (0.45, 0.60),
+                                  ("<0.45", "0.45-0.60", "0.60+")),
+        "move_shape": _move_shape(ctx.get("scar_cb_move"),
+                                  ctx.get("scar_cb_move_10s")),
+        "cl_confirm": _cl_confirm(ctx.get("chainlink_price_at_fire"),
+                                  ctx.get("strike_price"), side),
         # observational (fill-created information — never enforceable)
         "slip": _bucket(slip, (-0.005, 0.0101),
                         ("improved", "clean", "padded")),
@@ -147,13 +198,19 @@ def derive_dims(ctx: dict[str, Any], side: str, dow: str,
 
 # ── Registry io ────────────────────────────────────────────────────────────────
 def load_registry(path: Path) -> dict:
-    try:
-        reg = json.loads(Path(path).read_text())
-        if isinstance(reg, dict) and isinstance(reg.get("gates"), list):
-            return reg
-    except (OSError, json.JSONDecodeError, ValueError):
-        pass
-    return {"version": 1, "gates": []}
+    """A missing file bootstraps an empty registry; an EXISTING file that fails
+    to parse raises instead — silently substituting empty would let the next
+    scan() save_registry() the amnesia, erasing the retired-gate
+    never-re-register ledger and every frozen σ. The fire path reaches this
+    only inside its fail-open try/except, so raising can never block trading."""
+    p = Path(path)
+    if not p.exists():
+        return {"version": 1, "gates": []}
+    reg = json.loads(p.read_text())
+    if not (isinstance(reg, dict) and isinstance(reg.get("gates"), list)):
+        raise ValueError(f"scar registry {p} is not a gates dict — refusing to "
+                         "overwrite it with an empty registry; fix or remove the file")
+    return reg
 
 
 def save_registry(path: Path, reg: dict) -> None:
@@ -177,8 +234,12 @@ def fire_time_matches(ctx: dict[str, Any], side: str, dow: str, registry: dict,
     for g in registry.get("gates", []):
         if not isinstance(g, dict) or not g.get("name"):
             continue
+        # bucket must be non-None: a bucket-less (mangled) gate would otherwise
+        # match every decision whose dim stamp is None (cold feed) — a veto
+        # keyed on feed coldness, not on the learned cell.
         if (g.get("status") in statuses and g.get("dim") in FIRE_TIME_DIMS
-                and dims.get(g["dim"]) == g.get("bucket")):
+                and g.get("bucket") is not None
+                and dims.get(g["dim"]) == g["bucket"]):
             out.append(g["name"])
     return out
 
@@ -255,9 +316,19 @@ def scan(db_path, since_iso: str | None, registry_path: Path,
         return {i for i, f in enumerate(fills) if f["dims"].get(dim) == bucket}
 
     # -- discovery: flag-rule sweep over every cell not already a gate --------
-    known = {(g["dim"], g["bucket"]) for g in reg["gates"] if isinstance(g, dict)}
+    # The registry is git-synced and hand-editable (the seed gate was
+    # hand-authored): a malformed entry must degrade to "skipped + reported",
+    # never to a KeyError that kills the whole nightly scan.
+    def _wellformed(g: Any) -> bool:
+        return (isinstance(g, dict)
+                and all(g.get(k) is not None
+                        for k in ("name", "dim", "bucket", "discovered")))
+
+    malformed = [str(g.get("name") if isinstance(g, dict) else g)[:60]
+                 for g in reg["gates"] if not _wellformed(g)]
+    known = {(g["dim"], g["bucket"]) for g in reg["gates"] if _wellformed(g)}
     active_gates = [g for g in reg["gates"]
-                    if isinstance(g, dict) and g.get("status") != "retired"]
+                    if _wellformed(g) and g.get("status") != "retired"]
     candidates, watch = [], []
     if fills:
         for dim in fills[0]["dims"]:
@@ -315,7 +386,7 @@ def scan(db_path, since_iso: str | None, registry_path: Path,
     # -- per-gate OOS SPRT (freeze σ, score days strictly after discovery) ----
     gate_reports = []
     for g in reg["gates"]:
-        if not isinstance(g, dict) or g.get("status") == "retired":
+        if not _wellformed(g) or g.get("status") == "retired":
             continue
         if mode and g.get("mode") and g["mode"] != mode:
             # foreign-mode gate: pause, never splice populations into its test
@@ -350,7 +421,7 @@ def scan(db_path, since_iso: str | None, registry_path: Path,
             if len(est) >= SPRT_SIGMA_DAYS and statistics.stdev([x for _, x in est]) > 0:
                 sp["frozen_sigma"] = round(statistics.stdev([x for _, x in est]), 4)
                 sp["sigma_days"] = [d for d, _ in est]
-                sp["frozen_at"] = datetime.now(ET).isoformat()
+                sp["frozen_at"] = datetime.now(timezone.utc).isoformat()
         sigma_days = set(sp.get("sigma_days", []))
         scored = [x for d, x in qualifying if d not in sigma_days]
         if sp.get("frozen_sigma"):
@@ -383,6 +454,7 @@ def scan(db_path, since_iso: str | None, registry_path: Path,
 
     save_registry(registry_path, reg)
     return dict(n_fills=len(fills), gates=gate_reports, registered=registered,
+                malformed=malformed,
                 watch=[dict(cell=f"{d}={b}", flagged_observational=fl, **st)
                        for d, b, st, fl in watch[:3]])
 
@@ -434,8 +506,16 @@ def resolve_vetoes(vetoes_path: Path, db_path) -> dict:
             con.close()
         except sqlite3.OperationalError:
             pass
+    # Dedup by (window, gate): the once-per-window latch is in-memory only, so
+    # a mid-window crash-restart can journal the same veto twice — one line
+    # counts, duplicates never tick/double-weight the per-gate read.
+    seen: set[tuple] = set()
     per: dict[str, dict] = {}
     for v in vetoes:
+        key = (str(v.get("window")), str(v.get("gate")))
+        if key in seen:
+            continue
+        seen.add(key)
         g = per.setdefault(str(v.get("gate")), dict(n=0, would=[], usd=0.0))
         g["n"] += 1
         up = labels.get(v.get("window"))
@@ -453,7 +533,7 @@ def resolve_vetoes(vetoes_path: Path, db_path) -> dict:
                    avoided_usd=round(-g["usd"], 2))
         for name, g in per.items()}
     all_would = [w for g in per.values() for w in g["would"]]
-    return dict(n=len(vetoes), resolved=len(all_would),
+    return dict(n=len(seen), resolved=len(all_would),
                 avoided_cs=round(-statistics.mean(all_would), 2) if all_would else None,
                 avoided_usd=round(-sum(g["usd"] for g in per.values()), 2),
                 per_gate=per_gate)

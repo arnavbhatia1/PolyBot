@@ -202,28 +202,16 @@ def _fresh_book(ask_price: float) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_retry_walk_retries_price_moved_then_fills(trader):
-    """A "Price moved" FOK rejection retries (same class live retries on):
-    attempt 1 sees an ask above the limit, attempt 2 sees it recoil and fills."""
-    trader._PAPER_RETRY_BASE_DELAY = 0.001
+async def test_retry_walk_price_moved_is_one_shot(trader):
+    """A simulated reprice kill does NOT re-walk in-submit: live's reprice
+    kill is a 4xx that returns immediately, so paper takes exactly one walk
+    per submit — a recoiled book fills only on the NEXT tick's fresh fire."""
     ws = _FakeClobWs([_fresh_book(0.60), _fresh_book(0.55)])
-    trader.set_clob_ws(ws)
-    result = await trader._retry_walk("tok", side="buy", requested_price=0.55, size_usd=10.0)
-    assert result.filled is True
-    assert ws.calls == 2
-
-
-@pytest.mark.asyncio
-async def test_retry_walk_exhausts_on_persistent_price_moved(trader):
-    """All attempts see the ask above the limit — unfilled after exactly
-    _PAPER_MAX_RETRIES walks, with the price-moved reason."""
-    trader._PAPER_RETRY_BASE_DELAY = 0.001
-    ws = _FakeClobWs([_fresh_book(0.60)])
     trader.set_clob_ws(ws)
     result = await trader._retry_walk("tok", side="buy", requested_price=0.55, size_usd=10.0)
     assert result.filled is False
     assert "price moved" in result.reason.lower()
-    assert ws.calls == trader._PAPER_MAX_RETRIES
+    assert ws.calls == 1
 
 
 @pytest.mark.asyncio

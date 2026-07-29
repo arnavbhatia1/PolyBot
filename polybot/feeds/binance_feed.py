@@ -132,6 +132,7 @@ class BinanceFeed:
         self._running: bool = False
         self._ws: Any = None
         self._task: asyncio.Task | None = None
+        self._gap_backfill: asyncio.Task | None = None  # in-connection gap repair
 
     async def backfill(self) -> bool:
         """Returns True iff at least one candle was loaded. Non-fatal on failure —
@@ -189,6 +190,7 @@ class BinanceFeed:
                             msg = await asyncio.wait_for(ws.recv(), timeout=75.0)
                         except asyncio.TimeoutError:
                             logger.warning("kline WS idle >75s, forcing reconnect")
+                            self.staleness.mark_disconnected()
                             break
                         try:
                             envelope = _loads(msg)
@@ -222,6 +224,19 @@ class BinanceFeed:
         )
         latest = self.buffer.latest()
         if latest is None or latest.timestamp != candle.timestamp:
+            if latest is not None and candle.timestamp != latest.timestamp + 60_000:
+                # In-connection delivery gap: a stall short enough to beat the
+                # 75s idle reconnect can still span a candle close, and a
+                # gap-adjacent pair poisons ATR true-range + lag1-autocorr —
+                # the same hazard the reconnect path rebuilds against. Clear +
+                # REST backfill; decisions fail closed on the empty buffer
+                # until it lands.
+                if self._gap_backfill is None or self._gap_backfill.done():
+                    logger.warning("kline gap %s -> %s — rebuilding buffer from REST",
+                                   latest.timestamp, candle.timestamp)
+                    self.buffer.clear()
+                    self._gap_backfill = asyncio.create_task(self.backfill())
+                return
             self.buffer.add(candle)
         else:
             self.buffer.update_current(close=candle.close, high=candle.high,

@@ -8,6 +8,28 @@ from dotenv import load_dotenv
 
 _config: dict[str, Any] | None = None
 
+
+class _NoDuplicateKeysLoader(yaml.SafeLoader):
+    """PyYAML silently keeps the LAST of duplicate mapping keys — a duplicated
+    top-level section wipes every knob in the first copy without a trace.
+    Reject at parse so the file fails at boot instead."""
+
+
+def _no_dup_construct_mapping(loader, node, deep=False):
+    seen = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise yaml.YAMLError(
+                f"duplicate key {key!r} at line {key_node.start_mark.line + 1} — "
+                "the second mapping would silently clobber the first")
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+
+_NoDuplicateKeysLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup_construct_mapping)
+
 def _get_nested(config: dict[str, Any], dotted_key: str) -> tuple[Any, bool]:
     keys = dotted_key.split(".")
     current = config
@@ -64,6 +86,25 @@ def validate_config(config: dict[str, Any]) -> None:
 
     _check_range("signal.max_edge", 0.15, 0.30)
 
+    # Exit engine + adverse-selection + timing knobs — consumed by the money
+    # path with direct key access; a typo (0.08 for 0.80) silently disables
+    # the sniper or force-cuts every position, so they gate at boot too.
+    _check_range("signal.loss_cut_fraction", 0.30, 0.90)
+    _check_range("signal.loss_cut_time_s", 30.0, 300.0)
+    _check_range("signal.deep_loss_hold_threshold", -0.30, -0.02)
+    _check_range("signal.regime_lookback", 10, 200, integer=True)
+    _check_range("signal.adverse_selection_threshold", 0.50, 1.0)
+    _check_range("signal.adverse_penalty_floor", 0.20, 0.70)
+    _check_range("signal.adverse_penalty_slope", 0.5, 3.0)
+    _check_range("signal.adverse_penalty_min", 0.10, 1.0)
+    _check_range("signal.edge_decay_threshold", -0.20, 0.0)
+    _check_range("entry_timing.normal_fraction", 0.20, 0.90)
+    _check_range("entry_timing.late_max_penalty", 0.0, 0.90)
+    _check_range("entry_timing.flip_edge_premium", 0.0, 0.05)
+    _check_range("circuit_breaker.floor_pct", 0.50, 0.95)
+    _check_range("circuit_breaker.min_multiplier", 0.10, 1.0)
+    _check_range("execution.fok_spread_cross_floor", 0.0, 0.20)
+
     # Sniper knobs — the ONLY capital-deploying strategy, so a typo here deploys.
     _check_range("late_window.sniper_late_start_s", 10.0, 60.0)
     _check_range("late_window.sniper_move_window_s", 0.5, 10.0)
@@ -119,7 +160,7 @@ def load_config(config_path: str | Path | None = None, env_path: str | Path | No
     if config_path is None:
         config_path = config_dir / "settings.yaml"
     with open(config_path, "r") as f:
-        _config = yaml.safe_load(f)
+        _config = yaml.load(f, Loader=_NoDuplicateKeysLoader)
     validate_config(_config)
     return _config
 
