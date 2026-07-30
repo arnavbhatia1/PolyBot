@@ -1635,8 +1635,7 @@ async def _evaluate_signal_and_enter(
                      _banner_ctx, _PENDING_BANNERS_MAX)
             logger.info(
                 f"{_C.YELLOW}{_C.BOLD}FILLED {side}{_C.RESET}{_C.YELLOW}  ${size:.2f}  |  "
-                f"{_slug_to_window(cid)} — price settling… (full entry prints at the "
-                f"+8s chain audit){_C.RESET}")
+                f"{_slug_to_window(cid)} — price settling…{_C.RESET}")
         else:
             _log_open_banner(_banner_ctx, fill_price, settled="paper")
             if alert_manager:
