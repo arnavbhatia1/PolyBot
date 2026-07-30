@@ -3163,7 +3163,7 @@ async def main() -> None:
     # field isn't zeroed for the first trades after each restart.
     global _prev_resolution_margin
     _prev_resolution_margin = _load_prev_resolution_margin()
-    if _prev_resolution_margin != 0.0:
+    if _prev_resolution_margin is not None:
         logger.debug(f"Restored prev_resolution_margin: {_prev_resolution_margin:+.2f}")
 
     # Gate-skip stats load lazily from _record_skip / flush_gate_stats; this just
