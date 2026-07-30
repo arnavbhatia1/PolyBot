@@ -500,6 +500,61 @@ def regime_shadow_read(db_path=None, since_iso=None):
                 day_detail=scored)
 
 
+# ── Resolution-mechanism watch (TWAP rollout tripwire) ────────────────────────
+def resolution_snapshot_read(db_path=None, hours: float = 26.0):
+    """Is Polymarket still resolving on the terminal Chainlink snapshot?
+
+    Mechanical invariant of the current rule: a window's official final_price
+    and the NEXT window's price_to_beat are the SAME Chainlink report (first
+    at/after their shared boundary) — measured 516/516 bit-exact on the live
+    ledger 2026-07-30. The announced TWAP resolution (no date published)
+    breaks the equality by real dollars whenever price moved during the
+    averaging window, so any systematic divergence = the resolution mechanism
+    changed under the sniper → kill it. Checks windows labeled in the
+    trailing ``hours``; alert-only.
+    """
+    import time as _t
+    db = Path(db_path) if db_path else LIVE_DB
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        rows = con.execute(
+            "SELECT window_id, final_price, price_to_beat, labeled_at "
+            "FROM window_labels WHERE labeled_at >= ?",
+            (_t.time() - (hours + 1.0) * 3600.0,)).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        con.close()
+    cutoff = _t.time() - hours * 3600.0
+    by_ts: dict[int, tuple] = {}
+    for wid, fp, ptb, lab in rows:
+        try:
+            ts = int(str(wid).rsplit("-", 1)[-1])
+        except ValueError:
+            continue
+        by_ts[ts] = (fp, ptb, lab)
+    checked = matched = 0
+    worst = 0.0
+    mism = []
+    for ts, (fp, _ptb, lab) in sorted(by_ts.items()):
+        nxt = by_ts.get(ts + 300)
+        if nxt is None or fp is None or nxt[1] is None or (lab or 0) < cutoff:
+            continue
+        checked += 1
+        if abs(fp - nxt[1]) < 0.005:
+            matched += 1
+        else:
+            d = abs(fp - nxt[1])
+            worst = max(worst, d)
+            if len(mism) < 3:
+                mism.append(dict(window_ts=ts, final=fp, next_ptb=nxt[1],
+                                 diff=round(d, 2)))
+    return dict(checked=checked, matched=matched, worst=round(worst, 2),
+                mismatches=mism)
+
+
 # ── Scar scan (nightly learning loop — polybot/core/scar_scan.py) ─────────────
 def scar_scan_read(db_path=None, since_iso=None, enforce=None,
                    registry_path=None, vetoes_path=None, mode=None):

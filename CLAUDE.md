@@ -383,8 +383,14 @@ it was removed). Never re-add resting quotes.
   (default) the fire path only stamps, never vetoes, and the whole enforce
   hook fails OPEN (a scar-machinery error can never block trading). Flag-rule
   and SPRT constants are design-frozen — tuning them to make a pocket flag
-  (or stop flagging) is relaxing a bar. Pings
-  Discord `#polybot-daily` (✅/⚠️/⏳ sniper).
+  (or stop flagging) is relaxing a bar. The ping also carries the
+  **resolution-mechanism watch** (`resolution_snapshot_read`): every window's
+  official final_price must equal the NEXT window's price_to_beat bit-exact
+  (the same first-at/after-boundary Chainlink report; 516/516 on the live
+  ledger 07-30) — systematic divergence means Polymarket's announced TWAP
+  resolution rolled out and the sniper's terminal-snapshot premise is dead;
+  the ping then says set `sniper_enabled: false` (alert-only, like
+  everything here). Pings Discord `#polybot-daily` (✅/⚠️/⏳ sniper).
 
 ## 8. Hard rules
 

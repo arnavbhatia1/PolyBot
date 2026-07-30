@@ -462,3 +462,61 @@ def test_graduated_gate_stays_graduated_after_volatile_days(tmp_path):
     gr = next(r for r in rep["gates"] if r["name"] == "atr_regime=LO")
     assert g2["status"] == "graduated" and gr["sprt_state"] == "accept_h1"
     assert "restarted" not in g2 and g2["sprt"]["frozen_sigma"] is not None
+
+
+# ── Resolution-mechanism watch (TWAP rollout tripwire) ────────────────────────
+
+def _mk_labels_db(tmp_path, labels):
+    """labels: list of (window_ts, final_price, price_to_beat)."""
+    import time as _t
+    db = tmp_path / "labels_watch.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE window_labels (window_id TEXT PRIMARY KEY, "
+                "resolved_up INTEGER NOT NULL, final_price REAL, "
+                "price_to_beat REAL, labeled_at REAL NOT NULL)")
+    for ts, fp, ptb in labels:
+        con.execute("INSERT INTO window_labels VALUES (?, 1, ?, ?, ?)",
+                    (f"btc-updown-5m-{ts}", fp, ptb, _t.time()))
+    con.commit(); con.close()
+    return db
+
+
+def test_resolution_watch_terminal_snapshot_intact(tmp_path):
+    # final_price(N) == price_to_beat(N+1) — the current rule's invariant
+    # (516/516 bit-exact on the live ledger 2026-07-30).
+    mod = _load_harness()
+    db = _mk_labels_db(tmp_path, [
+        (1000, 64500.00, 64480.00),
+        (1300, 64511.25, 64500.00),
+        (1600, 64490.10, 64511.25),
+        (1900, 64502.00, 64490.10),
+    ])
+    r = mod.resolution_snapshot_read(db)
+    assert r["checked"] == 3 and r["matched"] == 3
+    assert r["mismatches"] == []
+
+
+def test_resolution_watch_flags_twap_style_divergence(tmp_path):
+    # An averaged final_price stops equalling the next boundary snapshot.
+    mod = _load_harness()
+    db = _mk_labels_db(tmp_path, [
+        (1000, 64493.70, 64480.00),   # TWAP-ish average ≠ 64511.25 boundary
+        (1300, 64506.10, 64511.25),   #   (and its own final is off too)
+        (1600, 64490.10, 64512.80),
+    ])
+    r = mod.resolution_snapshot_read(db)
+    assert r["checked"] == 2 and r["matched"] == 0
+    assert r["worst"] > 5.0
+    assert len(r["mismatches"]) == 2
+
+
+def test_resolution_watch_skips_gaps_and_null_prices(tmp_path):
+    mod = _load_harness()
+    db = _mk_labels_db(tmp_path, [
+        (1000, 64500.00, 64480.00),
+        (1300, None, 64500.00),        # unlabeled final — pair (1000,1300) ok,
+        (1900, 64502.00, 64490.10),    # (1300,1600) missing, (1600,1900) missing
+    ])
+    r = mod.resolution_snapshot_read(db)
+    assert r["checked"] == 1 and r["matched"] == 1
+    assert mod.resolution_snapshot_read(tmp_path / "absent.db") is None

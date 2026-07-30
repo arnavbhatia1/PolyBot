@@ -3321,6 +3321,15 @@ async def main() -> None:
         except Exception as e:
             logger.warning("scar scan failed: %s", e)
             scars = None
+        # Resolution-mechanism watch — the TWAP-rollout tripwire. Today every
+        # window's official final_price equals the NEXT window's price_to_beat
+        # bit-exact (same boundary report); the announced TWAP breaks that
+        # equality, and the day it does the sniper's premise is gone.
+        try:
+            twap = await asyncio.to_thread(mod.resolution_snapshot_read, _real_db)
+        except Exception as e:
+            logger.warning("resolution snapshot read failed: %s", e)
+            twap = None
         if sim is None and live is None:
             if alert_manager:
                 await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
@@ -3438,6 +3447,20 @@ async def main() -> None:
                                  f"gate matches — remove it")
             return ("Learned scars: " + " · ".join(parts) + "\n") if parts else ""
 
+        def _twap_line() -> str:
+            if not twap or not twap.get("checked"):
+                return ""
+            c, m = twap["checked"], twap["matched"]
+            if m == c:
+                return (f"Resolution watch: terminal snapshot intact — "
+                        f"{m}/{c} boundary matches to the cent\n")
+            return (f"🚨 **RESOLUTION MECHANISM SHIFT: {c - m}/{c} windows "
+                    f"resolved OFF the terminal Chainlink snapshot (worst "
+                    f"${twap['worst']:.2f} off)** — the announced TWAP rollout "
+                    f"is the prime suspect. **Set `late_window.sniper_enabled: "
+                    f"false` now** and verify a resolved market by hand before "
+                    f"re-enabling.\n")
+
         if kt:
             action = ("**→ ACTION: the pre-registered shut-off line is crossed. "
                       "Set `sniper_enabled: false` in settings.yaml and restart.**")
@@ -3453,6 +3476,7 @@ async def main() -> None:
             f"{_context_line()}"
             f"{_experiments_line()}"
             f"{_scars_line()}"
+            f"{_twap_line()}"
             f"{action}"
         )
         if alert_manager:
