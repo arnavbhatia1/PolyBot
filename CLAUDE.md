@@ -439,8 +439,7 @@ polybot/
                          peak_bankroll; window_labels lives here too; window_paths
                          sits in a gitignored sidecar DB — window_paths.db)
 scripts/
-  run_polybot.sh         THE daily supervisor (systemd unit: polybot.service;
-                         VPS runbook: docs/DEPLOY_ORACLE_VPS.md)
+  run_polybot.sh         THE daily supervisor (systemd unit: polybot.service)
   analyze_late_window.py sniper kill-bar harness (RTT-parametric; --rtt-sweep --max-slip)
   sniper_shadow_status.py  paper-shadow fills vs the harness
   verify_keys.py         live preflight: GET-auth + balance/allowance
