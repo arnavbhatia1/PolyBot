@@ -217,7 +217,7 @@ def _clob_book_aux(clob_ws: Any, token_up: str, token_down: str,
     }
 
 
-# ── Regime-Kelly SHADOW stamps (REGIME_KELLY_DESIGN §4) ──────────────────────
+# ── Regime-Kelly SHADOW stamps ────────────────────────────────────────────────
 # Bucket cuts are FROZEN — never re-fit them during the shadow (re-fitting
 # invalidates the test). Stamps + nightly arithmetic ONLY: nothing here touches
 # sizing, entries, or vetoes; deployment needs the burst SPRT and the

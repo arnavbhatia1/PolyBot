@@ -28,8 +28,8 @@ def _load_harness():
 # ── SPRT core ─────────────────────────────────────────────────────────────────
 
 def test_sprt_retro_sanity_validation_passes_day_3():
-    """Pre-registered retro check (SPRT_DESIGN): the 07-13..18 validation
-    day-means accept H1 on day 3 at the frozen constants."""
+    """Pre-registered retro check: the six validation day-means accept H1
+    on day 3 at the frozen constants."""
     r = run_sprt([2.9, 8.6, 21.1, 12.6, 1.9, 9.3], mu1=6.0, sigma=7.0)
     assert r.state == "accept_h1"
     assert r.n_days == 3
