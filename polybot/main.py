@@ -3652,9 +3652,19 @@ if __name__ == "__main__":
             "  3) Re-run with --allow-orphans to acknowledge known leftover shares\n"
             + "=" * 70 + "\n"
         )
-        _sys.exit(2)
+        # Hard-exit (not sys.exit): a boot that got far enough to open the DB
+        # has aiosqlite's non-daemon worker alive, and a SystemExit would hang
+        # the interpreter at thread-join — a zombie the supervisor waits on
+        # forever instead of restarting.
+        logging.shutdown()
+        os._exit(2)
     except SystemExit:
         raise
     except BaseException:
         logging.critical("FATAL: unhandled exception escaped main()", exc_info=True)
-        raise
+        # Same zombie hazard as above, observed live 07-30: a crash that
+        # bypassed the graceful teardown left the process hung on non-daemon
+        # threads for 10 hours while the supervisor thought it was trading.
+        # The 60s crash-restart only works if we actually die.
+        logging.shutdown()
+        os._exit(1)
