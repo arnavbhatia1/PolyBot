@@ -215,7 +215,7 @@ class CoinbaseFeed:
                         try:
                             msg = await asyncio.wait_for(ws.recv(), timeout=25.0)
                         except asyncio.TimeoutError:
-                            logger.warning("Coinbase WS idle >25s, forcing reconnect")
+                            logger.warning("Coinbase WS idle >25s - Reconnecting")
                             self.staleness.mark_disconnected()
                             break
                         try:
@@ -232,7 +232,7 @@ class CoinbaseFeed:
                 if not self._running:
                     break
                 self.staleness.mark_disconnected()
-                logger.warning("Coinbase WS error: %s, reconnecting in %ds", e, backoff)
+                logger.warning("Coinbase WS %s error - Reconnecting in %ds", type(e).__name__, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX)
 

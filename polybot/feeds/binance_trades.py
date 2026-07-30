@@ -182,7 +182,7 @@ class BinanceTradesFeed:
                         try:
                             msg = await asyncio.wait_for(ws.recv(), timeout=25.0)
                         except asyncio.TimeoutError:
-                            logger.warning("aggTrade WS idle >25s, forcing reconnect")
+                            logger.warning("Binance trades WS idle >25s - Reconnecting")
                             self.staleness.mark_disconnected()
                             break
                         try:
@@ -195,7 +195,7 @@ class BinanceTradesFeed:
                 if not self._running:
                     break
                 self.staleness.mark_disconnected()
-                logger.warning(f"aggTrade WebSocket error: {e}, reconnecting in {backoff}s")
+                logger.warning(f"Binance trades WS {type(e).__name__} error - Reconnecting in {backoff}s")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
 

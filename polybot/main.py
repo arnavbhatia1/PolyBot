@@ -410,6 +410,9 @@ def _log_price_sum_outlier(market_id: str, price_up: float, price_down: float,
 # Throttled logging for hold evaluations and resolution waiting
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
+# SNIPE trigger prints once per (window, side) per 10s — the loop re-evaluates on
+# every Coinbase tick while a burst persists, which spammed the same line at tick rate.
+_last_snipe_log: dict[tuple[int, str], float] = {}
 _resolve_oracle_logged: set[str] = set()  # market_id — RESOLVE oracle line printed once
 _SNIPER_ONLY_QUIET = True  # base entries are always suppressed (sniper-only), so their per-gate SKIP lines are noise -> DEBUG
 _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, hold to resolution
@@ -500,9 +503,9 @@ def _log_hold_heartbeat_stale(pos: dict[str, Any], live: dict[str, Any], reason:
         _last_hold_log[mid] = now_ts
         logger.info(
             f"  {_C.DIM}HOLD {pos.get('side', '?')}{_C.RESET}  "
-            f"{_fmt_secs(live.get('seconds_remaining', 0))}  |  "
-            f"deferring decision — {reason}"
+            f"{_fmt_secs(live.get('seconds_remaining', 0))}  |  Stale feeds"
         )
+        logger.debug("stale-feed detail: %s", reason)
 
 
 def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) -> tuple[float, str]:
@@ -561,11 +564,7 @@ def _emit_gate_skip(cid: str, gate_key: str, reason: str, quiet: bool = False) -
     if prev_time is not None and (now - prev_time) < 30:
         return
     _lru_set(_last_gate_skip_state, key, now, _GATE_STATE_MAX)
-    emit(
-        f"{_C.DIM}SKIP {ctx['direction']} {ctx['window_slug']} | "
-        f"model {ctx['prob']:.0%} {ctx['direction']}, BTC {ctx['dist']:+,.0f} vs strike | "
-        f"{reason}{_C.RESET}"
-    )
+    emit(f"{_C.DIM}SKIP {ctx['direction']} — {reason}{_C.RESET}")
 
 def _et_date_key() -> str:
     """Current ET calendar date as 'YYYYMMDD' — the rollover key for daily gate stats."""
@@ -1128,8 +1127,14 @@ async def _evaluate_signal_and_enter(
             _snipe.action = "BUY_YES" if _snipe.action == "LATE_SNIPE_YES" else "BUY_NO"
             signal = _snipe
             is_sniper = True
-            logger.info(f"{_C.DIM}SNIPE {signal.side} — coinbase {_cbm:+.0f} past strike · "
-                        f"model {signal.prob:.0%} edge {signal.edge:+.0%}{_C.RESET}")
+            _snipe_key = (_w_ts, signal.side)
+            _snipe_now = time.time()
+            if _snipe_now - _last_snipe_log.get(_snipe_key, 0.0) >= 10.0:
+                if len(_last_snipe_log) > 64:
+                    _last_snipe_log.clear()
+                _last_snipe_log[_snipe_key] = _snipe_now
+                logger.info(f"{_C.DIM}SNIPE {signal.side} — Coinbase {_cbm:+.0f} past strike | "
+                            f"Model {signal.prob:.0%} Edge {signal.edge:+.0%}{_C.RESET}")
 
     if is_sniper:                       # the sniper bypasses the late-window time penalty
         time_mult, phase = 1.0, "late_sniper"
@@ -1224,8 +1229,8 @@ async def _evaluate_signal_and_enter(
             if eval_window != _last_adverse_skip_log_window:
                 _last_adverse_skip_log_window = eval_window
                 logger.info(
-                    f"{_C.DIM}SKIP adverse selection (hard) — fade rate "
-                    f"{adverse_rate_at_30s:.0%} ≥ emergency floor {hard_skip_at:.0%}{_C.RESET}"
+                    f"{_C.DIM}SKIP {signal.side} — {adverse_rate_at_30s:.0%} of recent "
+                    f"fills faded after filling{_C.RESET}"
                 )
             return None, last_eval_log_window
         if adverse_rate_at_30s > penalty_floor:
@@ -1246,7 +1251,7 @@ async def _evaluate_signal_and_enter(
             _ghost("edge_decay", signal, {})
             _emit_gate_skip(
                 cid, "edge_decay",
-                f"15s post-fill drift {recent_decay:+.3f} < {edge_decay_threshold:+.3f}"
+                f"Recent fills drifting against us ({recent_decay:+.3f} in 15s)"
             )
             return None, last_eval_log_window
 
@@ -1333,7 +1338,7 @@ async def _evaluate_signal_and_enter(
         # thin-side fire population needs its resolved evidence too.
         _ghost("thin_book_depth", signal, {})
         _emit_gate_skip(cid, "thin_book_depth",
-                        f"chosen side {side} depth ${side_depth:.0f} < ${min_side_depth:.0f}")
+                        f"Thin book on the {side} side (${side_depth:.0f} < ${min_side_depth:.0f})")
         return None, last_eval_log_window
     max_fill = side_depth * max_fill_pct
     if size > max_fill:
@@ -1348,7 +1353,7 @@ async def _evaluate_signal_and_enter(
     if net_edge < signal_engine.min_edge:
         _record_skip("net_edge_after_slippage")
         _ghost("net_edge_after_slippage", signal, {})
-        _emit_gate_skip(cid, "net_edge_slippage", f"net edge {net_edge:+.1%} after {est_slip:.2%} slippage")
+        _emit_gate_skip(cid, "net_edge_slippage", f"Edge gone after slippage ({net_edge:+.1%})")
         return None, last_eval_log_window
 
     # Final min-size check after all caps: Polymarket's CLOB rejects orders below
@@ -1360,7 +1365,7 @@ async def _evaluate_signal_and_enter(
         # $1), and the resolved ghosts are the evidence for any future sizing-
         # anchor change.
         _ghost("min_size", signal, {})
-        _emit_gate_skip(cid, "min_size", f"size ${size:.2f} < $1 min")
+        _emit_gate_skip(cid, "min_size", f"Order below minimum (${size:.2f} < $1)")
         return None, last_eval_log_window
 
     # fee_rate already fetched before signal eval (used by Kelly). tick_size
@@ -1524,8 +1529,7 @@ async def _evaluate_signal_and_enter(
                 _scar_vetoed.setdefault(_sw, set()).add(_hit)
                 if _first_new:
                     _ghost(_gate, signal, snapshot)
-                    _emit_gate_skip(cid, _gate,
-                                    f"learned veto — {_scar_hits[0]} (SPRT-graduated scar gate)")
+                    _emit_gate_skip(cid, _gate, f"SCAR Veto ({_scar_hits[0]})")
                     _first_new = False
                 scar_scan.record_veto(SCAR_VETOES_PATH, _hit, cid, side,
                                       signal_ask, size)
@@ -1549,7 +1553,7 @@ async def _evaluate_signal_and_enter(
             _record_skip("pre_submit_vwap_drift")
             _ghost("pre_submit_vwap_drift", signal, snapshot)
             _emit_gate_skip(cid, "pre_submit_vwap_drift",
-                            f"vwap walk {price:.3f}→{fok_vwap:.3f}, net edge {vwap_net_edge:+.1%}")
+                            f"Ask moved {price:.3f} → {fok_vwap:.3f} (edge gone)")
             return None, last_eval_log_window
     elif fresh_ask > 0 and fresh_ask != price:
         fresh_gross_edge = signal.prob - fresh_ask
@@ -1558,7 +1562,7 @@ async def _evaluate_signal_and_enter(
             _record_skip("pre_submit_edge_drift")
             _ghost("pre_submit_edge_drift", signal, snapshot)
             _emit_gate_skip(cid, "pre_submit_drift",
-                            f"ask drifted {price:.3f}→{fresh_ask:.3f}, net edge {fresh_net_edge:+.1%}")
+                            f"Ask moved {price:.3f} → {fresh_ask:.3f} (edge gone)")
             return None, last_eval_log_window
 
     # Pre-sign concurrently with the submit's preflight. Spawned only after the
@@ -1591,12 +1595,13 @@ async def _evaluate_signal_and_enter(
         # fill" / "price moved before fill after N attempts" / "unmatched
         # status … — cancelled, no fill"; paper "Price moved before fill".
         _rl = reason.lower()
-        if is_sniper and ("no fill" in _rl or _rl.startswith("price moved")):
+        _killed = "no fill" in _rl or _rl.startswith("price moved")
+        if is_sniper and _killed:
             _record_killed_ask(cid, side, signal_ask)
         _log_skip_once(
             cid, f"open_rejected_{reason}",
-            f"{_C.DIM}OPEN {side} REJECTED  ${size:.2f} @ {price:.3f}  |  "
-            f"{_slug_to_window(cid)}  |  {reason}{_C.RESET}"
+            f"{_C.DIM}OPEN {side} REJECTED  ${size:.2f} @ {price:.2f} — "
+            f"{'Book repriced' if _killed else reason}{_C.RESET}"
         )
         return None, last_eval_log_window
 
@@ -1692,8 +1697,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
         # NOT Polymarket's first report (measured ~1-2% of windows, $35+ off).
         prev = window_strikes.get(contract_window_ts)
         if prev is not None and abs(prev - ptb) > 0.005:
-            logger.warning(f"Strike settle {_slug_to_window(cid)}: captured ${prev:,.2f} -> "
-                           f"Polymarket price_to_beat ${ptb:,.2f} (RTDS boundary gap)")
+            logger.warning(f"Strike Corrected {_slug_to_window(cid)}: ${prev:,.2f} → ${ptb:,.2f}")
         window_strikes[contract_window_ts] = ptb
         _strike_trusted[contract_window_ts] = True
         if contract_window_ts not in _strike_logged:
@@ -1718,10 +1722,9 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
 
     strike = window_strikes.get(contract_window_ts, 0)
     if strike <= 0:
-        buf_len = len(binance_feed.buffer) if binance_feed.buffer else 0
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
-            logger.info(f"EVAL {_slug_to_window(cid)}: No strike yet — buffer has {buf_len} candles")
+            logger.info(f"EVAL {_slug_to_window(cid)} - No Polymarket strike captured yet")
         return None, None, window_strikes, last_eval_log_window, "none"
 
     # BTC price comes from Coinbase WS only (the venue Chainlink resolves against);
@@ -1731,7 +1734,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     if btc_price <= 0:
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
-            logger.info(f"EVAL {_slug_to_window(cid)}: No BTC price — Binance feed not ready")
+            logger.info(f"EVAL {_slug_to_window(cid)} - No Coinbase BTC price yet")
         return None, None, window_strikes, last_eval_log_window, "none"
 
     # Skip if candle data is stale (WebSocket may have disconnected)
@@ -1739,7 +1742,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     if latest_candle_age > 180:
         if eval_window != last_eval_log_window:
             last_eval_log_window = eval_window
-            logger.warning(f"Stale Binance candle ({latest_candle_age:.0f}s old) — skipping entry")
+            logger.warning(f"Stale Binance Candle ({latest_candle_age:.0f}s old) — Skipping entry")
         return None, None, window_strikes, last_eval_log_window, "none"
 
     return strike, btc_price, window_strikes, last_eval_log_window, _price_source
@@ -1836,7 +1839,7 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
             if eval_window != last_eval_log_window:
                 last_eval_log_window = eval_window
                 _cid = contract.get("slug", contract.get("market_id", ""))
-                logger.info(f"EVAL {_slug_to_window(_cid)}: Thin CLOB depth — Up=${depth_usd_up:.0f} Dn=${depth_usd_down:.0f}, skipping window")
+                logger.info(f"SKIP {_slug_to_window(_cid)} — Thin book (Up ${depth_usd_up:.0f} / Down ${depth_usd_down:.0f})")
             return None, last_eval_log_window
 
     # Effective execution cost must clear max_spread on EITHER side — we don't yet
@@ -2040,10 +2043,10 @@ async def _evaluate_and_exit_position(
         mid = pos["market_id"]
         if now_ts - _last_hold_log.get(mid, 0) >= 30:
             _last_hold_log[mid] = now_ts
-            cl_str = f"  cl ${chainlink_feed.price:,.0f}" if chainlink_feed and chainlink_feed.price > 0 else ""
+            cl_str = f"  CL ${chainlink_feed.price:,.0f}" if chainlink_feed and chainlink_feed.price > 0 else ""
             logger.info(
                 f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
-                f"BTC ${btc_now:,.0f} [{_btc_src}]{cl_str}  (no fresh bid)"
+                f"CB ${btc_now:,.0f} {_btc_src.replace('coinbase ', '')}{cl_str}  (No fresh bid)"
             )
         return day_wins, day_losses, day_fees
 
@@ -2103,11 +2106,11 @@ async def _evaluate_and_exit_position(
             else:
                 edge_color = _C.GREEN if holding_edge > 0 else _C.RED
                 edge_str = f"{holding_edge:+.0%}"
-            cl_str = f"  cl ${chainlink_feed.price:,.0f}" if chainlink_feed and chainlink_feed.price > 0 else ""
+            cl_str = f"  CL ${chainlink_feed.price:,.0f}" if chainlink_feed and chainlink_feed.price > 0 else ""
             logger.info(
                 f"  {_C.DIM}HOLD {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
-                f"prob {model_prob:.0%}  {edge_color}edge {edge_str}{_C.RESET}  |  "
-                f"BTC ${btc_now:,.0f} [{_btc_src}]{cl_str}  mkt {market_price:.2f}")
+                f"model {model_prob:.0%}  mkt {market_price:.0%}  {edge_color}edge {edge_str}{_C.RESET}  |  "
+                f"CB ${btc_now:,.0f} {_btc_src.replace('coinbase ', '')}{cl_str}")
         if counterfactual_tracker:
             _cf_atr = indicators.get("atr", {}).get("atr", 1.0) or 1.0
             _hold_aux = _build_aux_signals(coinbase_feed, trades_feed)
@@ -2168,8 +2171,7 @@ async def _evaluate_and_exit_position(
             if pos["id"] not in _abandoned_scalp_positions:
                 logger.info(
                     f"  SCALP VERIFY {pos['side']}  {_fmt_secs(live['seconds_remaining'])}  |  "
-                    f"ws_bid={ws_bid:.3f} vs /price={verified_price:.3f} — using real price  "
-                    f"real_edge={real_edge:+.0%} thresh={effective_exit_threshold:+.0%}"
+                    f"Bid {ws_bid:.2f} vs Price {verified_price:.2f} — Using real price"
                 )
             if real_edge > effective_exit_threshold:
                 # Real market not bad enough to scalp — hold
@@ -2200,16 +2202,15 @@ async def _evaluate_and_exit_position(
             if pos["id"] not in _abandoned_scalp_positions:
                 _abandoned_scalp_positions.add(pos["id"])
                 logger.info(
-                    f"  SCALP DEFERRED — position too small (${exit_size_usd:.2f} < $1.00), "
-                    f"monitoring for recovery or resolution"
+                    f"  SCALP DEFERRED — Small position (${exit_size_usd:.2f} < $1.00), Monitoring"
                 )
                 _last_hold_log[mid] = now_ts
             elif now_ts - _last_hold_log.get(mid, 0) >= 30:
                 _last_hold_log[mid] = now_ts
                 logger.info(
-                    f"  {_C.DIM}HOLD (small) {pos['side']}{_C.RESET}  "
+                    f"  {_C.DIM}HOLD (Small) {pos['side']}{_C.RESET}  "
                     f"{_fmt_secs(live['seconds_remaining'])}  |  size ${exit_size_usd:.2f}  "
-                    f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  mkt {market_price:.2f}"
+                    f"prob {model_prob:.0%}  mkt {market_price:.0%}  edge {holding_edge:+.0%}"
                 )
             return day_wins, day_losses, day_fees
 
@@ -2217,16 +2218,16 @@ async def _evaluate_and_exit_position(
         if pos["id"] in _abandoned_scalp_positions:
             _abandoned_scalp_positions.discard(pos["id"])
             logger.info(
-                f"  SCALP RESUMED — position recovered to ${exit_size_usd:.2f}, "
-                f"attempting exit"
+                f"  SCALP RESUMED — Position recovered ${exit_size_usd:.2f}, Attempting exit"
             )
 
         # Emit the pre-scalp snapshot here (after size guard) so the price the
         # scalp triggers on is always visible, without spamming on deferred ticks.
+        _cl_pre = f"  CL ${chainlink_feed.price:,.0f}" if chainlink_feed and chainlink_feed.price > 0 else ""
         logger.info(
             f"  {_C.DIM}PRE-SCALP {pos['side']}{_C.RESET}  {_fmt_secs(live['seconds_remaining'])}  |  "
-            f"prob {model_prob:.0%}  edge {holding_edge:+.0%}  |  "
-            f"BTC ${btc_now:,.0f} [{_btc_src}]  mkt {market_price:.2f}"
+            f"prob {model_prob:.0%}  mkt {market_price:.0%}  edge {holding_edge:+.0%}  |  "
+            f"CB ${btc_now:,.0f} {_btc_src.replace('coinbase ', '')}{_cl_pre}"
         )
 
         result = await trader.close_trade(pos["id"], exit_fill, token_id=sell_token, position=pos)
@@ -2236,11 +2237,13 @@ async def _evaluate_and_exit_position(
                 # defer, monitor, retry next tick.
                 _abandoned_scalp_positions.add(pos["id"])
                 logger.info(
-                    f"  SCALP DEFERRED — order rejected by CLOB minimum (${exit_size_usd:.2f}), "
-                    f"monitoring for recovery"
+                    f"  SCALP DEFERRED — Below exchange minimum (${exit_size_usd:.2f}), Monitoring"
                 )
                 return day_wins, day_losses, day_fees
-            logger.warning(f"  SCALP FAILED — Retrying next tick: {result.reason}")
+            _fr = (result.reason or "").lower()
+            _fail_why = ("Book repriced" if ("no fill" in _fr or _fr.startswith("price moved"))
+                         else (result.reason or "unknown"))
+            logger.warning(f"  SCALP FAILED — {_fail_why}, retrying next tick")
         elif result.success:
             _invalidate_open_positions_cache()
             pnl = result.pnl
@@ -2303,7 +2306,8 @@ async def _evaluate_and_exit_position(
     return day_wins, day_losses, day_fees
 
 
-def _resolved_exit_price(live: dict[str, Any], side: str) -> tuple[float | None, str | None]:
+def _resolved_exit_price(live: dict[str, Any], side: str,
+                         market_id: str = "") -> tuple[float | None, str | None]:
     """Decide a resolved position's binary exit price from current market state.
 
     Returns ``(exit_price, oracle_log)``: ``exit_price`` is the binary payoff
@@ -2337,8 +2341,9 @@ def _resolved_exit_price(live: dict[str, Any], side: str) -> tuple[float | None,
                 "Up" if pu >= 0.5 else "Down", pu,
             )
         exit_price = 1.0 if (side == "Up") == up_won else 0.0
-        return exit_price, (f"Strike {strike:,.2f} → Final {final_price:,.2f} "
-                            f"— {'Up' if up_won else 'Down'} wins")
+        _wnd = f" {_slug_to_window(market_id)}" if market_id else ""
+        return exit_price, (f"{'UP' if up_won else 'DOWN'}{_wnd} | "
+                            f"${strike:,.2f} → ${final_price:,.2f}")
     price_up = live.get("price_up")
     price_down = live.get("price_down")
     if (live.get("closed") and price_up is not None and price_down is not None
@@ -2358,20 +2363,20 @@ async def _resolve_expired_position(
     """Resolve a position whose contract has expired (seconds_remaining <= 0)."""
     global _prev_resolution_margin
     # Chainlink oracle first (authoritative), then a coherent resolved CLOB book.
-    exit_price, resolve_log = _resolved_exit_price(live, pos["side"])
+    exit_price, resolve_log = _resolved_exit_price(live, pos["side"], pos["market_id"])
     if exit_price is None:
         # Window hasn't resolved yet — wait for the next tick (polls every 2s).
         now_ts = time.time()
         mid = pos["market_id"]
         if mid not in _last_resolve_wait_log:
             _last_resolve_wait_log[mid] = now_ts
-            logger.info(f"Waiting for resolution — {_slug_to_window(mid)}")
+            logger.info(f"{_C.DIM}WAITING FOR RESOLUTION {_slug_to_window(mid)}{_C.RESET}")
         return False, day_wins, day_losses, day_fees
     if resolve_log and pos["market_id"] not in _resolve_oracle_logged:
         # Log once per market — a pending winning redeem retries this path every
         # tick and would otherwise repeat the same RESOLVE line for minutes.
         _resolve_oracle_logged.add(pos["market_id"])
-        logger.info(f"RESOLVE {_slug_to_window(pos['market_id'])} | {resolve_log}")
+        logger.info(f"RESOLVED {resolve_log}")
 
     result = await trader.resolve_position(pos["id"], exit_price)
     if result.pending:
@@ -2448,15 +2453,19 @@ async def _manage_orphaned_position(
     resolved_strike: float | None = None
     # Try direct Gamma fetch for eventMetadata (Chainlink oracle)
     direct = await _get_contract_prices(market_scanner, pos["market_id"], http_client)
-    direct_price, direct_log = _resolved_exit_price(direct, pos["side"]) if direct else (None, None)
+    direct_price, direct_log = (_resolved_exit_price(direct, pos["side"], pos["market_id"])
+                                if direct else (None, None))
     if direct_price is not None:
         exit_price = direct_price
         meta = direct.get("event_metadata") or {}
         if meta.get("final_price") is not None and meta.get("price_to_beat") is not None:
             resolved_final = meta.get("final_price")
             resolved_strike = meta.get("price_to_beat")
-        logger.info(f"RESOLVE orphan {_slug_to_window(pos['market_id'])} | "
-                    f"{direct_log or 'coherent CLOB book'}")
+        if direct_log:
+            logger.info(f"RESOLVED {direct_log} (orphan)")
+        else:
+            logger.info(f"RESOLVED {_slug_to_window(pos['market_id'])} | "
+                        f"coherent CLOB book (orphan)")
     elif age > 1800 and chainlink_feed and chainlink_feed.price > 0:
         # Gamma silent for 30+ min — Polymarket has already auto-credited the Safe
         # via on-chain settlement, so the bankroll is correct. Use the Chainlink
@@ -2468,7 +2477,7 @@ async def _manage_orphaned_position(
         strike_at_boundary = chainlink_feed.get_strike(window_ts) if window_ts else None
         if strike_at_boundary is None or strike_at_boundary <= 0:
             # No captured strike (feed wasn't running at boundary) — keep waiting
-            logger.info(f"Orphan {_slug_to_window(pos['market_id'])} (age {age:.0f}s) — Chainlink strike not captured, still waiting")
+            logger.info(f"ORPHAN {_slug_to_window(pos['market_id'])} ({age:.0f}s old) — Waiting for resolution (no Chainlink strike captured)")
             return True, day_wins, day_losses, day_fees
         # Compare strike (Chainlink at window_ts) vs final (Chainlink at window_ts+300),
         # matching Polymarket's own resolution rule. Falling back to the current price
@@ -2486,9 +2495,9 @@ async def _manage_orphaned_position(
         resolved_final = final_price
         resolved_strike = strike_at_boundary
         logger.warning(
-            f"RESOLVE orphan {_slug_to_window(pos['market_id'])} via Chainlink fallback "
-            f"(Gamma silent {age:.0f}s) | Strike ${strike_at_boundary:,.2f} → ${final_price:,.2f} "
-            f"[{final_source}] — {'Up' if up_won else 'Down'} wins (exit={exit_price})"
+            f"RESOLVE ORPHAN {'UP' if up_won else 'DOWN'} {_slug_to_window(pos['market_id'])} | "
+            f"Via Chainlink fallback (Gamma silent for {age:.0f}s) | "
+            f"Strike ${strike_at_boundary:,.2f} → Final ${final_price:,.2f} [{final_source}]"
         )
         if alert_manager:
             try:
@@ -2502,14 +2511,14 @@ async def _manage_orphaned_position(
         # No official resolution data yet — keep waiting (Polymarket auto-credits
         # the Safe regardless, so bankroll is correct on next sync).
         if age > 3600:
-            logger.error(f"ORPHANED >1hr: {_slug_to_window(pos['market_id'])} — No Gamma resolution data, waiting for Chainlink oracle")
+            logger.error(f"ORPHANED >1hr {_slug_to_window(pos['market_id'])} | Waiting for Chainlink fallback")
             if alert_manager:
                 await alert_manager.send_trade_closed(
                     question=pos.get("question", ""), exit_price=0,
                     side=pos["side"], entry_price=pos["entry_price"], pnl=0,
                     gain_pct=0, reason="orphaned — awaiting resolution", fees=0)
         else:
-            logger.info(f"Orphan {_slug_to_window(pos['market_id'])} (age {age:.0f}s) — Waiting for Gamma resolution")
+            logger.info(f"ORPHAN {_slug_to_window(pos['market_id'])} ({age:.0f}s old) — Waiting for resolution")
         return True, day_wins, day_losses, day_fees  # still waiting
     result = await trader.resolve_position(pos["id"], exit_price)
     if result.pending:
@@ -2692,8 +2701,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     logger.info(
         f"Feeds: Coinbase {_f(coinbase_feed)} · Binance {_f(binance_feed)} · "
         f"Chainlink {_f(chainlink_feed)} · "
-        f"CLOB WS {'Ready' if clob_ws is not None else 'Disconnected'} · "
-        f"Discord {'Connected' if alert_manager is not None else 'Unavailable'}"
+        f"CLOB WS {'OK' if clob_ws is not None else '--'} · "
+        f"Discord {'OK' if alert_manager is not None else '--'}"
     )
 
     # Closure captures clob_ws once — reused across all book-update ticks.
@@ -2736,7 +2745,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     clob_ws.market_resolved.clear()
                     # Invalidate price cache — Gamma should have resolution data now
                     _contract_price_cache.clear()
-                    logger.info("Market resolved via WS — cache cleared, checking resolution")
+                    logger.info("Market Resolved — Checking resolution")
             except asyncio.TimeoutError:
                 pass  # housekeeping tick — contract discovery, day banners
         else:

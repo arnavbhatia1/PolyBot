@@ -209,7 +209,7 @@ class ClobWebSocket:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
                 await ws.send("PING")
                 if time.time() - self._last_pong_ts > HEARTBEAT_TIMEOUT:
-                    logger.warning("CLOB WS: no PONG in %.0fs — forcing reconnect",
+                    logger.warning("CLOB WS no PONG for %.0fs - Reconnecting",
                                    time.time() - self._last_pong_ts)
                     await ws.close()
                     return

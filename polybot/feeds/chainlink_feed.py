@@ -165,8 +165,8 @@ class ChainlinkFeed:
             connected_for = time.time() - self._last_connect
             if self._ws is not None and connected_for > 2 * STALE_TIMEOUT_S:
                 logger.warning(
-                    "ChainlinkFeed: connected %.0fs with zero reports — forcing "
-                    "reconnect", connected_for)
+                    "ChainlinkFeed connected %.0fs with zero reports - Reconnecting",
+                    connected_for)
                 try:
                     await self._ws.close()
                 except Exception:
@@ -179,7 +179,7 @@ class ChainlinkFeed:
             fresh_connect = (time.time() - self._last_connect) < STALE_TIMEOUT_S
             if stale and self._ws is not None and not fresh_connect:
                 logger.warning(
-                    "ChainlinkFeed: no update in %.0fs — forcing reconnect",
+                    "ChainlinkFeed idle for %.0fs — Reconnecting",
                     time.time() - self._last_update,
                 )
                 try:
@@ -265,7 +265,7 @@ class ChainlinkFeed:
                 # leave the per-IP penalty box instead of immediately re-tripping it.
                 if "429" in str(e):
                     backoff = max(backoff, RECONNECT_MAX_S / 2)
-                logger.warning("ChainlinkFeed: WS disconnected (%s), reconnecting in %.0fs", e, backoff)
+                logger.warning("ChainlinkFeed disconnected (%s) - Reconnecting in %.0fs", type(e).__name__, backoff)
                 self._ws = None
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX_S)

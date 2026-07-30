@@ -15,6 +15,19 @@ from polybot.execution.base import DEFAULT_FEE_RATE
 logger = logging.getLogger(__name__)
 
 
+def _slug_window(slug: str) -> str:
+    """'btc-updown-5m-1776691500' → '12:35-12:40 ET' for log lines."""
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import timedelta
+        ts = int(slug.rsplit("-", 1)[-1])
+        start = datetime.fromtimestamp(ts, tz=ZoneInfo("America/New_York"))
+        end = start + timedelta(minutes=5)
+        return f"{start.strftime('%I:%M').lstrip('0')}-{end.strftime('%I:%M ET').lstrip('0')}"
+    except Exception:
+        return slug
+
+
 @asynccontextmanager
 async def _ensure_client(http_client: httpx.AsyncClient | None) -> AsyncIterator[httpx.AsyncClient]:
     """Yield `http_client` if given, else a short-lived one. Lets None callers (tests, scripts) work."""
@@ -324,10 +337,10 @@ class BTCMarketScanner:
             except Exception as e:
                 if "getaddrinfo" in str(e).lower() or "dnserror" in type(e).__name__.lower():
                     if now - self._last_dns_error_ts >= 30:
-                        logger.warning("Gamma API: DNS failure — network down? (suppressing for 30s)")
+                        logger.warning("Gamma API DNS failure - suppressing for 30s")
                         self._last_dns_error_ts = now
                 else:
-                    logger.error(f"Gamma API error for {slug}: {type(e).__name__}: {e}")
+                    logger.error(f"Gamma API {type(e).__name__} error for {_slug_window(slug)}")
                 continue
 
             if not data:

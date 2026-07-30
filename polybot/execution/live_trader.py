@@ -74,8 +74,12 @@ _ALLOWANCE_RECHECK_EVERY = 10
 _FILL_PRICE_LOOKUP_RETRIES = 8
 _FILL_PRICE_LOOKUP_DELAY = 0.12
 _DUST_THRESHOLD_SHARES = 0.01
-_REDEEM_WAIT_MAX_S = 120.0    # winning tokens still on-chain past this → CRITICAL (alert-only)
+_REDEEM_WAIT_MAX_S = 600.0    # winning tokens still on-chain past this → CRITICAL (alert-only)
+_REDEEM_SETTLING_NOTE_S = 120.0  # calm one-line note while auto-redeem does its normal 1-3 min
 _REDEEM_CHECK_EVERY_S = 10.0  # data-API redeem checks are rate-limited to this cadence
+_ANSI_DIM = "\033[2m"
+_ANSI_RED = "\033[91m"
+_ANSI_RESET = "\033[0m"
 _FILL_AUDIT_DELAY_S = 8.0     # let the indexer see the fill before auditing the entry price
 _BALANCE_SETTLE_FLOOR = 0.03  # min chain-settle wait even if WS fires immediately
 _BALANCE_SETTLE_DELAY = 0.15  # max wait — WS-wait ceiling, and the fixed delay when no WS is attached
@@ -452,9 +456,8 @@ class LiveTrader(BaseTrader):
             return
         if allowance < self._min_allowance_warn_threshold:
             logger.error(
-                "USDC allowance dropped to $%.2f (warn threshold $%.2f). "
-                "Safe %s may need re-approval before next batch of orders. "
-                "Subsequent orders will fail INSUFFICIENT_ALLOWANCE.",
+                "USDC allowance dropped to $%.2f (warn threshold $%.2f, Safe %s) "
+                "- May need re-approval as subsequent orders will fail",
                 allowance,
                 self._min_allowance_warn_threshold,
                 os.environ.get("POLYMARKET_FUNDER", "<safe>"),
@@ -620,14 +623,14 @@ class LiveTrader(BaseTrader):
         """
         if exit_price < 0.99:
             real_balance = await self.get_balance()
-            logger.info("Resolution bankroll sync: real balance=%.2f", real_balance)
+            logger.info("Bankroll Sync - $%.2f", real_balance)
             return real_balance
 
         pos_id = position.get("id", -1)
         now = time.time()
         wait = self._redeem_pending.get(pos_id)
         if wait is None:
-            wait = {"deadline": now + _REDEEM_WAIT_MAX_S, "next_check": 0.0}
+            wait = {"since": now, "deadline": now + _REDEEM_WAIT_MAX_S, "next_check": 0.0}
             self._redeem_pending[pos_id] = wait
         if now < wait["next_check"]:
             return None
@@ -642,12 +645,10 @@ class LiveTrader(BaseTrader):
             if now >= wait["deadline"] and not wait.get("alerted"):
                 wait["alerted"] = True
                 logger.critical(
-                    "WINNING REDEEM UNVERIFIABLE: position %s — the winning-token "
-                    "balance could not be read once in %.0fs after resolution "
-                    "(token id missing from the entry snapshot, or the data API is "
-                    "down). Check the wallet at polymarket.com/portfolio and redeem "
-                    "manually; the position books automatically if a read succeeds.",
-                    pos_id, _REDEEM_WAIT_MAX_S,
+                    "%sREDEEM UNVERIFIABLE - Position %s: Winning-token balance "
+                    "could not be read once in %.0fs after resolution. Check the "
+                    "wallet, redeem manually, and the book will follow%s",
+                    _ANSI_RED, pos_id, _REDEEM_WAIT_MAX_S, _ANSI_RESET,
                 )
             return None
         if held <= _DUST_THRESHOLD_SHARES:
@@ -662,19 +663,21 @@ class LiveTrader(BaseTrader):
                 logger.warning("Balance cache refresh failed (booking anyway): %s", e)
             balance = await self.get_balance()
             del self._redeem_pending[pos_id]
-            logger.info(
-                "Winning resolution — redeem confirmed on-chain (tokens cleared): "
-                "balance %.2f", balance,
-            )
+            # The RESOLVED banner that follows immediately IS the confirmation.
+            logger.debug("Redeem cleared for position %s: balance %.2f", pos_id, balance)
             return balance
+        if now - wait["since"] >= _REDEEM_SETTLING_NOTE_S and not wait.get("noted"):
+            wait["noted"] = True
+            logger.info(
+                "%sPayout Settling — %.2f shares awaiting auto-redeem%s",
+                _ANSI_DIM, held, _ANSI_RESET,
+            )
         if now >= wait["deadline"] and not wait.get("alerted"):
             wait["alerted"] = True
             logger.critical(
-                "WINNING REDEEM STUCK: position %s — %.2f winning share(s) still in "
-                "the funder wallet %.0fs after resolution; auto-redeem has not fired. "
-                "The payout needs a manual redeem (Polymarket UI). Position stays "
-                "pending and books automatically once the tokens clear.",
-                pos_id, held, _REDEEM_WAIT_MAX_S,
+                "%sPAYOUT STUCK (%d min) — Position %s: Redeem manually and book "
+                "will follow%s",
+                _ANSI_RED, int(_REDEEM_WAIT_MAX_S // 60), pos_id, _ANSI_RESET,
             )
         return None
 
@@ -1339,18 +1342,15 @@ class LiveTrader(BaseTrader):
             )
 
         if not orphans:
-            # Crystal-clear clean-boot line. Never call the $0 losers "ignored":
-            # they are lost bets that resolved to $0 and have no redeem path at
-            # all, so they linger on-chain worth nothing. State that plainly.
+            # Crystal-clear clean-boot line. The $0 losing stubs are lost bets
+            # already booked in the ledger — closing them in the UI is cosmetic.
             if losers:
                 logger.info(
-                    "Wallet check: clean — all tradeable positions tracked; no real "
-                    "money unclaimed. %d finished window(s) hold only losing shares "
-                    "worth $0 (nothing to redeem — a $0 loser has no payout to claim).",
+                    "Wallet Check: Clean with %d cosmetic losing stubs",
                     len(losers),
                 )
             else:
-                logger.info("Wallet check: clean - all positions tracked")
+                logger.info("Wallet Check: Clean")
             logger.debug(
                 "Orphan detection detail: %d non-dust chain position(s), %d unclaimed "
                 "winner(s), %d resolved $0 loser(s).",
@@ -1623,7 +1623,7 @@ class LiveTrader(BaseTrader):
         notional_usd = amount if side == BUY else amount * expected_price
         if notional_usd < _MIN_ORDER_USD - 0.01:
             logger.info(
-                "FOK %s skipped: notional $%.2f below $%.2f minimum",
+                "SKIP %s — Order below minimum ($%.2f < $%.2f)",
                 side, notional_usd, _MIN_ORDER_USD,
             )
             reason = f"Order ${notional_usd:.2f} below ${_MIN_ORDER_USD:.2f} CLOB minimum"
@@ -1705,7 +1705,7 @@ class LiveTrader(BaseTrader):
                 if not resp.get("success"):
                     error_msg = resp.get("errorMsg", "unknown error")
                     if _looks_like_auth_error(error_msg):
-                        logger.error("AUTH FAILURE — Polymarket rejected order: %s", error_msg)
+                        logger.error("AUTH FAILURE — %s", error_msg)
                         raise AuthError(error_msg)
                     # Non-retryable errors bail immediately
                     if any(code in error_msg for code in _NON_RETRYABLE_ERRORS):
@@ -1777,7 +1777,8 @@ class LiveTrader(BaseTrader):
                     # py-clob amount semantics: USDC notional on BUY, shares on SELL.
                     qty_str = (f"notional=${amount:.2f}" if side == BUY
                                else f"shares={amount:.2f}")
-                    logger.info(
+                    # Console-wise the trading loop's FILLED line covers this.
+                    logger.debug(
                         "FOK %s filled: order=%s, price=$%.2f, %s",
                         side, order_short, fill_price, qty_str,
                     )
@@ -1898,7 +1899,7 @@ class LiveTrader(BaseTrader):
                     if attempt < _FILL_PRICE_LOOKUP_RETRIES - 1:
                         await asyncio.sleep(_FILL_PRICE_LOOKUP_DELAY)
                         continue
-                    logger.info(
+                    logger.debug(
                         "Fill confirmed — exact price pending the +%.0fs chain audit "
                         "(exchange order lookup unavailable; %.4f booked provisionally).",
                         _FILL_AUDIT_DELAY_S, fallback_price)
@@ -1910,7 +1911,7 @@ class LiveTrader(BaseTrader):
                     if attempt < _FILL_PRICE_LOOKUP_RETRIES - 1:
                         await asyncio.sleep(_FILL_PRICE_LOOKUP_DELAY)
                         continue
-                    logger.info(
+                    logger.debug(
                         "Fill confirmed — exact price pending the +%.0fs chain audit "
                         "(the exchange's trade indexer hasn't caught up; %.4f booked "
                         "provisionally, usually a touch pessimistic).",

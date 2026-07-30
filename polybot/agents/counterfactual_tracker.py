@@ -249,13 +249,20 @@ class CounterfactualTracker:
         }
 
         self._save(record)
-        verdict = "CORRECT" if hold_was_optimal else "SUBOPTIMAL"
-        moment = "the worst scalp exit" if hold_was_optimal else "the best scalp exit"
-        logger.info(
-            f"HOLD {verdict} (hindsight) {_slug_to_window(market_id)} | "
-            f"holding made ${actual_pnl:+.2f}; {moment} would have made "
-            f"${hypo_pnl:+.2f} — difference ${delta_pnl:+.2f}"
-        )
+        if hold_was_optimal:
+            # A hold that beat the counterfactual has nothing to teach on the
+            # console — the record above still feeds the learning corpus.
+            logger.debug(
+                f"HOLD hindsight {_slug_to_window(market_id)}: correct "
+                f"(${actual_pnl:+.2f} vs scalp ${hypo_pnl:+.2f})"
+            )
+        else:
+            secs = int(max(0, ctx["worst_seconds_remaining"]))
+            logger.info(
+                f"HINDSIGHT SUBOPTIMAL {_slug_to_window(market_id)} — Selling at the "
+                f"best moment ({ctx['entry_price']:.2f} → {worst_sell_price:.2f} with "
+                f"{secs // 60}:{secs % 60:02d} left) would have made ${hypo_pnl:+.2f}"
+            )
         return record
 
     def check_resolutions(self,
@@ -309,7 +316,8 @@ class CounterfactualTracker:
             btc_at_expiry = chainlink_fp
             if market_id not in logged_resolutions:
                 logged_resolutions.add(market_id)
-                logger.info(f"COUNTERFACTUAL: {_slug_to_window(market_id)} | Strike={chainlink_ptb:,.2f} → Final={chainlink_fp:,.2f}")
+                # Duplicate of the RESOLVED oracle line the trading loop prints.
+                logger.debug(f"COUNTERFACTUAL: {_slug_to_window(market_id)} | Strike={chainlink_ptb:,.2f} → Final={chainlink_fp:,.2f}")
             side = ctx["side"]
             resolution_price = 1.0 if (side == "Up") == up_won else 0.0
 
@@ -366,12 +374,18 @@ class CounterfactualTracker:
             resolved.append(record)
             to_remove.append(position_id)
 
-            verdict = "CORRECT" if scalp_was_optimal else "SUBOPTIMAL"
-            logger.info(
-                f"SCALP {verdict} (hindsight) {_slug_to_window(market_id)} | "
-                f"scalping made ${ctx['scalp_pnl']:+.2f}; holding to the end would have made "
-                f"${hypothetical_pnl:+.2f} — difference ${delta_pnl:+.2f}"
-            )
+            scalp_path = f"{ctx.get('entry_price', 0):.2f} → {ctx['scalp_exit_price']:.2f} scalp"
+            if scalp_was_optimal:
+                lost = " as it resolved to a loss" if resolution_price <= 0 else ""
+                logger.info(
+                    f"HINDSIGHT OPTIMAL — {scalp_path} saved "
+                    f"${ctx['scalp_pnl'] - hypothetical_pnl:+.2f}{lost}"
+                )
+            else:
+                logger.info(
+                    f"HINDSIGHT SUBOPTIMAL — {scalp_path} left "
+                    f"${delta_pnl:+.2f} on the table"
+                )
 
         for mid in to_remove:
             self._watchlist.pop(mid, None)

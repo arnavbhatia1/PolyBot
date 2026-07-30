@@ -180,7 +180,7 @@ class TestChainlinkFeed:
         assert attempts >= 3, "feed must keep retrying through handshake rejections"
         errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
         assert not errors, f"handshake rejection logged as ERROR: {errors}"
-        assert any("reconnecting" in r.getMessage() for r in caplog.records)
+        assert any("Reconnecting" in r.getMessage() for r in caplog.records)
         # Backoff doubles per consecutive failure (5 -> 10 -> ...), so an
         # extended outage can't hammer RTDS into 429ing us indefinitely.
         assert sleeps[:2] == [5.0, 10.0], f"expected doubling backoff, got {sleeps[:3]}"

@@ -189,7 +189,7 @@ class BinanceFeed:
                         try:
                             msg = await asyncio.wait_for(ws.recv(), timeout=75.0)
                         except asyncio.TimeoutError:
-                            logger.warning("kline WS idle >75s, forcing reconnect")
+                            logger.warning("Binance candle WS idle >75s - Reconnecting")
                             self.staleness.mark_disconnected()
                             break
                         try:
@@ -205,7 +205,7 @@ class BinanceFeed:
                 if not self._running:
                     break
                 self.staleness.mark_disconnected()
-                logger.warning("WebSocket error: %s, reconnecting in %ds", e, backoff)
+                logger.warning("Binance candle WS %s error - Reconnecting in %ds", type(e).__name__, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
 
@@ -232,8 +232,7 @@ class BinanceFeed:
                 # REST backfill; decisions fail closed on the empty buffer
                 # until it lands.
                 if self._gap_backfill is None or self._gap_backfill.done():
-                    logger.warning("kline gap %s -> %s — rebuilding buffer from REST",
-                                   latest.timestamp, candle.timestamp)
+                    logger.warning("Binance candle gap (ATR feed) — Rebuilding buffer from REST")
                     self.buffer.clear()
                     self._gap_backfill = asyncio.create_task(self.backfill())
                 return

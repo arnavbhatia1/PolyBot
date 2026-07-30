@@ -141,7 +141,7 @@ class CircuitBreaker:
         if self.consecutive_wins >= self.wins_to_restore:
             logger.info(
                 f"{self.consecutive_wins} consecutive Ws — "
-                f"kelly mult={self.kelly_multiplier:.2f}"
+                f"Kelly = {self.kelly_multiplier:.2f}"
             )
             return "streak_wins"
         return None
@@ -152,7 +152,7 @@ class CircuitBreaker:
         if self.consecutive_losses >= self.losses_to_reduce:
             logger.info(
                 f"{self.consecutive_losses} consecutive Ls — "
-                f"kelly mult={self.kelly_multiplier:.2f}"
+                f"Kelly = {self.kelly_multiplier:.2f}"
             )
             return "streak_losses"
         return None
