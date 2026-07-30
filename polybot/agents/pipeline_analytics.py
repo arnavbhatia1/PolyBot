@@ -1,5 +1,4 @@
-"""ET date helper shared by the daily rollup writers (outcomes, ghosts,
-counterfactuals)."""
+"""ET date helper shared by the daily rollup writers (outcomes, ghosts, counterfactuals)."""
 from __future__ import annotations
 
 from datetime import datetime

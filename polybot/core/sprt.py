@@ -1,8 +1,7 @@
-"""Wald SPRT — the pre-registered sequential gate design (frozen 2026-07-19).
+"""Wald SPRT — the pre-registered, design-frozen sequential gate arithmetic.
 
-Governs turning things ON for every validation after the 07-19 go-live gate;
-the post-live kill rule (realized ledger, trailing-4d / 8-day t) is unchanged
-and governs turning things OFF. Design constants live with each pre-registered
+SPRT turns things ON; the post-live kill rule (realized ledger, trailing-4d /
+8-day t) turns things OFF. Design constants live with each pre-registered
 application; this module is only the arithmetic.
 
 Test definition (normal day-means, known σ):
@@ -67,11 +66,10 @@ def run_sprt(day_means: list[float], mu1: float, sigma: float,
             state = "truncated"
             break
 
-    # σ-blowup void check over exactly the observations the test CONSUMED —
-    # a test whose variance regime changed under it must not decide on the
-    # corrupted likelihood, but observations after the stopping point were
-    # never "under" the test, so they can neither re-open nor retro-void a
-    # decision already reached (stop-on-boundary; a decided test replays
+    # σ-void check over exactly the observations the test CONSUMED: a variance
+    # regime that changed under the test corrupts the likelihood → void; but
+    # days past the stopping point were never under the test, so they can
+    # neither re-open nor retro-void a decision (a decided test replays
     # deterministically forever).
     consumed = day_means[:len(lambdas)]
     if len(consumed) >= 2:

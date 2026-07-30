@@ -1,8 +1,7 @@
-"""Per-feed inter-arrival staleness sampling.
+"""Per-feed WS message inter-arrival sampling.
 
-Lightweight rolling deque of gaps between successive WS messages, plus periodic
-persistence so the operator can calibrate staleness gates against P50/P95/P99
-of actual feed cadence rather than guess.
+Persists gap percentiles so staleness gates get calibrated from measured
+feed cadence, not guesses.
 """
 from __future__ import annotations
 
@@ -17,12 +16,9 @@ from typing import Iterable
 class StalenessTracker:
     """Records WS message inter-arrival gaps for a single feed.
 
-    Also tracks a lifetime message count and (for feeds that report it via
-    mark_connected/mark_disconnected) live connection state. Without these, a
-    persisted ``n=0`` snapshot is ambiguous: a connected feed that received no
-    messages (a genuinely quiet stream) looks identical to a
-    socket that never came up. ``reset()`` (called on reconnect) clears only the
-    inter-arrival anchor, so ``n_total`` survives across reconnects.
+    n_total + connected state disambiguate a bare n=0 snapshot: a quiet but
+    connected stream looks identical to a socket that never came up.
+    reset() (on reconnect) clears only the gap anchor — n_total survives.
     """
 
     __slots__ = ("name", "_gaps", "_last_ts", "_n_total", "_connected")
@@ -79,10 +75,9 @@ _lock = Lock()
 def snapshot_feeds(trackers: Iterable[StalenessTracker]) -> list[dict[str, float | int | bool]]:
     """Read each tracker's gap deque into a plain snapshot list.
 
-    Call this ON the event loop. ``snapshot()`` iterates/sorts the gap deque,
-    which races the loop's ``observe()`` append if done inside a worker thread
-    ("deque mutated during iteration"). Gathering here, then handing the result
-    to ``write_feeds`` in a thread, keeps the deque reads single-threaded.
+    Call ON the event loop only: snapshot() sorts the gap deque, which races
+    the loop's observe() append from a worker thread ("deque mutated during
+    iteration"). Hand only the result to write_feeds in a thread.
     """
     return [t.snapshot() for t in trackers]
 

@@ -26,9 +26,8 @@ class IndicatorEngine:
             "atr": compute_atr_gate(buffer.get_highs(), buffer.get_lows(),
                                     buffer.get_closes(), **self.params["atr"]),
         }
-        # Stamp the current 1-min candle's open-time so SignalEngine keeps one
-        # rolling-ATR slot per candle (the forming candle keeps this timestamp for
-        # the whole minute; only a new candle changes it).
+        # Stamp the candle open-time so SignalEngine keeps one rolling-ATR slot
+        # per candle (the forming candle keeps this ts for the whole minute).
         latest = buffer.latest() if hasattr(buffer, "latest") else None
         result["atr"]["candle_ts"] = latest.timestamp if latest is not None else None
         self._cache_version = v

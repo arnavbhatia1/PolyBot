@@ -1,23 +1,21 @@
-"""Scar scan — the nightly learning loop over the realized ledger.
+"""Scar scan — nightly auto-discovery of toxic fill pockets as shadow gates.
 
-Every fill the bot has ever made is sliced along a FIXED, versioned dimension
-library; any cell that is consistently negative under the pre-registered flag
-rule is auto-registered as a zero-capital SHADOW GATE in memory/state/
-scar_gates.json. From its discovery day forward the gate is scored strictly
-out-of-sample with the frozen Wald SPRT (polybot/core/sprt.py): accept-H1
-graduates it (the nightly ping tells the operator to add its name to
-late_window.scar_enforce — enforcement is always a manual config flip, never
-automatic); accept-H0 auto-retires it. Discovery is in-sample and cheap by
+Realized fills are sliced along a FIXED dimension library; a cell passing the
+pre-registered flag rule registers as a zero-capital SHADOW GATE in
+memory/state/scar_gates.json, then scores strictly out-of-sample under the
+frozen Wald SPRT (polybot/core/sprt.py). Discovery is in-sample and cheap by
 design — the OOS SPRT is the multiple-comparisons control, so a noise cell
-that flags simply dies at its reject boundary and can never re-register.
+dies at its reject boundary and can never re-register. Accept-H1 graduates a
+gate (enforcement stays a MANUAL late_window.scar_enforce flip, never
+automatic); accept-H0 auto-retires it.
 
 Fire-path contract (main.py): `derive_dims` + `fire_time_matches` run on the
-just-built trade_context; with `late_window.scar_enforce` empty (the default)
-the fire path only stamps, never vetoes. Enforced vetoes append to
-scar_vetoes.jsonl and resolve nightly against window_labels.
+just-built trade_context; with scar_enforce empty (the default) the fire path
+only stamps, never vetoes. Enforced vetoes append to scar_vetoes.jsonl and
+resolve nightly against window_labels.
 
-The flag rule and SPRT constants below are design-frozen like the SPRT itself:
-tuning them to make a pocket flag (or stop flagging) is relaxing a bar.
+Flag rule + SPRT constants below are design-frozen: tuning them to make a
+pocket flag (or stop flagging) is relaxing a bar.
 """
 from __future__ import annotations
 
@@ -33,21 +31,18 @@ from polybot.core.sprt import run_sprt
 
 ET = ZoneInfo("America/New_York")
 
-# ── Pre-registered flag rule (frozen 2026-07-27) ──────────────────────────────
+# ── Pre-registered flag rule (design-frozen) ──────────────────────────────────
 FLAG_MIN_FILLS = 8        # cell size floor
 FLAG_MIN_DAYS = 3         # distinct ET days the cell must span
 FLAG_MAX_EW = -5.0        # ¢/sh — cell equal-weight mean at or below
 FLAG_MAX_T = -1.5         # day-clustered t at or below (never fill-weighted)
-FLAG_MAX_COVERAGE = 0.5   # a gate prunes a POCKET; a cell that is most of the
-                          # ledger isn't a pocket — population-wide toxicity is
-                          # the kill rule's jurisdiction, never a scar veto.
-                          # Measured against fills where the dim is STAMPED
-                          # (None-dim fills excluded — a sparsely-stamped dim
-                          # must not read as low coverage of the future).
-MAX_SIBLING_OVERLAP = 0.6 # a candidate whose fills are mostly an existing
-                          # active gate's fills is the same pocket wearing a
-                          # different label — registering it would give one
-                          # noise cluster K correlated SPRT shots
+FLAG_MAX_COVERAGE = 0.5   # a gate prunes a POCKET — population-wide toxicity
+                          # is the kill rule's jurisdiction, never a scar veto.
+                          # Coverage counts STAMPED fills only (a sparse dim
+                          # must not read as low coverage).
+MAX_SIBLING_OVERLAP = 0.6 # mostly-same-fills as an active gate = the same
+                          # pocket relabeled — one noise cluster gets ONE SPRT,
+                          # not K correlated shots
 
 MAX_NEW_PER_NIGHT = 2     # registration cap per scan (ping readability)
 MAX_ACTIVE_GATES = 6      # shadow+graduated cap; excess candidates wait
@@ -56,13 +51,12 @@ MAX_ACTIVE_GATES = 6      # shadow+graduated cap; excess candidates wait
 SPRT_MU1 = 6.0            # H1: vetoing the cell gains ≥ +6¢/sh on veto days
 SPRT_ALPHA = 0.05
 SPRT_BETA = 0.23
-SPRT_SIGMA_DAYS = 4       # σ frozen on the first 4 qualifying OOS days
-                          # (pockets are rare — 6 estimation days could take
-                          # weeks; those days never score, same convention)
+SPRT_SIGMA_DAYS = 4       # σ frozen on the first 4 qualifying OOS days, which
+                          # never score (pockets are rare — 6 days could take weeks)
 
-# Dimensions whose value is knowable BEFORE the order is sent — only these may
-# become enforceable gates. Observational dims (booked slip, measured submit
-# latency) are report-only: you cannot veto on information the fill created.
+# Only dims knowable BEFORE the order is sent may become enforceable gates.
+# Observational dims (booked slip, submit latency) stay report-only: you
+# cannot veto on information the fill created.
 FIRE_TIME_DIMS = frozenset({
     "ask_bucket", "tremain", "side", "dow", "refire", "session",
     "atr_regime", "burst", "edge_bucket", "prob_bucket", "cb_move_bucket",
@@ -150,9 +144,7 @@ def derive_dims(ctx: dict[str, Any], side: str, dow: str,
                                ("<0.75", "0.75-0.90", ">0.90")),
         "cb_move_bucket": _bucket(ctx.get("scar_cb_move"), (12.0, 20.0),
                                   ("8-12", "12-20", "20+")),
-        # Reversion-mechanism dims (all from existing stamps — retroactive):
-        # how far past the strike, in what micro-regime, with what flow behind
-        # it, into what book. Each has a prior tied to the measured loss
+        # Reversion-mechanism dims — each has a prior tied to the measured loss
         # mechanism (moves that fire the signal then come back).
         "strike_dist": _bucket(dist, (12.0, 25.0), ("<12", "12-25", "25+")),
         "autocorr": _bucket(ctx.get("regime_autocorr"), (-0.05, 0.05),
@@ -170,15 +162,10 @@ def derive_dims(ctx: dict[str, Any], side: str, dow: str,
         "killed_n": (None if killed_n is None else
                      ("0" if killed_n == 0 else "1" if killed_n == 1 else "2+")),
         "flip": (None if is_flip is None else ("flip" if is_flip else "first")),
-        # Stale-ask + oracle-confirm dims (07-29 census): each keys directly
-        # on a named mechanism — book_age IS the stale-ask window being
-        # harvested (a fresh book = the MM already repriced, informed-against
-        # bait); dir_agree separates counter-drift spikes (revert-prone) from
-        # continuation; adverse_regime is the live post-fill fade rate;
-        # move_shape brackets the 2s burst inside the 10s move (isolated
-        # spike vs extending trend); cl_confirm asks whether the RESOLUTION
-        # venue's own report crossed the strike or the premise rests on
-        # Coinbase alone.
+        # Stale-ask + oracle-confirm dims: book_age IS the stale-ask window
+        # being harvested (a fresh book = the MM already repriced —
+        # informed-against bait); adverse_regime = the live post-fill fade
+        # rate; dir_agree/move_shape/cl_confirm priors live in their helpers.
         "book_age": _bucket(ctx.get("clob_book_age_s"), (1.0, 5.0),
                             ("<1s", "1-5s", "5s+")),
         "dir_agree": _dir_agree(ctx.get("regime_direction"), side),
@@ -198,9 +185,8 @@ def derive_dims(ctx: dict[str, Any], side: str, dow: str,
 
 # ── Registry io ────────────────────────────────────────────────────────────────
 def load_registry(path: Path) -> dict:
-    """A missing file bootstraps an empty registry; an EXISTING file that fails
-    to parse raises instead — silently substituting empty would let the next
-    scan() save_registry() the amnesia, erasing the retired-gate
+    """Missing file → empty registry; an EXISTING file that fails to parse
+    RAISES — substituting empty would let the next save erase the retired-gate
     never-re-register ledger and every frozen σ. The fire path reaches this
     only inside its fail-open try/except, so raising can never block trading."""
     p = Path(path)
@@ -224,19 +210,19 @@ def save_registry(path: Path, reg: dict) -> None:
 def fire_time_matches(ctx: dict[str, Any], side: str, dow: str, registry: dict,
                       statuses: tuple = ("shadow", "graduated")) -> list[str]:
     """Names of gates (in the given statuses) whose fire-time cell this
-    decision falls in. Cheap: a dict build + equality checks. Defensive
-    against malformed registry entries — the registry is git-synced and a
-    corrupt gate must degrade to "no match", never to a fire-path exception.
-    The ENFORCE path passes statuses=("graduated",): only an SPRT-graduated
-    gate may veto, whatever settings.yaml says."""
+    decision falls in.
+
+    The registry is git-synced/hand-editable: a corrupt gate must degrade to
+    "no match", never to a fire-path exception. The ENFORCE path passes
+    statuses=("graduated",) — only an SPRT-graduated gate may veto, whatever
+    settings.yaml says."""
     dims = derive_dims(ctx, side, dow)
     out = []
     for g in registry.get("gates", []):
         if not isinstance(g, dict) or not g.get("name"):
             continue
-        # bucket must be non-None: a bucket-less (mangled) gate would otherwise
-        # match every decision whose dim stamp is None (cold feed) — a veto
-        # keyed on feed coldness, not on the learned cell.
+        # bucket must be non-None: a mangled gate would match every None-stamped
+        # (cold-feed) decision — a veto keyed on feed coldness, not the cell.
         if (g.get("status") in statuses and g.get("dim") in FIRE_TIME_DIMS
                 and g.get("bucket") is not None
                 and dims.get(g["dim"]) == g["bucket"]):
@@ -316,9 +302,8 @@ def scan(db_path, since_iso: str | None, registry_path: Path,
         return {i for i, f in enumerate(fills) if f["dims"].get(dim) == bucket}
 
     # -- discovery: flag-rule sweep over every cell not already a gate --------
-    # The registry is git-synced and hand-editable (the seed gate was
-    # hand-authored): a malformed entry must degrade to "skipped + reported",
-    # never to a KeyError that kills the whole nightly scan.
+    # Registry is git-synced/hand-editable: a malformed entry degrades to
+    # "skipped + reported", never a KeyError that kills the whole nightly scan.
     def _wellformed(g: Any) -> bool:
         return (isinstance(g, dict)
                 and all(g.get(k) is not None
@@ -359,9 +344,8 @@ def scan(db_path, since_iso: str | None, registry_path: Path,
     for dim, b, st in candidates[:MAX_NEW_PER_NIGHT]:
         if n_active >= MAX_ACTIVE_GATES:
             break
-        # One active gate per dimension: complementary buckets registered on
-        # different nights could jointly veto ~100% of fires — a population
-        # kill switch assembled from "pockets".
+        # One active gate per dimension: complementary buckets could jointly
+        # veto ~100% of fires — a population kill switch built from "pockets".
         if any(g.get("dim") == dim for g in active_gates):
             continue
         # Sibling control: mostly-the-same-fills as an existing active gate =
@@ -396,9 +380,8 @@ def scan(db_path, since_iso: str | None, registry_path: Path,
                 lam=None, n_oos=0, n_scored=0, oos_ew=None,
                 in_sample=g.get("in_sample", {})))
             continue
-        # OOS starts strictly after discovery; a VOIDed test restarts (σ
-        # re-estimated on fresh days only — the sprt.py doctrine) from the
-        # recorded restart day.
+        # OOS starts strictly after discovery; a VOIDed test restarts from the
+        # restart day with σ re-estimated on fresh days only (sprt.py doctrine).
         oos_start = g.get("restarted") or g["discovered"]
         matching = [f for f in fills
                     if f["day"] > oos_start
@@ -434,9 +417,8 @@ def scan(db_path, since_iso: str | None, registry_path: Path,
                 g["status"] = "retired"
                 g["retired"] = today
             elif r.state == "void":
-                # restart with a re-estimated σ on post-void days only — never
-                # patch mid-test (sprt.py doctrine; burst restarts by deleting
-                # its state file, a gate restarts in place with its history kept)
+                # void → restart with σ re-estimated on post-void days only,
+                # never patch mid-test (sprt.py doctrine); history kept in place
                 g.setdefault("void_history", []).append(
                     {"voided": today, "sigma": sp.get("frozen_sigma")})
                 g["restarted"] = today
@@ -507,8 +489,7 @@ def resolve_vetoes(vetoes_path: Path, db_path) -> dict:
         except sqlite3.OperationalError:
             pass
     # Dedup by (window, gate): the once-per-window latch is in-memory only, so
-    # a mid-window crash-restart can journal the same veto twice — one line
-    # counts, duplicates never tick/double-weight the per-gate read.
+    # a crash-restart can journal a veto twice — duplicates never double-count.
     seen: set[tuple] = set()
     per: dict[str, dict] = {}
     for v in vetoes:

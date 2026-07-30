@@ -18,8 +18,8 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 
-# Force UTF-8 on stdout/stderr so Windows cp1252 consoles don't choke on box-drawing
-# chars in pipeline summaries; errors='replace' survives any still-unrenderable codepoint.
+# Force UTF-8 on stdout/stderr — Windows cp1252 consoles choke on box-drawing
+# chars; errors='replace' survives anything still unrenderable.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -137,12 +137,10 @@ _AUX_FRESH_S_COINBASE = 10.0
 _AUX_FRESH_S_TRADES = 3.0
 
 def _build_aux_signals(coinbase_feed: Any, trades_feed: Any = None) -> dict[str, Any]:
-    """Auxiliary microstructure signals shared between trade_context, ghost replay,
-    and the counterfactual exit contexts (E3 latency features included).
+    """Aux microstructure signals shared by trade_context, ghosts, and counterfactual contexts.
 
-    Every field is ``None`` when the source feed is missing, not warm, stale, or
-    its trade buffer doesn't yet span the 60s window (post-reconnect) — never
-    0.0, which would collide with a legitimate zero reading.
+    Every field is None when its feed is missing/stale or doesn't span the
+    window yet — never 0.0, which would collide with a real zero reading.
     """
     cb_fresh = (coinbase_feed is not None
                 and coinbase_feed.state.age_seconds < _AUX_FRESH_S_COINBASE
@@ -154,9 +152,8 @@ def _build_aux_signals(coinbase_feed: Any, trades_feed: Any = None) -> dict[str,
     else:
         cb_taker, cb_taker_n = None, 0
 
-    # E3 latency features. cross_venue_gap = Coinbase (resolution venue) minus
-    # Binance latest trade — the lead the exit engine monetizes. fast vol from
-    # the 1s-bucketed Coinbase price history.
+    # cross_venue_gap = Coinbase (resolution venue) minus Binance last trade —
+    # the lead the exit engine monetizes; fast vol from 1s Coinbase history.
     bt_acc = trades_feed.accumulator if trades_feed else None
     bt_fresh = bt_acc is not None and bt_acc.latest_age_s < _AUX_FRESH_S_TRADES
     cb_tick_fresh = (coinbase_feed is not None
@@ -166,9 +163,8 @@ def _build_aux_signals(coinbase_feed: Any, trades_feed: Any = None) -> dict[str,
     gap = (cb_price - bn_price) if (cb_price and bn_price) else None
     fast_rv = coinbase_feed.realized_vol(60.0) if cb_fresh else None
 
-    # Burst-intensity counters (pre-registered HOT/COLD shadow-tag: HOT when the
-    # 1s tick rate runs >= 2x its 30s baseline at fire). Stratification evidence
-    # only — nothing in the decision path consumes these.
+    # Burst counters for the HOT/COLD shadow tag (HOT = 1s tick rate >= 2x its
+    # 30s baseline). Evidence only — nothing in the decision path reads these.
     cb_burst_fresh = (coinbase_feed is not None
                       and coinbase_feed.state.age_seconds < _AUX_FRESH_S_COINBASE
                       and coinbase_feed.covers(30.0))
@@ -190,11 +186,11 @@ def _build_aux_signals(coinbase_feed: Any, trades_feed: Any = None) -> dict[str,
 
 def _clob_book_aux(clob_ws: Any, token_up: str, token_down: str,
                    book_up: dict[str, Any], book_down: dict[str, Any]) -> dict[str, Any]:
-    """E2 fields: per-side CLOB top-5 ask depth (USD) + book age, stamped into the
-    entry trade_context for trades and ghosts. depth_usd_top20 is BINANCE BTC
-    depth — these are the market's own books. None = no book on that side; age
-    is None when either side lacks a timestamped WS snapshot (HTTP books are
-    fetch-fresh but carry no ts)."""
+    """Per-side CLOB top-5 ask depth (USD) + book age for the entry trade_context.
+
+    These are the market's own books (depth_usd_top20 is Binance BTC depth).
+    None = no book on that side; age is None when a side lacks a timestamped
+    WS snapshot (HTTP books carry no ts)."""
     now = time.time()
 
     def _side(token: str, http_book: dict[str, Any]) -> tuple[float | None, float | None]:
@@ -221,13 +217,11 @@ def _clob_book_aux(clob_ws: Any, token_up: str, token_down: str,
     }
 
 
-# ── Regime-Kelly SHADOW stamps (REGIME_KELLY_DESIGN §4, frozen 2026-07-20) ────
-# Bucket cuts are FROZEN from the 192-window validation population — never
-# re-fit during the shadow. The single pre-registered multiplier candidate is
-# burst-only (the f* ratios, clamped [0.5, 1.5]); every other variable rides at
-# 1.0 pending day-t ≥ 2 separation. Stamps + nightly arithmetic ONLY — nothing
-# here touches sizing, entries, or vetoes; deployment needs the burst SPRT and
-# the counterfactual-D SPRT to both accept (SPRT_DESIGN).
+# ── Regime-Kelly SHADOW stamps (REGIME_KELLY_DESIGN §4) ──────────────────────
+# Bucket cuts are FROZEN — never re-fit them during the shadow (re-fitting
+# invalidates the test). Stamps + nightly arithmetic ONLY: nothing here touches
+# sizing, entries, or vetoes; deployment needs the burst SPRT and the
+# counterfactual-D SPRT to both accept.
 _REGIME_CUTS_ATR_REGIME = (0.694, 1.041)   # atr / atr_long_term_mean
 _REGIME_CUTS_ATR_SHORT = (0.789, 1.004)    # atr / atr_rolling_20
 _REGIME_CUTS_FRV = (4.1e-5, 6.9e-5)        # fast_realized_vol_60s
@@ -292,10 +286,10 @@ def _scar_registry() -> dict:
 def _scar_fields(cid: str, side: str, ask: float,
                  cb_move: float | None) -> dict[str, Any]:
     """Fire-time facts the scar dimensions need that nothing else stamps.
-    refire_class: a kill earlier this window means the book repriced away —
-    re-firing at/below that killed price means it came back down (the census
-    join that needed these facts post-hoc was irreducibly ambiguous; stamping
-    at fire time is the only clean measurement)."""
+
+    refire_class: an earlier kill this window means the book repriced away;
+    re-firing at/below that price means it came back. Stamp at fire time —
+    reconstructing these facts post-hoc was irreducibly ambiguous."""
     kills: list[float] = []
     try:
         kills = _window_killed_asks.get(int(cid.rsplit("-", 1)[-1]), {}).get(side, [])
@@ -316,12 +310,10 @@ def _scar_fields(cid: str, side: str, ask: float,
 
 
 # ── Single settled OPEN banner ────────────────────────────────────────────────
-# Live fills print one short FILLED line at fill time and the full OPEN banner
-# ONCE, from the +8s chain audit, with the settled entry — the fill-time number
-# is usually the padded FOK limit, not the real fill, and a provisional banner
-# would disagree with the settled books. Log-only: the trade engine, DB
-# booking, and exit engine run on the booked numbers unchanged. Paper prints
-# the full banner at fill time (its fills are exact).
+# Live prints a short FILLED line at fill and the full OPEN banner ONCE from the
+# +8s chain audit — the fill-time number is usually the padded FOK limit, and a
+# provisional banner would disagree with the settled books. Log-only; paper
+# prints the full banner at fill (its fills are exact).
 from collections import OrderedDict as _OrderedDict
 
 _pending_settled_banners: _OrderedDict = _OrderedDict()
@@ -355,10 +347,10 @@ def _log_open_banner(ctx: dict[str, Any], entry_price: float, settled: str) -> N
 
 
 def _on_entry_settled(pos_id: int, final_price: float, source: str) -> None:
-    """LiveTrader.on_entry_settled hook — prints the OPEN banner and sends the
-    Discord OPEN ping, both with the settled entry, so the OPEN surfaces always
-    agree with the RESOLVED ping and the books. Must never raise into the
-    audit."""
+    """LiveTrader.on_entry_settled hook — OPEN banner + Discord OPEN ping at the settled entry.
+
+    Both surfaces must agree with the RESOLVED ping and the books.
+    Must never raise into the audit."""
     try:
         ctx = _pending_settled_banners.pop(int(pos_id), None)
         if ctx is None:
@@ -380,8 +372,8 @@ def _on_entry_settled(pos_id: int, final_price: float, source: str) -> None:
         pass
 
 
-# E1 recorder throttle: one line per market per second, so a stuck out-of-band
-# window can't grow the JSONL unboundedly at tick rate.
+# Outlier-log throttle: one line per market per second — a stuck out-of-band
+# window otherwise grows the JSONL unboundedly at tick rate.
 _last_price_sum_log: dict[str, float] = {}
 
 def _log_price_sum_outlier(market_id: str, price_up: float, price_down: float,
@@ -410,8 +402,8 @@ def _log_price_sum_outlier(market_id: str, price_up: float, price_down: float,
 # Throttled logging for hold evaluations and resolution waiting
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
-# SNIPE trigger prints once per (window, side) per 10s — the loop re-evaluates on
-# every Coinbase tick while a burst persists, which spammed the same line at tick rate.
+# SNIPE line once per (window, side) per 10s — the loop re-evaluates on every
+# Coinbase tick while a burst holds, which spams the same line at tick rate.
 _last_snipe_log: dict[tuple[int, str], float] = {}
 _resolve_oracle_logged: set[str] = set()  # market_id — RESOLVE oracle line printed once
 _SNIPER_ONLY_QUIET = True  # base entries are always suppressed (sniper-only), so their per-gate SKIP lines are noise -> DEBUG
@@ -424,20 +416,18 @@ _window_recorder = None
 # Chainlink boundary value LOCKS (suppresses the cold-start settle churn).
 _strike_logged: set[int] = set()
 
-# Windows whose strike is TRUSTED for capital deployment: sourced from Gamma's
-# price_to_beat (the resolved truth) or from a Chainlink boundary capture with no
-# delivery hole around the boundary (strike_reliable). The sniper only fires on a
-# trusted strike — an RTDS gap can lock a value $35+ off Polymarket's (measured
-# ~1-2% of windows), and a sniper firing on the wrong strike is trading noise.
+# Windows whose strike is TRUSTED for capital: Gamma price_to_beat, or a
+# Chainlink boundary capture with no delivery hole (strike_reliable). The sniper
+# never fires on an untrusted strike — an RTDS gap can lock a value $35+ off
+# Polymarket's (~1-2% of windows), and firing on the wrong strike trades noise.
 _strike_trusted: dict[int, bool] = {}
 
-# Previous window resolution margin — recorded telemetry (no model layer
-# consumes it). None until a resolution has been observed this session —
-# never 0.0, which would read as a genuine hairline resolution downstream.
+# Previous window's resolution margin — telemetry only (no model reads it).
+# None until a resolution is seen — never 0.0, which would read downstream as
+# a genuine hairline resolution.
 _prev_resolution_margin: float | None = None
 _PREV_MARGIN_PATH = PREV_MARGIN_PATH
-# Beyond this many seconds the margin is no longer adjacent to the current
-# window and stamps as unknown.
+# Older than this and the margin isn't adjacent to the current window — stamp unknown.
 _PREV_MARGIN_STALE_S = 1800  # 30 min ≈ six 5-min windows
 
 def _load_prev_resolution_margin() -> float | None:
@@ -646,7 +636,7 @@ def flush_gate_stats() -> None:
     """Persist today's live skip counts to GATE_STATS_CURRENT_PATH."""
     _ensure_gate_stats_day_loaded()
     _write_gate_current(_gate_skip_counts)
-# Per-window flip state: tracks flip count and last side
+# Per-window flip state — arms the flip hurdle for re-entries
 _window_flip_state: dict[str, dict] = {}  # window_id -> {flip_count}
 
 # Killed sniper FOKs this window: window_ts -> side -> [decision asks]. Feeds
@@ -684,10 +674,10 @@ async def _get_open_positions_cached(db: Any) -> list:
 
 
 def _persist_day_open(day: str, bankroll: float) -> None:
-    """Snapshot the ET day's opening bankroll (memory/state/day_open_bankroll.json)
-    so a mid-day restart reloads it instead of reconstructing from
-    (bankroll − trade sum) — that difference drifts whenever money settles
-    on-chain outside recorded trades, and the drift poisons the day-close P&L.
+    """Snapshot the ET day's opening bankroll so a mid-day restart reloads it.
+
+    Never reconstruct from (bankroll − trade sum): that drifts when money
+    settles on-chain outside recorded trades and poisons the day-close P&L.
     Best-effort: never raises."""
     try:
         write_json_atomic(DAY_OPEN_PATH, {"day": day, "bankroll": bankroll})
@@ -707,10 +697,10 @@ def _load_day_open(day: str) -> float | None:
 
 
 def _invalidate_open_positions_cache() -> None:
-    """Force the next _get_open_positions_cached / _get_bankroll_cached call to
-    re-read the DB. Call after any successful open/close/resolve so
-    concurrent-position math and entry-gate checks see the new state
-    immediately instead of trailing the 1s TTL.
+    """Force the next positions/bankroll cache read to hit the DB.
+
+    Call after every successful open/close/resolve — concurrent-position math
+    and entry gates must see the new state now, not trail the 1s TTL.
     """
     global _open_positions_cache_ts, _bankroll_cache_ts
     _open_positions_cache_ts = 0.0
@@ -905,11 +895,9 @@ async def _evaluate_signal_and_enter(
         ghost_tracker: Any = None) -> tuple[str | None, int]:
     """Compute indicators/flow/signal, check for entry, size the trade, execute."""
 
-    # The Coinbase tick this evaluation is deciding on — the delta to the
-    # pre-submit moment is stamped as cb_tick_to_submit_ms so decision latency
-    # is a measured number per fill, not an inference. (Ticks arriving mid-
-    # evaluation refresh updated_at, so this is the freshest input the decision
-    # actually used; sign + POST legs are recorded separately in latency_stats.)
+    # Coinbase tick this evaluation decides on — its delta to the pre-submit
+    # moment stamps cb_tick_to_submit_ms, so decision latency is measured per
+    # fill, not inferred. Sign + POST legs are recorded in latency_stats.
     _eval_tick_ts = coinbase_feed.state.updated_at if coinbase_feed is not None else 0.0
 
     # Stamped once per evaluation so ghosts and filled outcomes share one schema;
@@ -917,9 +905,8 @@ async def _evaluate_signal_and_enter(
     aux_signals = _build_aux_signals(coinbase_feed, trades_feed)
     aux_signals.update(_clob_book_aux(clob_ws, token_up, token_down, book_up, book_down))
 
-    # Neutral defaults so ghosts recorded BEFORE the adverse gate (sniper_only,
-    # sub-threshold) still stamp the audit fields; the gate's real values rebind
-    # these before any downstream ghost fires.
+    # Neutral defaults so ghosts recorded BEFORE the adverse gate still stamp
+    # the audit fields; the gate's real values rebind before downstream ghosts.
     adverse_kelly_mult = 1.0
     adverse_rate_at_30s = -1.0
 
@@ -934,9 +921,8 @@ async def _evaluate_signal_and_enter(
     def _ghost(gate: str, signal: Any, snap: dict) -> None:
         """Record a ghost trade when a downstream gate rejects a real BUY signal.
 
-        Base trade_context is built from closure vars at gate-fire time so the
-        ghost survives downstream record consumers; a caller-supplied snap merges on
-        top (caller wins on overlapping keys).
+        Base trade_context comes from closure vars at gate-fire time; the
+        caller's snap merges on top (caller wins on overlapping keys).
         """
         if ghost_tracker is None or signal is None:
             return
@@ -1031,8 +1017,8 @@ async def _evaluate_signal_and_enter(
     flow_data = compute_flow_signal(book_up, book_down, trades_up, trades_down)
     flow_score = flow_data["flow_score"]
 
-    # L3b — shared helper in `polybot/core/aux_layers.py`; entry and exit paths
-    # both call it so the model math is identical.
+    # Shared helper in core/aux_layers.py — entry and exit paths both call it
+    # so the model math is identical.
     _vol_factor = regime_vol_factor(
         indicators.get("atr", {}).get("atr", 0.0), signal_engine.last_atr_long_term_mean)
     spot_flow_signal = compute_spot_flow_signal(
@@ -1041,10 +1027,10 @@ async def _evaluate_signal_and_enter(
         aux_signals.get("coinbase_taker_n", 0),
         vol_factor=_vol_factor,
     )
-    # Cold-vs-real-zero split (CLAUDE.md §8): the live model consumes a number
-    # (cold collapses to 0.0), but the *recorded* trade_context value must be None
-    # when the feed is cold — spot_flow cold when Coinbase CVD is None; book flow
-    # cold when neither CLOB book nor any trade is present.
+    # Cold-vs-real-zero split: the live model consumes a number (cold collapses
+    # to 0.0), but the RECORDED value must be None when the feed is cold —
+    # spot_flow cold when Coinbase CVD is None; book flow cold when neither
+    # CLOB book nor any trade is present.
     spot_flow_rec = spot_flow_signal if aux_signals.get("coinbase_cvd_60s") is not None else None
     _book_present = bool(
         book_up.get("bids") or book_up.get("asks")
@@ -1066,19 +1052,16 @@ async def _evaluate_signal_and_enter(
         fee_rate=fee_rate,
     )
 
-    # --- LATE-WINDOW SNIPER (gated; default OFF until its kill bar passes) --------
-    # The one bot-formable late-window edge: a sharp Coinbase move (the resolution
-    # venue) just pushed price past strike but the CLOB ask hasn't repriced — a
-    # stale-book lag in OUR favor (and L1's own favored side, so it doesn't fight the
-    # model). Fires only when the normal path skipped, in the final seconds, behind
-    # the enable flag. Remaps to a normal BUY so ALL sizing/exec/safety gates run
-    # unchanged; only max_edge (-> sniper_max_edge) and the time penalty are bypassed.
+    # --- LATE-WINDOW SNIPER (behind sniper_enabled, the kill-bar safety) ----------
+    # A sharp Coinbase move (the resolution venue) pushed price past strike but
+    # the CLOB ask hasn't repriced — stale-book lag in OUR favor. Remaps to a
+    # normal BUY so ALL sizing/exec/safety gates run unchanged; only max_edge
+    # (-> sniper_max_edge) and the time penalty are bypassed.
     is_sniper = False
     lw_cfg = config.get("late_window", {})
 
-    # Time multiplier (phase penalizes ATM trades late, barely penalizes high
-    # conviction). Computed here — before the ghost below — so a suppressed base
-    # entry records its true entry_phase; the sniper overrides it to late_sniper.
+    # Time multiplier, computed BEFORE the ghost below so a suppressed base
+    # entry records its true entry_phase; the sniper overrides to late_sniper.
     timing_cfg = config.get("entry_timing", {})
     time_mult, phase = compute_time_multiplier(
         prob=signal.prob,
@@ -1087,10 +1070,9 @@ async def _evaluate_signal_and_enter(
         late_max_penalty=timing_cfg["late_max_penalty"],
     )
 
-    # The sniper is the bot's SOLE capital-deploying strategy. The base L1 signal
-    # is still evaluated, but its BUYs never trade — each is recorded as a ghost
-    # (gate "sniper_only") that resolves at window close, keeping the base
-    # strategy's zero-cost evidence stream alive for the deployment gate.
+    # The sniper is the SOLE capital-deploying strategy. Base BUYs never trade —
+    # each becomes a "sniper_only" ghost, keeping the base strategy's zero-cost
+    # evidence stream alive for the deployment gate.
     if signal.action in ("BUY_YES", "BUY_NO"):
         _ghost("sniper_only", signal, {})
         signal = TradeSignal("SKIP", signal.prob, signal.edge, 0,
@@ -1204,8 +1186,7 @@ async def _evaluate_signal_and_enter(
                     "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
                     "regime_direction": round(signal_engine.last_regime_direction, 4),
                     "closes_tail": _closes_tail,
-                    # Ghost schema parity with _ghost(): stamp phase + flip fields
-                    # on the sub-threshold population so ghost and filled records share one schema.
+                    # Schema parity with _ghost(): ghost and filled records share one schema.
                     "entry_phase": phase,
                     "flip_count": _st_flip_count,
                     "is_flip": _st_flip_count > 0,
@@ -1333,9 +1314,8 @@ async def _evaluate_signal_and_enter(
     min_side_depth = market_scanner.min_book_depth_usd
     if side_depth < min_side_depth:
         _record_skip("thin_book_depth")
-        # Ghost like every other downstream gate — the upstream depth gate
-        # passes on EITHER side ≥ $50, so a one-sided book lands here and the
-        # thin-side fire population needs its resolved evidence too.
+        # Ghost it — one-sided books land here (upstream passes on EITHER side
+        # ≥ $50) and the thin-side fire population needs resolved evidence too.
         _ghost("thin_book_depth", signal, {})
         _emit_gate_skip(cid, "thin_book_depth",
                         f"Thin book on the {side} side (${side_depth:.0f} < ${min_side_depth:.0f})")
@@ -1360,10 +1340,9 @@ async def _evaluate_signal_and_enter(
     # $1 notional. Paper mirrors the floor so paper and live behave identically.
     if size < 1.0:
         _record_skip("min_size")
-        # Ghost it like every other downstream gate — at live-scale bankrolls this
-        # is the most active sniper veto (anchored Kelly on cheap asks lands under
-        # $1), and the resolved ghosts are the evidence for any future sizing-
-        # anchor change.
+        # Ghost it — the most active sniper veto at live bankrolls (anchored
+        # Kelly on cheap asks lands under $1); the resolved ghosts are the
+        # evidence for any future sizing-anchor change.
         _ghost("min_size", signal, {})
         _emit_gate_skip(cid, "min_size", f"Order below minimum (${size:.2f} < $1)")
         return None, last_eval_log_window
@@ -1380,15 +1359,12 @@ async def _evaluate_signal_and_enter(
     impact = config.get("execution", {}).get("slippage_impact_pct", 0.03)
     slip = slippage_pct(size, side_depth, impact)
     if is_sniper:
-        # Sniper FOK limit pads the decision ask by only sniper_fok_slip (~one
-        # tick), then dies. The pad absorbs benign book jitter; a genuine
-        # reprice KILLS the order, and that kill IS the adverse-selection filter
-        # — a book repricing away means the move is reverting, so sitting out is
-        # correct. Realized paper: clean fills (slip ≤ one tick) net +9¢/sh at
-        # 70% win; fills that only landed by chasing further reprice were −16¢/sh.
-        # A wide pad defeats the filter by forcing fills into reverting books.
-        # Gates all ran at the decision ask (harness-faithful); the pre-submit
-        # VWAP re-check still vetoes fires whose visible book has lost the edge.
+        # Sniper FOK limit: pad the decision ask by sniper_fok_slip (~one tick),
+        # then die. The pad absorbs jitter; a genuine reprice KILLS the order,
+        # and that kill IS the adverse-selection filter (repricing away = the
+        # move is reverting). Never widen the pad: chased fills measured
+        # −16¢/sh vs +9¢/sh clean. Gates ran at the decision ask; the pre-submit
+        # VWAP re-check still vetoes books that lost the edge.
         _fok_slip = lw_cfg["sniper_fok_slip"]
         # Never chase above model_prob − min_edge: a fill there would carry less
         # than the pre-registered edge floor (e.g. a 0.93 limit on a 94% model).
@@ -1398,15 +1374,13 @@ async def _evaluate_signal_and_enter(
         price = market_scanner.snap_to_tick(
             max(price, min(price + _fok_slip, _limit_cap)), tick_size)
     else:
-        # Base entries deliberately use a tight slip (no FOK-cross floor): an FOK
-        # reject on adverse movement is a feature — it stops buying post-reversal
-        # tops. Exits use a loose floor instead (see exit_fill) — there we must
-        # fill to avoid lockout.
+        # Base entries keep a tight slip (no FOK-cross floor): a reject on
+        # adverse movement is a feature — it stops buying post-reversal tops.
+        # Exits use a loose floor instead — there we must fill to avoid lockout.
         price = market_scanner.snap_to_tick(price * (1 + slip), tick_size)
 
     snapshot = indicator_engine.get_snapshot(indicators)
-    # Last two closes recorded for the exit-value model / counterfactual replay
-    # (record-schema continuity; kept as an entry fact in the trade_context).
+    # Last two closes — an entry fact for the exit-value model / counterfactual replay.
     _closes_buf = binance_feed.buffer.get_closes()
     _closes_tail = (
         [float(_closes_buf[-2]), float(_closes_buf[-1])]
@@ -1449,8 +1423,7 @@ async def _evaluate_signal_and_enter(
         "spot_flow_signal": spot_flow_rec,
         "regime_autocorr": round(signal_engine.last_regime_autocorr, 4),
         "regime_direction": round(signal_engine.last_regime_direction, 4),
-        # Time-of-window classification (recorded telemetry; constant
-        # "late_sniper" on every sniper fill by construction)
+        # Time-of-window telemetry ("late_sniper" on every sniper fill by construction)
         "entry_phase": phase,
         "flip_count": flip_count,
         "is_flip": flip_count > 0,
@@ -1458,9 +1431,8 @@ async def _evaluate_signal_and_enter(
         # dict (same schema as ghosts). None means "feed cold/stale", never 0.0.
         "depth_usd_top20": _depth_usd_top20(),
         **aux_signals,
-        # Adverse-selection diagnostic — 30s is the post-fill checkpoint, not the
-        # lookback (that's the monitor's 30-minute window). None when this
-        # evaluation never computed it (never a 0.5 stand-in — the rule).
+        # Adverse-selection diagnostic — 30s is the post-fill checkpoint, not
+        # the lookback. None when never computed — never a stand-in value.
         "adverse_rate_at_30s": adverse_rate_at_30s if adverse_rate_at_30s >= 0 else None,
         "adverse_kelly_mult": round(adverse_kelly_mult, 3),
         "cb_tick_to_submit_ms": (round((time.time() - _eval_tick_ts) * 1000.0, 1)
@@ -1476,12 +1448,11 @@ async def _evaluate_signal_and_enter(
         # limit here, and the limit cap binding would poison ask-vs-ask
         # comparisons. _cbm exists whenever is_sniper is True.
         **_scar_fields(cid, side, signal_ask, _cbm if is_sniper else None),
-        # Burst-shape + oracle-confirm stamps (discovery-only scar dims; None
-        # on cold, never a 0.0 stand-in): the 10s Coinbase move brackets the
-        # 2s burst (isolated spike vs extending trend — reverting spikes are
-        # the measured bleed), and the RESOLUTION venue's own live report
-        # either confirms the strike cross or the fire's premise rests on
-        # Coinbase alone (RTDS ~1Hz lag = thinner true cushion).
+        # Burst-shape + oracle-confirm stamps (discovery-only scar dims; None on
+        # cold, never 0.0): the 10s move brackets the 2s burst (isolated spike
+        # vs extending — reverting spikes are the measured bleed), and the
+        # resolution venue's own fresh report either confirms the strike cross
+        # or the fire's premise rests on Coinbase alone.
         "scar_cb_move_10s": (coinbase_feed.cb_move(10.0)
                              if is_sniper and coinbase_feed else None),
         "chainlink_price_at_fire": _cl_px_at_fire,
@@ -1490,15 +1461,12 @@ async def _evaluate_signal_and_enter(
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
     }
-    # Scar-gate enforcement — learned vetoes, OFF by default. A gate only works
-    # here if it GRADUATED its OOS SPRT (statuses filter — a shadow gate in the
-    # config list is ignored) AND the operator added its name to
-    # late_window.scar_enforce (never automatic). The veto journals ONCE per
-    # (window, gate) to scar_vetoes.jsonl — the sniper re-evaluates every tick
-    # while the move holds, and duplicate lines would tick-weight the nightly
-    # resolution exactly the way the methodology rules forbid. Fail-OPEN: a
-    # scar-machinery error must never block the trading loop (the kill rule
-    # owns turning the strategy off, not this).
+    # Scar-gate enforcement — learned vetoes, OFF by default. A gate vetoes only
+    # if it GRADUATED its OOS SPRT AND the operator listed it in
+    # late_window.scar_enforce (a shadow gate in the list is ignored). Journal
+    # ONCE per (window, gate): the sniper re-evaluates every tick and duplicate
+    # lines would tick-weight the nightly resolution. Fail-OPEN — a scar error
+    # must never block trading (the kill rule owns shutoff, not this).
     _scar_enforce = lw_cfg.get("scar_enforce") or []
     if _scar_enforce:
         try:
@@ -1518,10 +1486,8 @@ async def _evaluate_signal_and_enter(
             _now_ts = int(time.time())
             for k in [k for k in _scar_vetoed if _now_ts - k >= 600]:
                 del _scar_vetoed[k]
-            # EVERY matching gate journals (one ghost/skip for the window is
-            # enough, but the per-gate resolution ledger needs each gate's
-            # line — a co-firing gate whose vetoes only ever count when it
-            # fires alone would read better than reality).
+            # EVERY matching gate journals — a co-firing gate whose vetoes only
+            # counted when it fired alone would read better than reality.
             _first_new = True
             for _hit in _scar_hits:
                 if _hit in _scar_vetoed.get(_sw, set()):
@@ -1565,11 +1531,10 @@ async def _evaluate_signal_and_enter(
                             f"Ask moved {price:.3f} → {fresh_ask:.3f} (edge gone)")
             return None, last_eval_log_window
 
-    # Pre-sign concurrently with the submit's preflight. Spawned only after the
-    # last veto gate (the task can't start before the next await regardless, so
-    # this placement is scheduling-identical — but a vetoed tick no longer burns
-    # a doomed sign on the shared core). The submit path awaits this in-flight
-    # sign instead of racing a duplicate against it.
+    # Pre-sign concurrently with the submit's preflight, spawned only after the
+    # last veto gate so a vetoed tick never burns a doomed sign on the shared
+    # core. The submit AWAITS this in-flight sign — never race a duplicate
+    # against it (two concurrent pure-python signs contend on the GIL).
     if hasattr(trader, "warm_buy_signature"):
         asyncio.create_task(trader.warm_buy_signature(
             token_id, size, price, fee_rate=fee_rate,
@@ -1631,11 +1596,9 @@ async def _evaluate_signal_and_enter(
             "alert_manager": alert_manager,
         }
         if getattr(trader, "on_entry_settled", None) is not None and result.position_id:
-            # LIVE: the fill-time price is usually the padded limit (the tape
-            # loses the indexer race) — print one short line now; the full OPEN
-            # banner AND the Discord OPEN ping both come from the +8s chain
-            # audit with the settled entry, so every surface agrees with the
-            # books (and with the eventual RESOLVED ping).
+            # LIVE: fill-time price is usually the padded limit (the tape loses
+            # the indexer race) — short line now; the OPEN banner + Discord ping
+            # come from the +8s chain audit so every surface agrees with the books.
             _lru_set(_pending_settled_banners, int(result.position_id),
                      _banner_ctx, _PENDING_BANNERS_MAX)
             logger.info(
@@ -1669,9 +1632,10 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
                             coinbase_feed: Any = None,
                             contract: Any = None,
                             **kwargs) -> tuple[float | None, float | None, dict[int, float], int, str]:
-    """Derive strike and BTC price. Strike = Chainlink's first-report-at/after-the-boundary
-    (get_strike) — the exact rule Polymarket's price_to_beat uses; Gamma price_to_beat is a
-    cold-start fallback."""
+    """Derive strike and BTC price for a window.
+
+    Strike = Chainlink's first report at/after the boundary (the exact
+    price_to_beat rule); Gamma's price_to_beat WINS whenever served."""
     now_ts = int(time.time())
 
     try:
@@ -1679,22 +1643,17 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     except (ValueError, IndexError):
         contract_window_ts = int(now_ts // 300) * 300  # fallback
 
-    # Decision strike = Chainlink's first-report-AT/AFTER-the-boundary (get_strike) — the
-    # exact rule Polymarket's price_to_beat uses (same btc/usd data stream it resolves on,
-    # matched at +0ms), captured live from RTDS and available ~ms into the window. Any
-    # settle from the cold-start fallback to the captured value is logged so it's visible.
-    # Gamma's event_metadata.price_to_beat is the SAME value but served late/unreliably
-    # in-window (whole windows never get it), so it is only a cold-start bootstrap until
-    # the boundary report lands.
+    # Decision strike = Chainlink's first report AT/AFTER the boundary — the
+    # exact rule Polymarket's price_to_beat uses (capturing the LAST report
+    # BEFORE it missed the official round by >$8 in fast opens). Gamma's
+    # price_to_beat is the same value but served late/unreliably in-window.
     cl_strike = chainlink_feed.get_strike(contract_window_ts) if chainlink_feed else None
     ptb = (contract or {}).get("event_metadata") or {}
     ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
     if ptb and ptb > 0:
-        # Gamma's price_to_beat is the RESOLVED truth (the value the market settles
-        # against — verified bit-exact with the Chainlink boundary report). It is
-        # served late/unreliably in-window, but once present it wins over our own
-        # capture: an RTDS delivery hole can lock a first-received report that is
-        # NOT Polymarket's first report (measured ~1-2% of windows, $35+ off).
+        # Gamma's price_to_beat is the RESOLVED truth — once served it WINS over
+        # our own capture: an RTDS delivery hole can lock a first-received
+        # report that is NOT Polymarket's (~1-2% of windows, $35+ off).
         prev = window_strikes.get(contract_window_ts)
         if prev is not None and abs(prev - ptb) > 0.005:
             logger.warning(f"Strike Corrected {_slug_to_window(cid)}: ${prev:,.2f} → ${ptb:,.2f}")
@@ -1707,9 +1666,8 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
         window_strikes[contract_window_ts] = cl_strike     # the sniper reads this — set every loop
         _strike_trusted[contract_window_ts] = (
             chainlink_feed.strike_reliable(contract_window_ts) if chainlink_feed else False)
-        # Log ONE line per window, when the boundary value LOCKS (the first at/after-boundary
-        # report has landed). Before that get_strike serves a cold-start fallback that ticks
-        # with the live price; logging every tick was noisy and the value isn't final yet.
+        # Log ONE line per window, when the boundary value LOCKS — before that
+        # get_strike serves a cold-start fallback that ticks with the live price.
         locked = chainlink_feed.boundary_captured(contract_window_ts) if chainlink_feed else False
         if locked and contract_window_ts not in _strike_logged:
             logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
@@ -1863,15 +1821,14 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
             spread_down = await market_scanner.get_spread(token_down, http_client)
         spread_val = max(spread_up, spread_down)
         if spread_val < 0:
-            # Fail closed: both the WS BBO and the REST /spread fallback failed —
-            # without a spread there is no execution-cost check, so skip the tick
+            # Fail closed: WS BBO and REST /spread both failed — skip the tick
             # rather than waive the only cost-vs-max_spread gate.
             _record_skip("spread_unavailable")
             logger.debug("Spread unavailable from WS + REST — skipping tick (fail-closed)")
             return None, last_eval_log_window
         # Half-spread above mid + the EFFECTIVE peak taker fee (flat per-share
-        # proxy, NOT the raw coefficient). Gate stays max_spread — accounts for the
-        # fee-eaten portion without tightening into illiquid markets.
+        # proxy — never the raw coefficient, the two fee models must not mix).
+        # Gate stays max_spread so it doesn't tighten into illiquid markets.
         effective_cost = spread_val * 0.5 + EFFECTIVE_FEE_PEAK
         if effective_cost > max_spread:
             _record_skip("spread_too_wide")
@@ -2008,7 +1965,7 @@ async def _evaluate_and_exit_position(
     _candle_age = binance_feed.buffer.latest_age_s if binance_feed and binance_feed.buffer else float("inf")
     if _candle_age > 45:
         _stale.append(f"binance_kline={_candle_age:.0f}s")
-    # Loss-cut math (BTC vs strike + ATR) is independent of L3b/Chainlink; only
+    # Loss-cut math (BTC vs strike + ATR) is independent of flow/Chainlink; only
     # candle staleness corrupts ATR. Under non-critical staleness evaluate_hold
     # still fires so loss-cut can protect — any non-loss-cut EXIT is reverted below.
     scalp_gated_by_stale = False
@@ -2064,7 +2021,7 @@ async def _evaluate_and_exit_position(
         hold_trades_up, hold_trades_down,
     )
 
-    # Same L3b helper used at entry — identical math via aux_layers.
+    # Same helper as the entry path — identical model math via aux_layers.
     _hold_aux_local = _build_aux_signals(coinbase_feed, trades_feed)
     _hold_vol_factor = regime_vol_factor(
         indicators.get("atr", {}).get("atr", 0.0), signal_engine.last_atr_long_term_mean)
@@ -2310,17 +2267,14 @@ def _resolved_exit_price(live: dict[str, Any], side: str,
                          market_id: str = "") -> tuple[float | None, str | None]:
     """Decide a resolved position's binary exit price from current market state.
 
-    Returns ``(exit_price, oracle_log)``: ``exit_price`` is the binary payoff
-    (1.0 winner / 0.0 loser) or ``None`` when the window hasn't resolved yet
-    (caller keeps waiting); ``oracle_log`` is a human log fragment when the
-    Chainlink oracle decided, else ``None``.
+    Returns (exit_price, oracle_log): 1.0/0.0, or None while unresolved
+    (caller keeps waiting); oracle_log is set when the Chainlink oracle decided.
 
-    Source priority matches §6 (Chainlink is the source of truth, never Binance):
-      1. ``event_metadata`` (final_price vs price_to_beat) — the Chainlink oracle.
-      2. A *coherent* resolved CLOB book (``closed``, prices sum ~1, one side at an
-         extreme), paid the exact binary 1.0/0.0 — zero taker fee at the extreme.
-         An incoherent book (stale/phantom print) is rejected so a winning side
-         can't mis-resolve; the caller falls through to the oracle/orphan path.
+    Priority (Chainlink is the truth, never Binance):
+      1. event_metadata final_price vs price_to_beat — the Chainlink oracle.
+      2. A COHERENT resolved CLOB book (closed, sums ~1, one side at an extreme).
+         Incoherent books are rejected — a stale/phantom print must never
+         mis-resolve a winning side; the caller falls to the oracle/orphan path.
     """
     if not live:
         return None, None
@@ -2365,7 +2319,7 @@ async def _resolve_expired_position(
     # Chainlink oracle first (authoritative), then a coherent resolved CLOB book.
     exit_price, resolve_log = _resolved_exit_price(live, pos["side"], pos["market_id"])
     if exit_price is None:
-        # Window hasn't resolved yet — wait for the next tick (polls every 2s).
+        # Window hasn't resolved yet — wait for the next tick.
         now_ts = time.time()
         mid = pos["market_id"]
         if mid not in _last_resolve_wait_log:
@@ -2417,8 +2371,7 @@ async def _resolve_expired_position(
         if counterfactual_tracker:
             counterfactual_tracker.record_hold_resolution(
                 pos["market_id"], exit_price, pnl, gain_pct, position_id=pos["id"])
-        # Track resolution margin (final - strike), persisted as the
-        # prev_resolution_margin telemetry field — from event_metadata
+        # Resolution margin (final − strike) telemetry — from event_metadata
         # regardless of which branch above set exit_price.
         meta = live.get("event_metadata")
         if meta and meta.get("final_price") is not None and meta.get("price_to_beat") is not None:
@@ -2446,9 +2399,8 @@ async def _manage_orphaned_position(
         age = 0
     if age < 600:
         return True, day_wins, day_losses, day_fees  # too young, skip
-    # Track (final_price, strike) for the prev_resolution_margin telemetry —
-    # populated by whichever branch below has the data. Saved at the end
-    # alongside resolve_position.
+    # (final_price, strike) for the prev_resolution_margin telemetry —
+    # populated by whichever branch below has the data.
     resolved_final: float | None = None
     resolved_strike: float | None = None
     # Try direct Gamma fetch for eventMetadata (Chainlink oracle)
@@ -2640,7 +2592,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     sched_start_et = (sched["trading_start_hour_et"], sched["trading_start_minute"])
     sched_end_et = (sched["trading_end_hour_et"], sched["trading_end_minute"])
 
-    window_strikes: dict[int, float] = {}      # window_ts -> BTC price at window open
+    window_strikes: dict[int, float] = {}      # window_ts -> strike (Chainlink boundary / price_to_beat)
     ws_subscribed_tokens: list[str] = []       # currently subscribed token_ids
     last_eval_log_window: int = 0              # track which window we last logged eval for
     prev_contract_tokens: list[str] = []       # tokens from previous contract (for unsubscribe)
@@ -3259,13 +3211,12 @@ async def main() -> None:
     scheduler.register_job("recordings_retention", recordings_cleanup_job())
 
     async def _sniper_health_job() -> dict:
-        """Re-run the kill-bar momentum read + post-live kill rule and ping Discord.
-        Deterministic, alert-only — it never flips config (kill bars are operator
-        authority). Reports BOTH the SIM corpus (window_paths harness) and the REAL
-        live fills (polybot_live.db), with their gap, so any execution/selection
-        divergence is visible; the kill-rule VERDICT is driven by the LIVE ledger
-        once fills exist (the sim can't see live execution quality). Skipped when the
-        sniper is disabled."""
+        """Nightly sniper health: kill-bar read + post-live kill rule, pinged to Discord.
+
+        Alert-only — never flips config (kill bars are operator authority).
+        Reports the SIM corpus AND the realized fills with their gap; the
+        kill-rule verdict is driven by the realized ledger once fills exist
+        (the sim can't see live execution quality). Skipped when disabled."""
         if not config.get("late_window", {})["sniper_enabled"]:
             return {"skipped": "sniper disabled"}
         import importlib.util
@@ -3273,11 +3224,10 @@ async def main() -> None:
         spec = importlib.util.spec_from_file_location("analyze_late_window", hp)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        # Read the SIM ceiling at the DEPLOYED config (settings.yaml) so it is
-        # apples-to-apples with the realized fills — not the harness's research
-        # defaults. RTT 0.34 = the box's measured POST p50 pooled over the three
-        # full days after Polymarket's 07-24 async-commit rollout (375/312/314ms,
-        # n=100; the 250ms crypto taker delay is the floor — zero samples below it).
+        # Read the SIM ceiling at the DEPLOYED config (settings.yaml), not the
+        # harness's research defaults — apples-to-apples with realized fills.
+        # RTT 0.34 = the box's measured POST p50 (Polymarket's 250ms crypto
+        # taker delay is a policy floor — no sample beats it).
         _lw = config.get("late_window", {})
         # Each read individually guarded: the SIM corpus lives in a gitignored
         # sidecar DB that can be missing/corrupt while the realized ledger is
@@ -3295,9 +3245,9 @@ async def main() -> None:
         # since the validation epoch (pre-epoch fills ran different code/config).
         try:
             if mode == "live":
-                # Scoped to the epoch too: without it, day 1 of a live run scores the
-                # PREVIOUS live era (mis-booked pre-07-08 fills) and false-trips the
-                # kill rule the first night. Pin validation_epoch at every go-live.
+                # Scoped to the epoch too: without it, day 1 of a live run scores
+                # the PREVIOUS live era and false-trips the kill rule the first
+                # night. Pin validation_epoch at every go-live.
                 live = await asyncio.to_thread(
                     mod.live_health_read, None, _lw.get("validation_epoch"))
             else:
@@ -3306,9 +3256,9 @@ async def main() -> None:
         except Exception as e:
             logger.warning("sniper health realized-ledger read failed: %s", e)
             live = None
-        # SPRT #1 (burst-alive) + regime-Kelly shadow accrual — both alert-only
-        # reads over the same realized ledger the kill rule uses. SPRT turns
-        # things ON; the kill rule turns things OFF (SPRT_DESIGN, frozen 07-19).
+        # Burst-alive SPRT + regime-Kelly shadow accrual — alert-only reads over
+        # the same realized ledger the kill rule uses. SPRT turns things ON;
+        # the kill rule turns things OFF.
         _real_db = None if mode == "live" else mod.PAPER_DB
         try:
             sprt_burst = await asyncio.to_thread(
@@ -3523,11 +3473,9 @@ async def main() -> None:
     except asyncio.TimeoutError:
         logger.warning("Discord did not connect within 15s — starting trading loop anyway")
 
-    # Everything long-lived is constructed: move it to the GC's permanent
-    # generation and raise the gen-0 threshold. Full (gen-2) collections
-    # otherwise rescan every boot object on a schedule and their multi-ms
-    # pauses can land mid-fire on the 1-core box; freezing shrinks them to the
-    # (small) post-boot heap. Thresholds stay modest — the box has 1 GB.
+    # Freeze the boot heap: full-GC pauses (multi-ms on the 1-core box) can
+    # land mid-fire; freezing long-lived objects shrinks gen-2 scans to the
+    # small post-boot heap. Thresholds stay modest — the box has 1 GB.
     import gc
     gc.collect()
     gc.freeze()
@@ -3595,11 +3543,12 @@ _SINGLE_INSTANCE_SOCK = None
 
 
 def _acquire_single_instance(port: int = 49653) -> bool:
-    """OS-level single-instance lock for the trading process: bind a localhost port
-    (no SO_REUSEADDR, so a second bind fails on Windows and POSIX alike). The OS
-    releases it on exit — even on crash — so there is no stale-lock to clean up.
-    Returns False if another trading instance already holds it. This is the
-    backstop that prevents the 06-22 double-launch (two bots on one paper DB)."""
+    """OS-level single-instance lock: bind a localhost port.
+
+    No SO_REUSEADDR, so a second bind fails on Windows and POSIX alike; the OS
+    releases the port on any exit (even a crash), so no stale lock. Returns
+    False if another instance holds it — the backstop against a double-launch
+    running two bots on one DB."""
     global _SINGLE_INSTANCE_SOCK
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -3614,15 +3563,11 @@ def _acquire_single_instance(port: int = 49653) -> bool:
 
 
 def _make_sigint_handler(force_quit=os._exit):
-    """Ctrl+C handler. First press raises KeyboardInterrupt so main()'s finally
-    runs its (time-boxed) teardown; a second press force-quits via os._exit.
+    """Ctrl+C handler: first press = graceful teardown, second press = os._exit.
 
-    The force-quit exists because an impatient repeat Ctrl+C otherwise lands while
-    the interpreter is joining a lingering non-daemon thread (a feed/websocket
-    worker whose async stop() didn't fully unwind, or aiosqlite's worker) at
-    _thread._shutdown() — producing 'Exception ignored while joining a thread ...
-    KeyboardInterrupt' and hanging the process, which forced a manual taskkill.
-    Exit 130 is non-zero so the run_polybot.sh wrapper skips the commit."""
+    The force-quit exists because a repeat Ctrl+C lands while the interpreter
+    joins a lingering non-daemon thread (feed/websocket/aiosqlite worker) and
+    hangs the process. Exit 130 is non-zero so the wrapper skips the commit."""
     state = {"count": 0}
 
     def _handler(signum=None, frame=None):
@@ -3694,9 +3639,8 @@ if __name__ == "__main__":
         raise
     except BaseException:
         logging.critical("FATAL: unhandled exception escaped main()", exc_info=True)
-        # Same zombie hazard as above, observed live 07-30: a crash that
-        # bypassed the graceful teardown left the process hung on non-daemon
-        # threads for 10 hours while the supervisor thought it was trading.
-        # The 60s crash-restart only works if we actually die.
+        # Same zombie hazard as above, paid for in production: a crash that
+        # bypassed graceful teardown hung on non-daemon threads for hours while
+        # the supervisor thought it was trading. Crash-restart only works if we die.
         logging.shutdown()
         os._exit(1)

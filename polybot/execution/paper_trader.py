@@ -21,14 +21,11 @@ class PaperTrader(BaseTrader):
             max_bankroll_deployed=kwargs.get("max_bankroll_deployed", 0.80),
             max_concurrent_positions=kwargs.get("max_concurrent_positions", 1),
         )
-        # Realism knobs (all overridable via settings.yaml -> execution.*; the
-        # defaults here equal settings' calibrated values and apply only when
-        # settings omit the keys). Latency is sampled from the LIVE ledger's
-        # measured order-path POST-RTT distribution (_LATENCY_QUANTILES, from
-        # latency_stats.json); latency_scale multiplies the draw (0.70 = the
-        # Stockholm box, MEASURED: warm signed FOK smoke orders p50 304ms vs
-        # the table's 436ms; 0 = instant for deterministic tests).
-        # Re-derive the quantiles from box-live fills at go-live.
+        # Realism knobs (overridable via settings.yaml -> execution.*; defaults
+        # here equal settings' calibrated values). Latency samples the LIVE
+        # ledger's measured POST-RTT distribution (_LATENCY_QUANTILES);
+        # latency_scale multiplies the draw (0.70 = the VPS box's measured RTT
+        # ratio; 0 = instant for deterministic tests).
         self.latency_scale: float = kwargs.get("paper_latency_scale", 0.70)
         self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.30)
         # Fallback fail rate when the book is unavailable; the i.i.d. baseline
@@ -39,9 +36,8 @@ class PaperTrader(BaseTrader):
         # live would have found a presigned order, not at a hardcoded probability.
         self._sell_warmups: dict[str, dict[str, float]] = {}
 
-    # Warm-SELL parameters mirror LiveTrader exactly (TTL + drift acceptance).
-    # The speedup is the sign work a presigned order skips — measured live at
-    # ~3-5ms (EIP-712 sign), so 5ms, not a full sign-and-post's worth.
+    # Mirrors LiveTrader exactly (TTL + drift acceptance). The speedup is only
+    # the ~5ms sign work a presigned order skips — not a full sign-and-post.
     _SELL_WARMUP_TTL_S: float = 5.0
     _SELL_WARMUP_SPEEDUP_S: float = 0.005
 
@@ -124,11 +120,9 @@ class PaperTrader(BaseTrader):
             return False
         return True
 
-    # State-dependent FOK fail rate (live rejects cluster around thin top-of-book
-    # + wide spread). Coefficients are estimates pending fill_stats.json cause
-    # buckets; two safety properties hold regardless:
-    #   1) The absolute cap (0.030) bounds over-rejection if the state proxies
-    #      are wrong.
+    # State-dependent FOK fail rate — live rejects cluster around thin
+    # top-of-book + wide spread. Coefficients are estimates; safety holds anyway:
+    #   1) The absolute cap bounds over-rejection if the state proxies are wrong.
     #   2) Book unavailable -> constant network_fail_rate (deterministic tests
     #      and degraded-feed startup).
     _STATE_FAIL_RATE_BASE: float = 0.005
@@ -220,13 +214,12 @@ class PaperTrader(BaseTrader):
 
     async def _retry_walk(self, token_id: str, side: str, requested_price: float,
                           size_usd: float) -> FillResult:
-        """One walk against the current book. A simulated reprice kill is
-        ONE-SHOT: live's reprice kill arrives as an exchange 4xx and returns
-        without an in-submit retry (the adverse-selection filter; kills
-        dominate sniper POSTs, verified live 07-22) — the tick loop is the
-        retry, in paper and live alike. In-submit re-walks gave paper second
-        chances live never takes, filling reverting-move fires live sits out
-        and triple-counting kill stats per submit."""
+        """One walk against the current book — a simulated reprice kill is ONE-SHOT.
+
+        Live's reprice kill is an exchange 4xx with no in-submit retry (the
+        adverse-selection filter); the tick loop is the retry in both modes.
+        In-submit re-walks gave paper second chances live never takes and
+        triple-counted kill stats."""
         result = self._walk_book(token_id, side=side, requested_price=requested_price,
                                  size_usd=size_usd)
         self._record_stats(filled=result.filled, side=side, reason=result.reason or "")
@@ -256,12 +249,11 @@ class PaperTrader(BaseTrader):
     # Internals
     # ------------------------------------------------------------------
 
-    # The LIVE ledger's order-path POST RTT distribution (latency_stats.json, 80
-    # samples across the 4 live days: fills + FOK kills). Sampled by inverse-CDF
-    # interpolation so paper experiences the same right-skewed shape live did —
-    # a gaussian under-served the 0.5-1.6s slow fills, which are exactly the
-    # ones most likely to land on a repriced book. Re-derive from the ledger if
-    # the route ever changes; not a tunable.
+    # The LIVE ledger's order-path POST RTT distribution (latency_stats.json,
+    # fills + FOK kills), sampled inverse-CDF so paper sees the same right skew
+    # — a gaussian under-served the 0.5-1.6s slow fills, exactly the ones that
+    # land on a repriced book. Re-derive from the ledger if the route changes;
+    # never hand-tune.
     _LATENCY_QUANTILES: tuple[tuple[float, float], ...] = (
         (0.00, 0.405), (0.25, 0.410), (0.50, 0.436),
         (0.75, 0.679), (0.99, 1.646), (1.00, 2.222),
@@ -319,7 +311,6 @@ class PaperTrader(BaseTrader):
             return FillResult(filled=False, reason="book empty after parse")
         levels.sort(key=lambda ps: ps[0], reverse=(side == "sell"))
 
-        # Walk levels up to size_usd (buy) or size_shares (sell), compute VWAP.
         remaining = size_usd if side == "buy" else (size_usd / requested_price)
         spent = 0.0
         consumed = 0.0
@@ -344,15 +335,14 @@ class PaperTrader(BaseTrader):
             return FillResult(filled=False, reason="book empty during fill")
         vwap = spent / consumed
 
-        # Detect insufficient depth (book couldn't absorb the full order from direct levels).
+        # FOK is all-or-none — leftover size means no fill.
         if remaining > 1e-6:
             return FillResult(
                 filled=False,
                 reason=f"Insufficient book depth (remaining={remaining:.2f})",
             )
 
-        # Strict FOK: BUY rejects if vwap > requested_price, SELL if vwap <
-        # requested_price (book moved between calc and fill).
+        # Strict FOK: a VWAP past the limit is a kill (book moved).
         if side == "buy":
             if vwap > requested_price:
                 return FillResult(filled=False, reason="Price moved before fill (simulated)")

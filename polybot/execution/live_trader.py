@@ -40,11 +40,12 @@ _clob_helpers._http_client = httpx.Client(
 )
 
 class OrphanPositionError(Exception):
-    """Raised at startup when on-chain positions exist that the DB doesn't know about
-    (e.g. a FOK fill acked but the DB row write failed) — the loop can never manage
-    them and `reconcile_open` only covers DB-known rows. Trips again on every boot:
-    trading stays down until the operator inspects `memory/state/orphan_positions.json`,
-    reconciles manually, then re-runs with `--allow-orphans`.
+    """Startup guard: on-chain positions the DB doesn't know about.
+
+    (e.g. a FOK fill acked but the DB write failed). The loop can never manage
+    them — reconcile_open covers DB-known rows only. Trips on every boot until
+    the operator reconciles from memory/state/orphan_positions.json and
+    re-runs with --allow-orphans.
     """
 
 logger = logging.getLogger(__name__)
@@ -63,14 +64,10 @@ _NON_RETRYABLE_ERRORS = frozenset({
     "INVALID_ORDER_EXPIRATION",
 })
 _ALLOWANCE_RECHECK_EVERY = 10
-# The CLOB match-engine REST view (associate_trades) lags the fill by 100-300ms.
-# A short budget here makes _get_fill_price give up and book expected_price (the
-# padded FOK limit) as the entry — the sniper's booking bug: its <=45s positions
-# resolve before the slower WS-tape/data-api audit can correct them, so the fee/
-# pnl math runs off a price up to sniper_fok_slip too high. This budget (~8x0.12s
-# + per-call RTT ≈ up to ~1.6s worst case) covers the indexer lag so the true VWAP
-# is booked at write time. Runs AFTER the FOK matched, so it never risks a resubmit;
-# it only delays the FillResult, harmless for a 45s sniper that has already filled.
+# associate_trades lags the fill by 100-300ms; too small a budget books the
+# padded FOK limit as the entry — sniper positions can resolve before the +8s
+# audit corrects them, skewing fee/pnl by up to sniper_fok_slip. Runs AFTER
+# the FOK matched: never risks a resubmit, only delays the FillResult.
 _FILL_PRICE_LOOKUP_RETRIES = 8
 _FILL_PRICE_LOOKUP_DELAY = 0.12
 _DUST_THRESHOLD_SHARES = 0.01
@@ -83,18 +80,17 @@ _ANSI_RESET = "\033[0m"
 _FILL_AUDIT_DELAY_S = 8.0     # let the indexer see the fill before auditing the entry price
 _BALANCE_SETTLE_FLOOR = 0.03  # min chain-settle wait even if WS fires immediately
 _BALANCE_SETTLE_DELAY = 0.15  # max wait — WS-wait ceiling, and the fixed delay when no WS is attached
-# WS trade events for our token typically arrive within 50-150ms of the
-# match-engine confirmation; the floor absorbs ordering jitter between
-# POST-success and the WS event landing.
+# WS trade events land ~50-150ms after match confirmation; the floor absorbs
+# ordering jitter between POST-success and the WS event.
 
 def _retry_sleep(attempt: int) -> float:
     """Exponential backoff with multiplicative jitter. attempt is 1-indexed."""
     base = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
     return base * random.uniform(1.0 - _RETRY_JITTER, 1.0 + _RETRY_JITTER)
 
-# Substrings that indicate auth/signing failure (revoked Safe, bad nonce, expired
-# API creds). On any of these we stop retrying and raise — silent fail-loops
-# would let the bot run for hours posting orders that never reach the exchange.
+# Auth/signing failure substrings (revoked Safe, bad nonce, expired creds).
+# Stop retrying and raise — a silent fail-loop would let the bot run for hours
+# posting orders that never reach the exchange.
 _AUTH_ERR_TOKENS = (
     "status_code=401", "status_code=403", "unauthorized", "forbidden",
     "signature", "signing", "nonce",
@@ -143,9 +139,8 @@ _LATENCY_STATS_PATH = LATENCY_STATS_PATH
 _LATENCY_SAMPLES: deque[float] = deque(maxlen=200)        # total = sign + post
 _SIGN_LATENCY_SAMPLES: deque[float] = deque(maxlen=200)   # excludes presigned (sign=0)
 _POST_LATENCY_SAMPLES: deque[float] = deque(maxlen=200)
-# Bimodal-distribution detector for the POST leg. A TLS-handshake-on-half-of-requests
-# pattern shows up as a cluster in the 250–500ms bucket; with a warm connection
-# pool the bulk lands in 50–250ms.
+# POST-leg histogram: a cold-TLS-handshake regression shows as a cluster in the
+# 250-500ms bucket; a warm pool keeps the bulk in 50-250ms.
 _POST_BUCKET_EDGES_MS: tuple[float, ...] = (50, 100, 250, 500, 1000)
 
 
@@ -181,9 +176,8 @@ def _record_submit_latency(total_secs: float, sign_secs: float, post_secs: float
         if sign_secs > 0:
             _SIGN_LATENCY_SAMPLES.append(sign_secs)
         _POST_LATENCY_SAMPLES.append(post_secs)
-        # Write from the first sample: the daily restart resets these buffers,
-        # and at a handful of POSTs per day a warm-up threshold means the file
-        # never lands on disk at all.
+        # Write from the first sample — the daily restart resets these buffers;
+        # a warm-up threshold would mean the file never lands on disk.
         total_sorted = sorted(_LATENCY_SAMPLES)
         sign_sorted = sorted(_SIGN_LATENCY_SAMPLES)
         post_sorted = sorted(_POST_LATENCY_SAMPLES)
@@ -213,9 +207,8 @@ def _record_submit_latency(total_secs: float, sign_secs: float, post_secs: float
         pass
 
 
-# The stats writer lives in execution.base so paper records the SAME schema
-# to its own file (fill_stats_paper.json) and kill rates are directly
-# comparable across modes.
+# Writer lives in execution.base so paper records the SAME schema to its own
+# file — kill rates stay directly comparable across modes.
 def _update_fill_stats(filled: bool, side: str, reason: str = "") -> None:
     _base_update_fill_stats(_FILL_STATS_PATH, filled, side, reason)
 
@@ -340,25 +333,23 @@ class LiveTrader(BaseTrader):
             max_workers=2, thread_name_prefix="clob-sign"
         )
         self._latched_auth_error: str | None = None
-        # Post-BUY chain-balance cache: token_id → (timestamp, balance_shares).
-        # Filled after each FOK BUY by a background task; lets _sellable_shares
-        # skip the ~300ms REST call on the subsequent SELL. Safe in
-        # single-position-per-market mode (nothing else touches the wallet
-        # between our BUY and SELL); 300s TTL bounds staleness.
+        # Post-BUY chain-balance cache: token_id → (ts, shares). Primed after
+        # each FOK BUY so _sellable_shares skips a ~300ms REST call on the SELL.
+        # Safe only because nothing else touches the wallet between our BUY and
+        # SELL; the TTL bounds staleness.
         self._balance_cache: dict[str, tuple[float, float]] = {}
         self._BALANCE_CACHE_TTL_S: float = 300.0
-        # Pre-signed SELL warm-ups, filled in the background when main.py sees
-        # holding_edge in the danger zone — keeps the EIP-712 sign (measured
-        # ~3-5ms warm on this host, pure-python eth_account) plus any first-call
-        # jitter off the scalp hot path. token_id → {"order", "amount", "price", "ts"}.
+        # Pre-signed SELL warm-ups, armed when main.py sees holding_edge in the
+        # danger zone — keeps the EIP-712 sign + first-call jitter off the scalp
+        # hot path. token_id → {"order", "amount", "price", "ts"}.
         self._sell_warmups: dict[str, dict] = {}
         self._SELL_WARMUP_TTL_S: float = 5.0
         self._buy_warmups: dict[str, dict] = {}
         self._BUY_WARMUP_TTL_S: float = 5.0
         # In-flight BUY warmup signs: token_id → {"amount", "price", "event"}.
-        # The submit path AWAITS a param-matching in-flight sign instead of
-        # dispatching a second one — two concurrent pure-python EIP-712 signs
-        # contend on the GIL (one weak core) and slow the money-path sign.
+        # The submit path AWAITS a param-matching in-flight sign, never signs a
+        # duplicate — two concurrent EIP-712 signs contend on the GIL and slow
+        # the money-path sign.
         self._buy_warmup_inflight: dict[str, dict] = {}
         # Winning resolutions awaiting on-chain auto-redeem: position_id →
         # {"deadline": alert ts, "next_check": rate-limit ts}. One non-blocking
@@ -390,10 +381,11 @@ class LiveTrader(BaseTrader):
                 self._latched_auth_error = str(e)
 
     async def prewarm_market_info(self, condition_id: str) -> None:
-        """Warm the py-clob tick-size/neg-risk/fee caches at window discovery,
-        off the hot path — otherwise the first FOK of each window pays ~2
+        """Warm the py-clob tick-size/neg-risk/fee caches at window discovery.
+
+        Off the hot path — otherwise the first FOK of each window pays ~2
         sequential REST round-trips inside create_market_order before it can
-        sign. One call covers BOTH tokens. Best-effort, idempotent per
+        sign. One call covers BOTH tokens; best-effort, idempotent per
         condition_id; on failure the order falls back to the per-order fetch.
         """
         if not condition_id or condition_id == self._prewarmed_condition_id:
@@ -530,14 +522,13 @@ class LiveTrader(BaseTrader):
                                       submit_ts: float = 0.0,
                                       ws_settle_event: asyncio.Event | None = None,
                                       ) -> FillResult:
-        """Resolve an accepted-but-unmatched FOK (e.g. status "delayed") without
-        resubmitting — the order exists at the exchange and may still fill, so a
-        fresh submit is the double-fill path. Three-way settle: an exchange-
-        CONFIRMED cancel of a FOK is a proven no-fill (kill-or-fill can't
-        partially match); associated trades are a fill; anything else is
-        AMBIGUOUS — the trade indexer loses the race on nearly every fill, so
-        "no trades visible" without a confirmed cancel must never be booked as
-        a definitive miss."""
+        """Resolve an accepted-but-unmatched FOK (e.g. "delayed") without resubmitting.
+
+        The order exists at the exchange and may still fill — a fresh submit is
+        the double-fill path. Three-way settle: exchange-CONFIRMED cancel of a
+        FOK = proven no-fill; associated trades = fill; anything else is
+        AMBIGUOUS — the indexer loses the race on nearly every fill, so "no
+        trades visible" without a confirmed cancel is never booked as a miss."""
         status = resp.get("status")
         order_id = resp.get("orderID", "")
         logger.warning("FOK %s status=%r — cancelling and checking trades instead of retrying",
@@ -603,23 +594,20 @@ class LiveTrader(BaseTrader):
         return await self._submit_fok_order(token_id, SELL, shares, price, fee_rate=fee_rate)
 
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float | None:
-        """Sync bankroll with real Polymarket balance.
+        """Sync bankroll with the real Polymarket balance.
 
         Losses settle immediately (no redeem tx). Wins book only once the
-        winning tokens are GONE from the funder wallet on the public data API:
-        redemption burns the tokens and credits the USDC in one atomic tx, so
-        token-absence == payout landed. A balance-delta wait is unusable here —
-        the auto-redeem often credits BEFORE the first balance snapshot, hiding
-        the payout inside the baseline so no delta ever appears (and the CLOB's
-        /balance-allowance is a cache that doesn't see off-exchange transfers
-        until /balance-allowance/update busts it).
+        winning tokens are GONE from the funder wallet: redemption burns the
+        tokens and credits the USDC in one tx, so token-absence == payout
+        landed. A balance-delta wait can't work — auto-redeem often credits
+        BEFORE the first snapshot (no delta ever appears), and the CLOB's
+        /balance-allowance is a cache blind to off-exchange transfers.
 
         Never blocks: one rate-limited check per call, None while unconfirmed
-        (the loop retries next tick, so concurrent positions stay managed).
-        While the tokens remain on-chain the position stays PENDING — we never
-        book an un-redeemed balance (which would silently drop the winner's
-        payout) — and a CRITICAL fires once past the deadline for a manual
-        redeem; booking still happens automatically whenever the tokens clear.
+        (the loop retries next tick). While tokens remain on-chain the position
+        stays PENDING — booking an un-redeemed balance would silently drop the
+        winner's payout. A CRITICAL fires past the deadline for a manual
+        redeem; booking still happens automatically once the tokens clear.
         """
         if exit_price < 0.99:
             real_balance = await self.get_balance()
@@ -638,10 +626,9 @@ class LiveTrader(BaseTrader):
 
         held = await self._chain_token_shares(self._winning_token_id(position))
         if held is None:
-            # Can't verify (missing token id in the snapshot, or data-API
-            # failure) — retry next interval, but the deadline CRITICAL must
-            # still fire: a permanently unverifiable win would otherwise stay
-            # pending forever with no alert, silently withholding the payout.
+            # Can't verify — retry next interval, but the deadline CRITICAL
+            # must still fire: a permanently unverifiable win would otherwise
+            # stay pending forever, silently withholding the payout.
             if now >= wait["deadline"] and not wait.get("alerted"):
                 wait["alerted"] = True
                 logger.critical(
@@ -766,16 +753,14 @@ class LiveTrader(BaseTrader):
                                       size_usdc: float) -> tuple[float, str]:
         """The audit body → (settled_price, "chain" | "provisional").
 
-        Production fills book the submitted limit almost every time (the WS
-        tape and associate_trades both lose the indexer race), so this audit
-        is the de-facto booking authority. The data-API position is the chain
-        truth: `avgPrice` when served, else gross VWAP = size_usdc / wallet
-        shares — the wallet holds exactly notional/VWAP shares (verified on
-        32/32 live fills 07-21: no share-denominated fee is deducted on-chain;
-        the fee model lives in the `fees` column only). Corrects any position
-        whose trade_history row hasn't been booked yet — resolution booking
-        reads positions.shares_held afterwards, so a fill seconds before the
-        window close still books chain-true. Single-fill positions only.
+        Production fills book the submitted limit almost every time (WS tape
+        and associate_trades both lose the indexer race), so this audit is the
+        de-facto booking authority. Chain truth: `avgPrice` when served, else
+        gross VWAP = size_usdc / wallet shares — no share-denominated fee is
+        deducted on-chain; the fee model lives in the `fees` column only.
+        Corrects any position whose trade_history row isn't booked yet, so a
+        fill seconds before window close still books chain-true. Single-fill
+        positions only.
         """
         if not token_id:
             logger.debug("Fill audit pos %s: no token_id — skipped", pos_id)
@@ -972,7 +957,6 @@ class LiveTrader(BaseTrader):
             return
         existing = self._sell_warmups.get(token_id)
         if existing is not None:
-            # Only re-sign if the existing warmup is stale or params drifted.
             age = time.time() - existing["ts"]
             price_drift = abs(existing["price"] - expected_price)
             size_drift = abs(existing["amount"] - shares) / max(shares, 1e-6)
@@ -1106,8 +1090,8 @@ class LiveTrader(BaseTrader):
                 "Dust detected: %.2f shares (~$%.2f) — sweeping",
                 residual, approx_val,
             )
-            # Clamp ref_price into a valid FOK range so the sweep doesn't bounce on
-            # tick / spread issues. Use the existing ref_price as best-effort.
+            # Clamp ref_price into a valid FOK range so the sweep doesn't
+            # bounce on tick/spread issues.
             safe_price = max(0.01, min(0.99, float(ref_price) if ref_price else 0.5))
             sweep_args = MarketOrderArgs(
                 token_id=token_id, amount=residual, side=SELL, price=safe_price,
@@ -1197,23 +1181,18 @@ class LiveTrader(BaseTrader):
 
     async def detect_orphan_positions(self, db: Database,
                                       allow_orphans: bool = False) -> int:
-        """Refuse to start if any on-chain position isn't referenced by an
-        open/pending DB row (or one closed within _ORPHAN_LOOKBACK_HOURS —
-        sweep may not have finished before restart).
+        """Refuse to start if an on-chain position isn't referenced by the DB.
 
-        A **resolved** on-chain position (``redeemable`` true — the market has
-        settled, tokens redeem for $0/$1) can neither be double-traded nor needs
-        managing, so it is settled dust and never blocks. Only an **unresolved**
-        unknown position (``redeemable`` false/absent — market still open, i.e. a
-        genuinely-lost live bet the loop can't see) is a true orphan. This is
-        self-sustaining: leftover dust auto-passes forever with no operator
-        action, while the fail-closed guarantee holds for real lost positions.
+        Checks open/pending rows plus ones closed within _ORPHAN_LOOKBACK_HOURS
+        (a sweep may not finish before a restart). A RESOLVED position
+        (``redeemable`` true) can't be double-traded and needs no managing —
+        settled dust, never blocks. Only an UNRESOLVED unknown (a live bet the
+        loop can't see) is a true orphan.
 
-        Strict mode (allow_orphans=False) raises OrphanPositionError on true
-        orphans AND on DB-read or data-API failure (can't verify → fail closed).
-        Lenient mode (--allow-orphans) logs CRITICAL and proceeds — an ephemeral
-        emergency bypass, no state persisted. Details always persist to
-        ``orphan_positions.json``. Returns the count of true (unresolved) orphans.
+        Strict mode raises OrphanPositionError on true orphans AND on DB/API
+        failure (can't verify → fail closed). --allow-orphans logs CRITICAL and
+        proceeds — an ephemeral emergency bypass, no state persisted. Details
+        always persist to ``orphan_positions.json``. Returns the true-orphan count.
         """
         funder = os.environ.get("POLYMARKET_FUNDER", "").strip()
         if not funder:
@@ -1273,12 +1252,11 @@ class LiveTrader(BaseTrader):
                 return 0
             raise OrphanPositionError(msg)
 
-        # 3) Compare. An unknown token blocks ONLY if its market is unresolved
-        # (redeemable is not True). A resolved position (redeemable True) is
-        # settled dust — can't be double-traded, needs no management — so it is
-        # recorded but never blocks. Missing/None redeemable is treated as
-        # unresolved (fail-closed) so an API schema change can't silently disarm
-        # the gate. `redeemable` is already in the fetched JSON — no extra HTTP.
+        # 3) Compare. An unknown token blocks ONLY if unresolved; resolved =
+        # settled dust, recorded but never blocking. Missing/None redeemable
+        # counts as unresolved (fail-closed) so an API schema change can't
+        # silently disarm the gate. `redeemable` is already in the fetched
+        # JSON — no extra HTTP.
         non_dust_chain = 0
         orphans: list[dict[str, Any]] = []          # unresolved unknowns → block
         resolved_dust: list[dict[str, Any]] = []    # resolved unknowns → informational
@@ -1342,8 +1320,8 @@ class LiveTrader(BaseTrader):
             )
 
         if not orphans:
-            # Crystal-clear clean-boot line. The $0 losing stubs are lost bets
-            # already booked in the ledger — closing them in the UI is cosmetic.
+            # $0 losing stubs are lost bets already booked in the ledger —
+            # closing them in the UI is cosmetic.
             if losers:
                 logger.info(
                     "Wallet Check: Clean with %d cosmetic losing stubs",
@@ -1749,15 +1727,12 @@ class LiveTrader(BaseTrader):
                                     balance_after = await self._get_token_balance(token_id)
                                     delta = balance_after - balance_before
                                     if delta > _DUST_THRESHOLD_SHARES:
-                                        # delta IS gross shares: no share-denominated
-                                        # fee is deducted on-chain on this series (the
-                                        # wallet holds exactly notional/VWAP shares —
-                                        # verified 32/32 live fills 07-21; the fee model
-                                        # lives in the books only). Grossing delta up by
-                                        # the modeled fee booked entries ~0.5-1¢ LOW and,
-                                        # for fills in ~[0.60, 0.73], pushed the true
-                                        # price past the +8s audit's +0.01 plausibility
-                                        # guard so the deflation was never corrected.
+                                        # delta IS gross shares — no share-denominated
+                                        # fee is deducted on-chain; the fee model lives
+                                        # in the books only. Grossing delta up by the
+                                        # modeled fee booked entries low AND pushed the
+                                        # true price past the +8s audit's plausibility
+                                        # guard, so it was never corrected.
                                         fill_price = amount / delta
                                         logger.debug(
                                             "BUY balance-delta VWAP fallback: shares=%.4f -> "
@@ -1777,20 +1752,18 @@ class LiveTrader(BaseTrader):
                     # py-clob amount semantics: USDC notional on BUY, shares on SELL.
                     qty_str = (f"notional=${amount:.2f}" if side == BUY
                                else f"shares={amount:.2f}")
-                    # Console-wise the trading loop's FILLED line covers this.
+                    # DEBUG only — the loop's FILLED line covers the console.
                     logger.debug(
                         "FOK %s filled: order=%s, price=$%.2f, %s",
                         side, order_short, fill_price, qty_str,
                     )
                     _update_fill_stats(filled=True, side=side)
-                    # Fire-and-forget: the recheck only logs a warning when allowance
-                    # drops below threshold — not worth blocking the FOK return path
-                    # 30-100ms every 10th submit.
+                    # Fire-and-forget — the allowance recheck isn't worth
+                    # blocking the FOK return path 30-100ms every 10th submit.
                     asyncio.create_task(self._maybe_recheck_allowance())
                     if side == BUY:
-                        # Background prefetch of post-BUY chain balance — primes
-                        # the cache so the eventual SELL's _sellable_shares can
-                        # skip the ~300ms /balance-allowance REST roundtrip.
+                        # Prefetch post-BUY chain balance so the eventual SELL's
+                        # _sellable_shares skips a ~300ms REST roundtrip.
                         asyncio.create_task(self._cache_post_buy_balance(token_id))
                     else:
                         # Sell just succeeded — cached balance is now stale.
@@ -1822,13 +1795,11 @@ class LiveTrader(BaseTrader):
                 if balance_task is not None and not balance_task.done():
                     balance_task.cancel()
                 if _exchange_rejected(e.__cause__):
-                    # 4xx from the exchange: the FOK was evaluated and killed
-                    # (ask repriced under us) — a definitive miss, not an
-                    # ambiguous POST. No settle wait; the next tick re-fires.
-                    # Main logs the OPEN REJECTED line; raw detail at DEBUG only.
-                    # A kill is still a full POST round-trip — record its RTT
-                    # (kills dominate sniper POSTs; without them the latency
-                    # file starves at a few fills/day).
+                    # Exchange 4xx: the FOK was evaluated and killed (book
+                    # repriced) — a definitive miss, not an ambiguous POST; the
+                    # next tick re-fires. A kill is still a full POST round-trip
+                    # — record its RTT (kills dominate sniper POSTs; without
+                    # them the latency file starves).
                     _elapsed = time.perf_counter() - _lat_t0
                     _record_submit_latency(_elapsed, 0.0, _elapsed)
                     logger.debug("FOK %s kill detail: %s", side, e)
@@ -1872,9 +1843,7 @@ class LiveTrader(BaseTrader):
         # balance_task so it doesn't leave a dangling reference.
         if balance_task is not None and not balance_task.done():
             balance_task.cancel()
-        # Bucket by what actually happened last — the in-loop catch overwrites
-        # last_error with each attempt's specific failure (price_moved vs
-        # network vs other), so the final value is the truest signal of cause.
+        # Bucket by the last attempt's failure — the truest signal of cause.
         _update_fill_stats(filled=False, side=side, reason=last_error or "price moved")
         return FillResult(
             filled=False,

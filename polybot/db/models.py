@@ -18,10 +18,9 @@ class Database:
     def __init__(self, db_path: str) -> None:
         self.db_path: str = db_path
         self.conn: aiosqlite.Connection | None = None
-        # One connection, many coroutines: a commit issued by any other task
-        # while a multi-statement transaction is mid-flight would persist the
-        # half-done write (SQLite commits the CONNECTION's open transaction).
-        # Every commit-bearing method serializes through this lock.
+        # One connection, many coroutines: any other task's commit mid-transaction
+        # persists the half-done write (SQLite commits the CONNECTION's open
+        # transaction). Every commit-bearing method serializes through this lock.
         self._write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
@@ -68,7 +67,7 @@ class Database:
                 amount REAL NOT NULL
             );
         """)
-        # Migrate existing DBs: add missing columns to positions and trade_history
+        # Additive migrations — columns only ever appended (schema is immutable truth)
         cursor = await self.conn.execute("PRAGMA table_info(positions)")
         cols = {row[1] for row in await cursor.fetchall()}
         if "fee_rate" not in cols:
@@ -84,10 +83,9 @@ class Database:
         if "exit_reason" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN exit_reason TEXT NOT NULL DEFAULT 'resolution'")
         if "position_id" not in th_cols:
-            # The true link to positions. The historical implicit join (t.id = p.id)
-            # only held while both AUTOINCREMENT sequences happened to run in
-            # lockstep — any drift (unclosed positions, a ledger reset) silently
-            # mispairs rows. Legacy rows keep NULL; readers COALESCE to t.id.
+            # The true link to positions: an implicit t.id = p.id join only holds
+            # while both AUTOINCREMENT sequences run in lockstep — any drift
+            # silently mispairs rows. NULL rows are read via COALESCE to t.id.
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN position_id INTEGER")
         # Hot-path indexes — get_open_positions / has_position_for_market run every tick.
         await self.conn.execute(
@@ -112,12 +110,11 @@ class Database:
         new_bankroll: float,
         **position_kwargs: Any,
     ) -> int:
-        """Insert the position row AND update bankroll in a single SQLite transaction.
+        """Insert the position row AND update bankroll in one transaction.
 
-        Either both writes happen or neither — a process crash between them can no
-        longer leave the DB with a position record but no bankroll debit (or vice
-        versa). Pass the same kwargs you'd pass to ``open_position``, plus the new
-        bankroll value to set after the debit.
+        Both writes or neither — a crash between them must never leave a
+        position with no bankroll debit (or vice versa). Takes open_position
+        kwargs plus the post-debit bankroll value.
         """
         now = datetime.now(timezone.utc).isoformat()
         async with self._write_lock:
@@ -144,9 +141,9 @@ class Database:
                 await self.conn.commit()
                 return pos_id
             except BaseException:
-                # BaseException: a Ctrl+C/cancel landing mid-transaction must roll
-                # back too — the connection is shared, and a later commit from any
-                # other coroutine would otherwise persist the half-done write.
+                # BaseException: a Ctrl+C/cancel mid-transaction must roll back too —
+                # the connection is shared, and any other coroutine's later commit
+                # would persist the half-done write.
                 await self.conn.rollback()
                 raise
 
@@ -173,8 +170,8 @@ class Database:
     ) -> None:
         """Mark position closed and write the trade_history row.
 
-        Pure inner step shared by every close path — does NOT commit. Callers
-        wrap this together with any bankroll update inside a single transaction.
+        Does NOT commit — callers wrap this with any bankroll update inside
+        a single transaction.
         """
         now = datetime.now(timezone.utc).isoformat()
         await self.conn.execute(
@@ -201,13 +198,13 @@ class Database:
     ) -> None:
         """Close a position atomically. Pass at most one of new_bankroll / bankroll_delta.
 
-        * new_bankroll: set absolute (used by resolve_position — paper computes
+        * new_bankroll: set absolute (resolve_position — paper computes
           bankroll + revenue, live reads on-chain balance).
-        * bankroll_delta: credit relative (mirror of open_position_and_debit_bankroll).
+        * bankroll_delta: credit relative.
         * Neither: position-only close, no bankroll write.
 
-        Either every write commits or none does — a crash can never leave a
-        closed position with an unaccounted bankroll change (or vice versa).
+        Every write commits or none does — a crash can never leave a closed
+        position with an unaccounted bankroll change (or vice versa).
         """
         if new_bankroll is not None and bankroll_delta is not None:
             raise ValueError("Pass at most one of new_bankroll / bankroll_delta")
@@ -229,8 +226,8 @@ class Database:
                     )
                 await self.conn.commit()
             except BaseException:
-                # Same rationale as open_position_and_debit_bankroll: roll back on
-                # cancellation too, or a foreign commit persists the half-done close.
+                # Roll back on cancellation too, or a foreign commit persists the
+                # half-done close (same rationale as open_position_and_debit_bankroll).
                 await self.conn.rollback()
                 raise
 
@@ -266,8 +263,9 @@ class Database:
 
     async def get_open_trade_preflight(self, market_id: str) -> tuple[bool, int, float, float]:
         """Return (has_position_in_market, open_count, bankroll, deployed_usdc) in one round trip.
-        Atomic snapshot — eliminates the race window where 4 separate gathered queries could
-        see inconsistent views of the positions table after a concurrent insert/update.
+
+        Atomic snapshot: 4 separate gathered queries could see inconsistent
+        views of the positions table around a concurrent insert/update.
         """
         cursor = await self.conn.execute(
             "SELECT "
@@ -298,12 +296,10 @@ class Database:
     async def get_day_stats(self, date_str: str) -> tuple[int, int, float, float]:
         """Return (wins, losses, modeled_fees, pnl_sum) for a trading day (ET date).
 
-        Converts the ET date to a UTC range so trades timestamped in UTC are
-        correctly bucketed into the Eastern trading day. `modeled_fees` is the
-        day's total MODELED fee (the per-trade entry buffer rate·size·(1−entry)
-        plus recorded exit-fee models) — the same quantity each OPEN ping shows,
-        so the day-close sum matches what was displayed through the day. No fee
-        is currently charged on-chain on this series; nothing here is money.
+        The ET date converts to a UTC range so UTC-timestamped trades bucket
+        into the Eastern day. modeled_fees is the day's MODELED fee buffer —
+        the same quantity each OPEN ping shows, so the day-close sum matches.
+        No fee is currently charged on-chain on this series; nothing here is money.
         """
         day_start_et = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=_ET)
         day_end_et = day_start_et + timedelta(days=1)
@@ -330,10 +326,9 @@ class Database:
             size_val = row[4] or 0.0
             rate = row[5] if row[5] is not None else 0.07  # DEFAULT_FEE_RATE (base.py)
             shares_val = row[6]
-            # Entry buffer in USD: rate·size·(1−e) == the taker-fee model at entry.
-            # The stored `fees` value already contains an entry component of
-            # size − shares_held·entry (zero for chain-audited live fills, the
-            # full buffer for paper/unaudited fills) — swap it out for the
+            # Entry buffer in USD: rate·size·(1−entry). Stored `fees` already
+            # carries an entry component of size − shares_held·entry (zero for
+            # chain-audited live fills, full buffer for paper) — swap it for the
             # modeled buffer so the entry fee counts exactly once either way.
             if entry_p and 0.0 < entry_p < 1.0:
                 total_fees += rate * size_val * (1.0 - entry_p)

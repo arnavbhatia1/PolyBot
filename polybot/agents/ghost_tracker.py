@@ -1,18 +1,8 @@
-"""Ghost trade tracker: log and resolve unrealized-signal rejections.
+"""Log and resolve ghost trades: signals a gate vetoed or that fell below the prob floor.
 
-Two ghost sources:
-- Downstream gate veto: signal fired BUY_YES/BUY_NO but a gate in
-  _evaluate_signal_and_enter blocked entry (sniper_only suppression, adverse
-  selection, edge-decay, edge cap, flip hurdle, net-edge, pre-submit drift).
-- Sub-threshold-prob SKIP: signal's favored side was below
-  min_model_probability — recorded so the pipeline has resolution data on
-  the low-confidence region the entry gate filters out.
-
-Ghosts give the learning loop 5–10× more resolution data per day — the evidence
-stream for any future gate evaluation. Each ghost resolves at window close
-(winning side → 1, losing → 0) into ghost_outcomes/ and folds into the nightly
-record rollups. (No entry-side optimizer/calibrator consumes them — entry
-forecasting has no edge.)
+Ghosts resolve at window close into ghost_outcomes/ — the zero-capital evidence
+stream for gate evaluation (5-10x more resolution data than fills).
+No entry-side optimizer/calibrator consumes them: entry forecasting has no edge.
 """
 from __future__ import annotations
 
@@ -48,18 +38,16 @@ class GhostTracker:
         seconds_remaining: float,
         indicator_snapshot: dict[str, Any],
     ) -> None:
-        """Log a ghost trade at the moment a rejection fires.
+        """Log a ghost at the moment a rejection fires.
 
-        Sources: (a) downstream-gate vetoes of BUY_YES/BUY_NO signals in
-        _evaluate_signal_and_enter, and (b) sub-threshold-prob SKIPs where
-        the favored side fell below min_model_probability. Other model-level
-        SKIPs (ATR gate, etc.) are NOT recorded — those signals weren't
-        actionable to begin with.
+        Sources: downstream-gate vetoes of BUY signals, and sub-
+        min_model_probability SKIPs. Other model-level SKIPs (ATR gate, etc.)
+        are NOT recorded — those signals were never actionable.
         """
         if not market_id:
             return
-        # One ghost per market per session — first rejection wins so we capture
-        # the cleanest signal moment (before the gate fired repeatedly on same tick).
+        # One ghost per market — first rejection wins: the cleanest signal
+        # moment, before the gate refires on every tick.
         if market_id in self._pending:
             return
 
@@ -79,14 +67,11 @@ class GhostTracker:
         self,
         event_metadata: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Resolve pending ghost trades against Chainlink eventMetadata only.
+        """Resolve pending ghosts against Chainlink eventMetadata only.
 
-        Called from the main resolution loop alongside CounterfactualTracker.
-        Matches CounterfactualTracker's policy: no Binance fallback. Binance
-        candle close ≠ Polymarket resolution price, and ghost win/loss labels
-        feed gate-skip diagnostics — using Binance would mislabel ghosts near
-        the strike and distort the "which gate over-filters" signal. Waits up
-        to 20 min for Chainlink/Gamma to post final_price before giving up.
+        NEVER Binance fallback: Binance close ≠ Polymarket resolution price,
+        which mislabels near-strike ghosts and distorts the gate-skip signal.
+        Waits up to 20 min for final_price before dropping a ghost.
         """
         if not self._pending:
             return []
@@ -108,14 +93,13 @@ class GhostTracker:
             expiry_ts = window_ts + 300
             if now < expiry_ts + 30:
                 continue  # window hasn't settled yet
-            # Give Chainlink/Gamma up to 20 min to post final_price before
-            # dropping. Matches CounterfactualTracker's 1200s window.
+            # 20 min for final_price to post before dropping — matches
+            # CounterfactualTracker's window.
             if now > expiry_ts + 1200:
                 to_remove.append(market_id)
                 continue
 
-            # Resolve only via Chainlink eventMetadata (matches Polymarket
-            # settlement). No Binance fallback — see method docstring.
+            # Chainlink eventMetadata only — no Binance fallback (see docstring)
             meta = event_metadata.get(market_id)
             if not meta or meta.get("final_price") is None or meta.get("price_to_beat") is None:
                 continue  # keep waiting — Chainlink final_price not posted yet
@@ -123,8 +107,8 @@ class GhostTracker:
 
             side = ctx["side"].lower()
             ghost_correct = (side == "up") == up_won
-            # Approximate gain_pct: if correct, you'd get $1 on your signal_prob-priced token.
-            # If wrong, you get $0. This is the EXPECTED gain at the SIGNAL price (not filled).
+            # gain_pct is the EXPECTED gain at the SIGNAL price, not a fill:
+            # correct → $1 payout on a signal_prob-priced token; wrong → $0.
             signal_prob = ctx["signal_prob"]
             if signal_prob > 0:
                 ghost_gain_pct = (1.0 / signal_prob - 1.0) if ghost_correct else -1.0
@@ -172,8 +156,8 @@ class GhostTracker:
     def rollup_old_ghosts(self) -> int:
         """Roll up previous days' resolved ghost files into one file per day.
 
-        Same pattern as outcome rollup — keeps git manageable at high ghost volumes.
-        Only touches resolved ghosts from before today. Returns number rolled up.
+        Keeps git manageable at high ghost volumes; only touches resolved
+        ghosts from before today. Returns the count rolled up.
         """
         from collections import defaultdict
         today = datetime.now(_ET).strftime("%Y-%m-%d")

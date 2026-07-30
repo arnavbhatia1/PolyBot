@@ -10,9 +10,11 @@ _config: dict[str, Any] | None = None
 
 
 class _NoDuplicateKeysLoader(yaml.SafeLoader):
-    """PyYAML silently keeps the LAST of duplicate mapping keys — a duplicated
-    top-level section wipes every knob in the first copy without a trace.
-    Reject at parse so the file fails at boot instead."""
+    """Reject duplicate YAML mapping keys at parse.
+
+    PyYAML silently keeps the LAST duplicate — a duplicated top-level section
+    wipes every knob in the first copy without a trace; fail at boot instead.
+    """
 
 
 def _no_dup_construct_mapping(loader, node, deep=False):

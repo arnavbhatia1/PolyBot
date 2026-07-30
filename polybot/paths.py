@@ -18,9 +18,12 @@ MEMORY_DIR: Path = Path(os.environ.get("POLYBOT_MEMORY_DIR") or (POLYBOT_DIR / "
 
 
 def write_json_atomic(path: Path, obj, indent: int = 2) -> None:
-    """tmp + replace (atomic on POSIX) — a crash or full disk mid-write must
-    never leave truncated JSON: every state reader falls back to a fresh
-    default on a parse failure, so a torn file silently erases its history."""
+    """Write JSON via tmp + replace (atomic on POSIX).
+
+    A crash or full disk mid-write must never leave truncated JSON: state
+    readers fall back to a fresh default on parse failure, so a torn file
+    silently erases its history.
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
@@ -64,9 +67,10 @@ SCAR_GATES_PATH: Path = STATE_DIR / "scar_gates.json"
 SCAR_VETOES_PATH: Path = STATE_DIR / "scar_vetoes.jsonl"
 
 def trim_jsonl_by_age(path: Path, max_age_days: float) -> int:
-    """Drop lines from an append-only JSONL whose `ts` is older than max_age_days,
-    keeping the file bounded. Atomic (temp + replace); unparseable lines are kept
-    (never silently lose data). Returns lines dropped. Best-effort: never raises.
+    """Drop JSONL lines whose ts is older than max_age_days, bounding the file.
+
+    Atomic (tmp + replace); unparseable lines are KEPT — never silently lose
+    data. Returns lines dropped. Best-effort: never raises.
     """
     try:
         if not path.exists():
@@ -94,9 +98,10 @@ def trim_jsonl_by_age(path: Path, max_age_days: float) -> int:
 
 
 def fold_gate_day(acc_path: Path, counts: dict, day_key: str) -> dict | None:
-    """Add one finished ET day's gate-skip counts into the lifetime accumulator at
-    `acc_path` (created if absent), bumping days_accumulated and the day range.
-    No-op when `counts` is empty. Returns the updated accumulator dict (or None).
+    """Fold one finished ET day's gate-skip counts into the lifetime accumulator.
+
+    Creates acc_path if absent; bumps days_accumulated and the day range.
+    No-op when counts is empty. Returns the updated accumulator (or None).
     """
     if not counts:
         return None

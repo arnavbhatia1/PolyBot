@@ -1,31 +1,24 @@
-"""Watch the late-window sniper PAPER-SHADOW.
+"""Day-by-day status of the sniper's realized paper-shadow fills (net of fee).
 
-Reports the sniper's realized paper fills and their net-of-fee P&L, day by day.
-Run it any time once the shadow is live (sniper_enabled: true in paper). Fills are
-sparse — the sniper only fires in the final 45s on a Coinbase move past strike with
-a still-cheap ask — so expect a handful per day.
+THIN wrapper over analyze_late_window.live_health_read(PAPER_DB, epoch) — the
+SAME reader the nightly health job uses, so the manual read and the binding
+gate compute the IDENTICAL metric: net $/share = pnl / shares_held (pnl is
+already net of fees; see live_health_read — subtracting `fees` again
+double-counts). Reads the DB's audited shares_held, never the outcome JSON
+(it has no shares field). Every paper fill is a sniper fire (base entries
+always suppressed), so the epoch scope alone isolates the shadow population.
 
-This is a THIN wrapper over analyze_late_window.live_health_read(PAPER_DB, epoch) —
-the SAME reader the nightly health job uses — so the manual read and the binding
-gate compute the IDENTICAL metric: fee-correct net $/share = pnl / shares_held
-(pnl is already net of fees; see live_health_read). It reads the paper DB's audited
-shares_held, not the outcome JSON (which has no shares field). Post-gut every paper
-fill is a sniper fire (base entries are unconditionally suppressed), so the epoch
-scope alone isolates the shadow population.
-
-These are PAPER fills at the box's MEASURED order latency (paper_trader shim, p50
-~0.30s after scale), so the right harness comparison is
-`python scripts/analyze_late_window.py --rtt-sweep 0.34` (the box's measured
-POST RTT), NOT the optimistic 40ms read. Go-live still requires the full
-kill bar: t_day>=2, p10>0 over >=8 clean ET days, with this shadow tracking the
-harness to <3c/sh.
+These are PAPER fills at the box's MEASURED order latency, so compare against
+`python scripts/analyze_late_window.py --rtt-sweep 0.34` (the measured POST
+RTT), NOT an optimistic low-RTT read. Go-live still requires the full kill
+bar: >=8 clean ET days, net >= +2c/sh, t_day>=2, p10>0, shadow-vs-harness
+gap < 3c/sh. Fills are sparse (final-45s fires only) — a handful per day.
 
   python scripts/sniper_shadow_status.py
   python scripts/sniper_shadow_status.py --since 2026-07-08T17:15:00+00:00
 
---since scopes the read to fills resolved at/after an epoch (the clean-baseline
-restart), excluding pre-fix fills that ran different code/config. Defaults to
-late_window.validation_epoch from settings.yaml.
+--since scopes to fills resolved at/after an epoch — pre-epoch fills ran
+different code/config. Defaults to late_window.validation_epoch (settings.yaml).
 """
 from __future__ import annotations
 
@@ -47,9 +40,9 @@ def _parse_since(s: str) -> datetime:
 
 
 def _config_epoch() -> datetime | None:
-    """Default --since to late_window.validation_epoch from settings.yaml, so the
-    manual read and the nightly health job scope to the same binding population.
-    Pre-parsed: argparse applies ``type=`` only to CLI-provided values."""
+    """Default --since = late_window.validation_epoch, so the manual read and
+    the nightly health job scope to the same binding population.
+    Pre-parsed here: argparse applies ``type=`` only to CLI-provided values."""
     try:
         from polybot.config.loader import load_config
         epoch = load_config().get("late_window", {}).get("validation_epoch")

@@ -1,14 +1,8 @@
-"""Track counterfactual outcomes for both scalps and holds.
+"""Record both arms of every scalp/hold decision — the ground truth for exit-policy changes.
 
-Scalp counterfactuals: when the bot exits early, watch until resolution
-and record whether holding would have been better.
-
-Hold counterfactuals: when the bot holds to resolution, record the worst
-moment during the hold (lowest holding_edge) and compute whether scalping
-at that moment would have been better.
-
-Both arms are the ground-truth evidence for any exit-policy change, scored
-as actual − counterfactual (never a naive sum of stored delta_pnl).
+Score policies as actual − counterfactual; NEVER a naive sum of stored delta_pnl.
+Scalp arm: watch an early exit to resolution (would holding have won?).
+Hold arm: record the worst holding moment (would scalping there have won?).
 """
 from __future__ import annotations
 
@@ -68,9 +62,8 @@ class CounterfactualTracker:
                     self._watchlist[pid] = entry
 
     def _save_watchlist(self) -> None:
-        # threading.Lock: saves run via asyncio.to_thread, and two scalps
-        # resolving seconds apart would otherwise interleave writes to the
-        # same file; atomic replace keeps a crash from tearing it.
+        # Lock: saves run via to_thread, and two scalps resolving seconds apart
+        # would interleave writes; atomic replace keeps a crash from tearing the file.
         with self._watchlist_write_lock:
             try:
                 payload = {"saved_at": time.time(),
@@ -89,9 +82,8 @@ class CounterfactualTracker:
               aux_signals: dict[str, Any] | None = None) -> None:
         """Add a scalped position to the watch list for post-resolution comparison.
 
-        ``aux_signals`` is the live ``_build_aux_signals`` output stamped at the
-        scalp moment — preserved verbatim so the resolution record carries the
-        same aux microstructure fields the entry trade_context carries.
+        aux_signals: live _build_aux_signals output at the scalp moment, kept
+        verbatim so the record carries the same aux fields as entry trade_context.
         """
         position_id = pos.get("id", 0)
         market_id = pos.get("market_id", "")
@@ -125,11 +117,10 @@ class CounterfactualTracker:
             "aux_signals": dict(aux_signals or {}),
             "watched_at": time.time(),
         }
-        # This position is no longer held (it scalped) — drop its worst-moment slot
-        # so it can't be mis-attributed. Keyed by position_id.
+        # Scalped ⇒ drop its worst-moment slot so the hold arm can't mis-attribute it.
         self._hold_worst.pop(position_id, None)
         self._schedule_save_watchlist()
-        # Debug-level: the SCALP block already emitted this exit context to the console.
+        # debug: the SCALP block already printed this exit context.
         logger.debug(
             f"SCALP watching {_slug_to_window(market_id)} | {pos.get('side', '?')} @ "
             f"{scalp_context.get('exit_fill', 0):.3f}, edge={scalp_context.get('holding_edge', 0):+.2f}"
@@ -137,15 +128,10 @@ class CounterfactualTracker:
 
     def track_hold_moment(self, market_id: str, pos: dict[str, Any], hold_context: dict[str, Any],
                           aux_signals: dict[str, Any] | None = None) -> None:
-        """Track the worst holding moment for a position being held to resolution.
+        """Track the worst holding moment (lowest holding_edge) per HOLD tick.
 
-        Called on every HOLD tick. Updates only if this tick's holding_edge is
-        lower than the previous worst. After resolution, record_hold_resolution()
-        uses this to compute "what if I had scalped at the worst moment?"
-
-        Only tracks while the window is still live (seconds_remaining > 0). After
-        expiry the CLOB market converges toward $1.00/$0.00, producing a degenerate
-        worst-moment at the resolution price and a meaningless $0 delta.
+        Only while the window is live: post-expiry the CLOB converges to $1/$0,
+        making the "worst moment" degenerate and the delta a meaningless $0.
         """
         if not market_id:
             return
@@ -154,10 +140,8 @@ class CounterfactualTracker:
             return
 
         holding_edge = hold_context.get("holding_edge", 0)
-        # Keyed by position_id (NOT market_id) so two concurrently-held positions in one
-        # window — the normal entry + a late-window sniper stack — each track their own
-        # worst moment instead of sharing a single per-window slot (which would silently
-        # drop BOTH positions' hold-counterfactuals).
+        # Key by position_id, NOT market_id: two positions can hold the same window
+        # concurrently; a shared per-window slot would silently drop both hold-CFs.
         pid = pos.get("id", 0)
         current = self._hold_worst.get(pid)
 
@@ -188,14 +172,11 @@ class CounterfactualTracker:
     def record_hold_resolution(self, market_id: str, resolution_price: float,
                                actual_pnl: float, actual_gain_pct: float,
                                position_id: Any | None = None) -> dict[str, Any] | None:
-        """Record counterfactual for a position that was held to resolution.
+        """Record the hold-arm counterfactual (scalp at the worst tracked moment).
 
-        Computes what would have happened if the bot had scalped at the worst
-        holding moment (lowest holding_edge during the hold).
-
-        Returns the counterfactual record, or None if no hold data was tracked.
+        Returns the record, or None if no hold data was tracked.
         """
-        # Keyed by position_id so concurrent same-window holds each resolve their own arm.
+        # position_id key: concurrent same-window holds each resolve their own arm.
         ctx = self._hold_worst.pop(position_id, None)
         if ctx is None:
             return None
@@ -250,8 +231,8 @@ class CounterfactualTracker:
 
         self._save(record)
         if hold_was_optimal:
-            # A hold that beat the counterfactual has nothing to teach on the
-            # console — the record above still feeds the learning corpus.
+            # debug: a correct hold teaches nothing on the console; the saved
+            # record still feeds the learning corpus.
             logger.debug(
                 f"HOLD hindsight {_slug_to_window(market_id)}: correct "
                 f"(${actual_pnl:+.2f} vs scalp ${hypo_pnl:+.2f})"
@@ -267,10 +248,10 @@ class CounterfactualTracker:
 
     def check_resolutions(self,
                           event_metadata: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-        """Check if any watched contracts have expired and compute counterfactuals.
+        """Resolve expired watched scalps and record their counterfactuals.
 
-        Resolves only via Chainlink-derived ``event_metadata`` (price_to_beat /
-        final_price per market). Returns the list of resolved records.
+        Resolves only via Chainlink-derived event_metadata (price_to_beat /
+        final_price). Returns the resolved records.
         """
         if event_metadata is None:
             event_metadata = {}
@@ -285,7 +266,7 @@ class CounterfactualTracker:
 
         for position_id, ctx in self._watchlist.items():
             market_id = ctx["market_id"]
-            # Parse window_ts from slug: btc-updown-5m-{window_ts}
+            # slug format: btc-updown-5m-{window_ts}
             try:
                 window_ts = int(market_id.rsplit("-", 1)[-1])
             except (ValueError, IndexError):
@@ -294,18 +275,18 @@ class CounterfactualTracker:
                 continue
 
             expiry_ts = window_ts + 300  # 5-min window
-            # Wait 30s after expiry for candle to settle in buffer
+            # 30s grace: let the resolution data settle before reading it
             if now < expiry_ts + 30:
                 continue
 
-            # Expire stale entries — give Chainlink/Gamma 20 min to post before giving up.
+            # Give Chainlink/Gamma 20 min to post before dropping the entry
             if now > expiry_ts + 1200:
                 logger.warning(f"COUNTERFACTUAL: {market_id} — Chainlink not available after 20 min, dropping")
                 to_remove.append(position_id)
                 continue
 
-            # Resolve only via Chainlink eventMetadata — no Binance fallback
-            # (Binance close ≠ Polymarket resolution price → wrong training data).
+            # Chainlink eventMetadata only — NEVER Binance fallback: Binance close
+            # ≠ Polymarket resolution price, which poisons the training data.
             meta = event_metadata.get(market_id)
             if not meta or meta.get("final_price") is None:
                 continue  # keep waiting — Chainlink final_price not posted yet
@@ -316,7 +297,7 @@ class CounterfactualTracker:
             btc_at_expiry = chainlink_fp
             if market_id not in logged_resolutions:
                 logged_resolutions.add(market_id)
-                # Duplicate of the RESOLVED oracle line the trading loop prints.
+                # debug: duplicates the RESOLVED oracle line the trading loop prints.
                 logger.debug(f"COUNTERFACTUAL: {_slug_to_window(market_id)} | Strike={chainlink_ptb:,.2f} → Final={chainlink_fp:,.2f}")
             side = ctx["side"]
             resolution_price = 1.0 if (side == "Up") == up_won else 0.0

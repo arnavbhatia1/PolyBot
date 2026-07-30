@@ -173,12 +173,9 @@ class BinanceFeed:
                     self._ws = ws
                     enable_nodelay(ws, "binance_kline")
                     if not first_connect:
-                        # A dropped WS can span 1-min candle closes; the buffer then
-                        # holds a gap-adjacent candle pair that poisons ATR true-range
-                        # and lag1-autocorr for up to ~20min (the sniper's prob/edge
-                        # consume that ATR). Rebuild from REST before trusting the
-                        # stream again; on backfill failure the buffer stays empty
-                        # and decisions fail closed until the WS re-warms it.
+                        # Reconnect gap: a gap-adjacent candle pair poisons ATR/autocorr
+                        # for ~20min (the sniper reads that ATR) — rebuild from REST;
+                        # on backfill failure decisions fail closed on the empty buffer.
                         self.buffer.clear()
                         await self.backfill()
                     first_connect = False
@@ -196,8 +193,7 @@ class BinanceFeed:
                             envelope = _loads(msg)
                         except ValueError:
                             continue
-                        # Combined-stream payload: {"stream": ..., "data": ...};
-                        # non-{stream,data} control frames are skipped.
+                        # Combined-stream payload {"stream","data"}; control frames skipped.
                         if "stream" in envelope and "data" in envelope:
                             self._route(envelope["stream"], envelope["data"])
                             backoff = 1   # healthy DATA — safe to reset
@@ -225,12 +221,9 @@ class BinanceFeed:
         latest = self.buffer.latest()
         if latest is None or latest.timestamp != candle.timestamp:
             if latest is not None and candle.timestamp != latest.timestamp + 60_000:
-                # In-connection delivery gap: a stall short enough to beat the
-                # 75s idle reconnect can still span a candle close, and a
-                # gap-adjacent pair poisons ATR true-range + lag1-autocorr —
-                # the same hazard the reconnect path rebuilds against. Clear +
-                # REST backfill; decisions fail closed on the empty buffer
-                # until it lands.
+                # A stall shorter than the 75s idle reconnect can still gap a candle
+                # close (same ATR/autocorr poison): clear + REST backfill; decisions
+                # fail closed until it lands.
                 if self._gap_backfill is None or self._gap_backfill.done():
                     logger.warning("Binance candle gap (ATR feed) — Rebuilding buffer from REST")
                     self.buffer.clear()
@@ -248,9 +241,8 @@ class BinanceFeed:
 
     async def stop(self) -> None:
         self._running = False
-        # Cancel before the first await: stop() runs under a shutdown timeout,
-        # and a slow ws.close() must not eat the budget before the reader task
-        # is cancelled (an uncancelled task outlives the loop).
+        # Cancel before the first await — stop() runs under a shutdown timeout,
+        # and an uncancelled reader task outlives the loop.
         if self._task:
             self._task.cancel()
         if self._ws:

@@ -37,18 +37,20 @@ class BinanceTradeAccumulator:
         self._window_start: float = 0.0
 
     def clear(self) -> None:
-        """Wipe rolling state. Call after any WS reconnect so windowed analytics
-        don't bridge across a gap (e.g. CVD-accel comparing baseline trades from
-        before the disconnect against fresh recent trades)."""
+        """Wipe rolling state; call on every WS reconnect.
+
+        Windowed analytics must not bridge a gap (e.g. CVD-accel comparing a
+        pre-disconnect baseline against fresh trades)."""
         self._trades.clear()
         self._cache.clear()
         self._last_received_at = 0.0
         self._window_start = 0.0
 
     def covers(self, window_s: float) -> bool:
-        """True iff the trade window continuously spans the last window_s seconds
-        (no reconnect cleared it mid-window). Consumers stamp None instead of
-        reading a truncated window as a real near-zero CVD."""
+        """True iff the trade buffer continuously spans the last window_s seconds.
+
+        Reconnects clear the buffer; consumers stamp None instead of reading a
+        truncated window as a real near-zero CVD."""
         return self._window_start > 0 and (time.time() - self._window_start) >= window_s
 
     def add_trade(self, price: float, qty: float, is_buyer_maker: bool,

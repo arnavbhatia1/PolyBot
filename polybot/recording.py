@@ -1,18 +1,12 @@
 """Window-path + CLOB-tape recorders.
 
-WindowPathRecorder: 1 Hz state of EVERY 5-min window — both tokens' BBO + top-3
-depth, Coinbase mid, strike, elapsed — traded or not. Self-discovering (its own
-Gamma slug fetch + CLOB WS subscribe) so coverage is all ~288 windows/day, not
-just the ones the trading loop enters; labels itself from Gamma event_metadata
-after each window closes. This is the exit-research corpus and the
-late-window-sniper kill-bar feed: ~288 labeled windows/day instead of ~35
-trades/day.
-
+WindowPathRecorder: 1 Hz state of EVERY 5-min window (~288/day), traded or not
+— self-discovering, self-labeling from Gamma. The sniper kill-bar feed and the
+research corpus.
 TapeRecorder: every CLOB trade print to a daily JSONL (gitignored — recordings
-must never enter the nightly memory/ commit). A resting-order shadow "fills"
-only when the tape prints through it.
-
-Both are write-behind: samples buffer in memory and flush in batches, so the
+must never enter the nightly memory/ commit). Research rule: a resting-order
+shadow "fills" only when the tape prints through it.
+Both are write-behind: rows buffer in memory and flush in batches, so the
 trading loop never waits on disk.
 """
 from __future__ import annotations
@@ -31,9 +25,8 @@ from polybot.paths import MEMORY_DIR
 logger = logging.getLogger(__name__)
 
 RECORDINGS_DIR: Path = MEMORY_DIR / "recordings"
-# 1 Hz path rows (~86k/day) live in their own gitignored DB so the nightly git
-# commit of the per-mode DB stays small; window_labels (tiny, joined by the
-# analysis) stay in the per-mode DB.
+# Path rows (~86k/day) live in their own gitignored DB so the nightly commit of
+# the per-mode DB stays small; window_labels (tiny) stay in the per-mode DB.
 PATHS_DB: Path = Path(__file__).resolve().parent / "db" / "window_paths.db"
 
 _FLUSH_EVERY_S = 10.0
@@ -43,8 +36,10 @@ _LABEL_GIVE_UP_S = 2400.0  # stop asking Gamma 40 min after window end
 
 
 def _top3_usd(levels: list[dict[str, Any]]) -> float | None:
-    """None for a missing/unparseable book (cold WS, pre-subscribe gap) — the
-    None-vs-0.0 rule: 0.0 would read as real zero liquidity downstream."""
+    """USD notional of the top-3 levels; None when the book is missing/unparseable.
+
+    None, never 0.0 — 0.0 would read as real zero liquidity downstream.
+    """
     if not levels:
         return None
     try:
@@ -56,24 +51,20 @@ def _top3_usd(levels: list[dict[str, Any]]) -> float | None:
 class WindowPathRecorder:
     """Samples the active 5-min window at 1 Hz (5 Hz in the final 45s).
 
-    The late-window burst + Binance columns feed the late-window-sniper kill-bar
-    study (scripts/analyze_late_window.py): the reverse-engineered winning edge is
-    a final-seconds directional fill, and resolving whether a bot-FORMABLE signal
-    survives a realistic ~340ms FOK fill needs sub-second ask/Coinbase/Binance data.
+    The late-window burst feeds the sniper kill-bar harness
+    (scripts/analyze_late_window.py) — modeling a FOK fill needs sub-second
+    ask/Coinbase/Binance data.
 
     Tables (created on first run):
-      window_paths (in PATHS_DB, gitignored): window_id, ts, elapsed_s, bid/ask
+      window_paths (PATHS_DB, gitignored): window_id, ts, elapsed_s, bid/ask
                    both sides, top-3 depths, coinbase_price, strike, traded,
-                   binance_price, binance_cvd_10s/30s, atr, model_prob_up,
-                   + full-capture columns (chainlink price/age, CLOB book ages,
-                   coinbase BBO + CVD, touch sizes, Binance depth20 sides) —
-                   see _APPENDED_COLUMNS
-      window_labels (in the per-mode DB): window_id PRIMARY KEY, resolved_up,
-                   final_price, price_to_beat, labeled_at
+                   + appended columns (see _APPENDED_COLUMNS)
+      window_labels (per-mode DB): window_id PRIMARY KEY, resolved_up,
+                   final_price, price_to_beat, labeled_at, token_up/down
 
-    `atr` + `model_prob_up` stamp the live L1 model per sample so the offline
-    sniper harness can replicate the live `sniper_min_edge` floor exactly
-    (without them the harness is only a conservative superset of live fires).
+    atr + model_prob_up stamp the live L1 per sample so the offline harness
+    replicates the live sniper_min_edge floor exactly — without them it is
+    only a conservative superset of live fires.
     """
 
     def __init__(self, db: Any, clob_ws: Any, coinbase_feed: Any,
@@ -87,14 +78,12 @@ class WindowPathRecorder:
         self.chainlink_feed = chainlink_feed
         self.market_scanner = market_scanner
         self.http_client = http_client
-        # Binance aggTrade accumulator (the candidate leading/order-flow feed for the
-        # late-window sniper study). Recorded only so the offline kill-bar analyzer can
-        # test a bot-FORMABLE signal against the resolution venue (Coinbase). None-safe.
+        # Binance aggTrade accumulator — recorded only so the offline analyzer
+        # can test a bot-formable signal against the resolution venue. None-safe.
         self.binance_trades = binance_trades
-        # L1 stamping deps. signal_engine/indicator_engine must be DEDICATED
-        # instances (same config as live, but never the trading loop's own —
-        # compute_probability mutates engine state the ghost path reads between
-        # evaluate() and ghost-record time). None-safe: columns stay NULL.
+        # L1 stamping deps. signal_engine/indicator_engine MUST be dedicated
+        # instances (same config, never the trading loop's own): compute_probability
+        # mutates engine state the ghost path reads. None-safe: columns stay NULL.
         self.binance_feed = binance_feed
         self.indicator_engine = indicator_engine
         self.signal_engine = signal_engine
@@ -148,10 +137,9 @@ class WindowPathRecorder:
                 labeled_at REAL NOT NULL
             );
         """)
-        # Additive migration: persist the window's token ids with its label. The
-        # tape/micro-tape record by TOKEN — without this map, offline research can
-        # only join the ~subset of windows that produced fills/ghosts (the 07-11
-        # tape-flow scan was crippled to n=18 by exactly this gap).
+        # Persist the window's token ids with its label: the tape/micro-tape
+        # record by TOKEN — without this map, offline research can only join
+        # the subset of windows that produced fills/ghosts.
         cur = await self.db.conn.execute("PRAGMA table_info(window_labels)")
         cols = {row[1] for row in await cur.fetchall()}
         if "token_up" not in cols:
@@ -161,17 +149,16 @@ class WindowPathRecorder:
         await self.db.conn.commit()
         await self._migrate_paths_out_of_main_db()
 
-    # New columns are APPENDED (schema is immutable truth — columns added at the
-    # end, read order follows DB order). Existing rows get NULL; analyzers filter
-    # on the relevant column being NOT NULL (post-extension data only).
+    # Columns are APPENDED only — schema is immutable truth, read order follows
+    # DB order. Existing rows get NULL; analyzers filter NOT NULL.
     _APPENDED_COLUMNS = (
         ("binance_price", "REAL"),
         ("binance_cvd_10s", "REAL"),
         ("binance_cvd_30s", "REAL"),
         ("atr", "REAL"),
         ("model_prob_up", "REAL"),
-        # Full capture of everything already flowing through the process —
-        # the pivot-research corpus. All None-on-cold, never 0.0 stand-ins.
+        # Full capture of everything already flowing through the process — the
+        # pivot-research corpus. All None-on-cold, never 0.0 stand-ins.
         ("chainlink_price", "REAL"),     # the RESOLUTION venue's live price
         ("chainlink_age_s", "REAL"),
         ("book_age_up_s", "REAL"),       # CLOB WS book staleness per sample —
@@ -198,8 +185,7 @@ class WindowPathRecorder:
         await self._paths_conn.commit()
 
     async def _migrate_paths_out_of_main_db(self) -> None:
-        """One-time: move pre-split window_paths rows out of the per-mode DB so
-        the nightly git commit stays small."""
+        """One-time move of window_paths rows out of the per-mode DB, keeping the nightly commit small."""
         try:
             cur = await self.db.conn.execute("SELECT * FROM window_paths")
             rows = await cur.fetchall()
@@ -234,9 +220,9 @@ class WindowPathRecorder:
         return None
 
     def _spawn(self, coro) -> None:
-        """create_task with a strong ref (event loops hold tasks weakly; an
-        unreferenced task can be GC'd mid-await and silently drop a window's
-        discovery or a label pass)."""
+        """create_task with a strong ref: event loops hold tasks weakly, and an
+        unreferenced task can be GC'd mid-await, silently dropping a window's
+        discovery or a label pass."""
         t = asyncio.create_task(coro)
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
@@ -260,7 +246,7 @@ class WindowPathRecorder:
             "token_up": token_up,
             "token_down": token_down,
         }
-        # Remembered past rotation so the (post-close) label write can persist the
+        # Kept past rotation so the post-close label write can persist the
         # token map; pruned alongside the label queue.
         self._window_tokens[contract.get("slug", slug)] = (token_up, token_down)
         if len(self._window_tokens) > 50:
@@ -273,11 +259,12 @@ class WindowPathRecorder:
             logger.debug(f"recorder subscribe failed: {e}")
 
     async def _recover_orphan_labels(self) -> None:
-        """Boot-time: a restart between a window closing and its label being fetched
-        leaves a recorded path with no window_labels row (the queue is in-memory).
-        Re-seed any such window still inside the give-up horizon so _label_pass
-        relabels it. Older orphans are past Gamma's reliable window and are handled
-        by the one-time backfill, not here."""
+        """Boot-time re-seed of unlabeled windows still inside the give-up horizon.
+
+        The label queue is in-memory: a restart between window close and label
+        fetch leaves a recorded path with no window_labels row. Older orphans
+        are past Gamma's reliable window — backfill territory, not here.
+        """
         if self._paths_conn is None:
             return
         now = time.time()
@@ -297,9 +284,8 @@ class WindowPathRecorder:
                 end_ts = int(wid.rsplit("-", 1)[-1]) + 300.0
             except ValueError:
                 continue
-            # Only the still-recoverable band: ended >30s ago (resolved) and within
-            # the give-up horizon _label_pass honors. Skips the active window and the
-            # long-dead backlog.
+            # Recoverable band only: ended >30s ago (resolved) and inside the
+            # give-up horizon — skips the active window and the long-dead backlog.
             if 30 < (now - end_ts) <= _LABEL_GIVE_UP_S:
                 self._pending_label[wid] = end_ts
                 seeded += 1
@@ -323,7 +309,7 @@ class WindowPathRecorder:
             tok_up, tok_down = self._window_tokens.pop(market_id, (None, None))
             if tok_up is None:
                 # restart-orphaned window: the in-memory map is gone, but the
-                # contract we just fetched carries the ids
+                # just-fetched contract carries the ids
                 tok_up = contract.get("token_id_up") or None
                 tok_down = contract.get("token_id_down") or None
             try:
@@ -362,7 +348,7 @@ class WindowPathRecorder:
         strike = (self.chainlink_feed.get_strike(w["window_ts"])
                   if self.chainlink_feed else None)
 
-        # Resolution-venue live price (Chainlink RTDS) + its age.
+        # Resolution-venue live price (Chainlink RTDS) + its age
         cl_px = cl_age = None
         if self.chainlink_feed is not None:
             _age = getattr(self.chainlink_feed, "age_seconds", float("inf"))
@@ -371,14 +357,14 @@ class WindowPathRecorder:
                 cl_px = _px
                 cl_age = round(_age, 3)
 
-        # CLOB WS book age per token — makes stale/frozen book rows detectable
-        # offline (the trading loop gates on 10s; the recorder records instead).
+        # CLOB book age per token — stale/frozen books detectable offline
+        # (the trading loop gates on 10s; the recorder records instead).
         def _book_age(book: dict) -> float | None:
             ts = book.get("ts")
             return round(now - ts, 3) if ts else None
 
-        # Coinbase BBO + resolution-venue flow (fresh-feed gated; CVD 0.0 is a
-        # legitimate balanced-flow value, so it is recorded as-is when fresh).
+        # Coinbase BBO + flow, fresh-feed gated. CVD 0.0 is a legitimate
+        # balanced-flow value — recorded as-is when fresh.
         cb_bid = cb_ask = cb_cvd10 = cb_cvd30 = None
         if cb_fresh:
             st = self.coinbase_feed.state
@@ -398,8 +384,8 @@ class WindowPathRecorder:
             except (KeyError, IndexError, ValueError, TypeError):
                 return None
 
-        # Binance top-20 book pressure, side-split (compute_depth_usd's single
-        # total destroys direction). None when the depth WS is stale.
+        # Binance top-20 book pressure, side-split — a single total destroys
+        # direction. None when the depth WS is stale.
         d20_bid = d20_ask = None
         bd = self.binance_depth
         if bd is not None and getattr(bd, "updated_at", 0.0) > 0 and now - bd.updated_at < 5:
@@ -409,8 +395,8 @@ class WindowPathRecorder:
             except (IndexError, ValueError, TypeError):
                 d20_bid = d20_ask = None
 
-        # Binance aggTrade leading/order-flow telemetry (None when the feed is cold —
-        # never 0.0, so the analyzer can distinguish "no flow" from "stale feed").
+        # Binance aggTrade flow. None when cold, never 0.0 — the analyzer must
+        # distinguish "no flow" from "stale feed".
         bn_price = bn_cvd10 = bn_cvd30 = None
         acc = getattr(self.binance_trades, "accumulator", None)
         if acc is not None:
@@ -424,7 +410,7 @@ class WindowPathRecorder:
                 pass
 
         # Live-L1 stamp (same math + config as the trading engine, dedicated
-        # instance) so offline harnesses can apply the exact live edge floor.
+        # instance) so offline harnesses apply the exact live edge floor.
         # None when any input is cold — never a 0.0 stand-in.
         atr_v = prob_up_v = None
         if (self.binance_feed is not None and self.indicator_engine is not None
@@ -510,9 +496,8 @@ class WindowPathRecorder:
                     self._spawn(self._label_pass())
             except Exception as e:
                 logger.warning(f"window recorder tick failed: {e}")
-            # 1 Hz baseline, burst to ~5 Hz in the final 45s — the late-window sniper
-            # study needs sub-second ask/Coinbase/Binance resolution to model a ~340ms
-            # FOK fill; 1 Hz averages the sweep away (the dead-naive-sniper trap).
+            # 1 Hz baseline, ~5 Hz in the final 45s: modeling a FOK fill needs
+            # sub-second data — 1 Hz averages the sweep away (the dead-naive-sniper trap).
             w = self._window
             late = w is not None and 255 <= (time.time() - w["window_ts"]) <= 300
             await asyncio.sleep(0.2 if late else 1.0)
@@ -528,10 +513,9 @@ class WindowPathRecorder:
 class TapeRecorder:
     """CLOB trade prints → memory/recordings/tape_YYYY-MM-DD.jsonl (gitignored).
 
-    Writes run on a single-thread executor: the flush is triggered from the CLOB
-    WS trade callback (event loop), and print volume peaks in the final seconds
-    of a window — exactly when the sniper fires — so the loop must never carry
-    the disk write. One worker keeps batches ordered and appends non-overlapping.
+    Writes run on a single-thread executor: flushes fire from the CLOB WS
+    callback and print volume peaks exactly when the sniper fires, so the event
+    loop must never carry the disk write. One worker keeps appends ordered.
     """
 
     def __init__(self, dir_path: Path | None = None) -> None:
@@ -549,9 +533,8 @@ class TapeRecorder:
                 "price": trade.get("price"),
                 "size": trade.get("size"),
                 "side": trade.get("side"),
-                # Exchange-side fields clob_ws carries for the tape: the
-                # exchange's own clock (per-print WS delivery latency,
-                # sub-second tape-fair pricing) + the served fee rate.
+                # Exchange-side fields: the exchange's own clock (per-print WS
+                # delivery latency, tape-fair pricing) + the served fee rate.
                 "ets": trade.get("exchange_ts") or None,
                 "fee_bps": trade.get("fee_rate_bps") or None,
             }))
@@ -581,20 +564,19 @@ class TapeRecorder:
 
 
 class MicroTape:
-    """Event-driven micro-structure tape → memory/recordings/micro_YYYY-MM-DD.jsonl
-    (gitignored). Fixes the 5Hz recorder's blind spot: the WindowPathRecorder
-    SAMPLES the book 5×/s, but fills/kills are decided by the book's exact
+    """Event-driven micro-structure tape → memory/recordings/micro_YYYY-MM-DD.jsonl (gitignored).
+
+    The WindowPathRecorder SAMPLES; fills/kills are decided by the book's exact
     trajectory between samples. This records the events themselves:
 
       k="b"  every CLOB best-bid/ask CHANGE for subscribed tokens
       k="c"  every Coinbase tick (the sniper's exact fire-condition input)
       k="l"  every Chainlink RTDS report (resolution + boundary-gap research)
 
-    b/c rows are kept only in the DECISIVE phase (window elapsed >= 210s, i.e.
-    the final 90s) to bound volume; l rows are kept always (~1Hz, tiny) since
-    boundary-adjacent reports are the strike-research corpus. Same off-loop
-    single-writer pattern as TapeRecorder — the event-loop callbacks only
-    append to a list; the disk write never rides the money path.
+    b/c rows only in the final 90s (elapsed >= 210s) to bound volume; l rows
+    always (~1 Hz, tiny — the strike-research corpus). Same off-loop
+    single-writer pattern as TapeRecorder: callbacks only append to a list,
+    the disk write never rides the money path.
     """
 
     _LATE_ELAPSED_S = 210.0
@@ -634,9 +616,11 @@ class MicroTape:
             pass
 
     def on_cl_report(self, payload_ts: float, price: float) -> None:
-        """Wired as ChainlinkFeed.on_report. payload_ts = the report's own
-        timestamp (seconds); receipt time is stamped alongside so delivery
-        lag/holes are measurable offline."""
+        """Wired as ChainlinkFeed.on_report.
+
+        payload_ts = the report's own timestamp; receipt time is stamped
+        alongside so delivery lag/holes are measurable offline.
+        """
         try:
             now = time.time()
             self._buf.append(json.dumps({
@@ -671,11 +655,12 @@ class MicroTape:
 
 
 def recordings_cleanup_job(retention_days: int = 30, micro_retention_days: int = 7):
-    """Nightly retention sweep on memory/recordings/*.jsonl. Tape keeps
-    `retention_days`; micro-tape (micro_*.jsonl) keeps the shorter
-    `micro_retention_days` — the event-true BBA hook writes ~2.6GB/day, so 7
-    days (~18GB) is what the 45GB host can hold alongside tape (~100MB/day)
-    and the DBs. Older research corpora are pulled off-host before they age out."""
+    """Nightly retention sweep on memory/recordings/*.jsonl.
+
+    Micro-tape keeps the shorter micro_retention_days: the BBA hook writes
+    ~2.6GB/day, and 7 days is all the 45GB host can hold alongside tape and
+    the DBs. Pull research corpora off-host before they age out.
+    """
     async def _job() -> dict[str, Any]:
         import asyncio as _aio
         def _sweep() -> int:
@@ -700,7 +685,7 @@ def recordings_cleanup_job(retention_days: int = 30, micro_retention_days: int =
 
 
 def cleanup_job(db: Any, retention_days: int = 90):
-    """Nightly retention sweep on window_paths (the plan's rolling 90 days)."""
+    """Nightly retention sweep on window_paths (rolling 90 days)."""
     async def _job() -> dict[str, Any]:
         import aiosqlite
         cutoff = time.time() - retention_days * 86400

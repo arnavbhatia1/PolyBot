@@ -1,9 +1,7 @@
 """Nightly job scheduler: record rollups + pluggable nightly jobs.
 
-This scheduler tunes nothing — entry forecasting has no edge over the CLOB price,
-so there are no parameter/model optimizers or calibrators to run. Nightly it rolls
-per-trade records into daily bundles, then runs whatever jobs are registered
-(window-paths retention sweep, sniper-edge health report).
+Tunes NOTHING — entry forecasting has no edge, so no optimizers or calibrators
+run here. Rolls per-trade records into daily bundles, then runs registered jobs.
 """
 from __future__ import annotations
 
@@ -82,8 +80,7 @@ class NightlyScheduler:
         logger.info("─── Nightly jobs complete ───")
 
     async def run_outcome_loop(self) -> None:
-        """Heartbeat slot for periodic analysis tasks — records are written inline
-        by the trading loop."""
+        """Heartbeat slot for periodic analysis; records are written inline by the trading loop."""
         while self._running:
             await asyncio.sleep(self.outcome_interval_seconds)
 
@@ -103,8 +100,7 @@ class NightlyScheduler:
                             await self.alert_manager.send_error(
                                 f"Nightly pipeline failed: {e}")
                         except Exception:
-                            # Discord down too — the daily loop must survive
-                            # a failed failure-alert.
+                            # Discord down too — the loop must survive a failed failure-alert
                             pass
                 if self._auto_shutdown:
                     logger.info("Pipeline complete")

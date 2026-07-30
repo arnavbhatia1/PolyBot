@@ -1,41 +1,31 @@
-"""Late-window sniper KILL BAR — does a bot-FORMABLE final-seconds signal survive
-a realistic FOK fill at the host's measured order RTT (box POST p50 ~0.34s), net of fee?
+"""Sniper kill-bar harness: replay late-window signals over the recorded 5Hz
+corpus with an RTT-parametric FOK fill, net of fee.
 
-The winning wallets (e.g. 0x565ca5, +33c/$1) make their entire edge in the final
-~60s by buying a directional side the CLOB hasn't fully repriced. The open question
-the offline 1Hz corpus could NOT answer: is there a signal the BOT can form from its
-OWN feeds (Coinbase = resolution venue, Binance aggTrade = order flow) that, hit with
-a realistic-RTT FOK, nets positive? This needs the 5 Hz late-window samples + Binance columns
-the extended WindowPathRecorder now writes (recording.py). Run AFTER >= ~8 clean ET
-days of post-extension recording.
+Method (lookahead-safe): first fire per window using only info <= t_i; fill =
+the ask interpolated at decision+RTT; settle at resolution (window_labels).
+Thresholds are pre-registered — never sweep-then-pick; the gate is holding
+them FORWARD.
 
-Method (lookahead-safe): for each window, at the FIRST late-window instant a signal
-fires (decision row i, using only info <= t_i), model the FOK fill at the ask one
-sample later (~0.2s, interpolated to the swept RTT — conservative), settle at resolution (window_
-labels), net of the dynamic taker fee. Day-cluster + block-bootstrap. Pre-registered
-thresholds (not swept-then-cherry-picked); the binding gate is holding them FORWARD.
+KILL BAR (all legs): day-clustered t_day >= 2.0 AND block-bootstrap p10 > 0
+over >= 8 clean ET days, >= 6 positive, >= MIN_FILLS fills. The CONTROL
+(spot-side at ask, no momentum/flow filter) must stay ~0 by eye (G-M sanity).
 
-KILL BAR (all): realistic-fill day-clustered t_day >= 2.0 AND block-bootstrap p10 > 0
-(net of fee, executable asks) over >= 8 clean ET days, >= 6 positive. A control
-(buy spot-side at ask, no momentum/flow filter — ask-cap still applied) must stay
-~0 (G-M sanity); oracle = upper bound.
+CEILING, NOT AUTHORITY: this is a full-population replay — it fires on every
+qualifying window and fills at the trigger tick. A real bot is latency-capped
+and ADVERSELY selected; the go-live that trusted this print alone realized
+~16c/sh worse than it. The BINDING gate is the paper-shadow's REALIZED fills
+(sniper_shadow_status.py / live_health_read). Never deploy on this print alone.
+
+Fidelity: the live sniper also requires an L1 edge >= sniper_min_edge; the
+momentum() signal here has no prob/edge floor, so n_fills overstates live's
+count (live trades the higher-conviction subset).
 
   python scripts/analyze_late_window.py [--cb-move 8] [--ask-cap 0.92] \
       [--rtt-sweep 0.04,0.08,0.135,0.20] [--max-slip 0.05]
 
---rtt-sweep is the edge-vs-latency curve (the fill is the ask interpolated at
-decision+RTT along its repricing path) — the RTT at which momentum first clears the
-bar is the latency the host must hit. --max-slip is the FOK limit tolerance (the key
-reachability sensitivity; re-run at 0.02 for a strict read).
-
-FIDELITY CAVEAT (live vs this harness): the live sniper (signal_engine.evaluate_late_sniper)
-additionally requires an L1 model edge >= sniper_min_edge, which this momentum() signal
-deliberately does NOT (no prob/edge floor — a conservative directional gate whose n_fills
-overstates live's count; live trades the higher-conviction SUBSET). window_paths now stamps
-the live-L1 `atr` and `model_prob_up` per sample (recording.py appended columns), so an exact
-sniper_min_edge-subset read is possible if ever needed. Before any deploy, ALSO paper-shadow
-the sniper (sniper_enabled in PAPER mode) for >= the same span and compare the realized
-fills/edge head-to-head.
+--rtt-sweep traces the edge-vs-latency curve (the RTT where momentum first
+clears the bar = the latency the host must hit). --max-slip is the FOK limit
+tolerance — the key reachability sensitivity; re-run at 0.02 for a strict read.
 """
 from __future__ import annotations
 
@@ -52,17 +42,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
-# The SPRT/shadow reads import polybot.core.sprt + polybot.paths; make that work
-# when the script runs standalone from anywhere (main.py's exec-by-path already
-# runs with the package importable).
+# Standalone runs from any cwd still need polybot.* importable (sprt/paths).
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 PATHS_DB = ROOT / "polybot" / "db" / "window_paths.db"
 LIVE_DB = ROOT / "polybot" / "db" / "polybot_live.db"   # real fills for the live kill-rule read
 PAPER_DB = ROOT / "polybot" / "db" / "polybot_paper.db" # paper-shadow fills (the binding gate in paper mode)
-# window_labels accrue in the ACTIVE mode's DB — paper holds the pre-07-04
-# history, live everything since the flip. Read both or the corpus freezes
-# at the mode switch (and the post-live kill rule can never trip).
+# window_labels accrue in whichever mode's DB is active — read BOTH, or the
+# corpus freezes at a mode switch and the post-live kill rule can never trip.
 LABEL_DBS = [PAPER_DB, LIVE_DB]
 ET = ZoneInfo("America/New_York")  # DST-correct; a fixed UTC-4 mis-buckets EST days
 FEE_RATE = 0.07
@@ -90,10 +77,9 @@ def tstat(xs: list[float]):
 
 
 def block_bootstrap_p10(daily: list[float], iters: int = 2000) -> float:
-    """Resample whole days with replacement; p10 of the resampled day-mean.
-    Seeded stdlib RNG, deterministic across runs. (A raw LCG's low bits cycle
-    with period 8: at n_days=8 every draw became a permutation of all 8 days,
-    so p10 degenerated to exactly the mean and the leg checked nothing.)"""
+    """Resample whole days with replacement; p10 of the resampled day-means.
+    Seeded stdlib RNG on purpose: a raw LCG's low bits cycle with period 8, so
+    at n_days=8 p10 degenerated to exactly the mean — the leg checked nothing."""
     if len(daily) < 2:
         return float("nan")
     n = len(daily)
@@ -106,8 +92,8 @@ def block_bootstrap_p10(daily: list[float], iters: int = 2000) -> float:
 
 
 def load_windows():
-    """window_id -> sorted list of late rows (dicts), for windows with a label and
-    post-extension data (binance_price not null somewhere in the window)."""
+    """window_id -> sorted late rows (dicts), for labeled windows with
+    binance_price data."""
     pc = sqlite3.connect(f"file:{PATHS_DB}?mode=ro", uri=True)
     pc.row_factory = sqlite3.Row
     cols = {r[1] for r in pc.execute("PRAGMA table_info(window_paths)")}
@@ -127,11 +113,9 @@ def load_windows():
             pass  # mode DB without a window_labels table yet
         finally:
             lc.close()
-    # NOTE: the decision strike used by every signal is window_labels.price_to_beat
-    # (the authoritative value Polymarket resolves on = the prior window's close, and
-    # exactly what the live bot now uses). window_paths.strike is the recorder's
-    # Chainlink boundary capture — a diagnostic sensor that can miss price_to_beat by
-    # >$8 in a fast open, so it is deliberately NOT loaded here.
+    # Strike for every signal = window_labels.price_to_beat (what Polymarket
+    # resolves on). window_paths.strike is the recorder's Chainlink capture —
+    # can miss the official value by >$8 in a fast open, never load it here.
     rows_by_win = defaultdict(list)
     cur = pc.execute(
         "SELECT window_id, ts, elapsed_s, bid_up, ask_up, bid_down, ask_down, "
@@ -164,18 +148,15 @@ MAX_SLIP = 0.05      # default FOK limit tolerance: miss if the fill would be >t
 
 
 def fill_ask(rows, i, side_up, rtt, max_slip=MAX_SLIP):
-    """Modeled fill price for a taker order sent at the decision tick and arriving
-    `rtt` seconds later. The 5Hz tape can't resolve sub-200ms timing directly, so we
-    INTERPOLATE the ask along its repricing path between the two samples bracketing
-    `decision_ts + rtt`. Lower rtt -> fill nearer the (stale, cheap) decision-tick
-    ask; higher rtt -> nearer the repriced ask. This is what turns the harness into
-    an edge-vs-latency curve. Assumes ~linear repricing within a ~0.2s inter-sample
-    gap (the agent measured the trajectory is ~linear over the first sample).
+    """Modeled taker fill arriving `rtt` s after the decision tick: the ask
+    interpolated between the two 5Hz samples bracketing arrival (repricing is
+    measured ~linear over one sample gap; the tape can't resolve sub-200ms).
+    Lower rtt -> nearer the stale, cheap decision ask — the edge-vs-latency curve.
 
-    None = miss: the book gapped out, there is no sample after arrival to confirm the
-    quote still existed, or it repriced >max_slip above the decision ask before arrival
-    (a FOK with limit = decision_ask + max_slip would not have filled). max_slip is the
-    key reachability sensitivity — a tighter limit fills fewer windows but at better prices.
+    None = miss: book gapped, no sample after arrival confirms the quote, or
+    the ask repriced > max_slip above the decision ask (a FOK with limit =
+    decision_ask + max_slip would not have filled). max_slip is the key
+    reachability sensitivity — tighter fills fewer windows at better prices.
     """
     dec_ask = rows[i]["ask_up"] if side_up else rows[i]["ask_down"]
     if dec_ask is None:
@@ -205,9 +186,9 @@ def fill_ask(rows, i, side_up, rtt, max_slip=MAX_SLIP):
 
 
 def momentum_signal(rows, i, strike, cb_move_thr=8.0, ask_cap=0.92):
-    """The deployed sniper's directional rule, module-level so the CLI and the
-    nightly health job share ONE implementation: a >= cb_move_thr Coinbase move
-    over 2s that pushed price past strike, on the move side, if its ask <= cap."""
+    """Deployed sniper's directional rule — module-level so the CLI and the
+    nightly health job share ONE implementation, never two drifting copies:
+    a >= cb_move_thr Coinbase move over 2s past strike, move side, ask <= cap."""
     mv = cb_move(rows, i, 2.0)
     cb = rows[i]["coinbase_price"]
     if mv is None or cb is None or strike is None:
@@ -222,13 +203,12 @@ def momentum_signal(rows, i, strike, cb_move_thr=8.0, ask_cap=0.92):
 
 
 def evaluate(rows_by_win, labels, signal_fn, label, rtt, max_slip):
-    """signal_fn(rows, i) -> side_up (bool) or None. First fire per window. `rtt` is
-    the modeled order round-trip (s); the fill is the ask interpolated at decision+rtt,
-    a miss if it exceeds the FOK limit (decision_ask + max_slip)."""
+    """signal_fn(rows, i, strike) -> side_up (bool) or None. First fire per
+    window; fill = ask interpolated at decision+rtt, miss past the FOK limit."""
     per_day = defaultdict(list)
     fills = []
     for wid, rows in rows_by_win.items():
-        resolved_up, strike = labels[wid]   # strike = authoritative price_to_beat (== prev-window close)
+        resolved_up, strike = labels[wid]   # strike = authoritative price_to_beat
         for i in range(len(rows)):
             if rows[i]["elapsed_s"] < LATE_START:
                 continue
@@ -260,10 +240,9 @@ def evaluate(rows_by_win, labels, signal_fn, label, rtt, max_slip):
 
 
 def health_read(rtt=0.135, max_slip=0.05, cb_move_thr=8.0, ask_cap=0.92):
-    """One-call momentum read for the nightly health job: the kill-bar momentum
-    result plus the post-live kill-rule metrics (trailing-4-day mean, trailing-
-    8-day t). Returns None if the corpus isn't ready. kill_rule_tripped is None
-    until >= 8 ET days exist (not evaluable), then True/False."""
+    """One-call momentum read for the nightly health job: kill-bar result plus
+    the kill-rule metrics (trailing-4-day mean, trailing-8-day t). None if the
+    corpus isn't ready; kill_rule_tripped None until >= 8 ET days exist."""
     rows_by_win, labels = load_windows()
     if not rows_by_win:
         return None
@@ -283,38 +262,32 @@ def health_read(rtt=0.135, max_slip=0.05, cb_move_thr=8.0, ask_cap=0.92):
 
 
 def live_health_read(db_path=None, since_iso=None):
-    """Post-live kill-rule metrics computed from REALIZED fills (trade_history),
-    the money-side analog of health_read() (which reads the SIM corpus). Defaults
-    to polybot_live.db; pass db_path=PAPER_DB + since_iso=<validation epoch> for
-    the paper-shadow read (the BINDING gate while re-validating in paper mode —
-    fills before the epoch ran different code/config and are excluded). Same
-    convention as the kill bar so the reads are directly comparable:
-    EQUAL-WEIGHT per-fill net $/share, day-clustered by ET.
+    """Post-live kill-rule metrics from REALIZED fills (trade_history) — the
+    money-side analog of health_read()'s SIM read.
 
-    Per-fill net = pnl / shares_held. pnl is ALREADY net of fees: the entry taker
-    fee is folded into `size` (size = shares_held*entry + entry_fee), and
-    resolve_position/close_trade set pnl = revenue - size (base.py), so the fee is
-    subtracted once inside pnl; scalp exits net the exit fee into revenue too.
-    Therefore pnl/shares_held == the harness's win - fill - fee(fill) (verified to
-    <1e-3 on all 52 real resolutions) — subtracting the stored `fees` a SECOND time
-    (the pre-2026-07-13 formula) DOUBLE-COUNTED it, understating net by ~1.3c/sh.
-    shares_held is the audited fill count. Folds in the live exit engine (scalp /
-    loss-cut outcomes, not just hold-to-resolution). Live runs sniper_only, so every
-    trade_history row is a sniper fire.
+    Defaults to polybot_live.db; pass db_path=PAPER_DB + since_iso=<validation
+    epoch> for the BINDING paper-shadow gate (pre-epoch fills ran different
+    code/config and are excluded). Unit matches the kill bar so the reads
+    compare directly: EQUAL-WEIGHT per-fill net $/share, ET-day-clustered.
 
-    kill_rule_tripped mirrors CLAUDE.md's OR-rule but activates each leg as soon as
-    it has the days: trailing-4-day mean < +0.02 (+2c/sh) once >= 4 ET days, OR
-    trailing-8-day t < 2.0 once >= 8. None until >= 4 live days exist. Alert-only —
-    the caller never flips config (kill bars are operator authority)."""
+    Per-fill net = pnl / shares_held, and pnl is ALREADY net of all fees
+    (size = shares*entry + entry_fee, pnl = revenue - size; scalp exits net
+    the exit fee into revenue) — subtracting the stored `fees` column again
+    DOUBLE-COUNTS the fee, ~1.3c/sh too pessimistic. shares_held is the
+    audited fill count. Every trade_history row is a sniper fire (base
+    entries are always suppressed).
+
+    kill_rule_tripped: trailing-4-day mean < +0.02 once >= 4 ET days, OR
+    trailing-8-day t < 2.0 once >= 8; None before 4 days. Alert-only — the
+    caller never flips config (kill bars are operator authority)."""
     db = Path(db_path) if db_path else LIVE_DB
     if not db.exists():
         return None
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     try:
-        # position_id is the true link (the historical implicit t.id = p.id pairing
-        # only held while both AUTOINCREMENT sequences ran in lockstep). Legacy rows
-        # / un-migrated DBs fall back to the id pairing.
+        # Join on position_id — a bare t.id = p.id pairing only holds while both
+        # AUTOINCREMENT sequences run in lockstep. id is the un-migrated fallback.
         has_pid = any(r[1] == "position_id"
                       for r in con.execute("PRAGMA table_info(trade_history)"))
         join_key = "COALESCE(t.position_id, t.id)" if has_pid else "t.id"
@@ -337,13 +310,13 @@ def live_health_read(db_path=None, since_iso=None):
             ts = datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00")).timestamp()
         except (ValueError, AttributeError):
             continue
-        nps = r["pnl"] / r["shares"]        # pnl already nets all fees (size includes the entry fee)
+        nps = r["pnl"] / r["shares"]        # pnl already nets all fees — never subtract `fees` again
         per_day[et_day(ts)].append((nps, 1.0 if (r["pnl"] or 0) > 0 else 0.0, r["pnl"] or 0.0))
     if not per_day:
         return None
     fills = [x for v in per_day.values() for x in v]
     series = [(day, statistics.mean(n for n, _, _ in v)) for day, v in sorted(per_day.items())]
-    # per-day rollup for the manual shadow table (one source of truth for both reads)
+    # per-day rollup for the manual shadow table — one source of truth for both reads
     day_detail = [(day, len(v), statistics.mean(w for _, w, _ in v),
                    statistics.mean(n for n, _, _ in v), sum(p for _, _, p in v))
                   for day, v in sorted(per_day.items())]
@@ -367,9 +340,9 @@ def live_health_read(db_path=None, since_iso=None):
 
 
 def _realized_fill_contexts(db_path, since_iso):
-    """(et_day, net_per_share_$, pnl_$, size_$, trade_context) per realized fill —
-    the shared loader for the SPRT / regime-shadow reads. Same join + net
-    convention as live_health_read (pnl is already net of all fees)."""
+    """(et_day, net_per_share_$, pnl_$, size_$, trade_context) per realized
+    fill — shared loader for the SPRT / regime-shadow reads. Same join + net
+    convention as live_health_read (pnl already net of all fees)."""
     db = Path(db_path) if db_path else LIVE_DB
     if not db.exists():
         return []
@@ -405,14 +378,13 @@ def _realized_fill_contexts(db_path, since_iso):
     return out
 
 
-# ── Burst-alive SPRT (pre-registered application #1, SPRT_DESIGN 07-19) ───────
+# ── Burst-alive SPRT (pre-registered; constants are design-frozen) ────────────
 # HOT ⇔ n_ticks_1s / (n_ticks_30s/30) ≥ 2.0 at the fill's decision tick; unit =
-# per-ET-day (mean HOT net − mean COLD net) in ¢/sh, days with ≥ 2 fills on EACH
-# arm. H1 μ₁ = +6¢/sh (the refuter's realized-train delta). σ is estimated on
-# the FIRST 6 qualifying days, frozen write-once (memory/state/sprt_burst.json),
-# and those estimation days never score — scoring starts on qualifying day 7
-# (same independence convention as the full-strategy design, whose σ came from
-# the prior validation's days). Deleting the state file restarts the test.
+# per-ET-day (mean HOT net − mean COLD net) in ¢/sh, days with ≥ 2 fills on
+# EACH arm. H1 μ₁ = +6¢/sh. σ freezes WRITE-ONCE from the first 6 qualifying
+# days (memory/state/sprt_burst.json); those days never score — estimating and
+# scoring on the same days would bias the test. Deleting the state file
+# restarts it.
 BURST_SPRT_MU1 = 6.0
 BURST_SPRT_ALPHA = 0.05
 BURST_SPRT_BETA = 0.23
@@ -423,7 +395,7 @@ BURST_HOT_RATIO = 2.0
 
 def _burst_arm(ctx: dict):
     """'HOT' / 'COLD' from the stamped tick counters; None when the feed was
-    cold at fire time (fill scores on neither arm)."""
+    cold at fire time — the fill scores on neither arm."""
     n1, n30 = ctx.get("n_ticks_1s"), ctx.get("n_ticks_30s")
     if n1 is None or n30 is None or not n30:
         return None
@@ -431,9 +403,9 @@ def _burst_arm(ctx: dict):
 
 
 def burst_sprt_read(db_path=None, since_iso=None, state_path=None):
-    """Nightly burst-alive SPRT state from the realized ledger. Alert-only:
-    accept-H1 graduates burst into the regime-Kelly framework (its own shadow
-    gate); accept-H0 parks it. Never touches sizing or entries."""
+    """Nightly burst-alive SPRT state from the realized ledger. Alert-only —
+    never touches sizing or entries: accept-H1 graduates burst into the
+    regime-Kelly framework, accept-H0 parks it."""
     from polybot.core.sprt import run_sprt
     from polybot.paths import SPRT_BURST_PATH
     sp = Path(state_path) if state_path else SPRT_BURST_PATH
@@ -480,13 +452,12 @@ def burst_sprt_read(db_path=None, since_iso=None, state_path=None):
                 day_diffs=[d for _, d in scored])
 
 
-# ── Regime-Kelly shadow counterfactual (REGIME_KELLY_DESIGN §4) ────────────────
+# ── Regime-Kelly shadow counterfactual ─────────────────────────────────────────
 def regime_shadow_read(db_path=None, since_iso=None):
     """Per-ET-day counterfactual D = regime-sized $P&L − flat $P&L over fills
-    carrying the regime shadow stamps (size_flat/size_regime, shipped 07-24).
-    Report-only accrual: the D-level SPRT may not START until the burst SPRT
-    accepts H1 (its μ₁/σ freeze by amendment then). size_regime == 0 means the
-    regime arm skipped the fill (sub-$1) — it earns nothing there."""
+    carrying the regime shadow stamps (size_flat/size_regime). Report-only:
+    the D-level SPRT may not START until the burst SPRT accepts H1.
+    size_regime == 0 = the regime arm skipped the fill (sub-$1) — earns nothing."""
     per_day = defaultdict(lambda: [0.0, 0])                 # day -> [D$, n_stamped]
     for day, _nps, pnl, _size, ctx in _realized_fill_contexts(db_path, since_iso):
         sf, sr = ctx.get("size_flat"), ctx.get("size_regime")
@@ -504,14 +475,13 @@ def regime_shadow_read(db_path=None, since_iso=None):
 def resolution_snapshot_read(db_path=None, hours: float = 26.0):
     """Is Polymarket still resolving on the terminal Chainlink snapshot?
 
-    Mechanical invariant of the current rule: a window's official final_price
-    and the NEXT window's price_to_beat are the SAME Chainlink report (first
-    at/after their shared boundary) — measured 516/516 bit-exact on the live
-    ledger 2026-07-30. The announced TWAP resolution (no date published)
-    breaks the equality by real dollars whenever price moved during the
-    averaging window, so any systematic divergence = the resolution mechanism
-    changed under the sniper → kill it. Checks windows labeled in the
-    trailing ``hours``; alert-only.
+    Invariant of the current rule: a window's official final_price and the
+    NEXT window's price_to_beat are the SAME Chainlink report (first at/after
+    their shared boundary), so they match bit-exact. Polymarket's announced
+    TWAP resolution breaks that equality by real dollars — systematic
+    divergence means the mechanism changed under the sniper: kill it
+    (sniper_enabled: false). Checks windows labeled in the trailing
+    ``hours``; alert-only.
     """
     import time as _t
     db = Path(db_path) if db_path else LIVE_DB
@@ -558,10 +528,11 @@ def resolution_snapshot_read(db_path=None, hours: float = 26.0):
 # ── Scar scan (nightly learning loop — polybot/core/scar_scan.py) ─────────────
 def scar_scan_read(db_path=None, since_iso=None, enforce=None,
                    registry_path=None, vetoes_path=None, mode=None):
-    """Discovery + per-gate OOS SPRT over the realized ledger for the current
-    mode, plus enforced-veto resolution. Registry persists to
-    memory/state/scar_gates.json (committed nightly). Alert-only. `mode`
-    stamps registrations and pauses foreign-mode gates on a mode flip."""
+    """Scar scan: discovery + per-gate OOS SPRT over the current mode's
+    realized ledger, plus enforced-veto resolution. Alert-only; registry
+    persists to memory/state/scar_gates.json. `mode` stamps registrations and
+    pauses foreign-mode gates on a mode flip — never splice modes into one
+    frozen-σ test."""
     from polybot.core.scar_scan import scan, resolve_vetoes
     from polybot.paths import SCAR_GATES_PATH, SCAR_VETOES_PATH
     db = Path(db_path) if db_path else LIVE_DB
@@ -579,7 +550,7 @@ def main():
     ap.add_argument("--ask-cap", type=float, default=0.92, help="only buy if the side's ask is still <= this")
     ap.add_argument("--rtt-sweep", type=str, default="0.04,0.08,0.135,0.20",
                     help="comma-list of modeled order RTTs (s) to sweep — the edge-vs-latency curve. "
-                         "0.04~Dublin VPS, 0.135~current Canada VPN, 0.20~one-5Hz-sample (most conservative).")
+                         "0.34~the box's measured POST p50, 0.20~one-5Hz-sample.")
     ap.add_argument("--max-slip", type=float, default=MAX_SLIP,
                     help="FOK limit tolerance (default 0.05): a fill is a MISS if the ask repriced more "
                          "than this above the decision ask by arrival. Tighter = stricter reachability "

@@ -35,7 +35,7 @@ python -m polybot.main --mode paper       # paper trading
 python -m polybot.main --mode live        # real USDC (needs allowance)
 python -m polybot.main --run-pipeline     # one nightly cycle, no trading
 python -m pytest polybot/tests/           # full suite
-.\scripts\run_polybot.ps1                 # daily cycle: trade -> nightly jobs -> commit -> restart
+scripts/run_polybot.sh                    # daily cycle: trade -> nightly jobs -> commit -> restart (VPS only)
 ```
 
 **The live recipe**: `settings.yaml` → `mode: live` + `late_window.sniper_enabled:

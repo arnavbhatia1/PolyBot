@@ -1,14 +1,12 @@
-"""One-shot live ORDER-POST smoke test — proves the signed-order path clears Cloudflare.
+"""One-shot live ORDER-POST smoke test — proves signed order POSTs clear Cloudflare.
 
-`verify_keys.py` exercises only GET-authenticated endpoints (key derivation,
-balance/allowance). The go-live runbook additionally requires
-proof that an EIP-712-signed order POST from this host reaches the exchange —
-Cloudflare treats POSTs differently and a 403 there would brick the first live
-window. This posts ONE deliberately unfillable FOK BUY on the current 5-min BTC
-window: limit 0.01 against a side whose best ask is verified >= 0.05, so the FOK
-cannot cross and is killed by the matching engine. Any well-formed exchange
-response (success=false, "couldn't be fully filled", etc.) PROVES the path;
-a Cloudflare 403 / HTML response FAILS it.
+verify_keys.py exercises only GET-authenticated endpoints; Cloudflare treats
+POSTs differently, and a 403 there would brick the first live window. This
+posts ONE deliberately unfillable FOK BUY on the current 5-min BTC window:
+limit 0.01 against a side whose best ask is verified >= 0.05, so the matching
+engine kills it. Any well-formed exchange response (success=false, "couldn't
+be fully filled", etc.) PROVES the path; a Cloudflare 403 / HTML response
+FAILS it.
 
 Operator-run, needs live keys in polybot/config/.env. Refuses to run without
 --confirm. Touches no DB or bot state; safe while the bot is running.
@@ -45,7 +43,7 @@ def _current_contract() -> dict:
             window_ts = int(time.time() // WINDOW_SECONDS) * WINDOW_SECONDS + offset
             slug = f"btc-updown-5m-{window_ts}"
             resp = client.get(f"{GAMMA_API}/events", params={"slug": slug})
-            if not resp.is_success:  # deprecated endpoint enforced — undeprecated fallback
+            if not resp.is_success:  # /events?slug= is deprecated upstream — fall back to /events/slug/{slug}
                 resp = client.get(f"{GAMMA_API}/events/slug/{slug}")
                 if resp.status_code == 404:
                     continue

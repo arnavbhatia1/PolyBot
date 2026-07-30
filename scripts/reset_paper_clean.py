@@ -1,23 +1,19 @@
 #!/usr/bin/env python
-"""Clean-slate the PAPER experiment so the data reflects the CURRENT bot.
-
-WHY: the live bankroll carried a ~$800 offset (an old seed/top-up whose origin isn't
-recoverable from the records) on top of real trade P&L, plus pre-fix contamination from
-the old code. The trade rows themselves are clean (verified: no dupes, no nulls, pnl
-reconciles to real $). So "cleaning" = a fresh start at a defined baseline, not deleting
-junk. After this, bankroll == start + cum(real pnl) exactly — no offset, nothing to misread.
+"""Clean-slate the PAPER ledger to a defined baseline; afterwards
+bankroll == start + cum(pnl) exactly, no unexplained offset to misread.
 
 WHAT IT DOES (polybot_paper.db only):
-  - BACKS UP the whole DB + archives the memory record dirs (outcomes/counterfactuals/
-    ghost_outcomes) to backups/reset_<ts>/  (reversible — nothing is destroyed).
+  - BACKS UP the whole DB + archives the memory record dirs (outcomes/
+    counterfactuals/ghost_outcomes) to backups/reset_<ts>/ (reversible —
+    nothing is destroyed).
   - Clears trade_history + positions (the ledger).
   - Sets bankroll and peak_bankroll to --start (default 1000).
   - KEEPS window_labels (the sniper kill-bar harness needs them).
-  - Does NOT touch window_paths.db (the recorder sensor / kill-bar corpus).
+  - Does NOT touch window_paths.db (the kill-bar corpus).
 
-MUST be run with the trading bot STOPPED (it writes the DB on every trade; a concurrent
-write would corrupt this). Run it before a fresh-baseline relaunch, then start the
-bot — it boots on the clean baseline.
+MUST run with the bot STOPPED — it writes the DB on every trade and a
+concurrent write would corrupt the reset. Start the bot afterwards; it boots
+on the clean baseline.
 
   python scripts/reset_paper_clean.py --dry-run          # preview, change nothing
   python scripts/reset_paper_clean.py --start 1000        # prompts, then resets

@@ -1,9 +1,7 @@
-"""OutcomeReviewer: writes per-trade outcome JSON files and rolls them up into daily files.
+"""Write per-trade outcome JSON files and roll them up into daily files.
 
-Each resolved or scalped trade writes an outcome record capturing model probability,
-fill quality, realized edge, and indicator context. These feed the nightly record
-rollups and the sniper paper-shadow read. Daily rollup keeps the file count
-manageable for git.
+Outcomes feed the nightly rollups and the sniper paper-shadow read.
+Daily rollup keeps the file count manageable for git.
 """
 from __future__ import annotations
 
@@ -24,9 +22,8 @@ logger = logging.getLogger(__name__)
 def _dedup_key(record: dict[str, Any]) -> Any:
     """Identity key for an outcome record: (position_id, market_id).
 
-    position_id is per-mode SQLite AUTOINCREMENT while memory/ is shared across
-    paper/live, so position_id alone can collide across modes. Records without
-    market_id key by position_id alone.
+    position_id alone collides across modes (per-mode AUTOINCREMENT, shared
+    memory/ dir). Records without market_id key by position_id alone.
     """
     pid = record.get("position_id")
     mid = record.get("market_id")
@@ -49,13 +46,12 @@ class OutcomeReviewer:
                        seconds_remaining_at_exit: float = 0.0,
                        edge_decay: dict[str, Any] | None = None) -> None:
         now_utc = datetime.now(timezone.utc).isoformat()
-        # Realized edge: model prob for the chosen side minus actual fill price.
-        # Compares what the model expected at signal time to what it actually cost.
-        # Negative realized_edge means the fill price was worse than the model believed.
+        # realized_edge = model prob at signal − actual fill price;
+        # negative means the fill cost more than the model believed.
         realized_edge = round(signal_score - entry_price, 4) if entry_price > 0 else 0.0
 
-        # Fill slippage: fill_price - signal_moment_market_price for the chosen side.
-        # Non-zero when paper/live latency caused the ask to move between signal and fill.
+        # fill_slippage = fill − signal-moment price; non-zero when latency
+        # moved the ask between signal and fill.
         ctx = (indicator_snapshot or {}).get("trade_context", {})
         signal_price = ctx.get("market_price_up") if side == "Up" else ctx.get("market_price_down")
         fill_slippage = round(entry_price - signal_price, 4) if signal_price and entry_price > 0 else 0.0
@@ -70,12 +66,10 @@ class OutcomeReviewer:
                   "fill_slippage": fill_slippage,
                   "indicator_snapshot": indicator_snapshot or {},
                   "exit_reason": exit_reason,
-                  # 0.0 = held to resolution; > 0 = scalp with this many seconds left in window
+                  # 0.0 = held to resolution; > 0 = scalp with this many seconds left
                   "seconds_remaining_at_exit": seconds_remaining_at_exit,
-                  # Post-fill drift of the traded token's mid at 5/10/15/30/60s.
-                  # Positive = our side's price rose (in our favor). Absent / null
-                  # windows = trade closed or feed lapsed before that checkpoint
-                  # resolved. None when monitor was disabled.
+                  # Post-fill mid drift at 5/10/15/30/60s; positive = in our favor.
+                  # Null checkpoints = closed/feed lapse first; None = monitor disabled.
                   "edge_decay": edge_decay,
                   "exit_timestamp": exit_timestamp or now_utc,
                   "timestamp": now_utc}
@@ -85,12 +79,11 @@ class OutcomeReviewer:
         logger.debug(f"Recorded outcome for position {position_id}: profitable={profitable}")
 
     def load_all_outcomes(self) -> list[dict[str, Any]]:
-        """Load all outcomes from both individual files and daily rollup files.
+        """Load all outcomes from individual files and daily rollups.
 
-        Deduplicates by (position_id, market_id) — a trade present in both (e.g.,
-        after a partial rollup run) is only counted once, and a paper/live
-        position_id collision doesn't drop a distinct trade. Sorted by
-        exit_timestamp for correct walk-forward fold ordering.
+        Dedup by (position_id, market_id): a partial rollup can leave a trade
+        in both places, and paper/live position_ids collide. Sorted by
+        exit_timestamp so walk-forward folds order correctly.
         """
         outcomes = []
         seen_keys: set = set()
@@ -110,10 +103,9 @@ class OutcomeReviewer:
     def rollup_old_outcomes(self) -> int:
         """Roll up previous days' individual outcome files into one file per day.
 
-        At 400+ trades/day, individual files become 150k+ files/year in git.
-        One rollup file per day keeps the repo manageable. Only touches days before
-        today so live intraday files are never disturbed. Atomic write (tmp → rename)
-        means a crash leaves data intact. Returns number of files rolled up.
+        Per-trade files would swamp git (150k+/year). Only touches days before
+        today, so live intraday files are never disturbed; atomic write
+        (tmp → rename) so a crash can't tear data. Returns files rolled up.
         """
         from collections import defaultdict
         today = datetime.now(_ET).strftime("%Y-%m-%d")

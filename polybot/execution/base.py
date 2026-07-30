@@ -20,14 +20,11 @@ except ImportError:
         return _json.dumps(obj)
 
 # ---------------------------------------------------------------------------
-# FOK fill/kill stats (shared by live + paper so kill rates are COMPARABLE —
-# "paper kills at the live rate" must be a measurement, not an assumption)
+# FOK fill/kill stats — one schema for live + paper so kill rates stay comparable.
 # ---------------------------------------------------------------------------
 
-# Failure-cause buckets — lets the pipeline distinguish "price moved" rejects
-# (a feature) from "network error" or "depth" rejects (a defect). Empty or
-# unmatched reasons go to `other` so future failure modes show up rather than
-# getting silently lumped in.
+# Failure buckets split "price moved" rejects (a feature) from network/depth
+# defects; unmatched reasons land in `other` so new failure modes stay visible.
 FAILURE_BUCKETS: tuple[str, ...] = (
     "price_moved", "non_retryable", "precheck_depth", "fok_killed",
     "below_min", "network_error", "auth", "other",
@@ -57,12 +54,8 @@ def categorize_failure(reason: str) -> str:
 def update_fill_stats(path: Any, filled: bool, side: str, reason: str = "") -> None:
     """Atomically update FOK fill-rate stats at ``path``. Silent on I/O errors.
 
-    ``reason`` is bucketed into FAILURE_BUCKETS when filled=False so the
-    pipeline can stratify retryable rejects (price_moved — a feature) from
-    network/depth errors (a defect). The files are operator/offline-read
-    calibration ledgers (kill-rate parity, RTT re-derivation at go-live) —
-    no runtime consumer. ``side`` accepts either trader's convention
-    ("BUY"/"buy").
+    Failed ``reason``s are bucketed via FAILURE_BUCKETS. The files are offline
+    calibration ledgers — no runtime consumer. ``side`` accepts "BUY"/"buy".
     """
     from datetime import datetime as _dt, timezone as _tz
     try:
@@ -133,23 +126,21 @@ class FillResult:
 # Fee math (canonical — imported by paper_trader, live_trader, main)
 # ---------------------------------------------------------------------------
 
-# Polymarket's `feeRate` coefficient for Crypto markets (docs.polymarket.com/trading/fees).
-# It goes INSIDE the formula `fee = feeRate x shares x p x (1-p)` — a coefficient, not a flat
-# percentage. Peak effective fee is feeRate x 0.25 = 1.75% of payout at p=0.50.
+# Polymarket Crypto `feeRate`: fee = feeRate x shares x p x (1-p). A coefficient
+# INSIDE that formula, never a flat percentage — peak is 1.75% at p=0.50.
 DEFAULT_FEE_RATE = 0.07
 
-# Flat per-share effective-fee proxy (= feeRate x 0.25, the p=0.50 peak). Use ONLY where the fee
-# is a flat additive cost term (spread/exec-cost gates), never inside the p(1-p) formula.
+# Flat per-share fee proxy (feeRate x 0.25, the p=0.50 peak). ONLY for flat
+# additive cost gates — never inside the p(1-p) formula.
 EFFECTIVE_FEE_PEAK = round(DEFAULT_FEE_RATE * 0.25, 5)  # 0.0175
 
 def slippage_pct(order_size_usd: float, book_depth_usd: float,
                  impact_factor: float = 0.03) -> float:
     """Convex market impact: deeper book consumption costs disproportionately more.
 
-    Returns a percentage (0.015 = 1.5%) to add (buys) or subtract (sells). Cost
-    accelerates via fill_pct * impact * (1 + fill_pct): 1.5x a linear model at
-    50% depth, 2x at 100%. Conservative for negRisk markets where cross-matching
-    creates deeper real liquidity than the raw book shows.
+    Returns a fraction (0.015 = 1.5%) to add on buys / subtract on sells.
+    Deliberately conservative on negRisk markets, where cross-matching creates
+    deeper real liquidity than the raw book shows.
     """
     if book_depth_usd <= 0:
         return 0.0
@@ -272,11 +263,12 @@ class BaseTrader(ABC):
 
     def _scalp_residual_credit(self, residual_shares: float, fill_price: float,
                                fee_rate: float) -> float:
-        """USDC to credit the bankroll for the fee-headroom shares held back from
-        a scalp's FOK. Live returns 0 — its on-chain residual is swept by
-        ``_sweep_residual`` and surfaces in the next absolute balance sync. Paper
-        overrides to credit the simulated sweep, since paper bankroll is
-        delta-only and would otherwise leak ~2% of exit notional per scalp."""
+        """USDC credited for the fee-headroom shares held back from a scalp's FOK.
+
+        Live returns 0 — its residual is swept on-chain and lands in the next
+        absolute balance sync. Paper must credit the simulated sweep: its
+        bankroll is delta-only and would otherwise leak ~2% of exit notional
+        per scalp."""
         return 0.0
 
     @abstractmethod
@@ -302,8 +294,7 @@ class BaseTrader(ABC):
         fee_rate: float = DEFAULT_FEE_RATE,
     ) -> TradeResult:
         # --- Rejection gates ---
-        # Single composite query: one round trip on aiosqlite's serialized
-        # connection, and an atomic snapshot — no race between sub-reads.
+        # One composite query: an atomic snapshot — no race between sub-reads.
         has_pos, pos_count, bankroll, deployed = await self.db.get_open_trade_preflight(market_id)
         if has_pos:
             return TradeResult(success=False, reason="Duplicate market — already have position")
@@ -360,9 +351,8 @@ class BaseTrader(ABC):
             )
             return TradeResult(success=False, reason=f"DB write failed after fill: {e}")
 
-        # Live audits the booked entry price against the exchange a few seconds
-        # later (the WS-tape VWAP can fall back to the submitted limit); paper
-        # has no such hook.
+        # Live audits the booked entry against chain truth a few seconds later
+        # (the fill-time price can be the padded limit); paper has no hook.
         audit = getattr(self, "_schedule_fill_audit", None)
         if audit is not None:
             audit(pos_id, token_id, fill.fill_price, fill.fill_size, fee_rate)
@@ -396,9 +386,9 @@ class BaseTrader(ABC):
         sellable_shares = await self._sellable_shares(token_id, fallback_shares)
         fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
 
-        # Share buffer so Polymarket's per-share fee deduction (fee_rate × shares
-        # × p × (1-p), peak fee_rate × 0.25) doesn't push the FOK above available
-        # balance; the 0.005 floor also covers 1-tick mismatches at zero fee_rate.
+        # Hold back headroom so Polymarket's per-share fee deduction can't push
+        # the FOK above available balance; the 0.005 floor covers 1-tick
+        # mismatches at zero fee_rate.
         sell_fee_headroom = max(fee_rate * 0.25, 0.0) + 0.002
         sell_fee_headroom = max(sell_fee_headroom, 0.005)
         shares = sellable_shares * (1.0 - sell_fee_headroom)
@@ -413,19 +403,16 @@ class BaseTrader(ABC):
         lr = log_return(position["entry_price"], fill_price)
         fee_usdc = exit_fee_usdc(shares, fill_price, fee_rate)
         revenue = shares * fill_price - fee_usdc
-        # Entry fee = the at-open share haircut; derive it from the entry-held shares
-        # (fallback_shares), not the headroom-reduced sell qty, so held-back
-        # headroom (credited back via _scalp_residual_credit) isn't booked as fee.
-        # Mirrors resolve_position.
+        # Entry fee derives from the entry-held shares (fallback_shares), never
+        # the headroom-reduced sell qty — else held-back headroom (credited via
+        # _scalp_residual_credit) gets booked as fee. Mirrors resolve_position.
         entry_fee_usd = _entry_fee_usd_from_position(position, fallback_shares)
         pnl = revenue - position["size"]
         gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
 
         # --- Persist to DB (atomic: close + bankroll credit in one transaction) ---
-        # Headroom shares held back from the FOK are credited via
-        # _scalp_residual_credit (paper simulates the sweep; live returns 0 — its
-        # residual lands in the next absolute balance sync). Deliberately NOT in
-        # pnl: live's recorded pnl excludes the swept residual too, so paper/live
+        # Held-back headroom is credited via _scalp_residual_credit but stays
+        # OUT of pnl — live's pnl excludes the swept residual too, so paper/live
         # trade records stay comparable.
         residual_credit = self._scalp_residual_credit(
             sellable_shares - shares, fill_price, fee_rate)

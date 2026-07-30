@@ -14,10 +14,10 @@ source "$REPO/.venv/bin/activate"
 
 while true; do
     echo "[$(date '+%F %T %Z')] pull origin main"
-    # --autostash: mid-day restarts have uncommitted DB/state churn; stash it
+    # --autostash: mid-day restarts carry uncommitted DB/state churn — stash it
     # around the pull instead of failing and running stale code. A failed pull
-    # (conflict) must never leave the repo mid-rebase — abort and run what we
-    # have; every later nightly commit would otherwise fail silently.
+    # must never leave the repo mid-rebase (every later nightly commit would
+    # fail silently) — abort and run what we have.
     if ! git pull --rebase --autostash origin main; then
         git rebase --abort 2>/dev/null || true
         echo "[$(date '+%F %T %Z')] PULL FAILED — continuing on existing code"

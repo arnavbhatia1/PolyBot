@@ -50,11 +50,14 @@ class AlertManager:
                                 fee: float = 0.0, flow: float = 0.0,
                                 bankroll: float = 0.0,
                                 provisional: bool = False) -> None:
-        """Live sends this from the +8s chain audit with the SETTLED entry (the
-        fill-time number is usually the padded FOK limit, not the real fill —
-        the ping must agree with the RESOLVED ping and the books). Paper sends
-        at fill time (its fills are exact). `provisional` flags the rare fill
-        whose chain lookup failed — the booked price is shown, labeled."""
+        """Trade-open ping.
+
+        Live sends this from the +8s chain audit with the SETTLED entry — the
+        fill-time number is usually the padded FOK limit, not the real fill,
+        and this ping must agree with the RESOLVED ping and the books. Paper
+        sends at fill time (its fills are exact). provisional flags a fill
+        whose chain lookup failed — the booked price is shown, labeled.
+        """
         channel = self._get_channel(self.trade_channel_name)
         if not channel:
             return
@@ -110,8 +113,7 @@ class AlertManager:
         await self._safe_send(channel, f"**Error**\n```{error_message}```")
 
     async def send_health(self, message: str) -> None:
-        """Nightly sniper-edge health report → daily channel (posted during the
-        wind-down while the bot isn't trading)."""
+        """Nightly sniper-edge health report → daily channel (posted during wind-down, no trading)."""
         await self._send_to_channels(message, [self.daily_channel_name])
 
     async def send_session_banner(self, mode: str, bankroll: float) -> None:

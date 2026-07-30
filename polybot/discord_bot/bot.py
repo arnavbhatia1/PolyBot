@@ -51,8 +51,8 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
     async def on_command_error(ctx, error):
         """Collapse noisy Discord tracebacks to single-line warnings.
 
-        Unknown commands (user typos) and Discord API hiccups (5xx) shouldn't dump
-        a 20-line stack trace — the bot's main trading loop is unaffected.
+        User typos and Discord 5xx hiccups must not dump 20-line stack traces;
+        the trading loop is unaffected either way.
         """
         if isinstance(error, commands.CommandNotFound):
             logger.debug(f"Unknown Discord command: {ctx.message.content!r}")
@@ -102,8 +102,8 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
             pnls.append(pnl)
             gp = pnl / size if size > 0 else 0
             gain_pcts.append(gp)
-            # Bucket by ET calendar day. exit_timestamp is UTC, so convert to ET first —
-            # a naive [:10] compares a UTC date to the ET date and mixes in the prior evening.
+            # Bucket by ET day: exit_timestamp is UTC — a naive [:10] compares a
+            # UTC date to the ET date and mixes in the prior evening.
             exit_ts = t.get("exit_timestamp", "")
             if exit_ts:
                 try:
@@ -169,8 +169,8 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
 
     @bot.command(name="history")
     async def history(ctx, n: int = 10):
-        # Clamp to a sane range: negative n → SQLite LIMIT -1 (all rows); huge n →
-        # a >2000-char message Discord rejects. Bound to [1, 50].
+        # Clamp to [1, 50]: negative n → SQLite LIMIT -1 (all rows); huge n →
+        # a >2000-char message Discord rejects.
         n = max(1, min(50, n))
         trades = await bot.db.get_trade_history(limit=n)
         if not trades:
@@ -228,9 +228,8 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
         if not targets:
             await ctx.send("Usage: `!clear [trades|control|all] confirm`")
             return
-        # Confirmation guard. Purges Discord chat history only (never the DB /
-        # memory / positions — verified), but it's irreversible message deletion,
-        # so require an explicit `confirm` token.
+        # Confirmation guard: purges Discord chat only (never DB/memory/positions),
+        # but message deletion is irreversible — require an explicit confirm token.
         if confirm != "confirm":
             chan_list = ", ".join(f"#{name}" for _, name in targets)
             await ctx.send(
@@ -247,9 +246,8 @@ def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
 
     @bot.command(name="pipeline")
     async def pipeline_status(ctx):
-        # Nightly jobs run 23:45 ET (run_polybot.sh; CLAUDE.md §7): record
-        # rollups, retention sweeps, and the sniper-edge health report.
-        # No parameter adoption — entry forecasting has no edge.
+        # Nightly jobs run 23:45 ET: record rollups, retention sweeps, sniper-edge
+        # health report. No parameter adoption — entry forecasting has no edge.
         now_et = datetime.now(_ET)
         next_run = now_et.replace(hour=23, minute=45, second=0, microsecond=0)
         if next_run <= now_et:

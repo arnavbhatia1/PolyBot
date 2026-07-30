@@ -84,14 +84,9 @@ class CircuitBreaker:
     def kelly_multiplier(self) -> float:
         """1.0 at/above tier, min_multiplier at/below floor, concave (sqrt) between.
 
-        Shallow drawdowns are mostly noise in a 58% model (3 losses in a row is ~7%
-        probability per window). Concave curve keeps Kelly near 1.0 for small
-        drawdowns and reserves the aggressive cut for deep drawdowns that are more
-        likely to reflect a real regime break.
-
-        Comparison at midpoint of a $100 tier / $85 floor:
-          Linear:  0.40 + 0.60 × 0.50        = 0.70
-          Concave: 0.40 + 0.60 × √0.50 ≈ 0.82
+        Concave on purpose: shallow drawdowns are mostly noise in a 58% model,
+        so Kelly stays near 1.0; the aggressive cut is reserved for deep
+        drawdowns that look like a real regime break.
         """
         b = self.current_bankroll
         if b >= self.locked_tier:
@@ -118,14 +113,11 @@ class CircuitBreaker:
             )
 
     def restore_from_peak(self, peak: float, current: float) -> None:
-        """Restart restore: lock the tier/floor from the historical ``peak`` while
-        leaving ``current_bankroll`` at the real (post-drawdown) balance.
+        """Restart restore: lock tier/floor from ``peak``, size against ``current``.
 
-        Encapsulates the two-step dance so callers can't get the ordering wrong:
-        ``update_bankroll(peak)`` ratchets the tier up to the high-water mark, then
-        we set ``current_bankroll`` back to the live balance so the drawdown Kelly
-        multiplier applies. e.g. peak=$1000, restart at $700 → floor stays $850,
-        ``kelly_multiplier`` reflects the $700 drawdown rather than resetting to 1.0.
+        Ordering is the trap this encapsulates — ratchet the tier from the peak
+        FIRST, then set current_bankroll back to the live balance so the
+        drawdown multiplier applies instead of resetting to 1.0.
         """
         self.peak_bankroll = max(self.peak_bankroll, peak)
         self.update_bankroll(peak)      # ratchet locked_tier/floor from the peak

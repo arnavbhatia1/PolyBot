@@ -83,13 +83,10 @@ class BTCMarketScanner:
     async def gamma_events_by_slug(self, client: httpx.AsyncClient, slug: str) -> list[dict[str, Any]]:
         """Single-event Gamma lookup, normalized to a list of event dicts.
 
-        ``GET /events`` carries a Deprecation/Sunset header (sunset 2026-05-01,
-        still tolerated — enforceable any day, possibly via redirect). Any
-        non-2xx other than a transient 429/5xx means the deprecated endpoint is
-        enforced: this call and every later one (latched per scanner) use the
-        undeprecated ``GET /events/slug/{slug}`` instead (one event dict; 404 =
-        no such event -> []). 429/5xx raise immediately without a second
-        request; network errors propagate, matching callers' existing handling.
+        GET /events is deprecated upstream (sunset 2026-05-01, enforceable any
+        day). Any non-2xx besides transient 429/5xx = enforced: latch and use
+        GET /events/slug/{slug} from then on (404 = no such event -> []).
+        429/5xx raise without a second request; network errors propagate.
         """
         resp = None
         if not self._gamma_events_gone:
@@ -130,9 +127,8 @@ class BTCMarketScanner:
         price_up = price_down = 0.0
         token_id_up = token_id_down = ""
 
-        # Gamma should always return 2 prices and 2 token IDs for binary markets. If
-        # fewer come back the market is malformed — log once so it doesn't look like
-        # "no edge" in the entry evaluator.
+        # Malformed market (fewer prices/tokens than outcomes): log it so the skip
+        # doesn't masquerade as "no edge" in the entry evaluator.
         if len(prices_raw) < len(outcomes) or len(clob_tokens_raw) < len(outcomes):
             slug = market.get("slug") or event.get("slug") or "<unknown>"
             logger.warning(
@@ -164,9 +160,7 @@ class BTCMarketScanner:
         condition_id = market.get("conditionId", "")
         neg_risk = market.get("negRisk", False)
 
-        # Extract Chainlink oracle prices.
-        # price_to_beat is set at window open and available during active windows.
-        # final_price is only available after resolution.
+        # price_to_beat is set at window open; final_price only after resolution.
         raw_meta = event.get("eventMetadata")
         event_metadata = None
         if raw_meta and isinstance(raw_meta, dict):
@@ -223,10 +217,11 @@ class BTCMarketScanner:
             return {}
 
     async def fetch_fee_rate(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> float:
-        """Polymarket crypto taker rate. Constant — the live per-order fee is
-        ``rate × shares × p × (1-p)`` (see ``taker_fee`` in execution/base.py),
-        so price-dependent variation is already in the formula, not the rate.
-        Single source: DEFAULT_FEE_RATE in execution/base.py.
+        """Polymarket crypto taker rate — a constant.
+
+        Price-dependent variation lives in the fee formula rate*shares*p*(1-p)
+        (taker_fee in execution/base.py), not in the rate. Single source:
+        DEFAULT_FEE_RATE.
         """
         return DEFAULT_FEE_RATE
 

@@ -50,23 +50,19 @@ class CoinbaseFeed:
         self.product_id = product_id
         self.state = CoinbaseState()
         self.staleness = StalenessTracker("coinbase")
-        # Set on every fresh ticker so a latency-sensitive consumer (the late-window
-        # sniper loop) can wake the instant Coinbase moves — the CLOB book lags it,
-        # so waiting on book updates alone would miss the stale-book window. The
-        # waiter clears it after waking.
+        # Wakes the sniper loop on every fresh tick — waiting on CLOB book updates
+        # alone misses the stale-book window (the book lags Coinbase). Waiter clears it.
         self.price_event: asyncio.Event = asyncio.Event()
         self.on_tick = None   # micro-tape hook: every raw tick (recording.MicroTape)
 
         # Per-trade flow: (ts, signed_size). +size = buyer aggressor, -size = seller aggressor.
         self._trade_buffer_s = trade_buffer_s
         self._trades: deque[tuple[float, float]] = deque()
-        # 1s-bucketed (ts, price) history for realized_vol.
+        # 1s-bucketed (ts, price) history (realized_vol, cb_move).
         self._prices: deque[tuple[float, float]] = deque()
         self._last_price_sample: float = 0.0
-        # When the current contiguous trade window began (reset on every
-        # (re)connect, since the deque is cleared). Window-based reads must not
-        # trust a window the buffer doesn't span yet — a fresh reconnect would
-        # otherwise read a truncated window as genuinely flat flow.
+        # Start of the contiguous buffer (reset on reconnect). Reads that skip
+        # covers() would score a truncated window as genuinely flat flow.
         self._window_start: float = 0.0
 
         self._running = False
@@ -91,9 +87,10 @@ class CoinbaseFeed:
                 pass
 
     def covers(self, window_s: float) -> bool:
-        """True iff the trade buffer continuously spans the last window_s seconds
-        (i.e., no reconnect cleared it mid-window). Consumers stamp None instead
-        of reading a truncated window as a real near-zero."""
+        """True iff the trade buffer continuously spans the last window_s seconds.
+
+        Reconnects clear the buffer; consumers stamp None instead of reading a
+        truncated window as a real near-zero."""
         return self._window_start > 0 and (time.time() - self._window_start) >= window_s
 
     def get_cvd(self, window_s: float = 60.0) -> float:
@@ -107,9 +104,10 @@ class CoinbaseFeed:
         return total
 
     def trade_count(self, window_s: float) -> int:
-        """Number of trades in the last window_s seconds — the burst-intensity
-        counter (tick rate vs its baseline). Gate on covers(window_s) so a
-        reconnect-truncated buffer stamps None, not a fake near-zero."""
+        """Trade count in the last window_s seconds (burst-intensity input).
+
+        Gate on covers(window_s): a reconnect-truncated buffer must stamp None,
+        not a fake near-zero."""
         cutoff = time.time() - window_s
         n = 0
         for ts, _ in reversed(self._trades):
@@ -119,9 +117,10 @@ class CoinbaseFeed:
         return n
 
     def realized_vol(self, window_s: float = 60.0) -> float:
-        """Sample stdev of log returns over the 1s-bucketed price history in the
-        window. 0.0 when fewer than 3 samples; gate on covers(window_s) to avoid
-        reading a reconnect-truncated window as genuinely quiet."""
+        """Sample stdev of log returns over the 1s-bucketed prices in the window.
+
+        0.0 with fewer than 3 samples. Gate on covers(window_s): a reconnect-
+        truncated window otherwise reads as genuinely quiet."""
         cutoff = time.time() - window_s
         closes = [p for ts, p in self._prices if ts >= cutoff and p > 0]
         if len(closes) < 3:
@@ -132,16 +131,14 @@ class CoinbaseFeed:
         return math.sqrt(var)
 
     def cb_move(self, window_s: float = 2.0) -> float | None:
-        """Signed Coinbase price change over exactly the last ``window_s`` — the live
-        form of the offline late-window ``cb_move`` signal. The 1s-bucketed history is
-        spaced >=1s, so the latest bucket at/before (now - window_s) can sit up to ~1s
-        too far back; we therefore INTERPOLATE the ``then`` price at exactly
-        (now - window_s) between the two buckets bracketing it, so the effective lookback
-        stays == window_s. Without this, a sustained move is measured over ~window_s+1s
-        and OVERSTATES the move, firing on sub-threshold moves the harness scored as
-        non-fires. ``now`` is the freshest un-bucketed tick (state.price), so a recent
-        spike is still captured. None if the buffer doesn't continuously span the window
-        (reconnect) so a truncated buffer can't read as a flat move.
+        """Signed Coinbase move over exactly the last window_s seconds (the sniper's cb_move).
+
+        INTERPOLATES the `then` price at exactly (now - window_s): the 1s buckets
+        are spaced >=1s, so taking the nearest older bucket stretches the lookback
+        to ~window_s+1s and OVERSTATES the move — fires on sub-threshold moves the
+        harness scored as non-fires. `now` is the freshest un-bucketed tick.
+        None when the buffer doesn't span the window (reconnect): a truncated
+        buffer must not read as a flat move.
         """
         cur = self.state.price
         if cur <= 0 or not self.covers(window_s):
@@ -223,8 +220,7 @@ class CoinbaseFeed:
                         except ValueError:
                             continue
                         self._handle_message(data)
-                        backoff = RECONNECT_BASE   # healthy DATA — safe to reset (an
-                                                   # accept-then-drop server must keep escalating)
+                        backoff = RECONNECT_BASE   # reset on DATA only — an accept-then-drop server must keep escalating
 
             except asyncio.CancelledError:
                 break
@@ -251,8 +247,8 @@ class CoinbaseFeed:
             price = float(data["price"])
         except (KeyError, ValueError, TypeError):
             return
-        # float() happily parses "NaN"/"Infinity"; reject non-finite prints so a
-        # bad tick can't flow into L1's z = (btc - strike) / vol_scaled.
+        # float() parses "NaN"/"Infinity" — drop non-finite prints so a bad
+        # tick can't reach L1's z = (btc - strike) / vol_scaled.
         if not math.isfinite(price):
             return
 
