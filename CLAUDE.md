@@ -294,7 +294,10 @@ after ~30 min of Gamma silence. Winner payouts book via Polymarket auto-redeem
 
 Resolved shares are not swept on-chain — winners are claimed manually at
 polymarket.com/portfolio (or via Polymarket's Auto-Redeem), and losing $0 stubs
-have no UI redeem so they sit inert on the wallet, locking nothing. The startup
+sit inert on the wallet, locking nothing (the UI offers a cosmetic "close out"
+for them; the loss is already booked in the ledger at resolution, so closing
+moves $0 — deliberately NOT automated: CLOB orders are the only on-chain thing
+the bot's wallet ever signs). The startup
 wallet-check reports any unclaimed winners honestly (never "worthless leftovers
 ignored"); the redeemable-aware orphan gate lets resolved dust through and
 fail-closes only on genuinely unresolved positions.
