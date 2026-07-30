@@ -1,20 +1,20 @@
 {
   "schema": 2,
-  "saved_at": 1785282865.9625957,
+  "saved_at": 1785377664.311285,
   "fills": [
     {
-      "timestamp": 1785282865.9620936,
-      "side": "Down",
-      "fill_price": 0.9,
-      "token_id": "45351957024089733971616074474536509650665826791157012601822031958792582069715",
-      "midprice_at_fill": 0.895,
+      "timestamp": 1785377664.3103433,
+      "side": "Up",
+      "fill_price": 0.82,
+      "token_id": "111547656880433048802128196594125560052425826446036679274186185628906673772951",
+      "midprice_at_fill": 0.855,
       "midprice_5s": null,
       "midprice_10s": null,
       "midprice_15s": null,
       "midprice_30s": null,
       "midprice_60s": null,
       "resolved": false,
-      "position_id": 189
+      "position_id": 205
     }
   ]
 }

@@ -1,29 +1,10 @@
 {
-  "checked_at": "2026-07-28T06:58:59.895832+00:00",
+  "checked_at": "2026-07-29T04:01:07.262668+00:00",
   "funder": "0x863DB57D4a54fA306091D53B4Fe19f1611221Be8",
-  "non_dust_chain_positions": 3,
-  "db_known_tokens": 4,
+  "non_dust_chain_positions": 1,
+  "db_known_tokens": 2,
   "orphans_detected": 0,
   "orphans": [],
-  "resolved_dust": [
-    {
-      "token_id": "5541278839558355627484114360621328611961392034834118192764761349110561211018",
-      "shares": 2.6046,
-      "outcome": "Down",
-      "title": "Bitcoin Up or Down - July 27, 5:40PM-5:45PM ET",
-      "conditionId": "0x48931f2b19ab4cae5495dca9b3b346763f1d596637065cb92cd4d8e34b7be09d",
-      "redeemable": true,
-      "current_value": 0.0
-    },
-    {
-      "token_id": "25746020477087462204653021376025570599385029696077354349700127920067214906760",
-      "shares": 1.6538,
-      "outcome": "Down",
-      "title": "Bitcoin Up or Down - July 27, 7:45PM-7:50PM ET",
-      "conditionId": "0x4abe5165fcbb05c7c83c98651fd9ef194506701f48ec81d390c4cc6938fcbfa6",
-      "redeemable": true,
-      "current_value": 0.0
-    }
-  ],
+  "resolved_dust": [],
   "allow_orphans_flag": false
 }
