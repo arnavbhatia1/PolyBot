@@ -66,3 +66,44 @@ def test_load_all_reads_individual_and_rollup(tracker, tmp_path):
 
     records = tracker.load_all()
     assert {r["market_id"] for r in records} == {"btc-updown-5m-1000", "btc-updown-5m-2000"}
+
+
+def _record(tracker, market_id, gate, secs=200.0):
+    tracker.record_rejection(
+        gate_name=gate, side="Up", signal_prob=0.7, signal_edge=0.05,
+        market_id=market_id, seconds_remaining=secs, indicator_snapshot={},
+    )
+
+
+def test_per_gate_dedup_sniper_veto_coexists_with_base_ghost(tracker):
+    # An early base-path ghost must NOT swallow a later sniper-path veto in the
+    # same window — per-market dedup zeroed the sniper evidence stream live.
+    mid = f"btc-updown-5m-{int(time.time() // 300) * 300}"
+    _record(tracker, mid, "sniper_only", secs=280.0)
+    _record(tracker, mid, "min_size", secs=30.0)
+    _record(tracker, mid, "min_size", secs=25.0)  # refire: first-wins per gate
+    assert len(tracker._pending) == 2
+    assert {g for (_, g) in tracker._pending} == {"sniper_only", "min_size"}
+
+
+def test_watched_markets_exposes_pending_ghost_windows(tracker):
+    # The resolution loop fetches Gamma metadata for these after window close —
+    # ghosts in untraded windows died unresolved without this surface.
+    ts = int(time.time() // 300) * 300
+    _record(tracker, f"btc-updown-5m-{ts}", "min_size")
+    _record(tracker, f"btc-updown-5m-{ts - 300}", "thin_book_depth")
+    assert set(tracker.watched_markets) == {
+        f"btc-updown-5m-{ts}", f"btc-updown-5m-{ts - 300}"}
+
+
+def test_ghosts_resolve_and_persist_per_gate(tracker, tmp_path):
+    ts = int(time.time()) - 400  # window expired >30s ago, within 20-min hold
+    win = ts - (ts % 300)
+    mid = f"btc-updown-5m-{win}"
+    _record(tracker, mid, "sniper_only")
+    _record(tracker, mid, "min_size")
+    meta = {mid: {"final_price": 63500.0, "price_to_beat": 63400.0}}
+    resolved = tracker.check_resolutions(event_metadata=meta)
+    assert {r["gate_name"] for r in resolved} == {"sniper_only", "min_size"}
+    assert all(r["ghost_correct"] for r in resolved)  # Up side, Up won
+    assert len(list((tmp_path / "ghost_outcomes").glob("*.json"))) == 2

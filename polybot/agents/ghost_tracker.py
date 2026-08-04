@@ -25,8 +25,17 @@ class GhostTracker:
     def __init__(self, memory_dir: str) -> None:
         self._dir: Path = Path(memory_dir) / "ghost_outcomes"
         self._dir.mkdir(parents=True, exist_ok=True)
-        # market_id -> ghost context (pending resolution)
-        self._pending: dict[str, dict[str, Any]] = {}
+        # (market_id, gate_name) -> ghost context (pending resolution).
+        # Keyed per gate: keying per market let an early base-path ghost
+        # swallow every later sniper-path veto — the sniper evidence stream
+        # recorded 0 ghosts in production until this was per-gate.
+        self._pending: dict[tuple[str, str], dict[str, Any]] = {}
+
+    @property
+    def watched_markets(self) -> list[str]:
+        """Market_ids with pending ghosts — the resolution loop must keep
+        fetching these windows' Gamma metadata after they close."""
+        return list({mid for (mid, _gate) in self._pending})
 
     def record_rejection(
         self,
@@ -46,12 +55,12 @@ class GhostTracker:
         """
         if not market_id:
             return
-        # One ghost per market — first rejection wins: the cleanest signal
-        # moment, before the gate refires on every tick.
-        if market_id in self._pending:
+        # One ghost per (market, gate) — first rejection wins: the cleanest
+        # signal moment, before the gate refires on every tick.
+        if (market_id, gate_name) in self._pending:
             return
 
-        self._pending[market_id] = {
+        self._pending[(market_id, gate_name)] = {
             "market_id": market_id,
             "side": side,
             "gate_name": gate_name,
@@ -81,13 +90,14 @@ class GhostTracker:
 
         now = time.time()
         resolved: list[dict[str, Any]] = []
-        to_remove: list[str] = []
+        to_remove: list[tuple[str, str]] = []
 
-        for market_id, ctx in self._pending.items():
+        for key, ctx in self._pending.items():
+            market_id = ctx["market_id"]
             try:
                 window_ts = int(market_id.rsplit("-", 1)[-1])
             except (ValueError, IndexError):
-                to_remove.append(market_id)
+                to_remove.append(key)
                 continue
 
             expiry_ts = window_ts + 300
@@ -96,7 +106,7 @@ class GhostTracker:
             # 20 min for final_price to post before dropping — matches
             # CounterfactualTracker's window.
             if now > expiry_ts + 1200:
-                to_remove.append(market_id)
+                to_remove.append(key)
                 continue
 
             # Chainlink eventMetadata only — no Binance fallback (see docstring)
@@ -125,14 +135,14 @@ class GhostTracker:
             }
             self._save(record)
             resolved.append(record)
-            to_remove.append(market_id)
+            to_remove.append(key)
             logger.debug(
                 f"GHOST resolved: {market_id} gate={ctx['gate_name']} side={ctx['side']} "
                 f"correct={ghost_correct} gain={ghost_gain_pct:+.1%}"
             )
 
-        for mid in to_remove:
-            self._pending.pop(mid, None)
+        for key in to_remove:
+            self._pending.pop(key, None)
 
         return resolved
 

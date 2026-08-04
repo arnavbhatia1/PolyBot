@@ -1903,7 +1903,13 @@ async def _check_counterfactuals(counterfactual_tracker: Any, ghost_tracker: Any
                                  event_metadata_cache: dict[str, Any] | None = None) -> None:
     """Pre-fetch Gamma metadata for watched scalps/ghosts and check resolutions."""
     cf_event_metadata = dict(event_metadata_cache or {})
-    markets_to_fetch = [m for m in counterfactual_tracker.watched_markets if m not in cf_event_metadata]
+    # Union of both watchlists: ghost windows are mostly UNTRADED, so nothing
+    # else re-fetches their Gamma metadata after close — without this, sniper
+    # veto ghosts died unresolved at the 20-min drop (0 persisted ever).
+    watched = set(counterfactual_tracker.watched_markets)
+    if ghost_tracker is not None:
+        watched |= set(ghost_tracker.watched_markets)
+    markets_to_fetch = [m for m in watched if m not in cf_event_metadata]
     if markets_to_fetch:
         # Look up each watched market by its exact slug — _get_contract_prices only checks
         # the current ±1 window, so it returns None for markets from 10+ minutes ago.
