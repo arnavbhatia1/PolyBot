@@ -116,7 +116,9 @@ reprices.
   the de-facto booking authority**: it syncs entry + shares_held to the
   wallet's chain truth (avgPrice when served, else notional/wallet-shares —
   the wallet holds exactly notional/VWAP shares, NO share-denominated fee
-  on-chain; the fee model lives in the `fees` column only) for any position
+  on-chain; the `fees` column stores the REALIZED fee — ~$0 on entries and
+  resolutions; scalps book the modeled exit fee into pnl deliberately — while
+  the modeled buffer lives in the gates and get_day_stats) for any position
   whose trade_history row isn't booked yet, so last-seconds fills that close
   the window before the audit still book chain-true. Logging follows the audit
   (log-only; engine/DB unchanged): live prints a short FILLED line at fill time
