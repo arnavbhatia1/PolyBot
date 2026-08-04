@@ -1,11 +1,29 @@
 {
-  "checked_at": "2026-08-02T04:06:32.821923+00:00",
+  "checked_at": "2026-08-03T04:01:06.550235+00:00",
   "funder": "0x863DB57D4a54fA306091D53B4Fe19f1611221Be8",
-  "non_dust_chain_positions": 6,
-  "db_known_tokens": 4,
+  "non_dust_chain_positions": 10,
+  "db_known_tokens": 8,
   "orphans_detected": 0,
   "orphans": [],
   "resolved_dust": [
+    {
+      "token_id": "55892795147963853530021432773783079908460230168540316272554636492398274054146",
+      "shares": 5.3956,
+      "outcome": "Down",
+      "title": "Bitcoin Up or Down - August 2, 8:40AM-8:45AM ET",
+      "conditionId": "0x4243c28dcd5b6828708f8f16a76698d774efcaab7d5f730896bb648a907fc1da",
+      "redeemable": true,
+      "current_value": 0.0
+    },
+    {
+      "token_id": "7953605213203256306444389832917893627789620657083865250923817816712372691382",
+      "shares": 4.675,
+      "outcome": "Down",
+      "title": "Bitcoin Up or Down - August 2, 9:25AM-9:30AM ET",
+      "conditionId": "0x4783349510b5fea1ca492538b2fb0e28d6a83b76b4831370e35e3e7f7b89d6ff",
+      "redeemable": true,
+      "current_value": 0.0
+    },
     {
       "token_id": "57864520065942523021827656990221734555637105036032002502654869704164565204082",
       "shares": 4.1333,
@@ -30,6 +48,15 @@
       "outcome": "Down",
       "title": "Bitcoin Up or Down - July 31, 4:55PM-5:00PM ET",
       "conditionId": "0xf749e031facf4db5e3bedf3c7c0ce8b760f1f2f586a09eb9e2d3682fcbef18eb",
+      "redeemable": true,
+      "current_value": 0.0
+    },
+    {
+      "token_id": "64430219360834791855344893590052042424832496600322311569361785062655144680356",
+      "shares": 2.7763,
+      "outcome": "Down",
+      "title": "Bitcoin Up or Down - August 2, 5:15AM-5:20AM ET",
+      "conditionId": "0x5437b28a2f5f00e0f2be0e6f81f6895c01286ec02ab867c1a8afdb64b762ec20",
       "redeemable": true,
       "current_value": 0.0
     },
