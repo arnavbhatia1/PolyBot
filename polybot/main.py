@@ -129,6 +129,13 @@ logging.getLogger("polybot.discord_bot.bot").setLevel(logging.INFO)
 _contract_price_cache: dict[str, tuple[float, dict[str, Any]]] = {}  # market_id -> (timestamp, contract)
 _CONTRACT_CACHE_TTL = 5.0  # seconds — re-fetch at most every 5s per contract
 _CONTRACT_RESOLUTION_TTL = 2.0  # faster polling when contract might be resolving
+# Stale-while-revalidate plumbing: the wake path must NEVER wait on Gamma —
+# an inline fetch on a Coinbase-tick wake put a full HTTP RTT in front of the
+# sniper evaluation (the measured 300-550ms tick-to-submit p90 tail).
+_contract_refresh_inflight: set[str] = set()
+_CONTRACT_SERVE_MAX_AGE_S = 900.0  # never serve a cache entry older than this
+# Loop-segment marks for the latency breakdown stamped into trade_context.
+_loop_marks: dict[str, float] = {}
 _WS_STALE_S = 10.0  # max age for CLOB WS BBA/book before treating as stale
 
 # Aux-signal freshness limit: aux trade_context fields stamp None (never 0.0) when
@@ -724,6 +731,7 @@ async def _get_bankroll_cached(db: Any) -> float:
 # Rate-limit counterfactual resolution checks (Gamma REST calls, no need every tick).
 _last_cf_check_ts: float = 0.0
 _CF_CHECK_INTERVAL = 30.0  # seconds
+_cf_check_task: Any = None  # in-flight guard — one background CF sweep at a time
 
 
 def _build_signal_engine(signal_cfg: dict, config: dict) -> SignalEngine:
@@ -763,13 +771,34 @@ def compute_time_multiplier(prob: float, seconds_remaining: float,
     return max(0.40, 1.0 - penalty), phase
 
 
-async def _get_contract_prices(market_scanner: Any, market_id: str, http_client: Any = None) -> dict[str, Any] | None:
-    """Fetch current Up/Down prices for an active contract via Gamma API.
+_bg_refresh_tasks: set = set()  # strong refs — a bare create_task can be GC'd mid-flight
 
-    Caches results per market_id to avoid redundant HTTP calls during
-    position management ticks. Polls faster near expiry for resolution.
+
+def _spawn_bg(coro) -> None:
+    t = asyncio.create_task(coro)
+    _bg_refresh_tasks.add(t)
+    t.add_done_callback(_bg_refresh_tasks.discard)
+
+
+async def _refresh_contract_prices(market_scanner: Any, market_id: str, http_client: Any) -> None:
+    """Background cache refresh — the wake path serves stale and never waits."""
+    try:
+        await _fetch_contract_prices(market_scanner, market_id, http_client)
+    except Exception as e:
+        logger.debug("background contract refresh failed for %s: %s", market_id, e)
+    finally:
+        _contract_refresh_inflight.discard(market_id)
+
+
+async def _get_contract_prices(market_scanner: Any, market_id: str, http_client: Any = None) -> dict[str, Any] | None:
+    """Current Up/Down contract state, stale-while-revalidate.
+
+    Serves the cache immediately (seconds_remaining recomputed locally) and
+    refreshes in the background on TTL expiry — an inline Gamma fetch here sat
+    directly in front of the sniper evaluation on tick wakes. Blocks only when
+    there is no servable cache at all (first call, or cache older than
+    _CONTRACT_SERVE_MAX_AGE_S).
     """
-    import httpx
     from datetime import datetime, timezone
 
     now = time.time()
@@ -784,11 +813,21 @@ async def _get_contract_prices(market_scanner: Any, market_id: str, http_client:
                 contract["seconds_remaining"] = max(0.0, (end - datetime.now(timezone.utc)).total_seconds())
             except ValueError:
                 pass
-        # Use longer cache TTL while active, shorter near/past expiry
+        # Longer TTL while active, shorter near/past expiry (resolution watch)
         ttl = _CONTRACT_RESOLUTION_TTL if contract.get("seconds_remaining", 999) <= 10 else _CONTRACT_CACHE_TTL
-        if (now - cache_ts) < ttl:
+        if (now - cache_ts) >= ttl and market_id not in _contract_refresh_inflight:
+            _contract_refresh_inflight.add(market_id)
+            _spawn_bg(_refresh_contract_prices(market_scanner, market_id, http_client))
+        if (now - cache_ts) < _CONTRACT_SERVE_MAX_AGE_S:
             return contract
+    return await _fetch_contract_prices(market_scanner, market_id, http_client)
 
+
+async def _fetch_contract_prices(market_scanner: Any, market_id: str, http_client: Any = None) -> dict[str, Any] | None:
+    """Blocking Gamma fetch + cache write (the SWR path's slow half)."""
+    import httpx
+
+    now = time.time()
     window_ts = int(time.time() // 300) * 300
     for ts in [window_ts, window_ts + 300, window_ts - 300]:
         slug = market_scanner._make_slug(ts)
@@ -1437,6 +1476,15 @@ async def _evaluate_signal_and_enter(
         "adverse_kelly_mult": round(adverse_kelly_mult, 3),
         "cb_tick_to_submit_ms": (round((time.time() - _eval_tick_ts) * 1000.0, 1)
                                  if _eval_tick_ts > 0 else None),
+        # Latency breakdown of the same span (observational, this iteration's
+        # marks): tick receipt -> loop wake -> entry evaluation start.
+        "lat_tick_to_wake_ms": (round((_loop_marks["wake"] - _eval_tick_ts) * 1000.0, 1)
+                                if _eval_tick_ts > 0 and _loop_marks.get("wake", 0) >= _eval_tick_ts
+                                else None),
+        "lat_wake_to_eval_ms": (round((_loop_marks["pre_eval"] - _loop_marks["wake"]) * 1000.0, 1)
+                                if _loop_marks.get("wake", 0) > 0
+                                and _loop_marks.get("pre_eval", 0) >= _loop_marks.get("wake", 0)
+                                else None),
         # Regime-Kelly SHADOW stamps (frozen cuts; sizing untouched) — the
         # nightly counterfactual-D read and its gated SPRT consume these.
         **_regime_shadow_fields(
@@ -2708,6 +2756,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 pass  # housekeeping tick — contract discovery, day banners
         else:
             await asyncio.sleep(0.1)  # fallback polling if no WebSocket
+        _loop_marks["wake"] = time.time()
         try:
             # --- DAY OPEN / CLOSE ---
             now_et = datetime.now(ET)
@@ -2764,13 +2813,18 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                             chainlink_feed=chainlink_feed)
 
             # --- COUNTERFACTUAL: check watched scalps for resolution (every 30s) ---
+            # Background task: its Gamma sweep (one fetch per watched CF/ghost
+            # market) blocked THIS wake for hundreds of ms — with a sniper fire
+            # potentially waiting behind it. Nothing downstream needs its result.
             if counterfactual_tracker:
-                global _last_cf_check_ts
+                global _last_cf_check_ts, _cf_check_task
                 _now_cf = time.time()
-                if _now_cf - _last_cf_check_ts >= _CF_CHECK_INTERVAL:
+                if (_now_cf - _last_cf_check_ts >= _CF_CHECK_INTERVAL
+                        and (_cf_check_task is None or _cf_check_task.done())):
                     _last_cf_check_ts = _now_cf
-                    await _check_counterfactuals(counterfactual_tracker, ghost_tracker,
-                                                 market_scanner, http_client, binance_feed)
+                    _cf_check_task = asyncio.create_task(
+                        _check_counterfactuals(counterfactual_tracker, ghost_tracker,
+                                               market_scanner, http_client, binance_feed))
 
             # --- ENTRY: find contract and evaluate for edge ---
             # Skip new entries when paused (positions still managed above)
@@ -2832,6 +2886,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 continue
 
             current_bankroll = await _get_bankroll_cached(db)
+            _loop_marks["pre_eval"] = time.time()
             _, last_eval_log_window = await _evaluate_signal_and_enter(
                 contract, cid, binance_feed, indicator_engine,
                 signal_engine, market_scanner, http_client, clob_ws,

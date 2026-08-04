@@ -73,6 +73,7 @@ class BTCMarketScanner:
         self._prewarmed_condition_id: str = ""  # last contract we kicked pre-warm fetches for
         self._prewarm_tasks: set[asyncio.Task[Any]] = set()  # strong refs so GC doesn't kill them
         self._gamma_events_gone: bool = False  # latched once GET /events is enforced-dead
+        self._contract_refresh_inflight: bool = False  # one background SWR refresh at a time
 
     def _current_window_ts(self) -> int:
         return int(time.time() // self.WINDOW_SECONDS) * self.WINDOW_SECONDS
@@ -304,9 +305,16 @@ class BTCMarketScanner:
             return -1.0
 
     async def find_active_contract(self, http_client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:
+        """Active-contract lookup, stale-while-revalidate.
+
+        A live cached contract is ALWAYS served (seconds_remaining recomputed
+        locally); on TTL expiry the Gamma refresh runs in the background — an
+        inline fetch here sat in front of the sniper evaluation on tick wakes.
+        Blocks only when no cached contract is live (boot / window rollover).
+        """
         now = time.time()
 
-        if self._cached_contract and (now - self._cache_time) < self.cache_seconds:
+        if self._cached_contract:
             contract = self._cached_contract
             end_str = contract.get("end_date", "")
             if end_str:
@@ -315,11 +323,32 @@ class BTCMarketScanner:
                     remaining = (end - datetime.now(timezone.utc)).total_seconds()
                     if remaining > 0:
                         contract["seconds_remaining"] = remaining
+                        if ((now - self._cache_time) >= self.cache_seconds
+                                and http_client is not None
+                                and not self._contract_refresh_inflight):
+                            self._contract_refresh_inflight = True
+                            t = asyncio.create_task(
+                                self._refresh_active_contract(http_client))
+                            self._prewarm_tasks.add(t)
+                            t.add_done_callback(self._prewarm_tasks.discard)
                         return contract
                 except ValueError:
                     pass
             self._cached_contract = None
 
+        return await self._fetch_active_contract(http_client)
+
+    async def _refresh_active_contract(self, http_client: httpx.AsyncClient) -> None:
+        """Background half of the SWR pair — updates the cache off the wake path."""
+        try:
+            await self._fetch_active_contract(http_client)
+        except Exception as e:
+            logger.debug("background contract discovery refresh failed: %s", e)
+        finally:
+            self._contract_refresh_inflight = False
+
+    async def _fetch_active_contract(self, http_client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:
+        now = time.time()
         window_ts = self._current_window_ts()
         for ts in [window_ts, window_ts + self.WINDOW_SECONDS]:
             slug = self._make_slug(ts)
