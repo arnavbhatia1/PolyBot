@@ -3633,13 +3633,21 @@ def _make_sigint_handler(force_quit=os._exit):
 
     def _handler(signum=None, frame=None):
         state["count"] += 1
+        # os.write only: buffered sys.stderr writes from signal context hit
+        # Python's reentrancy guard when the main thread is mid-write
+        # (RuntimeError killed a teardown live — systemd's control-group stop
+        # reliably delivers a second SIGTERM).
         if state["count"] >= 2:
-            sys.stderr.write("\nForce-quitting (second Ctrl+C).\n")
-            sys.stderr.flush()
+            try:
+                os.write(2, b"\nForce-quitting (second signal).\n")
+            except OSError:
+                pass
             force_quit(130)
             return
-        sys.stderr.write("\nStopping PolyBot — press Ctrl+C again to force-quit.\n")
-        sys.stderr.flush()
+        try:
+            os.write(2, b"\nStopping PolyBot - second signal force-quits.\n")
+        except OSError:
+            pass
         raise KeyboardInterrupt
 
     return _handler
