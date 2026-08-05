@@ -535,6 +535,23 @@ def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) 
     return 0.0, "stale"
 
 
+def _pregate_should_eval(now: float, last_eval_ts: float, sec_rem: float,
+                         cb_move_abs: float, late_start_s: float,
+                         move_thresh: float, sniper_on: bool) -> bool:
+    """µs pre-gate: does this wake deserve the full 30-80ms evaluation?
+
+    A fire-adjacent Coinbase move (≥60% of the sniper threshold, inside the
+    late window) ALWAYS evaluates — no fire can be missed. Everything else is
+    throttled (4Hz late-window, 1Hz otherwise): chained full evaluations on
+    every burst book-tick were the 392ms queue in front of real signals.
+    Ghost/skip records are per-(window, gate) deduped, so throttling changes
+    their timestamp by <1s and their content not at all.
+    """
+    if sniper_on and sec_rem <= late_start_s and cb_move_abs >= 0.6 * move_thresh:
+        return True
+    return (now - last_eval_ts) >= (0.25 if sec_rem <= late_start_s else 1.0)
+
+
 def _fmt_secs(s: float) -> str:
     """Seconds remaining formatted as M:SS — 298 → '4:58'. Easier to scan than '298s'."""
     s_int = max(0, int(s))
@@ -672,14 +689,16 @@ def _record_killed_ask(cid: str, side: str, ask: float) -> None:
         del _window_killed_asks[k]
     _window_killed_asks.setdefault(wts, {}).setdefault(side, []).append(ask)
 
-# 1-second open-positions cache: avoids repeated SQLite round-trips in the hot path.
+# 5-second open-positions cache: correctness comes from event-driven
+# invalidation (every open/close/resolve calls _invalidate_open_positions_cache),
+# not the TTL — a longer TTL just means fewer DB yields into a burst's backlog.
 _open_positions_cache: list = []
 _open_positions_cache_ts: float = 0.0
 
 async def _get_open_positions_cached(db: Any) -> list:
     global _open_positions_cache, _open_positions_cache_ts
     now = time.time()
-    if now - _open_positions_cache_ts < 1.0:
+    if now - _open_positions_cache_ts < 5.0:
         return _open_positions_cache
     _open_positions_cache = await db.get_open_positions()
     _open_positions_cache_ts = now
@@ -728,7 +747,7 @@ _bankroll_cache_ts: float = 0.0
 async def _get_bankroll_cached(db: Any) -> float:
     global _bankroll_cache, _bankroll_cache_ts
     now = time.time()
-    if now - _bankroll_cache_ts < 1.0:
+    if now - _bankroll_cache_ts < 5.0:
         return _bankroll_cache
     _bankroll_cache = await db.get_bankroll()
     _bankroll_cache_ts = now
@@ -1780,10 +1799,11 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
 
     # Entry prices derive from the direct CLOB best_ask (what a FOK actually pays),
     # NOT the /price cross-matched API, which can return phantom executable prices.
-    book_up, book_down = await asyncio.gather(
-        _get_book(ws_book_up, token_up),
-        _get_book(ws_book_down, token_down),
-    )
+    # Sequential awaits, not gather: with fresh WS books neither call yields, so
+    # the fire path never re-enters the loop queue behind a burst's backlog
+    # (gather always schedules tasks = a guaranteed yield).
+    book_up = await _get_book(ws_book_up, token_up)
+    book_down = await _get_book(ws_book_down, token_down)
 
     # Stale BBA entries are treated as missing so we fall through to the
     # freshly-fetched book or Gamma fallback.
@@ -1920,8 +1940,12 @@ async def _discover_contract_and_subscribe(market_scanner: Any,
     # races; on subsequent flips we know the previous position scalped clean.
     state = _window_flip_state.get(cid, {})
     flip_count = state.get("flip_count", 0)
-    if flip_count == 0 and db is not None and await db.has_position_for_market(cid):
-        return None, None, ws_subscribed_tokens, prev_contract_tokens
+    if flip_count == 0 and db is not None:
+        _has = db.has_open_or_pending_market(cid) if hasattr(db, "has_open_or_pending_market") else None
+        if _has is None:
+            _has = await db.has_position_for_market(cid)
+        if _has:
+            return None, None, ws_subscribed_tokens, prev_contract_tokens
 
     # Subscribe WebSocket to this contract's tokens (idempotent)
     token_up = contract["token_id_up"]
@@ -2719,6 +2743,12 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     # Closure captures clob_ws once — reused across all book-update ticks.
     _midprice_fn = _get_token_midprice(clob_ws) if clob_ws else None
 
+    _pg_lw = config.get("late_window", {})
+    _pg_late_start = float(_pg_lw.get("sniper_late_start_s", 45))
+    _pg_move = float(_pg_lw.get("sniper_cb_move", 8.0))
+    _pg_mv_win = float(_pg_lw.get("sniper_move_window_s", 2.0))
+    _last_full_eval = 0.0
+
     async def _entry_pass(positions: list) -> None:
         """The single entry evaluation — one copy, two call sites in the loop.
 
@@ -2726,6 +2756,14 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         position management); every other wake runs it last, as before.
         """
         nonlocal ws_subscribed_tokens, prev_contract_tokens, last_eval_log_window, window_strikes
+        nonlocal _last_full_eval
+        # µs pre-gate: only fire-adjacent wakes pay the full evaluation.
+        _pg_now = time.time()
+        _pg_mv = abs(coinbase_feed.cb_move(_pg_mv_win)) if coinbase_feed is not None else 0.0
+        if not _pregate_should_eval(_pg_now, _last_full_eval, 300.0 - (_pg_now % 300.0),
+                                    _pg_mv, _pg_late_start, _pg_move, _sniper_wake):
+            return
+        _last_full_eval = _pg_now
         # Skip new entries when paused / outside hours (positions still managed)
         if is_paused_fn():
             return
@@ -3682,6 +3720,13 @@ if __name__ == "__main__":
     try:
         faulthandler.enable(file=open("crash_native.log", "a"))
     except OSError:
+        pass
+    # uvloop (Linux box only): 2-4x lower loop overhead — burst frames + wakes
+    # drain faster, shrinking the queue in front of signal ticks.
+    try:
+        import uvloop
+        uvloop.install()
+    except ImportError:
         pass
     args = parse_args()
     try:

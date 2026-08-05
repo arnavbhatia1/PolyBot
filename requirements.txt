@@ -18,4 +18,7 @@ py_clob_client_v2>=1.0.0,<1.1.0
 # sign ~10x vs the pure-python fallback. Linux-only marker — no Windows wheel
 # exists for the dev workstation's Python, and tests don't need the speed.
 coincurve>=19.0; sys_platform == "linux"
+# 2-4x lower event-loop overhead: burst WS frames + wakes drain faster, so the
+# queue in front of a sniper signal tick collapses. Linux-only like coincurve.
+uvloop>=0.21; sys_platform == "linux"
 tzdata>=2024.1; sys_platform == "win32"

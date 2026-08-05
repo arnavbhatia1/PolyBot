@@ -295,7 +295,13 @@ class BaseTrader(ABC):
     ) -> TradeResult:
         # --- Rejection gates ---
         # One composite query: an atomic snapshot — no race between sub-reads.
-        has_pos, pos_count, bankroll, deployed = await self.db.get_open_trade_preflight(market_id)
+        # Sync mirror peek keeps the fire path off the DB; identical semantics
+        # (falls back to the atomic query until the mirror is built).
+        _peek = self.db.preflight_peek(market_id) if hasattr(self.db, "preflight_peek") else None
+        if _peek is not None:
+            has_pos, pos_count, bankroll, deployed = _peek
+        else:
+            has_pos, pos_count, bankroll, deployed = await self.db.get_open_trade_preflight(market_id)
         if has_pos:
             return TradeResult(success=False, reason="Duplicate market — already have position")
         if pos_count >= self.max_concurrent_positions:

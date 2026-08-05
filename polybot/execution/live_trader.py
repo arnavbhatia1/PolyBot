@@ -1473,6 +1473,9 @@ class LiveTrader(BaseTrader):
                     (exit_price, _dt.now(_tz.utc).isoformat(), pos["id"]),
                 )
                 await db.conn.commit()
+                # The one status write outside Database — keep the hot mirror true.
+                if hasattr(db, "mirror_mark_closed"):
+                    db.mirror_mark_closed(pos["id"])
             except Exception as inner:
                 logger.error("Reconcile recovery: even fallback close failed: %s", inner)
             return

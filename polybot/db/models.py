@@ -22,6 +22,9 @@ class Database:
         # persists the half-done write (SQLite commits the CONNECTION's open
         # transaction). Every commit-bearing method serializes through this lock.
         self._write_lock = asyncio.Lock()
+        # Hot-read mirror (see _rebuild_hot_mirror): position_id -> (market_id, status, size)
+        self._pos_mirror: dict[int, tuple[str, str, float]] = {}
+        self._bankroll_mirror: float | None = None
 
     async def initialize(self) -> None:
         self.conn = await aiosqlite.connect(self.db_path)
@@ -100,10 +103,54 @@ class Database:
             "ON trade_history(exit_timestamp)"
         )
         await self.conn.commit()
+        await self._rebuild_hot_mirror()
 
     async def close(self) -> None:
         if self.conn:
             await self.conn.close()
+
+    # ── Hot-read mirror ───────────────────────────────────────────────────────
+    # The fire path must never await the DB: these sync peeks serve the exact
+    # preflight semantics from memory. Every status/bankroll writer below runs
+    # under _write_lock in this single-writer process, so the mirror IS the DB.
+
+    async def _rebuild_hot_mirror(self) -> None:
+        cur = await self.conn.execute(
+            "SELECT id, market_id, status, size FROM positions "
+            "WHERE status IN ('open', 'pending_resolution')"
+        )
+        rows = await cur.fetchall()
+        self._pos_mirror = {r[0]: (r[1], r[2], float(r[3] or 0.0)) for r in rows}
+        cur = await self.conn.execute("SELECT amount FROM bankroll WHERE id=1")
+        row = await cur.fetchone()
+        self._bankroll_mirror = float(row[0]) if row else 0.0
+
+    def preflight_peek(self, market_id: str) -> tuple[bool, int, float, float] | None:
+        """Sync (has_position_in_market, open_count, bankroll, deployed_usdc);
+        None until the mirror is built (callers fall back to the DB query)."""
+        if self._bankroll_mirror is None:
+            return None
+        has = False
+        open_count = 0
+        deployed = 0.0
+        for mid, st, sz in self._pos_mirror.values():
+            if st == "open":
+                open_count += 1
+            deployed += sz
+            if mid == market_id:
+                has = True
+        return has, open_count, self._bankroll_mirror, deployed
+
+    def has_open_or_pending_market(self, market_id: str) -> bool | None:
+        """Sync has_position_for_market; None until the mirror is built."""
+        if self._bankroll_mirror is None:
+            return None
+        return any(mid == market_id for mid, _st, _sz in self._pos_mirror.values())
+
+    def mirror_mark_closed(self, position_id: int) -> None:
+        """Hook for the one status writer outside this class (reconcile's
+        direct status-only UPDATE in live_trader)."""
+        self._pos_mirror.pop(position_id, None)
 
     async def open_position_and_debit_bankroll(
         self,
@@ -139,6 +186,10 @@ class Database:
                     (new_bankroll,),
                 )
                 await self.conn.commit()
+                self._pos_mirror[pos_id] = (
+                    position_kwargs["market_id"], "open",
+                    float(position_kwargs["size"] or 0.0))
+                self._bankroll_mirror = float(new_bankroll)
                 return pos_id
             except BaseException:
                 # BaseException: a Ctrl+C/cancel mid-transaction must roll back too —
@@ -163,6 +214,9 @@ class Database:
                 (position_id,),
             )
             await self.conn.commit()
+            if position_id in self._pos_mirror:
+                mid, _st, sz = self._pos_mirror[position_id]
+                self._pos_mirror[position_id] = (mid, "pending_resolution", sz)
 
     async def _close_position_and_history(
         self, position_id: int, exit_price: float,
@@ -225,6 +279,11 @@ class Database:
                         (bankroll_delta,),
                     )
                 await self.conn.commit()
+                self._pos_mirror.pop(position_id, None)
+                if new_bankroll is not None:
+                    self._bankroll_mirror = float(new_bankroll)
+                elif bankroll_delta is not None and self._bankroll_mirror is not None:
+                    self._bankroll_mirror += float(bankroll_delta)
             except BaseException:
                 # Roll back on cancellation too, or a foreign commit persists the
                 # half-done close (same rationale as open_position_and_debit_bankroll).
@@ -356,6 +415,7 @@ class Database:
                 (amount,),
             )
             await self.conn.commit()
+            self._bankroll_mirror = float(amount)
 
     async def get_bankroll(self) -> float:
         cursor = await self.conn.execute("SELECT amount FROM bankroll WHERE id=1")
