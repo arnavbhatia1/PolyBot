@@ -1526,7 +1526,8 @@ async def _evaluate_signal_and_enter(
             a: round((_loop_marks[b] - _loop_marks[c]) * 1000.0, 1)
             for a, b, c in (
                 ("sched", "m_sched", "wake"), ("gate", "m_gate", "m_sched"),
-                ("disc", "m_disc", "m_gate"), ("px", "m_px", "m_disc"),
+                ("disc", "m_disc", "m_gate"), ("books", "m_books", "m_disc"),
+                ("bkgates", "m_px", "m_books"), ("px", "m_px", "m_disc"),
                 ("pos", "m_evalpos", "pre_eval"), ("tick", "m_tick", "m_evalpos"),
             )
             if _loop_marks.get(b, 0) >= _loop_marks.get(c, 0) > 0
@@ -1827,6 +1828,7 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
     # (gather always schedules tasks = a guaranteed yield).
     book_up = await _get_book(ws_book_up, token_up)
     book_down = await _get_book(ws_book_down, token_down)
+    _loop_marks["m_books"] = time.time()
 
     # Stale BBA entries are treated as missing so we fall through to the
     # freshly-fetched book or Gamma fallback.
@@ -1905,7 +1907,16 @@ async def _fetch_market_prices(contract: dict[str, Any], token_up: str, token_do
                 return -1.0
             s = bba.get("spread")
             if s is None:
-                return -1.0
+                # price_change events carry best_bid/best_ask but never a
+                # spread field — derive it (identical to REST /spread, which
+                # is ask−bid of the same book). The REST fallback here was a
+                # ~90ms hit on nearly every burst fire (fill 305: px=93.3ms).
+                try:
+                    bid = float(bba.get("best_bid", 0) or 0)
+                    ask = float(bba.get("best_ask", 0) or 0)
+                except (TypeError, ValueError):
+                    return -1.0
+                return round(ask - bid, 4) if (bid > 0 and ask > 0) else -1.0
             try:
                 return float(s)
             except (TypeError, ValueError):
