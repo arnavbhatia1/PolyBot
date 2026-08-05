@@ -1364,6 +1364,7 @@ async def _evaluate_signal_and_enter(
     size = round(size * adverse_kelly_mult, 2)
 
     open_positions = await _get_open_positions_cached(db)
+    _loop_marks["m_evalpos"] = time.time()
     active_positions = [p for p in open_positions if p.get("status") == "open"]
     if active_positions:
         cc_mult = concurrent_multiplier(side, cid, active_positions)
@@ -1419,6 +1420,7 @@ async def _evaluate_signal_and_enter(
     # fee_rate already fetched before signal eval (used by Kelly). tick_size
     # is per-chosen-side so fetched here.
     tick_size = await market_scanner.fetch_tick_size(token_id, http_client)
+    _loop_marks["m_tick"] = time.time()
     fresh_bba = clob_ws.best_bid_ask.get(token_id, {}) if clob_ws else {}
     _fresh_bba_ts = float(fresh_bba.get("ts", 0) or 0)
     fresh_ask = (float(fresh_bba.get("best_ask", 0) or 0)
@@ -1517,6 +1519,20 @@ async def _evaluate_signal_and_enter(
                                 else None),
         "lat_fast_path": bool(_loop_marks.get("fast")),
         "lat_cb_woke": bool(_loop_marks.get("cb_woke")),
+        # Microscope: per-segment deltas (ms) through this iteration's pre-submit
+        # path — wake → sched → pregate → discovery → prices → sizing-positions →
+        # tick-size → ctx. Names the exact await that eats time under burst.
+        "lat_segs_ms": {
+            a: round((_loop_marks[b] - _loop_marks[c]) * 1000.0, 1)
+            for a, b, c in (
+                ("sched", "m_sched", "wake"), ("gate", "m_gate", "m_sched"),
+                ("disc", "m_disc", "m_gate"), ("px", "m_px", "m_disc"),
+                ("pos", "m_evalpos", "pre_eval"), ("tick", "m_tick", "m_evalpos"),
+            )
+            if _loop_marks.get(b, 0) >= _loop_marks.get(c, 0) > 0
+        },
+        "lat_ctx_ms": (round((time.time() - _loop_marks["m_tick"]) * 1000.0, 1)
+                       if _loop_marks.get("m_tick", 0) > 0 else None),
         # Regime-Kelly SHADOW stamps (frozen cuts; sizing untouched) — the
         # nightly counterfactual-D read and its gated SPRT consume these.
         **_regime_shadow_fields(
@@ -2771,6 +2787,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                                     _pg_mv, _pg_late_start, _pg_move, _sniper_wake):
             return
         _last_full_eval = _pg_now
+        _loop_marks["m_gate"] = time.time()
         # Skip new entries when paused / outside hours (positions still managed)
         if is_paused_fn():
             return
@@ -2788,6 +2805,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 prev_contract_tokens, db=db, http_client=http_client)
         if not contract:
             return
+        _loop_marks["m_disc"] = time.time()
 
         # Warm the py-clob market-info cache so the entry FOK signs without ~2
         # sequential REST round-trips; dedups per condition_id (PaperTrader: no-op).
@@ -2806,6 +2824,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             http_client, clob_ws, max_spread, last_eval_log_window)
         if not prices:
             return
+        _loop_marks["m_px"] = time.time()
 
         price_up = prices["price_up"]
         price_down = prices["price_down"]
@@ -2895,24 +2914,33 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     current_trading_day, day_open_bankroll, day_wins, day_losses, day_fees,
                     alert_manager, db, config, breaker)
 
-            positions = await _get_open_positions_cached(db)
+            _loop_marks["m_sched"] = time.time()
 
             # --- FAST PATH: with nothing at risk, a Coinbase-tick wake OR any
-            # wake during a fire-adjacent move runs the entry evaluation FIRST
-            # (fill 299: a refire on a book wake still waited 91ms behind
-            # housekeeping). With an OPEN position, exits keep priority.
+            # wake during a fire-adjacent move runs the entry evaluation FIRST.
+            # The mirror answers "anything open?" sync, so nothing — not even
+            # the positions cache — precedes a hot evaluation.
             _fast_entry = False
             _loop_marks["cb_woke"] = 1.0 if _cb_woke else 0.0
             _now_fp = time.time()
             _hot_fp = (_sniper_wake and coinbase_feed is not None
                        and (300.0 - (_now_fp % 300.0)) <= _pg_late_start
                        and abs(coinbase_feed.cb_move(_pg_mv_win)) >= 0.6 * _pg_move)
-            if (_cb_woke or _hot_fp) and not any(p["status"] == "open" for p in positions):
+            _open_n = db.open_market_count() if hasattr(db, "open_market_count") else None
+            if (_cb_woke or _hot_fp) and _open_n == 0:
+                _fast_entry = True
+                _loop_marks["fast"] = 1.0
+                await _entry_pass([])
+            else:
+                _loop_marks["fast"] = 0.0
+
+            positions = await _get_open_positions_cached(db)
+            if not _fast_entry and (_cb_woke or _hot_fp) \
+                    and not any(p["status"] == "open" for p in positions):
+                # Mirror wasn't ready — fall back to the cached-positions check.
                 _fast_entry = True
                 _loop_marks["fast"] = 1.0
                 await _entry_pass(positions)
-            else:
-                _loop_marks["fast"] = 0.0
 
             # --- POSITION MANAGEMENT: resolution check + active re-evaluation ---
             live_results = await asyncio.gather(

@@ -153,6 +153,12 @@ class Database:
             return None
         return len(self._pos_mirror)
 
+    def open_market_count(self) -> int | None:
+        """Sync count of status='open' positions; None until the mirror is built."""
+        if self._bankroll_mirror is None:
+            return None
+        return sum(1 for _mid, st, _sz in self._pos_mirror.values() if st == "open")
+
     def mirror_mark_closed(self, position_id: int) -> None:
         """Hook for the one status writer outside this class (reconcile's
         direct status-only UPDATE in live_trader)."""
