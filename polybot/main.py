@@ -362,7 +362,7 @@ def _on_entry_settled(pos_id: int, final_price: float, source: str) -> None:
                 question=ctx.get("question", ""), side=ctx["side"], size=ctx["size"],
                 entry_price=final_price, ev=ctx["edge"], model_prob=ctx["prob"],
                 market_price=ctx.get("mkt_price", 0.0), fee=fee_usd,
-                flow=ctx["flow"], bankroll=ctx["bankroll"],
+                bankroll=ctx["bankroll"],
                 provisional=provisional))
     except Exception:
         pass
@@ -1646,7 +1646,7 @@ async def _evaluate_signal_and_enter(
                     question=contract["question"], side=side, size=size,
                     entry_price=fill_price, ev=signal.edge,
                     model_prob=signal.prob, market_price=_banner_ctx["mkt_price"],
-                    fee=fee_usd, flow=flow_score, bankroll=bankroll_now)
+                    fee=fee_usd, bankroll=bankroll_now)
         if _adverse_monitor:
             # Baseline must live on the same axis as the post-fill checkpoints
             # (update_prices): the traded token's own mid. Falls back to the
@@ -2563,8 +2563,8 @@ async def _check_trading_schedule(
         config: dict[str, Any], breaker: Any) -> tuple[bool, str | None, float, int, int, float]:
     """Check trading hours and emit day open/close banners."""
     now_time_et = (now_et.hour, now_et.minute)
-    active_start = scheduler._trading_start if scheduler and scheduler._trading_start else sched_start_et
-    active_end = scheduler._trading_end if scheduler and scheduler._trading_end else sched_end_et
+    active_start = sched_start_et
+    active_end = sched_end_et
     today_str = now_et.strftime("%Y-%m-%d")
     in_trading_hours = now_time_et >= active_start and now_time_et < active_end
 
@@ -2958,7 +2958,7 @@ async def run_pipeline() -> None:
     except Exception:
         logger.info("No DISCORD_BOT_TOKEN — pipeline report will be logged only")
     if discord_token:
-        discord_bot = create_bot(db=None, trader=None, scanner=None, scheduler=None, config=config)
+        discord_bot = create_bot(db=None, scanner=None, config=config)
         alert_manager = AlertManager(bot=discord_bot,
             trade_channel_name=config["discord"]["trade_channel_name"],
             control_channel_name=config["discord"]["control_channel_name"],
@@ -2973,7 +2973,6 @@ async def run_pipeline() -> None:
         outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
         daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
         daily_pipeline_minute=agents_cfg.get("daily_pipeline_minute", 0),
-        config=config,
     )
 
     async def _run_with_discord():
@@ -3104,7 +3103,7 @@ async def main() -> None:
     ghost_tracker = GhostTracker(memory_dir=str(base_dir / "memory"))
 
     # Discord (created before scheduler so alert_manager can be passed in)
-    discord_bot = create_bot(db, trader, market_scanner, None, config)
+    discord_bot = create_bot(db, market_scanner, config)
     alert_manager = AlertManager(bot=discord_bot,
         trade_channel_name=config["discord"]["trade_channel_name"],
         control_channel_name=config["discord"]["control_channel_name"],
@@ -3119,12 +3118,9 @@ async def main() -> None:
         outcome_interval_seconds=agents_cfg["outcome_reviewer_interval_seconds"],
         daily_pipeline_hour=agents_cfg["daily_pipeline_hour"],
         daily_pipeline_minute=agents_cfg.get("daily_pipeline_minute", 0),
-        config=config,
     )
     scheduler._exit_edge_threshold = signal_cfg["exit_edge_threshold"]
-    scheduler._min_time_remaining = market_cfg.get("min_time_remaining_seconds", 20)
     scheduler._auto_shutdown = args.auto_restart
-    discord_bot.scheduler = scheduler
     if mode == "live":
         # Sync DB bankroll with real Polymarket balance (fetched during preflight)
         await db.set_bankroll(live_balance)

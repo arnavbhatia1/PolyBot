@@ -30,11 +30,6 @@ def write_json_atomic(path: Path, obj, indent: int = 2) -> None:
     tmp.write_text(json.dumps(obj, indent=indent))
     tmp.replace(p)
 
-# ── Per-event record directories ──────────────────────────────────────────────
-OUTCOMES_DIR: Path = MEMORY_DIR / "outcomes"
-GHOSTS_DIR: Path = MEMORY_DIR / "ghost_outcomes"
-COUNTERFACTUALS_DIR: Path = MEMORY_DIR / "counterfactuals"
-
 # ── Rolling single-file state + logs (memory/state/) ──────────────────────────
 STATE_DIR: Path = MEMORY_DIR / "state"
 ADVERSE_STATE_PATH: Path = STATE_DIR / "adverse_state.json"

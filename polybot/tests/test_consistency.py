@@ -14,8 +14,7 @@ def test_discord_commands_resolve_and_help_text_is_accurate():
     only real commands (no phantom-documented commands)."""
     from polybot.discord_bot.bot import create_bot
 
-    bot = create_bot(db=MagicMock(), trader=MagicMock(), scanner=MagicMock(),
-                     scheduler=MagicMock(), config={"mode": "paper"})
+    bot = create_bot(db=MagicMock(), scanner=MagicMock(), config={"mode": "paper"})
     registered = {c.name for c in bot.commands}
 
     # The 8 commands the bot implements; discord.py also auto-registers a built-in `help`.

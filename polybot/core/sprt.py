@@ -81,7 +81,7 @@ def run_sprt(day_means: list[float], mu1: float, sigma: float,
 
 
 def format_status(name: str, r: SprtResult) -> str:
-    """One-line human status for the nightly Discord report."""
+    """One-line human-readable SPRT status."""
     tag = {
         "continue": "accruing",
         "accept_h1": "✅ ACCEPT H1",

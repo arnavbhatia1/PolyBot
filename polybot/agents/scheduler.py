@@ -22,8 +22,7 @@ class NightlyScheduler:
                  alert_manager: Any = None,
                  outcome_interval_seconds: int = 3600,
                  daily_pipeline_hour: int = 2,
-                 daily_pipeline_minute: int = 0,
-                 config: dict[str, Any] | None = None) -> None:
+                 daily_pipeline_minute: int = 0) -> None:
         self.outcome_reviewer = outcome_reviewer
         self.counterfactual_tracker = counterfactual_tracker
         self.ghost_tracker = ghost_tracker
@@ -31,15 +30,11 @@ class NightlyScheduler:
         self.outcome_interval_seconds = outcome_interval_seconds
         self.daily_pipeline_hour = daily_pipeline_hour
         self.daily_pipeline_minute = daily_pipeline_minute
-        self._config = config
         self._running = False
         self._auto_shutdown = False
         self._shutdown_requested = False
-        # Runtime knobs the trading loop reads (set by main at boot).
+        # Runtime knob the trading loop reads (set by main at boot).
         self._exit_edge_threshold: float | None = None
-        self._min_time_remaining: int | None = None
-        self._trading_start: tuple[int, int] | None = None
-        self._trading_end: tuple[int, int] | None = None
         # Registered by main at boot (retention sweeps, sniper-edge health report).
         self.nightly_jobs: list[tuple[str, NightlyJob]] = []
 

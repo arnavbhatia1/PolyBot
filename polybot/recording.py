@@ -98,8 +98,6 @@ class WindowPathRecorder:
         self._rows: list[tuple] = []
         self._running = False
         self._paths_conn = None
-        self.rows_written = 0
-        self.labels_written = 0
 
     async def ensure_tables(self) -> None:
         import aiosqlite
@@ -319,7 +317,6 @@ class WindowPathRecorder:
                     "token_up, token_down) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (market_id, 1 if fp >= ptb else 0, fp, ptb, now, tok_up, tok_down))
                 await self.db.conn.commit()
-                self.labels_written += 1
             except Exception as e:
                 logger.warning(f"window label write failed for {market_id}: {e}")
 
@@ -468,7 +465,6 @@ class WindowPathRecorder:
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows)
             await self._paths_conn.commit()
-            self.rows_written += len(rows)
         except Exception as e:
             logger.warning(f"window_paths flush failed ({len(rows)} rows): {e}")
 

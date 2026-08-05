@@ -20,15 +20,12 @@ logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
-def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
-               config: dict[str, Any]) -> commands.Bot:
+def create_bot(db: Any, scanner: Any, config: dict[str, Any]) -> commands.Bot:
     intents = discord.Intents.default()
     intents.message_content = True
     bot = commands.Bot(command_prefix="!", intents=intents)
     bot.db = db
-    bot.trader = trader
     bot.scanner = scanner
-    bot.scheduler = scheduler
     bot.config = config
     bot.is_paused = False
     bot.ready_event = asyncio.Event()

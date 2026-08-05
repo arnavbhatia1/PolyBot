@@ -324,9 +324,7 @@ class LiveTrader(BaseTrader):
         self.client: ClobClient = _create_clob_client()
         self._keepalive_task: asyncio.Task | None = None
         self._submit_count_since_allowance_check: int = 0
-        self._min_allowance_warn_threshold: float = float(
-            kwargs.get("min_allowance_warn_usd", 25.0)
-        )
+        self._min_allowance_warn_threshold: float = 25.0
         # 2 workers let a concurrent BUY+SELL sign in parallel; py-clob-client
         # is thread-safe per call.
         self._sign_executor = concurrent.futures.ThreadPoolExecutor(
