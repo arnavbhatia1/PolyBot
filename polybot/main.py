@@ -3651,11 +3651,36 @@ async def main() -> None:
         http_client=http_client,
         depth_feed=depth_feed, trades_feed=trades_feed,
         chainlink_feed=chainlink_feed, coinbase_feed=coinbase_feed))
+    async def _book_warmer() -> None:
+        """Keep both tokens' REST book cache warm through the sniper window.
+
+        The WS stores full book snapshots only when the exchange sends one, so
+        by fire time the local copy looks stale and the fire path's fallback
+        paid an inline ~95ms REST fetch (measured, fill 304). Warming the
+        scanner's 2s book cache off-path turns that fallback into a sync hit.
+        """
+        while True:
+            try:
+                sec_rem = 300.0 - (time.time() % 300.0)
+                contract = market_scanner._cached_contract
+                if contract and sec_rem <= 60.0:
+                    for tok in (contract.get("token_id_up"), contract.get("token_id_down")):
+                        if tok:
+                            await market_scanner.fetch_clob_book(tok, http_client)
+                    await asyncio.sleep(1.4)
+                else:
+                    await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                await asyncio.sleep(2.0)
+
     background_tasks = [
         asyncio.create_task(scheduler.run_outcome_loop()),
         asyncio.create_task(scheduler.run_daily_loop()),
         asyncio.create_task(_flush_staleness_loop()),
         asyncio.create_task(window_recorder.run()),
+        asyncio.create_task(_book_warmer()),
         discord_task,
     ]
     logger.debug("PolyBot started — all systems running (WebSocket + event-driven)")
