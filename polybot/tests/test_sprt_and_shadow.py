@@ -184,12 +184,24 @@ _CTX = dict(side="Up", size=1.61, cid="btc-updown-5m-1776691500", phase="late_sn
             prob=0.94, edge=0.14, flow=0.10, cvd=0.20, fee_rate=0.07, bankroll=135.0)
 
 
-def test_paper_banner_prints_fee_buffer_label(caplog):
+def test_paper_banner_prints_charged_fee(caplog):
     with caplog.at_level(logging.INFO, logger="polybot"):
         _log_open_banner(dict(_CTX), 0.77, settled="paper")
     assert "OPEN Up" in caplog.text
-    assert "fee buffer" in caplog.text and "not charged" in caplog.text
+    assert "fee $" in caplog.text and "not charged" not in caplog.text
     assert "provisional" not in caplog.text
+
+
+def test_chain_banner_fee_is_exact_from_settled_shares(caplog):
+    # Chain-true booking: wallet holds exactly notional/VWAP shares -> fee $0.00.
+    with caplog.at_level(logging.INFO, logger="polybot"):
+        _log_open_banner(dict(_CTX), 0.77, settled="chain", shares=1.61 / 0.77)
+    assert "fee $0.00" in caplog.text
+    caplog.clear()
+    # A real 2c fee (fewer shares than notional/price) must surface exactly.
+    with caplog.at_level(logging.INFO, logger="polybot"):
+        _log_open_banner(dict(_CTX), 0.77, settled="chain", shares=(1.61 - 0.02) / 0.77)
+    assert "fee $0.02" in caplog.text
 
 
 def test_settled_banner_prints_once_from_audit_callback(caplog):

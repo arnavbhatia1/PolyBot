@@ -70,7 +70,7 @@ class AlertManager:
             f"```\n"
             f"  Price     {entry_price:.3f}  |  ${size:.2f}\n"
             f"  Edge      {ev:+.0%}  (model {model_prob:.0%} vs mkt {market_price:.0%} at decision)\n"
-            f"  Fee       ${fee:.2f} buffer (modeled, not charged)\n"
+            f"  Fee       ${fee:.2f}\n"
             f"{prov_str}{bankroll_str}```")
 
     async def send_trade_closed(self, question: str, exit_price: float,

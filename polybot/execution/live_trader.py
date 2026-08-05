@@ -731,10 +731,10 @@ class LiveTrader(BaseTrader):
         wallet confirmed the price, "provisional" when the lookup failed and
         the booked number stands. Best-effort: never raises.
         """
-        final_price, source = recorded_price, "provisional"
+        final_price, source, shares = recorded_price, "provisional", None
         try:
             await asyncio.sleep(_FILL_AUDIT_DELAY_S)
-            final_price, source = await self._audit_entry_fill_inner(
+            final_price, source, shares = await self._audit_entry_fill_inner(
                 pos_id, token_id, recorded_price, size_usdc)
         except Exception as e:
             logger.warning("Fill audit failed for position %s: %s", pos_id, e)
@@ -742,14 +742,14 @@ class LiveTrader(BaseTrader):
             cb = self.on_entry_settled
             if cb is not None:
                 try:
-                    cb(pos_id, final_price, source)
+                    cb(pos_id, final_price, source, shares)
                 except Exception:
                     pass
 
     async def _audit_entry_fill_inner(self, pos_id: int, token_id: str,
                                       recorded_price: float,
-                                      size_usdc: float) -> tuple[float, str]:
-        """The audit body → (settled_price, "chain" | "provisional").
+                                      size_usdc: float) -> tuple[float, str, float | None]:
+        """The audit body → (settled_price, "chain" | "provisional", chain shares or None).
 
         Production fills book the submitted limit almost every time (WS tape
         and associate_trades both lose the indexer race), so this audit is the
@@ -762,23 +762,23 @@ class LiveTrader(BaseTrader):
         """
         if not token_id:
             logger.debug("Fill audit pos %s: no token_id — skipped", pos_id)
-            return recorded_price, "provisional"
+            return recorded_price, "provisional", None
         positions = await self._fetch_wallet_positions()
         if positions is None:
             logger.debug("Fill audit pos %s: wallet-positions fetch failed — "
                          "entry left at booked %.3f", pos_id, recorded_price)
-            return recorded_price, "provisional"
+            return recorded_price, "provisional", None
         pos = next((p for p in positions
                     if str(p.get("asset")) == str(token_id)), None)
         if pos is None:
             logger.debug("Fill audit pos %s: token not in wallet yet (indexer lag or "
                          "already resolved) — entry left at booked %.3f", pos_id, recorded_price)
-            return recorded_price, "provisional"
+            return recorded_price, "provisional", None
         true_price = float(pos.get("avgPrice") or 0.0)
         chain_size = float(pos.get("size") or 0.0)
         if chain_size <= 0:
             logger.debug("Fill audit pos %s: no chain size — skipped", pos_id)
-            return recorded_price, "provisional"
+            return recorded_price, "provisional", None
         if not (0.0 < true_price < 1.0):
             # The data-API often serves avgPrice 0.0000 for a fresh position
             # — but its `size` is the wallet's true share count, so the
@@ -790,7 +790,7 @@ class LiveTrader(BaseTrader):
             # the wallet balance; not this order's fill.
             logger.debug("Fill audit pos %s: chain price %.4f implausible vs "
                          "booked %.3f — skipped", pos_id, true_price, recorded_price)
-            return recorded_price, "provisional"
+            return recorded_price, "provisional", None
         implied_shares = size_usdc / true_price
         if abs(chain_size - implied_shares) / max(implied_shares, 1e-9) > 0.02:
             # mixed position (older residue) — the wallet average isn't this
@@ -798,7 +798,7 @@ class LiveTrader(BaseTrader):
             logger.debug("Fill audit pos %s: chain shares %.2f vs implied %.2f mismatch "
                          "(mixed position) — entry left at booked %.3f",
                          pos_id, chain_size, implied_shares, recorded_price)
-            return recorded_price, "provisional"
+            return recorded_price, "provisional", None
         synced = await self.db.sync_entry_booking(
             pos_id, round(true_price, 4), round(chain_size, 6))
         if not synced:
@@ -807,10 +807,10 @@ class LiveTrader(BaseTrader):
             logger.debug("Fill audit pos %s: trade already booked to history — "
                          "entry left at %.3f (chain says %.4f)",
                          pos_id, recorded_price, true_price)
-            return true_price, "chain"
+            return true_price, "chain", chain_size
         logger.debug("Fill audit pos %s: entry %.3f → chain %.4f, shares synced "
                      "to wallet (%.4f)", pos_id, recorded_price, true_price, chain_size)
-        return true_price, "chain"
+        return true_price, "chain", chain_size
 
     # -- FOK pre-check + balance/dust helpers --------------------------------
     @staticmethod

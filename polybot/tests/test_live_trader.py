@@ -892,7 +892,7 @@ async def test_fill_audit_reports_settled_entry_via_callback(trader, monkeypatch
     pos_id = open_result.position_id
 
     settled = []
-    trader.on_entry_settled = lambda pid, price, src: settled.append((pid, price, src))
+    trader.on_entry_settled = lambda pid, price, src, shares: settled.append((pid, price, src, shares))
     import polybot.execution.live_trader as lt_mod
     monkeypatch.setattr(lt_mod, "_FILL_AUDIT_DELAY_S", 0.0)
 
@@ -903,7 +903,8 @@ async def test_fill_audit_reports_settled_entry_via_callback(trader, monkeypatch
 
     monkeypatch.setattr(trader, "_fetch_wallet_positions", fake_wallet)
     await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.93, 4.74, 0.07)
-    assert settled == [(pos_id, pytest.approx(0.88, abs=1e-4), "chain")]
+    assert settled == [(pos_id, pytest.approx(0.88, abs=1e-4), "chain",
+                        pytest.approx(4.74 / 0.88, rel=1e-6))]
 
     # Chain lookup failure → the booked price is reported, flagged provisional.
     async def broken_wallet():
@@ -911,7 +912,7 @@ async def test_fill_audit_reports_settled_entry_via_callback(trader, monkeypatch
 
     monkeypatch.setattr(trader, "_fetch_wallet_positions", broken_wallet)
     await trader._audit_entry_fill(pos_id, _TRADE_KWARGS["token_id"], 0.93, 4.74, 0.07)
-    assert settled[-1] == (pos_id, 0.93, "provisional")
+    assert settled[-1] == (pos_id, 0.93, "provisional", None)
 
 
 @pytest.mark.asyncio

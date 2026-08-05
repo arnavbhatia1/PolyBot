@@ -316,11 +316,27 @@ _pending_settled_banners: _OrderedDict = _OrderedDict()
 _PENDING_BANNERS_MAX = 32
 
 
-def _log_open_banner(ctx: dict[str, Any], entry_price: float, settled: str) -> None:
+def _realized_entry_fee(ctx: dict[str, Any], entry_price: float,
+                        shares: float | None) -> float:
+    """Fee actually taken, for the OPEN surfaces.
+
+    With settled chain shares: fee = notional − shares×entry (exactly what the
+    wallet paid beyond its shares; $0.00 while Polymarket charges none). Without
+    them (paper fill-time = the sim's charged fee; provisional) fall back to
+    the model."""
+    if shares is not None and entry_price > 0:
+        return max(0.0, ctx["size"] - shares * entry_price)
+    est_shares = ctx["size"] / entry_price if entry_price > 0 else 0.0
+    return entry_fee_shares(est_shares, entry_price, ctx["fee_rate"]) * entry_price
+
+
+def _log_open_banner(ctx: dict[str, Any], entry_price: float, settled: str,
+                     shares: float | None = None) -> None:
     """The yellow OPEN banner. settled: "paper" (fill-time, exact), "chain"
     (audit-confirmed), or "provisional" (chain lookup failed — flagged)."""
-    shares = ctx["size"] / entry_price if entry_price > 0 else 0.0
-    fee_usd = entry_fee_shares(shares, entry_price, ctx["fee_rate"]) * entry_price
+    fee_usd = _realized_entry_fee(ctx, entry_price, shares)
+    fee_str = (f"fee ~${fee_usd:.2f} (est)" if settled == "provisional"
+               else f"fee ${fee_usd:.2f}")
     chase = ctx["posted"] - ctx["signal_ask"]
     if abs(chase) > 0.001 or abs(entry_price - ctx["signal_ask"]) > 0.001:
         slip_note = (f"  [signal {ctx['signal_ask']:.3f} → posted {ctx['posted']:.3f} "
@@ -334,7 +350,7 @@ def _log_open_banner(ctx: dict[str, Any], entry_price: float, settled: str) -> N
     logger.info(
         f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
         f"  {_C.YELLOW}{_C.BOLD}OPEN {ctx['side']}{_C.RESET} @{entry_price:.2f}  ${ctx['size']:.2f}  "
-        f"fee buffer ${fee_usd:.2f} (modeled, not charged)  |  "
+        f"{fee_str}  |  "
         f"{_slug_to_window(ctx['cid'])}{'' if _phase == 'normal' else f' [{_phase}]'}{slip_note}{prov}\n"
         f"  {_C.DIM}BTC {ctx['btc_price']:,.0f} ({_dist:+.0f} vs strike) · model {ctx['prob']:.0%} "
         f"edge {ctx['edge']:+.0%} · flow {ctx['flow']:+.2f} cvd {ctx['cvd']:+.2f} · "
@@ -342,7 +358,8 @@ def _log_open_banner(ctx: dict[str, Any], entry_price: float, settled: str) -> N
         f"{_C.YELLOW}{'=' * 69}{_C.RESET}")
 
 
-def _on_entry_settled(pos_id: int, final_price: float, source: str) -> None:
+def _on_entry_settled(pos_id: int, final_price: float, source: str,
+                      shares: float | None = None) -> None:
     """LiveTrader.on_entry_settled hook — OPEN banner + Discord OPEN ping at the settled entry.
 
     Both surfaces must agree with the RESOLVED ping and the books.
@@ -353,11 +370,11 @@ def _on_entry_settled(pos_id: int, final_price: float, source: str) -> None:
             return
         provisional = source != "chain"
         _log_open_banner(ctx, final_price,
-                         settled=("provisional" if provisional else "chain"))
+                         settled=("provisional" if provisional else "chain"),
+                         shares=shares)
         am = ctx.get("alert_manager")
         if am is not None:
-            shares = ctx["size"] / final_price if final_price > 0 else 0.0
-            fee_usd = entry_fee_shares(shares, final_price, ctx["fee_rate"]) * final_price
+            fee_usd = _realized_entry_fee(ctx, final_price, shares)
             asyncio.create_task(am.send_trade_opened(
                 question=ctx.get("question", ""), side=ctx["side"], size=ctx["size"],
                 entry_price=final_price, ev=ctx["edge"], model_prob=ctx["prob"],

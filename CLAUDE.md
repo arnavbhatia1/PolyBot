@@ -125,11 +125,12 @@ reprices.
   and the full OPEN banner ONCE, from the audit's `on_entry_settled` callback,
   with the settled entry (flagged provisional if the chain lookup failed); the
   Discord OPEN ping rides the same callback so it always agrees with the
-  RESOLVED ping and the books; paper banners/pings stay instant. "Fee buffer
-  (modeled, not charged)" on both surfaces is the gate's conservative fee
-  model — no taker fee is currently charged on-chain on this series, and the
-  Discord day-close reports the summed modeled buffer (`get_day_stats`)
-  alongside the $0.00 actually charged. CAVEAT on the pre-07-08 live
+  RESOLVED ping and the books; paper banners/pings stay instant. The OPEN
+  banner/ping print the fee ACTUALLY TAKEN (notional − settled shares × entry;
+  $0.00 while Polymarket charges none; "~$ (est)" when the chain lookup
+  failed). The conservative fee model still runs the gates, and the Discord
+  day-close reports the summed modeled buffer (`get_day_stats`) alongside the
+  $0.00 actually charged. CAVEAT on the pre-07-08 live
   ledger: those 46 fills booked the padded limit (silent fallback + a defeated
   audit) — chain-truth reconstruction puts them ≈ breakeven, ~4.4¢/sh better
   than the ledger's −4.3¢/sh; read that era's kill-rule prints accordingly.
