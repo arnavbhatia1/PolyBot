@@ -65,6 +65,28 @@ def test_handle_price_change(ws):
     assert bba["best_bid"] == "0.50"
     assert bba["best_ask"] == "0.55"
     assert ws.book_updated.is_set()
+    assert ws.feed_delay_ms is None   # no exchange timestamp on the message
+
+
+def test_feed_delay_from_exchange_timestamp(ws):
+    import time as _t
+    msg = json.dumps({
+        "event_type": "price_change",
+        "market": "0xabc",
+        "timestamp": str(int((_t.time() - 0.030) * 1000)),   # exchange-stamped 30ms ago
+        "price_changes": [{
+            "asset_id": "token_up_123", "price": "0.50", "size": "200",
+            "side": "BUY", "best_bid": "0.50", "best_ask": "0.55",
+        }],
+    })
+    ws._handle_message(msg)
+    assert ws.feed_delay_ms is not None
+    assert 0.0 <= ws.feed_delay_ms <= 1000.0
+    assert abs(ws.feed_delay_ms - 30.0) < 50.0
+    # A bad timestamp never clobbers the last good reading, never raises.
+    prev = ws.feed_delay_ms
+    ws._stamp_feed_delay({"timestamp": "garbage"}, _t.time())
+    assert ws.feed_delay_ms == prev
 
 
 def test_handle_best_bid_ask(ws):

@@ -34,6 +34,46 @@ class TestCoinbaseFeed:
         assert f.state.best_bid == 71500.0
         assert f.state.best_ask == 71500.5
 
+    def test_feed_delay_from_exchange_timestamp(self):
+        import time
+        from datetime import datetime, timezone
+        f = CoinbaseFeed()
+        # Exchange stamped this tick 80ms ago → delay ≈ 80ms (NTP-skew tolerance wide).
+        t = datetime.fromtimestamp(time.time() - 0.080, tz=timezone.utc)
+        f._handle_message({
+            "type": "ticker", "product_id": "BTC-USD", "price": "71500.25",
+            "time": t.isoformat().replace("+00:00", "Z"),
+        })
+        assert f.state.feed_delay_ms is not None
+        assert 0.0 <= f.state.feed_delay_ms <= 1000.0
+        assert abs(f.state.feed_delay_ms - 80.0) < 50.0
+
+    def test_feed_delay_none_when_time_missing_or_bad(self):
+        for msg in (
+            {"type": "ticker", "product_id": "BTC-USD", "price": "71500.25"},
+            {"type": "ticker", "product_id": "BTC-USD", "price": "71500.25",
+             "time": "not-a-timestamp"},
+        ):
+            f = CoinbaseFeed()
+            f._handle_message(msg)
+            assert f.state.price == 71500.25   # a bad clock never drops the tick
+            assert f.state.feed_delay_ms is None
+
+    def test_on_tick_receives_feed_delay(self):
+        import time
+        from datetime import datetime, timezone
+        f = CoinbaseFeed()
+        seen = []
+        f.on_tick = lambda ts, price, fd: seen.append((ts, price, fd))
+        t = datetime.fromtimestamp(time.time() - 0.050, tz=timezone.utc)
+        f._handle_message({
+            "type": "ticker", "product_id": "BTC-USD", "price": "71500.25",
+            "time": t.isoformat().replace("+00:00", "Z"),
+        })
+        assert len(seen) == 1
+        assert seen[0][1] == 71500.25
+        assert seen[0][2] == f.state.feed_delay_ms
+
     def test_drops_non_finite_price(self):
         # float("NaN")/("Infinity") parse successfully; they must not reach
         # state.price (an inf would flow into L1's z = (btc-strike)/vol).

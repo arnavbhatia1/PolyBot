@@ -264,7 +264,9 @@ tick-size/neg-risk/fee + contract-version caches prewarmed per window,
 warm pooled HTTP/2 singleton (keepalive_expiry 60s > 5s ping, connect timeout
 5s, TCP_NODELAY), gc.freeze() post-boot (full-GC pauses off the fire path).
 `cb_tick_to_submit_ms` in trade_context measures tick→submit decision latency
-per fill. Live boot: key+funder required,
+per fill; `lat_cb_feed_ms`/`lat_clob_feed_ms` stamp the upstream feed-transit
+leg (receipt − the message's own exchange timestamp, both venues) so the race
+is measured from the exchanges' clocks, not just ours. Live boot: key+funder required,
 balance/allowance preflight, allowance recheck every 10 fills. Per-trade DB
 writes are atomic. `fill.fill_size` is always USDC notional.
 

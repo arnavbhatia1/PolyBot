@@ -14,6 +14,7 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from polybot.feeds._json import loads as _loads
@@ -33,6 +34,9 @@ class CoinbaseState:
     updated_at: float = 0.0
     best_bid: float = 0.0
     best_ask: float = 0.0
+    # Receipt minus the tick's own exchange timestamp — the feed-transit leg
+    # (Coinbase match → here) that local stamps can't see. Includes NTP skew (~ms).
+    feed_delay_ms: float | None = None
 
     @property
     def age_seconds(self) -> float:
@@ -254,11 +258,18 @@ class CoinbaseFeed:
 
         self.state.price = price
         self.state.updated_at = now
+        try:
+            t = data.get("time")
+            self.state.feed_delay_ms = (
+                round((now - datetime.fromisoformat(t).timestamp()) * 1000.0, 1)
+                if t else None)
+        except (ValueError, TypeError):
+            self.state.feed_delay_ms = None
         self.price_event.set()
         # Optional micro-tape hook (recording.MicroTape.on_cb_tick) — must not raise.
         if self.on_tick is not None:
             try:
-                self.on_tick(now, price)
+                self.on_tick(now, price, self.state.feed_delay_ms)
             except Exception:
                 pass
 

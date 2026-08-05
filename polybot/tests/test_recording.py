@@ -284,6 +284,7 @@ class TestMicroTape:
         t = self._tape(tmp_path)
         late = (int(time.time() // 300)) * 300 + 250.0
         t.on_cb_tick(late, 60010.0)
+        t.on_cb_tick(late, 60011.0, feed_delay_ms=72.5)
         t.on_cl_report(1783600000.0, 60005.0)
         t.flush()
         t._writer.shutdown(wait=True)
@@ -292,6 +293,9 @@ class TestMicroTape:
         rows = [_j.loads(l) for l in files[0].read_text().splitlines()]
         kinds = {r["k"] for r in rows}
         assert kinds == {"c", "l"}
+        c_rows = [r for r in rows if r["k"] == "c"]
+        assert "fd" not in c_rows[0]           # no exchange timestamp → no field
+        assert c_rows[1]["fd"] == 72.5         # transit leg recorded when known
         l_row = next(r for r in rows if r["k"] == "l")
         assert l_row["ts"] == 1783600000.0 and "rx" in l_row and l_row["p"] == 60005.0
 

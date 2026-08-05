@@ -42,6 +42,9 @@ class ClobWebSocket:
 
         self.book_updated: asyncio.Event = asyncio.Event()
         self.market_resolved: asyncio.Event = asyncio.Event()
+        # Receipt minus the message's own exchange timestamp — the feed-transit
+        # leg (Polymarket → here) local stamps can't see. Includes NTP skew (~ms).
+        self.feed_delay_ms: float | None = None
         # Optional per-print tape hook: fn(asset_id, trade) (recording.TapeRecorder).
         self.on_trade = None
         self.on_bba = None   # micro-tape hook: every best-bid/ask change
@@ -249,22 +252,33 @@ class ClobWebSocket:
             logger.debug("Tick size changed: %s -> %s for %s",
                          msg.get("old_tick_size"), msg.get("new_tick_size"), msg.get("asset_id"))
 
+    def _stamp_feed_delay(self, msg: dict[str, Any], now: float) -> None:
+        try:
+            t = msg.get("timestamp")
+            if t:
+                self.feed_delay_ms = round(now * 1000.0 - float(t), 1)
+        except (ValueError, TypeError):
+            pass
+
     def _on_book(self, msg: dict[str, Any]) -> None:
         asset_id = msg.get("asset_id", "")
         if not asset_id:
             return
+        now = time.time()
+        self._stamp_feed_delay(msg, now)
         self.books[asset_id] = {
             "bids": msg.get("bids", []),
             "asks": msg.get("asks", []),
             "hash": msg.get("hash", ""),
             "timestamp": msg.get("timestamp", ""),
             "market": msg.get("market", ""),
-            "ts": time.time(),
+            "ts": now,
         }
         self.book_updated.set()
 
     def _on_price_change(self, msg: dict[str, Any]) -> None:
         now = time.time()
+        self._stamp_feed_delay(msg, now)
         for change in msg.get("price_changes", []):
             asset_id = change.get("asset_id", "")
             if not asset_id:
@@ -291,11 +305,13 @@ class ClobWebSocket:
         asset_id = msg.get("asset_id", "")
         if not asset_id:
             return
+        now = time.time()
+        self._stamp_feed_delay(msg, now)
         self.best_bid_ask[asset_id] = {
             "best_bid": msg.get("best_bid", "0"),
             "best_ask": msg.get("best_ask", "0"),
             "spread": msg.get("spread", "0"),
-            "ts": time.time(),
+            "ts": now,
         }
         self.book_updated.set()
         # Optional micro-tape hook (recording.MicroTape.on_bba) — must not raise.

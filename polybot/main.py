@@ -968,6 +968,11 @@ async def _evaluate_signal_and_enter(
     # moment stamps cb_tick_to_submit_ms, so decision latency is measured per
     # fill, not inferred. Sign + POST legs are recorded in latency_stats.
     _eval_tick_ts = coinbase_feed.state.updated_at if coinbase_feed is not None else 0.0
+    # Same tick's feed-transit leg (Coinbase match → receipt) — captured here so
+    # it can't be overwritten by a newer tick before the context is built.
+    _eval_feed_delay_ms = (coinbase_feed.state.feed_delay_ms
+                           if coinbase_feed is not None else None)
+    _eval_clob_delay_ms = clob_ws.feed_delay_ms if clob_ws is not None else None
 
     # Stamped once per evaluation so ghosts and filled outcomes share one schema;
     # aux fields are a real value or None — never a 0.0 stand-in.
@@ -1519,6 +1524,8 @@ async def _evaluate_signal_and_enter(
                                 else None),
         "lat_fast_path": bool(_loop_marks.get("fast")),
         "lat_cb_woke": bool(_loop_marks.get("cb_woke")),
+        "lat_cb_feed_ms": _eval_feed_delay_ms,
+        "lat_clob_feed_ms": _eval_clob_delay_ms,
         # Microscope: per-segment deltas (ms) through this iteration's pre-submit
         # path — wake → sched → pregate → discovery → prices → sizing-positions →
         # tick-size → ctx. Names the exact await that eats time under burst.

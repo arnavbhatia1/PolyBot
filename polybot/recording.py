@@ -601,12 +601,16 @@ class MicroTape:
         except Exception:
             pass
 
-    def on_cb_tick(self, ts: float, price: float) -> None:
-        """Wired as CoinbaseFeed.on_tick."""
+    def on_cb_tick(self, ts: float, price: float,
+                   feed_delay_ms: float | None = None) -> None:
+        """Wired as CoinbaseFeed.on_tick. fd = Coinbase match → receipt transit (ms)."""
         try:
             if not self._late(ts):
                 return
-            self._buf.append(json.dumps({"k": "c", "ts": round(ts, 3), "p": price}))
+            rec = {"k": "c", "ts": round(ts, 3), "p": price}
+            if feed_delay_ms is not None:
+                rec["fd"] = feed_delay_ms
+            self._buf.append(json.dumps(rec))
             self._maybe_flush(ts)
         except Exception:
             pass
