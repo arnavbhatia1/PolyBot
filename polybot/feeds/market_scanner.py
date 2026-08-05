@@ -15,17 +15,7 @@ from polybot.execution.base import DEFAULT_FEE_RATE
 logger = logging.getLogger(__name__)
 
 
-def _slug_window(slug: str) -> str:
-    """'btc-updown-5m-1776691500' → '12:35-12:40 ET' for log lines."""
-    try:
-        from zoneinfo import ZoneInfo
-        from datetime import timedelta
-        ts = int(slug.rsplit("-", 1)[-1])
-        start = datetime.fromtimestamp(ts, tz=ZoneInfo("America/New_York"))
-        end = start + timedelta(minutes=5)
-        return f"{start.strftime('%I:%M').lstrip('0')}-{end.strftime('%I:%M ET').lstrip('0')}"
-    except Exception:
-        return slug
+from polybot.agents.pipeline_analytics import slug_to_window as _slug_window
 
 
 @asynccontextmanager
@@ -307,10 +297,10 @@ class BTCMarketScanner:
     async def find_active_contract(self, http_client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:
         """Active-contract lookup, stale-while-revalidate.
 
-        A live cached contract is ALWAYS served (seconds_remaining recomputed
-        locally); on TTL expiry the Gamma refresh runs in the background — an
-        inline fetch here sat in front of the sniper evaluation on tick wakes.
-        Blocks only when no cached contract is live (boot / window rollover).
+        A live cached contract is always served (seconds_remaining recomputed
+        locally), refreshing via Gamma in the background — an inline fetch put
+        HTTP ahead of the sniper evaluation. Blocks only when no cached
+        contract is live (boot / window rollover).
         """
         now = time.time()
 

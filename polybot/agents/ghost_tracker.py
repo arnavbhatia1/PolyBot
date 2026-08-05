@@ -25,10 +25,9 @@ class GhostTracker:
     def __init__(self, memory_dir: str) -> None:
         self._dir: Path = Path(memory_dir) / "ghost_outcomes"
         self._dir.mkdir(parents=True, exist_ok=True)
-        # (market_id, gate_name) -> ghost context (pending resolution).
-        # Keyed per gate: keying per market let an early base-path ghost
-        # swallow every later sniper-path veto — the sniper evidence stream
-        # recorded 0 ghosts in production until this was per-gate.
+        # (market_id, gate_name) -> pending ghost. Keyed per gate: per-market
+        # let an early base ghost swallow every later sniper veto (~0 sniper
+        # ghosts ever persisted live).
         self._pending: dict[tuple[str, str], dict[str, Any]] = {}
 
     @property

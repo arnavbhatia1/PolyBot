@@ -14,20 +14,11 @@ from zoneinfo import ZoneInfo
 import discord
 from discord.ext import commands
 
+from polybot.agents.pipeline_analytics import slug_to_window as _slug_to_window
+
 logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
-
-def _slug_to_window(slug: str) -> str:
-    """Convert btc-updown-5m-1776691500 to '9:25-9:30 ET'."""
-    try:
-        ts = int(slug.rsplit("-", 1)[-1])
-        start = datetime.fromtimestamp(ts, tz=_ET)
-        end = start + timedelta(minutes=5)
-        return f"{start.strftime('%I:%M').lstrip('0')}-{end.strftime('%I:%M ET').lstrip('0')}"
-    except Exception:
-        return slug
-
 
 def create_bot(db: Any, trader: Any, scanner: Any, scheduler: Any,
                config: dict[str, Any]) -> commands.Bot:

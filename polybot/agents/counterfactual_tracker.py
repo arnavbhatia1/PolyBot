@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+from polybot.agents.pipeline_analytics import slug_to_window as _slug_to_window
 from polybot.agents.pipeline_analytics import utc_ts_to_et_date as _utc_ts_to_et_date
 from polybot.execution.base import DEFAULT_FEE_RATE, exit_fee_usdc
 from polybot.paths import write_json_atomic
@@ -24,17 +25,6 @@ _ET = ZoneInfo("America/New_York")
 _WATCHLIST_MAX_AGE_S = 1800.0
 
 logger = logging.getLogger(__name__)
-
-def _slug_to_window(slug: str) -> str:
-    """Convert btc-updown-5m-1776691500 to '9:25-9:30 ET'."""
-    try:
-        from datetime import timedelta
-        ts = int(slug.rsplit("-", 1)[-1])
-        start = datetime.fromtimestamp(ts, tz=_ET)
-        end = start + timedelta(minutes=5)
-        return f"{start.strftime('%I:%M').lstrip('0')}-{end.strftime('%I:%M ET').lstrip('0')}"
-    except Exception:
-        return slug
 
 class CounterfactualTracker:
     def __init__(self, memory_dir: str) -> None:
