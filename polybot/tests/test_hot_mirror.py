@@ -91,3 +91,18 @@ def test_pregate_one_hz_outside_late_window():
     # Big move OUTSIDE the late window is not fire-adjacent -> 1Hz throttle.
     assert not _pregate_should_eval(now=100.0, last_eval_ts=99.5, **common)
     assert _pregate_should_eval(now=100.6, last_eval_ts=99.5, **common)
+
+
+@pytest.mark.asyncio
+async def test_open_or_pending_count_tracks_transitions(tmp_path):
+    db = Database(str(tmp_path / "c.db"))
+    await db.initialize()
+    await db.set_bankroll(50.0)
+    assert db.open_or_pending_count() == 0
+    pid = await db.open_position_and_debit_bankroll(new_bankroll=47.5, **_kwargs())
+    assert db.open_or_pending_count() == 1
+    await db.mark_pending_resolution(pid)
+    assert db.open_or_pending_count() == 1      # pending still needs management
+    await db.close_position(pid, exit_price=1.0, pnl=0.5, bankroll_delta=3.1)
+    assert db.open_or_pending_count() == 0
+    await db.close()

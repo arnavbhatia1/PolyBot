@@ -700,7 +700,14 @@ async def _get_open_positions_cached(db: Any) -> list:
     now = time.time()
     if now - _open_positions_cache_ts < 5.0:
         return _open_positions_cache
-    _open_positions_cache = await db.get_open_positions()
+    # Flat book = the firing case: the sync mirror proves there is nothing to
+    # fetch, so a cache miss costs 0 yields instead of a DB round-trip that
+    # re-enters the loop queue behind a burst's backlog.
+    _n = db.open_or_pending_count() if hasattr(db, "open_or_pending_count") else None
+    if _n == 0:
+        _open_positions_cache = []
+    else:
+        _open_positions_cache = await db.get_open_positions()
     _open_positions_cache_ts = now
     return _open_positions_cache
 
@@ -2890,13 +2897,17 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
             positions = await _get_open_positions_cached(db)
 
-            # --- FAST PATH: a Coinbase-tick wake with nothing at risk runs the
-            # entry evaluation FIRST — the wake→eval gap was measured at ~88ms
-            # when the eval sat behind housekeeping during bursts. With an OPEN
-            # position, exits keep priority and the normal order stands.
+            # --- FAST PATH: with nothing at risk, a Coinbase-tick wake OR any
+            # wake during a fire-adjacent move runs the entry evaluation FIRST
+            # (fill 299: a refire on a book wake still waited 91ms behind
+            # housekeeping). With an OPEN position, exits keep priority.
             _fast_entry = False
             _loop_marks["cb_woke"] = 1.0 if _cb_woke else 0.0
-            if _cb_woke and not any(p["status"] == "open" for p in positions):
+            _now_fp = time.time()
+            _hot_fp = (_sniper_wake and coinbase_feed is not None
+                       and (300.0 - (_now_fp % 300.0)) <= _pg_late_start
+                       and abs(coinbase_feed.cb_move(_pg_mv_win)) >= 0.6 * _pg_move)
+            if (_cb_woke or _hot_fp) and not any(p["status"] == "open" for p in positions):
                 _fast_entry = True
                 _loop_marks["fast"] = 1.0
                 await _entry_pass(positions)

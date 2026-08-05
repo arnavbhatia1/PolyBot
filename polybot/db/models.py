@@ -147,6 +147,12 @@ class Database:
             return None
         return any(mid == market_id for mid, _st, _sz in self._pos_mirror.values())
 
+    def open_or_pending_count(self) -> int | None:
+        """Sync count of open/pending positions; None until the mirror is built."""
+        if self._bankroll_mirror is None:
+            return None
+        return len(self._pos_mirror)
+
     def mirror_mark_closed(self, position_id: int) -> None:
         """Hook for the one status writer outside this class (reconcile's
         direct status-only UPDATE in live_trader)."""
