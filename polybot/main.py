@@ -1489,6 +1489,8 @@ async def _evaluate_signal_and_enter(
                                 if _loop_marks.get("wake", 0) > 0
                                 and _loop_marks.get("pre_eval", 0) >= _loop_marks.get("wake", 0)
                                 else None),
+        "lat_fast_path": bool(_loop_marks.get("fast")),
+        "lat_cb_woke": bool(_loop_marks.get("cb_woke")),
         # Regime-Kelly SHADOW stamps (frozen cuts; sizing untouched) — the
         # nightly counterfactual-D read and its gated SPRT consume these.
         **_regime_shadow_fields(
@@ -2855,9 +2857,13 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             # when the eval sat behind housekeeping during bursts. With an OPEN
             # position, exits keep priority and the normal order stands.
             _fast_entry = False
+            _loop_marks["cb_woke"] = 1.0 if _cb_woke else 0.0
             if _cb_woke and not any(p["status"] == "open" for p in positions):
                 _fast_entry = True
+                _loop_marks["fast"] = 1.0
                 await _entry_pass(positions)
+            else:
+                _loop_marks["fast"] = 0.0
 
             # --- POSITION MANAGEMENT: resolution check + active re-evaluation ---
             live_results = await asyncio.gather(
