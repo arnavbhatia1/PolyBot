@@ -62,18 +62,8 @@ import re
 _ANSI_RE = re.compile(r'\033\[[0-9;]*m')
 
 
-def _slug_to_window(slug: str) -> str:
-    """Convert btc-updown-5m-1776691500 to '9:25-9:30 ET'."""
-    try:
-        from zoneinfo import ZoneInfo
-        from datetime import datetime, timedelta
-        ts = int(slug.rsplit("-", 1)[-1])
-        ET = ZoneInfo("America/New_York")
-        start = datetime.fromtimestamp(ts, tz=ET)
-        end = start + timedelta(minutes=5)
-        return f"{start.strftime('%I:%M').lstrip('0')}-{end.strftime('%I:%M ET').lstrip('0')}"
-    except Exception:
-        return slug
+from polybot.agents.pipeline_analytics import slug_to_window as _slug_to_window
+
 
 class _StripAnsiFormatter(logging.Formatter):
     """Strips ANSI color codes so log files stay clean."""
@@ -129,9 +119,8 @@ logging.getLogger("polybot.discord_bot.bot").setLevel(logging.INFO)
 _contract_price_cache: dict[str, tuple[float, dict[str, Any]]] = {}  # market_id -> (timestamp, contract)
 _CONTRACT_CACHE_TTL = 5.0  # seconds — re-fetch at most every 5s per contract
 _CONTRACT_RESOLUTION_TTL = 2.0  # faster polling when contract might be resolving
-# Stale-while-revalidate plumbing: the wake path must NEVER wait on Gamma —
-# an inline fetch on a Coinbase-tick wake put a full HTTP RTT in front of the
-# sniper evaluation (the measured 300-550ms tick-to-submit p90 tail).
+# Stale-while-revalidate: the wake path must NEVER wait on Gamma — an inline
+# fetch put a full HTTP RTT in front of the sniper evaluation.
 _contract_refresh_inflight: set[str] = set()
 _CONTRACT_SERVE_MAX_AGE_S = 900.0  # never serve a cache entry older than this
 # Loop-segment marks for the latency breakdown stamped into trade_context.
@@ -793,11 +782,9 @@ async def _refresh_contract_prices(market_scanner: Any, market_id: str, http_cli
 async def _get_contract_prices(market_scanner: Any, market_id: str, http_client: Any = None) -> dict[str, Any] | None:
     """Current Up/Down contract state, stale-while-revalidate.
 
-    Serves the cache immediately (seconds_remaining recomputed locally) and
-    refreshes in the background on TTL expiry — an inline Gamma fetch here sat
-    directly in front of the sniper evaluation on tick wakes. Blocks only when
-    there is no servable cache at all (first call, or cache older than
-    _CONTRACT_SERVE_MAX_AGE_S).
+    Serves the cache immediately (seconds_remaining recomputed locally),
+    refreshing in the background on TTL expiry. Blocks only with no servable
+    cache (first call, or older than _CONTRACT_SERVE_MAX_AGE_S).
     """
     from datetime import datetime, timezone
 
@@ -1951,9 +1938,8 @@ async def _check_counterfactuals(counterfactual_tracker: Any, ghost_tracker: Any
                                  event_metadata_cache: dict[str, Any] | None = None) -> None:
     """Pre-fetch Gamma metadata for watched scalps/ghosts and check resolutions."""
     cf_event_metadata = dict(event_metadata_cache or {})
-    # Union of both watchlists: ghost windows are mostly UNTRADED, so nothing
-    # else re-fetches their Gamma metadata after close — without this, sniper
-    # veto ghosts died unresolved at the 20-min drop (0 persisted ever).
+    # Union both watchlists: untraded ghost windows get no Gamma metadata from
+    # anywhere else — sniper veto ghosts died unresolved (0 persisted live).
     watched = set(counterfactual_tracker.watched_markets)
     if ghost_tracker is not None:
         watched |= set(ghost_tracker.watched_markets)
@@ -2714,6 +2700,83 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     # Closure captures clob_ws once — reused across all book-update ticks.
     _midprice_fn = _get_token_midprice(clob_ws) if clob_ws else None
 
+    async def _entry_pass(positions: list) -> None:
+        """The single entry evaluation — one copy, two call sites in the loop.
+
+        A Coinbase-tick wake with no open position runs this FIRST (before
+        position management); every other wake runs it last, as before.
+        """
+        nonlocal ws_subscribed_tokens, prev_contract_tokens, last_eval_log_window, window_strikes
+        # Skip new entries when paused / outside hours (positions still managed)
+        if is_paused_fn():
+            return
+        if not in_trading_hours:
+            return
+        # Expired positions waiting for Gamma resolution don't block new entries.
+        max_concurrent = config.get("execution", {}).get("max_concurrent_positions", 1)
+        active_count = sum(1 for p in positions if p["status"] == "open")
+        if active_count >= max_concurrent:
+            return
+
+        contract, cid, ws_subscribed_tokens, prev_contract_tokens = \
+            await _discover_contract_and_subscribe(
+                market_scanner, ws_subscribed_tokens, clob_ws,
+                prev_contract_tokens, db=db, http_client=http_client)
+        if not contract:
+            return
+
+        # Warm the py-clob market-info cache so the entry FOK signs without ~2
+        # sequential REST round-trips; dedups per condition_id (PaperTrader: no-op).
+        if hasattr(trader, "prewarm_market_info"):
+            asyncio.create_task(trader.prewarm_market_info(contract.get("condition_id", "")))
+
+        # Never attempt entry when already holding a position in this window.
+        if any(p["market_id"] == cid and p["status"] == "open" for p in positions):
+            return
+
+        token_up = contract["token_id_up"]
+        token_down = contract["token_id_down"]
+
+        prices, last_eval_log_window = await _fetch_market_prices(
+            contract, token_up, token_down, market_scanner,
+            http_client, clob_ws, max_spread, last_eval_log_window)
+        if not prices:
+            return
+
+        price_up = prices["price_up"]
+        price_down = prices["price_down"]
+        book_up = prices["book_up"]
+        book_down = prices["book_down"]
+        depth_usd_up = prices["depth_usd_up"]
+        depth_usd_down = prices["depth_usd_down"]
+        eval_window = prices["eval_window"]
+
+        strike, btc_price, window_strikes, last_eval_log_window, _ = \
+            _compute_strike_and_btc(cid, binance_feed, window_strikes,
+                                    eval_window, last_eval_log_window,
+                                    chainlink_feed=chainlink_feed,
+                                    coinbase_feed=coinbase_feed,
+                                    trades_feed=trades_feed,
+                                    contract=contract)
+        if strike is None:
+            return
+
+        current_bankroll = await _get_bankroll_cached(db)
+        _loop_marks["pre_eval"] = time.time()
+        _, last_eval_log_window = await _evaluate_signal_and_enter(
+            contract, cid, binance_feed, indicator_engine,
+            signal_engine, market_scanner, http_client, clob_ws,
+            trader, alert_manager, db, config, breaker,
+            price_up, price_down,
+            book_up, book_down, depth_usd_up, depth_usd_down,
+            btc_price, strike, eval_window, last_eval_log_window,
+            token_up, token_down, signal_config, max_bankroll_pct,
+            bankroll=current_bankroll,
+            depth_feed=depth_feed, trades_feed=trades_feed,
+            coinbase_feed=coinbase_feed,
+            chainlink_feed=chainlink_feed,
+            ghost_tracker=ghost_tracker)
+
     while True:
         # Check if scheduler requested shutdown (auto-restart cycle after pipeline)
         if scheduler and getattr(scheduler, '_shutdown_requested', False):
@@ -2725,6 +2788,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         _sniper_wake = coinbase_feed is not None and bool(
             config.get("late_window", {})["sniper_enabled"])
 
+        _cb_woke = False  # this wake was a Coinbase tick (set below)
         # Event-driven: react instantly to WebSocket book/resolution updates; short timeout for housekeeping
         if clob_ws:
             try:
@@ -2739,6 +2803,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 for t in pending:
                     t.cancel()
                 if _sniper_wake:
+                    _cb_woke = coinbase_feed.price_event.is_set()
                     coinbase_feed.price_event.clear()
                 if clob_ws.book_updated.is_set():
                     clob_ws.book_updated.clear()
@@ -2766,8 +2831,18 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                     current_trading_day, day_open_bankroll, day_wins, day_losses, day_fees,
                     alert_manager, db, config, breaker)
 
-            # --- POSITION MANAGEMENT: resolution check + active re-evaluation ---
             positions = await _get_open_positions_cached(db)
+
+            # --- FAST PATH: a Coinbase-tick wake with nothing at risk runs the
+            # entry evaluation FIRST — the wake→eval gap was measured at ~88ms
+            # when the eval sat behind housekeeping during bursts. With an OPEN
+            # position, exits keep priority and the normal order stands.
+            _fast_entry = False
+            if _cb_woke and not any(p["status"] == "open" for p in positions):
+                _fast_entry = True
+                await _entry_pass(positions)
+
+            # --- POSITION MANAGEMENT: resolution check + active re-evaluation ---
             live_results = await asyncio.gather(
                 *[_get_contract_prices(market_scanner, pos["market_id"], http_client) for pos in positions],
                 return_exceptions=True,
@@ -2813,9 +2888,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                             chainlink_feed=chainlink_feed)
 
             # --- COUNTERFACTUAL: check watched scalps for resolution (every 30s) ---
-            # Background task: its Gamma sweep (one fetch per watched CF/ghost
-            # market) blocked THIS wake for hundreds of ms — with a sniper fire
-            # potentially waiting behind it. Nothing downstream needs its result.
+            # Background task: the inline Gamma sweep blocked this wake ahead of
+            # a potential sniper fire; nothing downstream needs its result.
             if counterfactual_tracker:
                 global _last_cf_check_ts, _cf_check_task
                 _now_cf = time.time()
@@ -2826,80 +2900,9 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                         _check_counterfactuals(counterfactual_tracker, ghost_tracker,
                                                market_scanner, http_client, binance_feed))
 
-            # --- ENTRY: find contract and evaluate for edge ---
-            # Skip new entries when paused (positions still managed above)
-            if is_paused_fn():
-                continue
-
-            # Skip new entries outside trading hours (positions still managed above)
-            if not in_trading_hours:
-                continue
-
-            # Concurrent windows: allow up to max_concurrent_positions from DIFFERENT markets.
-            # Expired positions waiting for Gamma resolution don't block new entries.
-            max_concurrent = config.get("execution", {}).get("max_concurrent_positions", 1)
-            active_count = sum(1 for p in positions if p["status"] == "open")
-            if active_count >= max_concurrent:
-                continue
-
-            contract, cid, ws_subscribed_tokens, prev_contract_tokens = \
-                await _discover_contract_and_subscribe(
-                    market_scanner, ws_subscribed_tokens, clob_ws,
-                    prev_contract_tokens, db=db, http_client=http_client)
-            if not contract:
-                continue
-
-            # Warm the py-clob market-info cache so the entry FOK signs without ~2
-            # sequential REST round-trips; dedups per condition_id (PaperTrader: no-op).
-            if hasattr(trader, "prewarm_market_info"):
-                asyncio.create_task(trader.prewarm_market_info(contract.get("condition_id", "")))
-
-            # Never attempt entry when already holding a position in this window.
-            if any(p["market_id"] == cid and p["status"] == "open" for p in positions):
-                continue
-
-            token_up = contract["token_id_up"]
-            token_down = contract["token_id_down"]
-
-            prices, last_eval_log_window = await _fetch_market_prices(
-                contract, token_up, token_down, market_scanner,
-                http_client, clob_ws, max_spread, last_eval_log_window)
-            if not prices:
-                continue
-
-            price_up = prices["price_up"]
-            price_down = prices["price_down"]
-            book_up = prices["book_up"]
-            book_down = prices["book_down"]
-            depth_usd_up = prices["depth_usd_up"]
-            depth_usd_down = prices["depth_usd_down"]
-            eval_window = prices["eval_window"]
-
-            strike, btc_price, window_strikes, last_eval_log_window, _ = \
-                _compute_strike_and_btc(cid, binance_feed, window_strikes,
-                                        eval_window, last_eval_log_window,
-                                        chainlink_feed=chainlink_feed,
-                                        coinbase_feed=coinbase_feed,
-                                        trades_feed=trades_feed,
-                                        contract=contract)
-            if strike is None:
-                continue
-
-            current_bankroll = await _get_bankroll_cached(db)
-            _loop_marks["pre_eval"] = time.time()
-            _, last_eval_log_window = await _evaluate_signal_and_enter(
-                contract, cid, binance_feed, indicator_engine,
-                signal_engine, market_scanner, http_client, clob_ws,
-                trader, alert_manager, db, config, breaker,
-                price_up, price_down,
-                book_up, book_down, depth_usd_up, depth_usd_down,
-                btc_price, strike, eval_window, last_eval_log_window,
-                token_up, token_down, signal_config, max_bankroll_pct,
-                bankroll=current_bankroll,
-                depth_feed=depth_feed, trades_feed=trades_feed,
-                coinbase_feed=coinbase_feed,
-                chainlink_feed=chainlink_feed,
-                ghost_tracker=ghost_tracker)
+            # --- ENTRY (normal order) — the fast path already ran it this wake
+            if not _fast_entry:
+                await _entry_pass(positions)
 
         except AuthError as e:
             # Every subsequent order would fail identically — bail loudly rather than
@@ -3633,10 +3636,8 @@ def _make_sigint_handler(force_quit=os._exit):
 
     def _handler(signum=None, frame=None):
         state["count"] += 1
-        # os.write only: buffered sys.stderr writes from signal context hit
-        # Python's reentrancy guard when the main thread is mid-write
-        # (RuntimeError killed a teardown live — systemd's control-group stop
-        # reliably delivers a second SIGTERM).
+        # os.write only: buffered stderr from signal context hits Python's
+        # reentrancy guard mid-write — a RuntimeError killed a live teardown.
         if state["count"] >= 2:
             try:
                 os.write(2, b"\nForce-quitting (second signal).\n")
