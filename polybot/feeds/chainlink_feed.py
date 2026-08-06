@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Any
 
 import websockets
@@ -38,6 +38,16 @@ class ChainlinkFeed:
         self._watchdog_task: asyncio.Task | None = None
         self._running: bool = False
         self.on_report = None  # micro-tape hook: every RTDS report (recording.MicroTape)
+        # Official 30s-TWAP stream (resolution source from 2026-08-07): observed
+        # value + its observation ts + local receipt (the topic delivers ~1.6s
+        # behind observation — receipt-vs-ts measures that lag continuously).
+        self.on_twap = None    # micro-tape hook: every official TWAP report
+        self.twap_official: float = 0.0
+        self.twap_official_ts: float = 0.0
+        self.twap_official_rx: float = 0.0
+        # Raw-report ring (~45s of payload-ts, price) — feeds twap_30(), our own
+        # running reconstruction of the official average.
+        self._reports: deque[tuple[float, float]] = deque()
         self._boundary_prices: "OrderedDict[int, float]" = OrderedDict()
         # boundary_ts -> (first at/after report ts, prev report ts). First-ts gap
         # drives strike_reliable(); prev None = feed's first-ever report = untrusted.
@@ -65,6 +75,35 @@ class ChainlinkFeed:
         if self._price > 0 and self.age_seconds < STALE_TIMEOUT_S:
             return self._price
         return None
+
+    def twap_30(self, end_ts: float | None = None, window_s: float = 30.0) -> float | None:
+        """Our reconstruction of the official 30s TWAP: time-weighted (step-function,
+        last-known-value) average of raw reports over [end−window, end] on the
+        payload-ts clock. None until the buffer spans the whole window — a partial
+        average silently masquerading as the real thing is worse than no value.
+        The official methodology is unpublished; this assumed form is verified
+        continuously against the official topic (twap_official)."""
+        end = end_ts if end_ts is not None else (self._last_report_ts or 0.0)
+        if end <= 0 or not self._reports:
+            return None
+        start = end - window_s
+        acc = 0.0
+        prev_t: float | None = None
+        prev_p = 0.0
+        for t, p in self._reports:
+            if t > end:
+                break
+            if t <= start:
+                prev_t, prev_p = start, p    # last report at/before start anchors
+                continue
+            if prev_t is None:
+                return None                  # no anchor — window not fully covered
+            acc += prev_p * (t - prev_t)
+            prev_t, prev_p = t, p
+        if prev_t is None:
+            return None
+        acc += prev_p * (end - prev_t)
+        return acc / window_s
 
     def boundary_captured(self, window_ts: int) -> bool:
         """True once the first report at/after window_ts has locked the boundary.
@@ -201,7 +240,13 @@ class ChainlinkFeed:
                     self.staleness.mark_connected()
                     await ws.send(json.dumps({
                         "action": "subscribe",
-                        "subscriptions": [{"topic": "crypto_prices_chainlink", "type": "*"}],
+                        "subscriptions": [
+                            {"topic": "crypto_prices_chainlink", "type": "*"},
+                            # The resolution source from 2026-08-07: 30s TWAP.
+                            # Exact filter format per docs (compact, lowercase).
+                            {"topic": "crypto_prices_twap_thirty", "type": "update",
+                             "filters": "{\"symbol\":\"btc/usd\"}"},
+                        ],
                     }))
                     # backoff resets only on real data, NOT on connect — a silent socket
                     # (RTDS rate-limiting us) must keep escalating or we re-trip the 429 limiter.
@@ -221,14 +266,28 @@ class ChainlinkFeed:
                             if value is None:
                                 continue
                             now = time.time()
+                            payload_ts = payload.get("timestamp") or payload.get("ts")
+                            observed_ts = self._epoch_seconds(float(payload_ts)) if payload_ts is not None else now
+                            # TWAP messages carry the same symbol — route by topic
+                            # STRICTLY, or averaged values poison the strike capture.
+                            if msg.get("topic", "") == "crypto_prices_twap_thirty":
+                                self.twap_official = float(value)
+                                self.twap_official_ts = observed_ts
+                                self.twap_official_rx = now
+                                if self.on_twap is not None:
+                                    try:
+                                        self.on_twap(observed_ts, self.twap_official)
+                                    except Exception:
+                                        pass
+                                continue
                             self._price = float(value)
                             self._last_update = now
                             backoff = RECONNECT_BASE_S      # healthy data — safe to reset
-                            # Payload timestamp preferred; wall-clock fallback if the field is missing.
-                            payload_ts = payload.get("timestamp") or payload.get("ts")
-                            observed_ts = self._epoch_seconds(float(payload_ts)) if payload_ts is not None else now
                             self.staleness.observe(now)
                             self._record_boundary(observed_ts)
+                            self._reports.append((observed_ts, self._price))
+                            while self._reports and self._reports[0][0] < observed_ts - 45.0:
+                                self._reports.popleft()
                             # Optional micro-tape hook — must not raise into the feed.
                             if self.on_report is not None:
                                 try:

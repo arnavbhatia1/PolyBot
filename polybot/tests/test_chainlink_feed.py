@@ -230,3 +230,86 @@ class TestChainlinkFeed:
 
         # First 429 jumps to RECONNECT_MAX_S/2 (30), not the base 5; then doubles to the cap.
         assert sleeps[0] >= cf_mod.RECONNECT_MAX_S / 2, f"429 must back off hard, got {sleeps[:2]}"
+
+
+class TestTwap:
+    """The 30s-TWAP machinery: our reconstruction + strict topic routing
+    (resolution source from 2026-08-07)."""
+
+    def test_twap_30_time_weighted_step_function(self):
+        f = ChainlinkFeed()
+        end = 1786060000.0
+        # Value 100 holds [end-30, end-20], 200 holds [end-20, end-10], 300 holds [end-10, end]
+        f._reports.extend([
+            (end - 42.0, 100.0),   # anchor at/before window start
+            (end - 20.0, 200.0),
+            (end - 10.0, 300.0),
+        ])
+        assert f.twap_30(end_ts=end) == pytest.approx((100 + 200 + 300) / 3)
+
+    def test_twap_30_none_until_window_fully_covered(self):
+        f = ChainlinkFeed()
+        end = 1786060000.0
+        f._reports.append((end - 12.0, 500.0))   # no report at/before end-30
+        assert f.twap_30(end_ts=end) is None     # partial average must not masquerade
+        assert ChainlinkFeed().twap_30(end_ts=end) is None
+
+    def test_twap_topic_routes_away_from_strike_capture(self):
+        """TWAP messages carry the same btc/usd symbol — a routing slip would
+        poison _price and the boundary capture with averaged values."""
+        import asyncio, json as _j
+
+        f = ChainlinkFeed()
+        boundary = ((int(time.time()) // 300) - 1) * 300
+
+        async def run():
+            class FakeWS:
+                def __init__(self, frames):
+                    self._frames = list(frames)
+                async def send(self, _): pass
+                def __aiter__(self): return self
+                async def __anext__(self):
+                    if not self._frames:
+                        raise StopAsyncIteration
+                    return self._frames.pop(0)
+
+            raw_report = _j.dumps({"topic": "crypto_prices_chainlink",
+                                   "payload": {"symbol": "btc/usd", "value": 64000.0,
+                                               "timestamp": (boundary + 1) * 1000}})
+            twap_report = _j.dumps({"topic": "crypto_prices_twap_thirty",
+                                    "payload": {"symbol": "btc/usd", "value": 63990.5,
+                                                "timestamp": (boundary + 2) * 1000,
+                                                "window_s": 30}})
+            ws = FakeWS([raw_report, twap_report])
+            f._running = True
+            f._ws = ws
+            # Drive the message loop body directly via _run's iteration: emulate by
+            # feeding through the same code path using a one-shot connect monkeypatch.
+            import websockets as _wslib
+            class _Ctx:
+                async def __aenter__(self): return ws
+                async def __aexit__(self, *a): return False
+            orig = _wslib.connect
+            _wslib.connect = lambda *a, **k: _Ctx()
+            try:
+                async def stop_soon():
+                    await asyncio.sleep(0.05)
+                    f._running = False
+                    raise _wslib.ConnectionClosed(None, None) if False else None
+                t = asyncio.create_task(f._run())
+                await asyncio.sleep(0.1)
+                f._running = False
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+            finally:
+                _wslib.connect = orig
+
+        asyncio.run(run())
+        # Raw report set the price + strike; TWAP report set ONLY the twap fields.
+        assert f.price == 64000.0
+        assert f.get_strike(boundary) == 64000.0
+        assert f.twap_official == 63990.5
+        assert f.twap_official_ts == pytest.approx(boundary + 2)

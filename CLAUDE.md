@@ -333,7 +333,13 @@ it was removed). Never re-add resting quotes.
   every CLOB best-bid/ask CHANGE + every Coinbase tick (final 90s of each
   window) and every Chainlink RTDS report (always; payload + receipt ts, so
   delivery holes are measurable) → `memory/recordings/micro_*.jsonl`
-  (gitignored). This is what lets future replays model FOK reachability
+  (gitignored). Since 08-06 it also records the official 30s-TWAP stream
+  (`crypto_prices_twap_thirty`, the resolution source from 08-07) as `"t"`
+  records with payload + receipt ts; `chainlink_feed.twap_30()` reconstructs
+  the running average from raw reports (None until the buffer spans 30s), and
+  `twap_official`/`twap_official_ts`/`twap_official_rx` hold the latest
+  official value — the topic delivers ~1.6s behind observation, so computing
+  our own is the faster read while the official value remains the resolver. This is what lets future replays model FOK reachability
   against the true book trajectory instead of a sampled ceiling.
 - **Per-decision records**: `trade_context` stamped into outcomes + ghosts
   (entry facts, model prob, flow/CVD telemetry, book aux, adverse audit

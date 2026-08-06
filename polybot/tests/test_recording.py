@@ -286,13 +286,16 @@ class TestMicroTape:
         t.on_cb_tick(late, 60010.0)
         t.on_cb_tick(late, 60011.0, feed_delay_ms=72.5)
         t.on_cl_report(1783600000.0, 60005.0)
+        t.on_twap_report(1783600001.0, 60004.2)
         t.flush()
         t._writer.shutdown(wait=True)
         files = list(tmp_path.glob("micro_*.jsonl"))
         assert len(files) == 1
         rows = [_j.loads(l) for l in files[0].read_text().splitlines()]
         kinds = {r["k"] for r in rows}
-        assert kinds == {"c", "l"}
+        assert kinds == {"c", "l", "t"}
+        t_row = next(r for r in rows if r["k"] == "t")
+        assert t_row["ts"] == 1783600001.0 and "rx" in t_row and t_row["p"] == 60004.2
         c_rows = [r for r in rows if r["k"] == "c"]
         assert "fd" not in c_rows[0]           # no exchange timestamp → no field
         assert c_rows[1]["fd"] == 72.5         # transit leg recorded when known

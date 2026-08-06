@@ -615,6 +615,19 @@ class MicroTape:
         except Exception:
             pass
 
+    def on_twap_report(self, payload_ts: float, value: float) -> None:
+        """Wired as ChainlinkFeed.on_twap. Official 30s-TWAP stream (the resolution
+        source from 2026-08-07), always recorded with receipt ts so the topic's
+        delivery lag stays measurable."""
+        try:
+            now = time.time()
+            self._buf.append(json.dumps({
+                "k": "t", "ts": round(payload_ts, 3), "rx": round(now, 3), "p": value,
+            }))
+            self._maybe_flush(now)
+        except Exception:
+            pass
+
     def on_cl_report(self, payload_ts: float, price: float) -> None:
         """Wired as ChainlinkFeed.on_report.
 

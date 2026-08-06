@@ -3383,6 +3383,7 @@ async def main() -> None:
     clob_ws.on_bba = micro_tape.on_bba
     coinbase_feed.on_tick = micro_tape.on_cb_tick
     chainlink_feed.on_report = micro_tape.on_cl_report
+    chainlink_feed.on_twap = micro_tape.on_twap_report
     window_recorder = WindowPathRecorder(
         db=db, clob_ws=clob_ws, coinbase_feed=coinbase_feed,
         chainlink_feed=chainlink_feed, market_scanner=market_scanner,
