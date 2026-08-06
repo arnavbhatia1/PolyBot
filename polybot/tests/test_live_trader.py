@@ -936,3 +936,103 @@ async def test_submit_awaits_inflight_warmup_instead_of_double_signing(trader):
     await warm
     assert result.filled is True
     assert trader.client.create_market_order.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Sell audit — a FOK SELL fills at limit-or-BETTER; a limit-booked exit gets
+# corrected to the exchange's trade record (regression: real +$0.15 scalp
+# pinged as a −$0.08 loss because the indexer lost the race).
+# ---------------------------------------------------------------------------
+
+async def _open_and_close_at_limit(trader, booked, shares, fee_rate):
+    from polybot.execution.base import exit_fee_usdc
+    _setup_successful_fill(trader, fill_price="0.89", fill_size="3.7753")
+    kwargs = {**_TRADE_KWARGS, "price": 0.89, "size": 3.36, "market_id": "mkt-sell-audit"}
+    pos_id = (await trader.open_trade(**kwargs)).position_id
+    rev = shares * booked - exit_fee_usdc(shares, booked, fee_rate)
+    await trader.db.close_position(pos_id, exit_price=booked, pnl=rev - 3.36,
+                                   fees=0.02, exit_reason="scalp", bankroll_delta=rev)
+    return pos_id, rev
+
+
+@pytest.mark.asyncio
+async def test_sell_audit_corrects_limit_booked_exit(trader, monkeypatch):
+    from polybot.execution.base import exit_fee_usdc
+    shares, booked, true_vwap, fee_rate = 3.7, 0.892, 0.957, 0.07
+    pos_id, rev_booked = await _open_and_close_at_limit(trader, booked, shares, fee_rate)
+    bank_before = await trader.db.get_bankroll()
+
+    async def fake_px(order_id, fallback):
+        return true_vwap, True
+    monkeypatch.setattr(trader, "_get_fill_price_ex", fake_px)
+    import polybot.execution.live_trader as lt_mod
+    monkeypatch.setattr(lt_mod, "_FILL_AUDIT_DELAY_S", 0.0)
+    corrected = []
+    trader.on_exit_corrected = lambda *a: corrected.append(a)
+
+    await trader._audit_sell_fill(pos_id, "ord-1", booked, shares, fee_rate, "Down")
+
+    delta = (shares * true_vwap - exit_fee_usdc(shares, true_vwap, fee_rate)) \
+        - (shares * booked - exit_fee_usdc(shares, booked, fee_rate))
+    row = await (await trader.db.conn.execute(
+        "SELECT exit_price, pnl FROM trade_history WHERE position_id=?",
+        (pos_id,))).fetchone()
+    assert row[0] == pytest.approx(true_vwap, abs=1e-4)
+    assert row[1] == pytest.approx(rev_booked - 3.36 + delta, abs=1e-6)
+    assert await trader.db.get_bankroll() == pytest.approx(bank_before + delta, abs=1e-6)
+    assert corrected and corrected[0][4] == pytest.approx(delta, abs=1e-6)
+    # A wrongly-booked "loss" flips to the true profit sign.
+    assert delta > 0.20
+
+
+@pytest.mark.asyncio
+async def test_sell_audit_leaves_books_when_no_trade_record(trader, monkeypatch):
+    shares, booked, fee_rate = 3.7, 0.892, 0.07
+    pos_id, _ = await _open_and_close_at_limit(trader, booked, shares, fee_rate)
+    bank_before = await trader.db.get_bankroll()
+
+    async def fake_px(order_id, fallback):
+        return 0.0, False
+    monkeypatch.setattr(trader, "_get_fill_price_ex", fake_px)
+    import polybot.execution.live_trader as lt_mod
+    monkeypatch.setattr(lt_mod, "_FILL_AUDIT_DELAY_S", 0.0)
+    monkeypatch.setattr(lt_mod, "_SELL_AUDIT_ATTEMPTS", 2)
+
+    await trader._audit_sell_fill(pos_id, "ord-2", booked, shares, fee_rate, "Down")
+
+    row = await (await trader.db.conn.execute(
+        "SELECT exit_price FROM trade_history WHERE position_id=?",
+        (pos_id,))).fetchone()
+    assert row[0] == pytest.approx(booked, abs=1e-6)
+    assert await trader.db.get_bankroll() == pytest.approx(bank_before, abs=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_close_trade_schedules_sell_audit_only_on_fallback(trader, monkeypatch):
+    from polybot.execution.base import FillResult
+    _setup_successful_fill(trader, fill_price="0.89", fill_size="3.7753")
+    calls = []
+    monkeypatch.setattr(trader, "_schedule_sell_audit",
+                        lambda *a, **k: calls.append(a))
+
+    async def sellable(token_id, fb):
+        return fb
+
+    monkeypatch.setattr(trader, "_sellable_shares", sellable)
+
+    for i, from_trades in enumerate((False, True)):
+        kwargs = {**_TRADE_KWARGS, "price": 0.89, "size": 3.36,
+                  "market_id": f"mkt-sched-{i}"}
+        pos_id = (await trader.open_trade(**kwargs)).position_id
+
+        async def sell(token_id, shares, price, fee_rate=0.07, _ft=from_trades):
+            return FillResult(filled=True, fill_price=price, fill_size=shares * price,
+                              order_id="ord-9", price_from_trades=_ft)
+        monkeypatch.setattr(trader, "_execute_sell", sell)
+        res = await trader.close_trade(pos_id, exit_price=0.892,
+                                       token_id=_TRADE_KWARGS["token_id"])
+        assert res.success is True
+
+    # Only the fallback-priced close needs the audit; the trades-priced one is truth.
+    assert len(calls) == 1
+    assert calls[0][1] == "ord-9"

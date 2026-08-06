@@ -130,7 +130,12 @@ reprices.
   $0.00 while Polymarket charges none; "~$ (est)" when the chain lookup
   failed). The conservative fee model still runs the gates, and the Discord
   day-close reports the summed modeled buffer (`get_day_stats`) alongside the
-  $0.00 actually charged. CAVEAT on the pre-07-08 live
+  $0.00 actually charged. SELL exits get the same chain-truth treatment: a FOK
+  SELL fills at limit-or-BETTER, so when the trade indexer loses the race the
+  close books the padded limit (worst case) — the post-close sell audit
+  (`_audit_sell_fill`, ~8-32s) re-reads the order's trade record and syncs
+  trade_history + bankroll to the true VWAP (EXIT CORRECTED log + Discord
+  note; a real +$0.15 scalp once pinged as a −$0.08 loss without it). CAVEAT on the pre-07-08 live
   ledger: those 46 fills booked the padded limit (silent fallback + a defeated
   audit) — chain-truth reconstruction puts them ≈ breakeven, ~4.4¢/sh better
   than the ledger's −4.3¢/sh; read that era's kill-rule prints accordingly.

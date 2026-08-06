@@ -324,6 +324,44 @@ class Database:
             await self.conn.commit()
             return True
 
+    async def correct_sell_fill(
+        self, position_id: int, new_exit_price: float,
+        bankroll_delta: float, fee_delta: float,
+    ) -> bool:
+        """Sell-audit write path: sync a limit-booked exit to chain truth.
+
+        Reprices the closed trade (exit_price, pnl, fees) and credits the
+        under-booked proceeds to bankroll in one transaction. Returns False
+        without writing when the trade row is missing (never booked).
+        """
+        async with self._write_lock:
+            try:
+                row = await (await self.conn.execute(
+                    "SELECT 1 FROM trade_history WHERE position_id=?", (position_id,)
+                )).fetchone()
+                if not row:
+                    return False
+                await self.conn.execute(
+                    "UPDATE trade_history SET exit_price=?, pnl=pnl+?, fees=fees+? "
+                    "WHERE position_id=?",
+                    (new_exit_price, bankroll_delta, fee_delta, position_id),
+                )
+                await self.conn.execute(
+                    "UPDATE positions SET exit_price=? WHERE id=?",
+                    (new_exit_price, position_id),
+                )
+                await self.conn.execute(
+                    "UPDATE bankroll SET amount = amount + ? WHERE id = 1",
+                    (bankroll_delta,),
+                )
+                await self.conn.commit()
+                if self._bankroll_mirror is not None:
+                    self._bankroll_mirror += float(bankroll_delta)
+                return True
+            except BaseException:
+                await self.conn.rollback()
+                raise
+
     async def has_position_for_market(self, market_id: str) -> bool:
         cursor = await self.conn.execute(
             "SELECT COUNT(*) FROM positions WHERE market_id=? AND status IN ('open', 'pending_resolution')",

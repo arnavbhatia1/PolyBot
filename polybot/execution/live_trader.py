@@ -78,6 +78,7 @@ _ANSI_DIM = "\033[2m"
 _ANSI_RED = "\033[91m"
 _ANSI_RESET = "\033[0m"
 _FILL_AUDIT_DELAY_S = 8.0     # let the indexer see the fill before auditing the entry price
+_SELL_AUDIT_ATTEMPTS = 4      # sell-audit lookups, _FILL_AUDIT_DELAY_S apart (~8-32s)
 _BALANCE_SETTLE_FLOOR = 0.03  # min chain-settle wait even if WS fires immediately
 _BALANCE_SETTLE_DELAY = 0.15  # max wait — WS-wait ceiling, and the fixed delay when no WS is attached
 # WS trade events land ~50-150ms after match confirmation; the floor absorbs
@@ -362,6 +363,9 @@ class LiveTrader(BaseTrader):
         # fallback ("provisional"). main.py prints the OPEN banner from it —
         # log-only plumbing; the trade engine never waits on this.
         self.on_entry_settled = None
+        # Fired when the post-close SELL audit corrects a limit-booked exit:
+        # cb(position_id, side, old_price, new_price, delta_usd). Log-only.
+        self.on_exit_corrected = None
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
     async def prewarm_http(self) -> None:
@@ -559,7 +563,8 @@ class LiveTrader(BaseTrader):
                     self._invalidate_balance_cache(token_id)
                     asyncio.create_task(self._sweep_residual(token_id, fill_price))
                 notional = amount if side == BUY else amount * fill_price
-                return FillResult(filled=True, fill_price=fill_price, fill_size=notional)
+                return FillResult(filled=True, fill_price=fill_price, fill_size=notional,
+                                  order_id=order_id, price_from_trades=True)
             # No confirmed cancel and no trades in the REST record — check the
             # WS tape like the ambiguous-POST path before giving up (BUY only;
             # a phantom-filled SELL reconciles via _sellable_shares + the
@@ -710,6 +715,60 @@ class LiveTrader(BaseTrader):
             if str(p.get("asset")) == token_id:
                 return float(p.get("size") or 0.0)
         return 0.0
+
+    def _schedule_sell_audit(self, position_id: int, order_id: str, booked_price: float,
+                             shares: float, fee_rate: float, side: str = "") -> None:
+        """Fire-and-forget audit of a fallback-booked SELL (called by
+        base.close_trade after the DB write; paper books exact fills)."""
+        try:
+            asyncio.create_task(self._audit_sell_fill(
+                position_id, order_id, booked_price, shares, fee_rate, side))
+        except RuntimeError:
+            pass  # no running loop (tests constructing outside asyncio)
+
+    async def _audit_sell_fill(self, position_id: int, order_id: str,
+                               booked_price: float, shares: float,
+                               fee_rate: float, side: str) -> None:
+        """Sync a limit-booked SELL to the exchange's trade record.
+
+        A FOK SELL fills at limit-or-BETTER; when the trade indexer loses the
+        race the books hold the padded limit — worst case, several ¢/sh
+        pessimistic (a real +$0.15 scalp once pinged as a −$0.08 loss). Re-read
+        until the record appears, then correct trade_history + bankroll to
+        chain truth (the SELL twin of the +8s entry audit). Never raises.
+        """
+        try:
+            true_vwap = 0.0
+            for _ in range(_SELL_AUDIT_ATTEMPTS):
+                await asyncio.sleep(_FILL_AUDIT_DELAY_S)
+                px, from_trades = await self._get_fill_price_ex(order_id, 0.0)
+                if from_trades and px > 0:
+                    true_vwap = px
+                    break
+            if true_vwap <= 0:
+                logger.warning("SELL audit: no trade record for order %.8s… — "
+                               "exit stays booked at the limit %.3f", order_id, booked_price)
+                return
+            if abs(true_vwap - booked_price) < 0.0005:
+                return
+            delta = (shares * true_vwap - exit_fee_usdc(shares, true_vwap, fee_rate)) \
+                - (shares * booked_price - exit_fee_usdc(shares, booked_price, fee_rate))
+            fee_delta = exit_fee_usdc(shares, true_vwap, fee_rate) \
+                - exit_fee_usdc(shares, booked_price, fee_rate)
+            ok = await self.db.correct_sell_fill(
+                position_id, round(true_vwap, 4), delta, fee_delta)
+            if not ok:
+                return
+            logger.info("EXIT CORRECTED %s %.3f → %.3f (%+.2f$) — books now match the chain",
+                        side, booked_price, true_vwap, delta)
+            cb = self.on_exit_corrected
+            if cb is not None:
+                try:
+                    cb(position_id, side, booked_price, true_vwap, delta)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning("SELL audit failed for position %d: %s", position_id, e)
 
     def _schedule_fill_audit(self, pos_id: int, token_id: str, recorded_price: float,
                              size_usdc: float, fee_rate: float) -> None:
@@ -1702,6 +1761,7 @@ class LiveTrader(BaseTrader):
                     # Matched = filled. Nothing past this point may re-enter the
                     # retry loop — a fill-price lookup hiccup would resubmit an
                     # already-filled order.
+                    _px_from_trades = False
                     try:
                         fill_price: float | None = None
                         if side == BUY:
@@ -1740,13 +1800,17 @@ class LiveTrader(BaseTrader):
                                             "vwap=%.4f (before=%.4f after=%.4f notional=%.2f)",
                                             delta, fill_price, balance_before, balance_after, amount,
                                         )
-                        if fill_price is None:
-                            fill_price = await self._get_fill_price(order_id, expected_price)
+                        if fill_price is not None:
+                            _px_from_trades = True   # WS/balance-delta = chain truth
+                        else:
+                            fill_price, _px_from_trades = await self._get_fill_price_ex(
+                                order_id, expected_price)
                     except Exception as e:
                         logger.warning(
                             "FOK %s matched but fill-price determination failed (%s) — "
                             "using limit price", side, e)
                         fill_price = expected_price
+                        _px_from_trades = False
                     order_short = (f"{order_id[:6]}…{order_id[-4:]}"
                                    if isinstance(order_id, str) and len(order_id) > 12
                                    else order_id)
@@ -1776,6 +1840,8 @@ class LiveTrader(BaseTrader):
                         filled=True,
                         fill_price=fill_price,
                         fill_size=notional_usdc,
+                        order_id=order_id,
+                        price_from_trades=_px_from_trades,
                     )
 
                 # Accepted but not matched (e.g. "delayed"): the order exists at
@@ -1854,10 +1920,15 @@ class LiveTrader(BaseTrader):
     # -- Fill price lookup --------------------------------------------------
 
     async def _get_fill_price(self, order_id: str, fallback_price: float) -> float:
-        """Actual fill VWAP from associate_trades. Retries because the CLOB REST
-        view lags the match engine 100–300ms; falls back to the limit price only
-        after all retries fail or the order genuinely has no trades (a premature
-        fallback misreports VWAP and breaks fee accounting downstream).
+        price, _ = await self._get_fill_price_ex(order_id, fallback_price)
+        return price
+
+    async def _get_fill_price_ex(self, order_id: str,
+                                 fallback_price: float) -> tuple[float, bool]:
+        """Actual fill VWAP from associate_trades, plus whether it came from the
+        exchange's trade record (False = the fallback limit — a SELL booked on it
+        is worst-case and gets the post-close audit). Retries because the CLOB
+        REST view lags the match engine 100–300ms.
         """
         last_err: Exception | None = None
         for attempt in range(_FILL_PRICE_LOOKUP_RETRIES):
@@ -1874,7 +1945,7 @@ class LiveTrader(BaseTrader):
                         "(exchange order lookup unavailable; %.4f booked provisionally).",
                         _FILL_AUDIT_DELAY_S, fallback_price)
                     logger.debug("Fill price lookup %s: get_order None on every attempt", order_id)
-                    return fallback_price
+                    return fallback_price, False
                 trades = order.get("associate_trades", [])
                 trades = [t for t in trades if isinstance(t, dict)]
                 if not trades:
@@ -1888,12 +1959,12 @@ class LiveTrader(BaseTrader):
                         _FILL_AUDIT_DELAY_S, fallback_price)
                     logger.debug("Fill price lookup %s: associate_trades empty after %d tries",
                                  order_id, _FILL_PRICE_LOOKUP_RETRIES)
-                    return fallback_price
+                    return fallback_price, False
                 total_shares = sum(float(t["size"]) for t in trades)
                 if total_shares == 0:
-                    return fallback_price
+                    return fallback_price, False
                 total_cost = sum(float(t["size"]) * float(t["price"]) for t in trades)
-                return total_cost / total_shares
+                return total_cost / total_shares, True
             except Exception as e:
                 last_err = e
                 if attempt < _FILL_PRICE_LOOKUP_RETRIES - 1:
@@ -1903,4 +1974,4 @@ class LiveTrader(BaseTrader):
             "submitted limit %.4f. Fee math may be off if the order walked the book.",
             order_id, last_err, fallback_price,
         )
-        return fallback_price
+        return fallback_price, False

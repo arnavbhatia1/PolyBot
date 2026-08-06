@@ -552,6 +552,16 @@ def _pregate_should_eval(now: float, last_eval_ts: float, sec_rem: float,
     return (now - last_eval_ts) >= (0.25 if sec_rem <= late_start_s else 1.0)
 
 
+def _hot_move_abs(feed: Any, window_s: float) -> float:
+    """|cb_move| for the pre-gate/fast-path hot checks. 0.0 when the feed is
+    absent or its buffer doesn't cover the window (cold boot, mid-reconnect) —
+    a cold tick throttles to the slow path, it never crashes the loop."""
+    if feed is None:
+        return 0.0
+    mv = feed.cb_move(window_s)
+    return abs(mv) if mv is not None else 0.0
+
+
 def _fmt_secs(s: float) -> str:
     """Seconds remaining formatted as M:SS — 298 → '4:58'. Easier to scan than '298s'."""
     s_int = max(0, int(s))
@@ -2800,7 +2810,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         nonlocal _last_full_eval
         # µs pre-gate: only fire-adjacent wakes pay the full evaluation.
         _pg_now = time.time()
-        _pg_mv = abs(coinbase_feed.cb_move(_pg_mv_win)) if coinbase_feed is not None else 0.0
+        _pg_mv = _hot_move_abs(coinbase_feed, _pg_mv_win)
         if not _pregate_should_eval(_pg_now, _last_full_eval, 300.0 - (_pg_now % 300.0),
                                     _pg_mv, _pg_late_start, _pg_move, _sniper_wake):
             return
@@ -2941,9 +2951,9 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
             _fast_entry = False
             _loop_marks["cb_woke"] = 1.0 if _cb_woke else 0.0
             _now_fp = time.time()
-            _hot_fp = (_sniper_wake and coinbase_feed is not None
+            _hot_fp = (_sniper_wake
                        and (300.0 - (_now_fp % 300.0)) <= _pg_late_start
-                       and abs(coinbase_feed.cb_move(_pg_mv_win)) >= 0.6 * _pg_move)
+                       and _hot_move_abs(coinbase_feed, _pg_mv_win) >= 0.6 * _pg_move)
             _open_n = db.open_market_count() if hasattr(db, "open_market_count") else None
             if (_cb_woke or _hot_fp) and _open_n == 0:
                 _fast_entry = True
@@ -3179,6 +3189,17 @@ async def main() -> None:
         # The +8s chain audit reports the settled entry here → the OPEN banner
         # prints once, with the real fill (see _log_open_banner).
         trader.on_entry_settled = _on_entry_settled
+
+        def _on_exit_corrected(pos_id: int, side: str, old_px: float,
+                               new_px: float, delta: float) -> None:
+            # The close banner already printed with the limit-booked exit — one
+            # follow-up line keeps Discord agreeing with the wallet.
+            if alert_manager:
+                _spawn_bg(alert_manager.send_health(
+                    f"CORRECTED {side.upper()} exit {old_px:.3f} → {new_px:.3f} "
+                    f"({delta:+.2f}$) — earlier close line was the order's limit; "
+                    f"books now match your wallet."))
+        trader.on_exit_corrected = _on_exit_corrected
     else:
         # Fallbacks match settings.yaml's calibrated values (one source of truth
         # for the realism constants; the fallbacks only fire if settings omit keys).

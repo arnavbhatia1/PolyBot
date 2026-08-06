@@ -106,3 +106,21 @@ async def test_open_or_pending_count_tracks_transitions(tmp_path):
     await db.close_position(pid, exit_price=1.0, pnl=0.5, bankroll_delta=3.1)
     assert db.open_or_pending_count() == 0
     await db.close()
+
+
+def test_hot_move_abs_none_safe():
+    """Regression: a mid-reconnect Coinbase buffer returns cb_move=None — the
+    pre-gate/fast-path hot checks must read it as a cold tick, never crash
+    the loop (08-05: abs(None) spammed one Discord error per tick)."""
+    from polybot.main import _hot_move_abs
+
+    class F:
+        def __init__(self, v):
+            self.v = v
+
+        def cb_move(self, w):
+            return self.v
+
+    assert _hot_move_abs(None, 2.0) == 0.0
+    assert _hot_move_abs(F(None), 2.0) == 0.0
+    assert _hot_move_abs(F(-12.5), 2.0) == 12.5

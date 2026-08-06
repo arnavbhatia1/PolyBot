@@ -120,6 +120,10 @@ class FillResult:
     fill_price: float = 0.0
     fill_size: float = 0.0
     reason: str = ""
+    order_id: str = ""
+    # False = fill_price is a fallback (the FOK limit — worst case for a SELL,
+    # which fills at limit-or-BETTER); triggers the post-close sell audit.
+    price_from_trades: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +432,14 @@ class BaseTrader(ABC):
             bankroll_delta=revenue + residual_credit, pnl=pnl,
             fees=total_fees, exit_reason=exit_reason,
         )
+
+        # Live audits a limit-booked SELL against the exchange's trade record
+        # once the indexer catches up — a FOK SELL fills at limit-or-BETTER, so
+        # the fallback price is worst-case (paper books exact fills, no hook).
+        audit = getattr(self, "_schedule_sell_audit", None)
+        if audit is not None and fill.order_id and not fill.price_from_trades:
+            audit(position_id, fill.order_id, fill_price, shares, fee_rate,
+                  position.get("side", ""))
 
         return TradeResult(success=True, position_id=position_id, log_return=lr,
                            pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=fee_usdc,
