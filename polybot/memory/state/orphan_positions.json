@@ -1,20 +1,10 @@
 {
-  "checked_at": "2026-08-05T02:54:28.743352+00:00",
+  "checked_at": "2026-08-05T19:47:09.599835+00:00",
   "funder": "0x863DB57D4a54fA306091D53B4Fe19f1611221Be8",
   "non_dust_chain_positions": 1,
-  "db_known_tokens": 6,
+  "db_known_tokens": 26,
   "orphans_detected": 0,
   "orphans": [],
-  "resolved_dust": [
-    {
-      "token_id": "79249545431008472115638033981590956856899837743699259266476780640462937910002",
-      "shares": 2.2375,
-      "outcome": "Down",
-      "title": "Bitcoin Up or Down - August 4, 3:10PM-3:15PM ET",
-      "conditionId": "0x80c08b1f9c2bb7aa83dc751b82e814fed51388a916f6614fcbc30b43f6890c7d",
-      "redeemable": true,
-      "current_value": 0.0
-    }
-  ],
+  "resolved_dust": [],
   "allow_orphans_flag": false
 }

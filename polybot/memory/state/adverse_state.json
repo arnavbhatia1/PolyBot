@@ -1,34 +1,20 @@
 {
   "schema": 2,
-  "saved_at": 1785899660.2059956,
+  "saved_at": 1785982492.4498498,
   "fills": [
     {
-      "timestamp": 1785898178.6586428,
+      "timestamp": 1785982492.449102,
       "side": "Down",
-      "fill_price": 0.84,
-      "token_id": "104503434685402697502952070210078059049509173093415665939059961198319527573338",
-      "midprice_at_fill": 0.895,
+      "fill_price": 0.91,
+      "token_id": "73962191678687733396538386454771876050546255174852784120541827419489736180751",
+      "midprice_at_fill": 0.915,
       "midprice_5s": null,
       "midprice_10s": null,
       "midprice_15s": null,
       "midprice_30s": null,
       "midprice_60s": null,
       "resolved": false,
-      "position_id": 299
-    },
-    {
-      "timestamp": 1785899660.2029855,
-      "side": "Down",
-      "fill_price": 0.85,
-      "token_id": "506084303756676465006811054376763519965509022837546228669879707362837166385",
-      "midprice_at_fill": 0.855,
-      "midprice_5s": null,
-      "midprice_10s": null,
-      "midprice_15s": null,
-      "midprice_30s": null,
-      "midprice_60s": null,
-      "resolved": false,
-      "position_id": 300
+      "position_id": 318
     }
   ]
 }
