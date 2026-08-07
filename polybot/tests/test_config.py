@@ -75,12 +75,6 @@ class TestValidateConfigPasses:
         """All parameters at their minimum allowed values."""
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.04)
-        _set_nested(cfg, "signal.min_edge", 0.02)
-        _set_nested(cfg, "signal.min_kelly", 0.005)
-        _set_nested(cfg, "signal.atr_sigma_ratio", 1.2)
-        _set_nested(cfg, "signal.exit_edge_threshold", -0.10)
-        _set_nested(cfg, "signal.min_model_probability", 0.52)
-        _set_nested(cfg, "signal.student_t_df", 3)
         _set_nested(cfg, "execution.max_concurrent_positions", 1)
         _set_nested(cfg, "execution.max_bankroll_deployed", 0.0)
         _set_nested(cfg, "execution.max_book_fill_pct", 0.0)
@@ -97,12 +91,6 @@ class TestValidateConfigPasses:
         """All parameters at their maximum allowed values."""
         cfg = _valid_config()
         _set_nested(cfg, "math.kelly_fraction", 0.18)
-        _set_nested(cfg, "signal.min_edge", 0.10)
-        _set_nested(cfg, "signal.min_kelly", 0.04)
-        _set_nested(cfg, "signal.atr_sigma_ratio", 2.5)
-        _set_nested(cfg, "signal.exit_edge_threshold", -0.03)
-        _set_nested(cfg, "signal.min_model_probability", 0.70)
-        _set_nested(cfg, "signal.student_t_df", 8)
         _set_nested(cfg, "execution.max_bankroll_deployed", 1.0)
         _set_nested(cfg, "execution.max_book_fill_pct", 1.0)
         _set_nested(cfg, "execution.slippage_impact_pct", 0.20)
@@ -157,7 +145,7 @@ class TestValidateSniperKnobs:
 class TestValidateConfigMissing:
     @pytest.mark.parametrize("key", [
         "math.kelly_fraction",       # registry-driven check
-        "signal.max_edge",            # loader-specific check outside the registry
+        "late_window.twap_zone_s",    # leg-zone check
         "execution.initial_bankroll", # execution section
         "late_window.sniper_fok_slip",  # sniper knobs are money-critical too
     ])
@@ -176,9 +164,9 @@ class TestValidateConfigMissing:
 class TestValidateConfigOutOfRange:
     @pytest.mark.parametrize("key, bad_value", [
         ("math.kelly_fraction", 0.50),                       # float upper
-        ("signal.min_edge", 0.001),                          # float lower
-        ("signal.exit_edge_threshold", 0.01),                # signed (must be negative)
-        ("signal.student_t_df", 9),                          # int upper
+        ("late_window.sniper_min_edge", 0.001),              # float lower
+        ("maker.maker_k_cancel_s", 10.0),                    # float upper
+        ("circuit_breaker.losses_to_reduce", 0),             # positive int
         ("execution.initial_bankroll", -100),                # must be > 0
         ("execution.max_bankroll_deployed", 1.1),            # percent upper
         ("market.entry_window_seconds", 0),                  # must be > 0 (int)
@@ -197,8 +185,8 @@ class TestValidateConfigOutOfRange:
 class TestValidateConfigTypes:
     def test_int_field_rejects_float(self):
         cfg = _valid_config()
-        _set_nested(cfg, "signal.student_t_df", 4.5)
-        with pytest.raises(ValueError, match="student_t_df.*integer"):
+        _set_nested(cfg, "execution.max_concurrent_positions", 4.5)
+        with pytest.raises(ValueError, match="max_concurrent_positions.*integer"):
             validate_config(cfg)
 
     def test_numeric_field_rejects_string(self):
@@ -211,12 +199,12 @@ class TestValidateConfigTypes:
 def test_multiple_violations_all_listed():
     cfg = _valid_config()
     _set_nested(cfg, "math.kelly_fraction", 0.50)
-    _set_nested(cfg, "signal.min_edge", 0.001)
+    _set_nested(cfg, "late_window.sniper_min_edge", 0.001)
     _set_nested(cfg, "execution.initial_bankroll", -1)
     with pytest.raises(ValueError) as exc_info:
         validate_config(cfg)
     msg = str(exc_info.value)
     assert "kelly_fraction" in msg
-    assert "min_edge" in msg
+    assert "sniper_min_edge" in msg
     assert "initial_bankroll" in msg
     assert "3 error(s)" in msg

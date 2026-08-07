@@ -1,7 +1,9 @@
 # PolyBot
 
-5-min BTC Up/Down trader for Polymarket. The **TWAP lock sniper** (§2) is the
-bot's **only strategy** — base entries are always suppressed (no toggle).
+5-min BTC Up/Down trader for Polymarket, rebuilt lean for the TWAP era: the
+only feeds are Chainlink (RTDS) + the Polymarket CLOB + Gamma, the only
+strategy is the two-leg TWAP lock system (§2), and every position holds to
+resolution. There is no other model, feed, or exit path.
 **PAPER SHADOW since 2026-08-07**: at 00:00 UTC that day Polymarket switched
 resolution from the terminal Chainlink snapshot to the official **30-second
 TWAP stream** (strike = the stream's value at the open, final = its value at
@@ -17,9 +19,8 @@ ask to 0.84-0.93 for 1-4s in ~1 in 6 windows, well inside the ~0.4s FOK reach.
 The lock call itself has never been wrong (583/583 windows, margins frozen in
 `signal_engine.TWAP_MARGIN_*`). **No real capital until the pre-registered
 paper bar passes** (§2); the nightly health job re-reads the realized shadow
-daily. The **base strategy** (§3) has no proven edge, never touches real
-capital, and survives only as the zero-capital ghost/counterfactual evidence
-stream the gate machinery needs.
+daily. Gate-vetoed fires persist as leg-stamped ghosts — the zero-capital
+evidence stream the gate machinery reads.
 
 **This file is the single source of truth — update it in the same commit as any
 behavioral change.**
@@ -66,10 +67,10 @@ Chainlink's official BTC/USD 30s-TWAP stream (via Polymarket RTDS topic
 `crypto_prices_twap_thirty`, ~1Hz on integer seconds, delivered ~1.6-1.8s
 behind observation); Gamma mirrors it for discovery. The per-window **decision
 strike** is the TWAP stream's **first report at/after the window-boundary
-timestamp** (`chainlink_feed.get_strike`; `_compute_strike_and_btc`) — the
+timestamp** (`chainlink_feed.get_strike`; `_compute_strike`) — the
 exact `price_to_beat` rule, verified bit-exact against Gamma's served value
 (17/17), and each window's final equals the next window's strike to the cent
-(the resolution-watch invariant, §7). The RAW ~1Hz stream (`crypto_prices_chainlink`)
+(the resolution-watch invariant, §6). The RAW ~1Hz stream (`crypto_prices_chainlink`)
 is NOT the strike source — its boundary value differs from the served strike by
 $10+ — it feeds the running TWAP reconstruction (`running_avg`/`twap_30`,
 rx-clock ZOH: the official aggregator weights by arrival spacing, which fits
@@ -79,8 +80,8 @@ RESOLVED truth, but served late/unreliably in-window: when present it WINS;
 otherwise the boundary capture carries. A capture landing > 2s past the
 boundary (`strike_reliable`: the topic ticks on integer seconds, so the true
 boundary report carries ts == boundary; a later first capture = delivery hole;
-pre-boundary gaps don't veto) still serves the base path but is UNTRUSTED —
-the sniper never deploys capital on it (`_strike_trusted`). Two modes, one
+pre-boundary gaps don't veto) still serves logging/telemetry but is UNTRUSTED —
+no leg deploys capital on it (`_strike_trusted`). Two modes, one
 engine: **paper**
 (realism shim: real CLOB books, FOK semantics, convex slippage, latency
 SAMPLED inverse-CDF from the LIVE ledger's measured order-path POST-RTT
@@ -129,9 +130,7 @@ sniper buys those dips and holds ≤30s to resolution.
   snapped back to 0.99+ before the order lands KILLS it and the bot sits that
   window out (never chase a vanished dip upward; burst-era fills proved wide
   pads buy exactly the repriced books). Capped at `model_prob − min_edge` so a
-  true reprice can never fill below the edge floor. Base entries keep the
-  tight at-ask limit (a reject on adverse movement
-  is a feature there). All gates run at the decision ask (harness-faithful);
+  true reprice can never fill below the edge floor. All gates run at the decision ask (harness-faithful);
   the pre-submit VWAP re-check still vetoes books that lost the edge. The booked
   entry is the CLOB's TRUE fill VWAP — resolved WS-tape → balance-delta →
   `associate_trades` REST → loudly-logged limit fallback; in production the
@@ -162,14 +161,12 @@ sniper buys those dips and holds ≤30s to resolution.
   ledger: those 46 fills booked the padded limit (silent fallback + a defeated
   audit) — chain-truth reconstruction puts them ≈ breakeven, ~4.4¢/sh better
   than the ledger's −4.3¢/sh; read that era's kill-rule prints accordingly.
-- **What it bypasses**: `max_edge` (→ `sniper_max_edge` 0.50, at both the
-  edge-cap and pre-submit gates), the late-window time penalty, and the base
-  signal-level gates `min_model_probability`, `min_kelly`, and the ATR
-  percentile (deliberate — the signal is lock-driven, not L1-driven;
-  `sniper_min_edge` = `min_edge` is the floor and the $1 min-size backstops
-  tiny-Kelly fires). Every execution-quality gate stays — adverse selection,
-  edge-decay, depth, net-edge, min-size, pre-submit VWAP re-check, feed
-  freshness, flip hurdle. **Sizing is market-anchored**: sniper Kelly is
+- **The gates** (all of them): trusted strike, Chainlink freshness (≤60s),
+  edge cap (`sniper_max_edge` 0.50 — wider = stale phantom price), chosen-side
+  depth ≥ $50 with a 50% book-fill cap, net-edge after modeled slippage ≥ the
+  floor, $1 min size, scar vetoes (graduated + operator-enabled only), and the
+  pre-submit VWAP re-check against the live book. **Sizing is market-anchored**:
+  leg Kelly is
   computed on `ask + sniper_min_edge` (the defended edge at market odds),
   never on the tier prob — the tier floors are empirical tail bounds, and
   Kelly on a tail bound upsizes exactly the fires a regime shift breaks
@@ -180,14 +177,14 @@ sniper buys those dips and holds ≤30s to resolution.
   reachability modeled, plus the bit-exact mechanism check) is a CEILING —
   fills book the decision ask, queue depth is invisible. (2) The BINDING gate
   is the **paper-shadow's realized fills** (`sniper_shadow_status.py` /
-  `live_health_read`, scoped to `validation_epoch` 2026-08-07T15:00Z — the
-  audited two-leg strategy; night-one fills ran different code):
+  `live_health_read`, scoped to `validation_epoch` 2026-08-07T16:25Z — the
+  lean-machine deploy; earlier fills ran different code):
   **pre-registered 08-07** as the deadline-shortened leg-identical form of
   the 8-day bar (07-15 precedent) — ≥ 6 clean ET days, ≥ 40 fills,
   equal-weight net ≥ +2¢/sh, `t_day ≥ 2`, ≥ 5/6 days positive, day-bootstrap
   `p10 > 0`, AND zero realized lock-breaches (a locked side losing =
   mechanism failure → investigate before any deploy). Never deploy real
-  capital on the harness print alone. The nightly health job (§7) re-reads
+  capital on the harness print alone. The nightly health job (§6) re-reads
   both in production.
 - **Open head-start leg** (`SignalEngine.evaluate_open_edge`, §3c in
   settings): the strike is the average of the 30s BEFORE the open — known at
@@ -224,85 +221,31 @@ sniper buys those dips and holds ≤30s to resolution.
   only tape prints STRICTLY BELOW the bid count, because queue position is
   unknowable and at-price fills would flatter the shadow. Fills stamp
   `signal_leg="maker_bid"` — its own ledger line and bar.
-- **Capital deploys ONLY through these legs** — base-entry BUYs are ALWAYS
-  suppressed (unconditional in `main.py`; recorded as `sniper_only` ghosts —
-  free zero-capital evidence for the gate). `sniper_enabled` is the shared
-  kill-bar SAFETY across all legs — the emergency brake (set `false` to halt
-  every leg), not a strategy choice. Recipe: `mode: live` + `sniper_enabled:
-  true`.
+- **Capital deploys ONLY through these legs** — there is no other entry
+  path in the codebase. `sniper_enabled` is the shared kill-bar SAFETY across
+  all legs — the emergency brake (set `false` to halt every leg), not a
+  strategy choice. Recipe: `mode: live` + `sniper_enabled: true`.
 - **Post-live kill rule** (armed at any future go-live): trailing-4-day
   lenient mean < +2¢/sh or trailing-8-day t < 2 → set `sniper_enabled: false`.
   A single realized lock-breach at max tier trips it immediately.
 
-## 3. The base strategy (paper-only evidence engine)
-
-Entry = inventory sourcing off a single fair-value model; **no proven edge**
-(binding 10-day read failed 2026-07-01: t_day +1.07; paper P&L swings are
-BTC-vol variance). It keeps running in paper because it exercises the exit
-engine and generates the outcome/ghost/counterfactual evidence stream.
-
-**The L1 model** (the only model — never rebuild entry-side prediction):
+## 3. Sizing (every leg)
 
 ```
-ac         = clamp(lag1_autocorr(closes, regime_lookback), ±0.5)
-vol_scaled = (max(atr, atr_floor) / atr_sigma_ratio) * sqrt(minutes_remaining) * sqrt((1+ac)/(1-ac))
-z          = (btc_price - strike) / vol_scaled
-prob_up    = StudentT_CDF(df, z * sqrt(df/(df-2)))        # df clamped ≥3
-```
-
-- `student_t_cdf` + df clamp + `autocorr_vol_scale` in `core/aux_layers.py`.
-- ATR floor is dynamic: `max(min_atr, 0.30*rolling_20)`, widened when
-  `rolling_20/long_term_200 < atr_regime_shift_threshold`. ATR buffers keep one
-  slot per 1-min candle (entry + exit ticks share the dedup).
-- `btc_price` from Coinbase WS only (<2s stale → decision skipped, never
-  zeroed) — the L1/exit-engine spot; the TWAP legs decide on the raw
-  Chainlink stream.
-- L1 is uncalibrated (`model_probability` == `model_probability_raw`).
-
-**Entry gates** — edge = `model_prob - market_price`; all must pass:
-
-| Gate | Threshold |
-|---|---|
-| Chosen-side prob | ≥ `min_model_probability` (0.56) |
-| Edge | ≥ `min_edge` (0.04; flip premium scales it — §6) |
-| Kelly (fee-aware) | ≥ `min_kelly` (0.01); `b_eff = b*(1-fee_rate)` |
-| Spread | `spread/2 + EFFECTIVE_FEE_PEAK ≤ max_spread` (0.10); both sides unavailable = skip |
-| Book depth | ≥ `min_book_depth_usd` ($50) on the chosen side |
-| Price sum | `price_up + price_down ∈ [0.98, 1.02]` |
-| Book freshness | both sides' WS books ≤ 10s old |
-| Edge cap | edge ≤ `max_edge` (0.20) — wider = stale phantom price |
-| ATR | ≥ 5th percentile (lower bound only) |
-| Adverse-selection hard skip | `adverse_rate_at_30s ≥ 0.80` |
-| Edge-decay | mean 15s post-fill drift ≥ −0.05 (needs ≥15 resolved fills/30min) |
-| Net edge after slippage | `edge − price*est_slip ≥ min_edge` |
-| Pre-submit re-check | FOK VWAP keeps net edge in `[min_edge, max_edge]` |
-| Min order | ≥ $1 (CLOB floor; paper mirrors live) |
-| Feed staleness | Coinbase ≤30s, Chainlink ≤60s, Binance aggTrade ≤30s, kline ≤45s |
-
-Adverse selection also scales size:
-`kelly_mult = max(0.30, 1 − 1.5*max(0, adverse_rate − 0.45))`, Bayesian-shrunk.
-
-**Ghosting**: every gate veto records a ghost (`GhostTracker`) that resolves at
-window close — the evidence stream for gate evaluation.
-
-## 4. Sizing (applies to both strategies)
-
-```
-size  = bankroll * kelly * circuit_breaker_mult * time_mult * adverse_kelly_mult
+size  = bankroll * kelly * circuit_breaker_mult
 size *= concurrent_multiplier(side, market, opens)     # correlation-aware
 size  = min(size, bankroll * max_bankroll_deployed)    # 0.80
 size  = min(size, side_depth * max_book_fill_pct)      # 0.50
-if size < 1.0: skip
+if size < 1.0: skip                                    # CLOB $1 floor
 ```
 
-`kelly` is the fee-aware Kelly already scaled by `math.kelly_fraction` (0.08) —
+`kelly` is the fee-aware Kelly on the market-anchored defended edge
+(ask + sniper_min_edge), already scaled by `math.kelly_fraction` (0.08) —
 fractional Kelly, not full.
 
 - **Circuit breaker**: tier-locked floor at $100/150/200/... milestones
   (floor = tier × 0.85; sqrt Kelly interpolation down to 0.40×; tier never
   resets down; persists via `peak_bankroll`).
-- **Time multiplier**: full Kelly for the first 60% of the window; after,
-  penalty scales by (1 − conviction) up to 0.30. (Sniper bypasses this.)
 
 ## 5. Orders
 
@@ -338,55 +281,37 @@ the race is measured from the exchanges' clocks, not just ours. Live boot: key+f
 balance/allowance preflight, allowance recheck every 10 fills. Per-trade DB
 writes are atomic. `fill.fill_size` is always USDC notional.
 
-## 6. The exit engine + flips (unstamped/legacy positions only — every
-sniper-leg position holds to resolution, §2)
+## 5. Hold to resolution + resolution
 
-Every tick while holding an unstamped position, re-run L1 and decide HOLD vs EXIT
-(`SignalEngine.evaluate_hold`). `holding_edge = model_prob - bid`; the exit
-threshold blends `exit_edge_threshold` (−0.10) with the binary-payoff
-`ExitBoundary` curve (deep-ITM patience, OTM urgency, ATM fee-aware time
-value); the blend is stamped so the phantom-bid SELL re-verify gates against
-the same number.
+There is NO exit engine: every position rides to resolution, exactly how each
+leg's edge was measured (night one proved the alternative — a spot-lens exit
+scalped a winning maker fill at 0.05 seconds before it paid $1.00).
 
-Branches in order: **loss-cut** (market < entry×0.65, <90s left, BTC wrong
-side of strike by >0.5×ATR; locks the loss only when holding_edge ≤ 0, else
-HOLDs the residual), **deep-loss hold** (holding_edge < −0.10 and
-market < entry → binary residual beats locking the loss), **scalp**
-(holding_edge ≤ effective threshold, outside the whipsaw cushion), else
-**hold**. No confidence overrides.
-
-Re-entry after a scalp (one position per window; `max_concurrent_positions`
-caps across windows) requires clearing a flip hurdle:
-`min_edge + max(flip_premium, spread + 2*fee_rate*p*(1-p))`, premium
-`0.015 + 0.005*max(0, flips-2)`.
-
-**Resolution**: Chainlink decides; winner $1/loser $0 credited atomically.
-Exit price is oracle-first (`event_metadata` final_price vs price_to_beat;
-Gamma resolved prices as fallback; never Binance); Chainlink orphan fallback
-after ~30 min of Gamma silence. Winner payouts book via Polymarket auto-redeem
+**Resolution**: the TWAP oracle decides; winner $1/loser $0 credited
+atomically. Exit price is oracle-first (`event_metadata` final_price vs
+price_to_beat; a coherent resolved CLOB book as fallback; never Binance);
+the orphan fallback (~30 min of Gamma silence) resolves ONLY from genuine
+TWAP boundary captures — it waits and pages rather than fabricate. Our own
+tape prints a TAPE VERDICT ~85s before Gamma serves, and a per-window
+RESOLUTION DRIFT warning fires if Gamma ever disagrees with a reliable
+capture by more than a cent. Winner payouts book via Polymarket auto-redeem
 (the bankroll sync waits for the winning tokens to clear).
 
 Resolved shares are not swept on-chain — winners are claimed manually at
 polymarket.com/portfolio (or via Polymarket's Auto-Redeem), and losing $0 stubs
-sit inert on the wallet, locking nothing (the UI offers a cosmetic "close out"
-for them; the loss is already booked in the ledger at resolution, so closing
-moves $0 — deliberately NOT automated: CLOB orders are the only on-chain thing
-the bot's wallet ever signs). The startup
-wallet-check reports any unclaimed winners honestly (never "worthless leftovers
-ignored"); the redeemable-aware orphan gate lets resolved dust through and
-fail-closes only on genuinely unresolved positions.
+sit inert on the wallet, locking nothing (the loss is already booked in the
+ledger at resolution — deliberately NOT automated: CLOB orders are the only
+on-chain thing the bot's wallet ever signs). The startup wallet-check reports
+any unclaimed winners honestly; the redeemable-aware orphan gate lets resolved
+dust through and fail-closes only on genuinely unresolved positions.
 
-Exits are always taker FOK — no passive/maker/resting path exists (it was
-measured −2.1¢/sh ≈ −$62/day over 8 clean days and moot under the ≤30s sniper, so
-it was removed). Never re-add resting quotes.
-
-## 7. Recorders + evidence stream
+## 6. Recorders + evidence stream
 
 - **Window-path recorder** (`recording.py`, in-process; 1 Hz, 5 Hz in the final
-  45s): both tokens' BBO + touch sizes + top-3 depth + book ages, Coinbase
-  price/BBO/CVD, Chainlink live price + age (the resolution venue), strike,
-  Binance price/CVD/depth20-sides, live-L1 ATR + prob stamp (NULL on cold
-  feeds, never 0.0) for EVERY window (~288/day, self-discovering). Tables
+  45s): both tokens' BBO + touch sizes + top-3 depth + book ages, Chainlink
+  live price + age, and the strike, for EVERY window (~288/day,
+  self-discovering). Columns from the removed feeds (Coinbase/Binance/L1)
+  stay in the schema and record NULL — None-not-0.0 is load-bearing. Tables
   `window_paths` (gitignored sidecar DB) / `window_labels`; 90-day retention
   nightly. **This feeds the head-start gauge, the label flow (labels are the
   kill-bar ground truth), and the pivot-research corpus — everything already
@@ -394,9 +319,9 @@ it was removed). Never re-add resting quotes.
 - **Tape recorder**: every CLOB print (incl. the exchange's own timestamp +
   fee_rate_bps) → `memory/recordings/*.jsonl` (gitignored).
 - **Micro-tape** (`MicroTape`): event-true streams the 5Hz sampler can't see —
-  every CLOB best-bid/ask CHANGE + every Coinbase tick (final 90s of each
-  window) and every Chainlink RTDS report (always; payload + receipt ts, so
-  delivery holes are measurable) → `memory/recordings/micro_*.jsonl`
+  every CLOB best-bid/ask CHANGE (final 90s of each window) and every
+  Chainlink RTDS report (always; payload + receipt ts, so delivery holes are
+  measurable) → `memory/recordings/micro_*.jsonl`
   (gitignored). It also records the official 30s-TWAP stream (the resolution
   source) as `"t"` records with payload + receipt ts;
   `chainlink_feed.running_avg`/`twap_30()` reconstruct the average from raw
@@ -408,17 +333,12 @@ it was removed). Never re-add resting quotes.
   `analyze_twap_lock.py` harness replays (fires + FOK reachability against the
   true book trajectory).
 - **Per-decision records**: `trade_context` stamped into outcomes + ghosts
-  (entry facts, model prob, flow/CVD telemetry, book aux, adverse audit
-  fields, `cl_report_to_submit_ms`/`cb_tick_to_submit_ms` decision latency,
-  the TWAP fire facts (`twap_proj`/`twap_disp`/`twap_k_s`/`twap_tier` — the
-  lock each fire stood on), and the regime-Kelly
-  SHADOW stamps — `regime_buckets` at frozen cuts, `regime_kelly_mult` (burst
-  HOT 1.15 / COLD 0.80, clamped [0.5, 1.5]), `size_flat`/`size_regime` —
-  report-only inputs; sizing never reads them). **None-vs-0.0 is
-  load-bearing**: cold feeds record `None`, never
-  0.0. `CounterfactualTracker` records both arms of every scalp/hold — the
-  ground truth for exit-policy changes (score via `actual − cf`, never a naive
-  signed sum of `delta_pnl`).
+  (entry facts, CLOB book aux, `cl_report_to_submit_ms` decision latency +
+  the per-segment `lat_*` breakdown, the TWAP fire facts
+  (`twap_proj`/`twap_disp`/`twap_k_s`/`twap_tier` — the lock each fire stood
+  on), `open_disp`, `maker_bid`, and `signal_leg` — the per-leg ledger key on
+  every fill AND every ghost). **None-vs-0.0 is load-bearing**: cold inputs
+  record `None`, never 0.0.
 - **NightlyScheduler** (23:45 ET): record rollups + retention sweep + the
   **sniper-edge health report** (`_sniper_health_job`, skipped when
   `sniper_enabled` is false — reports BOTH the SIM read (`analyze_twap_lock.
@@ -431,25 +351,15 @@ it was removed). Never re-add resting quotes.
   **head-start gauge** (`analyze_twap_lock.open_gap_read`: trailing-day
   favorite win rate vs the median ask it traded at — the open leg's oxygen
   meter) — and drives the kill-rule verdict off the realized ledger once
-  fills exist; alert-only, never flips config). The same ping carries the **burst-alive SPRT** state
-  (`polybot/core/sprt.py` + `burst_sprt_read`: Wald test, μ₁ +6¢/sh,
-  α 0.05 / β 0.23, accept ≥ +2.73 / reject ≤ −1.42, no decision before day 3,
-  truncate at 16; σ frozen write-once to `state/sprt_burst.json` from the
-  first 6 qualifying days, which never score — SPRT turns things ON, the kill
-  rule turns things OFF) and the **regime-shadow counterfactual D** accrual
-  (`regime_shadow_read`; its own SPRT starts only after burst accepts), and the
+  fills exist; alert-only, never flips config). The same ping carries the
   **scar scan** (`polybot/core/scar_scan.py` via `scar_scan_read`) — the
   nightly learning loop: every realized fill for the current mode is sliced
   along a FROZEN dimension library (ask/edge/prob buckets, time-remaining,
-  side, DoW, regime buckets incl. frv/atr_short, refire class, cb-move,
-  strike displacement, micro-autocorr, CVD-side agreement, cross-venue gap,
-  chosen-side depth, vig, in-window kill count, flip, CLOB book age at fire,
-  drift-agreement (fired side vs 1-min drift sign), live adverse-fade regime,
-  2s-vs-10s move shape (isolated spike vs extending), and Chainlink-confirms-
-  cross (the resolution venue's own fresh report past the strike vs a
-  Coinbase-only premise); booked slip + submit latency are
-  observational-only — you can't veto on information the fill
-  created); any cell passing the pre-registered flag rule (n ≥ 8, ≥ 3 ET days,
+  signal_leg, side, DoW, session, refire class, strike displacement,
+  chosen-side depth, vig, in-window kill count, CLOB book age at fire, and
+  Chainlink-confirms-cross; dims fed by the removed feeds record None and
+  never populate cells; booked slip + submit latency are observational-only —
+  you can't veto on information the fill created); any cell passing the pre-registered flag rule (n ≥ 8, ≥ 3 ET days,
   EW ≤ −5¢/sh, day-clustered t ≤ −1.5, ≤ 50% ledger coverage, fire-time dims
   only, ≤ 2 new/night, ≤ 6 active) auto-registers as a zero-capital SHADOW
   gate in `memory/state/scar_gates.json`, then each gate runs its own
@@ -482,19 +392,17 @@ it was removed). Never re-add resting quotes.
   set `sniper_enabled: false` (alert-only, like everything here). Pings
   Discord `#polybot-daily` (✅/⚠️/⏳ sniper).
 
-## 8. Hard rules
+## 7. Hard rules
 
 - No ML/feature-stack entry-side prediction — the CLOB price wins. The two
   sanctioned exceptions, each through its own bar: the final-30s TWAP lock (a
   projection of an already-observed average) and the open head-start leg (a
   frozen calibration of a known strike's displacement). Anything else fires
   zero capital.
-- The base strategy never deploys live. No deployment before a kill bar passes;
-  never relax a bar to pass it.
+- No deployment before a kill bar passes; never relax a bar to pass it.
 - No symmetric market-making, no oracle-cadence trading, no expansion past BTC
   until the goal completes.
-- No Gaussian, no Binance resolution, no mid-price edge math (executable CLOB
-  BBO only). Never skip the fee: `rate*shares*p*(1-p)`, rate 0.07
+- No mid-price edge math (executable CLOB BBO only). Never skip the fee: `rate*shares*p*(1-p)`, rate 0.07
   (`DEFAULT_FEE_RATE`); flat-additive gates use `EFFECTIVE_FEE_PEAK` 0.0175 —
   never mix them.
 - `gain_pct = pnl/size`, never log_return. Don't bypass the circuit breaker.
@@ -504,28 +412,27 @@ it was removed). Never re-add resting quotes.
 
 # Part B — Operations
 
-## 9. Project layout
+## 8. Project layout
 
 ```
 polybot/
   main.py                Trading loop; entry/exit/sizing orchestration; sniper hook
   config/                settings.yaml (THE single config source), loader.py (loads + range-validates it)
-  core/                  signal_engine (L1 + exit engine + sniper), exit_boundary,
-                         returns, adverse_selection, order_flow, aux_layers
-  feeds/                 coinbase_feed (primary BTC + CVD), binance_feed (candles/ATR),
-                         binance_depth, binance_trades, chainlink_feed (strike/resolution),
+  core/                  signal_engine (the TWAP legs — margins, calibration,
+                         Kelly), scar_scan (nightly learning loop), sprt
+  feeds/                 chainlink_feed (strike + projection + resolution),
                          clob_ws (books/tape), market_scanner (discovery + gamma fallback),
                          _socket, _staleness, _json
-  indicators/            ATR engine
-  recording.py           WindowPathRecorder (all windows) + TapeRecorder + retention
+  recording.py           WindowPathRecorder (all windows) + TapeRecorder +
+                         MicroTape + retention
   execution/             base (BaseTrader, fee math), paper_trader, live_trader,
                          maker_bid (lock-informed resting bid), circuit_breaker,
                          correlation
-  agents/                scheduler, outcome_reviewer, counterfactual_tracker,
-                         ghost_tracker, pipeline_analytics
-  memory/                outcomes/, ghost_outcomes/, counterfactuals/ (+ rollups);
+  agents/                scheduler, outcome_reviewer, ghost_tracker,
+                         pipeline_analytics
+  memory/                outcomes/, ghost_outcomes/ (+ rollups);
                          recordings/ (gitignored); state/. Layout: polybot/paths.py
-  discord_bot/           monitoring + control commands (§12)
+  discord_bot/           monitoring + control commands (§11)
   db/models.py           SQLite per mode (positions, trade_history, bankroll,
                          peak_bankroll; window_labels lives here too; window_paths
                          sits in a gitignored sidecar DB — window_paths.db)
@@ -542,17 +449,15 @@ scripts/
   reset_paper_clean.py   clean-slate the paper ledger (operator-run, bot STOPPED)
 ```
 
-## 10. Data sources
+## 9. Data sources
 
 | Source | Feed | What |
 |---|---|---|
-| Coinbase | `ticker` WS (BTC-USD) | Primary BTC price + CVD + 1s history |
-| Binance.com | `kline_1m` / `depth20@100ms` / `aggTrade` WS | Candles, ATR, depth, cross-venue gap |
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/tick-size` | Books, tape, executable prices |
 | Polymarket Gamma | `GET /events?slug=` (deprecated upstream; auto-fallback `GET /events/slug/{slug}` — `gamma_events_by_slug`) | Discovery + resolution + labels |
 | Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` (`crypto_prices_twap_thirty` + raw `crypto_prices_chainlink`) | Strike + resolution (TWAP topic); raw stream feeds the projection |
 
-## 11. Running + invariants
+## 10. Running + invariants
 
 The bot runs ONLY on the VPS (Oracle Stockholm, systemd unit `polybot` →
 `run_polybot.sh`): starts 12:01 AM ET, stops trading 11:30 PM ET, nightly jobs
@@ -569,7 +474,7 @@ lock guards one host only). Live preflight: `verify_keys.py` then
   nightly.
 - Kill bars are the deployment authority.
 
-## 12. Discord
+## 11. Discord
 
 `!status` `!history [n]` `!pause` `!resume` `!clear [trades|control|all] confirm`
 `!session` `!pipeline` `!commands` — `!pause` halts new entries only; `!clear`

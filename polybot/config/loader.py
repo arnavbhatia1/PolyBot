@@ -76,33 +76,7 @@ def validate_config(config: dict[str, Any]) -> None:
 
     # Money-critical knobs: settings.yaml values must land inside these ranges at
     # load (a typo like kelly_fraction: 8.0 for 0.08 is rejected, not deployed).
-    _check_range("signal.atr_sigma_ratio", 1.2, 2.5)
-    _check_range("signal.student_t_df", 3, 8, integer=True)
-    _check_range("signal.min_atr", 8.0, 25.0)
-    _check_range("signal.atr_regime_shift_threshold", 0.40, 0.80)
     _check_range("math.kelly_fraction", 0.04, 0.18)
-    _check_range("signal.min_edge", 0.02, 0.10)
-    _check_range("signal.min_kelly", 0.005, 0.04)
-    _check_range("signal.min_model_probability", 0.52, 0.70)
-    _check_range("signal.exit_edge_threshold", -0.10, -0.03)
-
-    _check_range("signal.max_edge", 0.15, 0.30)
-
-    # Exit engine + adverse-selection + timing knobs — consumed by the money
-    # path with direct key access; a typo (0.08 for 0.80) silently disables
-    # the sniper or force-cuts every position, so they gate at boot too.
-    _check_range("signal.loss_cut_fraction", 0.30, 0.90)
-    _check_range("signal.loss_cut_time_s", 30.0, 300.0)
-    _check_range("signal.deep_loss_hold_threshold", -0.30, -0.02)
-    _check_range("signal.regime_lookback", 10, 200, integer=True)
-    _check_range("signal.adverse_selection_threshold", 0.50, 1.0)
-    _check_range("signal.adverse_penalty_floor", 0.20, 0.70)
-    _check_range("signal.adverse_penalty_slope", 0.5, 3.0)
-    _check_range("signal.adverse_penalty_min", 0.10, 1.0)
-    _check_range("signal.edge_decay_threshold", -0.20, 0.0)
-    _check_range("entry_timing.normal_fraction", 0.20, 0.90)
-    _check_range("entry_timing.late_max_penalty", 0.0, 0.90)
-    _check_range("entry_timing.flip_edge_premium", 0.0, 0.05)
     _check_range("circuit_breaker.floor_pct", 0.50, 0.95)
     _check_range("circuit_breaker.min_multiplier", 0.10, 1.0)
     _check_range("execution.fok_spread_cross_floor", 0.0, 0.20)

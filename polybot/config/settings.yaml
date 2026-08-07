@@ -39,58 +39,6 @@ execution:
   paper_latency_floor_s: 0.30      # fastest measured signed POST from the box
   paper_network_fail_rate: 0.03    # 0 network errors in first 29 live POSTs — consistent, keep
 
-binance_trades:
-  ws_url: wss://stream.binance.com:9443/ws
-  max_age_s: 300              # aggTrade rolling-buffer horizon (s)
-
-# =============================================================================
-#  SECTION 2: SIGNAL — L1 fair-value anchor + entry gates + exit engine
-#
-#  The deployable edge is the late-window sniper (SECTION 3b); the base entry
-#  strategy below has no proven edge and runs in paper only as the evidence
-#  engine (the CLOB price beats every feature stack). L1
-#  anchors the fee/spread/Kelly gates. All knobs are operator-owned.
-# =============================================================================
-signal:
-  # --- Edge gates ---
-  min_edge: 0.04              # Minimum model-vs-market gap to enter
-  max_edge: 0.2               # Reject if edge > 20% — likely a stale/phantom price, not real opportunity.
-  min_model_probability: 0.56 # Model must be x% confident in chosen direction
-  min_kelly: 0.01             # Kelly fraction must be at least x% (filters near-worthless bets)
-
-  # --- Exit / loss-cut ---
-  exit_edge_threshold: -0.10  # Scalp when holding_edge drops below x% (blended with the
-                              # ExitBoundary curve at decision time).
-  loss_cut_fraction: 0.65     # Force exit if market < entry × 65% with < loss_cut_time_s remaining.
-  loss_cut_time_s: 90.0       # Last X seconds: if position is deeply underwater, cut it.
-  deep_loss_hold_threshold: -0.10  # Below this holding_edge → hold to resolution.
-
-  # --- Adverse selection (sizing penalty, not entry gate) ---
-  # `adverse_rate_at_30s` shrinks Kelly through `1 − adverse_penalty_slope × max(0, adverse_rate − adverse_penalty_floor)`
-  # capped to [adverse_penalty_min, 1.0]. Hard-skip only if adverse_rate ≥ adverse_selection_threshold.
-  adverse_penalty_floor: 0.45 # Below this, no penalty.
-  adverse_penalty_slope: 1.5  # Penalty steepness; at slope=1.5, adverse=0.85 → kelly_mult=0.40.
-  adverse_penalty_min: 0.30   # Floor so the trade can still happen with reduced size.
-  adverse_selection_threshold: 0.80  # Hard-skip when fade rate ≥ 80% (kept as emergency cutoff).
-  edge_decay_threshold: -0.05 # Skip entry when mean 15s post-fill drift is worse than -5¢.
-                              # Inactive until ≥15 resolved fills in the 30-min lookback.
-
-  # --- L1 model (the only model) ---
-  min_atr: 12.0               # Skip entries when the market is too quiet.
-  atr_sigma_ratio: 1.3        # L1 vol scale: vol_scaled = ATR / this. Higher = sharper/more confident probs, lower = wider. Raw, uncalibrated L1 setting.
-  student_t_df: 5             # Tail fatness (5 = BTC-appropriate fat tails)
-  regime_lookback: 50         # 1-min candles for the lag-1 autocorr that scales remaining vol
-  atr_regime_shift_threshold: 0.60  # ATR_short/ATR_long below this widens the ATR floor
-
-# =============================================================================
-#  SECTION 3: ENTRY TIMING
-# =============================================================================
-entry_timing:
-  normal_fraction: 0.6        # First 60% of window (0-180s): full Kelly, no penalty.
-  late_max_penalty: 0.30      # Last 40%: ATM trades penalized up to x%.
-  flip_edge_premium: 0.015    # Base re-entry edge premium. Scaled by flip count at runtime:
-                              #     effective premium = base + 0.005 × max(0, flip_count − 2).
-
 # =============================================================================
 #  SECTION 3b: LATE-WINDOW SNIPER — the TWAP lock (gated)
 #
@@ -110,10 +58,9 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-07T15:00:00+00:00"  # two-leg strategy as audited (937d3193):
-                               # hold-to-resolution, maker at max tier, open_edge off.
-                               # Night-one fills (02:50-15:00) ran different code —
-                               # 53 of 56 were the killed open_edge leg.
+  validation_epoch: "2026-08-07T16:25:00+00:00"  # the LEAN machine deploy: Chainlink+CLOB+Gamma
+                               # only, no L1/exit engine/old feeds — the bar scores
+                               # only the code being validated.
                                # The nightly health job scores only the current mode's fills
                                # at/after this instant in BOTH modes (earlier fills ran the
                                # snapshot-era signal). Reset when a new validation epoch starts.
@@ -123,8 +70,8 @@ late_window:
                                 # margin — a fill that can't land before the close is a coin toss
   sniper_min_edge: 0.04         # edge floor AND the ask cap in one knob: fire only when
                                 # tier_prob − ask ≥ this (max-tier 0.999 → ask ≤ ~0.96;
-                                # p99.5-tier 0.995 → ask ≤ ~0.955). Set = signal.min_edge so the
-                                # downstream net-edge / pre-submit gates don't silently raise it.
+                                # p99.5-tier 0.995 → ask ≤ ~0.955). Also the net-edge /
+                                # pre-submit floor (SignalEngine.min_edge) — one consistent floor.
   sniper_max_edge: 0.50         # sniper's own sanity cap, replacing the bypassed 0.20
   scar_enforce: []              # learned-veto switch (core/scar_scan.py): gate names from
                                 # memory/state/scar_gates.json whose veto is LIVE. Only add a name
@@ -212,22 +159,3 @@ discord:
 
 database:
   path: polybot/db/polybot.db
-
-binance:
-  symbol: btcusdt
-  ws_url: wss://stream.binance.com:9443/ws
-  rest_url: https://api.binance.com/api/v3
-  candle_buffer_size: 200
-
-binance_depth:
-  ws_url: wss://stream.binance.com:9443/ws
-
-coinbase:
-  ws_url: wss://ws-feed.exchange.coinbase.com
-  product_id: BTC-USD
-
-indicators:
-  atr:
-    period: 7
-    low_percentile: 5
-    history_periods: 100

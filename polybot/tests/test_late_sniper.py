@@ -17,7 +17,6 @@ from polybot.core.signal_engine import (
     OPEN_CALIB, SignalEngine, TWAP_MARGIN_MAX, TWAP_MARGIN_P995,
     TWAP_PROB_DETERMINISTIC, TWAP_PROB_P995, twap_margin,
 )
-from polybot.feeds.coinbase_feed import CoinbaseFeed
 
 
 def test_phase_assigned_before_any_ghost_call():
@@ -40,8 +39,7 @@ def test_phase_assigned_before_any_ghost_call():
 
     # Enclosing free vars that _ghost's base_ctx reads; each must be bound before the ghost.
     # (raw_prob_side / _closes_tail / _ghost_flip_count are local to _ghost, not checked here.)
-    for var in ("aux_signals", "adverse_kelly_mult", "adverse_rate_at_30s",
-                "spot_flow_rec", "flow_score_rec", "phase"):
+    for var in ("aux_signals", "phase", "_signal_leg", "_proj", "_odisp"):
         assigns = [t.lineno
                    for node in ast.walk(fn) if isinstance(node, ast.Assign)
                    for t in ast.walk(node)
@@ -242,59 +240,3 @@ def test_open_calib_is_monotone():
     vals = [v for _, v in OPEN_CALIB]
     assert vals == sorted(vals)
     assert vals[-1] <= 0.85     # never lets the curve claim near-certainty
-
-
-# ───────────────────────────── cb_move accessor ──────────────────────────────
-def test_cb_move_change_over_window():
-    f = CoinbaseFeed()
-    now = time.time()
-    f._window_start = now - 10.0            # buffer continuously spans > 2s
-    f._prices.clear()
-    f._prices.append((now - 3.0, 60000.0))
-    f._prices.append((now - 2.0, 60010.0))  # latest sample at/before cutoff (now-2)
-    f._prices.append((now - 1.0, 60030.0))
-    f.state.price = 60050.0
-    # interpolated at exactly now-2.0 (= the 60010 bucket, within a sub-ms timing epsilon)
-    assert f.cb_move(window_s=2.0) == pytest.approx(40.0, abs=0.01)
-
-
-def test_cb_move_none_when_buffer_truncated():
-    f = CoinbaseFeed()
-    now = time.time()
-    f._window_start = now - 0.5             # reconnect: buffer doesn't span 2s
-    f._prices.append((now - 0.4, 60000.0))
-    f.state.price = 60010.0
-    assert f.cb_move(window_s=2.0) is None
-
-
-def test_cb_move_none_when_no_price():
-    f = CoinbaseFeed()
-    f._window_start = time.time() - 10.0
-    f.state.price = 0.0
-    assert f.cb_move(2.0) is None
-
-
-def test_cb_move_sign_matches_direction():
-    f = CoinbaseFeed()
-    now = time.time()
-    f._window_start = now - 10.0
-    f._prices.append((now - 2.5, 60100.0))
-    f._prices.append((now - 1.0, 60050.0))
-    f.state.price = 60000.0
-    assert f.cb_move(2.0) < 0   # falling price -> negative move
-
-
-def test_cb_move_interpolates_between_buckets_no_overstatement():
-    # Regression for the 1s-bucket overstatement bug: the cutoff (now-2.0) falls BETWEEN
-    # buckets at now-2.5 and now-1.5. The old code took the now-2.5 bucket (a ~2.5s
-    # lookback) and overstated; interpolation must return the price at exactly now-2.0.
-    f = CoinbaseFeed()
-    now = time.time()
-    f._window_start = now - 10.0
-    f._prices.append((now - 2.5, 60000.0))
-    f._prices.append((now - 1.5, 60020.0))   # +20 over 1s -> +10 at the midpoint (now-2.0)
-    f.state.price = 60050.0
-    mv = f.cb_move(window_s=2.0)
-    # interpolated then ~= 60010 -> move ~= 40 (NOT the overstated 50 from using 60000)
-    assert mv == pytest.approx(40.0, abs=0.6)
-    assert mv < 50.0   # the bug would have returned ~50

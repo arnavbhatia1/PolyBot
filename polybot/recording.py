@@ -66,8 +66,9 @@ class WindowPathRecorder:
     fields (None on cold feeds, never 0.0); no decision path reads them.
     """
 
-    def __init__(self, db: Any, clob_ws: Any, coinbase_feed: Any,
-                 chainlink_feed: Any, market_scanner: Any, http_client: Any,
+    def __init__(self, db: Any, clob_ws: Any, chainlink_feed: Any,
+                 market_scanner: Any, http_client: Any,
+                 coinbase_feed: Any = None,
                  binance_trades: Any = None, binance_feed: Any = None,
                  indicator_engine: Any = None, signal_engine: Any = None,
                  binance_depth: Any = None) -> None:
@@ -565,11 +566,10 @@ class MicroTape:
     trajectory between samples. This records the events themselves:
 
       k="b"  every CLOB best-bid/ask CHANGE for subscribed tokens
-      k="c"  every Coinbase tick (L1/telemetry spot)
       k="l"  every Chainlink RTDS report (the sniper's decision clock; feeds
              the projection replay + boundary-gap research)
 
-    b/c rows only in the final 90s (elapsed >= 210s) to bound volume; l rows
+    b rows only in the final 90s (elapsed >= 210s) to bound volume; l rows
     always (~1 Hz, tiny — the strike-research corpus). Same off-loop
     single-writer pattern as TapeRecorder: callbacks only append to a list,
     the disk write never rides the money path.
@@ -598,20 +598,6 @@ class MicroTape:
                 "bid": entry.get("bid"), "ask": entry.get("ask"),
             }))
             self._maybe_flush(now)
-        except Exception:
-            pass
-
-    def on_cb_tick(self, ts: float, price: float,
-                   feed_delay_ms: float | None = None) -> None:
-        """Wired as CoinbaseFeed.on_tick. fd = Coinbase match → receipt transit (ms)."""
-        try:
-            if not self._late(ts):
-                return
-            rec = {"k": "c", "ts": round(ts, 3), "p": price}
-            if feed_delay_ms is not None:
-                rec["fd"] = feed_delay_ms
-            self._buf.append(json.dumps(rec))
-            self._maybe_flush(ts)
         except Exception:
             pass
 

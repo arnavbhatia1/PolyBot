@@ -27,7 +27,7 @@ from polybot.execution.base import (
     exit_fee_usdc, _entry_fee_usd_from_position,
     update_fill_stats as _base_update_fill_stats,
 )
-from polybot.core.returns import log_return
+from polybot.execution.base import log_return
 
 # Every order POST rides a warm, pooled connection
 _clob_helpers._http_client = httpx.Client(

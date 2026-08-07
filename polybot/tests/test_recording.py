@@ -261,7 +261,7 @@ class TestMicroTape:
         return MicroTape(dir_path=tmp_path)
 
     def test_late_phase_gating(self, tmp_path, monkeypatch):
-        """b/c events record only in the final 90s of a window (elapsed >= 210);
+        """b events record only in the final 90s of a window (elapsed >= 210);
         l (chainlink) events record always — boundary-adjacent reports are the
         strike-research corpus."""
         import polybot.recording as rec
@@ -270,21 +270,17 @@ class TestMicroTape:
         early = (int(time.time() // 300)) * 300 + 100.0   # elapsed 100s
         late = (int(time.time() // 300)) * 300 + 250.0    # elapsed 250s
         monkeypatch.setattr(rec.time, "time", lambda: early)
-        t.on_cb_tick(early, 60000.0)
         t.on_bba("tok", {"bid": "0.5", "ask": "0.52"})
         assert t._buf == []
         monkeypatch.setattr(rec.time, "time", lambda: late)
-        t.on_cb_tick(late, 60010.0)
         t.on_bba("tok", {"bid": "0.5", "ask": "0.52"})
         t.on_cl_report(late, 60005.0)
-        assert len(t._buf) == 3
+        assert len(t._buf) == 2
 
     def test_schema_and_flush(self, tmp_path):
         import json as _j
         t = self._tape(tmp_path)
         late = (int(time.time() // 300)) * 300 + 250.0
-        t.on_cb_tick(late, 60010.0)
-        t.on_cb_tick(late, 60011.0, feed_delay_ms=72.5)
         t.on_cl_report(1783600000.0, 60005.0)
         t.on_twap_report(1783600001.0, 60004.2)
         t.flush()
@@ -293,12 +289,9 @@ class TestMicroTape:
         assert len(files) == 1
         rows = [_j.loads(l) for l in files[0].read_text().splitlines()]
         kinds = {r["k"] for r in rows}
-        assert kinds == {"c", "l", "t"}
+        assert kinds == {"l", "t"}
         t_row = next(r for r in rows if r["k"] == "t")
         assert t_row["ts"] == 1783600001.0 and "rx" in t_row and t_row["p"] == 60004.2
-        c_rows = [r for r in rows if r["k"] == "c"]
-        assert "fd" not in c_rows[0]           # no exchange timestamp → no field
-        assert c_rows[1]["fd"] == 72.5         # transit leg recorded when known
         l_row = next(r for r in rows if r["k"] == "l")
         assert l_row["ts"] == 1783600000.0 and "rx" in l_row and l_row["p"] == 60005.0
 
@@ -306,7 +299,6 @@ class TestMicroTape:
         """Feed callbacks must be crash-proof — a tape bug can't touch the money path."""
         t = self._tape(tmp_path)
         t._buf = None  # force internal failure
-        t.on_cb_tick(time.time(), 60000.0)   # must not raise
         t.on_bba("tok", {})                  # must not raise
         t.on_cl_report(time.time(), 1.0)     # must not raise
 

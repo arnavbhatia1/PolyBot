@@ -17,14 +17,12 @@ NightlyJob = Callable[[], Awaitable[dict[str, Any] | None]]
 
 class NightlyScheduler:
     def __init__(self, outcome_reviewer: Any,
-                 counterfactual_tracker: Any = None,
                  ghost_tracker: Any = None,
                  alert_manager: Any = None,
                  outcome_interval_seconds: int = 3600,
                  daily_pipeline_hour: int = 2,
                  daily_pipeline_minute: int = 0) -> None:
         self.outcome_reviewer = outcome_reviewer
-        self.counterfactual_tracker = counterfactual_tracker
         self.ghost_tracker = ghost_tracker
         self.alert_manager = alert_manager
         self.outcome_interval_seconds = outcome_interval_seconds
@@ -33,8 +31,6 @@ class NightlyScheduler:
         self._running = False
         self._auto_shutdown = False
         self._shutdown_requested = False
-        # Runtime knob the trading loop reads (set by main at boot).
-        self._exit_edge_threshold: float | None = None
         # Registered by main at boot (retention sweeps, sniper-edge health report).
         self.nightly_jobs: list[tuple[str, NightlyJob]] = []
 
@@ -55,10 +51,7 @@ class NightlyScheduler:
         rolled = _safe_rollup("outcomes", self.outcome_reviewer.rollup_old_outcomes)
         ghost_rolled = (_safe_rollup("ghosts", self.ghost_tracker.rollup_old_ghosts)
                         if self.ghost_tracker else 0)
-        cf_rolled = (_safe_rollup("counterfactuals",
-                                  self.counterfactual_tracker.rollup_old_counterfactuals)
-                     if self.counterfactual_tracker else 0)
-        logger.info(f"  Rolled up: {rolled} outcomes, {cf_rolled} counterfactuals, {ghost_rolled} ghosts")
+        logger.info(f"  Rolled up: {rolled} outcomes, {ghost_rolled} ghosts")
 
         for name, job in self.nightly_jobs:
             try:

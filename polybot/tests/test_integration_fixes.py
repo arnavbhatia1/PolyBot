@@ -10,24 +10,6 @@ from pathlib import Path
 
 # ---- Stage 2 — sub_threshold_prob ghost stamps aux_signals ----
 
-def test_sub_threshold_prob_ghost_includes_aux_signals():
-    src = Path("polybot/main.py").read_text(encoding="utf-8")
-    # Find the sub_threshold_prob ghost block; it must splat aux_signals AND stamp
-    # the phase/flip fields (P1-F3) and the cold-feed-aware *_rec flow values (P1-F1).
-    idx = src.find('gate_name="sub_threshold_prob"')
-    assert idx > 0, "sub_threshold_prob ghost block missing"
-    block = src[idx: idx + 2000]
-    assert "**aux_signals" in block, (
-        "sub_threshold_prob ghost block must splat aux_signals so the 13 "
-        "Pillar-1 aux fields parity-match other ghost paths"
-    )
-    for field in ('"entry_phase"', '"flip_count"', '"is_flip"'):
-        assert field in block, f"sub_threshold ghost missing {field} (P1-F3 schema parity)"
-    assert "flow_score_rec" in block and "spot_flow_rec" in block, (
-        "sub_threshold ghost must record cold-feed-aware *_rec flow values (P1-F1)"
-    )
-
-
 def test_orphan_path_strings_point_to_state_subdir():
     """P1-F5: every operator-facing orphan-file reference must point to
     memory/state/orphan_positions.json (where it's actually written), not the
@@ -41,14 +23,6 @@ def test_orphan_path_strings_point_to_state_subdir():
 
 
 # ---- Stage 5 — flip_insufficient_edge writes ghosts ----
-
-def test_flip_insufficient_edge_records_ghost():
-    src = Path("polybot/main.py").read_text(encoding="utf-8")
-    idx = src.find('_record_skip("flip_insufficient_edge")')
-    assert idx > 0
-    block = src[idx: idx + 200]
-    assert '_ghost("flip_insufficient_edge"' in block
-
 
 # ---- Stage 11 — every outcome triggers a gate_stats flush ----
 
@@ -76,7 +50,6 @@ def test_resolution_paths_no_longer_double_flush():
 def test_bybit_completely_removed():
     for path in (
         "polybot/main.py",
-        "polybot/core/aux_layers.py",
         "polybot/agents/scheduler.py",
         "polybot/config/settings.yaml",
     ):

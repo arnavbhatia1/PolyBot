@@ -20,11 +20,12 @@ _SETTINGS = yaml.safe_load(
     .read_text(encoding="utf-8"))
 
 
-def test_sniper_min_edge_equals_min_edge():
-    # settings.yaml documents sniper_min_edge = signal.min_edge so the
-    # downstream net-edge / pre-submit gates don't silently raise the floor.
-    assert (_SETTINGS["late_window"]["sniper_min_edge"]
-            == _SETTINGS["signal"]["min_edge"])
+def test_sniper_min_edge_is_the_engine_floor():
+    # main boots SignalEngine with min_edge = late_window.sniper_min_edge, so
+    # the net-edge / pre-submit gates share the legs' one floor. Guard the
+    # wiring statically.
+    src = Path("polybot/main.py").read_text(encoding="utf-8")
+    assert 'min_edge=config["late_window"]["sniper_min_edge"]' in src
 
 
 def test_effective_fee_peak_is_quarter_of_rate():

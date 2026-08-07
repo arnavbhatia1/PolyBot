@@ -7,7 +7,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 from polybot.db.models import Database
-from polybot.core.returns import log_return
+def log_return(entry: float, exit_price: float) -> float:
+    """ln(exit/entry), 0.0 on degenerate inputs — outcome-record telemetry."""
+    import math as _math
+    if entry <= 0 or exit_price <= 0:
+        return 0.0
+    return _math.log(exit_price / entry)
 
 logger = logging.getLogger(__name__)
 

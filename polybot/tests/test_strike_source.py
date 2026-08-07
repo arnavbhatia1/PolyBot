@@ -1,4 +1,4 @@
-"""_compute_strike_and_btc strike source (polybot/main.py).
+"""_compute_strike strike source (polybot/main.py).
 
 Regression guard for the decision strike. Gamma's event_metadata.price_to_beat is
 the RESOLVED truth (verified bit-exact with the correct Chainlink boundary report),
@@ -11,7 +11,7 @@ strike, or a Chainlink capture with no delivery hole (strike_reliable).
 """
 import time
 
-from polybot.main import _compute_strike_and_btc, _strike_trusted
+from polybot.main import _compute_strike, _strike_trusted
 
 
 class _Chainlink:
@@ -29,10 +29,6 @@ class _Chainlink:
         return self._strike is not None and self._reliable
 
 
-class _Binance:
-    buffer = None  # only read on the no-strike path
-
-
 def _cid():
     # current 5-min window so the function's 600s prune keeps it
     ts = int(time.time() // 300) * 300
@@ -43,9 +39,9 @@ def _call(chainlink, gamma_ptb, window_strikes=None):
     cid, ts = _cid()
     contract = {"event_metadata": {"price_to_beat": gamma_ptb}} if gamma_ptb is not None else {}
     ws = window_strikes if window_strikes is not None else {}
-    strike, btc, ws_out, _, _ = _compute_strike_and_btc(
-        cid, _Binance(), ws, eval_window=ts, last_eval_log_window=-1,
-        chainlink_feed=chainlink, coinbase_feed=None, contract=contract)
+    strike, ws_out, _ = _compute_strike(
+        cid, ws, eval_window=ts, last_eval_log_window=-1,
+        chainlink_feed=chainlink, contract=contract)
     return ws_out.get(ts), ts
 
 
