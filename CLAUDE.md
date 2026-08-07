@@ -183,13 +183,26 @@ sniper buys those dips and holds ≤30s to resolution.
   mechanism failure → investigate before any deploy). Never deploy real
   capital on the harness print alone. The nightly health job (§7) re-reads
   both in production.
-- **The sniper is the ONLY strategy** — not a toggle. Base-entry BUYs are
-  ALWAYS suppressed (unconditional in `main.py`; recorded as `sniper_only`
-  ghosts — free zero-capital evidence for the gate). There is no `sniper_only`
-  lever any more; capital only ever deploys on sniper fires, in paper and live
-  alike. `sniper_enabled` (default `false`) is the separate kill-bar SAFETY —
-  the emergency brake, not a strategy choice. Recipe: `mode: live` +
-  `sniper_enabled: true`.
+- **Open head-start leg** (`SignalEngine.evaluate_open_edge`, §3c in
+  settings): the strike is the average of the 30s BEFORE the open — known at
+  t=0 — so a spot that opens displaced from it is a calibrated favorite
+  (843-window curve, lower-bounded, frozen in `signal_engine.OPEN_CALIB`:
+  0.65 @$10 → 0.82 @$50; below $5 = noise, never fires). Fires in the first
+  `open_zone_s` (20s) when calibrated prob − ask ≥ `open_min_edge` (0.06) —
+  night-one books sold $10+ favorites at 0.62 median, and the edge floor
+  silences the leg by itself the day they adapt (watch the ping's head-start
+  gauge). Trusted strike + fresh raw spot required; every execution gate
+  runs; Kelly anchors to ask + floor; holds to resolution under the normal
+  exit engine with the lock-hold guard protecting the close. Fills stamp
+  `signal_leg="open_edge"` (+ `open_disp`) — per-leg ledgers in the nightly
+  ping; the leg's own bar mirrors the lock bar and its kill is the operator
+  flipping `open_edge_enabled: false`.
+- **Capital deploys ONLY through these legs** — base-entry BUYs are ALWAYS
+  suppressed (unconditional in `main.py`; recorded as `sniper_only` ghosts —
+  free zero-capital evidence for the gate). `sniper_enabled` (default
+  `false`) is the shared kill-bar SAFETY across all legs — the emergency
+  brake, not a strategy choice. Recipe: `mode: live` + `sniper_enabled:
+  true`.
 - **Post-live kill rule** (armed at any future go-live): trailing-4-day
   lenient mean < +2¢/sh or trailing-8-day t < 2 → set `sniper_enabled: false`.
   A single realized lock-breach at max tier trips it immediately.
@@ -384,9 +397,12 @@ it was removed). Never re-add resting quotes.
   decision-ask ceiling, context only) and the REALIZED fills for
   the current mode (`live_health_read`: live → polybot_live.db; paper →
   polybot_paper.db scoped to `late_window.validation_epoch`, the BINDING
-  paper-shadow gate) side by side with their ¢/sh gap, and drives the kill-rule
-  verdict off the realized ledger once fills exist; alert-only, never flips
-  config). The same ping carries the **burst-alive SPRT** state
+  paper-shadow gate) side by side with their ¢/sh gap — plus a PER-LEG line
+  (`signal_leg` ledgers: lock_dip / open_edge, never collapsed) and the
+  **head-start gauge** (`analyze_twap_lock.open_gap_read`: trailing-day
+  favorite win rate vs the median ask it traded at — the open leg's oxygen
+  meter) — and drives the kill-rule verdict off the realized ledger once
+  fills exist; alert-only, never flips config). The same ping carries the **burst-alive SPRT** state
   (`polybot/core/sprt.py` + `burst_sprt_read`: Wald test, μ₁ +6¢/sh,
   α 0.05 / β 0.23, accept ≥ +2.73 / reject ≤ −1.42, no decision before day 3,
   truncate at 16; σ frozen write-once to `state/sprt_burst.json` from the
@@ -439,9 +455,11 @@ it was removed). Never re-add resting quotes.
 
 ## 8. Hard rules
 
-- No early/mid-window entry-side prediction (ML or rules) — the CLOB price
-  wins; the final-30s TWAP lock is the one sanctioned exception, through its
-  bar (and it is a projection of an already-observed average, not a forecast).
+- No ML/feature-stack entry-side prediction — the CLOB price wins. The two
+  sanctioned exceptions, each through its own bar: the final-30s TWAP lock (a
+  projection of an already-observed average) and the open head-start leg (a
+  frozen calibration of a known strike's displacement). Anything else fires
+  zero capital.
 - The base strategy never deploys live. No deployment before a kill bar passes;
   never relax a bar to pass it.
 - No symmetric market-making, no oracle-cadence trading, no expansion past BTC

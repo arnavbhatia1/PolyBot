@@ -138,6 +138,24 @@ late_window:
                                 # the repriced books; one tick sits them out.
 
 # =============================================================================
+#  SECTION 3c: OPEN HEAD-START LEG (gated; ledger-separated via signal_leg)
+#
+#  The strike is the average of the 30s BEFORE the open — known at t=0. A spot
+#  that opens displaced from it is a calibrated favorite (measured on 843
+#  windows: 72% wins at $10, 83% at $20, 88% at $30; frozen lower-bounded in
+#  signal_engine.OPEN_CALIB). Night-one books sold those favorites at 0.62-0.79
+#  — this leg buys them only while calibrated prob − ask clears the floor, so
+#  it silences itself the day the books adapt. Shares the sniper_enabled brake
+#  and every execution gate; its fills stamp signal_leg="open_edge" and its
+#  bar/kill are read PER LEG from the nightly ping.
+# =============================================================================
+open_window:
+  open_edge_enabled: true
+  open_zone_s: 20.0             # evaluate only the first N seconds (strike lands ~2s in)
+  open_min_edge: 0.06           # calibrated prob − ask floor; mid-price fills pay ~1.6c/sh
+                                # fee, so this leg demands more edge than the lock legs
+
+# =============================================================================
 #  SECTION 4: SCHEDULE
 # =============================================================================
 schedule:

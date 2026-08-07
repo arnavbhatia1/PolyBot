@@ -23,24 +23,30 @@ def _load():
     return mod
 
 
-def _make_db(path, rows):
-    """rows = list of (id, pnl, fees, shares_held, exit_ts_iso)."""
+def _make_db(path, rows, legs=None):
+    """rows = list of (id, pnl, fees, shares_held, exit_ts_iso); legs maps
+    row id -> signal_leg stamp (production shape: positions always carry
+    indicator_snapshot with a trade_context)."""
+    import json as _j
     con = sqlite3.connect(path)
-    con.execute("CREATE TABLE positions (id INTEGER PRIMARY KEY, shares_held REAL)")
+    con.execute("CREATE TABLE positions (id INTEGER PRIMARY KEY, shares_held REAL, "
+                "indicator_snapshot TEXT)")
     con.execute("CREATE TABLE trade_history (id INTEGER PRIMARY KEY, pnl REAL, "
                 "fees REAL, exit_timestamp TEXT)")
     for rid, pnl, fees, sh, ts in rows:
-        con.execute("INSERT INTO positions (id, shares_held) VALUES (?,?)", (rid, sh))
+        snap = _j.dumps({"trade_context": {"signal_leg": (legs or {}).get(rid)}})
+        con.execute("INSERT INTO positions (id, shares_held, indicator_snapshot) "
+                    "VALUES (?,?,?)", (rid, sh, snap))
         con.execute("INSERT INTO trade_history (id, pnl, fees, exit_timestamp) "
                     "VALUES (?,?,?,?)", (rid, pnl, fees, ts))
     con.commit()
     con.close()
 
 
-def _read(tmp_path, rows, name="live.db"):
+def _read(tmp_path, rows, name="live.db", legs=None):
     mod = _load()
     db = tmp_path / name
-    _make_db(str(db), rows)
+    _make_db(str(db), rows, legs=legs)
     mod.LIVE_DB = db
     return mod.live_health_read()
 
@@ -172,7 +178,8 @@ def test_join_uses_position_id_when_sequences_drift(tmp_path):
     mod = _load()
     db = tmp_path / "drift.db"
     con = sqlite3.connect(str(db))
-    con.execute("CREATE TABLE positions (id INTEGER PRIMARY KEY, shares_held REAL)")
+    con.execute("CREATE TABLE positions (id INTEGER PRIMARY KEY, shares_held REAL, "
+                "indicator_snapshot TEXT)")
     con.execute("CREATE TABLE trade_history (id INTEGER PRIMARY KEY, pnl REAL, "
                 "fees REAL, exit_timestamp TEXT, position_id INTEGER)")
     con.execute("INSERT INTO positions (id, shares_held) VALUES (8982, 5.0)")
@@ -186,3 +193,19 @@ def test_join_uses_position_id_when_sequences_drift(tmp_path):
     r = mod.live_health_read(db)
     assert r["n_fills"] == 2
     assert r["net_per_sh"] == pytest.approx((2.0/5.0 + 1.0/5.0) / 2)   # pnl/shares (fee already netted)
+
+
+def test_legs_breakdown_groups_by_signal_leg(tmp_path):
+    """Per-leg ledgers: fills stamped signal_leg group separately; rows without
+    a stamp report as 'unstamped' — never silently merged into a leg."""
+    r = _read(tmp_path, [
+        (1, 2.0, 0.0, 5.0, _ts("07-04")),    # lock_dip win
+        (2, -1.0, 0.0, 5.0, _ts("07-04")),   # open_edge loss
+        (3, 1.0, 0.0, 5.0, _ts("07-05")),    # unstamped legacy row
+    ], legs={1: "lock_dip", 2: "open_edge"})
+    legs = r["legs"]
+    assert set(legs) == {"lock_dip", "open_edge", "unstamped"}
+    assert legs["lock_dip"]["n_fills"] == 1
+    assert legs["lock_dip"]["net_per_sh"] == pytest.approx(0.4)
+    assert legs["open_edge"]["net_per_sh"] == pytest.approx(-0.2)
+    assert legs["open_edge"]["win_rate"] == 0.0

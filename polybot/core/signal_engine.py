@@ -46,6 +46,18 @@ TWAP_MARGIN_MAX: tuple[tuple[float, float], ...] = (
 TWAP_PROB_DETERMINISTIC = 0.999
 TWAP_PROB_P995 = 0.995
 
+# ---- Open head-start leg (design-frozen 2026-08-07) ---------------------------
+# Under TWAP the strike (= the average of the 30s BEFORE the open) is known at
+# t=0, so spot can open displaced from it. P(head-start side wins the final
+# TWAP | |spot − strike| at open), measured on 843 windows of rx-clock tape,
+# LOWER-BOUNDED 5-8pp under the point estimates for day-clustered CIs
+# (measured: 66% @$5, 72% @$10, 83% @$20, 88% @$30). Below the first knot the
+# head start is noise — never fire. Tuning these up is relaxing a bar.
+OPEN_CALIB: tuple[tuple[float, float], ...] = (
+    (5.0, 0.58), (10.0, 0.65), (15.0, 0.67), (20.0, 0.73),
+    (30.0, 0.78), (50.0, 0.82),
+)
+
 
 def twap_margin(knots: tuple[tuple[float, float], ...], k: float) -> float:
     """Piecewise-linear margin at k seconds remaining; clamped to the end knots."""
@@ -415,6 +427,51 @@ class SignalEngine:
             f"TWAP locked {side_word}: displacement ${adisp:.1f} clears the "
             f"${m995:.1f} margin with {k:.0f}s left and the ask is still {ask:.2f} "
             f"({'max-tier' if deterministic else 'p99.5-tier'}, edge {edge:+.1%})",
+            side=side_word)
+
+    def evaluate_open_edge(
+            self, disp: float | None, seconds_remaining: float,
+            market_ask_up: float, market_ask_down: float,
+            zone_s: float, open_min_edge: float,
+            fee_rate: float = DEFAULT_FEE_RATE) -> TradeSignal:
+        """Open head-start leg: in the first `zone_s` seconds, buy the side the
+        known strike already favors when the calibrated win probability beats
+        the ask by the edge floor.
+
+        disp = fresh raw spot − trusted strike (the caller owns both checks).
+        The probability comes from the frozen OPEN_CALIB curve — if the books
+        adapt and asks rise to fair, the edge floor silences this leg on its
+        own; no knob needs turning. Kelly anchors to market odds, never to the
+        calibration. Returns LATE_SNIPE_YES / LATE_SNIPE_NO / SKIP.
+        """
+        if disp is None:
+            return TradeSignal("SKIP", 0.5, 0, 0, "open-edge: no displacement")
+        if seconds_remaining < 300.0 - zone_s:
+            return TradeSignal("SKIP", 0.5, 0, 0, "open-edge: outside the open zone")
+        adisp = abs(disp)
+        up = disp >= 0
+        if adisp < OPEN_CALIB[0][0]:
+            return TradeSignal("SKIP", 0.5, 0, 0,
+                               f"open-edge: head start ${adisp:.1f} is noise",
+                               side="Up" if up else "Down")
+        prob = twap_margin(OPEN_CALIB, adisp)
+        ask = market_ask_up if up else market_ask_down
+        if ask is None or not (0.0 < ask < 1.0):
+            return TradeSignal("SKIP", prob, 0, 0, "open-edge: no executable ask",
+                               side="Up" if up else "Down")
+        edge = prob - ask
+        if edge < open_min_edge:
+            return TradeSignal("SKIP", prob, edge, 0,
+                               f"open-edge: ask {ask:.2f} already prices the "
+                               f"${adisp:.0f} head start (edge {edge:+.1%})",
+                               side="Up" if up else "Down")
+        kelly = self._kelly(ask + open_min_edge, ask, fee_rate=fee_rate)
+        action = "LATE_SNIPE_YES" if up else "LATE_SNIPE_NO"
+        side_word = "Up" if up else "Down"
+        return TradeSignal(
+            action, prob, edge, kelly,
+            f"Open head start {side_word}: spot ${adisp:.0f} past the known strike "
+            f"(calibrated {prob:.0%}) and the ask is only {ask:.2f} (edge {edge:+.1%})",
             side=side_word)
 
     def _kelly(self, prob: float, market_price: float, fee_rate: float = DEFAULT_FEE_RATE) -> float:

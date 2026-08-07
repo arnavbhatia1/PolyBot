@@ -88,7 +88,8 @@ def live_health_read(db_path=None, since_iso=None):
                       for r in con.execute("PRAGMA table_info(trade_history)"))
         join_key = "COALESCE(t.position_id, t.id)" if has_pid else "t.id"
         q = ("SELECT t.pnl AS pnl, t.exit_timestamp AS ts, "
-             "p.shares_held AS shares FROM trade_history t "
+             "p.shares_held AS shares, p.indicator_snapshot AS snap "
+             "FROM trade_history t "
              f"JOIN positions p ON {join_key} = p.id "
              "WHERE t.exit_timestamp IS NOT NULL AND p.shares_held > 0")
         args = ()
@@ -101,6 +102,7 @@ def live_health_read(db_path=None, since_iso=None):
     finally:
         con.close()
     per_day = defaultdict(list)     # ET day -> list of (net_per_sh, win, pnl$)
+    per_leg = defaultdict(list)     # signal_leg -> list of (net_per_sh, win)
     for r in rows:
         try:
             ts = datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00")).timestamp()
@@ -108,6 +110,12 @@ def live_health_read(db_path=None, since_iso=None):
             continue
         nps = r["pnl"] / r["shares"]        # pnl already nets all fees — never subtract `fees` again
         per_day[et_day(ts)].append((nps, 1.0 if (r["pnl"] or 0) > 0 else 0.0, r["pnl"] or 0.0))
+        try:
+            leg = (json.loads(r["snap"] or "{}").get("trade_context", {})
+                   or {}).get("signal_leg") or "unstamped"
+        except (ValueError, json.JSONDecodeError):
+            leg = "unstamped"
+        per_leg[leg].append((nps, 1.0 if (r["pnl"] or 0) > 0 else 0.0))
     if not per_day:
         return None
     fills = [x for v in per_day.values() for x in v]
@@ -124,6 +132,10 @@ def live_health_read(db_path=None, since_iso=None):
         tripped = None                                        # too few live days to judge
     else:
         tripped = (trailing4 < 0.02) or (trailing8_t is not None and trailing8_t < 2.0)
+    legs = {leg: dict(n_fills=len(v),
+                      net_per_sh=statistics.mean(n for n, _ in v),
+                      win_rate=statistics.mean(w for _, w in v))
+            for leg, v in sorted(per_leg.items())}
     return dict(label=f"{db.stem}(trade_history{' since ' + since_iso if since_iso else ''})",
                 n_fills=len(fills), n_days=len(daily),
                 win_rate=statistics.mean(w for _, w, _ in fills), avg_fill=float("nan"),
@@ -132,7 +144,7 @@ def live_health_read(db_path=None, since_iso=None):
                 net_sum=sum(n for n, _, _ in fills),
                 days_pos=sum(1 for d in daily if d > 0), series=series, day_detail=day_detail,
                 trailing4_mean=trailing4, trailing8_t=trailing8_t,
-                kill_rule_tripped=tripped)
+                kill_rule_tripped=tripped, legs=legs)
 
 
 def _realized_fill_contexts(db_path, since_iso):
