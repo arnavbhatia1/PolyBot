@@ -421,6 +421,8 @@ _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 # Chainlink report and book event while a lock holds, which spams the same line.
 _last_snipe_log: dict[tuple[int, str], float] = {}
 _resolve_oracle_logged: set[str] = set()  # market_id — RESOLVE oracle line printed once
+_tape_verdict_logged: set[str] = set()    # market_id — early TAPE VERDICT printed once
+_tape_mismatch_logged: set[str] = set()   # market_id — RESOLUTION DRIFT warned once
 _SNIPER_ONLY_QUIET = True  # base entries are always suppressed (sniper-only), so their per-gate SKIP lines are noise -> DEBUG
 _abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, hold to resolution
 
@@ -2581,24 +2583,57 @@ async def _resolve_expired_position(
         pos: dict[str, Any], live: dict[str, Any], trader: Any, alert_manager: Any,
         db: Any, outcome_reviewer: Any, breaker: Any, counterfactual_tracker: Any,
         day_wins: int, day_losses: int, day_fees: float,
-        signal_engine: Any = None) -> tuple[bool, int, int, float]:
+        signal_engine: Any = None,
+        chainlink_feed: Any = None) -> tuple[bool, int, int, float]:
     """Resolve a position whose contract has expired (seconds_remaining <= 0)."""
     global _prev_resolution_margin
     # Chainlink oracle first (authoritative), then a coherent resolved CLOB book.
     exit_price, resolve_log = _resolved_exit_price(live, pos["side"], pos["market_id"])
+    mid = pos["market_id"]
+    # Our own tape knows the outcome ~85s before Gamma serves it: the close
+    # boundary's TWAP capture IS the resolving final. Verdict-only — Gamma
+    # still books the money; a disagreement is a mechanism alarm, not a trade.
+    _tape_final = _tape_strike = None
+    if chainlink_feed is not None:
+        try:
+            _w = int(mid.rsplit("-", 1)[-1])
+            _tape_strike = (chainlink_feed.get_strike(_w)
+                            if chainlink_feed.boundary_captured(_w) else None)
+            _tape_final = (chainlink_feed.get_strike(_w + 300)
+                           if chainlink_feed.boundary_captured(_w + 300) else None)
+        except (ValueError, IndexError):
+            pass
     if exit_price is None:
         # Window hasn't resolved yet — wait for the next tick.
         now_ts = time.time()
-        mid = pos["market_id"]
         if mid not in _last_resolve_wait_log:
             _last_resolve_wait_log[mid] = now_ts
             logger.info(f"{_C.DIM}WAITING FOR RESOLUTION {_slug_to_window(mid)}{_C.RESET}")
+        if (_tape_final is not None and _tape_strike and mid not in _tape_verdict_logged):
+            # One early verdict line per window, the moment the close capture lands.
+            _tape_verdict_logged.add(mid)
+            _tv_up = _tape_final >= _tape_strike
+            _ours = "✓" if (pos["side"] == "Up") == _tv_up else "✗"
+            logger.info(f"TAPE VERDICT {_slug_to_window(mid)} — {'UP' if _tv_up else 'DOWN'} wins, "
+                        f"our {pos['side']} {_ours}  (final ${_tape_final:,.2f} vs "
+                        f"strike ${_tape_strike:,.2f}; Gamma confirms in ~1 min)")
         return False, day_wins, day_losses, day_fees
-    if resolve_log and pos["market_id"] not in _resolve_oracle_logged:
+    if resolve_log and mid not in _resolve_oracle_logged:
         # Log once per market — a pending winning redeem retries this path every
         # tick and would otherwise repeat the same RESOLVE line for minutes.
-        _resolve_oracle_logged.add(pos["market_id"])
+        _resolve_oracle_logged.add(mid)
         logger.info(f"RESOLVED {resolve_log}")
+    # Per-window mechanism check: our recorded final must equal Gamma's to the
+    # cent (28/28 so far). A drift here means the resolution rule moved again —
+    # scream now, not at the nightly watch.
+    _meta = (live.get("event_metadata") or {})
+    if (_tape_final is not None and _meta.get("final_price") is not None
+            and abs(_tape_final - _meta["final_price"]) > 0.005
+            and mid not in _tape_mismatch_logged):
+        _tape_mismatch_logged.add(mid)
+        logger.warning("RESOLUTION DRIFT %s — our tape final $%.2f vs Gamma $%.2f: "
+                       "verify the resolution rule before trusting the lock",
+                       _slug_to_window(mid), _tape_final, _meta["final_price"])
 
     result = await trader.resolve_position(pos["id"], exit_price)
     if result.pending:
@@ -2699,17 +2734,22 @@ async def _manage_orphaned_position(
             # No captured strike (feed wasn't running at boundary) — keep waiting
             logger.info(f"ORPHAN {_slug_to_window(pos['market_id'])} ({age:.0f}s old) — Waiting for resolution (no Chainlink strike captured)")
             return True, day_wins, day_losses, day_fees
-        # Compare strike (Chainlink at window_ts) vs final (Chainlink at window_ts+300),
-        # matching Polymarket's own resolution rule. Falling back to the current price
-        # would mis-classify when BTC has moved since expiry; the 2hr eviction window
-        # in chainlink_feed keeps the expiry capture available for orphan fallback.
+        # Compare strike (TWAP stream at window_ts) vs final (TWAP stream at
+        # window_ts+300) — the exact resolution rule. The 2hr eviction window in
+        # chainlink_feed keeps the expiry capture available for orphan fallback.
+        # Last resort is the CURRENT official TWAP value, never the raw price —
+        # the raw stream sits $10+ off the resolving number.
         final_at_expiry = chainlink_feed.get_strike(window_ts + 300) if window_ts else None
         if final_at_expiry is not None and final_at_expiry > 0:
             final_price = final_at_expiry
             final_source = "expiry boundary"
+        elif chainlink_feed.twap_official > 0:
+            final_price = chainlink_feed.twap_official
+            final_source = "current TWAP (expiry capture missing)"
         else:
-            final_price = chainlink_feed.price
-            final_source = "current (expiry capture missing)"
+            logger.info(f"ORPHAN {_slug_to_window(pos['market_id'])} ({age:.0f}s old) — "
+                        f"Waiting for resolution (no TWAP value to fall back on)")
+            return True, day_wins, day_losses, day_fees
         up_won = final_price >= strike_at_boundary
         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
         resolved_final = final_price
@@ -3140,7 +3180,8 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                             pos, live, trader, alert_manager, db,
                             outcome_reviewer, breaker, counterfactual_tracker,
                             day_wins, day_losses, day_fees,
-                            signal_engine=signal_engine)
+                            signal_engine=signal_engine,
+                            chainlink_feed=chainlink_feed)
                     if not resolved:
                         continue  # Gamma hasn't resolved yet — wait for next tick
                 else:
