@@ -13,6 +13,7 @@ class TestChainlinkFeed:
         f = ChainlinkFeed()
         assert f.price == 0.0
         assert f.age_seconds == float("inf")
+        assert f.last_report_rx == 0.0
 
     def test_get_strike_no_data(self):
         f = ChainlinkFeed()
@@ -28,23 +29,19 @@ class TestChainlinkFeed:
     def test_boundary_capture(self):
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300   # a past boundary (not the start window)
-        f._price = 71234.56
-        f._record_boundary(boundary_ts + 1)                   # first report just after the boundary
+        f._record_boundary(boundary_ts + 1, 71234.56)         # first TWAP report just after the boundary
         assert f.get_strike(boundary_ts) == 71234.56
 
     def test_boundary_first_at_or_after_wins(self):
-        """The FIRST report AT/AFTER a boundary defines that window's strike —
-        Polymarket's price_to_beat is the first Chainlink btc/usd report at/after the
-        window-boundary timestamp (matched at +0ms). Later in-window reports must NOT
+        """The FIRST TWAP-topic report AT/AFTER a boundary defines that window's
+        strike — Polymarket's price_to_beat is the TWAP stream's value at the
+        window open (verified bit-exact). Later in-window reports must NOT
         overwrite it."""
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300
-        f._price = 71000.0
-        f._record_boundary(boundary_ts + 1)      # first report at/after the boundary
-        f._price = 72000.0
-        f._record_boundary(boundary_ts + 120)    # later ticks in the same window
-        f._price = 73000.0
-        f._record_boundary(boundary_ts + 290)
+        f._record_boundary(boundary_ts + 1, 71000.0)      # first report at/after the boundary
+        f._record_boundary(boundary_ts + 120, 72000.0)    # later reports in the same window
+        f._record_boundary(boundary_ts + 290, 73000.0)
         # The first at/after the boundary defines the strike, not the last before the next.
         assert f.get_strike(boundary_ts) == 71000.0
 
@@ -54,46 +51,38 @@ class TestChainlinkFeed:
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300
         assert f.boundary_captured(boundary_ts) is False
-        f._price = 71000.0
-        f._record_boundary(boundary_ts + 1)
+        f._record_boundary(boundary_ts + 1, 71000.0)
         assert f.boundary_captured(boundary_ts) is True
         assert f.boundary_captured(f._start_window_ts) is False   # start window never captured
 
     def test_strike_reliable_tight_gap(self):
         """A boundary report landing on the ~1Hz heartbeat (within 2s of the
-        boundary) is trustworthy — our capture == Polymarket's first report."""
+        boundary) is trustworthy — our capture == Polymarket's price_to_beat."""
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300
-        f._price = 70990.0
-        f._record_boundary(boundary_ts - 1)      # last report before the boundary
-        f._price = 71000.0
-        f._record_boundary(boundary_ts + 1)      # first at/after — 1s past boundary
+        f._record_boundary(boundary_ts - 1, 70990.0)      # last report before the boundary
+        f._record_boundary(boundary_ts + 1, 71000.0)      # first at/after — 1s past boundary
         assert f.strike_reliable(boundary_ts) is True
 
     def test_strike_reliable_delivery_hole(self):
-        """A capture landing long after the boundary (measured live: strike locked
-        $35+ off Polymarket's price_to_beat) means the true first at/after report
-        never reached us — untrusted for sniper capital."""
+        """A capture landing long after the boundary means the true boundary
+        report never reached us — our value is a later second's average.
+        Untrusted for sniper capital."""
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300
-        f._price = 62853.77
-        f._record_boundary(boundary_ts - 38)
-        f._price = 62803.25
-        f._record_boundary(boundary_ts + 40)     # capture 40s past the boundary
+        f._record_boundary(boundary_ts - 38, 62853.77)
+        f._record_boundary(boundary_ts + 40, 62803.25)    # capture 40s past the boundary
         assert f.boundary_captured(boundary_ts) is True   # still locked...
         assert f.strike_reliable(boundary_ts) is False    # ...but not trusted
 
     def test_strike_reliable_short_hole_past_boundary_vetoes(self):
-        """The trusted-wrong class the 07-16 audit caught: a small (3-8s) delivery
-        hole whose capture lands a few seconds past the boundary skipped 1-Hz
-        reports that included the true price_to_beat (one was $143.62 off,
-        flipping the resolved side). Must veto."""
+        """A small (3-8s) delivery hole whose capture lands a few seconds past
+        the boundary skipped ~1Hz reports that included the true price_to_beat
+        (measured live at $143+ off, flipping the resolved side). Must veto."""
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300
-        f._price = 64600.0
-        f._record_boundary(boundary_ts - 0.5)    # heartbeat healthy pre-boundary
-        f._price = 64731.0
-        f._record_boundary(boundary_ts + 3.5)    # capture 3.5s late — missed ~3 reports
+        f._record_boundary(boundary_ts - 0.5, 64600.0)    # heartbeat healthy pre-boundary
+        f._record_boundary(boundary_ts + 3.5, 64731.0)    # capture 3.5s late — missed ~3 reports
         assert f.strike_reliable(boundary_ts) is False
 
     def test_strike_reliable_pre_boundary_gap_is_harmless(self):
@@ -101,18 +90,15 @@ class TestChainlinkFeed:
         first at/after report lands on the heartbeat, it IS Polymarket's first."""
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300
-        f._price = 70990.0
-        f._record_boundary(boundary_ts - 10)     # quiet spell before the boundary
-        f._price = 71000.0
-        f._record_boundary(boundary_ts + 0.5)    # on-heartbeat capture
+        f._record_boundary(boundary_ts - 10, 70990.0)     # quiet spell before the boundary
+        f._record_boundary(boundary_ts + 0.5, 71000.0)    # on-heartbeat capture
         assert f.strike_reliable(boundary_ts) is True
 
     def test_strike_reliable_requires_capture_and_history(self):
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300
         assert f.strike_reliable(boundary_ts) is False    # nothing captured
-        f._price = 71000.0
-        f._record_boundary(boundary_ts + 1)               # feed's FIRST-ever report
+        f._record_boundary(boundary_ts + 1, 71000.0)      # topic's FIRST-ever report
         assert f.strike_reliable(boundary_ts) is False    # no delivery history yet
 
     def test_epoch_seconds_normalizes_rtds_milliseconds(self):
@@ -126,13 +112,24 @@ class TestChainlinkFeed:
         by a second-space get_strike lookup — un-normalized ms keys never match."""
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300
-        f._price = 71234.56
-        f._record_boundary(ChainlinkFeed._epoch_seconds((boundary_ts + 10) * 1000.0))
-        # Fresh-price fallback must not mask the captured boundary: change the
-        # live price after capture and require the boundary value back.
-        f._price = 99999.0
-        f._last_update = time.time()
+        f._record_boundary(
+            ChainlinkFeed._epoch_seconds((boundary_ts + 10) * 1000.0), 71234.56)
+        # The live-TWAP fallback must not mask the captured boundary: change the
+        # official value after capture and require the boundary value back.
+        f.twap_official = 99999.0
+        f.twap_official_rx = time.time()
         assert f.get_strike(boundary_ts) == 71234.56
+
+    def test_get_strike_falls_back_to_fresh_official_twap(self):
+        """Before the boundary locks, the base path may read the latest official
+        TWAP value (the strike IS a TWAP-stream value); a stale one serves nothing."""
+        f = ChainlinkFeed()
+        boundary_ts = ((int(time.time()) // 300) - 1) * 300
+        f.twap_official = 64123.4
+        f.twap_official_rx = time.time()
+        assert f.get_strike(boundary_ts) == 64123.4
+        f.twap_official_rx = time.time() - 120.0          # stale
+        assert f.get_strike(boundary_ts) is None
 
     @pytest.mark.asyncio
     async def test_handshake_rejection_is_reconnectable_not_error(self, monkeypatch, caplog):
@@ -233,8 +230,9 @@ class TestChainlinkFeed:
 
 
 class TestTwap:
-    """The 30s-TWAP machinery: our reconstruction + strict topic routing
-    (resolution source from 2026-08-07)."""
+    """The 30s-TWAP machinery: the running reconstruction (rx-clock, the
+    estimator the frozen margins bind to), the sniper projection, and strict
+    topic routing (the TWAP topic owns the strike; raw ticks own the price)."""
 
     def test_twap_30_time_weighted_step_function(self):
         f = ChainlinkFeed()
@@ -250,14 +248,49 @@ class TestTwap:
     def test_twap_30_none_until_window_fully_covered(self):
         f = ChainlinkFeed()
         end = 1786060000.0
-        f._reports.append((end - 12.0, 500.0))   # no report at/before end-30
+        f._reports.append((end - 12.0, 500.0))   # no anchor near the window start
         assert f.twap_30(end_ts=end) is None     # partial average must not masquerade
         assert ChainlinkFeed().twap_30(end_ts=end) is None
 
-    def test_twap_topic_routes_away_from_strike_capture(self):
-        """TWAP messages carry the same btc/usd symbol — a routing slip would
-        poison _price and the boundary capture with averaged values."""
-        import asyncio, json as _j
+    def test_running_avg_accepts_anchor_shortly_after_start(self):
+        """The margins were measured with a ≤2s post-start anchor allowed — the
+        estimator must match its measurement convention exactly."""
+        f = ChainlinkFeed()
+        f._reports.extend([(101.5, 100.0), (110.0, 200.0)])
+        # anchor at 101.5 (1.5s after start): 100 holds [100,110] err-bounded, 200 holds [110,120]
+        assert f.running_avg(100.0, 120.0) == pytest.approx(150.0)
+        f2 = ChainlinkFeed()
+        f2._reports.append((103.0, 100.0))       # 3s after start — too far, no anchor
+        assert f2.running_avg(100.0, 120.0) is None
+
+    def test_projected_final_twap_blends_observed_and_spot(self):
+        f = ChainlinkFeed()
+        now = time.time()
+        close = now + 10.0                        # 10s remaining -> w = 2/3
+        t0 = close - 30.0
+        f._reports.extend([(t0 - 1.0, 64000.0), (t0 + 5.0, 64060.0)])
+        f._price = 64120.0
+        f._last_update = now
+        # A over [t0, now]: 64000 holds 5s, 64060 holds 15s -> 64045
+        proj = f.projected_final_twap(close, now=now)
+        assert proj == pytest.approx((2 / 3) * 64045.0 + (1 / 3) * 64120.0)
+
+    def test_projected_final_twap_none_outside_zone_or_stale(self):
+        f = ChainlinkFeed()
+        now = time.time()
+        f._reports.append((now - 40.0, 64000.0))
+        f._price = 64100.0
+        f._last_update = now
+        assert f.projected_final_twap(now + 31.0, now=now) is None   # zone not started
+        assert f.projected_final_twap(now - 1.0, now=now) is None    # window closed
+        f._last_update = now - 10.0                                  # stale spot
+        assert f.projected_final_twap(now + 10.0, now=now) is None
+
+    def test_twap_topic_owns_strike_raw_owns_price(self):
+        """Both topics carry the same btc/usd symbol — a routing slip would
+        poison the strike with raw ticks (measured $10+ off the served
+        price_to_beat) or the price with averaged values."""
+        import json as _j
 
         f = ChainlinkFeed()
         boundary = ((int(time.time()) // 300) - 1) * 300
@@ -281,10 +314,6 @@ class TestTwap:
                                                 "timestamp": (boundary + 2) * 1000,
                                                 "window_s": 30}})
             ws = FakeWS([raw_report, twap_report])
-            f._running = True
-            f._ws = ws
-            # Drive the message loop body directly via _run's iteration: emulate by
-            # feeding through the same code path using a one-shot connect monkeypatch.
             import websockets as _wslib
             class _Ctx:
                 async def __aenter__(self): return ws
@@ -292,10 +321,7 @@ class TestTwap:
             orig = _wslib.connect
             _wslib.connect = lambda *a, **k: _Ctx()
             try:
-                async def stop_soon():
-                    await asyncio.sleep(0.05)
-                    f._running = False
-                    raise _wslib.ConnectionClosed(None, None) if False else None
+                f._running = True
                 t = asyncio.create_task(f._run())
                 await asyncio.sleep(0.1)
                 f._running = False
@@ -308,8 +334,11 @@ class TestTwap:
                 _wslib.connect = orig
 
         asyncio.run(run())
-        # Raw report set the price + strike; TWAP report set ONLY the twap fields.
+        # Raw report set the price + ring + wake event; the TWAP report set the
+        # official fields AND the strike. Never the other way around.
         assert f.price == 64000.0
-        assert f.get_strike(boundary) == 64000.0
+        assert f.report_event.is_set()
+        assert len(f._reports) == 1
         assert f.twap_official == 63990.5
         assert f.twap_official_ts == pytest.approx(boundary + 2)
+        assert f.get_strike(boundary) == 63990.5

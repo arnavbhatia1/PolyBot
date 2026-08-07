@@ -1,4 +1,11 @@
-"""Chainlink BTC/USD oracle (via Polymarket RTDS WS). Resolution price source + 5-min strike capture."""
+"""Chainlink BTC/USD oracle (via Polymarket RTDS WS). Resolution price source + 5-min strike capture.
+
+Since 2026-08-07 00:00 UTC the market resolves on the official 30s-TWAP stream:
+strike = the stream's value AT the window open, final = its value AT the close
+(verified bit-exact against served price_to_beat/final_price, 17/17 windows).
+The boundary capture therefore locks the TWAP topic's first report at/after the
+boundary; the raw ~1Hz stream feeds the running reconstruction the sniper
+projects the final average from."""
 from __future__ import annotations
 
 import asyncio
@@ -22,8 +29,11 @@ APP_PING_INTERVAL_S = 10       # Application-level PING to keep RTDS subscriptio
 STALE_TIMEOUT_S = 60           # Chainlink mainnet can be quiet for >20s in low-vol; 60s is a true dead-feed signal
 RECONNECT_BASE_S = 5.0         # first retry delay; doubles per consecutive failure
 RECONNECT_MAX_S = 60.0         # cap — a flat fast retry during an RTDS outage trips their per-IP 429 limiter
-STRIKE_TRUST_GAP_S = 2.0       # RTDS is ~1Hz, so the true price_to_beat report lands in [boundary, boundary+1s];
-                               # a later first capture = delivery hole (our strike may be wrong). Pre-boundary gaps don't veto.
+STRIKE_TRUST_GAP_S = 2.0       # The TWAP topic ticks ~1Hz on integer seconds, so the true price_to_beat
+                               # report carries ts == boundary; a first capture with ts > boundary+2s means
+                               # we missed the official one (delivery hole). Pre-boundary gaps don't veto.
+SPOT_STALE_S = 3.0             # projected_final_twap refuses a raw price older than this — a stale spot
+                               # projects a stale displacement, and the sniper would fire on fiction.
 
 
 class ChainlinkFeed:
@@ -38,21 +48,32 @@ class ChainlinkFeed:
         self._watchdog_task: asyncio.Task | None = None
         self._running: bool = False
         self.on_report = None  # micro-tape hook: every RTDS report (recording.MicroTape)
-        # Official 30s-TWAP stream (resolution source from 2026-08-07): observed
-        # value + its observation ts + local receipt (the topic delivers ~1.6s
-        # behind observation — receipt-vs-ts measures that lag continuously).
+        # Wakes the main loop on every raw report — the sniper's decision clock
+        # in the final-30s averaging zone (cleared by the consumer, like
+        # coinbase_feed.price_event).
+        self.report_event: asyncio.Event = asyncio.Event()
+        # Official 30s-TWAP stream (THE resolution source): observed value + its
+        # observation ts + local receipt (the topic delivers ~1.6s behind
+        # observation — receipt-vs-ts measures that lag continuously).
         self.on_twap = None    # micro-tape hook: every official TWAP report
         self.twap_official: float = 0.0
         self.twap_official_ts: float = 0.0
         self.twap_official_rx: float = 0.0
-        # Raw-report ring (~45s of payload-ts, price) — feeds twap_30(), our own
-        # running reconstruction of the official average.
+        # Raw-report ring (~45s of receipt-ts, price) — feeds the running TWAP
+        # reconstruction. RECEIPT clock, not payload: the official aggregator
+        # weights by arrival spacing (rx-clock ZOH fits it 4× tighter, median
+        # $0.07 vs $0.30), and the sniper's frozen margins were measured on it.
         self._reports: deque[tuple[float, float]] = deque()
+        # Strike capture: the TWAP topic's first report AT/AFTER each boundary
+        # (== served price_to_beat bit-exact; the raw stream's own boundary read
+        # differs from it by $10+ — never use raw for the strike).
         self._boundary_prices: "OrderedDict[int, float]" = OrderedDict()
-        # boundary_ts -> (first at/after report ts, prev report ts). First-ts gap
-        # drives strike_reliable(); prev None = feed's first-ever report = untrusted.
+        # boundary_ts -> (first at/after twap-report ts, prev twap-report ts).
+        # First-ts gap drives strike_reliable(); prev None = topic's first-ever
+        # report = untrusted.
         self._boundary_meta: dict[int, tuple[float, float | None]] = {}
-        self._last_report_ts: float | None = None
+        self._last_twap_ts: float | None = None
+        self._last_report_rx: float | None = None
         self._start_window_ts: int = int(time.time() // 300) * 300
         self.staleness = StalenessTracker("chainlink")
 
@@ -66,44 +87,77 @@ class ChainlinkFeed:
             return float("inf")
         return time.time() - self._last_update
 
+    @property
+    def last_report_rx(self) -> float:
+        """Receipt time of the latest raw report — the sniper's decision-tick
+        anchor for the per-fill race meter (0.0 before the first report)."""
+        return self._last_report_rx or 0.0
+
     def get_strike(self, window_ts: int) -> float | None:
         if window_ts == self._start_window_ts:
             return None
         captured = self._boundary_prices.get(window_ts)
         if captured is not None:
             return captured
-        if self._price > 0 and self.age_seconds < STALE_TIMEOUT_S:
-            return self._price
+        # Cold-start fallback for the base path: the latest official TWAP value
+        # (the strike IS a TWAP-stream value now). Untrusted until captured.
+        if self.twap_official > 0 and (time.time() - self.twap_official_rx) < STALE_TIMEOUT_S:
+            return self.twap_official
         return None
 
-    def twap_30(self, end_ts: float | None = None, window_s: float = 30.0) -> float | None:
-        """Our reconstruction of the official 30s TWAP: time-weighted (step-function,
-        last-known-value) average of raw reports over [end−window, end] on the
-        payload-ts clock. None until the buffer spans the whole window — a partial
-        average silently masquerading as the real thing is worse than no value.
-        The official methodology is unpublished; this assumed form is verified
-        continuously against the official topic (twap_official)."""
-        end = end_ts if end_ts is not None else (self._last_report_ts or 0.0)
-        if end <= 0 or not self._reports:
+    def running_avg(self, start: float, end: float) -> float | None:
+        """Time-weighted (step-function, last-known-value) average of raw reports
+        over [start, end] on the RECEIPT clock — the estimator the sniper's
+        frozen margins were measured on. Anchor = last report at/before start,
+        or the first one within 2s after it (the bounded anchor error is folded
+        into the margins, which were measured with this exact convention)."""
+        if end <= start or not self._reports:
             return None
-        start = end - window_s
+        seed: float | None = None
+        pts: list[tuple[float, float]] = []
+        for rx, p in self._reports:
+            if rx <= start:
+                seed = p
+            elif rx <= end:
+                pts.append((rx, p))
+        if seed is None:
+            if not pts or pts[0][0] > start + 2.0:
+                return None
+            seed = pts[0][1]
         acc = 0.0
-        prev_t: float | None = None
-        prev_p = 0.0
-        for t, p in self._reports:
-            if t > end:
-                break
-            if t <= start:
-                prev_t, prev_p = start, p    # last report at/before start anchors
-                continue
-            if prev_t is None:
-                return None                  # no anchor — window not fully covered
-            acc += prev_p * (t - prev_t)
-            prev_t, prev_p = t, p
-        if prev_t is None:
-            return None
+        prev_t, prev_p = start, seed
+        for rx, p in pts:
+            acc += prev_p * (rx - prev_t)
+            prev_t, prev_p = rx, p
         acc += prev_p * (end - prev_t)
-        return acc / window_s
+        return acc / (end - start)
+
+    def twap_30(self, end_ts: float | None = None, window_s: float = 30.0) -> float | None:
+        """Our reconstruction of the official 30s TWAP over [end−window, end],
+        rx-clock. None until the buffer covers the window. Verified continuously
+        against the official topic (twap_official)."""
+        end = end_ts if end_ts is not None else (self._last_report_rx or 0.0)
+        if end <= 0:
+            return None
+        return self.running_avg(end - window_s, end)
+
+    def projected_final_twap(self, close_ts: float, now: float | None = None) -> float | None:
+        """The sniper's projection of the window's resolving 30s TWAP at time
+        `now`: observed-average mass + spot carried over the unobserved tail,
+        proj = w·A + (1−w)·spot,  w = observed fraction of [close−30, close].
+        None outside the averaging zone, on a cold ring, or on a stale spot —
+        a None here must read as "cannot fire", never as 0."""
+        t = now if now is not None else time.time()
+        t0 = close_ts - 30.0
+        if t <= t0 or t > close_ts:
+            return None
+        if self._price <= 0 or self.age_seconds > SPOT_STALE_S:
+            return None
+        w = (t - t0) / 30.0
+        avg = self.running_avg(t0, t)
+        if avg is None:
+            return None
+        return w * avg + (1.0 - w) * self._price
 
     def boundary_captured(self, window_ts: int) -> bool:
         """True once the first report at/after window_ts has locked the boundary.
@@ -115,12 +169,12 @@ class ChainlinkFeed:
     def strike_reliable(self, window_ts: int) -> bool:
         """True when the locked boundary value can be trusted to equal price_to_beat.
 
-        Trust = our first at/after-boundary report's own payload ts within
-        STRIKE_TRUST_GAP_S of the boundary; a later capture means the true report
-        never reached us — our value can be $35+ off (side-flips in fast opens),
+        Trust = our first at/after-boundary TWAP report's own payload ts within
+        STRIKE_TRUST_GAP_S of the boundary; a later capture means the true
+        boundary report never reached us — our value is a later second's average,
         and a sniper on a wrong strike is trading noise. Missed reports BEFORE
         the boundary don't veto. False until the boundary is captured, and false
-        for the feed's first-ever report (no delivery history)."""
+        for the topic's first-ever report (no delivery history)."""
         if not self.boundary_captured(window_ts):
             return False
         meta = self._boundary_meta.get(window_ts)
@@ -139,17 +193,18 @@ class ChainlinkFeed:
         un-normalized value can never match a get_strike() lookup."""
         return ts / 1000.0 if ts > 1e11 else ts
 
-    def _record_boundary(self, observed_ts: float) -> None:
-        if self._price <= 0:
+    def _record_boundary(self, observed_ts: float, value: float) -> None:
+        if value <= 0:
             return
-        # Strike rule: price_to_beat = the FIRST btc/usd report AT/AFTER the boundary;
-        # first write wins, later in-window ticks must NOT overwrite it. (Capturing the
-        # last tick BEFORE instead missed the official round by >$8 — ~1% flipped side.)
+        # Strike rule: price_to_beat = the TWAP stream's FIRST report AT/AFTER the
+        # boundary (ts == boundary on the ~1Hz integer-second topic; verified
+        # bit-exact vs served price_to_beat). First write wins — later in-window
+        # reports must NOT overwrite it.
         boundary_ts = int(observed_ts // 300) * 300
         if boundary_ts not in self._boundary_prices:
-            self._boundary_prices[boundary_ts] = self._price
-            self._boundary_meta[boundary_ts] = (observed_ts, self._last_report_ts)
-        self._last_report_ts = observed_ts
+            self._boundary_prices[boundary_ts] = value
+            self._boundary_meta[boundary_ts] = (observed_ts, self._last_twap_ts)
+        self._last_twap_ts = observed_ts
         cutoff = int(observed_ts) - 7200
         while self._boundary_prices:
             k = next(iter(self._boundary_prices))
@@ -269,11 +324,13 @@ class ChainlinkFeed:
                             payload_ts = payload.get("timestamp") or payload.get("ts")
                             observed_ts = self._epoch_seconds(float(payload_ts)) if payload_ts is not None else now
                             # TWAP messages carry the same symbol — route by topic
-                            # STRICTLY, or averaged values poison the strike capture.
+                            # STRICTLY, or raw ticks poison the strike capture.
                             if msg.get("topic", "") == "crypto_prices_twap_thirty":
                                 self.twap_official = float(value)
                                 self.twap_official_ts = observed_ts
                                 self.twap_official_rx = now
+                                # The strike IS this stream's boundary value.
+                                self._record_boundary(observed_ts, self.twap_official)
                                 if self.on_twap is not None:
                                     try:
                                         self.on_twap(observed_ts, self.twap_official)
@@ -284,10 +341,11 @@ class ChainlinkFeed:
                             self._last_update = now
                             backoff = RECONNECT_BASE_S      # healthy data — safe to reset
                             self.staleness.observe(now)
-                            self._record_boundary(observed_ts)
-                            self._reports.append((observed_ts, self._price))
-                            while self._reports and self._reports[0][0] < observed_ts - 45.0:
+                            self._last_report_rx = now
+                            self._reports.append((now, self._price))
+                            while self._reports and self._reports[0][0] < now - 45.0:
                                 self._reports.popleft()
+                            self.report_event.set()   # sniper decision clock
                             # Optional micro-tape hook — must not raise into the feed.
                             if self.on_report is not None:
                                 try:

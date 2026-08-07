@@ -73,10 +73,8 @@ SAMPLE_CONFIG = {
     },
     "late_window": {
         "sniper_enabled": False,
-        "sniper_late_start_s": 45.0,
-        "sniper_move_window_s": 2.0,
-        "sniper_cb_move": 8.0,
-        "sniper_ask_cap": 0.92,
+        "twap_zone_s": 30.0,
+        "twap_k_min_s": 0.8,
         "sniper_min_edge": 0.04,
         "sniper_max_edge": 0.50,
         "sniper_fok_slip": 0.01,

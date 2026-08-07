@@ -70,25 +70,21 @@ async def test_mirror_rebuilds_on_reconnect(tmp_path):
     await db2.close()
 
 
-def test_pregate_never_throttles_a_fire_adjacent_move():
-    # ≥60% of the fire threshold inside the late window ALWAYS evaluates,
-    # even 1ms after the previous eval — no fire can be missed.
-    assert _pregate_should_eval(now=100.0, last_eval_ts=99.999, sec_rem=30.0,
-                                cb_move_abs=4.8, late_start_s=45, move_thresh=8.0,
-                                sniper_on=True)
+def test_pregate_never_throttles_a_fire_adjacent_wake():
+    # A hot wake (near-locked displacement inside the zone) ALWAYS evaluates,
+    # even 1ms after the previous eval — no dip can be missed.
+    assert _pregate_should_eval(now=100.0, last_eval_ts=99.999, sec_rem=20.0,
+                                hot=True, zone_s=30.0)
 
 
-def test_pregate_throttles_cold_burst_ticks():
-    common = dict(sec_rem=30.0, cb_move_abs=1.0, late_start_s=45,
-                  move_thresh=8.0, sniper_on=True)
+def test_pregate_throttles_cold_in_zone_ticks():
+    common = dict(sec_rem=20.0, hot=False, zone_s=30.0)
     assert not _pregate_should_eval(now=100.0, last_eval_ts=99.9, **common)   # 100ms ago
     assert _pregate_should_eval(now=100.3, last_eval_ts=100.0, **common)      # 300ms ago
 
 
-def test_pregate_one_hz_outside_late_window():
-    common = dict(sec_rem=200.0, cb_move_abs=20.0, late_start_s=45,
-                  move_thresh=8.0, sniper_on=True)
-    # Big move OUTSIDE the late window is not fire-adjacent -> 1Hz throttle.
+def test_pregate_one_hz_outside_zone():
+    common = dict(sec_rem=200.0, hot=False, zone_s=30.0)
     assert not _pregate_should_eval(now=100.0, last_eval_ts=99.5, **common)
     assert _pregate_should_eval(now=100.6, last_eval_ts=99.5, **common)
 
@@ -108,19 +104,44 @@ async def test_open_or_pending_count_tracks_transitions(tmp_path):
     await db.close()
 
 
-def test_hot_move_abs_none_safe():
-    """Regression: a mid-reconnect Coinbase buffer returns cb_move=None — the
-    pre-gate/fast-path hot checks must read it as a cold tick, never crash
-    the loop (08-05: abs(None) spammed one Discord error per tick)."""
-    from polybot.main import _hot_move_abs
+def test_twap_hot_cold_inputs_never_crash():
+    """The µs hot check must read every cold input (no feed, no strike, no
+    projection, out-of-zone) as NOT hot — throttle, never crash the loop
+    (the abs(None) lesson: a mid-reconnect feed spammed one error per tick)."""
+    from polybot.main import _twap_hot
 
     class F:
         def __init__(self, v):
             self.v = v
 
-        def cb_move(self, w):
+        def projected_final_twap(self, close_ts, now=None):
             return self.v
 
-    assert _hot_move_abs(None, 2.0) == 0.0
-    assert _hot_move_abs(F(None), 2.0) == 0.0
-    assert _hot_move_abs(F(-12.5), 2.0) == 12.5
+    w_ts = (int(1786060801) // 300) * 300
+    in_zone = w_ts + 280.0          # 20s remaining
+    strikes = {w_ts: 64000.0}
+    assert _twap_hot(None, strikes, in_zone, 30.0) is False
+    assert _twap_hot(F(64100.0), {}, in_zone, 30.0) is False          # no strike
+    assert _twap_hot(F(None), strikes, in_zone, 30.0) is False        # cold projection
+    assert _twap_hot(F(64100.0), strikes, w_ts + 100.0, 30.0) is False  # outside zone
+
+
+def test_twap_hot_fires_at_ninety_pct_of_margin():
+    """Hot at ≥90% of the p99.5 margin — a borderline lock must never be
+    throttled past its dip."""
+    from polybot.core.signal_engine import TWAP_MARGIN_P995, twap_margin
+    from polybot.main import _twap_hot
+
+    class F:
+        def __init__(self, v):
+            self.v = v
+
+        def projected_final_twap(self, close_ts, now=None):
+            return self.v
+
+    w_ts = (int(1786060801) // 300) * 300
+    now = w_ts + 280.0              # 20s remaining
+    m = twap_margin(TWAP_MARGIN_P995, 20.0)
+    strikes = {w_ts: 64000.0}
+    assert _twap_hot(F(64000.0 + 0.95 * m), strikes, now, 30.0) is True
+    assert _twap_hot(F(64000.0 + 0.5 * m), strikes, now, 30.0) is False

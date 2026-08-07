@@ -39,7 +39,9 @@ from polybot.feeds.binance_feed import BinanceFeed
 from polybot.feeds.market_scanner import BTCMarketScanner
 from polybot.feeds.clob_ws import ClobWebSocket
 from polybot.indicators.engine import IndicatorEngine
-from polybot.core.signal_engine import SignalEngine, TradeSignal
+from polybot.core.signal_engine import (
+    SignalEngine, TradeSignal, TWAP_MARGIN_P995, twap_margin,
+)
 from polybot.core.order_flow import compute_flow_signal
 from polybot.core.aux_layers import compute_spot_flow_signal, regime_vol_factor
 from polybot.execution.paper_trader import PaperTrader
@@ -536,30 +538,43 @@ def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) 
 
 
 def _pregate_should_eval(now: float, last_eval_ts: float, sec_rem: float,
-                         cb_move_abs: float, late_start_s: float,
-                         move_thresh: float, sniper_on: bool) -> bool:
+                         hot: bool, zone_s: float) -> bool:
     """µs pre-gate: does this wake deserve the full 30-80ms evaluation?
 
-    A fire-adjacent Coinbase move (≥60% of the sniper threshold, inside the
-    late window) ALWAYS evaluates — no fire can be missed. Everything else is
-    throttled (4Hz late-window, 1Hz otherwise): chained full evaluations on
-    every burst book-tick were the 392ms queue in front of real signals.
-    Ghost/skip records are per-(window, gate) deduped, so throttling changes
-    their timestamp by <1s and their content not at all.
+    A fire-adjacent wake (near-locked displacement inside the averaging zone)
+    ALWAYS evaluates — no dip can be missed. Everything else is throttled
+    (4Hz in-zone, 1Hz otherwise): chained full evaluations on every burst
+    book-tick were the 392ms queue in front of real signals. Ghost/skip
+    records are per-(window, gate) deduped, so throttling changes their
+    timestamp by <1s and their content not at all.
     """
-    if sniper_on and sec_rem <= late_start_s and cb_move_abs >= 0.6 * move_thresh:
+    if hot:
         return True
-    return (now - last_eval_ts) >= (0.25 if sec_rem <= late_start_s else 1.0)
+    return (now - last_eval_ts) >= (0.25 if sec_rem <= zone_s else 1.0)
 
 
-def _hot_move_abs(feed: Any, window_s: float) -> float:
-    """|cb_move| for the pre-gate/fast-path hot checks. 0.0 when the feed is
-    absent or its buffer doesn't cover the window (cold boot, mid-reconnect) —
-    a cold tick throttles to the slow path, it never crashes the loop."""
-    if feed is None:
-        return 0.0
-    mv = feed.cb_move(window_s)
-    return abs(mv) if mv is not None else 0.0
+def _twap_hot(chainlink_feed: Any, window_strikes: dict[int, float],
+              now: float, zone_s: float) -> bool:
+    """µs fire-adjacency check: inside the averaging zone with the projected
+    TWAP's displacement at ≥90% of the p99.5 lock margin (0.9× so a borderline
+    lock is never throttled past its dip). Cold feed / missing strike / no
+    projection all read False — throttle to the slow path, never crash."""
+    if chainlink_feed is None:
+        return False
+    sec_rem = 300.0 - (now % 300.0)
+    if sec_rem > zone_s:
+        return False
+    w_ts = int(now // 300) * 300
+    strike = window_strikes.get(w_ts)
+    if not strike or strike <= 0:
+        return False
+    try:
+        proj = chainlink_feed.projected_final_twap(w_ts + 300, now=now)
+    except Exception:
+        return False
+    if proj is None:
+        return False
+    return abs(proj - strike) >= 0.9 * twap_margin(TWAP_MARGIN_P995, sec_rem)
 
 
 def _fmt_secs(s: float) -> str:
@@ -978,6 +993,10 @@ async def _evaluate_signal_and_enter(
     # moment stamps cb_tick_to_submit_ms, so decision latency is measured per
     # fill, not inferred. Sign + POST legs are recorded in latency_stats.
     _eval_tick_ts = coinbase_feed.state.updated_at if coinbase_feed is not None else 0.0
+    # The TWAP sniper decides on the raw Chainlink report — anchor its own
+    # race meter to that receipt (cb_tick_to_submit_ms stays for the frozen
+    # scar dims and cross-era comparisons).
+    _eval_cl_rx = chainlink_feed.last_report_rx if chainlink_feed is not None else 0.0
     # Same tick's feed-transit leg (Coinbase match → receipt) — captured here so
     # it can't be overwritten by a newer tick before the context is built.
     _eval_feed_delay_ms = (coinbase_feed.state.feed_delay_ms
@@ -1137,11 +1156,14 @@ async def _evaluate_signal_and_enter(
     )
 
     # --- LATE-WINDOW SNIPER (behind sniper_enabled, the kill-bar safety) ----------
-    # A sharp Coinbase move (the resolution venue) pushed price past strike but
-    # the CLOB ask hasn't repriced — stale-book lag in OUR favor. Remaps to a
-    # normal BUY so ALL sizing/exec/safety gates run unchanged; only max_edge
-    # (-> sniper_max_edge) and the time penalty are bypassed.
+    # In the final-30s averaging zone the resolving TWAP is mostly observed —
+    # when its displacement from strike clears the frozen margin the outcome is
+    # decided, and a whipsaw-scared ask under the tier cap is a mispriced
+    # winner. Remaps to a normal BUY so ALL sizing/exec/safety gates run
+    # unchanged; only max_edge (-> sniper_max_edge) and the time penalty are
+    # bypassed.
     is_sniper = False
+    _proj = None
     lw_cfg = config.get("late_window", {})
 
     # Time multiplier, computed BEFORE the ghost below so a suppressed base
@@ -1165,30 +1187,30 @@ async def _evaluate_signal_and_enter(
 
     if (lw_cfg["sniper_enabled"]
             and signal.action not in ("BUY_YES", "BUY_NO")
-            and coinbase_feed is not None
-            and contract["seconds_remaining"] <= lw_cfg["sniper_late_start_s"]):
+            and chainlink_feed is not None
+            and contract["seconds_remaining"] <= lw_cfg["twap_zone_s"]):
         # Capital only deploys on a TRUSTED strike (Gamma price_to_beat, or a
-        # Chainlink boundary capture with no delivery hole). An untrusted strike
-        # can be $35+ off Polymarket's, making move-past-strike a coin flip.
+        # TWAP-topic boundary capture with no delivery hole). An untrusted
+        # strike makes the displacement math fiction.
         try:
             _w_ts = int(cid.rsplit("-", 1)[-1])
         except (ValueError, IndexError):
             _w_ts = -1
         if not _strike_trusted.get(_w_ts, False):
             _emit_gate_skip(cid, "sniper_strike_unverified",
-                            "sniper: strike unverified (RTDS boundary gap — value may differ "
-                            "from Polymarket's price_to_beat)", quiet=_SNIPER_ONLY_QUIET)
+                            "sniper: strike unverified (TWAP-topic boundary gap — value may "
+                            "differ from Polymarket's price_to_beat)", quiet=_SNIPER_ONLY_QUIET)
             _snipe = TradeSignal("SKIP", signal.prob, signal.edge, 0,
                                  "sniper: strike unverified", side=signal.side)
         else:
-            _cbm = coinbase_feed.cb_move(lw_cfg["sniper_move_window_s"])
-            _snipe = signal_engine.evaluate_late_sniper(
-                indicators, btc_price, strike, contract["seconds_remaining"],
-                price_up, price_down, _cbm,
-                lw_cfg["sniper_cb_move"],
-                lw_cfg["sniper_ask_cap"],
+            _proj = chainlink_feed.projected_final_twap(_w_ts + 300) if _w_ts > 0 else None
+            _snipe = signal_engine.evaluate_twap_lock(
+                _proj, strike, contract["seconds_remaining"],
+                price_up, price_down,
+                lw_cfg["twap_zone_s"],
+                lw_cfg["twap_k_min_s"],
                 lw_cfg["sniper_min_edge"],
-                fee_rate=fee_rate, closes=closes)
+                fee_rate=fee_rate)
         if _snipe.action in ("LATE_SNIPE_YES", "LATE_SNIPE_NO"):
             _snipe.action = "BUY_YES" if _snipe.action == "LATE_SNIPE_YES" else "BUY_NO"
             signal = _snipe
@@ -1199,8 +1221,9 @@ async def _evaluate_signal_and_enter(
                 if len(_last_snipe_log) > 64:
                     _last_snipe_log.clear()
                 _last_snipe_log[_snipe_key] = _snipe_now
-                logger.info(f"{_C.DIM}SNIPE {signal.side} — Coinbase {_cbm:+.0f} past strike | "
-                            f"Model {signal.prob:.0%} Edge {signal.edge:+.0%}{_C.RESET}")
+                logger.info(f"{_C.DIM}TWAP LOCK {signal.side} — disp ${abs((_proj or 0) - strike):.1f} "
+                            f"with {contract['seconds_remaining']:.0f}s left | "
+                            f"Ask edge {signal.edge:+.1%}{_C.RESET}")
 
     if is_sniper:                       # the sniper bypasses the late-window time penalty
         time_mult, phase = 1.0, "late_sniper"
@@ -1523,6 +1546,8 @@ async def _evaluate_signal_and_enter(
         "adverse_kelly_mult": round(adverse_kelly_mult, 3),
         "cb_tick_to_submit_ms": (round((time.time() - _eval_tick_ts) * 1000.0, 1)
                                  if _eval_tick_ts > 0 else None),
+        "cl_report_to_submit_ms": (round((time.time() - _eval_cl_rx) * 1000.0, 1)
+                                   if _eval_cl_rx > 0 else None),
         # Latency breakdown of the same span (observational, this iteration's
         # marks): tick receipt -> loop wake -> entry evaluation start.
         "lat_tick_to_wake_ms": (round((_loop_marks["wake"] - _eval_tick_ts) * 1000.0, 1)
@@ -1533,7 +1558,7 @@ async def _evaluate_signal_and_enter(
                                 and _loop_marks.get("pre_eval", 0) >= _loop_marks.get("wake", 0)
                                 else None),
         "lat_fast_path": bool(_loop_marks.get("fast")),
-        "lat_cb_woke": bool(_loop_marks.get("cb_woke")),
+        "lat_sig_woke": bool(_loop_marks.get("sig_woke")),
         "lat_cb_feed_ms": _eval_feed_delay_ms,
         "lat_clob_feed_ms": _eval_clob_delay_ms,
         # Microscope: per-segment deltas (ms) through this iteration's pre-submit
@@ -1560,15 +1585,22 @@ async def _evaluate_signal_and_enter(
         # Scar stamps (fire-time facts for the nightly scan's dimensions), on
         # the DECISION ask (signal_ask) — `price` is already the padded FOK
         # limit here, and the limit cap binding would poison ask-vs-ask
-        # comparisons. _cbm exists whenever is_sniper is True.
-        **_scar_fields(cid, side, signal_ask, _cbm if is_sniper else None),
+        # comparisons. cb_move is observational under the TWAP signal (the
+        # frozen dim library still slices on it).
+        **_scar_fields(cid, side, signal_ask,
+                       (coinbase_feed.cb_move(2.0)
+                        if is_sniper and coinbase_feed else None)),
         # Burst-shape + oracle-confirm stamps (discovery-only scar dims; None on
-        # cold, never 0.0): the 10s move brackets the 2s burst (isolated spike
-        # vs extending — reverting spikes are the measured bleed), and the
-        # resolution venue's own fresh report either confirms the strike cross
-        # or the fire's premise rests on Coinbase alone.
+        # cold, never 0.0): the 10s move brackets the 2s window (isolated spike
+        # vs extending), and the resolution venue's own fresh report either
+        # confirms the displacement or the fire rests on a stale read.
         "scar_cb_move_10s": (coinbase_feed.cb_move(10.0)
                              if is_sniper and coinbase_feed else None),
+        # TWAP fire facts — the lock the fire stood on (None on non-sniper rows).
+        "twap_proj": (round(_proj, 2) if is_sniper and _proj is not None else None),
+        "twap_disp": (round(_proj - strike, 2) if is_sniper and _proj is not None else None),
+        "twap_k_s": (round(contract["seconds_remaining"], 1) if is_sniper else None),
+        "twap_tier": (("max" if signal.prob >= 0.999 else "p995") if is_sniper else None),
         "chainlink_price_at_fire": _cl_px_at_fire,
         "chainlink_age_s_at_fire": _cl_age_at_fire,
         # Token IDs for both outcomes — required for startup reconciliation and dust sweeping.
@@ -1748,8 +1780,9 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
                             **kwargs) -> tuple[float | None, float | None, dict[int, float], int, str]:
     """Derive strike and BTC price for a window.
 
-    Strike = Chainlink's first report at/after the boundary (the exact
-    price_to_beat rule); Gamma's price_to_beat WINS whenever served."""
+    Strike = the official 30s-TWAP stream's first report at/after the boundary
+    (the exact price_to_beat rule, bit-exact verified); Gamma's price_to_beat
+    WINS whenever served."""
     now_ts = int(time.time())
 
     try:
@@ -1757,10 +1790,10 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     except (ValueError, IndexError):
         contract_window_ts = int(now_ts // 300) * 300  # fallback
 
-    # Decision strike = Chainlink's first report AT/AFTER the boundary — the
-    # exact rule Polymarket's price_to_beat uses (capturing the LAST report
-    # BEFORE it missed the official round by >$8 in fast opens). Gamma's
-    # price_to_beat is the same value but served late/unreliably in-window.
+    # Decision strike = the TWAP stream's first report AT/AFTER the boundary —
+    # the exact rule Polymarket's price_to_beat uses (the RAW stream's boundary
+    # read differs from it by $10+; never substitute it). Gamma's price_to_beat
+    # is the same value but served late/unreliably in-window.
     cl_strike = chainlink_feed.get_strike(contract_window_ts) if chainlink_feed else None
     ptb = (contract or {}).get("event_metadata") or {}
     ptb = ptb.get("price_to_beat") if isinstance(ptb, dict) else None
@@ -2114,6 +2147,26 @@ async def _evaluate_and_exit_position(
     strike_now = pos_ctx.get("strike_price", 0)
     if strike_now <= 0:
         return day_wins, day_losses, day_fees
+
+    # TWAP lock-hold: when the projection says the HELD side is locked (beyond
+    # the p99.5 margin), the position is a decided winner — never let L1's
+    # spot-basis lens scalp or loss-cut it into the same whipsaw dip the sniper
+    # buys (spot on the wrong side of strike is EXPECTED there). Falls through
+    # to the normal protective exit engine whenever the projection is cold.
+    if chainlink_feed is not None and 0.0 < live["seconds_remaining"] <= 30.0:
+        try:
+            _w_close = int(pos["market_id"].rsplit("-", 1)[-1]) + 300
+        except (ValueError, IndexError):
+            _w_close = 0
+        _proj = chainlink_feed.projected_final_twap(_w_close) if _w_close > 0 else None
+        if _proj is not None:
+            _disp = _proj - strike_now
+            _m995 = twap_margin(TWAP_MARGIN_P995, live["seconds_remaining"])
+            _held_locked = (_disp >= _m995 if pos["side"] == "Up" else _disp <= -_m995)
+            if _held_locked:
+                logger.debug("HOLD %s — TWAP locked in our favor (disp $%+.1f, margin $%.1f)",
+                             pos["side"], _disp, _m995)
+                return day_wins, day_losses, day_fees
 
     indicators = indicator_engine.compute_all(binance_feed.buffer)
 
@@ -2795,9 +2848,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
     _midprice_fn = _get_token_midprice(clob_ws) if clob_ws else None
 
     _pg_lw = config.get("late_window", {})
-    _pg_late_start = float(_pg_lw.get("sniper_late_start_s", 45))
-    _pg_move = float(_pg_lw.get("sniper_cb_move", 8.0))
-    _pg_mv_win = float(_pg_lw.get("sniper_move_window_s", 2.0))
+    _pg_zone = float(_pg_lw.get("twap_zone_s", 30.0))
     _last_full_eval = 0.0
 
     async def _entry_pass(positions: list) -> None:
@@ -2810,9 +2861,9 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         nonlocal _last_full_eval
         # µs pre-gate: only fire-adjacent wakes pay the full evaluation.
         _pg_now = time.time()
-        _pg_mv = _hot_move_abs(coinbase_feed, _pg_mv_win)
+        _pg_hot = _sniper_wake and _twap_hot(chainlink_feed, window_strikes, _pg_now, _pg_zone)
         if not _pregate_should_eval(_pg_now, _last_full_eval, 300.0 - (_pg_now % 300.0),
-                                    _pg_mv, _pg_late_start, _pg_move, _sniper_wake):
+                                    _pg_hot, _pg_zone):
             return
         _last_full_eval = _pg_now
         _loop_marks["m_gate"] = time.time()
@@ -2893,13 +2944,14 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         if scheduler and getattr(scheduler, '_shutdown_requested', False):
             break
 
-        # Late-window sniper (gated; default OFF): also wake on Coinbase ticks so a
-        # stale-book move is acted on within one tick, not the 100ms housekeeping
+        # Late-window sniper (gated; default OFF): also wake on raw Chainlink
+        # reports — the resolution stream is the sniper's decision clock; a
+        # displacement is acted on within one report, not the 100ms housekeeping
         # fallback. No effect on the loop when the sniper is disabled.
-        _sniper_wake = coinbase_feed is not None and bool(
+        _sniper_wake = chainlink_feed is not None and bool(
             config.get("late_window", {})["sniper_enabled"])
 
-        _cb_woke = False  # this wake was a Coinbase tick (set below)
+        _sig_woke = False  # this wake was a Chainlink report (set below)
         # Event-driven: react instantly to WebSocket book/resolution updates; short timeout for housekeeping
         if clob_ws:
             try:
@@ -2908,14 +2960,14 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 resolve_task = asyncio.create_task(clob_ws.market_resolved.wait())
                 _wait_set = {book_task, resolve_task}
                 if _sniper_wake:
-                    _wait_set.add(asyncio.create_task(coinbase_feed.price_event.wait()))
+                    _wait_set.add(asyncio.create_task(chainlink_feed.report_event.wait()))
                 done, pending = await asyncio.wait(
                     _wait_set, timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
                 for t in pending:
                     t.cancel()
                 if _sniper_wake:
-                    _cb_woke = coinbase_feed.price_event.is_set()
-                    coinbase_feed.price_event.clear()
+                    _sig_woke = chainlink_feed.report_event.is_set()
+                    chainlink_feed.report_event.clear()
                 if clob_ws.book_updated.is_set():
                     clob_ws.book_updated.clear()
                 # Resolve adverse-selection checkpoints every loop tick, not only on
@@ -2944,18 +2996,17 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
             _loop_marks["m_sched"] = time.time()
 
-            # --- FAST PATH: with nothing at risk, a Coinbase-tick wake OR any
-            # wake during a fire-adjacent move runs the entry evaluation FIRST.
-            # The mirror answers "anything open?" sync, so nothing — not even
-            # the positions cache — precedes a hot evaluation.
+            # --- FAST PATH: with nothing at risk, a Chainlink-report wake OR
+            # any wake during a fire-adjacent displacement runs the entry
+            # evaluation FIRST. The mirror answers "anything open?" sync, so
+            # nothing — not even the positions cache — precedes a hot evaluation.
             _fast_entry = False
-            _loop_marks["cb_woke"] = 1.0 if _cb_woke else 0.0
+            _loop_marks["sig_woke"] = 1.0 if _sig_woke else 0.0
             _now_fp = time.time()
             _hot_fp = (_sniper_wake
-                       and (300.0 - (_now_fp % 300.0)) <= _pg_late_start
-                       and _hot_move_abs(coinbase_feed, _pg_mv_win) >= 0.6 * _pg_move)
+                       and _twap_hot(chainlink_feed, window_strikes, _now_fp, _pg_zone))
             _open_n = db.open_market_count() if hasattr(db, "open_market_count") else None
-            if (_cb_woke or _hot_fp) and _open_n == 0:
+            if (_sig_woke or _hot_fp) and _open_n == 0:
                 _fast_entry = True
                 _loop_marks["fast"] = 1.0
                 await _entry_pass([])
@@ -2963,7 +3014,7 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
                 _loop_marks["fast"] = 0.0
 
             positions = await _get_open_positions_cached(db)
-            if not _fast_entry and (_cb_woke or _hot_fp) \
+            if not _fast_entry and (_sig_woke or _hot_fp) \
                     and not any(p["status"] == "open" for p in positions):
                 # Mirror wasn't ready — fall back to the cached-positions check.
                 _fast_entry = True
@@ -3424,19 +3475,20 @@ async def main() -> None:
         spec = importlib.util.spec_from_file_location("analyze_late_window", hp)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        # Read the SIM ceiling at the DEPLOYED config (settings.yaml), not the
-        # harness's research defaults — apples-to-apples with realized fills.
-        # RTT 0.34 = the box's measured POST p50 (Polymarket's 250ms crypto
-        # taker delay is a policy floor — no sample beats it).
         _lw = config.get("late_window", {})
-        # Each read individually guarded: the SIM corpus lives in a gitignored
-        # sidecar DB that can be missing/corrupt while the realized ledger is
-        # perfectly healthy — a dead sidecar must degrade the ping, never
+        # Each read individually guarded: the SIM corpus lives in gitignored
+        # recordings that can be missing/corrupt while the realized ledger is
+        # perfectly healthy — a dead corpus must degrade the ping, never
         # suppress the kill-rule readout for live money (and vice versa).
+        # SIM = the TWAP lock replay over the micro-tape (analyze_twap_lock.py),
+        # an at-the-decision-ask ceiling — context only, never the verdict.
         try:
+            tp = Path(__file__).resolve().parent.parent / "scripts" / "analyze_twap_lock.py"
+            tspec = importlib.util.spec_from_file_location("analyze_twap_lock", tp)
+            tmod = importlib.util.module_from_spec(tspec)
+            tspec.loader.exec_module(tmod)
             sim = await asyncio.to_thread(
-                mod.health_read, 0.34, _lw["sniper_fok_slip"],
-                _lw["sniper_cb_move"], _lw["sniper_ask_cap"])   # SIM corpus (window_paths.db, RO)
+                tmod.health_read, None, _lw["sniper_min_edge"])
         except Exception as e:
             logger.warning("sniper health SIM read failed: %s", e)
             sim = None
@@ -3610,14 +3662,13 @@ async def main() -> None:
                 return ""
             c, m = twap["checked"], twap["matched"]
             if m == c:
-                return (f"Resolution watch: terminal snapshot intact — "
-                        f"{m}/{c} boundary matches to the cent\n")
-            return (f"🚨 **RESOLUTION MECHANISM SHIFT: {c - m}/{c} windows "
-                    f"resolved OFF the terminal Chainlink snapshot (worst "
-                    f"${twap['worst']:.2f} off)** — the announced TWAP rollout "
-                    f"is the prime suspect. **Set `late_window.sniper_enabled: "
-                    f"false` now** and verify a resolved market by hand before "
-                    f"re-enabling.\n")
+                return (f"Resolution watch: TWAP chain intact — each close equals "
+                        f"the next strike, {m}/{c} to the cent\n")
+            return (f"🚨 **RESOLUTION MECHANISM SHIFT: {c - m}/{c} windows broke "
+                    f"the final==next-strike chain (worst ${twap['worst']:.2f} "
+                    f"off)** — Polymarket changed the resolution rule again. "
+                    f"**Set `late_window.sniper_enabled: false` now** and verify "
+                    f"a resolved market by hand before re-enabling.\n")
 
         if kt:
             action = ("**→ ACTION: the pre-registered shut-off line is crossed. "

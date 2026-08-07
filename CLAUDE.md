@@ -1,23 +1,25 @@
 # PolyBot
 
-5-min BTC Up/Down trader for Polymarket. The **late-window sniper** (§2) is the
+5-min BTC Up/Down trader for Polymarket. The **TWAP lock sniper** (§2) is the
 bot's **only strategy** — base entries are always suppressed (no toggle).
-**LIVE since 2026-07-19**: the binding paper-shadow gate PASSED that day on 6
-clean ET days from the Stockholm VPS (194 fills, EW +8.55¢/sh, 6/6 days
-positive, t_day 3.27, day-bootstrap p10 +6.06¢ — pre-registered 07-15 as a
-deadline-shortened but leg-identical form of the 8-day bar). The edge is
-mechanism-verified, not just measured: an event-true micro-tape replay at the
-bot's actual fire ticks reproduces the realized net to 0.1¢, the G-M control
-(buy spot-side at ask) nets ~0 at every RTT, and the two levers that create it
-are quantified — the 304ms box RTT (the same replay at the old 436ms host is
-NEGATIVE; ceiling +14.7¢ at 0ms) and the L1 edge floor (floor-pass fires
-+16.7¢/sh vs floor-fail −3.6¢; it prunes the reverting-move fires that are
-~85% of the loss bill). Expect regression from +8.5¢ (4-day CIs are wide;
-reverting moves and a ~2.4% terminal-flip floor are permanent costs); the
-**post-live kill rule** (§2) is armed and the nightly health job re-reads the
-realized ledger daily. The **base strategy** (§3) has no proven edge, never
-touches real capital, and survives only as the zero-capital ghost/
-counterfactual evidence stream the gate machinery needs.
+**PAPER SHADOW since 2026-08-07**: at 00:00 UTC that day Polymarket switched
+resolution from the terminal Chainlink snapshot to the official **30-second
+TWAP stream** (strike = the stream's value at the open, final = its value at
+the close — both verified bit-exact against served price_to_beat/final_price,
+17/17 windows, and each close chains into the next strike to the cent). The
+switch killed the burst sniper that had been live since 07-19 (its own fills
+recompute to −17.5¢/sh under TWAP scoring, t −5.0) and created the current
+edge: in the final 30s the resolving average is mostly already observed, so
+the outcome is often mathematically decided while spot-reflexive traders still
+quote it — night-one books priced locked windows at 0.99-1.00 (the naive
+buy-the-lock is dead on arrival) but a late spot whipsaw dips the WINNER's
+ask to 0.84-0.93 for 1-4s in ~1 in 6 windows, well inside the ~0.4s FOK reach.
+The lock call itself has never been wrong (583/583 windows, margins frozen in
+`signal_engine.TWAP_MARGIN_*`). **No real capital until the pre-registered
+paper bar passes** (§2); the nightly health job re-reads the realized shadow
+daily. The **base strategy** (§3) has no proven edge, never touches real
+capital, and survives only as the zero-capital ghost/counterfactual evidence
+stream the gate machinery needs.
 
 **This file is the single source of truth — update it in the same commit as any
 behavioral change.**
@@ -38,9 +40,10 @@ python -m pytest polybot/tests/           # full suite
 scripts/run_polybot.sh                    # daily cycle: trade -> nightly jobs -> commit -> restart (VPS only)
 ```
 
-**The live recipe**: `settings.yaml` → `mode: live` + `late_window.sniper_enabled:
-true`. That is the complete switch; paper and live share every decision path, and
-the sniper is the only strategy either can run.
+**The live recipe** (only after the §2 bar passes): `settings.yaml` → `mode: live`
++ `late_window.sniper_enabled: true` + a fresh `validation_epoch`. That is the
+complete switch; paper and live share every decision path, and the sniper is the
+only strategy either can run.
 
 ### Secrets
 
@@ -56,25 +59,28 @@ the sniper is the only strategy either can run.
 
 ## 1. The market + the two modes
 
-Every 5 min, Polymarket runs a market: will BTC close higher or lower than at
-the window's start? Up/Down ERC-1155 tokens trade $0-$1; the winning side pays
-$1/share. Chainlink (via Polymarket RTDS, tracking Coinbase) is the resolution
-source; Gamma mirrors it for discovery. The per-window **decision strike** is
-Chainlink's **first btc/usd report at/after the window-boundary timestamp**
-(`chainlink_feed.get_strike`, via RTDS; `_compute_strike_and_btc`) — the exact rule
-Polymarket's `price_to_beat` uses (the same data stream it resolves on, matched at
-+0ms; verified bit-exact against Gamma's served value), captured live and available
-~ms into the window. Recording the last tick *before* the boundary instead missed
-the official round by >$8 in a fast open (~1% of windows flipped side). Gamma's
-`event_metadata.price_to_beat` is the RESOLVED truth, but served late/unreliably
-in-window (whole windows never get it): when present it WINS (it covers RTDS
-delivery holes, where our first-received at/after-boundary report is not
-Polymarket's — measured ~1-2% of windows, up to $35+ off); otherwise the Chainlink
-capture carries. A capture landing > 2s past the boundary (`strike_reliable`,
-own-report basis: the ~1Hz RTDS heartbeat puts the true report inside
-[boundary, boundary+1s], so a later capture means it was missed; pre-boundary
-gaps don't veto) still serves the base path but is UNTRUSTED — the sniper never
-deploys capital on it (`_strike_trusted`). Two modes, one
+Every 5 min, Polymarket runs a market: will BTC's **30-second TWAP** at the
+window close be ≥ its value at the open (tie → Up)? Up/Down ERC-1155 tokens
+trade $0-$1; the winning side pays $1/share. The resolution source is
+Chainlink's official BTC/USD 30s-TWAP stream (via Polymarket RTDS topic
+`crypto_prices_twap_thirty`, ~1Hz on integer seconds, delivered ~1.6-1.8s
+behind observation); Gamma mirrors it for discovery. The per-window **decision
+strike** is the TWAP stream's **first report at/after the window-boundary
+timestamp** (`chainlink_feed.get_strike`; `_compute_strike_and_btc`) — the
+exact `price_to_beat` rule, verified bit-exact against Gamma's served value
+(17/17), and each window's final equals the next window's strike to the cent
+(the resolution-watch invariant, §7). The RAW ~1Hz stream (`crypto_prices_chainlink`)
+is NOT the strike source — its boundary value differs from the served strike by
+$10+ — it feeds the running TWAP reconstruction (`running_avg`/`twap_30`,
+rx-clock ZOH: the official aggregator weights by arrival spacing, which fits
+4× tighter than payload spacing) and the sniper's projection
+(`projected_final_twap`). Gamma's `event_metadata.price_to_beat` is the
+RESOLVED truth, but served late/unreliably in-window: when present it WINS;
+otherwise the boundary capture carries. A capture landing > 2s past the
+boundary (`strike_reliable`: the topic ticks on integer seconds, so the true
+boundary report carries ts == boundary; a later first capture = delivery hole;
+pre-boundary gaps don't veto) still serves the base path but is UNTRUSTED —
+the sniper never deploys capital on it (`_strike_trusted`). Two modes, one
 engine: **paper**
 (realism shim: real CLOB books, FOK semantics, convex slippage, latency
 SAMPLED inverse-CDF from the LIVE ledger's measured order-path POST-RTT
@@ -86,28 +92,41 @@ schema so paper-vs-live kill rates are directly comparable) and **live**
 (`py-clob-client-v2` FOK
 against the real CLOB; USDC balance + allowance verified at boot).
 
-## 2. The late-window sniper — the deployable edge
+## 2. The TWAP lock sniper — the candidate edge (paper shadow)
 
-In the final `sniper_late_start_s` (45s) of a window, a sharp Coinbase move
-(the resolution venue) can push price past the strike while the CLOB ask lags
-~350ms behind. The sniper buys that side at the stale price before the book
-reprices.
+In the final 30s the resolving average is w-observed: `proj = w·A + (1−w)·spot`
+(A = running rx-clock average of the raw stream over the elapsed part of the
+averaging window, spot = latest raw report). When `|proj − strike|` exceeds the
+frozen projection-error margin for the time remaining, the outcome is decided.
+Night-one books price that lock at 0.99-1.00 — the edge is the **whipsaw dip**:
+a late spot move against the locked side scares spot-reflexive traders into
+selling the WINNER at 0.84-0.93 for 1-4s (~1 in 6 windows on night one). The
+sniper buys those dips and holds ≤30s to resolution.
 
-- **Fire condition** (`SignalEngine.evaluate_late_sniper`): Coinbase move over
-  `sniper_move_window_s` (2s) ≥ `sniper_cb_move` ($8) pushed price past strike
-  AND the chosen side's ask ≤ `sniper_ask_cap` (0.92). Both are the realized-
-  profitable 07-03..07-05 values; the sim grid favored $12 / 0.80 but the sim is
-  a full-population ceiling that did not translate (see the Fill bullet). The
-  real adverse-selection defense is `sniper_fok_slip`, not these two knobs. The
-  main loop wakes on Coinbase ticks when enabled.
+- **Fire condition** (`SignalEngine.evaluate_twap_lock`): inside
+  `twap_zone_s` (30s, hard ceiling — the projection is undefined earlier) with
+  ≥ `twap_k_min_s` (0.8s) left, displacement ≥ the k-interpolated margin, ask ≤
+  `tier_prob − sniper_min_edge`. Two frozen tiers
+  (`signal_engine.TWAP_MARGIN_P995`/`_MAX`, measured on 564 rx-clock tape
+  windows, zero disagreements in 583 incl. night one): beyond the max-ever
+  error → prob 0.999 (ask ≤ ~0.96); beyond p99.5 → prob 0.995 (ask ≤ ~0.955).
+  The cap DERIVES from the edge floor — one knob, no separate ask-cap to
+  drift. Tuning the margin tables to make a window fire is relaxing a bar.
+  The main loop wakes on raw Chainlink reports (`report_event`) and CLOB book
+  events; the µs pre-gate (`_twap_hot`) fast-paths any wake at ≥90% of the
+  p99.5 margin so a 1s dip is never throttled past.
+- **Lock-hold**: while the projection says the HELD side is locked, exit
+  evaluation is skipped entirely (`_evaluate_and_exit_position`) — L1's
+  spot-basis lens reads the whipsaw as danger and would loss-cut a decided
+  winner at the dip bottom, the exact dip the entry bought. Falls through to
+  the normal protective exit engine whenever the projection is cold.
 - **Fill**: the sniper FOK limit pads the decision ask by only `sniper_fok_slip`
-  (0.01, ~one tick) then dies — the pad absorbs benign jitter, but a genuine
-  reprice KILLS the order, and that kill IS the adverse-selection filter (a book
-  repricing away = the move is reverting → sit out). Capped at `model_prob −
-  min_edge` so a true reprice can never fill below the edge floor. Realized paper
-  fixed the pad size (96 fills / 9 ET days): clean fills (slip ≤ one tick) net
-  +9¢/sh at 70% win; a wider pad admits reverting-move fills measured −16¢/sh —
-  it turned 07-07's −15¢/sh into an all-day chase where one tick sits it out. Base entries keep the tight at-ask limit (a reject on adverse movement
+  (0.01, ~one tick) then dies — the pad absorbs benign jitter, but a dip that
+  snapped back to 0.99+ before the order lands KILLS it and the bot sits that
+  window out (never chase a vanished dip upward; burst-era fills proved wide
+  pads buy exactly the repriced books). Capped at `model_prob − min_edge` so a
+  true reprice can never fill below the edge floor. Base entries keep the
+  tight at-ask limit (a reject on adverse movement
   is a feature there). All gates run at the decision ask (harness-faithful);
   the pre-submit VWAP re-check still vetoes books that lost the edge. The booked
   entry is the CLOB's TRUE fill VWAP — resolved WS-tape → balance-delta →
@@ -142,27 +161,28 @@ reprices.
 - **What it bypasses**: `max_edge` (→ `sniper_max_edge` 0.50, at both the
   edge-cap and pre-submit gates), the late-window time penalty, and the base
   signal-level gates `min_model_probability`, `min_kelly`, and the ATR
-  percentile (deliberate and harness-faithful — the signal is move-driven, not
-  prob-driven; `sniper_min_edge` = `min_edge` is the floor and the $1 min-size
-  backstops tiny-Kelly fires). Every execution-quality gate stays — adverse
-  selection, edge-decay, depth, net-edge, min-size, pre-submit VWAP re-check,
-  feed freshness, flip hurdle. **Sizing is market-anchored**: sniper Kelly is
-  computed on `ask + sniper_min_edge` (the defended edge at market odds), never
-  on raw L1 prob — L1 is ~+17pp overconfident conditional on firing (calm-vol
-  ATR during the burst + winner's-curse selection) and Kelly on the phantom
-  edge upsized exactly the losing fires. Entry floor and exit engine still use
-  L1; the FOK-limit cap stays on L1 (anchoring it would zero the pad).
+  percentile (deliberate — the signal is lock-driven, not L1-driven;
+  `sniper_min_edge` = `min_edge` is the floor and the $1 min-size backstops
+  tiny-Kelly fires). Every execution-quality gate stays — adverse selection,
+  edge-decay, depth, net-edge, min-size, pre-submit VWAP re-check, feed
+  freshness, flip hurdle. **Sizing is market-anchored**: sniper Kelly is
+  computed on `ask + sniper_min_edge` (the defended edge at market odds),
+  never on the tier prob — the tier floors are empirical tail bounds, and
+  Kelly on a tail bound upsizes exactly the fires a regime shift breaks
+  first. The FOK-limit cap stays on L1 (anchoring it would zero the pad).
 - **Kill bar — two gates; the harness is only the first.** (1) The
-  `analyze_late_window.py` momentum read (`t_day ≥ 2.0` AND block-bootstrap
-  `p10 > 0` over ≥ 8 clean ET days, ≥ 6 positive, ≥ 40 fills, net of fee,
-  control ~0 by eye) is a full-population REPLAY CEILING — it fires on all
-  ~58 windows/day and is BLIND to the latency-driven adverse selection that
-  leaked ~16¢ live, so it is NECESSARY BUT NOT SUFFICIENT (the go-live that
-  failed trusted it alone). (2) The BINDING gate is the **paper-shadow's
-  realized fills** (`sniper_shadow_status.py` / `live_health_read`): ≥ 8 clean
-  ET days, equal-weight net ≥ +2¢/sh, `t_day ≥ 2`, `p10 > 0`, AND a
-  shadow-vs-harness gap < 3¢. Never deploy real capital on the harness print
-  alone. The nightly health job (§7) re-reads both in production.
+  `analyze_twap_lock.py` replay (lock-dip fires over the micro-tape with FOK
+  reachability modeled, plus the bit-exact mechanism check) is a CEILING —
+  fills book the decision ask, queue depth is invisible. (2) The BINDING gate
+  is the **paper-shadow's realized fills** (`sniper_shadow_status.py` /
+  `live_health_read`, scoped to `validation_epoch` 2026-08-07T04:00Z):
+  **pre-registered 08-07** as the deadline-shortened leg-identical form of
+  the 8-day bar (07-15 precedent) — ≥ 6 clean ET days, ≥ 40 fills,
+  equal-weight net ≥ +2¢/sh, `t_day ≥ 2`, ≥ 5/6 days positive, day-bootstrap
+  `p10 > 0`, AND zero realized lock-breaches (a locked side losing =
+  mechanism failure → investigate before any deploy). Never deploy real
+  capital on the harness print alone. The nightly health job (§7) re-reads
+  both in production.
 - **The sniper is the ONLY strategy** — not a toggle. Base-entry BUYs are
   ALWAYS suppressed (unconditional in `main.py`; recorded as `sniper_only`
   ghosts — free zero-capital evidence for the gate). There is no `sniper_only`
@@ -170,8 +190,9 @@ reprices.
   alike. `sniper_enabled` (default `false`) is the separate kill-bar SAFETY —
   the emergency brake, not a strategy choice. Recipe: `mode: live` +
   `sniper_enabled: true`.
-- **Post-live kill rule**: re-run the harness every 2-3 days; trailing-4-day
+- **Post-live kill rule** (armed at any future go-live): trailing-4-day
   lenient mean < +2¢/sh or trailing-8-day t < 2 → set `sniper_enabled: false`.
+  A single realized lock-breach at max tier trips it immediately.
 
 ## 3. The base strategy (paper-only evidence engine)
 
@@ -268,10 +289,11 @@ trade events (SELL fill price via REST after the fill, off the latency path),
 tick-size/neg-risk/fee + contract-version caches prewarmed per window,
 warm pooled HTTP/2 singleton (keepalive_expiry 60s > 5s ping, connect timeout
 5s, TCP_NODELAY), gc.freeze() post-boot (full-GC pauses off the fire path).
-`cb_tick_to_submit_ms` in trade_context measures tick→submit decision latency
-per fill; `lat_cb_feed_ms`/`lat_clob_feed_ms` stamp the upstream feed-transit
-leg (receipt − the message's own exchange timestamp, both venues) so the race
-is measured from the exchanges' clocks, not just ours. Live boot: key+funder required,
+`cl_report_to_submit_ms` in trade_context measures the sniper's true race
+(latest raw Chainlink receipt → submit) per fill; `cb_tick_to_submit_ms`
+stays for cross-era comparisons; `lat_cb_feed_ms`/`lat_clob_feed_ms` stamp the
+upstream feed-transit leg (receipt − the message's own exchange timestamp) so
+the race is measured from the exchanges' clocks, not just ours. Live boot: key+funder required,
 balance/allowance preflight, allowance recheck every 10 fills. Per-trade DB
 writes are atomic. `fill.fill_size` is always USDC notional.
 
@@ -333,17 +355,21 @@ it was removed). Never re-add resting quotes.
   every CLOB best-bid/ask CHANGE + every Coinbase tick (final 90s of each
   window) and every Chainlink RTDS report (always; payload + receipt ts, so
   delivery holes are measurable) → `memory/recordings/micro_*.jsonl`
-  (gitignored). Since 08-06 it also records the official 30s-TWAP stream
-  (`crypto_prices_twap_thirty`, the resolution source from 08-07) as `"t"`
-  records with payload + receipt ts; `chainlink_feed.twap_30()` reconstructs
-  the running average from raw reports (None until the buffer spans 30s), and
-  `twap_official`/`twap_official_ts`/`twap_official_rx` hold the latest
-  official value — the topic delivers ~1.6s behind observation, so computing
-  our own is the faster read while the official value remains the resolver. This is what lets future replays model FOK reachability
-  against the true book trajectory instead of a sampled ceiling.
+  (gitignored). It also records the official 30s-TWAP stream (the resolution
+  source) as `"t"` records with payload + receipt ts;
+  `chainlink_feed.running_avg`/`twap_30()` reconstruct the average from raw
+  reports on the rx clock (None until covered — a partial average must never
+  masquerade), and `twap_official`/`twap_official_ts`/`twap_official_rx` hold
+  the latest official value — the topic delivers ~1.6-1.8s behind observation,
+  so our own reconstruction is the faster read while the official value
+  remains the resolver and the strike source. This tape is what the
+  `analyze_twap_lock.py` harness replays (fires + FOK reachability against the
+  true book trajectory).
 - **Per-decision records**: `trade_context` stamped into outcomes + ghosts
   (entry facts, model prob, flow/CVD telemetry, book aux, adverse audit
-  fields, `cb_tick_to_submit_ms` decision latency, and the regime-Kelly
+  fields, `cl_report_to_submit_ms`/`cb_tick_to_submit_ms` decision latency,
+  the TWAP fire facts (`twap_proj`/`twap_disp`/`twap_k_s`/`twap_tier` — the
+  lock each fire stood on), and the regime-Kelly
   SHADOW stamps — `regime_buckets` at frozen cuts, `regime_kelly_mult` (burst
   HOT 1.15 / COLD 0.80, clamped [0.5, 1.5]), `size_flat`/`size_regime` —
   report-only inputs; sizing never reads them). **None-vs-0.0 is
@@ -353,9 +379,9 @@ it was removed). Never re-add resting quotes.
   signed sum of `delta_pnl`).
 - **NightlyScheduler** (23:45 ET): record rollups + retention sweep + the
   **sniper-edge health report** (`_sniper_health_job`, skipped when
-  `sniper_enabled` is false — reports BOTH the SIM corpus (`health_read`,
-  window_paths, modeled at the measured post-rollout 0.34s POST p50) and the
-  REALIZED fills for
+  `sniper_enabled` is false — reports BOTH the SIM read (`analyze_twap_lock.
+  health_read`, the lock-dip replay over the trailing micro-tape days — a
+  decision-ask ceiling, context only) and the REALIZED fills for
   the current mode (`live_health_read`: live → polybot_live.db; paper →
   polybot_paper.db scoped to `late_window.validation_epoch`, the BINDING
   paper-shadow gate) side by side with their ¢/sh gap, and drives the kill-rule
@@ -405,16 +431,17 @@ it was removed). Never re-add resting quotes.
   (or stop flagging) is relaxing a bar. The ping also carries the
   **resolution-mechanism watch** (`resolution_snapshot_read`): every window's
   official final_price must equal the NEXT window's price_to_beat bit-exact
-  (the same first-at/after-boundary Chainlink report; 516/516 on the live
-  ledger 07-30) — systematic divergence means Polymarket's announced TWAP
-  resolution rolled out and the sniper's terminal-snapshot premise is dead;
-  the ping then says set `sniper_enabled: false` (alert-only, like
-  everything here). Pings Discord `#polybot-daily` (✅/⚠️/⏳ sniper).
+  (both are the TWAP stream's value at the same boundary instant; 17/17 on
+  night one) — systematic divergence means Polymarket changed the resolution
+  rule again and the lock premise needs re-verification; the ping then says
+  set `sniper_enabled: false` (alert-only, like everything here). Pings
+  Discord `#polybot-daily` (✅/⚠️/⏳ sniper).
 
 ## 8. Hard rules
 
 - No early/mid-window entry-side prediction (ML or rules) — the CLOB price
-  wins; the final-45s sniper is the one sanctioned exception, through its bar.
+  wins; the final-30s TWAP lock is the one sanctioned exception, through its
+  bar (and it is a projection of an already-observed average, not a forecast).
 - The base strategy never deploys live. No deployment before a kill bar passes;
   never relax a bar to pass it.
 - No symmetric market-making, no oracle-cadence trading, no expansion past BTC
@@ -456,7 +483,11 @@ polybot/
                          sits in a gitignored sidecar DB — window_paths.db)
 scripts/
   run_polybot.sh         THE daily supervisor (systemd unit: polybot.service)
-  analyze_late_window.py sniper kill-bar harness (RTT-parametric; --rtt-sweep --max-slip)
+  analyze_twap_lock.py   TWAP lock kill-bar harness (micro-tape replay + bit-exact
+                         mechanism check; health_read feeds the nightly ping)
+  analyze_late_window.py ledger readers the nightly job still uses
+                         (live_health_read / SPRT / scar / resolution watch);
+                         its burst-era replay no longer models the market
   sniper_shadow_status.py  paper-shadow fills vs the harness
   verify_keys.py         live preflight: GET-auth + balance/allowance
   smoke_order_test.py    live preflight: one unfillable FOK proves order POSTs
@@ -472,7 +503,7 @@ scripts/
 | Binance.com | `kline_1m` / `depth20@100ms` / `aggTrade` WS | Candles, ATR, depth, cross-venue gap |
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/tick-size` | Books, tape, executable prices |
 | Polymarket Gamma | `GET /events?slug=` (deprecated upstream; auto-fallback `GET /events/slug/{slug}` — `gamma_events_by_slug`) | Discovery + resolution + labels |
-| Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` | Strike + resolution price |
+| Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` (`crypto_prices_twap_thirty` + raw `crypto_prices_chainlink`) | Strike + resolution (TWAP topic); raw stream feeds the projection |
 
 ## 11. Running + invariants
 

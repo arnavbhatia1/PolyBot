@@ -26,6 +26,36 @@ _ATR_LONG_TERM_MIN_SAMPLES = 50
 # L1 prob clip — keeps the CDF away from exact 0/1.
 _L1_CLIP = 1e-6
 
+# ---- TWAP lock sniper (design-frozen 2026-08-07) ------------------------------
+# Projection-error margins for |final_TWAP − (w·A + (1−w)·spot)| by seconds
+# remaining, measured on 564 windows of rx-clock micro-tape (08-05..08-07,
+# zero lock disagreements in 583 windows incl. the first live TWAP night).
+# P995 = the p99.5 percentile; MAX = the worst error ever observed (rounded up,
+# monotone-enforced). Tuning these to make a window fire is relaxing a bar.
+TWAP_MARGIN_P995: tuple[tuple[float, float], ...] = (
+    (2.0, 0.6), (4.0, 1.6), (6.0, 4.5), (8.0, 6.5), (10.0, 11.0),
+    (12.0, 11.5), (15.0, 14.0), (20.0, 23.0), (25.0, 26.0), (29.0, 32.0),
+)
+TWAP_MARGIN_MAX: tuple[tuple[float, float], ...] = (
+    (2.0, 0.7), (4.0, 4.0), (6.0, 14.0), (8.0, 14.5), (10.0, 14.5),
+    (12.0, 14.5), (15.0, 20.0), (20.0, 28.0), (25.0, 42.0), (29.0, 50.0),
+)
+# Mechanical win-prob floors per tier: displacement beyond the max-ever error
+# has never lost (583/583); beyond p99.5 the one-sided breach-and-cross risk
+# is < 0.25%. Kelly still anchors to market odds, never to these.
+TWAP_PROB_DETERMINISTIC = 0.999
+TWAP_PROB_P995 = 0.995
+
+
+def twap_margin(knots: tuple[tuple[float, float], ...], k: float) -> float:
+    """Piecewise-linear margin at k seconds remaining; clamped to the end knots."""
+    if k <= knots[0][0]:
+        return knots[0][1]
+    for (x0, y0), (x1, y1) in zip(knots, knots[1:]):
+        if k <= x1:
+            return y0 + (y1 - y0) * (k - x0) / (x1 - x0)
+    return knots[-1][1]
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -330,68 +360,61 @@ class SignalEngine:
                 f"Hold {side}: model={model_prob:.0%} mkt={market_price_for_side:.0%} "
                 f"edge={holding_edge:+.0%}")
 
-    def evaluate_late_sniper(
-            self, indicators: dict[str, dict], btc_price: float, strike_price: float,
+    def evaluate_twap_lock(
+            self, projected_twap: float | None, strike_price: float,
             seconds_remaining: float, market_ask_up: float, market_ask_down: float,
-            cb_move: float | None, cb_move_threshold: float, ask_cap: float,
-            sniper_min_edge: float, fee_rate: float = DEFAULT_FEE_RATE,
-            closes: np.ndarray | None = None) -> TradeSignal:
-        """Late-window sniper: buy the side a sharp Coinbase move pushed past
-        the strike while that side's CLOB ask lags (still <= ask_cap).
+            zone_s: float, k_min_s: float, sniper_min_edge: float,
+            fee_rate: float = DEFAULT_FEE_RATE) -> TradeSignal:
+        """TWAP lock sniper: in the final-30s averaging zone, the window's
+        resolving 30s TWAP is mostly already observed — when the projection's
+        displacement from strike exceeds the frozen error margin, the outcome
+        is decided while spot-reflexive traders still quote the winner below
+        $1 (late whipsaws dip the winning ask to 0.84-0.93 for 1-4s).
 
-        Mirrors the `momentum` signal in analyze_late_window.py. The move is
-        L1's own favored side; only max_edge (built to dodge stale-AGAINST-us
-        prices) rejects it, so the caller bypasses max_edge + the late-window
-        time penalty for this action ONLY and keeps every other safety gate.
-        Deliberately skips min_model_probability (move-driven, not prob-driven)
-        but keeps the `sniper_min_edge` floor: ask at/above L1 fair = book
-        already repriced, no lag left to capture.
+        Two tiers, both mechanical: displacement beyond the max-ever error
+        fires at prob 0.999; beyond p99.5 at 0.995. The ask cap DERIVES from
+        the edge floor (ask ≤ tier_prob − sniper_min_edge) — one knob, no
+        separate cap to drift. Tie rule: final ≥ strike resolves Up, so a
+        non-negative displacement takes the Up side.
         Returns LATE_SNIPE_YES / LATE_SNIPE_NO / SKIP.
         """
-        if btc_price <= 0 or strike_price <= 0 or cb_move is None:
-            return TradeSignal("SKIP", 0.5, 0, 0, "sniper: no price/strike/move")
-        if abs(cb_move) < cb_move_threshold:
+        if projected_twap is None or strike_price <= 0:
+            return TradeSignal("SKIP", 0.5, 0, 0, "sniper: no projection/strike")
+        k = seconds_remaining
+        if k < k_min_s or k > zone_s:
             return TradeSignal("SKIP", 0.5, 0, 0,
-                               f"sniper: move {cb_move:+.1f} < {cb_move_threshold:.1f}")
-        up = cb_move > 0
-        # the move must have pushed Coinbase past the strike toward the chosen side
-        if not ((up and btc_price > strike_price) or ((not up) and btc_price < strike_price)):
-            return TradeSignal("SKIP", 0.5, 0, 0, "sniper: move not past strike")
+                               f"sniper: {k:.1f}s outside the averaging zone")
+        disp = projected_twap - strike_price
+        up = disp >= 0
+        adisp = abs(disp)
+        m995 = twap_margin(TWAP_MARGIN_P995, k)
+        if adisp < m995:
+            return TradeSignal("SKIP", 0.5, 0, 0,
+                               f"sniper: not locked — |disp| ${adisp:.1f} < ${m995:.1f} @ {k:.0f}s",
+                               side="Up" if up else "Down")
+        deterministic = adisp >= twap_margin(TWAP_MARGIN_MAX, k)
+        prob = TWAP_PROB_DETERMINISTIC if deterministic else TWAP_PROB_P995
         ask = market_ask_up if up else market_ask_down
         if ask is None or not (0.0 < ask < 1.0):
-            return TradeSignal("SKIP", 0.5, 0, 0, "sniper: no executable ask")
-        if ask > ask_cap:
-            return TradeSignal("SKIP", 0.5, 0, 0,
-                               f"sniper: ask {ask:.2f} > cap {ask_cap:.2f} (book already repriced)")
-        atr = indicators.get("atr", {}).get("atr", 0)
-        if atr is None or atr <= 0:
-            # Cold ATR → compute_probability falls back to 0.5; with the ATR gate
-            # bypassed the sniper would fire a garbage (0.5 - ask) edge at boot.
-            return TradeSignal("SKIP", 0.5, 0, 0, "sniper: ATR not ready")
-        prob_up = self.compute_probability(btc_price, strike_price, seconds_remaining, atr,
-                                           closes=closes,
-                                           atr_candle_ts=indicators.get("atr", {}).get("candle_ts"))
-        prob = prob_up if up else 1.0 - prob_up
-        edge = prob - ask
-        if edge < sniper_min_edge:        # ask already at/above L1 fair -> no stale-cheap lag left
-            return TradeSignal("SKIP", prob, edge, 0,
-                               f"sniper: book already repriced — edge {edge:+.0%} is below the "
-                               f"{sniper_min_edge:.0%} floor",
+            return TradeSignal("SKIP", prob, 0, 0, "sniper: no executable ask",
                                side="Up" if up else "Down")
-        # SIZE on the defended edge (ask + sniper_min_edge), NEVER raw L1: L1 is
-        # ~+17pp overconfident conditional on firing, and Kelly on that phantom
-        # edge upsizes exactly the losing fires. Entry floor and exit engine
-        # still use L1; the gate guarantees prob >= ask + sniper_min_edge, so
-        # this is always the conservative branch.
+        edge = prob - ask
+        if edge < sniper_min_edge:
+            return TradeSignal("SKIP", prob, edge, 0,
+                               f"sniper: locked but ask {ask:.2f} already prices it "
+                               f"(edge {edge:+.1%} below the {sniper_min_edge:.0%} floor)",
+                               side="Up" if up else "Down")
+        # SIZE on the defended edge (ask + sniper_min_edge), NEVER on the tier
+        # prob: the tier floors are empirical tail bounds, and Kelly on a tail
+        # bound upsizes exactly the fires a regime shift would break first.
         kelly = self._kelly(ask + sniper_min_edge, ask, fee_rate=fee_rate)
         action = "LATE_SNIPE_YES" if up else "LATE_SNIPE_NO"
         side_word = "Up" if up else "Down"
-        move_word = "jumped" if cb_move > 0 else "dropped"
         return TradeSignal(
             action, prob, edge, kelly,
-            f"Coinbase {move_word} ${abs(cb_move):.0f} across the strike and the {side_word} "
-            f"ask is still {ask:.2f} — buying before the book reprices  "
-            f"(model {prob:.0%}, edge {edge:+.0%}, BTC {btc_price:,.0f} vs strike {strike_price:,.0f})",
+            f"TWAP locked {side_word}: displacement ${adisp:.1f} clears the "
+            f"${m995:.1f} margin with {k:.0f}s left and the ask is still {ask:.2f} "
+            f"({'max-tier' if deterministic else 'p99.5-tier'}, edge {edge:+.1%})",
             side=side_word)
 
     def _kelly(self, prob: float, market_price: float, fee_rate: float = DEFAULT_FEE_RATE) -> float:

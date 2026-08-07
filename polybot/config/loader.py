@@ -108,10 +108,10 @@ def validate_config(config: dict[str, Any]) -> None:
     _check_range("execution.fok_spread_cross_floor", 0.0, 0.20)
 
     # Sniper knobs — the ONLY capital-deploying strategy, so a typo here deploys.
-    _check_range("late_window.sniper_late_start_s", 10.0, 60.0)
-    _check_range("late_window.sniper_move_window_s", 0.5, 10.0)
-    _check_range("late_window.sniper_cb_move", 3.0, 50.0)
-    _check_range("late_window.sniper_ask_cap", 0.50, 0.97)
+    # twap_zone_s hard-caps at 30: the projection is undefined before the
+    # resolving 30s averaging window even starts.
+    _check_range("late_window.twap_zone_s", 5.0, 30.0)
+    _check_range("late_window.twap_k_min_s", 0.0, 5.0)
     _check_range("late_window.sniper_min_edge", 0.02, 0.10)
     _check_range("late_window.sniper_max_edge", 0.20, 0.60)
     _check_range("late_window.sniper_fok_slip", 0.0, 0.05)

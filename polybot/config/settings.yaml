@@ -95,57 +95,47 @@ entry_timing:
                               #     effective premium = base + 0.005 × max(0, flip_count − 2).
 
 # =============================================================================
-#  SECTION 3b: LATE-WINDOW SNIPER (gated — the one bot-formable late-window edge)
+#  SECTION 3b: LATE-WINDOW SNIPER — the TWAP lock (gated)
 #
-#  Final-seconds entry: a sharp Coinbase move (the resolution venue) pushed price
-#  past strike but the CLOB ask hasn't repriced yet (a stale-book lag in OUR favor).
-#  Buys that side, bypassing ONLY max_edge (-> sniper_max_edge) and the late-window
-#  time penalty; every safety gate (adverse, edge-decay, depth, net-edge, min-size,
-#  pre-submit VWAP, freshness) stays. DISABLED until its kill bar passes AT THE
-#  ACHIEVED RTT: scripts/analyze_late_window.py must show momentum t_day>=2 AND p10>0
-#  over >=8 clean ET days at your host's measured RTT. DO NOT enable on faith.
+#  The market resolves on the official 30s TWAP (strike = the stream's value at
+#  the open, final = its value at the close; both verified bit-exact). In the
+#  final 30s the resolving average is mostly already observed: when the
+#  projection w·A + (1−w)·spot sits further from strike than the frozen error
+#  margin (signal_engine.TWAP_MARGIN_*), the outcome is decided — and a late
+#  spot whipsaw still dips the WINNER's ask to 0.84-0.93 for 1-4s (measured
+#  3/19 windows on night one). The sniper buys those dips, bypassing ONLY
+#  max_edge (-> sniper_max_edge) and the late-window time penalty; every safety
+#  gate (adverse, edge-decay, depth, net-edge, min-size, pre-submit VWAP,
+#  freshness) stays. Kill bar: scripts/analyze_twap_lock.py is the sim ceiling;
+#  the BINDING gate is the paper-shadow's realized fills. DO NOT enable on faith.
 # =============================================================================
 late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-07-19T22:54:00+00:00"  # the live deployment epoch (gate PASSED
-                               # 2026-07-19 on 6 clean paper days: +8.55c/sh, t_day 3.27,
-                               # boot p10 +6.06). The nightly health job scores only the
-                               # current mode's fills at/after this instant in BOTH modes
-                               # (earlier fills ran different code/config/mode). Reset when
-                               # a new validation epoch starts.
-  sniper_late_start_s: 45.0     # only fire in the final N seconds of the window
-  sniper_move_window_s: 2.0     # Coinbase move lookback (s)
-  sniper_cb_move: 8.0           # $ Coinbase move over the 2s lookback to fire. The value the realized-
-                                # profitable paper ran (07-03..07-05: 81/75/86% win, net positive). The sim
-                                # grid favored $12 but the sim is a full-population REPLAY CEILING that did
-                                # not translate to realized fills — trust realized. The sniper_fok_slip
-                                # filter (below), not this threshold, is what removes reverting fires.
-  sniper_ask_cap: 0.92          # only buy if the chosen side's ask is <= this. The realized-profitable
-                                # 07-03..07-05 value; the sim grid favored 0.80 but that is the same
-                                # untrustworthy ceiling. The fok_slip filter (not this cap) is the
-                                # adverse-selection defense — it dies on a reverting book regardless of
-                                # how favored the side looks, so the cap only bounds phantom-price fires.
-  sniper_min_edge: 0.04         # stale-cheap floor; set = signal.min_edge so the downstream net-edge /
-                                # pre-submit gates don't silently raise it (one consistent live floor).
-                                # NOTE: the offline harness momentum signal has NO edge floor, so live
-                                # trades the higher-conviction SUBSET (L1 edge >= this) — the kill bar is
-                                # a CONSERVATIVE directional gate; the paper-shadow gate is the binding one.
+  validation_epoch: "2026-08-07T04:00:00+00:00"  # TWAP lock signal v1 deploy (paper shadow).
+                               # The nightly health job scores only the current mode's fills
+                               # at/after this instant in BOTH modes (earlier fills ran the
+                               # snapshot-era signal). Reset when a new validation epoch starts.
+  twap_zone_s: 30.0             # decision zone = the resolving 30s averaging window; the
+                                # projection is undefined earlier (never raise above 30)
+  twap_k_min_s: 0.8             # no fires with less time than the FOK round-trip (~0.4s) plus
+                                # margin — a fill that can't land before the close is a coin toss
+  sniper_min_edge: 0.04         # edge floor AND the ask cap in one knob: fire only when
+                                # tier_prob − ask ≥ this (max-tier 0.999 → ask ≤ ~0.96;
+                                # p99.5-tier 0.995 → ask ≤ ~0.955). Set = signal.min_edge so the
+                                # downstream net-edge / pre-submit gates don't silently raise it.
   sniper_max_edge: 0.50         # sniper's own sanity cap, replacing the bypassed 0.20
   scar_enforce: []              # learned-veto switch (core/scar_scan.py): gate names from
                                 # memory/state/scar_gates.json whose veto is LIVE. Only add a name
                                 # after the nightly ping reports it ✅ PROVEN (its OOS SPRT accepted);
                                 # empty = all scar gates are shadow-only (stamps, never vetoes).
   sniper_fok_slip: 0.01         # FOK limit pad: fill only within ~one tick of the decision ask, else
-                                # let the order DIE. This kill is the sniper's adverse-selection filter:
-                                # a genuine stale-book move fills clean, but a move already REVERTING
-                                # reprices the ask away, the FOK dies, and the bot sits out that window.
-                                # Realized paper (96 fills, 9 ET days): clean fills (slip<=one tick) net
-                                # +9.1¢/sh at 70% win; fills that only landed by chasing further reprice
-                                # (slip>0.005) were -15.8¢/sh — pure adverse selection. A wide pad (0.05)
-                                # DEFEATS the filter by forcing fills into reverting books (it turned the
-                                # 07-07 −15¢/sh day into an all-day chase; one tick sits it out).
+                                # let the order DIE. The pad absorbs benign jitter; a genuine reprice
+                                # (the dip snapping back to 0.99+ before our order lands) kills the
+                                # FOK and the bot sits that window out — never chase a vanished dip
+                                # upward. Burst-era realized fills proved wide pads (0.05) buy exactly
+                                # the repriced books; one tick sits them out.
 
 # =============================================================================
 #  SECTION 4: SCHEDULE
