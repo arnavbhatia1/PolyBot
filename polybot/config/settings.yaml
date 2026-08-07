@@ -150,7 +150,12 @@ late_window:
 #  bar/kill are read PER LEG from the nightly ping.
 # =============================================================================
 open_window:
-  open_edge_enabled: true
+  open_edge_enabled: false      # KILLED 08-07 on night-one evidence: 22/51 wins (43%)
+                                # vs the calibrated 65% — conditional on the book selling
+                                # the favorite cheap, the book was right (adverse
+                                # selection, z ≈ −3.3). The ping's head-start gauge keeps
+                                # measuring unconditionally; re-enable only behind a
+                                # fresh calibration that survives a regime split.
   open_zone_s: 20.0             # evaluate only the first N seconds (strike lands ~2s in)
   open_min_edge: 0.06           # calibrated prob − ask floor; mid-price fills pay ~1.6c/sh
                                 # fee, so this leg demands more edge than the lock legs

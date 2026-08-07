@@ -115,11 +115,15 @@ sniper buys those dips and holds ≤30s to resolution.
   The main loop wakes on raw Chainlink reports (`report_event`) and CLOB book
   events; the µs pre-gate (`_twap_hot`) fast-paths any wake at ≥90% of the
   p99.5 margin so a 1s dip is never throttled past.
-- **Lock-hold**: while the projection says the HELD side is locked, exit
-  evaluation is skipped entirely (`_evaluate_and_exit_position`) — L1's
-  spot-basis lens reads the whipsaw as danger and would loss-cut a decided
-  winner at the dip bottom, the exact dip the entry bought. Falls through to
-  the normal protective exit engine whenever the projection is cold.
+- **Hold to resolution — every sniper leg, unconditionally**
+  (`_evaluate_and_exit_position` skips all `signal_leg`-stamped positions):
+  all three legs' edges were MEASURED hold-to-resolution, and L1's
+  short-horizon spot lens re-deciding a resolution bet sells every noise
+  bottom — night one it scalped an open_edge fill −64% forty seconds in and
+  dumped a WINNING maker fill at 0.05 seconds before it paid $1.00 (the
+  scalp was that leg's entire loss). The lock-hold projection guard remains
+  for unstamped/legacy positions only. Any smarter exit needs its own
+  measured evidence first.
 - **Fill**: the sniper FOK limit pads the decision ask by only `sniper_fok_slip`
   (0.01, ~one tick) then dies — the pad absorbs benign jitter, but a dip that
   snapped back to 0.99+ before the order lands KILLS it and the bot sits that
@@ -192,11 +196,12 @@ sniper buys those dips and holds ≤30s to resolution.
   night-one books sold $10+ favorites at 0.62 median, and the edge floor
   silences the leg by itself the day they adapt (watch the ping's head-start
   gauge). Trusted strike + fresh raw spot required; every execution gate
-  runs; Kelly anchors to ask + floor; positions HOLD TO RESOLUTION
-  unconditionally (exit evaluation skipped — the calibration was measured
-  hold-to-resolution, and L1's short-horizon lens re-deciding a 5-minute bet
-  sells every noise bottom; its first fill was scalped −64% forty seconds in
-  before this guard). Fills stamp
+  runs; Kelly anchors to ask + floor. **DISABLED 08-07 on night-one
+  evidence**: 22/51 wins vs the calibrated 65% (z ≈ −3.3) — conditional on
+  the book selling the favorite cheap, the book was right (adverse
+  selection). The ping's head-start gauge keeps measuring unconditionally;
+  re-enable only behind a fresh calibration that survives a regime split.
+  Fills stamp
   `signal_leg="open_edge"` (+ `open_disp`) — per-leg ledgers in the nightly
   ping; the leg's own bar mirrors the lock bar and its kill is the operator
   flipping `open_edge_enabled: false`.
@@ -206,8 +211,10 @@ sniper buys those dips and holds ≤30s to resolution.
   and queue priority instead of a 0.4s FOK race, no 250ms taker hold, and the
   resting size farms the liquidity-rewards pool while it waits. One order at
   a time; placed from the fire path when the taker SKIPs on a locked window
-  (k within [3, 25]s); cancelled the instant the lock weakens below the
-  p99.5 margin or k < 1s; the taker leg is suppressed while a bid rests
+  (k within [3, 25]s) — placement demands the NEVER-BREACHED max tier, not
+  p99.5 (a resting order lives through displacement decay; night one's only
+  boundary placement met the one violent reversal); cancelled the instant
+  the lock weakens below the p99.5 margin or k < 1s; the taker leg is suppressed while a bid rests
   (one entry path per window — a dip must never fill both). Fills book
   through `BaseTrader.book_maker_fill` (open_trade's tail with the same
   preflight; a rejected booking is a LOUD reconcile-manually error). LIVE

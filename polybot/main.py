@@ -40,7 +40,7 @@ from polybot.feeds.market_scanner import BTCMarketScanner
 from polybot.feeds.clob_ws import ClobWebSocket
 from polybot.indicators.engine import IndicatorEngine
 from polybot.core.signal_engine import (
-    SignalEngine, TradeSignal, TWAP_MARGIN_P995, twap_margin,
+    SignalEngine, TradeSignal, TWAP_MARGIN_MAX, TWAP_MARGIN_P995, twap_margin,
 )
 from polybot.core.order_flow import compute_flow_signal
 from polybot.core.aux_layers import compute_spot_flow_signal, regime_vol_factor
@@ -1234,7 +1234,11 @@ async def _evaluate_signal_and_enter(
                         <= _mk.get("maker_k_place_max", 25.0)):
                 _mdisp = _proj - strike
                 _mside = "Up" if _mdisp >= 0 else "Down"
-                if abs(_mdisp) >= twap_margin(TWAP_MARGIN_P995, contract["seconds_remaining"]):
+                # A resting order lives through displacement decay, so it
+                # demands the NEVER-BREACHED tier (max-ever error), not p99.5:
+                # night one's only maker entry into a reversal was placed at
+                # the exact p99.5 boundary of a violent window.
+                if abs(_mdisp) >= twap_margin(TWAP_MARGIN_MAX, contract["seconds_remaining"]):
                     _mbid = round(0.995 - lw_cfg["sniper_min_edge"]
                                   - _mk.get("maker_bid_discount", 0.02), 3)
                     _mkelly = signal_engine._kelly(
@@ -2231,12 +2235,14 @@ async def _evaluate_and_exit_position(
     if strike_now <= 0:
         return day_wins, day_losses, day_fees
 
-    # Open head-start positions hold to resolution, unconditionally: the
-    # OPEN_CALIB entry edge was measured hold-to-resolution over 843 windows,
-    # and L1's short-horizon spot lens re-deciding a 5-minute calibrated bet
-    # sells every noise bottom (first live fill: scalped −64% forty seconds
-    # in). Any smarter exit needs its own measured evidence first.
-    if pos_ctx.get("signal_leg") == "open_edge":
+    # Every sniper-leg position holds to resolution, unconditionally: all
+    # three legs' edges were MEASURED hold-to-resolution, and L1's
+    # short-horizon spot lens re-deciding a resolution bet sells every noise
+    # bottom (night one: an open_edge fill scalped −64% forty seconds in, and
+    # a WINNING maker fill scalped at 0.05 seconds before it paid $1.00 —
+    # the scalp was the leg's entire loss). Any smarter exit needs its own
+    # measured evidence first.
+    if pos_ctx.get("signal_leg") in ("lock_dip", "open_edge", "maker_bid"):
         return day_wins, day_losses, day_fees
 
     # TWAP lock-hold: when the projection says the HELD side is locked (beyond
