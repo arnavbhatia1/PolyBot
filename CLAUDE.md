@@ -177,8 +177,8 @@ sniper buys those dips and holds ≤30s to resolution.
   reachability modeled, plus the bit-exact mechanism check) is a CEILING —
   fills book the decision ask, queue depth is invisible. (2) The BINDING gate
   is the **paper-shadow's realized fills** (`sniper_shadow_status.py` /
-  `live_health_read`, scoped to `validation_epoch` 2026-08-07T16:25Z — the
-  lean-machine deploy; earlier fills ran different code):
+  `live_health_read`, scoped to `validation_epoch` 2026-08-07T21:45Z — the
+  ladder deploy; earlier fills ran different code):
   **pre-registered 08-07** as the deadline-shortened leg-identical form of
   the 8-day bar (07-15 precedent) — ≥ 6 clean ET days, ≥ 40 fills,
   equal-weight net ≥ +2¢/sh, `t_day ≥ 2`, ≥ 5/6 days positive, day-bootstrap
@@ -204,16 +204,23 @@ sniper buys those dips and holds ≤30s to resolution.
   `signal_leg="open_edge"` (+ `open_disp`) — per-leg ledgers in the nightly
   ping; the leg's own bar mirrors the lock bar and its kill is the operator
   flipping `open_edge_enabled: false`.
-- **Lock-informed maker bid** (`execution/maker_bid.py`, §3d in settings):
-  when a window locks but no dip is trading, a GTC bid rests on the locked
-  side at ≈0.935 — the whipsaw panic fills a resting order with ZERO latency
-  and queue priority instead of a 0.4s FOK race, no 250ms taker hold, and the
-  resting size farms the liquidity-rewards pool while it waits. One order at
-  a time; placed from the fire path when the taker SKIPs on a locked window
-  (k within [3, 25]s) — placement demands the NEVER-BREACHED max tier, not
-  p99.5 (a resting order lives through displacement decay; night one's only
-  boundary placement met the one violent reversal); cancelled the instant
-  the lock weakens below the p99.5 margin or k < 1s; the taker leg is suppressed while a bid rests
+- **Lock-informed maker LADDER** (`execution/maker_bid.py`, §3d in settings):
+  when a window locks but no dip is trading, a LADDER of GTC bids rests on
+  the locked side (seed ≈0.96/0.92/0.87, budget split 40/35/25) — the
+  measured dip CDF (233 locked windows) says panic goes DEEP when it comes
+  (touch rates: 0.96 → 5.6%, 0.93 → 4.7%, 0.86 → 3.9%), so rungs across the
+  depth beat any single bid (a static 0.935 filled 0/45). Panic fills resting
+  orders with ZERO latency and queue priority instead of a 0.4s FOK race, no
+  250ms taker hold. Rung PRICES re-derive nightly from the trailing tape's
+  dip quantiles (`ladder_recalibrate` → `state/maker_ladder.json`, clamped
+  [0.85, 0.975]); fractions + headroom rules stay frozen. One ladder at a
+  time; placed from the fire path when the taker SKIPs on a locked window
+  (k within [3, 25]s) — placement demands the NEVER-BREACHED max tier, and
+  the deepest rung arms only at ≥1.5× that margin (deep fills concentrate in
+  violent windows where breach risk is conditionally elevated). All rungs
+  cancelled the instant the lock weakens below the p99.5 margin, the
+  projection goes cold, or k < 1s; accumulated fills book as ONE position at
+  the blended price; the taker leg is suppressed while a bid rests
   (one entry path per window — a dip must never fill both). Fills book
   through `BaseTrader.book_maker_fill` (open_trade's tail with the same
   preflight; a rejected booking is a LOUD reconcile-manually error). LIVE

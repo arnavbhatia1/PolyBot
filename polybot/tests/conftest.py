@@ -61,7 +61,7 @@ SAMPLE_CONFIG = {
     },
     "maker": {
         "maker_bid_enabled": False,
-        "maker_bid_discount": 0.02,
+        "maker_ladder": [[0.96, 0.40, 1.0], [0.92, 0.35, 1.0], [0.87, 0.25, 1.5]],
         "maker_k_place_max": 25.0,
         "maker_k_place_min": 3.0,
         "maker_k_cancel_s": 1.0,

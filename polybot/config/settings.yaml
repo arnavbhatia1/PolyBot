@@ -58,9 +58,8 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-07T16:25:00+00:00"  # the LEAN machine deploy: Chainlink+CLOB+Gamma
-                               # only, no L1/exit engine/old feeds — the bar scores
-                               # only the code being validated.
+  validation_epoch: "2026-08-07T21:45:00+00:00"  # maker LADDER deploy (CDF-priced rungs):
+                               # the bar scores only the code being validated.
                                # The nightly health job scores only the current mode's fills
                                # at/after this instant in BOTH modes (earlier fills ran the
                                # snapshot-era signal). Reset when a new validation epoch starts.
@@ -121,10 +120,18 @@ open_window:
 # =============================================================================
 maker:
   maker_bid_enabled: true
-  maker_bid_discount: 0.02      # bid = (0.995 − sniper_min_edge) − this ≈ 0.935
+  # Rung seed: [price, budget_fraction, min_headroom_mult]. Prices re-derive
+  # NIGHTLY from the trailing tape's dip-depth CDF (state/maker_ladder.json,
+  # clamped to [0.85, 0.975]); fractions + headroom stay frozen. The deepest
+  # rung arms only when |disp| ≥ 1.5× the max-tier margin — deep fills happen
+  # in violent windows where breach risk is conditionally elevated.
+  maker_ladder:
+    - [0.96, 0.40, 1.0]
+    - [0.92, 0.35, 1.0]
+    - [0.87, 0.25, 1.5]
   maker_k_place_max: 25.0       # place once locked with at most this many s left
   maker_k_place_min: 3.0        # too late to bother resting under this
-  maker_k_cancel_s: 1.0         # pull the order before the close
+  maker_k_cancel_s: 1.0         # pull all rungs before the close
 
 # =============================================================================
 #  SECTION 4: SCHEDULE

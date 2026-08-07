@@ -904,26 +904,28 @@ async def _evaluate_signal_and_enter(
                         <= _mk.get("maker_k_place_max", 25.0)):
                 _mdisp = _proj - strike
                 _mside = "Up" if _mdisp >= 0 else "Down"
-                # A resting order lives through displacement decay, so it
-                # demands the NEVER-BREACHED tier (max-ever error), not p99.5.
-                if abs(_mdisp) >= twap_margin(TWAP_MARGIN_MAX, contract["seconds_remaining"]):
-                    _mbid = round(0.995 - lw_cfg["sniper_min_edge"]
-                                  - _mk.get("maker_bid_discount", 0.02), 3)
+                # A resting ladder lives through displacement decay, so it
+                # demands the NEVER-BREACHED tier (max-ever error), not p99.5;
+                # deeper rungs demand extra headroom (manager enforces).
+                _mmargin = twap_margin(TWAP_MARGIN_MAX, contract["seconds_remaining"])
+                if abs(_mdisp) >= _mmargin:
+                    # Budget = Kelly at the ladder's mid rung, defended-edge
+                    # anchored like every leg; the manager splits it by the
+                    # frozen fractions.
                     _mkelly = signal_engine._kelly(
-                        _mbid + lw_cfg["sniper_min_edge"], _mbid, fee_rate=fee_rate)
-                    _msize = round(bankroll * _mkelly
-                                   * (breaker.kelly_multiplier if breaker else 1.0), 2)
+                        0.92 + lw_cfg["sniper_min_edge"], 0.92, fee_rate=fee_rate)
+                    _mbudget = round(bankroll * _mkelly
+                                     * (breaker.kelly_multiplier if breaker else 1.0), 2)
                     await _MAKER_MGR.consider_placement(
                         _w_ts, cid, contract.get("question", ""), _mside,
                         token_up if _mside == "Up" else token_down,
-                        _mbid, _msize,
+                        _mbudget, abs(_mdisp) / _mmargin,
                         {"trade_context": {
                             "signal_leg": "maker_bid",
                             "strike_price": strike,
                             "seconds_remaining": contract["seconds_remaining"],
                             "twap_proj": round(_proj, 2),
                             "twap_disp": round(_mdisp, 2),
-                            "maker_bid": _mbid,
                             # startup reconciliation + dust sweep key on these
                             "token_id_up": token_up,
                             "token_id_down": token_down,
@@ -2547,6 +2549,18 @@ async def main() -> None:
         dropped = await asyncio.to_thread(trim_jsonl_by_age, PRICE_SUM_OUTLIERS_PATH, 90.0)
         return {"price_sum_lines_dropped": dropped}
     scheduler.register_job("price_sum_retention", _price_sum_retention_job)
+
+    async def _maker_ladder_job() -> dict:
+        """Nightly self-improvement: re-derive the maker rung prices from the
+        trailing tape's dip CDF (clamped; fractions frozen). The manager picks
+        the new prices up on its next placement — no restart needed."""
+        import importlib.util as _ilu
+        lp = Path(__file__).resolve().parent.parent / "scripts" / "analyze_twap_lock.py"
+        spec = _ilu.spec_from_file_location("analyze_twap_lock_l", lp)
+        lmod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(lmod)
+        return await asyncio.to_thread(lmod.ladder_recalibrate)
+    scheduler.register_job("maker_ladder", _maker_ladder_job)
 
     from polybot.recording import recordings_cleanup_job
     scheduler.register_job("recordings_retention", recordings_cleanup_job())

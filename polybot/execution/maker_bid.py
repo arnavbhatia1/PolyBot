@@ -1,33 +1,42 @@
-"""Lock-informed maker bid (signal_leg="maker_bid") — the resting twin of the
-lock-dip taker.
+"""Lock-informed maker LADDER (signal_leg="maker_bid") — the resting twin of
+the lock-dip taker.
 
-Once the final-30s projection says a side is locked, a GTC bid rests on that
-side at a discount to the taker cap: the whipsaw panic that the FOK leg has to
-race (~0.4s) fills a resting bid with zero latency, queue priority, no 250ms
-taker hold — and earns liquidity-rewards points while it waits. The taker leg
-is suppressed while a bid rests on the same window (never two entry paths into
-one window); windows the maker can't serve (lock arrives too late, placement
-fails) fall back to the taker.
+Once the final-30s projection locks a side at the never-breached tier, a
+ladder of GTC bids rests on that side. The measured dip-depth CDF (233 locked
+windows, 08-07) says panic goes DEEP when it comes at all — P(touch|locked):
+0.96 → 5.6%, 0.93 → 4.7%, 0.86 → 3.9% — so a single shallow bid starves
+(0/45 placements) while rungs spread across the depth capture the near-full
+move at real prices. The panic seller of the winner and the momentum buyer of
+the loser are the same flow on a binary book; the ladder serves both with
+queue priority and zero reaction latency.
 
-Lifecycle (one active order, ever): place at lock (k within the placement
-band, trusted strike) → cancel the moment the lock weakens below the p99.5
-margin or the window runs out → book any fills through the trader's normal
-position path. PAPER fills are print-through conservative: only prints
-STRICTLY BELOW the bid count (the market traded through our level), never
-prints at it — queue position is unknowable, so at-price fills would flatter
-the shadow.
+Lifecycle (one ladder, one window at a time): place all qualifying rungs at
+max-tier lock (deepest rungs demand extra displacement headroom — deep fills
+happen in violent windows where breach risk is conditionally elevated) →
+cancel everything the moment the lock weakens below p99.5, the projection
+goes cold, or the window runs out → book ALL accumulated fills as ONE
+position at the blended price (holds to resolution). PAPER fills are
+print-through conservative: only prints STRICTLY BELOW a rung count.
+
+Rung prices auto-recalibrate nightly from the trailing tape's dip CDF
+(memory/state/maker_ladder.json, hard-clamped to [0.85, 0.975]) — the engine
+gets better as data accrues; the fractions and headroom rules stay frozen.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
 
 from polybot.core.signal_engine import TWAP_MARGIN_P995, twap_margin
+from polybot.paths import MAKER_LADDER_PATH
 
 logger = logging.getLogger("polybot")
 
 MIN_NOTIONAL_USD = 1.0          # CLOB floor — below this nothing books
+LADDER_PRICE_MIN = 0.85         # hard clamps on the nightly recalibration —
+LADDER_PRICE_MAX = 0.975        # no data artifact may quote outside these
 
 
 class MakerBidManager:
@@ -39,35 +48,69 @@ class MakerBidManager:
         self.paper = paper
         self.active: dict | None = None
         self._last_poll = 0.0
+        self._ladder_cache: tuple[float, list] | None = None  # (mtime, ladder)
 
     # -- queries ----------------------------------------------------------
 
     def resting_on(self, window_ts: int) -> bool:
         return self.active is not None and self.active["window_ts"] == window_ts
 
-    # -- placement (called from the fire path when locked but no dip) ------
+    def ladder(self) -> list:
+        """[[price, budget_frac, min_headroom_mult], ...] — the nightly
+        recalibration file wins when present (clamped); config is the seed."""
+        seed = self.cfg.get("maker_ladder") or [[0.96, 0.40, 1.0],
+                                                [0.92, 0.35, 1.0],
+                                                [0.87, 0.25, 1.5]]
+        try:
+            mtime = MAKER_LADDER_PATH.stat().st_mtime
+            if self._ladder_cache and self._ladder_cache[0] == mtime:
+                return self._ladder_cache[1]
+            data = json.loads(MAKER_LADDER_PATH.read_text())
+            rungs = []
+            for (px, frac, hm), seed_r in zip(data.get("ladder", []), seed):
+                px = min(LADDER_PRICE_MAX, max(LADDER_PRICE_MIN, float(px)))
+                # fractions + headroom stay FROZEN — only prices recalibrate
+                rungs.append([px, seed_r[1], seed_r[2]])
+            if len(rungs) == len(seed):
+                self._ladder_cache = (mtime, rungs)
+                return rungs
+        except (OSError, ValueError, KeyError):
+            pass
+        return seed
+
+    # -- placement (called from the fire path at max-tier lock) -------------
 
     async def consider_placement(self, window_ts: int, market_id: str,
                                  question: str, side: str, token_id: str,
-                                 bid: float, size_usd: float,
+                                 budget_usd: float, headroom_mult: float,
                                  snapshot: dict) -> None:
-        if self.active is not None or size_usd < MIN_NOTIONAL_USD:
+        """headroom_mult = |disp| / max-tier margin at placement time — deep
+        rungs only arm when the lock has real slack (deep fills concentrate
+        in violent windows)."""
+        if self.active is not None or budget_usd < MIN_NOTIONAL_USD:
             return
-        if not (0.0 < bid < 1.0):
-            return
-        shares = round(size_usd / bid, 2)
-        order_id = await self.trader.place_gtc_bid(token_id, bid, shares)
-        if not order_id:
+        rungs = []
+        for px, frac, need in self.ladder():
+            if headroom_mult < need:
+                continue
+            usd = round(budget_usd * frac, 2)
+            if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
+                continue
+            shares = round(usd / px, 2)
+            order_id = await self.trader.place_gtc_bid(token_id, px, shares)
+            if order_id:
+                rungs.append({"price": px, "shares": shares,
+                              "order_id": order_id, "filled": 0.0})
+        if not rungs:
             return
         self.active = {
             "window_ts": window_ts, "market_id": market_id,
             "question": question, "side": side, "token_id": token_id,
-            "bid": bid, "shares": shares, "order_id": order_id,
-            "placed": time.time(), "filled_shares": 0.0,
-            "snapshot": snapshot,
+            "rungs": rungs, "placed": time.time(), "snapshot": snapshot,
         }
-        logger.info("MAKER BID %s — $%.2f resting at %.3f on the locked side "
-                    "(%.0fs left)", side, size_usd, bid,
+        logger.info("MAKER LADDER %s — %s resting on the locked side (%.0fs left)",
+                    side, "/".join(f"${r['shares'] * r['price']:.0f}@{r['price']:.2f}"
+                                   for r in rungs),
                     window_ts + 300 - time.time())
 
     # -- paper fill matcher (clob_ws print hook; sync, must not raise) ------
@@ -81,10 +124,13 @@ class MakerBidManager:
             sz = float(trade.get("size") or 0.0)
         except (TypeError, ValueError):
             return
-        # STRICTLY below the bid = the market traded through our level; a print
-        # AT the bid may have gone entirely to earlier queue — never count it.
-        if 0.0 < px < a["bid"] and sz > 0:
-            a["filled_shares"] = min(a["shares"], a["filled_shares"] + sz)
+        if not (0.0 < px and sz > 0):
+            return
+        # STRICTLY below a rung = the market traded through that level; a
+        # print AT the rung may have gone entirely to earlier queue.
+        for r in a["rungs"]:
+            if px < r["price"]:
+                r["filled"] = min(r["shares"], r["filled"] + sz)
 
     # -- lifecycle (every main-loop tick; cheap float math off the hot path) --
 
@@ -102,7 +148,7 @@ class MakerBidManager:
             proj = self.chainlink.projected_final_twap(close)
             if proj is None:
                 # Fail CLOSED: a cold projection means the lock is
-                # unverifiable — a resting order must never sit blind.
+                # unverifiable — resting orders must never sit blind.
                 reason = "projection cold"
             else:
                 disp = proj - a["snapshot"]["strike_price"]
@@ -112,12 +158,14 @@ class MakerBidManager:
                     reason = "lock weakened"
         if not self.paper and reason is None and now - self._last_poll >= 1.0:
             self._last_poll = now
-            matched = await self.trader.poll_gtc_fill(a["order_id"])
-            if matched is not None and matched > a["filled_shares"]:
-                a["filled_shares"] = min(a["shares"], matched)
-        # A complete fill books immediately — the position must be on the
-        # books (it holds to resolution), not parked in a dead order slot.
-        if reason is None and a["filled_shares"] >= a["shares"] - 1e-9:
+            for r in a["rungs"]:
+                matched = await self.trader.poll_gtc_fill(r["order_id"])
+                if matched is not None and matched > r["filled"]:
+                    r["filled"] = min(r["shares"], matched)
+        # Every rung fully filled -> book now; the position needs to be on
+        # the books (it holds to resolution), not parked in dead order slots.
+        if reason is None and all(r["filled"] >= r["shares"] - 1e-9
+                                  for r in a["rungs"]):
             reason = "filled"
         if reason is not None:
             await self._retire(reason)
@@ -126,27 +174,30 @@ class MakerBidManager:
         a, self.active = self.active, None
         if a is None:
             return
-        try:
-            await self.trader.cancel_gtc(a["order_id"])
-        except Exception as e:
-            logger.warning("MAKER CANCEL failed (%s) — exchange closes resting "
-                           "orders at market close", e)
-        filled = a["filled_shares"]
-        if filled * a["bid"] >= MIN_NOTIONAL_USD:
+        for r in a["rungs"]:
+            try:
+                await self.trader.cancel_gtc(r["order_id"])
+            except Exception as e:
+                logger.warning("MAKER CANCEL failed (%s) — exchange closes "
+                               "resting orders at market close", e)
+        filled = sum(r["filled"] for r in a["rungs"])
+        notional = sum(r["filled"] * r["price"] for r in a["rungs"])
+        if filled > 0 and notional >= MIN_NOTIONAL_USD:
+            vwap = round(notional / filled, 4)
             try:
                 booked = await self.trader.book_maker_fill(
                     market_id=a["market_id"], question=a["question"],
-                    side=a["side"], price=a["bid"], shares_gross=filled,
+                    side=a["side"], price=vwap, shares_gross=filled,
                     token_id=a["token_id"], indicator_snapshot=a["snapshot"])
                 if booked:
-                    logger.info("MAKER FILLED %s — %.1f sh at %.3f (%s)",
-                                a["side"], filled, a["bid"], reason)
+                    logger.info("MAKER FILLED %s — %.1f sh at %.3f blended (%s)",
+                                a["side"], filled, vwap, reason)
                     return
             except Exception:
                 logger.exception("MAKER fill booking failed — reconcile manually")
             logger.warning("MAKER UNBOOKED %s — %.1f sh at %.3f could not book "
                            "(see the CRITICAL above; reconcile manually)",
-                           a["side"], filled, a["bid"])
+                           a["side"], filled, vwap)
             return
         logger.info("MAKER DONE %s — %s, %.1f sh filled (below the $1 floor "
                     "books nothing)", a["side"], reason, filled)

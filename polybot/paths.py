@@ -60,6 +60,9 @@ SPRT_BURST_PATH: Path = STATE_DIR / "sprt_burst.json"
 # vetoes journal to the JSONL and resolve nightly against window_labels.
 SCAR_GATES_PATH: Path = STATE_DIR / "scar_gates.json"
 SCAR_VETOES_PATH: Path = STATE_DIR / "scar_vetoes.jsonl"
+# Nightly-recalibrated maker ladder prices (dip-depth CDF quantiles from the
+# trailing tape; execution/maker_bid.py clamps + consumes).
+MAKER_LADDER_PATH: Path = STATE_DIR / "maker_ladder.json"
 
 def trim_jsonl_by_age(path: Path, max_age_days: float) -> int:
     """Drop JSONL lines whose ts is older than max_age_days, bounding the file.

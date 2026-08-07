@@ -375,6 +375,71 @@ def open_gap_read(hours: float = 26.0, min_disp: float = 10.0):
             "gap": wins / len(asks) - asks[len(asks) // 2]}
 
 
+def ladder_recalibrate(days: int = 2, write: bool = True):
+    """Nightly maker-ladder recalibration: re-derive rung PRICES from the
+    trailing tape's dip-depth CDF (min winner-ask while max-tier locked).
+    Quantiles 40/65/85 of the dip minima → rungs, hard-clamped [0.85, 0.975],
+    ≥ 2¢ apart. Fractions/headroom are frozen in settings; prices are the only
+    thing the data may move, and only inside the clamps. Too few dips → no
+    write (the seed ladder stands)."""
+    from polybot.paths import MAKER_LADDER_PATH
+    since = max(datetime.now(timezone.utc).timestamp() - days * 86400.0,
+                TWAP_SWITCH_TS)
+    labels = load_labels(since)
+    if not labels:
+        return {"n_dips": 0, "applied": False}
+    lrec, _trec, books = load_windows(labels, since)
+    mins = []
+    for ep, lab in sorted(labels.items()):
+        recs = sorted(lrec[ep])
+        strike = lab["price_to_beat"]
+        close = ep + 300
+        t0 = close - 30.0
+        if len(recs) < 3 or not strike:
+            continue
+        lock_t = lock_side = None
+        for rx, p in recs:
+            k = close - rx
+            if k > 25 or k < 1:
+                continue
+            avg = running_avg(recs, t0, rx)
+            if avg is None:
+                continue
+            w = (rx - t0) / 30.0
+            disp = w * avg + (1 - w) * p - strike
+            if abs(disp) >= twap_margin(TWAP_MARGIN_MAX, k):
+                lock_t, lock_side = rx, (1 if disp >= 0 else 0)
+                break
+        if lock_t is None or lock_side != lab["resolved_up"]:
+            continue
+        mn = None
+        for ts, a in books[ep][lock_side]:
+            if lock_t <= ts <= close and 0.0 < a < 1.0:
+                mn = a if mn is None else min(mn, a)
+        if mn is not None:
+            mins.append(mn)
+    dips = sorted(m for m in mins if m <= 0.985)
+    if len(dips) < 8:
+        return {"n_locked": len(mins), "n_dips": len(dips), "applied": False}
+    def q(f):
+        px = dips[min(int(f * len(dips)), len(dips) - 1)]
+        return min(0.975, max(0.85, round(px, 2)))
+    rungs = [q(0.40), q(0.65), q(0.85)]
+    # enforce descending, ≥2¢ apart
+    for i in range(1, 3):
+        rungs[i] = min(rungs[i], round(rungs[i - 1] - 0.02, 2))
+        rungs[i] = max(0.85, rungs[i])
+    out = {"ladder": [[rungs[0], 0.40, 1.0], [rungs[1], 0.35, 1.0],
+                      [rungs[2], 0.25, 1.5]],
+           "n_locked": len(mins), "n_dips": len(dips),
+           "asof": datetime.now(timezone.utc).isoformat()}
+    if write:
+        MAKER_LADDER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MAKER_LADDER_PATH.write_text(json.dumps(out, indent=2))
+    return {"n_locked": len(mins), "n_dips": len(dips),
+            "rungs": rungs, "applied": write}
+
+
 def health_read(db_path=None, min_edge: float = 0.04, days: int = 2):
     """Nightly-ping sim read: the lock-dip replay over the trailing tape days.
     db_path is accepted for call-shape parity and unused (labels are read from
