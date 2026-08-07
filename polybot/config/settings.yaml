@@ -156,6 +156,25 @@ open_window:
                                 # fee, so this leg demands more edge than the lock legs
 
 # =============================================================================
+#  SECTION 3d: LOCK-INFORMED MAKER BID (the resting twin of the lock-dip taker)
+#
+#  When a window locks but no dip is trading yet, a GTC bid rests on the locked
+#  side at (p99.5 prob − sniper_min_edge − discount) ≈ 0.935: the next whipsaw
+#  panic fills us with ZERO latency and queue priority instead of a 0.4s FOK
+#  race, and the resting size farms liquidity rewards while it waits. Cancelled
+#  the instant the lock weakens or the window closes; the taker leg is
+#  suppressed while a bid rests (one entry path per window). PAPER fills are
+#  print-through conservative: only tape prints STRICTLY BELOW the bid count.
+#  Fills stamp signal_leg="maker_bid" — its own ledger line in the ping.
+# =============================================================================
+maker:
+  maker_bid_enabled: true
+  maker_bid_discount: 0.02      # bid = (0.995 − sniper_min_edge) − this ≈ 0.935
+  maker_k_place_max: 25.0       # place once locked with at most this many s left
+  maker_k_place_min: 3.0        # too late to bother resting under this
+  maker_k_cancel_s: 1.0         # pull the order before the close
+
+# =============================================================================
 #  SECTION 4: SCHEDULE
 # =============================================================================
 schedule:

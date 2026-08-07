@@ -118,6 +118,13 @@ def validate_config(config: dict[str, Any]) -> None:
     val, found = _get_nested(config, "open_window.open_edge_enabled")
     if not found or not isinstance(val, bool):
         errors.append("open_window.open_edge_enabled: missing or not a boolean")
+    _check_range("maker.maker_bid_discount", 0.0, 0.10)
+    _check_range("maker.maker_k_place_max", 5.0, 29.0)
+    _check_range("maker.maker_k_place_min", 1.0, 10.0)
+    _check_range("maker.maker_k_cancel_s", 0.5, 5.0)
+    val, found = _get_nested(config, "maker.maker_bid_enabled")
+    if not found or not isinstance(val, bool):
+        errors.append("maker.maker_bid_enabled: missing or not a boolean")
     _check_range("late_window.sniper_max_edge", 0.20, 0.60)
     _check_range("late_window.sniper_fok_slip", 0.0, 0.05)
     val, found = _get_nested(config, "late_window.sniper_enabled")

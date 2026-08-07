@@ -369,6 +369,57 @@ class BaseTrader(ABC):
 
         return TradeResult(success=True, position_id=pos_id, fill_price=fill.fill_price)
 
+    # -- book_maker_fill ---------------------------------------------------
+
+    async def book_maker_fill(
+        self,
+        market_id: str,
+        question: str,
+        side: str,
+        price: float,
+        shares_gross: float,
+        token_id: str = "",
+        indicator_snapshot: str | dict[str, Any] = "",
+        fee_rate: float = DEFAULT_FEE_RATE,
+    ) -> bool:
+        """Persist a resting-bid fill that ALREADY EXECUTED on the exchange —
+        the open_trade tail (fee-in-shares + atomic insert/debit) without the
+        execution step. A preflight rejection here means we own shares with no
+        booked position: loud error, manual reconcile, never silent."""
+        _peek = self.db.preflight_peek(market_id) if hasattr(self.db, "preflight_peek") else None
+        if _peek is not None:
+            has_pos, pos_count, bankroll, deployed = _peek
+        else:
+            has_pos, pos_count, bankroll, deployed = await self.db.get_open_trade_preflight(market_id)
+        notional = shares_gross * price
+        if has_pos or pos_count >= self.max_concurrent_positions or notional > bankroll:
+            logger.error("CRITICAL: maker fill (%.1f sh @ %.3f, %s) has no free "
+                         "position slot or cash (bankroll %.2f) — shares are on "
+                         "the exchange unbooked; reconcile manually.",
+                         shares_gross, price, market_id, bankroll)
+            return False
+        fee_in_shares = entry_fee_shares(shares_gross, price, fee_rate)
+        if isinstance(indicator_snapshot, dict):
+            indicator_snapshot = _dumps_snapshot(indicator_snapshot)
+        try:
+            await self.db.open_position_and_debit_bankroll(
+                new_bankroll=bankroll - notional,
+                market_id=market_id,
+                question=question,
+                side=side,
+                entry_price=price,
+                size=notional,
+                signal_score=0.0,
+                indicator_snapshot=indicator_snapshot,
+                fee_rate=fee_rate,
+                shares_held=shares_gross - fee_in_shares,
+            )
+        except Exception as e:
+            logger.error("CRITICAL: maker fill booked on exchange but DB write "
+                         "failed: %s — reconcile manually before next trade.", e)
+            return False
+        return True
+
     # -- close_trade -----------------------------------------------------
 
     async def close_trade(

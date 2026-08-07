@@ -197,6 +197,21 @@ sniper buys those dips and holds ≤30s to resolution.
   `signal_leg="open_edge"` (+ `open_disp`) — per-leg ledgers in the nightly
   ping; the leg's own bar mirrors the lock bar and its kill is the operator
   flipping `open_edge_enabled: false`.
+- **Lock-informed maker bid** (`execution/maker_bid.py`, §3d in settings):
+  when a window locks but no dip is trading, a GTC bid rests on the locked
+  side at ≈0.935 — the whipsaw panic fills a resting order with ZERO latency
+  and queue priority instead of a 0.4s FOK race, no 250ms taker hold, and the
+  resting size farms the liquidity-rewards pool while it waits. One order at
+  a time; placed from the fire path when the taker SKIPs on a locked window
+  (k within [3, 25]s); cancelled the instant the lock weakens below the
+  p99.5 margin or k < 1s; the taker leg is suppressed while a bid rests
+  (one entry path per window — a dip must never fill both). Fills book
+  through `BaseTrader.book_maker_fill` (open_trade's tail with the same
+  preflight; a rejected booking is a LOUD reconcile-manually error). LIVE
+  fills poll at 1Hz off-path; PAPER fills are print-through conservative —
+  only tape prints STRICTLY BELOW the bid count, because queue position is
+  unknowable and at-price fills would flatter the shadow. Fills stamp
+  `signal_leg="maker_bid"` — its own ledger line and bar.
 - **Capital deploys ONLY through these legs** — base-entry BUYs are ALWAYS
   suppressed (unconditional in `main.py`; recorded as `sniper_only` ghosts —
   free zero-capital evidence for the gate). `sniper_enabled` (default
@@ -490,7 +505,8 @@ polybot/
   indicators/            ATR engine
   recording.py           WindowPathRecorder (all windows) + TapeRecorder + retention
   execution/             base (BaseTrader, fee math), paper_trader, live_trader,
-                         circuit_breaker, correlation
+                         maker_bid (lock-informed resting bid), circuit_breaker,
+                         correlation
   agents/                scheduler, outcome_reviewer, counterfactual_tracker,
                          ghost_tracker, pipeline_analytics
   memory/                outcomes/, ghost_outcomes/, counterfactuals/ (+ rollups);

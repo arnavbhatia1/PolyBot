@@ -694,6 +694,10 @@ def flush_gate_stats() -> None:
 # Per-window flip state — arms the flip hurdle for re-entries
 _window_flip_state: dict[str, dict] = {}  # window_id -> {flip_count}
 
+# Lock-informed maker bid manager (execution.maker_bid) — set at boot when
+# maker.maker_bid_enabled; module-level like the other fire-path state.
+_MAKER_MGR: Any = None
+
 # Killed sniper FOKs this window: window_ts -> side -> [decision asks]. Feeds
 # the scar_refire_class stamp (was this fire a re-attempt at/below a price the
 # book already repriced away from?). Swept with the _strike_trusted 600s idiom.
@@ -1204,6 +1208,11 @@ async def _evaluate_signal_and_enter(
                             "differ from Polymarket's price_to_beat)", quiet=_SNIPER_ONLY_QUIET)
             _snipe = TradeSignal("SKIP", signal.prob, signal.edge, 0,
                                  "sniper: strike unverified", side=signal.side)
+        elif _MAKER_MGR is not None and _MAKER_MGR.resting_on(_w_ts):
+            # A maker bid already rests on this window — one entry path per
+            # window, or a dip could fill both the resting bid and an FOK.
+            _snipe = TradeSignal("SKIP", signal.prob, signal.edge, 0,
+                                 "sniper: maker bid resting", side=signal.side)
         else:
             _proj = chainlink_feed.projected_final_twap(_w_ts + 300) if _w_ts > 0 else None
             _snipe = signal_engine.evaluate_twap_lock(
@@ -1213,6 +1222,35 @@ async def _evaluate_signal_and_enter(
                 lw_cfg["twap_k_min_s"],
                 lw_cfg["sniper_min_edge"],
                 fee_rate=fee_rate)
+            # Locked but no dip to take -> rest the maker bid where the next
+            # dip lands (leg 3). Placement is one POST ~20s before close, off
+            # the FOK race path entirely.
+            _mk = config.get("maker", {})
+            if (_MAKER_MGR is not None and _proj is not None
+                    and _snipe.action == "SKIP"
+                    and _mk.get("maker_k_place_min", 3.0) <= contract["seconds_remaining"]
+                        <= _mk.get("maker_k_place_max", 25.0)):
+                _mdisp = _proj - strike
+                _mside = "Up" if _mdisp >= 0 else "Down"
+                if abs(_mdisp) >= twap_margin(TWAP_MARGIN_P995, contract["seconds_remaining"]):
+                    _mbid = round(0.995 - lw_cfg["sniper_min_edge"]
+                                  - _mk.get("maker_bid_discount", 0.02), 3)
+                    _mkelly = signal_engine._kelly(
+                        _mbid + lw_cfg["sniper_min_edge"], _mbid, fee_rate=fee_rate)
+                    _msize = round(bankroll * _mkelly
+                                   * (breaker.kelly_multiplier if breaker else 1.0), 2)
+                    await _MAKER_MGR.consider_placement(
+                        _w_ts, cid, contract.get("question", ""), _mside,
+                        token_up if _mside == "Up" else token_down,
+                        _mbid, _msize,
+                        {"trade_context": {
+                            "signal_leg": "maker_bid",
+                            "strike_price": strike,
+                            "seconds_remaining": contract["seconds_remaining"],
+                            "twap_proj": round(_proj, 2),
+                            "twap_disp": round(_mdisp, 2),
+                            "maker_bid": _mbid,
+                        }, "strike_price": strike})
         if _snipe.action in ("LATE_SNIPE_YES", "LATE_SNIPE_NO"):
             _snipe.action = "BUY_YES" if _snipe.action == "LATE_SNIPE_YES" else "BUY_NO"
             signal = _snipe
@@ -3039,6 +3077,15 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
 
             _loop_marks["m_sched"] = time.time()
 
+            # Maker-bid lifecycle: cancel on lock-weaken/close, book fills.
+            # Pure float math per tick (live polls at 1Hz in a thread) — runs
+            # every iteration so a resting order can never outlive its lock.
+            if _MAKER_MGR is not None:
+                try:
+                    await _MAKER_MGR.maintain()
+                except Exception:
+                    logger.exception("maker maintain failed")
+
             # --- FAST PATH: with nothing at risk, a Chainlink-report wake OR
             # any wake during a fire-adjacent displacement runs the entry
             # evaluation FIRST. The mirror answers "anything open?" sync, so
@@ -3471,8 +3518,19 @@ async def main() -> None:
     # + CLOB tape + micro-tape (event-true BBO/tick/report stream — the sub-5Hz
     # resolution the sampled recorder can't see). Write-behind; never block the loop.
     from polybot.recording import MicroTape, TapeRecorder, WindowPathRecorder
+    from polybot.execution.maker_bid import MakerBidManager
     tape_recorder = TapeRecorder()
-    clob_ws.on_trade = tape_recorder.on_trade
+    _maker_cfg = config.get("maker", {})
+    global _MAKER_MGR
+    _MAKER_MGR = (MakerBidManager(trader, chainlink_feed, _maker_cfg,
+                                  paper=(mode != "live"))
+                  if _maker_cfg.get("maker_bid_enabled") else None)
+
+    def _on_trade_mux(asset_id: str, trade: dict) -> None:
+        tape_recorder.on_trade(asset_id, trade)
+        if _MAKER_MGR is not None:
+            _MAKER_MGR.on_print(asset_id, trade)
+    clob_ws.on_trade = _on_trade_mux
     micro_tape = MicroTape()
     clob_ws.on_bba = micro_tape.on_bba
     coinbase_feed.on_tick = micro_tape.on_cb_tick

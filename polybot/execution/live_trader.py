@@ -16,6 +16,7 @@ from py_clob_client_v2.clob_types import (
     AssetType,
     BalanceAllowanceParams,
     MarketOrderArgs,
+    OrderArgs,
     OrderType,
 )
 from py_clob_client_v2.order_builder.constants import BUY, SELL
@@ -595,6 +596,39 @@ class LiveTrader(BaseTrader):
     ) -> FillResult:
         """FOK market sell for `shares` shares."""
         return await self._submit_fok_order(token_id, SELL, shares, price, fee_rate=fee_rate)
+
+    # -- maker resting bid (execution.maker_bid) ---------------------------
+    # All three run off the fire path (placement happens ~20s before close,
+    # polling at 1Hz in a thread) — no impact on the FOK race.
+
+    async def place_gtc_bid(self, token_id: str, price: float, shares: float) -> str | None:
+        try:
+            def _place():
+                signed = self.client.create_order(OrderArgs(
+                    token_id=token_id, price=price, size=shares, side=BUY))
+                return self.client.post_order(signed, OrderType.GTC)
+            resp = await asyncio.to_thread(_place)
+            oid = (resp or {}).get("orderID") or (resp or {}).get("id")
+            if not oid:
+                logger.warning("maker bid rejected: %s", resp)
+            return oid or None
+        except Exception as e:
+            logger.warning("maker bid POST failed: %s", e)
+            return None
+
+    async def cancel_gtc(self, order_id: str) -> None:
+        await asyncio.to_thread(self.client.cancel_orders, [order_id])
+
+    async def poll_gtc_fill(self, order_id: str) -> float | None:
+        """Matched shares so far, or None when the lookup fails (a dead order
+        that already filled reports via its last successful poll)."""
+        try:
+            o = await asyncio.to_thread(self.client.get_order, order_id)
+            if not o:
+                return None
+            return float(o.get("size_matched") or 0.0)
+        except Exception:
+            return None
 
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float | None:
         """Sync bankroll with the real Polymarket balance.

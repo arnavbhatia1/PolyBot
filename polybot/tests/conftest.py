@@ -84,6 +84,13 @@ SAMPLE_CONFIG = {
         "open_zone_s": 20.0,
         "open_min_edge": 0.06,
     },
+    "maker": {
+        "maker_bid_enabled": False,
+        "maker_bid_discount": 0.02,
+        "maker_k_place_max": 25.0,
+        "maker_k_place_min": 3.0,
+        "maker_k_cancel_s": 1.0,
+    },
 }
 
 @pytest.fixture

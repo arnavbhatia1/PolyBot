@@ -56,6 +56,19 @@ class PaperTrader(BaseTrader):
             return FillResult(filled=False, reason="simulated network error")
         return await self._retry_walk(token_id, side="buy", requested_price=price, size_usd=size)
 
+    # -- maker resting bid (execution.maker_bid) ---------------------------
+    # Paper fills come from the PRINT-THROUGH matcher (MakerBidManager.on_print
+    # — real tape prints strictly below the bid), never from these stubs.
+
+    async def place_gtc_bid(self, token_id: str, price: float, shares: float) -> str | None:
+        return f"paper-{int(time.time() * 1000)}"
+
+    async def cancel_gtc(self, order_id: str) -> None:
+        return None
+
+    async def poll_gtc_fill(self, order_id: str) -> float | None:
+        return None
+
     async def _execute_sell(
         self, token_id: str, shares: float, price: float,
         fee_rate: float = DEFAULT_FEE_RATE,
