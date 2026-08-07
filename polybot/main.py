@@ -2231,6 +2231,14 @@ async def _evaluate_and_exit_position(
     if strike_now <= 0:
         return day_wins, day_losses, day_fees
 
+    # Open head-start positions hold to resolution, unconditionally: the
+    # OPEN_CALIB entry edge was measured hold-to-resolution over 843 windows,
+    # and L1's short-horizon spot lens re-deciding a 5-minute calibrated bet
+    # sells every noise bottom (first live fill: scalped −64% forty seconds
+    # in). Any smarter exit needs its own measured evidence first.
+    if pos_ctx.get("signal_leg") == "open_edge":
+        return day_wins, day_losses, day_fees
+
     # TWAP lock-hold: when the projection says the HELD side is locked (beyond
     # the p99.5 margin), the position is a decided winner — never let L1's
     # spot-basis lens scalp or loss-cut it into the same whipsaw dip the sniper

@@ -192,8 +192,11 @@ sniper buys those dips and holds ≤30s to resolution.
   night-one books sold $10+ favorites at 0.62 median, and the edge floor
   silences the leg by itself the day they adapt (watch the ping's head-start
   gauge). Trusted strike + fresh raw spot required; every execution gate
-  runs; Kelly anchors to ask + floor; holds to resolution under the normal
-  exit engine with the lock-hold guard protecting the close. Fills stamp
+  runs; Kelly anchors to ask + floor; positions HOLD TO RESOLUTION
+  unconditionally (exit evaluation skipped — the calibration was measured
+  hold-to-resolution, and L1's short-horizon lens re-deciding a 5-minute bet
+  sells every noise bottom; its first fill was scalped −64% forty seconds in
+  before this guard). Fills stamp
   `signal_leg="open_edge"` (+ `open_disp`) — per-leg ledgers in the nightly
   ping; the leg's own bar mirrors the lock bar and its kill is the operator
   flipping `open_edge_enabled: false`.
