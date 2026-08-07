@@ -1,10 +1,10 @@
-"""live_health_read() — the money-side post-live kill-rule read (scripts/analyze_late_window.py).
+"""live_health_read() — the money-side kill-rule read (scripts/analyze_late_window.py).
 
-Locks the two things that make it a faithful analog of the SIM health_read():
-per-fill net = pnl / shares_held (pnl is ALREADY net of fees — size includes the
-entry fee, so pnl = payout - size subtracts it once) == the harness's
-win - fill - fee(fill), equal-weight and day-clustered; and the kill-rule OR-legs
-(trailing-4d < +2c/sh, trailing-8d t < 2.0) activate as soon as they have the ET days.
+Locks the two things that make it the binding-gate metric: per-fill net =
+pnl / shares_held (pnl is ALREADY net of fees — size includes the entry fee,
+so pnl = payout - size subtracts it once), equal-weight and day-clustered;
+and the kill-rule OR-legs (trailing-4d < +2c/sh, trailing-8d t < 2.0)
+activate as soon as they have the ET days.
 """
 import importlib.util
 import sqlite3

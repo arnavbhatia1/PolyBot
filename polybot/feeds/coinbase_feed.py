@@ -54,9 +54,6 @@ class CoinbaseFeed:
         self.product_id = product_id
         self.state = CoinbaseState()
         self.staleness = StalenessTracker("coinbase")
-        # Wakes the sniper loop on every fresh tick — waiting on CLOB book updates
-        # alone misses the stale-book window (the book lags Coinbase). Waiter clears it.
-        self.price_event: asyncio.Event = asyncio.Event()
         self.on_tick = None   # micro-tape hook: every raw tick (recording.MicroTape)
 
         # Per-trade flow: (ts, signed_size). +size = buyer aggressor, -size = seller aggressor.
@@ -135,7 +132,7 @@ class CoinbaseFeed:
         return math.sqrt(var)
 
     def cb_move(self, window_s: float = 2.0) -> float | None:
-        """Signed Coinbase move over exactly the last window_s seconds (the sniper's cb_move).
+        """Signed Coinbase move over exactly the last window_s seconds (scar-dim telemetry).
 
         INTERPOLATES the `then` price at exactly (now - window_s): the 1s buckets
         are spaced >=1s, so taking the nearest older bucket stretches the lookback
@@ -265,7 +262,6 @@ class CoinbaseFeed:
                 if t else None)
         except (ValueError, TypeError):
             self.state.feed_delay_ms = None
-        self.price_event.set()
         # Optional micro-tape hook (recording.MicroTape.on_cb_tick) — must not raise.
         if self.on_tick is not None:
             try:

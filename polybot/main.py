@@ -417,8 +417,8 @@ def _log_price_sum_outlier(market_id: str, price_up: float, price_down: float,
 # Throttled logging for hold evaluations and resolution waiting
 _last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
-# SNIPE line once per (window, side) per 10s — the loop re-evaluates on every
-# Coinbase tick while a burst holds, which spams the same line at tick rate.
+# TWAP LOCK line once per (window, side) per 10s — the loop re-evaluates on every
+# Chainlink report and book event while a lock holds, which spams the same line.
 _last_snipe_log: dict[tuple[int, str], float] = {}
 _resolve_oracle_logged: set[str] = set()  # market_id — RESOLVE oracle line printed once
 _SNIPER_ONLY_QUIET = True  # base entries are always suppressed (sniper-only), so their per-gate SKIP lines are noise -> DEBUG
@@ -1504,7 +1504,7 @@ async def _evaluate_signal_and_enter(
             _cl_age_at_fire = round(_cl_age, 3)
             _cl_px = getattr(chainlink_feed, "price", 0.0)
             # ≤5s fresh: staleness gates already passed at ≤60s, but a cross-
-            # confirm read needs the report to be from the burst itself.
+            # confirm read needs the report to be from the fire moment itself.
             if _cl_px > 0 and _cl_age <= 5.0:
                 _cl_px_at_fire = _cl_px
     snapshot["trade_context"] = {
@@ -3591,18 +3591,18 @@ async def main() -> None:
             if sprt_burst is not None:
                 s = sprt_burst
                 if s["state"] == "accruing_sigma":
-                    parts.append(f"burst test warming up ({s['n_qualifying']}/{s['need']} baseline days)")
+                    parts.append(f"tick-burst test warming up ({s['n_qualifying']}/{s['need']} baseline days)")
                 elif s["state"] == "continue":
-                    parts.append(f"burst test running (score {s['lam']:+.2f}; "
+                    parts.append(f"tick-burst test running (score {s['lam']:+.2f}; "
                                  f"graduates at +2.73, dies at −1.42)")
                 elif s["state"] == "accept_h1":
-                    parts.append("burst test ✅ GRADUATED — regime sizing unlocks its own trial")
+                    parts.append("tick-burst test ✅ GRADUATED — regime sizing unlocks its own trial")
                 elif s["state"] == "accept_h0":
-                    parts.append("burst test ❌ rejected — idea parked")
+                    parts.append("tick-burst test ❌ rejected — idea parked")
                 elif s["state"] == "void":
-                    parts.append("burst test ⚠️ voided (market regime shifted under it) — restarts")
+                    parts.append("tick-burst test ⚠️ voided (market regime shifted under it) — restarts")
                 else:
-                    parts.append("burst test hit its time limit — falling back to the fixed read")
+                    parts.append("tick-burst test hit its time limit — falling back to the fixed read")
             if regime_d is not None and regime_d["n_days"] > 0:
                 parts.append(f"sizing shadow would have made {regime_d['total_d']:+.2f}$ vs flat")
             return ("Experiments: " + " · ".join(parts) + "\n") if parts else ""

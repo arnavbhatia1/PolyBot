@@ -8,14 +8,14 @@ double-counts). Reads the DB's audited shares_held, never the outcome JSON
 (it has no shares field). Every paper fill is a sniper fire (base entries
 always suppressed), so the epoch scope alone isolates the shadow population.
 
-These are PAPER fills at the box's MEASURED order latency, so compare against
-`python scripts/analyze_late_window.py --rtt-sweep 0.34` (the measured POST
-RTT), NOT an optimistic low-RTT read. Go-live still requires the full kill
-bar: >=8 clean ET days, net >= +2c/sh, t_day>=2, p10>0, shadow-vs-harness
-gap < 3c/sh. Fills are sparse (final-45s fires only) — a handful per day.
+These are PAPER fills at the box's MEASURED order latency. Go-live requires
+the pre-registered bar: >=6 clean ET days, >=40 fills, net >= +2c/sh,
+t_day>=2, p10>0, ZERO lock-breaches — read the sim ceiling beside it with
+`python scripts/analyze_twap_lock.py`. Fills are sparse (final-30s lock-dip
+fires only).
 
   python scripts/sniper_shadow_status.py
-  python scripts/sniper_shadow_status.py --since 2026-07-08T17:15:00+00:00
+  python scripts/sniper_shadow_status.py --since 2026-08-07T03:00:00+00:00
 
 --since scopes to fills resolved at/after an epoch — pre-epoch fills ran
 different code/config. Defaults to late_window.validation_epoch (settings.yaml).
@@ -70,9 +70,9 @@ def main() -> None:
     since_iso = args.since.isoformat() if args.since else None
     r = mod.live_health_read(mod.PAPER_DB, since_iso)   # the ONE binding-gate reader
     if r is None or r["n_fills"] == 0:
-        print("No sniper paper fills in scope yet. The shadow fires only in the final 45s "
-              "on a Coinbase move past strike with a still-cheap ask (a handful/day). Check "
-              "the bot log for 'SNIPE' lines to confirm it is active.")
+        print("No sniper paper fills in scope yet. The shadow fires only in the final 30s "
+              "when the TWAP is locked and the winner's ask dips under the tier cap. Check "
+              "the bot log for 'TWAP LOCK' lines to confirm it is active.")
         return
 
     if since_iso:
@@ -90,9 +90,9 @@ def main() -> None:
           f"-- the SAME unit the nightly health job and the harness use.")
     print(f"t_day {r['t_day']:+.2f}, p10 {r['p10']:+.4f}, days+ {r['days_pos']}/{r['n_days']}, "
           f"last-4 {t4}, last-8 {t8}.")
-    print(f"\n{r['n_days']} day(s) of shadow data -- kill bar needs >=8 clean days, "
-          f"equal-weight net/sh >= +0.02, t_day>=2, p10>0, AND shadow-vs-harness gap < 0.03. "
-          f"Compare net/sh to `analyze_late_window.py --rtt-sweep 0.34` (the box's measured RTT).")
+    print(f"\n{r['n_days']} day(s) of shadow data -- the bar needs >=6 clean days, >=40 fills, "
+          f"equal-weight net/sh >= +0.02, t_day>=2, p10>0, AND zero lock-breaches. "
+          f"Read the sim ceiling beside it: `python scripts/analyze_twap_lock.py`.")
 
 
 if __name__ == "__main__":

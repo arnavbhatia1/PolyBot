@@ -175,7 +175,7 @@ sniper buys those dips and holds ≤30s to resolution.
   reachability modeled, plus the bit-exact mechanism check) is a CEILING —
   fills book the decision ask, queue depth is invisible. (2) The BINDING gate
   is the **paper-shadow's realized fills** (`sniper_shadow_status.py` /
-  `live_health_read`, scoped to `validation_epoch` 2026-08-07T04:00Z):
+  `live_health_read`, scoped to `validation_epoch` 2026-08-07T02:50Z):
   **pre-registered 08-07** as the deadline-shortened leg-identical form of
   the 8-day bar (07-15 precedent) — ≥ 6 clean ET days, ≥ 40 fills,
   equal-weight net ≥ +2¢/sh, `t_day ≥ 2`, ≥ 5/6 days positive, day-bootstrap
@@ -335,7 +335,7 @@ ignored"); the redeemable-aware orphan gate lets resolved dust through and
 fail-closes only on genuinely unresolved positions.
 
 Exits are always taker FOK — no passive/maker/resting path exists (it was
-measured −2.1¢/sh ≈ −$62/day over 8 clean days and moot under the <45s sniper, so
+measured −2.1¢/sh ≈ −$62/day over 8 clean days and moot under the ≤30s sniper, so
 it was removed). Never re-add resting quotes.
 
 ## 7. Recorders + evidence stream
@@ -485,9 +485,8 @@ scripts/
   run_polybot.sh         THE daily supervisor (systemd unit: polybot.service)
   analyze_twap_lock.py   TWAP lock kill-bar harness (micro-tape replay + bit-exact
                          mechanism check; health_read feeds the nightly ping)
-  analyze_late_window.py ledger readers the nightly job still uses
-                         (live_health_read / SPRT / scar / resolution watch);
-                         its burst-era replay no longer models the market
+  analyze_late_window.py realized-ledger readers for the nightly job
+                         (live_health_read / SPRT / scar / resolution watch)
   sniper_shadow_status.py  paper-shadow fills vs the harness
   verify_keys.py         live preflight: GET-auth + balance/allowance
   smoke_order_test.py    live preflight: one unfillable FOK proves order POSTs

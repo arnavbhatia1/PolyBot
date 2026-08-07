@@ -113,7 +113,7 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-07T04:00:00+00:00"  # TWAP lock signal v1 deploy (paper shadow).
+  validation_epoch: "2026-08-07T02:50:00+00:00"  # TWAP lock signal v1 deploy (paper shadow).
                                # The nightly health job scores only the current mode's fills
                                # at/after this instant in BOTH modes (earlier fills ran the
                                # snapshot-era signal). Reset when a new validation epoch starts.

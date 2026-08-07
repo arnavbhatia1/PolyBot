@@ -1,65 +1,32 @@
-"""Sniper kill-bar harness: replay late-window signals over the recorded 5Hz
-corpus with an RTT-parametric FOK fill, net of fee.
+"""Realized-ledger readers for the nightly sniper health job (main._sniper_health_job).
 
-Method (lookahead-safe): first fire per window using only info <= t_i; fill =
-the ask interpolated at decision+RTT; settle at resolution (window_labels).
-Thresholds are pre-registered — never sweep-then-pick; the gate is holding
-them FORWARD.
-
-KILL BAR (all legs): day-clustered t_day >= 2.0 AND block-bootstrap p10 > 0
-over >= 8 clean ET days, >= 6 positive, >= MIN_FILLS fills. The CONTROL
-(spot-side at ask, no momentum/flow filter) must stay ~0 by eye (G-M sanity).
-
-CEILING, NOT AUTHORITY: this is a full-population replay — it fires on every
-qualifying window and fills at the trigger tick. A real bot is latency-capped
-and ADVERSELY selected; the go-live that trusted this print alone realized
-~16c/sh worse than it. The BINDING gate is the paper-shadow's REALIZED fills
-(sniper_shadow_status.py / live_health_read). Never deploy on this print alone.
-
-Fidelity: the live sniper also requires an L1 edge >= sniper_min_edge; the
-momentum() signal here has no prob/edge floor, so n_fills overstates live's
-count (live trades the higher-conviction subset).
-
-  python scripts/analyze_late_window.py [--cb-move 8] [--ask-cap 0.92] \
-      [--rtt-sweep 0.04,0.08,0.135,0.20] [--max-slip 0.05]
-
---rtt-sweep traces the edge-vs-latency curve (the RTT where momentum first
-clears the bar = the latency the host must hit). --max-slip is the FOK limit
-tolerance — the key reachability sensitivity; re-run at 0.02 for a strict read.
+Everything here reads trade_history/window_labels — signal-agnostic, so the
+reads carried unchanged across the 08-07 TWAP cutover. The SIM-side replay
+lives in scripts/analyze_twap_lock.py; the BINDING deployment gate is
+live_health_read over the paper-shadow fills since late_window.validation_epoch
+(sniper_shadow_status.py prints it).
 """
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import random
 import sqlite3
 import statistics
-import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import sys
+
 ROOT = Path(__file__).resolve().parent.parent
 # Standalone runs from any cwd still need polybot.* importable (sprt/paths).
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-PATHS_DB = ROOT / "polybot" / "db" / "window_paths.db"
 LIVE_DB = ROOT / "polybot" / "db" / "polybot_live.db"   # real fills for the live kill-rule read
 PAPER_DB = ROOT / "polybot" / "db" / "polybot_paper.db" # paper-shadow fills (the binding gate in paper mode)
-# window_labels accrue in whichever mode's DB is active — read BOTH, or the
-# corpus freezes at a mode switch and the post-live kill rule can never trip.
-LABEL_DBS = [PAPER_DB, LIVE_DB]
 ET = ZoneInfo("America/New_York")  # DST-correct; a fixed UTC-4 mis-buckets EST days
-FEE_RATE = 0.07
-LATE_START = 255.0          # only the final 45s
-FILL_GAP_MAX = 0.45         # if the next sample is > this many s away, can't model the fill
-MIN_FILLS = 40              # below this, "not enough data"
-
-
-def fee(p: float) -> float:
-    return FEE_RATE * p * (1 - p)
 
 
 def et_day(ts: float) -> str:
@@ -91,179 +58,8 @@ def block_bootstrap_p10(daily: list[float], iters: int = 2000) -> float:
     return means[int(0.10 * len(means))]
 
 
-def load_windows():
-    """window_id -> sorted late rows (dicts), for labeled windows with
-    binance_price data."""
-    pc = sqlite3.connect(f"file:{PATHS_DB}?mode=ro", uri=True)
-    pc.row_factory = sqlite3.Row
-    cols = {r[1] for r in pc.execute("PRAGMA table_info(window_paths)")}
-    if "binance_price" not in cols:
-        pc.close()
-        return None, None      # recorder hasn't run the schema migration yet
-    labels = {}
-    for label_db in LABEL_DBS:
-        if not label_db.exists():
-            continue
-        lc = sqlite3.connect(f"file:{label_db}?mode=ro", uri=True)
-        try:
-            labels.update({r[0]: (r[1], r[2]) for r in lc.execute(
-                "SELECT window_id, resolved_up, price_to_beat FROM window_labels "
-                "WHERE window_id LIKE 'btc%' AND price_to_beat IS NOT NULL")})
-        except sqlite3.OperationalError:
-            pass  # mode DB without a window_labels table yet
-        finally:
-            lc.close()
-    # Strike for every signal = window_labels.price_to_beat (what Polymarket
-    # resolves on). window_paths.strike is the recorder's Chainlink capture —
-    # can miss the official value by >$8 in a fast open, never load it here.
-    rows_by_win = defaultdict(list)
-    cur = pc.execute(
-        "SELECT window_id, ts, elapsed_s, bid_up, ask_up, bid_down, ask_down, "
-        "coinbase_price, binance_price, binance_cvd_10s, binance_cvd_30s "
-        "FROM window_paths WHERE elapsed_s >= ? AND binance_price IS NOT NULL "
-        "ORDER BY window_id, ts", (LATE_START - 8,))
-    for r in cur:
-        if r["window_id"] in labels:
-            rows_by_win[r["window_id"]].append(dict(r))
-    pc.close()
-    return rows_by_win, labels
-
-
-def cb_move(rows, i, lookback_s=2.0):
-    """Coinbase price change over the ~lookback_s before row i (signed)."""
-    t = rows[i]["ts"]
-    cb_now = rows[i]["coinbase_price"]
-    if cb_now is None:
-        return None
-    j = i
-    while j > 0 and rows[j]["ts"] > t - lookback_s:
-        j -= 1
-    cb_then = rows[j]["coinbase_price"]
-    if cb_then is None:
-        return None
-    return cb_now - cb_then
-
-
-MAX_SLIP = 0.05      # default FOK limit tolerance: miss if the fill would be >this above the decision ask
-
-
-def fill_ask(rows, i, side_up, rtt, max_slip=MAX_SLIP):
-    """Modeled taker fill arriving `rtt` s after the decision tick: the ask
-    interpolated between the two 5Hz samples bracketing arrival (repricing is
-    measured ~linear over one sample gap; the tape can't resolve sub-200ms).
-    Lower rtt -> nearer the stale, cheap decision ask — the edge-vs-latency curve.
-
-    None = miss: book gapped, no sample after arrival confirms the quote, or
-    the ask repriced > max_slip above the decision ask (a FOK with limit =
-    decision_ask + max_slip would not have filled). max_slip is the key
-    reachability sensitivity — tighter fills fewer windows at better prices.
-    """
-    dec_ask = rows[i]["ask_up"] if side_up else rows[i]["ask_down"]
-    if dec_ask is None:
-        return None
-    arrive = rows[i]["ts"] + rtt
-    # j = last sample at/*before* arrival, k = first sample *after* arrival
-    j = i
-    while j + 1 < len(rows) and rows[j + 1]["ts"] <= arrive:
-        j += 1
-    k = j + 1
-    if k >= len(rows):                         # nothing after arrival -> can't confirm the quote -> miss
-        return None
-    if rows[k]["ts"] - rows[j]["ts"] > FILL_GAP_MAX:
-        return None
-    aj = rows[j]["ask_up"] if side_up else rows[j]["ask_down"]
-    ak = rows[k]["ask_up"] if side_up else rows[k]["ask_down"]
-    if aj is None or ak is None:
-        return None
-    span = rows[k]["ts"] - rows[j]["ts"]
-    frac = 0.0 if span <= 0 else max(0.0, min(1.0, (arrive - rows[j]["ts"]) / span))
-    fa = aj + (ak - aj) * frac
-    if not (0.01 < fa < 0.99):
-        return None
-    if fa > dec_ask + max_slip:                # repriced past our FOK limit before arrival -> miss
-        return None
-    return fa
-
-
-def momentum_signal(rows, i, strike, cb_move_thr=8.0, ask_cap=0.92):
-    """Deployed sniper's directional rule — module-level so the CLI and the
-    nightly health job share ONE implementation, never two drifting copies:
-    a >= cb_move_thr Coinbase move over 2s past strike, move side, ask <= cap."""
-    mv = cb_move(rows, i, 2.0)
-    cb = rows[i]["coinbase_price"]
-    if mv is None or cb is None or strike is None:
-        return None
-    up = mv > 0
-    if abs(mv) < cb_move_thr:
-        return None
-    if not ((up and cb > strike) or ((not up) and cb < strike)):  # move pushed it past strike
-        return None
-    a = rows[i]["ask_up"] if up else rows[i]["ask_down"]
-    return up if (a is not None and a <= ask_cap) else None
-
-
-def evaluate(rows_by_win, labels, signal_fn, label, rtt, max_slip):
-    """signal_fn(rows, i, strike) -> side_up (bool) or None. First fire per
-    window; fill = ask interpolated at decision+rtt, miss past the FOK limit."""
-    per_day = defaultdict(list)
-    fills = []
-    for wid, rows in rows_by_win.items():
-        resolved_up, strike = labels[wid]   # strike = authoritative price_to_beat
-        for i in range(len(rows)):
-            if rows[i]["elapsed_s"] < LATE_START:
-                continue
-            side_up = signal_fn(rows, i, strike)
-            if side_up is None:
-                continue
-            fa = fill_ask(rows, i, side_up, rtt, max_slip)
-            if fa is None:
-                continue
-            win = 1.0 if (side_up == (resolved_up == 1)) else 0.0
-            net = win - fa - fee(fa)
-            per_day[et_day(rows[i]["ts"])].append(net)
-            fills.append((net, fa, win))
-            break  # one entry per window
-    if len(fills) < 2:
-        return None
-    series = [(day, statistics.mean(v)) for day, v in sorted(per_day.items())]
-    daily = [m for _, m in series]
-    m, t, n = tstat(daily)
-    p10 = block_bootstrap_p10(daily)
-    win_rate = statistics.mean(f[2] for f in fills)
-    avg_fill = statistics.mean(f[1] for f in fills)
-    net_sum = sum(f[0] for f in fills)
-    npos = sum(1 for d in daily if d > 0)
-    return dict(label=label, n_fills=len(fills), n_days=len(daily), win_rate=win_rate,
-                avg_fill=avg_fill, mean_net_day=m, t_day=t, p10=p10,
-                net_per_sh=statistics.mean(f[0] for f in fills), net_sum=net_sum,
-                days_pos=npos, series=series)
-
-
-def health_read(rtt=0.135, max_slip=0.05, cb_move_thr=8.0, ask_cap=0.92):
-    """One-call momentum read for the nightly health job: kill-bar result plus
-    the kill-rule metrics (trailing-4-day mean, trailing-8-day t). None if the
-    corpus isn't ready; kill_rule_tripped None until >= 8 ET days exist."""
-    rows_by_win, labels = load_windows()
-    if not rows_by_win:
-        return None
-    r = evaluate(rows_by_win, labels,
-                 lambda rows, i, s: momentum_signal(rows, i, s, cb_move_thr, ask_cap),
-                 "momentum(cb_move)", rtt, max_slip)
-    if r is None:
-        return None
-    vals = [m for _, m in r["series"]]
-    r["trailing4_mean"] = statistics.mean(vals[-4:]) if len(vals) >= 4 else None
-    r["trailing8_t"] = tstat(vals[-8:])[1] if len(vals) >= 8 else None
-    if r["trailing8_t"] is None:
-        r["kill_rule_tripped"] = None                      # < 8 days: not evaluable
-    else:
-        r["kill_rule_tripped"] = (r["trailing4_mean"] < 0.02) or (r["trailing8_t"] < 2.0)
-    return r
-
-
 def live_health_read(db_path=None, since_iso=None):
-    """Post-live kill-rule metrics from REALIZED fills (trade_history) — the
-    money-side analog of health_read()'s SIM read.
+    """Post-live kill-rule metrics from REALIZED fills (trade_history).
 
     Defaults to polybot_live.db; pass db_path=PAPER_DB + since_iso=<validation
     epoch> for the BINDING paper-shadow gate (pre-epoch fills ran different
@@ -379,6 +175,7 @@ def _realized_fill_contexts(db_path, since_iso):
 
 
 # ── Burst-alive SPRT (pre-registered; constants are design-frozen) ────────────
+# Tests whether tick-rate-burst days out-earn calm days on realized fills.
 # HOT ⇔ n_ticks_1s / (n_ticks_30s/30) ≥ 2.0 at the fill's decision tick; unit =
 # per-ET-day (mean HOT net − mean COLD net) in ¢/sh, days with ≥ 2 fills on
 # EACH arm. H1 μ₁ = +6¢/sh. σ freezes WRITE-ONCE from the first 6 qualifying
@@ -471,17 +268,16 @@ def regime_shadow_read(db_path=None, since_iso=None):
                 day_detail=scored)
 
 
-# ── Resolution-mechanism watch (TWAP rollout tripwire) ────────────────────────
+# ── Resolution-mechanism watch ─────────────────────────────────────────────────
 def resolution_snapshot_read(db_path=None, hours: float = 26.0):
-    """Is Polymarket still resolving on the terminal Chainlink snapshot?
+    """Is the resolution rule still the one the sniper is built on?
 
-    Invariant of the current rule: a window's official final_price and the
-    NEXT window's price_to_beat are the SAME Chainlink report (first at/after
-    their shared boundary), so they match bit-exact. Polymarket's announced
-    TWAP resolution breaks that equality by real dollars — systematic
-    divergence means the mechanism changed under the sniper: kill it
-    (sniper_enabled: false). Checks windows labeled in the trailing
-    ``hours``; alert-only.
+    Invariant: a window's official final_price and the NEXT window's
+    price_to_beat are the SAME value — the 30s-TWAP stream's report at their
+    shared boundary — so they match bit-exact. Systematic divergence means
+    Polymarket changed the resolution rule again: kill the sniper
+    (sniper_enabled: false) and re-verify the mechanism by hand. Checks
+    windows labeled in the trailing ``hours``; alert-only.
     """
     import time as _t
     db = Path(db_path) if db_path else LIVE_DB
@@ -541,121 +337,3 @@ def scar_scan_read(db_path=None, since_iso=None, enforce=None,
     rep = scan(db, since_iso, reg, enforce or [], mode)
     rep["vetoes"] = resolve_vetoes(vet, db)
     return rep
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--cb-move", type=float, default=8.0, help="$ Coinbase move over ~2s to fire momentum")
-    ap.add_argument("--cvd", type=float, default=1.5, help="|binance_cvd_10s| (BTC) to fire order-flow")
-    ap.add_argument("--ask-cap", type=float, default=0.92, help="only buy if the side's ask is still <= this")
-    ap.add_argument("--rtt-sweep", type=str, default="0.04,0.08,0.135,0.20",
-                    help="comma-list of modeled order RTTs (s) to sweep — the edge-vs-latency curve. "
-                         "0.34~the box's measured POST p50, 0.20~one-5Hz-sample.")
-    ap.add_argument("--max-slip", type=float, default=MAX_SLIP,
-                    help="FOK limit tolerance (default 0.05): a fill is a MISS if the ask repriced more "
-                         "than this above the decision ask by arrival. Tighter = stricter reachability "
-                         "(fewer fills, better prices). The key sensitivity — re-run at 0.02 for a strict read.")
-    args = ap.parse_args()
-    rtt_list = [float(x) for x in args.rtt_sweep.split(",") if x.strip()]
-
-    rows_by_win, labels = load_windows()
-    if rows_by_win is None:
-        print("DATA NOT READY: window_paths has no binance_price column yet — the extended "
-              "WindowPathRecorder (recording.py) has not run. Start the bot on the new code, "
-              "let it accrue ~8 clean ET days of late-window samples, then re-run this.")
-        return
-    total_late = sum(len(v) for v in rows_by_win.values())
-    n_win = len(rows_by_win)
-    days = sorted({et_day(r["ts"]) for v in rows_by_win.values() for r in v})
-    print(f"post-extension late-window data: {n_win} windows, {total_late} rows, "
-          f"{len(days)} ET days {days[:1]}..{days[-1:]}")
-    if n_win < MIN_FILLS:
-        print(f"\nDATA NOT READY: only {n_win} windows with post-extension (binance_price) "
-              f"late samples. The extended recorder must run first. Need ~8 clean ET days "
-              f"(~{8*288} windows). Re-run this after the recorder has accrued them.")
-        return
-
-    cap = args.ask_cap
-
-    def side_ask(rows, i, up):
-        return rows[i]["ask_up"] if up else rows[i]["ask_down"]
-
-    # --- pre-registered candidate signals (held fixed; the gate is holding them FORWARD) ---
-    def momentum(rows, i, strike):
-        return momentum_signal(rows, i, strike, args.cb_move, cap)
-
-    def orderflow(rows, i, strike):
-        cvd = rows[i]["binance_cvd_10s"]
-        if cvd is None or abs(cvd) < args.cvd:
-            return None
-        up = cvd > 0
-        a = side_ask(rows, i, up)
-        return up if (a is not None and a <= cap) else None
-
-    def lead(rows, i, strike):
-        bn, cb = rows[i]["binance_price"], rows[i]["coinbase_price"]
-        if bn is None or cb is None or strike is None:
-            return None
-        # Binance already past strike while Coinbase hasn't crossed as far -> buy Binance's side
-        up = bn > strike
-        if abs(bn - strike) < 5:
-            return None
-        a = side_ask(rows, i, up)
-        return up if (a is not None and a <= cap) else None
-
-    def control_spotside(rows, i, strike):     # G-M sanity: spot-side at ask, no momentum/flow filter (ask-cap still applied)
-        cb = rows[i]["coinbase_price"]
-        if cb is None or strike is None:
-            return None
-        up = cb > strike
-        a = side_ask(rows, i, up)
-        return up if (a is not None and a <= cap) else None
-
-    sigs = [("momentum(cb_move)", momentum), ("orderflow(binance_cvd)", orderflow),
-            ("lead(binance_vs_strike)", lead), ("CONTROL spot-side@ask", control_spotside)]
-
-    print(f"\nthresholds: cb_move>=${args.cb_move:.0f}/2s, |cvd|>={args.cvd}, ask_cap<={cap}, "
-          f"max_slip(FOK limit)={args.max_slip}")
-    print("RTT sweep = the edge-vs-latency curve: fill is the ask interpolated at "
-          "decision+RTT along its repricing path. Lower RTT -> nearer the stale (cheap) ask.")
-    for rtt in rtt_list:
-        print(f"\n=== modeled RTT = {rtt*1000:.0f} ms ===")
-        print(f"{'signal':>26} {'fills':>6} {'days':>5} {'win%':>6} {'avg_fill':>8} "
-              f"{'net/sh':>8} {'net/day':>8} {'t_day':>6} {'p10':>7} {'days+':>6}  bar")
-        for name, fn in sigs:
-            r = evaluate(rows_by_win, labels, fn, name, rtt, args.max_slip)
-            if r is None:
-                print(f"{name:>26}  (no fills)")
-                continue
-            passed = (r["t_day"] >= 2.0 and r["p10"] > 0 and r["n_days"] >= 8
-                      and r["days_pos"] >= 6 and r["n_fills"] >= MIN_FILLS
-                      and name.startswith(("momentum", "orderflow", "lead")))
-            bar = "PASS" if passed else ("--" if name.startswith("CONTROL") else "fail")
-            print(f"{name:>26} {r['n_fills']:>6} {r['n_days']:>5} {r['win_rate']:>6.1%} "
-                  f"{r['avg_fill']:>8.3f} {r['net_per_sh']:>+8.4f} {r['mean_net_day']:>+8.4f} "
-                  f"{r['t_day']:>+6.2f} {r['p10']:>+7.4f} {r['days_pos']:>4}/{r['n_days']:<2} [{bar}]")
-
-    print("\nKILL BAR: a signal PASSES only with t_day>=2.0 AND p10>0 AND >=8 ET days "
-          f"AND >=6 positive days AND >={MIN_FILLS} fills, AT A REACHABLE RTT. The one leg "
-          "the print cannot enforce: CONTROL must be ~0 (G-M) at every RTT — check its row "
-          "by eye. Thresholds are pre-registered; the binding gate is the SAME threshold "
-          "holding FORWARD. The RTT at which momentum first clears the bar = the latency "
-          "you must hit.")
-
-    print("\n*** CEILING, NOT AUTHORITY ***  This harness is a FULL-POPULATION REPLAY: it "
-          "fires on EVERY qualifying window (~58/day), fills instantly at the trigger tick, "
-          "and resolves perfectly. No real bot can do that — latency caps a live/paper bot at "
-          "~1-2 fires/day, and those caught windows are ADVERSELY selected (the bot is slow "
-          "enough to catch moves already reverting), so within-bucket win% collapses vs this "
-          "replay. The 2026-07 live read proved it: harness ~+10c/sh, live ~-3 to -6c/sh — a "
-          "~16c gap that is real latency-driven selection, NOT a bug. So this PASS is NECESSARY "
-          "BUT NOT SUFFICIENT. The BINDING deployment gate is the PAPER-SHADOW REALIZED FILLS "
-          "(sniper_shadow_status.py / live_health_read): >=8 clean ET days, equal-weight net "
-          ">=+2c/sh, t_day>=2, p10>0, AND shadow-vs-harness gap <3c. Never go live on this print "
-          "alone.")
-
-
-if __name__ == "__main__":
-    import sys
-    sys.stdout.reconfigure(encoding="utf-8")
-    main()

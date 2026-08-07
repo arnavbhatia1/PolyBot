@@ -133,7 +133,10 @@ def load_windows(labels: dict[int, dict], since_ts: float):
                     i = line.find('"token": "')
                     if i < 0:
                         continue
-                    tok = line[i + 10: i + 87].split('"', 1)[0]
+                    # token ids are variable-length uint256 decimals (76-78+
+                    # digits) — slice generously, then cut at the close quote,
+                    # or long-id tokens silently drop their whole book stream.
+                    tok = line[i + 10: i + 120].split('"', 1)[0]
                     hit = toks.get(tok)
                     if hit is None:
                         continue

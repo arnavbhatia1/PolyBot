@@ -51,7 +51,7 @@ def _top3_usd(levels: list[dict[str, Any]]) -> float | None:
 class WindowPathRecorder:
     """Samples the active 5-min window at 1 Hz (5 Hz in the final 45s).
 
-    The late-window burst feeds the sniper kill-bar harness
+    The late-window burst feeds the pivot-research corpus
     (scripts/analyze_late_window.py) — modeling a FOK fill needs sub-second
     ask/Coinbase/Binance data.
 
