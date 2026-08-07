@@ -1319,7 +1319,7 @@ def _compute_strike(cid: str, window_strikes: dict[int, float],
         # get_strike serves a cold-start fallback that ticks with the live TWAP.
         locked = chainlink_feed.boundary_captured(contract_window_ts) if chainlink_feed else False
         if locked and contract_window_ts not in _strike_logged:
-            logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${cl_strike:,.2f} (Chainlink){_C.RESET}")
+            logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${cl_strike:,.2f} (TWAP stream){_C.RESET}")
             _strike_logged.add(contract_window_ts)
             _strike_logged.difference_update({k for k in _strike_logged if now_ts - k >= 600})
 
