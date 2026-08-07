@@ -421,6 +421,7 @@ _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 # Chainlink report and book event while a lock holds, which spams the same line.
 _last_snipe_log: dict[tuple[int, str], float] = {}
 _resolve_oracle_logged: set[str] = set()  # market_id — RESOLVE oracle line printed once
+_gamma_strikes: set[int] = set()   # window_ts whose strike came from Gamma (sticky)
 _tape_verdict_logged: set[str] = set()    # market_id — early TAPE VERDICT printed once
 _tape_mismatch_logged: set[str] = set()   # market_id — RESOLUTION DRIFT warned once
 _SNIPER_ONLY_QUIET = True  # base entries are always suppressed (sniper-only), so their per-gate SKIP lines are noise -> DEBUG
@@ -518,10 +519,10 @@ def _log_hold_heartbeat_stale(pos: dict[str, Any], live: dict[str, Any], reason:
 def _fastest_btc_price(coinbase_feed: Any, trades_feed: Any, binance_feed: Any) -> tuple[float, str]:
     """Return the Coinbase BTC price + source label, or (0.0, "stale").
 
-    Coinbase (the venue Chainlink resolves against) is the sole decision price;
-    callers must treat (0.0, "stale") as "skip this decision", not a zero price.
-    No Binance fallback — a divergent transient print could flip P(side) on a tick
-    the resolver never sees. Binance is read only to log the cross-venue gap.
+    Coinbase is the L1/exit-engine spot (the TWAP legs decide on the raw
+    Chainlink stream instead); callers must treat (0.0, "stale") as "skip this
+    decision", not a zero price. No Binance fallback — a divergent transient
+    print could flip P(side). Binance is read only to log the cross-venue gap.
     """
     cb_price = cb_age = bt_price = bt_age = 0.0
     if coinbase_feed:
@@ -1072,6 +1073,10 @@ async def _evaluate_signal_and_enter(
             "depth_usd_top20": _depth_usd_top20(),
             "adverse_rate_at_30s": adverse_rate_at_30s if adverse_rate_at_30s >= 0 else None,
             "adverse_kelly_mult": round(adverse_kelly_mult, 3),
+            # Leg attribution on EVERY ghost — a lock_dip fire vetoed by an
+            # early gate (min_size is the busiest) must still count against
+            # its leg's evidence population.
+            "signal_leg": _signal_leg,
             **aux_signals,
         }
         merged_snap = dict(snap or {})
@@ -1205,9 +1210,11 @@ async def _evaluate_signal_and_enter(
         except (ValueError, IndexError):
             _w_ts = -1
         if not _strike_trusted.get(_w_ts, False):
+            # INFO, never quiet: this veto suppresses capital — the operator
+            # must be able to count what the trust gate is costing.
             _emit_gate_skip(cid, "sniper_strike_unverified",
                             "sniper: strike unverified (TWAP-topic boundary gap — value may "
-                            "differ from Polymarket's price_to_beat)", quiet=_SNIPER_ONLY_QUIET)
+                            "differ from Polymarket's price_to_beat)")
             _snipe = TradeSignal("SKIP", signal.prob, signal.edge, 0,
                                  "sniper: strike unverified", side=signal.side)
         elif _MAKER_MGR is not None and _MAKER_MGR.resting_on(_w_ts):
@@ -1256,6 +1263,9 @@ async def _evaluate_signal_and_enter(
                             "twap_proj": round(_proj, 2),
                             "twap_disp": round(_mdisp, 2),
                             "maker_bid": _mbid,
+                            # startup reconciliation + dust sweep key on these
+                            "token_id_up": token_up,
+                            "token_id_down": token_down,
                         }, "strike_price": strike})
         if _snipe.action in ("LATE_SNIPE_YES", "LATE_SNIPE_NO"):
             _snipe.action = "BUY_YES" if _snipe.action == "LATE_SNIPE_YES" else "BUY_NO"
@@ -1893,10 +1903,16 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             logger.warning(f"Strike Corrected {_slug_to_window(cid)}: ${prev:,.2f} → ${ptb:,.2f}")
         window_strikes[contract_window_ts] = ptb
         _strike_trusted[contract_window_ts] = True
+        _gamma_strikes.add(contract_window_ts)   # sticky — a later metadata-less
+                                                 # fetch must not revert it
         if contract_window_ts not in _strike_logged:
             logger.info(f"{_C.CYAN}NEW WINDOW {_slug_to_window(cid)} | Strike ${ptb:,.2f} (Polymarket){_C.RESET}")
             _strike_logged.add(contract_window_ts)
-    elif cl_strike and cl_strike > 0:
+    elif cl_strike and cl_strike > 0 and not (
+            contract_window_ts in _gamma_strikes
+            and contract_window_ts in window_strikes):
+        # Never DOWNGRADE a Gamma-served strike to our own capture (a later
+        # metadata-less contract refresh would flip-flop the number mid-window).
         window_strikes[contract_window_ts] = cl_strike     # the sniper reads this — set every loop
         _strike_trusted[contract_window_ts] = (
             chainlink_feed.strike_reliable(contract_window_ts) if chainlink_feed else False)
@@ -1911,6 +1927,7 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
     window_strikes = {k: v for k, v in window_strikes.items() if now_ts - k < 600}
     for k in [k for k in _strike_trusted if now_ts - k >= 600]:
         del _strike_trusted[k]
+    _gamma_strikes.difference_update({k for k in _gamma_strikes if now_ts - k >= 600})
 
     strike = window_strikes.get(contract_window_ts, 0)
     if strike <= 0:
@@ -1919,8 +1936,9 @@ def _compute_strike_and_btc(cid: str, binance_feed: Any, window_strikes: dict[in
             logger.info(f"EVAL {_slug_to_window(cid)} - No Polymarket strike captured yet")
         return None, None, window_strikes, last_eval_log_window, "none"
 
-    # BTC price comes from Coinbase WS only (the venue Chainlink resolves against);
-    # a stale Coinbase feed returns 0 here and skips the decision.
+    # BTC price comes from Coinbase WS only (the L1/exit-engine spot; the TWAP
+    # legs decide on the raw Chainlink stream); a stale feed returns 0 here and
+    # skips the decision.
     trades_feed = kwargs.get("trades_feed")
     btc_price, _price_source = _fastest_btc_price(coinbase_feed, trades_feed, binance_feed)
     if btc_price <= 0:
@@ -2610,11 +2628,14 @@ async def _resolve_expired_position(
     _tape_final = _tape_strike = None
     if chainlink_feed is not None:
         try:
+            # strike_reliable (not just captured): a delivery-hole capture is a
+            # LATER second's value — a verdict or drift alarm from it blames
+            # Polymarket for our own hole (last night's false "rule drift").
             _w = int(mid.rsplit("-", 1)[-1])
             _tape_strike = (chainlink_feed.get_strike(_w)
-                            if chainlink_feed.boundary_captured(_w) else None)
+                            if chainlink_feed.strike_reliable(_w) else None)
             _tape_final = (chainlink_feed.get_strike(_w + 300)
-                           if chainlink_feed.boundary_captured(_w + 300) else None)
+                           if chainlink_feed.strike_reliable(_w + 300) else None)
         except (ValueError, IndexError):
             pass
     if exit_price is None:
@@ -2735,35 +2756,30 @@ async def _manage_orphaned_position(
         else:
             logger.info(f"RESOLVED {_slug_to_window(pos['market_id'])} | "
                         f"coherent CLOB book (orphan)")
-    elif age > 1800 and chainlink_feed and chainlink_feed.price > 0:
+    elif age > 1800 and chainlink_feed is not None:
         # Gamma silent for 30+ min — Polymarket has already auto-credited the Safe
-        # via on-chain settlement, so the bankroll is correct. Use the Chainlink
-        # oracle directly to mark the DB record so the position stops blocking.
+        # via on-chain settlement, so the bankroll is correct. Use our own TWAP
+        # boundary CAPTURES to mark the DB record so the position stops blocking.
+        # Both ends must be genuine captures: get_strike's live fallback would
+        # serve the SAME current value for strike and final (tie → fake Up win).
+        # Never fabricate — an unresolvable orphan waits and pages the operator.
         try:
             window_ts = int(pos["market_id"].rsplit("-", 1)[-1])
         except (ValueError, IndexError):
             window_ts = 0
-        strike_at_boundary = chainlink_feed.get_strike(window_ts) if window_ts else None
-        if strike_at_boundary is None or strike_at_boundary <= 0:
-            # No captured strike (feed wasn't running at boundary) — keep waiting
-            logger.info(f"ORPHAN {_slug_to_window(pos['market_id'])} ({age:.0f}s old) — Waiting for resolution (no Chainlink strike captured)")
-            return True, day_wins, day_losses, day_fees
-        # Compare strike (TWAP stream at window_ts) vs final (TWAP stream at
-        # window_ts+300) — the exact resolution rule. The 2hr eviction window in
-        # chainlink_feed keeps the expiry capture available for orphan fallback.
-        # Last resort is the CURRENT official TWAP value, never the raw price —
-        # the raw stream sits $10+ off the resolving number.
-        final_at_expiry = chainlink_feed.get_strike(window_ts + 300) if window_ts else None
-        if final_at_expiry is not None and final_at_expiry > 0:
-            final_price = final_at_expiry
-            final_source = "expiry boundary"
-        elif chainlink_feed.twap_official > 0:
-            final_price = chainlink_feed.twap_official
-            final_source = "current TWAP (expiry capture missing)"
-        else:
+        strike_at_boundary = (chainlink_feed.get_strike(window_ts)
+                              if window_ts and chainlink_feed.boundary_captured(window_ts)
+                              else None)
+        final_at_expiry = (chainlink_feed.get_strike(window_ts + 300)
+                           if window_ts and chainlink_feed.boundary_captured(window_ts + 300)
+                           else None)
+        if (strike_at_boundary is None or strike_at_boundary <= 0
+                or final_at_expiry is None or final_at_expiry <= 0):
             logger.info(f"ORPHAN {_slug_to_window(pos['market_id'])} ({age:.0f}s old) — "
-                        f"Waiting for resolution (no TWAP value to fall back on)")
+                        f"Waiting for resolution (boundary captures incomplete)")
             return True, day_wins, day_losses, day_fees
+        final_price = final_at_expiry
+        final_source = "expiry boundary"
         up_won = final_price >= strike_at_boundary
         exit_price = 1.0 if (pos["side"] == "Up") == up_won else 0.0
         resolved_final = final_price
@@ -3079,10 +3095,10 @@ async def trading_loop(binance_feed: BinanceFeed, market_scanner: BTCMarketScann
         if scheduler and getattr(scheduler, '_shutdown_requested', False):
             break
 
-        # Late-window sniper (gated; default OFF): also wake on raw Chainlink
+        # Sniper legs (brake: sniper_enabled): also wake on raw Chainlink
         # reports — the resolution stream is the sniper's decision clock; a
         # displacement is acted on within one report, not the 100ms housekeeping
-        # fallback. No effect on the loop when the sniper is disabled.
+        # fallback. No effect on the loop when the brake is off.
         _sniper_wake = chainlink_feed is not None and bool(
             config.get("late_window", {})["sniper_enabled"])
 
@@ -3382,6 +3398,13 @@ async def main() -> None:
         trader = LiveTrader(db=db,
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
             max_concurrent_positions=exec_cfg["max_concurrent_positions"])
+        # Boot hygiene: cancel any resting order a crashed process left on the
+        # exchange — a fill in the gap would be unbooked shares with no DB row.
+        try:
+            await asyncio.to_thread(trader.client.cancel_all)
+            logger.info("Boot order sweep — no resting orders carried over")
+        except Exception as e:
+            logger.warning("boot cancel_all failed (check open orders by hand): %s", e)
         # The +8s chain audit reports the settled entry here → the OPEN banner
         # prints once, with the real fill (see _log_open_banner).
         trader.on_entry_settled = _on_entry_settled
@@ -3624,7 +3647,7 @@ async def main() -> None:
         Reports the SIM corpus AND the realized fills with their gap; the
         kill-rule verdict is driven by the realized ledger once fills exist
         (the sim can't see live execution quality). Skipped when disabled."""
-        if not config.get("late_window", {})["sniper_enabled"]:
+        if not config.get("late_window", {}).get("sniper_enabled"):
             return {"skipped": "sniper disabled"}
         import importlib.util
         hp = Path(__file__).resolve().parent.parent / "scripts" / "analyze_late_window.py"
@@ -3697,10 +3720,10 @@ async def main() -> None:
         except Exception as e:
             logger.warning("scar scan failed: %s", e)
             scars = None
-        # Resolution-mechanism watch — the TWAP-rollout tripwire. Today every
-        # window's official final_price equals the NEXT window's price_to_beat
-        # bit-exact (same boundary report); the announced TWAP breaks that
-        # equality, and the day it does the sniper's premise is gone.
+        # Resolution-mechanism watch: every window's official final_price
+        # equals the NEXT window's price_to_beat bit-exact (both are the TWAP
+        # stream's value at the shared boundary). A systematic break means
+        # Polymarket changed the rule again — the lock premise needs re-proof.
         try:
             twap = await asyncio.to_thread(mod.resolution_snapshot_read, _real_db)
         except Exception as e:
@@ -3741,15 +3764,15 @@ async def main() -> None:
         def _context_line() -> str:
             if sim is None or sim["n_fills"] == 0:
                 return ""
-            base = f"Research sim (no capital): {sim['net_per_sh']*100:+.1f}¢/share"
+            base = f"Research sim (a CEILING — fills at the decision ask): {sim['net_per_sh']*100:+.1f}¢/share"
             if live and live["n_fills"] > 0:
                 gap = (sim["net_per_sh"] - live["net_per_sh"]) * 100
                 if abs(gap) < 3:
                     base += " — real fills in line with it"
                 elif gap > 0:
-                    base += f" — real fills LAGGING it by {gap:.1f}¢ (possible execution leak)"
+                    base += f" — real fills {gap:.1f}¢ below it (some gap is expected; watch it grow)"
                 else:
-                    base += f" — real fills ahead of it by {-gap:.1f}¢ (normal: the sim reads low)"
+                    base += f" — real fills ABOVE the ceiling by {-gap:.1f}¢ (odd — check the sim)"
             return base + "\n"
 
         def _legs_line() -> str:
@@ -3874,12 +3897,17 @@ async def main() -> None:
             await alert_manager.send_health(msg)
 
         def _pick(r):
+            # .get throughout — the TWAP sim's dict is a subset of the ledger
+            # read's (no trailing/kill keys, t_day None under 2 fire-days).
             if r is None:
                 return None
-            return {"net_per_sh": r["net_per_sh"], "t_day": round(r["t_day"], 2),
-                    "n_fills": r["n_fills"], "n_days": r["n_days"],
-                    "trailing4_mean": r["trailing4_mean"], "trailing8_t": r["trailing8_t"],
-                    "kill_rule_tripped": r["kill_rule_tripped"]}
+            t = r.get("t_day")
+            return {"net_per_sh": r.get("net_per_sh"),
+                    "t_day": (round(t, 2) if isinstance(t, (int, float)) and t == t else None),
+                    "n_fills": r.get("n_fills"), "n_days": r.get("n_days"),
+                    "trailing4_mean": r.get("trailing4_mean"),
+                    "trailing8_t": r.get("trailing8_t"),
+                    "kill_rule_tripped": r.get("kill_rule_tripped")}
         return {"health": status, "kill_rule_tripped": kt,
                 "live": _pick(live), "sim": _pick(sim),
                 "legs": (live or {}).get("legs"), "open_gap": open_gap,
@@ -3976,6 +4004,10 @@ async def main() -> None:
         # threads holding the interpreter open forever.
         await _stop_rec(
             asyncio.gather(*background_tasks, return_exceptions=True), timeout=5.0)
+        # A resting maker bid must never outlive the process — cancel + book
+        # any accrued fill before the feeds die.
+        if _MAKER_MGR is not None and _MAKER_MGR.active is not None:
+            await _stop_rec(_MAKER_MGR._retire("shutdown"), timeout=5.0)
         await _stop_rec(window_recorder.stop())
         tape_recorder.flush()
         micro_tape.flush()

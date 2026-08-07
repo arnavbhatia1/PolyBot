@@ -55,14 +55,20 @@ class TestChainlinkFeed:
         assert f.boundary_captured(boundary_ts) is True
         assert f.boundary_captured(f._start_window_ts) is False   # start window never captured
 
-    def test_strike_reliable_tight_gap(self):
-        """A boundary report landing on the ~1Hz heartbeat (within 2s of the
-        boundary) is trustworthy — our capture == Polymarket's price_to_beat."""
+    def test_strike_reliable_exact_boundary_only(self):
+        """The TWAP topic ticks ON integer seconds — the true price_to_beat
+        report carries ts == boundary exactly. Only that capture is trusted;
+        a boundary+1s capture is a hole-shifted LATER value (real dollars off
+        mid-burst) and must be vetoed."""
         f = ChainlinkFeed()
         boundary_ts = ((int(time.time()) // 300) - 1) * 300
         f._record_boundary(boundary_ts - 1, 70990.0)      # last report before the boundary
-        f._record_boundary(boundary_ts + 1, 71000.0)      # first at/after — 1s past boundary
+        f._record_boundary(boundary_ts, 71000.0)          # ON the boundary — the official report
         assert f.strike_reliable(boundary_ts) is True
+        f2 = ChainlinkFeed()
+        f2._record_boundary(boundary_ts - 1, 70990.0)
+        f2._record_boundary(boundary_ts + 1, 71001.0)     # 1s hole — later second's average
+        assert f2.strike_reliable(boundary_ts) is False
 
     def test_strike_reliable_delivery_hole(self):
         """A capture landing long after the boundary means the true boundary

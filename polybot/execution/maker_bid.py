@@ -100,7 +100,11 @@ class MakerBidManager:
             reason = "window closing"
         else:
             proj = self.chainlink.projected_final_twap(close)
-            if proj is not None:
+            if proj is None:
+                # Fail CLOSED: a cold projection means the lock is
+                # unverifiable — a resting order must never sit blind.
+                reason = "projection cold"
+            else:
                 disp = proj - a["snapshot"]["strike_price"]
                 held = disp >= twap_margin(TWAP_MARGIN_P995, k) if a["side"] == "Up" \
                     else -disp >= twap_margin(TWAP_MARGIN_P995, k)
@@ -111,8 +115,8 @@ class MakerBidManager:
             matched = await self.trader.poll_gtc_fill(a["order_id"])
             if matched is not None and matched > a["filled_shares"]:
                 a["filled_shares"] = min(a["shares"], matched)
-        # A complete fill books immediately — the position needs the exit
-        # engine's protection (lock-hold included), not a dead order slot.
+        # A complete fill books immediately — the position must be on the
+        # books (it holds to resolution), not parked in a dead order slot.
         if reason is None and a["filled_shares"] >= a["shares"] - 1e-9:
             reason = "filled"
         if reason is not None:
@@ -140,5 +144,9 @@ class MakerBidManager:
                     return
             except Exception:
                 logger.exception("MAKER fill booking failed — reconcile manually")
+            logger.warning("MAKER UNBOOKED %s — %.1f sh at %.3f could not book "
+                           "(see the CRITICAL above; reconcile manually)",
+                           a["side"], filled, a["bid"])
+            return
         logger.info("MAKER DONE %s — %s, %.1f sh filled (below the $1 floor "
                     "books nothing)", a["side"], reason, filled)

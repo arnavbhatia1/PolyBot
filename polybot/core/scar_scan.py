@@ -63,6 +63,7 @@ FIRE_TIME_DIMS = frozenset({
     "strike_dist", "autocorr", "cvd_side", "xgap", "frv", "atr_short",
     "depth_side", "vig", "killed_n", "flip",
     "book_age", "dir_agree", "adverse_regime", "move_shape", "cl_confirm",
+    "signal_leg",
 })
 
 
@@ -98,9 +99,10 @@ def _move_shape(m2: float | None, m10: float | None) -> str | None:
 
 
 def _cl_confirm(cl_px: float | None, strike: float | None, side: str) -> str | None:
-    """Has the resolution venue's own (fresh, ≤5s) report crossed the strike
-    in the fired direction? Not-crossed = the move-past-strike premise rests
-    on Coinbase alone — thinner true cushion, the terminal-flip population."""
+    """Has the raw Chainlink stream's (fresh, ≤5s) report crossed the strike
+    in the fired direction? Observational dim: raw-crossed vs not at fire
+    time slices the fills by how much of the move the resolution family of
+    feeds had already printed."""
     if cl_px is None or not strike:
         return None
     crossed = (cl_px > strike) if side == "Up" else (cl_px < strike)
@@ -131,7 +133,8 @@ def derive_dims(ctx: dict[str, Any], side: str, dow: str,
         "ask_bucket": _bucket(ask, (0.60, 0.75, 0.85),
                               ("<0.60", "0.60-0.75", "0.75-0.85", "0.85+")),
         "tremain": _bucket(ctx.get("seconds_remaining"), (15, 30),
-                           ("<15s", "15-30s", "30-45s")),
+                           ("<15s", "15-30s", ">30s")),
+        "signal_leg": ctx.get("signal_leg"),
         "side": side,
         "dow": dow,
         "refire": ctx.get("scar_refire_class"),
@@ -143,7 +146,7 @@ def derive_dims(ctx: dict[str, Any], side: str, dow: str,
         "prob_bucket": _bucket(ctx.get("model_probability"), (0.75, 0.90),
                                ("<0.75", "0.75-0.90", ">0.90")),
         "cb_move_bucket": _bucket(ctx.get("scar_cb_move"), (12.0, 20.0),
-                                  ("8-12", "12-20", "20+")),
+                                  ("<12", "12-20", "20+")),
         # Reversion-mechanism dims — each has a prior tied to the measured loss
         # mechanism (moves that fire the signal then come back).
         "strike_dist": _bucket(dist, (12.0, 25.0), ("<12", "12-25", "25+")),

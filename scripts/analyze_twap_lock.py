@@ -102,6 +102,10 @@ def load_labels(since_ts: float) -> dict[int, dict]:
 
 
 def _tape_files(since_ts: float) -> list[Path]:
+    # Never touch pre-TWAP tape: those files are 1.2-2.6 GB each and can't
+    # contribute a label — streaming them hung the first nightly job into a
+    # systemd SIGKILL and silenced the kill-rule ping.
+    since_ts = max(since_ts, TWAP_SWITCH_TS)
     start = datetime.fromtimestamp(since_ts, timezone.utc).date()
     end = datetime.now(timezone.utc).date()
     files = []
@@ -371,11 +375,14 @@ def open_gap_read(hours: float = 26.0, min_disp: float = 10.0):
             "gap": wins / len(asks) - asks[len(asks) // 2]}
 
 
-def health_read(db_path=None, min_edge: float = 0.04, days: int = 8):
+def health_read(db_path=None, min_edge: float = 0.04, days: int = 2):
     """Nightly-ping sim read: the lock-dip replay over the trailing tape days.
     db_path is accepted for call-shape parity and unused (labels are read from
-    both mode DBs). Shape matches the ping's needs: n_fills / net_per_sh."""
-    since = datetime.now(timezone.utc).timestamp() - days * 86400.0
+    both mode DBs). Trailing window stays SHORT (context line, not the
+    verdict): each tape day is ~2.5 GB and the job must finish well inside
+    the 23:45-23:59 ET wind-down. Shape: n_fills / net_per_sh."""
+    since = max(datetime.now(timezone.utc).timestamp() - days * 86400.0,
+                TWAP_SWITCH_TS)
     r = run_replay(since, min_edge, DEFAULT_RTT)
     if r is None:
         return {"n_fills": 0, "net_per_sh": 0.0, "n_days": 0}

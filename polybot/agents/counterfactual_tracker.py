@@ -283,7 +283,11 @@ class CounterfactualTracker:
 
             chainlink_ptb = meta["price_to_beat"]
             chainlink_fp = meta["final_price"]
+            if chainlink_ptb is None:
+                continue  # metadata served final without strike — wait, never compare vs None
             up_won = chainlink_fp >= chainlink_ptb
+            # Legacy field name: this is the resolving 30s TWAP value, not a
+            # spot print — readers must not treat it as raw BTC.
             btc_at_expiry = chainlink_fp
             if market_id not in logged_resolutions:
                 logged_resolutions.add(market_id)

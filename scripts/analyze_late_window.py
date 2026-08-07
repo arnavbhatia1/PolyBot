@@ -27,6 +27,9 @@ if str(ROOT) not in sys.path:
 LIVE_DB = ROOT / "polybot" / "db" / "polybot_live.db"   # real fills for the live kill-rule read
 PAPER_DB = ROOT / "polybot" / "db" / "polybot_paper.db" # paper-shadow fills (the binding gate in paper mode)
 ET = ZoneInfo("America/New_York")  # DST-correct; a fixed UTC-4 mis-buckets EST days
+TWAP_SWITCH_TS = 1786060800        # 2026-08-07 00:00 UTC — the resolution-rule cutover;
+                                   # the straddle pair (old-rule final vs new-rule strike)
+                                   # differs by $10.61 BY DESIGN and must never alarm
 
 
 def et_day(ts: float) -> str:
@@ -317,6 +320,8 @@ def resolution_snapshot_read(db_path=None, hours: float = 26.0):
     worst = 0.0
     mism = []
     for ts, (fp, _ptb, lab) in sorted(by_ts.items()):
+        if ts < TWAP_SWITCH_TS:
+            continue   # pre-cutover windows chain on the OLD rule — never compare
         nxt = by_ts.get(ts + 300)
         if nxt is None or fp is None or nxt[1] is None or (lab or 0) < cutoff:
             continue

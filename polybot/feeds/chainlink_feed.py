@@ -29,9 +29,10 @@ APP_PING_INTERVAL_S = 10       # Application-level PING to keep RTDS subscriptio
 STALE_TIMEOUT_S = 60           # Chainlink mainnet can be quiet for >20s in low-vol; 60s is a true dead-feed signal
 RECONNECT_BASE_S = 5.0         # first retry delay; doubles per consecutive failure
 RECONNECT_MAX_S = 60.0         # cap — a flat fast retry during an RTDS outage trips their per-IP 429 limiter
-STRIKE_TRUST_GAP_S = 2.0       # The TWAP topic ticks ~1Hz on integer seconds, so the true price_to_beat
-                               # report carries ts == boundary; a first capture with ts > boundary+2s means
-                               # we missed the official one (delivery hole). Pre-boundary gaps don't veto.
+STRIKE_TRUST_GAP_S = 0.5       # The TWAP topic ticks ~1Hz ON integer seconds, so the true price_to_beat
+                               # report carries ts == boundary EXACTLY; any later first capture means we
+                               # missed the official one (a 1-2s hole slews the value by real dollars
+                               # mid-burst — never bless it). Pre-boundary gaps don't veto.
 SPOT_STALE_S = 3.0             # projected_final_twap refuses a raw price older than this — a stale spot
                                # projects a stale displacement, and the sniper would fire on fiction.
 
@@ -133,8 +134,8 @@ class ChainlinkFeed:
 
     def twap_30(self, end_ts: float | None = None, window_s: float = 30.0) -> float | None:
         """Our reconstruction of the official 30s TWAP over [end−window, end],
-        rx-clock. None until the buffer covers the window. Verified continuously
-        against the official topic (twap_official)."""
+        rx-clock. None until the buffer covers the window. Research/cross-check
+        helper — the live projection path calls running_avg directly."""
         end = end_ts if end_ts is not None else (self._last_report_rx or 0.0)
         if end <= 0:
             return None
@@ -256,8 +257,15 @@ class ChainlinkFeed:
                 await asyncio.sleep(5)
         while self._running:
             await asyncio.sleep(10)
-            stale = self._last_update > 0 and (time.time() - self._last_update) > STALE_TIMEOUT_S
-            fresh_connect = (time.time() - self._last_connect) < STALE_TIMEOUT_S
+            now = time.time()
+            stale = self._last_update > 0 and (now - self._last_update) > STALE_TIMEOUT_S
+            # The TWAP topic is the resolution-critical stream: a server-side
+            # drop of just that subscription (raw still flowing) silently kills
+            # strikes — watch it independently once it has ever delivered.
+            twap_stale = (self.twap_official_rx > 0
+                          and (now - self.twap_official_rx) > STALE_TIMEOUT_S)
+            stale = stale or twap_stale
+            fresh_connect = (now - self._last_connect) < STALE_TIMEOUT_S
             if stale and self._ws is not None and not fresh_connect:
                 logger.warning(
                     "ChainlinkFeed idle for %.0fs — Reconnecting",

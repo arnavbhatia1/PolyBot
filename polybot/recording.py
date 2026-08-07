@@ -51,9 +51,9 @@ def _top3_usd(levels: list[dict[str, Any]]) -> float | None:
 class WindowPathRecorder:
     """Samples the active 5-min window at 1 Hz (5 Hz in the final 45s).
 
-    The late-window burst feeds the pivot-research corpus
-    (scripts/analyze_late_window.py) — modeling a FOK fill needs sub-second
-    ask/Coinbase/Binance data.
+    The corpus behind the head-start gauge (analyze_twap_lock.open_gap_read),
+    the label flow, and future pivot research; event-true FOK modeling lives
+    in the micro-tape (analyze_twap_lock.py replays that, not this).
 
     Tables (created on first run):
       window_paths (PATHS_DB, gitignored): window_id, ts, elapsed_s, bid/ask
@@ -62,9 +62,8 @@ class WindowPathRecorder:
       window_labels (per-mode DB): window_id PRIMARY KEY, resolved_up,
                    final_price, price_to_beat, labeled_at, token_up/down
 
-    atr + model_prob_up stamp the live L1 per sample so the offline harness
-    replicates the live sniper_min_edge floor exactly — without them it is
-    only a conservative superset of live fires.
+    atr + model_prob_up stamp the live L1 view per sample — corpus-only
+    fields (None on cold feeds, never 0.0); no decision path reads them.
     """
 
     def __init__(self, db: Any, clob_ws: Any, coinbase_feed: Any,
@@ -566,8 +565,9 @@ class MicroTape:
     trajectory between samples. This records the events themselves:
 
       k="b"  every CLOB best-bid/ask CHANGE for subscribed tokens
-      k="c"  every Coinbase tick (the sniper's exact fire-condition input)
-      k="l"  every Chainlink RTDS report (resolution + boundary-gap research)
+      k="c"  every Coinbase tick (L1/telemetry spot)
+      k="l"  every Chainlink RTDS report (the sniper's decision clock; feeds
+             the projection replay + boundary-gap research)
 
     b/c rows only in the final 90s (elapsed >= 210s) to bound volume; l rows
     always (~1 Hz, tiny — the strike-research corpus). Same off-loop

@@ -174,7 +174,7 @@ class BinanceFeed:
                     enable_nodelay(ws, "binance_kline")
                     if not first_connect:
                         # Reconnect gap: a gap-adjacent candle pair poisons ATR/autocorr
-                        # for ~20min (the sniper reads that ATR) — rebuild from REST;
+                        # for ~20min (L1/exit engine read that ATR) — rebuild from REST;
                         # on backfill failure decisions fail closed on the empty buffer.
                         self.buffer.clear()
                         await self.backfill()

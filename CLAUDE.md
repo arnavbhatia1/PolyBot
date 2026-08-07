@@ -173,7 +173,8 @@ sniper buys those dips and holds ≤30s to resolution.
   computed on `ask + sniper_min_edge` (the defended edge at market odds),
   never on the tier prob — the tier floors are empirical tail bounds, and
   Kelly on a tail bound upsizes exactly the fires a regime shift breaks
-  first. The FOK-limit cap stays on L1 (anchoring it would zero the pad).
+  first. The FOK-limit cap rides `signal.prob − min_edge` (the tier/calib
+  prob) so a true reprice can never fill below the edge floor.
 - **Kill bar — two gates; the harness is only the first.** (1) The
   `analyze_twap_lock.py` replay (lock-dip fires over the micro-tape with FOK
   reachability modeled, plus the bit-exact mechanism check) is a CEILING —
@@ -224,9 +225,9 @@ sniper buys those dips and holds ≤30s to resolution.
   `signal_leg="maker_bid"` — its own ledger line and bar.
 - **Capital deploys ONLY through these legs** — base-entry BUYs are ALWAYS
   suppressed (unconditional in `main.py`; recorded as `sniper_only` ghosts —
-  free zero-capital evidence for the gate). `sniper_enabled` (default
-  `false`) is the shared kill-bar SAFETY across all legs — the emergency
-  brake, not a strategy choice. Recipe: `mode: live` + `sniper_enabled:
+  free zero-capital evidence for the gate). `sniper_enabled` is the shared
+  kill-bar SAFETY across all legs — the emergency brake (set `false` to halt
+  every leg), not a strategy choice. Recipe: `mode: live` + `sniper_enabled:
   true`.
 - **Post-live kill rule** (armed at any future go-live): trailing-4-day
   lenient mean < +2¢/sh or trailing-8-day t < 2 → set `sniper_enabled: false`.
@@ -253,7 +254,8 @@ prob_up    = StudentT_CDF(df, z * sqrt(df/(df-2)))        # df clamped ≥3
   `rolling_20/long_term_200 < atr_regime_shift_threshold`. ATR buffers keep one
   slot per 1-min candle (entry + exit ticks share the dedup).
 - `btc_price` from Coinbase WS only (<2s stale → decision skipped, never
-  zeroed) — the venue Chainlink resolves against.
+  zeroed) — the L1/exit-engine spot; the TWAP legs decide on the raw
+  Chainlink stream.
 - L1 is uncalibrated (`model_probability` == `model_probability_raw`).
 
 **Entry gates** — edge = `model_prob - market_price`; all must pass:
@@ -335,9 +337,10 @@ the race is measured from the exchanges' clocks, not just ours. Live boot: key+f
 balance/allowance preflight, allowance recheck every 10 fills. Per-trade DB
 writes are atomic. `fill.fill_size` is always USDC notional.
 
-## 6. The exit engine + flips (manages every position, sniper included)
+## 6. The exit engine + flips (unstamped/legacy positions only — every
+sniper-leg position holds to resolution, §2)
 
-Every tick while holding, re-run L1 and decide HOLD vs EXIT
+Every tick while holding an unstamped position, re-run L1 and decide HOLD vs EXIT
 (`SignalEngine.evaluate_hold`). `holding_edge = model_prob - bid`; the exit
 threshold blends `exit_edge_threshold` (−0.10) with the binary-payoff
 `ExitBoundary` curve (deep-ITM patience, OTM urgency, ATM fee-aware time
@@ -384,9 +387,9 @@ it was removed). Never re-add resting quotes.
   Binance price/CVD/depth20-sides, live-L1 ATR + prob stamp (NULL on cold
   feeds, never 0.0) for EVERY window (~288/day, self-discovering). Tables
   `window_paths` (gitignored sidecar DB) / `window_labels`; 90-day retention
-  nightly. **This is the sniper kill-bar feed, the post-live kill-rule input,
-  and the pivot-research corpus — everything already flowing through the
-  process gets persisted.**
+  nightly. **This feeds the head-start gauge, the label flow (labels are the
+  kill-bar ground truth), and the pivot-research corpus — everything already
+  flowing through the process gets persisted.**
 - **Tape recorder**: every CLOB print (incl. the exchange's own timestamp +
   fee_rate_bps) → `memory/recordings/*.jsonl` (gitignored).
 - **Micro-tape** (`MicroTape`): event-true streams the 5Hz sampler can't see —

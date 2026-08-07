@@ -60,7 +60,7 @@ def test_derive_dims_fire_time_and_observational():
     d = derive_dims(_ctx(), "Up", "Mon")
     assert d["ask_bucket"] == "0.85+" and d["side"] == "Up" and d["dow"] == "Mon"
     assert d["tremain"] == "15-30s" and d["refire"] == "first_fire"
-    assert d["atr_regime"] == "HI" and d["cb_move_bucket"] == "8-12"
+    assert d["atr_regime"] == "HI" and d["cb_move_bucket"] == "<12"
     assert d["slip"] is None                      # no entry price at fire time
     # scan time: booked entry vs decision ask classifies slip
     assert derive_dims(_ctx(), "Up", "Mon", entry_price=0.885)["slip"] == "clean"
@@ -481,28 +481,32 @@ def _mk_labels_db(tmp_path, labels):
     return db
 
 
-def test_resolution_watch_terminal_snapshot_intact(tmp_path):
-    # final_price(N) == price_to_beat(N+1) — the current rule's invariant
-    # (516/516 bit-exact on the live ledger 2026-07-30).
+_W = 1786060800  # first TWAP-era boundary — pre-cutover pairs are excluded by design
+
+
+def test_resolution_watch_chain_intact(tmp_path):
+    # final_price(N) == price_to_beat(N+1) — both are the TWAP stream's value
+    # at the shared boundary (17/17 bit-exact on night one).
     mod = _load_harness()
     db = _mk_labels_db(tmp_path, [
-        (1000, 64500.00, 64480.00),
-        (1300, 64511.25, 64500.00),
-        (1600, 64490.10, 64511.25),
-        (1900, 64502.00, 64490.10),
+        (_W, 64500.00, 64480.00),
+        (_W + 300, 64511.25, 64500.00),
+        (_W + 600, 64490.10, 64511.25),
+        (_W + 900, 64502.00, 64490.10),
     ])
     r = mod.resolution_snapshot_read(db)
     assert r["checked"] == 3 and r["matched"] == 3
     assert r["mismatches"] == []
 
 
-def test_resolution_watch_flags_twap_style_divergence(tmp_path):
-    # An averaged final_price stops equalling the next boundary snapshot.
+def test_resolution_watch_flags_rule_divergence(tmp_path):
+    # A final_price that stops equalling the next boundary value = the rule
+    # moved again.
     mod = _load_harness()
     db = _mk_labels_db(tmp_path, [
-        (1000, 64493.70, 64480.00),   # TWAP-ish average ≠ 64511.25 boundary
-        (1300, 64506.10, 64511.25),   #   (and its own final is off too)
-        (1600, 64490.10, 64512.80),
+        (_W, 64493.70, 64480.00),
+        (_W + 300, 64506.10, 64511.25),
+        (_W + 600, 64490.10, 64512.80),
     ])
     r = mod.resolution_snapshot_read(db)
     assert r["checked"] == 2 and r["matched"] == 0
@@ -510,12 +514,13 @@ def test_resolution_watch_flags_twap_style_divergence(tmp_path):
     assert len(r["mismatches"]) == 2
 
 
-def test_resolution_watch_skips_gaps_and_null_prices(tmp_path):
+def test_resolution_watch_skips_gaps_nulls_and_precutover(tmp_path):
     mod = _load_harness()
     db = _mk_labels_db(tmp_path, [
-        (1000, 64500.00, 64480.00),
-        (1300, None, 64500.00),        # unlabeled final — pair (1000,1300) ok,
-        (1900, 64502.00, 64490.10),    # (1300,1600) missing, (1600,1900) missing
+        (_W - 300, 64470.00, 64460.00),   # pre-cutover — never compared
+        (_W, 64500.00, 64480.00),
+        (_W + 300, None, 64500.00),       # unlabeled final — pair (_W, +300) ok,
+        (_W + 900, 64502.00, 64490.10),   # (+300,+600) missing, (+600,+900) missing
     ])
     r = mod.resolution_snapshot_read(db)
     assert r["checked"] == 1 and r["matched"] == 1
