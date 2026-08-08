@@ -31,12 +31,11 @@ execution:
   # p50 0.436 / p75 0.679 / p99 1.65, ZERO <= 0.250) via inverse-CDF — the
   # quantile table lives in paper_trader._LATENCY_QUANTILES (a measurement,
   # not a tunable). scale multiplies the draw (1.0 = live-faithful).
-  paper_latency_scale: 0.70        # STOCKHOLM MEASURED: six warm signed FOK smoke orders from
-                                   # the box ran p50 304ms (300-309) vs the 436ms the quantile
-                                   # table carries -> 304/436 = 0.70. Shape-scaling keeps the
-                                   # Windows-era tail = conservative. Ledger re-derives the
-                                   # true quantiles once box-live fills exist.
-  paper_latency_floor_s: 0.30      # fastest measured signed POST from the box
+  paper_latency_scale: 0.95        # POST-ASYNC-ROLLOUT MEASURED: live POSTs run p50 ~407-433ms
+                                   # (latency_stats n=8 + two fresh 08-07 smoke orders) vs the
+                                   # 436ms quantile table -> ~0.95. Re-measure after any
+                                   # Polymarket pipeline change (smoke_order_test.py).
+  paper_latency_floor_s: 0.32      # fastest measured post-rollout signed POST (p25 318ms)
   paper_network_fail_rate: 0.03    # 0 network errors in first 29 live POSTs — consistent, keep
 
 # =============================================================================
