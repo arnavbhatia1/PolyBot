@@ -195,12 +195,23 @@ sniper buys those dips and holds ≤30s to resolution.
   night-one books sold $10+ favorites at 0.62 median, and the edge floor
   silences the leg by itself the day they adapt (watch the ping's head-start
   gauge). Trusted strike + fresh raw spot required; every execution gate
-  runs; Kelly anchors to ask + floor. **DISABLED 08-07 on night-one
-  evidence**: 22/51 wins vs the calibrated 65% (z ≈ −3.3) — conditional on
-  the book selling the favorite cheap, the book was right (adverse
-  selection). The ping's head-start gauge keeps measuring unconditionally;
-  re-enable only behind a fresh calibration that survives a regime split.
-  Fills stamp
+  runs; Kelly anchors to ask + floor. **DISABLED 08-07, then REFUTED AND
+  CLOSED 08-10 — do not re-enable, and do not re-enable behind a recalibration
+  either.** Night one: 22/51 wins vs the calibrated 65% (z ≈ −3.3). The 749-window
+  re-test found the curve is approximately RIGHT and the rule is still
+  anti-predictive: bucketed by claimed edge (calib − ask), the most profitable
+  cell is where the model says DON'T buy (+16.6¢/sh, n=34) and tightening the
+  edge floor cuts 45-65% of fires without raising ¢/sh. Under TWAP the open ask
+  is at least as good a forecaster and strictly better where they disagree, so
+  `calib − ask ≥ floor` selects for windows where the book knows more. The
+  early-seconds pocket is not the answer either (paired early-vs-late t_day
+  +0.57; Gamma never serves the strike first in any TWAP window, 0/757, so the
+  head start is over Polymarket's REST layer, not over the market makers). The
+  ping's head-start gauge keeps measuring unconditionally. **The transferable
+  bar this produced, now standing for ANY new leg: net ¢/sh must rise
+  monotonically across model-edge buckets, scored against an `edge < 0` control
+  bucket — a candidate whose best cell is the control is anti-predictive no
+  matter how good its aggregate looks.** Fills stamp
   `signal_leg="open_edge"` (+ `open_disp`) — per-leg ledgers in the nightly
   ping; the leg's own bar mirrors the lock bar and its kill is the operator
   flipping `open_edge_enabled: false`.
