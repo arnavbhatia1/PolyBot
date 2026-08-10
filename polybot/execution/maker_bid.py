@@ -141,6 +141,49 @@ class MakerBidManager:
 
     # -- lifecycle (every main-loop tick; cheap float math off the hot path) --
 
+    def certain_winner(self, window_ts: int) -> str | None:
+        """The window's SETTLED winner from the two official TWAP boundary
+        captures — or None if either is missing or untrusted.
+
+        This is not a projection. `final >= strike` (tie → Up) is the exact rule
+        Polymarket resolves on, and both operands are the same boundary values
+        our strike capture already verifies bit-exact. Fail closed: 5-14
+        boundaries/day never arrive, and a fabricated winner would rest a bid on
+        a token that pays $0.
+        """
+        cl, close = self.chainlink, window_ts + 300
+        for b in (window_ts, close):
+            if not (cl.boundary_captured(b) and cl.strike_reliable(b)):
+                return None
+        strike, final = cl.get_strike(window_ts), cl.get_strike(close)
+        if strike is None or final is None:
+            return None
+        return "Up" if final >= strike else "Down"
+
+    async def _place_post_close_rung(self, a: dict) -> None:
+        """One extra bid, armed only once the winner is SETTLED FACT.
+
+        Pre-close this price is illegal — 0.999 − 0.995 is far inside the 4¢ edge
+        floor. Post-close the floor does not apply: the tier probability was a
+        tail bound on an unfinished average, and this is a finished one, so the
+        0.5¢ is certain rather than expected. Makers pay no fee, so it is gross.
+        """
+        px = float(self.cfg.get("post_close_price", 0.995))
+        frac = float(self.cfg.get("post_close_budget_frac", 0.40))
+        budget = sum(r["shares"] * r["price"] for r in a["rungs"])
+        usd = round(budget * frac, 2)
+        a["pc_placed"] = True          # set first: one attempt per window, ever
+        if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
+            return
+        shares = round(usd / px, 2)
+        order_id = await self.trader.place_gtc_bid(a["token_id"], px, shares)
+        if not order_id:
+            return
+        a["rungs"].append({"price": px, "shares": shares,
+                           "order_id": order_id, "filled": 0.0})
+        logger.info("MAKER POST-CLOSE %s — $%.0f@%.3f on the settled winner",
+                    a["side"], shares * px, px)
+
     async def maintain(self) -> None:
         a = self.active
         if a is None:
@@ -149,8 +192,33 @@ class MakerBidManager:
         close = a["window_ts"] + 300
         k = close - now
         reason = None
-        if k <= self.cfg["maker_k_cancel_s"]:
-            reason = "window closing"
+        pc_on = bool(self.cfg.get("post_close_enabled"))
+        if now >= close:
+            # POST-CLOSE CERTAINTY PHASE. The market keeps accepting orders for
+            # minutes after the close (verified live at close+143s), and this is
+            # the only part of the window where makers win every day — the
+            # outcome is settled while sellers who haven't read it yet dump the
+            # winner. The projection is retired here; the boundary captures rule.
+            if not pc_on:
+                reason = "window closing"
+            elif now - close > float(self.cfg.get("post_close_s", 120.0)):
+                reason = "post-close window over"
+            else:
+                winner = self.certain_winner(a["window_ts"])
+                if winner is None:
+                    reason = "outcome unverified"      # fail closed
+                elif winner != a["side"]:
+                    # The lock was wrong. Never observed at max tier in 718
+                    # locked windows, but a resting bid on a $0 token is the one
+                    # unbounded loss this leg has, so it is checked every tick.
+                    reason = "lock missed the winner"
+                elif not a.get("pc_placed"):
+                    await self._place_post_close_rung(a)
+        elif k <= self.cfg["maker_k_cancel_s"]:
+            # Hold through the close only when the post-close phase will take
+            # over; otherwise this is still the cancel point.
+            if not pc_on:
+                reason = "window closing"
         else:
             proj = self.chainlink.projected_final_twap(close)
             if proj is None:

@@ -135,7 +135,26 @@ maker:
     - [0.92, 0.25, 1.5]
   maker_k_place_max: 25.0       # place once locked with at most this many s left
   maker_k_place_min: 3.0        # too late to bother resting under this
-  maker_k_cancel_s: 1.0         # pull all rungs before the close
+  maker_k_cancel_s: 1.0         # pull all rungs before the close (post_close off)
+  # POST-CLOSE CERTAINTY PHASE. The market keeps accepting orders for minutes
+  # after the close — verified live at close+143s, `acceptingOrders=True` on both
+  # Gamma and the CLOB, with the winner showing 101 bid levels and ZERO asks.
+  # Measured over 814 windows / 4.29M trades: post-close is the ONLY part of the
+  # window where makers win on every single day (takers lose it 5/5). The reason
+  # is mechanical — the outcome is settled fact while sellers who haven't read
+  # the result yet dump the winner, and nothing can be lifted because the winner
+  # has no asks. So we rest and let them come.
+  #
+  # This phase does NOT use the projection. It uses the two official TWAP
+  # boundary captures: final >= strike (tie -> Up) is the exact rule Polymarket
+  # resolves on. Both must be captured AND trusted or the rungs are pulled —
+  # 5-14 boundaries/day never arrive, and a bid resting on a $0 token is this
+  # leg's only unbounded loss. Every tick also re-checks that the side we are
+  # resting on is the side that actually won.
+  post_close_enabled: true
+  post_close_s: 120.0            # keep resting this long past the close
+  post_close_price: 0.995        # certain 0.5c, gross (makers pay no fee)
+  post_close_budget_frac: 0.40   # of the window's original ladder budget
 
 # =============================================================================
 #  SECTION 4: SCHEDULE

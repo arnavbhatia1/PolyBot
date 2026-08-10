@@ -156,8 +156,7 @@ sniper buys those dips and holds ≤30s to resolution.
   the de-facto booking authority**: it syncs entry + shares_held to the
   wallet's chain truth (avgPrice when served, else notional/wallet-shares —
   the wallet holds exactly notional/VWAP shares, NO share-denominated fee
-  on-chain; the `fees` column stores the REALIZED fee — ~$0 on entries and
-  resolutions; scalps book the modeled exit fee into pnl deliberately — while
+  on-chain; scalps book the modeled exit fee into pnl deliberately — while
   the modeled buffer lives in the gates and get_day_stats) for any position
   whose trade_history row isn't booked yet, so last-seconds fills that close
   the window before the audit still book chain-true. Logging follows the audit
@@ -166,11 +165,24 @@ sniper buys those dips and holds ≤30s to resolution.
   with the settled entry (flagged provisional if the chain lookup failed); the
   Discord OPEN ping rides the same callback so it always agrees with the
   RESOLVED ping and the books; paper banners/pings stay instant. The OPEN
-  banner/ping print the fee ACTUALLY TAKEN (notional − settled shares × entry;
-  $0.00 while Polymarket charges none; "~$ (est)" when the chain lookup
-  failed). The conservative fee model still runs the gates, and the Discord
-  day-close reports the summed modeled buffer (`get_day_stats`) alongside the
-  $0.00 actually charged. SELL exits get the same chain-truth treatment: a FOK
+  banner/ping print the share-denominated fee (notional − settled shares ×
+  entry; "~$ (est)" when the chain lookup failed).
+  **⚠️THAT READS $0.00 AND IT IS NOT THE FEE. Takers ARE charged.** Polymarket
+  ADDS the taker fee to the buyer's USDC debit instead of shaving shares, so
+  `notional − shares × entry` is structurally blind to it. Verified 08-10 on
+  1,751 live fills via `data-api/activity` `usdcSize`: 903 BUYs match the
+  documented model at ratio −0.9996, 327 SELLs at +0.9989, and the 317
+  zero-fee rows are the MAKERS (docs: "Makers are never charged fees"). In the
+  sniper's own 0.84-0.99 dip band, 175 of 202 BUY fills match the model to
+  0.998-1.000 — **0.46-0.89¢/share of real, unbooked taker fee against a
+  +2¢/sh bar.** The fee MODEL (`DEFAULT_FEE_RATE` 0.07, `EFFECTIVE_FEE_PEAK`
+  0.0175) matches the documented curve exactly and correctly runs the gates;
+  it is the REALIZED-fee measurement that is wrong, so every taker ¢/sh in the
+  ledger is overstated by that much and the `fees` column must be read as
+  "share-denominated fee", not "fee charged". Measuring it truly needs the USDC
+  delta (or `data-api/activity`), not the share derivation. **The maker legs are
+  genuinely fee-free**, which is why a resting bid nets more at 0.95 than a
+  taker does at its own 0.959 cap. SELL exits get the same chain-truth treatment: a FOK
   SELL fills at limit-or-BETTER, so when the trade indexer loses the race the
   close books the padded limit (worst case) — the post-close sell audit
   (`_audit_sell_fill`, ~8-32s) re-reads the order's trade record and syncs
@@ -243,6 +255,26 @@ sniper buys those dips and holds ≤30s to resolution.
   `signal_leg="open_edge"` (+ `open_disp`) — per-leg ledgers in the nightly
   ping; the leg's own bar mirrors the lock bar and its kill is the operator
   flipping `open_edge_enabled: false`.
+- **POST-CLOSE CERTAINTY PHASE** (`maker_bid.certain_winner` +
+  `_place_post_close_rung`, `maker.post_close_*` in settings): the market keeps
+  ACCEPTING ORDERS FOR MINUTES after the close — verified live at close+143s,
+  `acceptingOrders=True` on both Gamma and the CLOB, winner showing 101 bid
+  levels and ZERO asks (so nothing can be lifted; only a resting bid works).
+  Measured over 814 windows / 4.29M trades: post-close is the ONLY part of the
+  window where makers win on EVERY day (takers lose it 5/5), because the outcome
+  is settled fact while sellers who haven't read it yet dump the winner. So the
+  ladder no longer dies at `maker_k_cancel_s` — it holds through the close for
+  `post_close_s` (120s) and arms one extra rung at `post_close_price` (0.995).
+  **This phase does NOT use the projection.** It uses the two official TWAP
+  boundary captures: `final >= strike` (tie → Up) is the exact rule Polymarket
+  resolves on, and both must be captured AND `strike_reliable` or every rung is
+  pulled (5-14 boundaries/day never arrive). The settled winner is re-checked
+  EVERY tick, not just at the transition — a bid resting on a $0 token is this
+  leg's only unbounded loss. The 4¢ edge floor does not apply here: the tier
+  probability was a tail bound on an unfinished average, this is a finished one,
+  so 0.5¢ is certain rather than expected — and makers pay no fee, so it is
+  gross. Fills book through the same blended `book_maker_fill` path and hold to
+  resolution. Its bar is its own; `sniper_enabled: false` still halts it.
 - **Lock-informed maker LADDER** (`execution/maker_bid.py`, §3d in settings):
   when a window locks but no dip is trading, a LADDER of GTC bids rests on
   the locked side (seed ≈0.96/0.92/0.87, budget split 40/35/25) — the
