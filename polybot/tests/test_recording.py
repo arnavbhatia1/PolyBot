@@ -322,8 +322,53 @@ async def test_recordings_cleanup_job_prunes_old_files(tmp_path, monkeypatch):
     fresh = tmp_path / "tape_2026-07-12.jsonl"; fresh.write_text("x")
     keepme = tmp_path / "notes.txt"; keepme.write_text("x")   # non-jsonl untouched
     os.utime(keepme, (time.time() - 400 * 86400,) * 2)
+    gz_aged = tmp_path / "micro_2026-06-30.jsonl.gz"; gz_aged.write_bytes(b"x")
+    os.utime(gz_aged, (time.time() - 10 * 86400,) * 2)         # compressed files age out too
     job = recording.recordings_cleanup_job(retention_days=30, micro_retention_days=7)
     out = await job()
-    assert out["recordings_deleted"] == 2
-    assert not old.exists() and not micro_aged.exists()
+    assert out["recordings_deleted"] == 3
+    assert not old.exists() and not micro_aged.exists() and not gz_aged.exists()
     assert micro_fresh.exists() and tape_aged.exists() and fresh.exists() and keepme.exists()
+
+
+@pytest.mark.asyncio
+async def test_compress_recordings_job_gzips_finished_days_only(tmp_path, monkeypatch):
+    """Finished tape days compress to .jsonl.gz (byte-identical on read) and the
+    live day is left alone — compressing a file still being appended to would
+    truncate the day's remaining events."""
+    import gzip
+    from datetime import datetime, timezone
+    import polybot.recording as recording
+    monkeypatch.setattr(recording, "RECORDINGS_DIR", tmp_path)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    body = "\n".join(f'{{"k": "l", "ts": {i}.0, "p": 6450{i}.5}}' for i in range(50)) + "\n"
+    done = tmp_path / "micro_2026-07-01.jsonl"; done.write_text(body)
+    live = tmp_path / f"micro_{today}.jsonl"; live.write_text(body)
+    out = await recording.compress_recordings_job()()
+    assert out["compressed"] == 1
+    assert not done.exists()
+    gz = tmp_path / "micro_2026-07-01.jsonl.gz"
+    assert gzip.open(gz, "rt", encoding="utf-8").read() == body
+    assert live.exists() and live.read_text() == body
+
+
+def test_replay_loader_reads_gzipped_tape(tmp_path, monkeypatch):
+    """The kill-bar replay must stream a compressed day exactly like a plain one —
+    the nightly job gzips yesterday, and the health read covers yesterday."""
+    import gzip
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "atl_gz", Path(__file__).resolve().parents[2] / "scripts" / "analyze_twap_lock.py")
+    atl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(atl)
+    plain = tmp_path / "micro_2026-08-08.jsonl"
+    plain.write_text('{"k": "l", "ts": 1.0, "rx": 1.0, "p": 64500.0}\n')
+    gz = tmp_path / "micro_2026-08-09.jsonl.gz"
+    with gzip.open(gz, "wt", encoding="utf-8") as f:
+        f.write('{"k": "l", "ts": 2.0, "rx": 2.0, "p": 64510.0}\n')
+    assert atl._open_tape(plain).read().startswith('{"k": "l"')
+    assert atl._open_tape(gz).read().startswith('{"k": "l"')
+    monkeypatch.setattr(atl, "RECORDINGS", tmp_path)
+    found = {p.name for p in atl._tape_files(atl.TWAP_SWITCH_TS)}
+    assert "micro_2026-08-09.jsonl.gz" in found and "micro_2026-08-08.jsonl" in found

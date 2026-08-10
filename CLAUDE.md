@@ -338,7 +338,11 @@ dust through and fail-closes only on genuinely unresolved positions.
   so our own reconstruction is the faster read while the official value
   remains the resolver and the strike source. This tape is what the
   `analyze_twap_lock.py` harness replays (fires + FOK reachability against the
-  true book trajectory).
+  true book trajectory). Finished days are **gzipped nightly**
+  (`compress_recordings_job`, ~39× at ~40 MB/s: 1.9 GB → ~50 MB; today's file
+  is skipped while it's still being appended), which is what lets the corpus
+  keep 30 days on a 45 GB host instead of 7 — readers take `.jsonl` and
+  `.jsonl.gz` interchangeably (`_open_tape`).
 - **Per-decision records**: `trade_context` stamped into outcomes + ghosts
   (entry facts, CLOB book aux, `cl_report_to_submit_ms` decision latency +
   the per-segment `lat_*` breakdown, the TWAP fire facts

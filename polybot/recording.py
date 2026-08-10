@@ -653,12 +653,52 @@ class MicroTape:
             logger.warning(f"micro-tape flush failed ({len(buf)} events): {e}")
 
 
-def recordings_cleanup_job(retention_days: int = 30, micro_retention_days: int = 7):
-    """Nightly retention sweep on memory/recordings/*.jsonl.
+def compress_recordings_job(level: int = 3):
+    """Nightly: gzip every finished tape file (today's stays open for appends).
 
-    Micro-tape keeps the shorter micro_retention_days: the BBA hook writes
-    ~2.6GB/day, and 7 days is all the 45GB host can hold alongside tape and
-    the DBs. Pull research corpora off-host before they age out.
+    The tape is repetitive JSON and compresses ~39x at ~40 MB/s, so a day's
+    micro-tape goes 1.9 GB -> ~50 MB in under a minute. That is what makes a
+    multi-day research corpus (and recording more than one market) fit the
+    45 GB host at all. Readers open .jsonl and .jsonl.gz interchangeably.
+    """
+    async def _job() -> dict[str, Any]:
+        import asyncio as _aio
+
+        def _compress() -> dict[str, Any]:
+            import gzip
+            import shutil
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            done, saved = 0, 0
+            try:
+                files = sorted(RECORDINGS_DIR.glob("*.jsonl"))
+            except OSError:
+                return {"compressed": 0, "mb_saved": 0}
+            for f in files:
+                if today in f.name:
+                    continue                      # still being appended to
+                gz = f.with_suffix(".jsonl.gz")
+                try:
+                    raw = f.stat().st_size
+                    tmp = gz.with_suffix(".gz.part")
+                    with open(f, "rb") as src, gzip.open(tmp, "wb", compresslevel=level) as dst:
+                        shutil.copyfileobj(src, dst, length=1 << 20)
+                    tmp.replace(gz)               # atomic: never leave a half file
+                    f.unlink()
+                    done += 1
+                    saved += raw - gz.stat().st_size
+                except OSError as e:
+                    logger.warning(f"tape compress failed for {f.name}: {e}")
+            return {"compressed": done, "mb_saved": round(saved / 1e6)}
+
+        return await _aio.to_thread(_compress)
+    return _job
+
+
+def recordings_cleanup_job(retention_days: int = 30, micro_retention_days: int = 30):
+    """Nightly retention sweep on memory/recordings/ (both .jsonl and .jsonl.gz).
+
+    Compression buys the depth: gzipped micro-tape runs ~50 MB/day, so the
+    corpus keeps a full month instead of the 7 days raw files forced.
     """
     async def _job() -> dict[str, Any]:
         import asyncio as _aio
@@ -668,7 +708,7 @@ def recordings_cleanup_job(retention_days: int = 30, micro_retention_days: int =
             micro_cutoff = now - micro_retention_days * 86400
             n = 0
             try:
-                for f in RECORDINGS_DIR.glob("*.jsonl"):
+                for f in list(RECORDINGS_DIR.glob("*.jsonl")) + list(RECORDINGS_DIR.glob("*.jsonl.gz")):
                     limit = micro_cutoff if f.name.startswith("micro_") else cutoff
                     try:
                         if f.stat().st_mtime < limit:

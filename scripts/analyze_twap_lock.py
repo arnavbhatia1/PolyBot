@@ -111,11 +111,22 @@ def _tape_files(since_ts: float) -> list[Path]:
     files = []
     d = start
     while d <= end:
-        p = RECORDINGS / f"micro_{d.isoformat()}.jsonl"
-        if p.exists():
-            files.append(p)
+        # Finished days are gzipped by the nightly compress job (~39x); today's
+        # is still plain. Prefer whichever exists.
+        for suffix in (".jsonl", ".jsonl.gz"):
+            p = RECORDINGS / f"micro_{d.isoformat()}{suffix}"
+            if p.exists():
+                files.append(p)
+                break
         d += timedelta(days=1)
     return files
+
+
+def _open_tape(path: Path):
+    if path.suffix == ".gz":
+        import gzip
+        return gzip.open(path, "rt", encoding="utf-8")
+    return open(path)
 
 
 def load_windows(labels: dict[int, dict], since_ts: float):
@@ -130,7 +141,7 @@ def load_windows(labels: dict[int, dict], since_ts: float):
     trec: dict[int, dict] = {ep: {} for ep in eps}
     books: dict[int, dict[int, list]] = {ep: {1: [], 0: []} for ep in eps}
     for path in _tape_files(since_ts):
-        with open(path) as f:
+        with _open_tape(path) as f:
             for line in f:
                 head = line[:12]
                 if '"k": "b"' in head:

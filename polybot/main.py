@@ -2562,7 +2562,7 @@ async def main() -> None:
         return await asyncio.to_thread(lmod.ladder_recalibrate)
     scheduler.register_job("maker_ladder", _maker_ladder_job)
 
-    from polybot.recording import recordings_cleanup_job
+    from polybot.recording import compress_recordings_job, recordings_cleanup_job
     scheduler.register_job("recordings_retention", recordings_cleanup_job())
 
     async def _sniper_health_job() -> dict:
@@ -2805,6 +2805,9 @@ async def main() -> None:
                 "legs": (live or {}).get("legs"), "open_gap": open_gap,
                 "scars": scars}
     scheduler.register_job("sniper_health", _sniper_health_job)
+    # Last: the analysis jobs above read the tape, so compress only after they
+    # are done with it (readers handle .gz either way).
+    scheduler.register_job("compress_recordings", compress_recordings_job())
 
     async def run_discord():
         backoff = 5
