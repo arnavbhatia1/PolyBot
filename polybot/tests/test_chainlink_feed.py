@@ -348,3 +348,53 @@ class TestTwap:
         assert f.twap_official == 63990.5
         assert f.twap_official_ts == pytest.approx(boundary + 2)
         assert f.get_strike(boundary) == 63990.5
+
+
+class TestTwapFrozen:
+    """The resolution source stalling is invisible to the raw-stream freshness
+    gate and to the receipt-based reconnect watchdog, so it needs its own guard.
+    Reproduces 2026-08-10 04:15 UTC: official value repeated for 35s while raw
+    climbed $18, leaving our reconstruction $5.59 off the served final."""
+
+    def _feed(self, value_since_ago, raw_points):
+        f = ChainlinkFeed()
+        now = time.time()
+        f.twap_official = 65003.4548
+        f._twap_value_since = now - value_since_ago
+        for ago, price in raw_points:
+            f._reports.append((now - ago, price))
+        return f
+
+    def test_flags_the_observed_stall(self):
+        f = self._feed(35.0, [(30.0, 65000.79), (15.0, 65006.5), (1.0, 65019.19)])
+        assert f.twap_frozen() is True
+
+    def test_quiet_market_is_not_a_stall(self):
+        """A genuinely flat market freezes the average legitimately — raw must
+        have actually travelled for this to fire."""
+        f = self._feed(35.0, [(30.0, 65003.40), (1.0, 65003.90)])
+        assert f.twap_frozen() is False
+
+    def test_normal_repeat_does_not_fire(self):
+        """The relay appears to poll rather than stream, so ~11% of consecutive
+        reports legitimately carry the previous value. A short repeat is normal."""
+        f = self._feed(5.0, [(4.0, 65000.0), (1.0, 65020.0)])
+        assert f.twap_frozen() is False
+
+    def test_no_raw_evidence_does_not_fire(self):
+        """With no raw reports spanning the freeze there is nothing to compare —
+        other gates own that case; this one must not guess."""
+        f = self._feed(35.0, [])
+        assert f.twap_frozen() is False
+
+    def test_cold_feed_does_not_fire(self):
+        f = ChainlinkFeed()
+        assert f.twap_frozen() is False
+
+    def test_value_change_resets_the_clock(self):
+        f = self._feed(35.0, [(30.0, 65000.79), (1.0, 65019.19)])
+        assert f.twap_frozen() is True
+        now = time.time()
+        f.twap_official = 65017.4591        # a fresh value arrives
+        f._twap_value_since = now
+        assert f.twap_frozen() is False

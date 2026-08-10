@@ -855,6 +855,16 @@ async def _evaluate_signal_and_enter(
                        f"SKIP: stale chainlink ({chainlink_feed.age_seconds:.0f}s)")
         return None, last_eval_log_window
 
+    # The resolution source itself can stall while raw spot keeps moving — a
+    # 35s freeze on 08-10 left our reconstruction $5.59 off the served final,
+    # which is breach-capable at low k. The freshness gate above cannot see it
+    # (it reads the RAW stream, which stays healthy through this).
+    if chainlink_feed is not None and chainlink_feed.twap_frozen():
+        _record_skip("twap_frozen")
+        _log_skip_once(cid, f"twapfrozen_{cid}",
+                       "SKIP: official TWAP stream stalled — resolution source untrustworthy")
+        return None, last_eval_log_window
+
     global _current_window_id
     window_id = contract.get("market_id", contract.get("slug", ""))
     if window_id != _current_window_id:

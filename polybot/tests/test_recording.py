@@ -348,6 +348,28 @@ def test_micro_tape_records_coinbase_spot_ticks(tmp_path):
     assert rows[1]["d"] is None
 
 
+def test_micro_tape_records_rtds_publish_timestamp(tmp_path):
+    """Both oracle record kinds carry the RTDS envelope's publish ts, which splits
+    the observation-to-us lag into Chainlink's upstream pipeline (pub - ts) and
+    the relay hop (rx - pub). Absent envelope ts records None, never 0.0 — a
+    zero would read as a 56-year lag."""
+    from polybot.recording import MicroTape
+    mt = MicroTape(dir_path=tmp_path)
+    mt.on_cl_report(1786334400.0, 64512.5, 1786334401.38)
+    mt.on_twap_report(1786334400.0, 64500.25, 1786334401.42)
+    mt.on_cl_report(1786334402.0, 64515.0, None)       # envelope ts missing
+    mt.flush()
+    mt._writer.shutdown(wait=True)
+    rows = [json.loads(x) for x in
+            next(tmp_path.glob("micro_*.jsonl")).read_text().splitlines()]
+    assert [r["k"] for r in rows] == ["l", "t", "l"]
+    assert rows[0]["pub"] == 1786334401.38
+    assert rows[1]["pub"] == 1786334401.42
+    assert rows[2]["pub"] is None
+    # the split the field exists to measure
+    assert round(rows[0]["pub"] - rows[0]["ts"], 2) == 1.38
+
+
 def test_coinbase_tick_hook_never_raises_into_the_feed():
     """The spot feed is recording-only; a tape failure must never propagate into
     a feed callback and take the socket (or the trading loop) down with it."""

@@ -601,14 +601,23 @@ class MicroTape:
         except Exception:
             pass
 
-    def on_twap_report(self, payload_ts: float, value: float) -> None:
+    def on_twap_report(self, payload_ts: float, value: float,
+                       pub_ts: float | None = None) -> None:
         """Wired as ChainlinkFeed.on_twap. Official 30s-TWAP stream (the resolution
         source from 2026-08-07), always recorded with receipt ts so the topic's
-        delivery lag stays measurable."""
+        delivery lag stays measurable.
+
+        `pub` = the RTDS envelope's own timestamp (when Polymarket published).
+        It splits the ~1.63s observation-to-us lag into Chainlink's upstream
+        pipeline (pub − ts, which a direct subscriber also pays) and the relay
+        hop (rx − pub). Both stamps are server-side, so that split is immune to
+        our clock. Recorded only — nothing decides on it.
+        """
         try:
             now = time.time()
             self._buf.append(json.dumps({
                 "k": "t", "ts": round(payload_ts, 3), "rx": round(now, 3), "p": value,
+                "pub": round(pub_ts, 3) if pub_ts else None,
             }))
             self._maybe_flush(now)
         except Exception:
@@ -634,16 +643,19 @@ class MicroTape:
         except Exception:
             pass
 
-    def on_cl_report(self, payload_ts: float, price: float) -> None:
+    def on_cl_report(self, payload_ts: float, price: float,
+                     pub_ts: float | None = None) -> None:
         """Wired as ChainlinkFeed.on_report.
 
         payload_ts = the report's own timestamp; receipt time is stamped
-        alongside so delivery lag/holes are measurable offline.
+        alongside so delivery lag/holes are measurable offline. `pub` is the
+        RTDS envelope timestamp — see on_twap_report for why it is recorded.
         """
         try:
             now = time.time()
             self._buf.append(json.dumps({
                 "k": "l", "ts": round(payload_ts, 3), "rx": round(now, 3), "p": price,
+                "pub": round(pub_ts, 3) if pub_ts else None,
             }))
             self._maybe_flush(now)
         except Exception:

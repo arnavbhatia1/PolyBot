@@ -180,6 +180,16 @@ sniper buys those dips and holds ≤30s to resolution.
   audit) — chain-truth reconstruction puts them ≈ breakeven, ~4.4¢/sh better
   than the ledger's −4.3¢/sh; read that era's kill-rule prints accordingly.
 - **The gates** (all of them): trusted strike, Chainlink freshness (≤60s),
+  **official-TWAP stall veto** (`chainlink_feed.twap_frozen`: the resolution
+  source itself can freeze while raw spot moves — measured 08-10 04:15 UTC, the
+  official 30s value repeated for 35s while raw climbed $18, leaving our
+  reconstruction $5.59 off the served final, i.e. breach-capable at low k.
+  Invisible to both existing guards: the freshness gate reads the RAW stream
+  (healthy throughout) and the reconnect watchdog reads TWAP RECEIPT time
+  (advancing on the repeated value). Fires only on BOTH an exactly-unchanged
+  official value ≥20s AND ≥$2 of raw travel in that span — ~11% of consecutive
+  reports legitimately repeat, because the relay appears to poll rather than
+  stream, and a truly flat market freezes the average honestly),
   edge cap (`sniper_max_edge` 0.50 — wider = stale phantom price), chosen-side
   depth ≥ $50 with a 50% book-fill cap, net-edge after modeled slippage ≥ the
   floor, $1 min size, scar vetoes (graduated + operator-enabled only), and the

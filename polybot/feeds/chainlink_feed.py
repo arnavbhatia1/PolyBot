@@ -35,6 +35,11 @@ STRIKE_TRUST_GAP_S = 0.5       # The TWAP topic ticks ~1Hz ON integer seconds, s
                                # mid-burst — never bless it). Pre-boundary gaps don't veto.
 SPOT_STALE_S = 3.0             # projected_final_twap refuses a raw price older than this — a stale spot
                                # projects a stale displacement, and the sniper would fire on fiction.
+TWAP_FROZEN_S = 20.0           # official-TWAP stall detector (twap_frozen): seconds of an EXACTLY unchanged
+                               # official value before we distrust the resolution source. The observed stall
+                               # ran 35s; ~11% single repeats are normal relay polling, so this sits between.
+TWAP_FROZEN_RAW_MOVE_USD = 2.0 # ...and the raw travel required inside that span. Both must hold: a genuinely
+                               # flat market freezes the average legitimately.
 
 
 class ChainlinkFeed:
@@ -73,6 +78,9 @@ class ChainlinkFeed:
         # report = untrusted.
         self._boundary_meta: dict[int, tuple[float, float | None]] = {}
         self._last_twap_ts: float | None = None
+        # rx of the FIRST report carrying the current official value — the clock
+        # twap_frozen() measures a resolution-source stall against.
+        self._twap_value_since: float = 0.0
         self._last_report_rx: float | None = None
         self._start_window_ts: int = int(time.time() // 300) * 300
         self.staleness = StalenessTracker("chainlink")
@@ -158,6 +166,36 @@ class ChainlinkFeed:
         if avg is None:
             return None
         return w * avg + (1.0 - w) * self._price
+
+    def twap_frozen(self, now: float | None = None) -> bool:
+        """True when the OFFICIAL TWAP stream has stopped moving while raw spot
+        has not — an upstream stall in the resolution source itself.
+
+        Measured 2026-08-10 04:15 UTC: the official 30s stream repeated
+        65003.4548 for 35 consecutive seconds while the raw stream climbed $18,
+        then jumped $17 at the boundary. Our reconstruction resolved $5.59 off
+        the served final — larger than the low-k margins, i.e. breach-capable.
+        Neither existing guard sees it: the ≤60s freshness gate reads the RAW
+        stream (which was healthy), and the reconnect watchdog reads TWAP
+        RECEIPT time (which kept advancing on the repeated value).
+
+        Both conditions are required. A repeat or two is normal — the relay
+        appears to poll rather than stream, so ~11% of consecutive reports
+        legitimately carry the previous value. But an EXACTLY unchanged average
+        across many seconds while spot genuinely moves is not a flat market; a
+        30s mean cannot hold to 4dp through real movement. Hence: sustained
+        value freeze AND material raw travel inside that same span.
+        """
+        t = now if now is not None else time.time()
+        if self._twap_value_since <= 0 or self.twap_official <= 0:
+            return False
+        frozen_s = t - self._twap_value_since
+        if frozen_s < TWAP_FROZEN_S:
+            return False
+        spanned = [p for rx, p in self._reports if rx >= self._twap_value_since]
+        if len(spanned) < 2:
+            return False        # no raw evidence either way — other gates own this
+        return (max(spanned) - min(spanned)) >= TWAP_FROZEN_RAW_MOVE_USD
 
     def boundary_captured(self, window_ts: int) -> bool:
         """True once the first report at/after window_ts has locked the boundary.
@@ -330,17 +368,35 @@ class ChainlinkFeed:
                             now = time.time()
                             payload_ts = payload.get("timestamp") or payload.get("ts")
                             observed_ts = self._epoch_seconds(float(payload_ts)) if payload_ts is not None else now
+                            # The ENVELOPE's own timestamp = when Polymarket's
+                            # publisher pushed to RTDS. Recorded (never used to
+                            # decide) because it splits our ~1.63s report lag
+                            # into Chainlink's upstream pipeline, which a direct
+                            # subscriber also pays, and the relay's own
+                            # overhead, which is the only part buying a direct
+                            # feed could recover.
+                            pub_raw = msg.get("timestamp")
+                            try:
+                                pub_ts = (self._epoch_seconds(float(pub_raw))
+                                          if pub_raw is not None else None)
+                            except (ValueError, TypeError):
+                                pub_ts = None
                             # TWAP messages carry the same symbol — route by topic
                             # STRICTLY, or raw ticks poison the strike capture.
                             if msg.get("topic", "") == "crypto_prices_twap_thirty":
-                                self.twap_official = float(value)
+                                _v = float(value)
+                                if _v != self.twap_official:
+                                    self._twap_value_since = now
+                                elif self._twap_value_since <= 0:
+                                    self._twap_value_since = now
+                                self.twap_official = _v
                                 self.twap_official_ts = observed_ts
                                 self.twap_official_rx = now
                                 # The strike IS this stream's boundary value.
                                 self._record_boundary(observed_ts, self.twap_official)
                                 if self.on_twap is not None:
                                     try:
-                                        self.on_twap(observed_ts, self.twap_official)
+                                        self.on_twap(observed_ts, self.twap_official, pub_ts)
                                     except Exception:
                                         pass
                                 continue
@@ -356,7 +412,7 @@ class ChainlinkFeed:
                             # Optional micro-tape hook — must not raise into the feed.
                             if self.on_report is not None:
                                 try:
-                                    self.on_report(observed_ts, self._price)
+                                    self.on_report(observed_ts, self._price, pub_ts)
                                 except Exception:
                                     pass
                         except (ValueError, TypeError):
