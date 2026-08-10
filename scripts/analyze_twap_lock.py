@@ -375,7 +375,7 @@ def open_gap_read(hours: float = 26.0, min_disp: float = 10.0):
             "gap": wins / len(asks) - asks[len(asks) // 2]}
 
 
-def ladder_recalibrate(days: int = 2, write: bool = True):
+def ladder_recalibrate(days: int = 1, write: bool = True):
     """Nightly maker-ladder recalibration: re-derive rung PRICES from the
     trailing tape's dip-depth CDF (min winner-ask while max-tier locked).
     Quantiles 40/65/85 of the dip minima → rungs, hard-clamped [0.85, 0.975],
@@ -419,7 +419,9 @@ def ladder_recalibrate(days: int = 2, write: bool = True):
         if mn is not None:
             mins.append(mn)
     dips = sorted(m for m in mins if m <= 0.985)
-    if len(dips) < 8:
+    if len(mins) < 150 or len(dips) < 8:
+        # Small samples move prices on noise (a partial-tape day once shifted
+        # every rung on 53 windows) — the seed ladder stands.
         return {"n_locked": len(mins), "n_dips": len(dips), "applied": False}
     def q(f):
         px = dips[min(int(f * len(dips)), len(dips) - 1)]
@@ -440,7 +442,7 @@ def ladder_recalibrate(days: int = 2, write: bool = True):
             "rungs": rungs, "applied": write}
 
 
-def health_read(db_path=None, min_edge: float = 0.04, days: int = 2):
+def health_read(db_path=None, min_edge: float = 0.04, days: int = 1):
     """Nightly-ping sim read: the lock-dip replay over the trailing tape days.
     db_path is accepted for call-shape parity and unused (labels are read from
     both mode DBs). Trailing window stays SHORT (context line, not the

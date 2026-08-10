@@ -26,8 +26,8 @@ class PaperTrader(BaseTrader):
         # ledger's measured POST-RTT distribution (_LATENCY_QUANTILES);
         # latency_scale multiplies the draw (0.70 = the VPS box's measured RTT
         # ratio; 0 = instant for deterministic tests).
-        self.latency_scale: float = kwargs.get("paper_latency_scale", 0.70)
-        self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.30)
+        self.latency_scale: float = kwargs.get("paper_latency_scale", 0.95)
+        self.latency_floor_s: float = kwargs.get("paper_latency_floor_s", 0.32)
         # Fallback fail rate when the book is unavailable; the i.i.d. baseline
         # otherwise — _compute_fail_rate adds state-dependent terms on top.
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.03)

@@ -62,12 +62,15 @@ while true; do
         fi
     fi
 
-    # wait until the next 12:01 AM ET; if the pipeline overran past midnight
-    # (>23h until the next 12:01), restart immediately instead of losing a day.
+    # wait until the next 12:01 AM ET — but ONLY when we're in the 23:30-00:01
+    # wind-down band. Any exit during trading hours (a pipeline that overran
+    # past midnight lands here at e.g. 1:42 AM ET) restarts immediately: the
+    # 08-09 overrun slept 22.3h and forfeited a full trading day.
+    et_hm="$(TZ='America/New_York' date +%H%M)"
     now="$(date +%s)"
     next="$(TZ='America/New_York' date -d 'tomorrow 00:01' +%s)"
     wait=$(( next - now ))
-    if [ "$wait" -gt $(( 23 * 3600 )) ]; then wait=0; fi
+    if [ "$((10#$et_hm))" -lt 2330 ]; then wait=0; fi
     if [ "$wait" -gt 10 ]; then
         echo "[$(date '+%F %T %Z')] sleeping $(( wait / 60 )) min until 12:01 AM ET"
         sleep "$wait"

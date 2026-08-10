@@ -55,8 +55,13 @@ class NightlyScheduler:
 
         for name, job in self.nightly_jobs:
             try:
-                result = await job()
+                # Hard per-job budget: a slow tape read must degrade, never eat
+                # the midnight restart window (the 08-09 overrun cost a full
+                # trading day).
+                result = await asyncio.wait_for(job(), timeout=600.0)
                 logger.info(f"  Nightly job '{name}': {result if result else 'ok'}")
+            except asyncio.TimeoutError:
+                logger.error(f"Nightly job '{name}' timed out at 600s — skipped")
             except Exception as e:
                 logger.error(f"Nightly job '{name}' failed: {e}")
                 if self.alert_manager:
