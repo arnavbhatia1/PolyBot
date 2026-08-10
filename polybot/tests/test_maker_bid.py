@@ -134,8 +134,12 @@ def test_nightly_file_moves_prices_only_and_clamps(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", lp)
     mgr = _mgr()
     rungs = mgr.ladder()
-    # prices clamped to [0.85, 0.975]; fractions + headroom stay the SEED's
-    assert [r[0] for r in rungs] == [0.975, 0.94, 0.85]
+    # Prices clamped to [0.92, 0.95]; fractions + headroom stay the SEED's.
+    # The band is deliberately narrow: above 0.95 breaches the 4c edge floor
+    # (the p99.5 cap is 0.955 and the tick is 0.01), and below 0.92 nothing
+    # trades once a window is locked — rungs at 0.85-0.90 filled 0 times in
+    # 285 placements while a deep-quantile feedback loop drove them lower.
+    assert [r[0] for r in rungs] == [0.95, 0.94, 0.92]
     assert [r[1] for r in rungs] == [0.40, 0.35, 0.25]
     assert [r[2] for r in rungs] == [1.0, 1.0, 1.5]
 

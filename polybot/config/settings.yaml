@@ -121,13 +121,18 @@ maker:
   maker_bid_enabled: true
   # Rung seed: [price, budget_fraction, min_headroom_mult]. Prices re-derive
   # NIGHTLY from the trailing tape's dip-depth CDF (state/maker_ladder.json,
-  # clamped to [0.85, 0.975]); fractions + headroom stay frozen. The deepest
+  # clamped to [0.92, 0.95]); fractions + headroom stay frozen. The deepest
   # rung arms only when |disp| ≥ 1.5× the max-tier margin — deep fills happen
   # in violent windows where breach risk is conditionally elevated.
+  # Geometry measured 08-10 over 4 days of ladder-era tape: 0.95/0.94/0.92 books
+  # the same fill count as 0.96/0.92/0.87 at +0.4¢/sh, and fixes two defects —
+  # 0.96 sits outside the 4¢ edge floor (p99.5 cap is 0.955), and the 0.87 rung
+  # lived in the only band where a locked side has ever LOST (1 of 7 windows
+  # below 0.80, against a 4.3% break-even loss rate at a 0.92 fill).
   maker_ladder:
-    - [0.96, 0.40, 1.0]
-    - [0.92, 0.35, 1.0]
-    - [0.87, 0.25, 1.5]
+    - [0.95, 0.40, 1.0]
+    - [0.94, 0.35, 1.0]
+    - [0.92, 0.25, 1.5]
   maker_k_place_max: 25.0       # place once locked with at most this many s left
   maker_k_place_min: 3.0        # too late to bother resting under this
   maker_k_cancel_s: 1.0         # pull all rungs before the close

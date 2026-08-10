@@ -35,8 +35,15 @@ from polybot.paths import MAKER_LADDER_PATH
 logger = logging.getLogger("polybot")
 
 MIN_NOTIONAL_USD = 1.0          # CLOB floor — below this nothing books
-LADDER_PRICE_MIN = 0.85         # hard clamps on the nightly recalibration —
-LADDER_PRICE_MAX = 0.975        # no data artifact may quote outside these
+LADDER_PRICE_MIN = 0.92         # hard clamps on the nightly recalibration — no data
+LADDER_PRICE_MAX = 0.95         # artifact may quote outside these. Measured 08-10:
+                                # rungs at 0.85-0.90 filled 0 times in 285 placements
+                                # (nothing trades there once a window is locked), and
+                                # the old floor let a self-defeating loop run — rare
+                                # deep dips -> deep quantiles -> deeper rungs -> never
+                                # touched. The ceiling is 0.95, not 0.955: the p99.5
+                                # cap is 0.955 and the tick is 0.01 here, so 0.95 is
+                                # the highest tick-legal price inside the edge floor.
 
 
 class MakerBidManager:
