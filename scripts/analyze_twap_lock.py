@@ -412,9 +412,13 @@ def ladder_recalibrate(days: int = 1, write: bool = True):
                 break
         if lock_t is None or lock_side != lab["resolved_up"]:
             continue
+        # A locked winner's ask usually sits AT 1.0 — that is a real "no dip"
+        # observation and must stay in the denominator (requiring a < 1.0 here
+        # once measured depth-given-dip instead of dip-given-locked and sent
+        # every rung to the floor of the clamps).
         mn = None
         for ts, a in books[ep][lock_side]:
-            if lock_t <= ts <= close and 0.0 < a < 1.0:
+            if lock_t <= ts <= close and 0.0 < a <= 1.0:
                 mn = a if mn is None else min(mn, a)
         if mn is not None:
             mins.append(mn)
