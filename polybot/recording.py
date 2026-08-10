@@ -614,6 +614,26 @@ class MicroTape:
         except Exception:
             pass
 
+    def on_cb_tick(self, rx: float, price: float, feed_delay_ms: float | None) -> None:
+        """Wired as CoinbaseFeed.on_tick. RECORDING ONLY — no decision path reads
+        spot.
+
+        Why it is recorded at all: Polymarket's oracle relay hands us each
+        Chainlink report ~1.63s after the report's own timestamp, so the last
+        ~1.6s of every resolving average is already determined but unseen. A
+        spot tick stamped on OUR clock is what makes that gap measurable
+        against the book events in this same tape — a cross-venue REST pull
+        cannot, because its clock is not ours.
+        """
+        try:
+            self._buf.append(json.dumps({
+                "k": "s", "src": "cb", "rx": round(rx, 3), "p": price,
+                "d": feed_delay_ms,
+            }))
+            self._maybe_flush(rx)
+        except Exception:
+            pass
+
     def on_cl_report(self, payload_ts: float, price: float) -> None:
         """Wired as ChainlinkFeed.on_report.
 

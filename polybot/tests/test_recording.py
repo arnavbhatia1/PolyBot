@@ -331,6 +331,33 @@ async def test_recordings_cleanup_job_prunes_old_files(tmp_path, monkeypatch):
     assert micro_fresh.exists() and tape_aged.exists() and fresh.exists() and keepme.exists()
 
 
+def test_micro_tape_records_coinbase_spot_ticks(tmp_path):
+    """Spot ticks land in the tape stamped on OUR clock, carrying the exchange
+    feed delay — that pairing is what makes the oracle relay's ~1.63s gap
+    measurable against this same tape's book events."""
+    from polybot.recording import MicroTape
+    mt = MicroTape(dir_path=tmp_path)
+    mt.on_cb_tick(1786334400.123456, 64512.5, 41.3)
+    mt.on_cb_tick(1786334400.987, 64513.0, None)      # missing exchange ts is allowed
+    mt.flush()
+    mt._writer.shutdown(wait=True)
+    rows = [json.loads(x) for x in
+            next(tmp_path.glob("micro_*.jsonl")).read_text().splitlines()]
+    assert [r["k"] for r in rows] == ["s", "s"]
+    assert rows[0] == {"k": "s", "src": "cb", "rx": 1786334400.123, "p": 64512.5, "d": 41.3}
+    assert rows[1]["d"] is None
+
+
+def test_coinbase_tick_hook_never_raises_into_the_feed():
+    """The spot feed is recording-only; a tape failure must never propagate into
+    a feed callback and take the socket (or the trading loop) down with it."""
+    from pathlib import Path
+    from polybot.recording import MicroTape
+    mt = MicroTape(dir_path=Path("/nonexistent-dir-for-test"))
+    mt._maybe_flush = lambda now: (_ for _ in ()).throw(RuntimeError("disk gone"))
+    mt.on_cb_tick(1786334400.0, 64512.5, 12.0)        # must swallow
+
+
 @pytest.mark.asyncio
 async def test_compress_recordings_job_gzips_finished_days_only(tmp_path, monkeypatch):
     """Finished tape days compress to .jsonl.gz (byte-identical on read) and the

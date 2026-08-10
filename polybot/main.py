@@ -2481,13 +2481,16 @@ async def main() -> None:
 
     await scheduler.start()
     from polybot.feeds.chainlink_feed import ChainlinkFeed
+    from polybot.feeds.coinbase_feed import CoinbaseFeed
     chainlink_feed = ChainlinkFeed()
     await chainlink_feed.start()
+    coinbase_feed = CoinbaseFeed()          # started below, once the tape exists
 
     # Periodic feed-staleness telemetry (P50/P95/P99 inter-arrival per feed).
     _staleness_trackers = [
         chainlink_feed.staleness,
         clob_ws.staleness,
+        coinbase_feed.staleness,
     ]
     _staleness_path = FEED_STALENESS_PATH
 
@@ -2532,6 +2535,13 @@ async def main() -> None:
     clob_ws.on_bba = micro_tape.on_bba
     chainlink_feed.on_report = micro_tape.on_cl_report
     chainlink_feed.on_twap = micro_tape.on_twap_report
+    # Coinbase spot — RECORDING ONLY, deliberately wired to nothing that decides.
+    # The oracle relay delivers each Chainlink report ~1.63s after its own
+    # timestamp, so the tail of every resolving average is already fixed but
+    # unseen; a spot tick stamped on OUR clock is the only way to measure that
+    # gap against this tape's book events. No gate, signal, or size reads it.
+    coinbase_feed.on_tick = micro_tape.on_cb_tick
+    await coinbase_feed.start()
     window_recorder = WindowPathRecorder(
         db=db, clob_ws=clob_ws,
         chainlink_feed=chainlink_feed, market_scanner=market_scanner,
@@ -2912,6 +2922,7 @@ async def main() -> None:
         await _stop(clob_ws.close())
         await _stop(scheduler.stop())
         await _stop(chainlink_feed.stop())
+        await _stop(coinbase_feed.stop())
         await _stop(discord_bot.close())
         bankroll = await db.get_bankroll()
         await db.close()

@@ -1,9 +1,17 @@
 # PolyBot
 
 5-min BTC Up/Down trader for Polymarket, rebuilt lean for the TWAP era: the
-only feeds are Chainlink (RTDS) + the Polymarket CLOB + Gamma, the only
-strategy is the two-leg TWAP lock system (§2), and every position holds to
-resolution. There is no other model, feed, or exit path.
+only feeds the STRATEGY reads are Chainlink (RTDS) + the Polymarket CLOB +
+Gamma, the only strategy is the two-leg TWAP lock system (§2), and every
+position holds to resolution. There is no other model or exit path. One feed
+records without deciding: **Coinbase spot (recording-only, §6)** — the oracle
+relay hands us each Chainlink report ~1.63s after the report's own timestamp
+(p10 1.26 / p50 1.63 / p90 2.07, both topics — it is the relay, not the
+topic), so the last ~1.6s of every resolving average is already fixed but
+unseen. Spot ticks stamped on OUR clock are the only way to measure that gap
+against the same tape's book events; a cross-venue REST pull cannot, because
+its clock is not ours. **No gate, signal, or size reads it** — promoting it to
+a decision input requires its own measured bar.
 **PAPER SHADOW since 2026-08-07**: at 00:00 UTC that day Polymarket switched
 resolution from the terminal Chainlink snapshot to the official **30-second
 TWAP stream** (strike = the stream's value at the open, final = its value at
@@ -346,6 +354,13 @@ dust through and fail-closes only on genuinely unresolved positions.
   flowing through the process gets persisted.**
 - **Tape recorder**: every CLOB print (incl. the exchange's own timestamp +
   fee_rate_bps) → `memory/recordings/*.jsonl` (gitignored).
+- **Coinbase spot (recording-only)**: `feeds/coinbase_feed.py` streams the
+  BTC-USD ticker; `MicroTape.on_cb_tick` writes `"s"` records (our receipt ts,
+  price, and the tick's exchange-transit delay). Wired to the tape and to
+  nothing else — the callback swallows its own errors so a tape fault can never
+  reach the socket or the trading loop. It exists to measure the relay gap in
+  the header; treat any use of it in a decision path as a new leg needing a
+  bar.
 - **Micro-tape** (`MicroTape`): event-true streams the 5Hz sampler can't see —
   every CLOB best-bid/ask CHANGE (final 90s of each window) and every
   Chainlink RTDS report (always; payload + receipt ts, so delivery holes are
@@ -454,6 +469,7 @@ polybot/
                          Kelly), scar_scan (nightly learning loop), sprt
   feeds/                 chainlink_feed (strike + projection + resolution),
                          clob_ws (books/tape), market_scanner (discovery + gamma fallback),
+                         coinbase_feed (spot, recording-only — §6),
                          _socket, _staleness, _json
   recording.py           WindowPathRecorder (all windows) + TapeRecorder +
                          MicroTape + retention
@@ -487,7 +503,8 @@ scripts/
 |---|---|---|
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/tick-size` | Books, tape, executable prices |
 | Polymarket Gamma | `GET /events?slug=` (deprecated upstream; auto-fallback `GET /events/slug/{slug}` — `gamma_events_by_slug`) | Discovery + resolution + labels |
-| Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` (`crypto_prices_twap_thirty` + raw `crypto_prices_chainlink`) | Strike + resolution (TWAP topic); raw stream feeds the projection |
+| Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` (`crypto_prices_twap_thirty` + raw `crypto_prices_chainlink`) | Strike + resolution (TWAP topic); raw stream feeds the projection. Arrives ~1.63s behind its own payload ts |
+| Coinbase (WS ticker) | `wss://ws-feed.exchange.coinbase.com` BTC-USD | **RECORDING ONLY** — measures the relay gap; no decision path reads it |
 
 ## 10. Running + invariants
 
