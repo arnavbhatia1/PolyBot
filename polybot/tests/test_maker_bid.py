@@ -227,9 +227,10 @@ def test_post_close_pulls_everything_when_the_lock_missed(tmp_path, monkeypatch)
 
 
 def test_post_close_fails_closed_without_trusted_boundaries(tmp_path, monkeypatch):
-    """5-14 boundaries/day never arrive. No capture, no trust, no bid."""
+    """5-14 boundaries/day never arrive. Once the grace for the closing report
+    is spent, no capture and no trust means no bid."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
-    w = time.time() - 301.0
+    w = time.time() - 300.0 - mb.PC_VERIFY_GRACE_S - 1.0
     for kwargs in ({"strike": 64000.0, "final": None},
                    {"strike": None, "final": 64010.0},
                    {"strike": 64000.0, "final": 64010.0, "trusted": False}):
@@ -275,3 +276,31 @@ def test_post_close_rung_fills_only_strictly_below(tmp_path, monkeypatch):
     assert pc["filled"] == 0.0
     mgr.on_print("tokU", {"price": 0.99, "size": 5.0})
     assert pc["filled"] == 5.0
+
+
+def test_post_close_waits_for_the_closing_boundary_report(tmp_path, monkeypatch):
+    """The closing boundary lands ~1.7s after the boundary (p99 2.9s), so an
+    unverified outcome in the first seconds is NORMAL and must not retire —
+    checking at close+0s made the whole phase a no-op in production."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    w = time.time() - 300.5                       # only 0.5s past the close
+    mgr = _pc_mgr(strike=64000.0, final=None)     # closing report not in yet
+    _pc_place(mgr, w, side="Up")
+    asyncio.run(mgr.maintain())
+    assert mgr.resting_on(w)                      # still resting, still waiting
+    assert mgr.trader.cancelled == []
+    # the report arrives, and the rung arms on the next tick
+    mgr.chainlink._b["close"] = 64010.0
+    asyncio.run(mgr.maintain())
+    assert mgr.trader.placed[-1][1] == 0.995
+
+
+def test_post_close_gives_up_after_the_grace(tmp_path, monkeypatch):
+    """A genuine delivery hole still fails closed."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    w = time.time() - 300.0 - mb.PC_VERIFY_GRACE_S - 1.0
+    mgr = _pc_mgr(strike=64000.0, final=None)
+    _pc_place(mgr, w, side="Up")
+    asyncio.run(mgr.maintain())
+    assert not mgr.resting_on(w)
+    assert 0.995 not in [p for _, p, _ in mgr.trader.placed]

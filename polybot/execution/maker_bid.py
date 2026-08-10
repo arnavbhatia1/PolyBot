@@ -46,6 +46,13 @@ LADDER_PRICE_MAX = 0.95         # artifact may quote outside these. Measured 08-
                                 # the highest tick-legal price inside the edge floor.
 
 
+PC_VERIFY_GRACE_S = 5.0         # how long the post-close phase waits for the
+                                # closing boundary report before giving up. It
+                                # lands p50 1.71s / p90 2.2s / p99 2.9s after the
+                                # boundary, so anything shorter retires before
+                                # the outcome can possibly be known.
+
+
 class MakerBidManager:
     def __init__(self, trader: Any, chainlink_feed: Any, cfg: dict,
                  paper: bool) -> None:
@@ -206,7 +213,13 @@ class MakerBidManager:
             else:
                 winner = self.certain_winner(a["window_ts"])
                 if winner is None:
-                    reason = "outcome unverified"      # fail closed
+                    # The closing boundary report lands ~1.7s after the boundary
+                    # (p90 2.2s, p99 2.9s), so "not yet" is the normal state for
+                    # the first seconds — keep resting on the max-tier locked
+                    # side and wait. Only give up once the grace is spent, which
+                    # is the real delivery hole (5-14 boundaries/day).
+                    if now - close > PC_VERIFY_GRACE_S:
+                        reason = "outcome unverified"      # fail closed
                 elif winner != a["side"]:
                     # The lock was wrong. Never observed at max tier in 718
                     # locked windows, but a resting bid on a $0 token is the one
