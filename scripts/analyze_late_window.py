@@ -141,7 +141,7 @@ def live_health_read(db_path=None, since_iso=None):
             for leg, v in sorted(per_leg.items())}
     return dict(label=f"{db.stem}(trade_history{' since ' + since_iso if since_iso else ''})",
                 n_fills=len(fills), n_days=len(daily),
-                win_rate=statistics.mean(w for _, w, _ in fills), avg_fill=float("nan"),
+                win_rate=statistics.mean(w for _, w, _ in fills),
                 mean_net_day=m, t_day=t, p10=block_bootstrap_p10(daily),
                 net_per_sh=statistics.mean(n for n, _, _ in fills),
                 net_sum=sum(n for n, _, _ in fills),
