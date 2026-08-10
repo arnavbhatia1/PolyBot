@@ -113,6 +113,16 @@ sniper buys those dips and holds ≤30s to resolution.
   error → prob 0.999 (ask ≤ ~0.96); beyond p99.5 → prob 0.995 (ask ≤ ~0.955).
   The cap DERIVES from the edge floor — one knob, no separate ask-cap to
   drift. Tuning the margin tables to make a window fire is relaxing a bar.
+  **The tables are correctly sized, NOT conservative — measured 08-10 on 739
+  windows**: making them vol-conditional (looser on calm windows, the obvious
+  volume lever) introduces 6 windows where the LOSING side clears P≥0.995
+  against 0 under the frozen tables. Vol is not persistent at this timescale —
+  both breach windows were dead-calm and then moved $28/$18 inside the
+  averaging window, and 10% of windows double their vol inside the zone. Calm
+  is not safe. Widening the rule below the frozen tail is also unprofitable,
+  not merely unsafe: a fully calibrated continuous P(win) over the 0.85-0.99
+  body loses to the CLOB ask on log score in every split, and its claimed-edge
+  gradient inverts (see the monotonicity bar under the open leg).
   The main loop wakes on raw Chainlink reports (`report_event`) and CLOB book
   events; the µs pre-gate (`_twap_hot`) fast-paths any wake at ≥90% of the
   p99.5 margin so a 1s dip is never throttled past.
