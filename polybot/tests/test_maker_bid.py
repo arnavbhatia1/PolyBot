@@ -375,6 +375,39 @@ def test_pending_keeps_both_tokens_subscribed(tmp_path, monkeypatch):
     assert mgr.holding_tokens() == {"tokU", "tokD"}
 
 
+def test_post_close_is_sized_off_bankroll_not_the_ladder(tmp_path, monkeypatch):
+    """A settled outcome is not a Kelly bet. Inheriting a fraction of the
+    ladder's fractional-Kelly budget made every fill ~$2.15, so 71 perfect wins
+    in one day earned $0.80. pc_budget must win over the ladder fraction."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    w = time.time() - 301.0
+    mgr = _pc_mgr(strike=64000.0, final=64010.0)
+    mgr.chainlink.window_ts = w
+    asyncio.run(mgr.consider_placement(w, "cid", "q?", "Up", "tokU", 30.0, 2.0,
+                                       {"strike_price": 64000.0},
+                                       pc_budget=41.13))
+    n_before = len(mgr.trader.placed)
+    asyncio.run(mgr.maintain())
+    top = next(x for x in mgr.trader.placed[n_before:] if x[1] == 0.995)
+    notional = top[2] * 0.995
+    assert abs(notional - 41.13 * 0.70) < 0.02      # bankroll-sized
+    assert abs(notional - 30.0 * 0.40 * 0.70) > 1.0  # NOT the ladder fraction
+
+
+def test_post_close_falls_back_to_the_ladder_fraction_without_pc_budget(
+        tmp_path, monkeypatch):
+    """Safety net: if no bankroll-sized budget reaches the manager, the leg still
+    arms off the ladder rather than placing nothing."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    w = time.time() - 301.0
+    mgr = _pc_mgr(strike=64000.0, final=64010.0)
+    _pc_place(mgr, w, side="Up")                     # no pc_budget passed
+    n_before = len(mgr.trader.placed)
+    asyncio.run(mgr.maintain())
+    top = next(x for x in mgr.trader.placed[n_before:] if x[1] == 0.995)
+    assert abs(top[2] * 0.995 - 30.0 * 0.40 * 0.70) < 0.05
+
+
 def test_arm_is_ignored_while_a_ladder_rests_and_never_goes_backwards(tmp_path,
                                                                      monkeypatch):
     """One entry path per window: a resting ladder handles its own post-close,

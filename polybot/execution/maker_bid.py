@@ -148,7 +148,7 @@ class MakerBidManager:
     async def consider_placement(self, window_ts: int, market_id: str,
                                  question: str, side: str, token_id: str,
                                  budget_usd: float, headroom_mult: float,
-                                 snapshot: dict) -> None:
+                                 snapshot: dict, pc_budget: float = 0.0) -> None:
         """headroom_mult = |disp| / max-tier margin at placement time — deep
         rungs only arm when the lock has real slack (deep fills concentrate
         in violent windows)."""
@@ -172,6 +172,10 @@ class MakerBidManager:
             "window_ts": window_ts, "market_id": market_id,
             "question": question, "side": side, "token_id": token_id,
             "rungs": rungs, "placed": time.time(), "snapshot": snapshot,
+            # Post-close is sized off BANKROLL, not off this ladder's Kelly
+            # budget — a settled outcome is not a probabilistic bet, and
+            # inheriting a fraction of fractional Kelly made every fill ~$2.
+            "pc_budget": pc_budget,
         }
         logger.info("MAKER LADDER %s — %s resting on the locked side (%.0fs left)",
                     side, "/".join(f"${r['shares'] * r['price']:.0f}@{r['price']:.2f}"
@@ -235,8 +239,8 @@ class MakerBidManager:
         never fills costs nothing.
         """
         rungs = self.cfg.get("post_close_ladder") or [[0.99, 1.0]]
-        budget = a.get("pc_budget")        # standalone arm carries its own budget
-        if budget is None:
+        budget = a.get("pc_budget") or 0.0     # bankroll-sized, set at arm time
+        if budget <= 0.0:                      # fallback: fraction of the ladder
             budget = (sum(r["shares"] * r["price"] for r in a["rungs"])
                       * float(self.cfg.get("post_close_budget_frac", 0.40)))
         a["pc_placed"] = True          # set first: one attempt per window, ever

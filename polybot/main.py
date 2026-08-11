@@ -908,6 +908,13 @@ async def _evaluate_signal_and_enter(
             # dip lands (leg 3). Placement is one POST ~20s before close, off
             # the FOK race path entirely.
             _mk = config.get("maker", {})
+            # Post-close budget rides BANKROLL, not the ladder's Kelly budget —
+            # a settled outcome is not a probabilistic bet. Same number for the
+            # ladder-promoted and standalone arms so the common path is not
+            # sized 47x smaller than the rare one.
+            _pcb = round(bankroll
+                         * float(_mk.get("post_close_bankroll_frac", 0.10))
+                         * (breaker.kelly_multiplier if breaker else 1.0), 2)
             if (_MAKER_MGR is not None and _proj is not None
                     and _snipe.action == "SKIP"
                     and _mk.get("maker_k_place_min", 3.0) <= contract["seconds_remaining"]
@@ -939,7 +946,8 @@ async def _evaluate_signal_and_enter(
                             # startup reconciliation + dust sweep key on these
                             "token_id_up": token_up,
                             "token_id_down": token_down,
-                        }, "strike_price": strike})
+                        }, "strike_price": strike},
+                        pc_budget=_pcb)
             # POST-CLOSE CERTAINTY, decoupled from the ladder. The outcome is
             # settled fact in EVERY window, but the ladder only rests on the few
             # that lock at max tier inside k [3,25]s — tying post-close to it
@@ -949,9 +957,6 @@ async def _evaluate_signal_and_enter(
             # ladder-promoted post-close stays "maker_bid" because those fills
             # blend with pre-close rungs into one position.
             if (_MAKER_MGR is not None and _mk.get("post_close_enabled")):
-                _pcb = round(bankroll
-                             * float(_mk.get("post_close_bankroll_frac", 0.25))
-                             * (breaker.kelly_multiplier if breaker else 1.0), 2)
                 _MAKER_MGR.arm_post_close(
                     _w_ts, cid, contract.get("question", ""),
                     token_up, token_down, _pcb,

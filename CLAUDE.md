@@ -270,8 +270,17 @@ sniper buys those dips and holds ≤30s to resolution.
   ladder only rests on the few that lock at max tier inside k [3,25]s, so tying
   the two together threw away all but a handful of windows a day. The fire path
   arms an intent on every window (safe on any strike — `certain_winner`
-  re-verifies both boundary captures at promotion and fails closed), sized by
-  `post_close_bankroll_frac` since a settled outcome is not a Kelly bet. Both
+  re-verifies both boundary captures at promotion and fails closed). **Sizing is
+  `post_close_bankroll_frac` of BANKROLL for BOTH arms** — a settled outcome is
+  not a Kelly bet, and inheriting `post_close_budget_frac` of the ladder's
+  fractional-Kelly budget made every fill ~$2.15, so 71 perfect wins in one day
+  earned $0.80. Capital recycles in ~2 min (book → resolve) against 5-min windows
+  with one ladder slot, and Auto-Redeem is ON, so one full-size position per
+  window is sustainable. 0.10 is a deliberate first step (~9% of the measured
+  $475/window supply); the only loss mode is `certain_winner` being wrong, so
+  each step up multiplies that tail — raise only after a clean day at the
+  current step. `post_close_budget_frac` remains the fallback if no
+  bankroll-sized budget reaches the manager. Both
   sides stay WS-subscribed while pending, because the winner is unknown until
   the closing boundary lands ~2s later and going deaf there would break
   paper/live parity silently (live polls its fills over REST). Standalone fills

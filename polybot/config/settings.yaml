@@ -171,11 +171,18 @@ maker:
   # 300s rest would also hold the single ladder slot straight through the next
   # window's k in [3,25]s placement point and suppress the pre-close leg.
   post_close_s: 90.0             # keep resting this long past the close
-  # Budget when post-close arms WITHOUT a pre-close ladder (fraction of
-  # bankroll). The outcome is settled fact, so this is not a Kelly bet — the
-  # real limit is redemption latency, since capital is locked until the winning
-  # tokens clear.
-  post_close_bankroll_frac: 0.25
+  # Post-close budget as a fraction of BANKROLL — used by BOTH the standalone
+  # arm and the ladder-promoted one. A settled outcome is not a Kelly bet, and
+  # inheriting post_close_budget_frac of the ladder's fractional-Kelly budget
+  # made every fill ~$2.15: 71 perfect wins in a day earned $0.80.
+  # Capital recycles in ~2 min (book -> resolve) against 5-min windows with one
+  # ladder slot, and Auto-Redeem is ON, so one full-size position per window is
+  # sustainable. 0.10 is a deliberate FIRST STEP (~20x the old size, ~9% of the
+  # measured $475/window supply). The only loss mode is certain_winner being
+  # wrong, so each step up multiplies that tail: raise only after a clean day
+  # of fills at the current step. post_close_budget_frac below is the fallback
+  # when no bankroll-sized budget reaches the manager.
+  post_close_bankroll_frac: 0.10
   # [price, share of the post-close budget]. The top rung is 0.995 and must stay
   # there: sellers PRINT at 0.990, so 0.995 is the price-improving bid that gets
   # hit — measured 71 fills / 71 wins in one day at exactly 0.9950. A 0.99 rung
