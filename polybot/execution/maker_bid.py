@@ -69,6 +69,17 @@ class MakerBidManager:
     def resting_on(self, window_ts: int) -> bool:
         return self.active is not None and self.active["window_ts"] == window_ts
 
+    def holding_token(self) -> str | None:
+        """Token this ladder still has orders on, so the WS keeps it subscribed.
+
+        The post-close phase rests past the window's end, but rotation used to
+        unsubscribe the closed window's tokens the moment the next contract was
+        discovered — leaving a live bid on a token we no longer listen to. Paper
+        then cannot see a fill at all (0 of 1,015 prints for a closed window
+        reached us), and live loses its print stream.
+        """
+        return self.active["token_id"] if self.active else None
+
     def ladder(self) -> list:
         """[[price, budget_frac, min_headroom_mult], ...] — the nightly
         recalibration file wins when present (clamped); config is the seed."""

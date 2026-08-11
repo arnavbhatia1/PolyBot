@@ -1532,9 +1532,18 @@ async def _discover_contract_and_subscribe(market_scanner: Any,
     current_tokens = [t for t in [token_up, token_down] if t]
     new_tokens = [t for t in current_tokens if t not in ws_subscribed_tokens]
 
-    # Unsubscribe tokens from previous contracts that are no longer needed
-    if prev_contract_tokens and clob_ws:
-        stale_tokens = [t for t in prev_contract_tokens if t not in current_tokens]
+    # Drop every subscription we no longer need — EXCEPT a token the maker
+    # ladder still has orders resting on. Its post-close phase outlives the
+    # window, and unsubscribing under it blinds the paper fill matcher entirely
+    # (a closed window's 1,015 prints reached us; 0 arrived after the close).
+    # Computed against what we are actually subscribed to rather than just the
+    # previous contract, so a deferred token still gets swept once it retires.
+    if clob_ws:
+        keep = set(current_tokens)
+        held = _MAKER_MGR.holding_token() if _MAKER_MGR is not None else None
+        if held:
+            keep.add(held)
+        stale_tokens = [t for t in ws_subscribed_tokens if t not in keep]
         if stale_tokens:
             await clob_ws.unsubscribe(stale_tokens)
             ws_subscribed_tokens = [t for t in ws_subscribed_tokens if t not in stale_tokens]

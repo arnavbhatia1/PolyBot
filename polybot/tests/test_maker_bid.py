@@ -304,3 +304,16 @@ def test_post_close_gives_up_after_the_grace(tmp_path, monkeypatch):
     asyncio.run(mgr.maintain())
     assert not mgr.resting_on(w)
     assert 0.995 not in [p for _, p, _ in mgr.trader.placed]
+
+
+def test_holding_token_keeps_the_ws_subscribed_past_the_close(tmp_path, monkeypatch):
+    """Rotation must not unsubscribe a token the ladder still rests on — that is
+    what made the post-close phase place orders that could never fill."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _pc_mgr(strike=64000.0, final=64010.0)
+    assert mgr.holding_token() is None
+    w = time.time() - 300.5
+    _pc_place(mgr, w, side="Up")
+    assert mgr.holding_token() == "tokU"
+    asyncio.run(mgr._retire("test"))
+    assert mgr.holding_token() is None
