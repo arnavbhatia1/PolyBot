@@ -154,8 +154,9 @@ def test_lock_held_keeps_resting(tmp_path, monkeypatch):
 
 
 # ── post-close certainty phase ────────────────────────────────────────────────
+PC_LADDER = [[0.99, 0.70], [0.97, 0.10], [0.95, 0.10], [0.90, 0.10]]
 PC_CFG = dict(CFG, post_close_enabled=True, post_close_s=120.0,
-              post_close_price=0.995, post_close_budget_frac=0.40)
+              post_close_ladder=PC_LADDER, post_close_budget_frac=0.40)
 
 
 class FakeSettledChainlink(FakeChainlink):
@@ -196,8 +197,8 @@ def _pc_place(mgr, window_ts, side="Up"):
 
 def test_post_close_arms_on_the_settled_winner(tmp_path, monkeypatch):
     """Once both boundaries are captured, final >= strike settles the winner and
-    a 0.995 rung arms — a price the pre-close edge floor forbids, legal here
-    because the average is finished rather than projected."""
+    the whole post-close ladder arms — prices the pre-close edge floor forbids,
+    legal here because the average is finished rather than projected."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     w = time.time() - 301.0                      # window already closed
     mgr = _pc_mgr(strike=64000.0, final=64010.0)  # final > strike -> Up won
@@ -205,11 +206,11 @@ def test_post_close_arms_on_the_settled_winner(tmp_path, monkeypatch):
     n_before = len(mgr.trader.placed)
     asyncio.run(mgr.maintain())
     assert mgr.resting_on(w)                     # NOT cancelled at the close
-    assert len(mgr.trader.placed) == n_before + 1
-    assert mgr.trader.placed[-1][1] == 0.995
+    new = mgr.trader.placed[n_before:]
+    assert [p for _, p, _ in new] == [px for px, _ in PC_LADDER]
     assert mgr.trader.cancelled == []
     asyncio.run(mgr.maintain())                  # never places twice
-    assert len(mgr.trader.placed) == n_before + 1
+    assert len(mgr.trader.placed) == n_before + len(PC_LADDER)
 
 
 def test_post_close_pulls_everything_when_the_lock_missed(tmp_path, monkeypatch):
@@ -222,7 +223,7 @@ def test_post_close_pulls_everything_when_the_lock_missed(tmp_path, monkeypatch)
     asyncio.run(mgr.maintain())
     assert not mgr.resting_on(w)
     assert len(mgr.trader.cancelled) == 3
-    assert 0.995 not in [p for _, p, _ in mgr.trader.placed]
+    assert 0.99 not in [p for _, p, _ in mgr.trader.placed]
 
 
 def test_post_close_fails_closed_without_trusted_boundaries(tmp_path, monkeypatch):
@@ -237,7 +238,7 @@ def test_post_close_fails_closed_without_trusted_boundaries(tmp_path, monkeypatc
         _pc_place(mgr, w, side="Up")
         asyncio.run(mgr.maintain())
         assert not mgr.resting_on(w), kwargs
-        assert 0.995 not in [p for _, p, _ in mgr.trader.placed], kwargs
+        assert 0.99 not in [p for _, p, _ in mgr.trader.placed], kwargs
 
 
 def test_post_close_expires(tmp_path, monkeypatch):
@@ -259,21 +260,21 @@ def test_disabled_still_cancels_at_the_close(tmp_path, monkeypatch):
     _place(mgr, w, side="Up", budget=30.0, headroom=2.0)
     asyncio.run(mgr.maintain())
     assert not mgr.resting_on(w)
-    assert 0.995 not in [p for _, p, _ in mgr.trader.placed]
+    assert 0.99 not in [p for _, p, _ in mgr.trader.placed]
 
 
 def test_post_close_rung_fills_only_strictly_below(tmp_path, monkeypatch):
     """Same conservative convention as every other rung — queue position is
-    unknowable, so a print AT 0.995 may have gone entirely to earlier queue."""
+    unknowable, so a print AT the rung may have gone entirely to earlier queue."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     w = time.time() - 301.0
     mgr = _pc_mgr(strike=64000.0, final=64010.0)
     _pc_place(mgr, w, side="Up")
     asyncio.run(mgr.maintain())
-    pc = mgr.active["rungs"][-1]
-    mgr.on_print("tokU", {"price": 0.995, "size": 5.0})
-    assert pc["filled"] == 0.0
+    pc = next(r for r in mgr.active["rungs"] if r["price"] == 0.99)
     mgr.on_print("tokU", {"price": 0.99, "size": 5.0})
+    assert pc["filled"] == 0.0
+    mgr.on_print("tokU", {"price": 0.98, "size": 5.0})
     assert pc["filled"] == 5.0
 
 
@@ -288,10 +289,10 @@ def test_post_close_waits_for_the_closing_boundary_report(tmp_path, monkeypatch)
     asyncio.run(mgr.maintain())
     assert mgr.resting_on(w)                      # still resting, still waiting
     assert mgr.trader.cancelled == []
-    # the report arrives, and the rung arms on the next tick
+    # the report arrives, and the ladder arms on the next tick
     mgr.chainlink._b["close"] = 64010.0
     asyncio.run(mgr.maintain())
-    assert mgr.trader.placed[-1][1] == 0.995
+    assert 0.99 in [p for _, p, _ in mgr.trader.placed]
 
 
 def test_post_close_gives_up_after_the_grace(tmp_path, monkeypatch):
@@ -302,27 +303,97 @@ def test_post_close_gives_up_after_the_grace(tmp_path, monkeypatch):
     _pc_place(mgr, w, side="Up")
     asyncio.run(mgr.maintain())
     assert not mgr.resting_on(w)
-    assert 0.995 not in [p for _, p, _ in mgr.trader.placed]
+    assert 0.99 not in [p for _, p, _ in mgr.trader.placed]
 
 
-def test_holding_token_keeps_the_ws_subscribed_past_the_close(tmp_path, monkeypatch):
+def test_holding_tokens_keeps_the_ws_subscribed_past_the_close(tmp_path, monkeypatch):
     """Rotation must not unsubscribe a token the ladder still rests on — that is
     what made the post-close phase place orders that could never fill."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _pc_mgr(strike=64000.0, final=64010.0)
-    assert mgr.holding_token() is None
+    assert mgr.holding_tokens() == set()
     w = time.time() - 300.5
     _pc_place(mgr, w, side="Up")
-    assert mgr.holding_token() == "tokU"
+    assert mgr.holding_tokens() == {"tokU"}
     asyncio.run(mgr._retire("test"))
-    assert mgr.holding_token() is None
+    assert mgr.holding_tokens() == set()
+
+
+# ── post-close decoupled from the ladder ──────────────────────────────────────
+def _arm(mgr, w, budget=20.0):
+    mgr.chainlink.window_ts = w
+    mgr.arm_post_close(w, "cid", "q?", "tokU", "tokD", budget,
+                       {"strike_price": 64000.0})
+
+
+def test_post_close_arms_without_any_pre_close_ladder(tmp_path, monkeypatch):
+    """The outcome is settled fact in EVERY window, so post-close must not depend
+    on a ladder having rested — that limited it to a handful of windows a day."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    w = time.time() - 301.0
+    mgr = _pc_mgr(strike=64000.0, final=64010.0)      # final > strike -> Up won
+    _arm(mgr, w)
+    assert mgr.active is None                          # nothing until the close
+    asyncio.run(mgr.maintain())
+    assert mgr.active is not None and mgr.active["side"] == "Up"
+    assert [p for _, p, _ in mgr.trader.placed] == [px for px, _ in PC_LADDER]
+    assert all(t == "tokU" for t, _, _ in mgr.trader.placed)
+
+
+def test_post_close_standalone_rests_on_the_settled_LOSER_side_never(tmp_path,
+                                                                    monkeypatch):
+    """final < strike settles Down — the bid must go on tokD. Resting on a $0
+    token is this leg's only unbounded loss."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    w = time.time() - 301.0
+    mgr = _pc_mgr(strike=64000.0, final=63990.0)
+    _arm(mgr, w)
+    asyncio.run(mgr.maintain())
+    assert mgr.active["side"] == "Down"
+    assert all(t == "tokD" for t, _, _ in mgr.trader.placed)
+
+
+def test_post_close_standalone_fails_closed_on_a_delivery_hole(tmp_path, monkeypatch):
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    w = time.time() - 300.0 - mb.PC_VERIFY_GRACE_S - 1.0
+    mgr = _pc_mgr(strike=64000.0, final=None)          # closing report never came
+    _arm(mgr, w)
+    asyncio.run(mgr.maintain())
+    assert mgr.active is None and mgr.pending is None
+    assert mgr.trader.placed == []
+
+
+def test_pending_keeps_both_tokens_subscribed(tmp_path, monkeypatch):
+    """The winner is unknown until the closing boundary lands, so both sides stay
+    subscribed — going deaf in that gap breaks paper/live parity silently."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    w = time.time() - 300.2                            # inside the verify grace
+    mgr = _pc_mgr(strike=64000.0, final=None)
+    _arm(mgr, w)
+    assert mgr.holding_tokens() == {"tokU", "tokD"}
+
+
+def test_arm_is_ignored_while_a_ladder_rests_and_never_goes_backwards(tmp_path,
+                                                                     monkeypatch):
+    """One entry path per window: a resting ladder handles its own post-close,
+    and a stale window must not overwrite a newer intent."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    w = time.time() - 150.0
+    mgr = _pc_mgr(strike=64000.0, final=64010.0)
+    _place(mgr, w, side="Up", budget=30.0, headroom=2.0)
+    _arm(mgr, w)
+    assert mgr.pending is None                         # ladder owns the window
+    asyncio.run(mgr._retire("test"))
+    _arm(mgr, w + 300)
+    _arm(mgr, w)                                       # older window ignored
+    assert mgr.pending["window_ts"] == w + 300
 
 
 # ── deep rungs survive a transient lock weakening ─────────────────────────────
 DEEP_CFG = dict(CFG, maker_ladder=[[0.90, 0.15, 1.0], [0.60, 0.20, 1.0],
                                    [0.35, 0.30, 1.5], [0.20, 0.35, 1.5]],
                 post_close_enabled=True, post_close_s=120.0,
-                post_close_price=0.995, post_close_budget_frac=0.40)
+                post_close_ladder=PC_LADDER, post_close_budget_frac=0.40)
 
 
 def _deep(proj):

@@ -21,13 +21,15 @@ goes cold, or the window runs out → book ALL accumulated fills as ONE
 position at the blended price (holds to resolution). PAPER fills are
 print-through conservative: only prints STRICTLY BELOW a rung count.
 
-Rung prices auto-recalibrate nightly from the trailing tape's dip CDF
-(memory/state/maker_ladder.json, hard-clamped to [0.15, 0.95]) — the engine
-gets better as data accrues; the fractions and headroom rules stay frozen.
+Rung prices live in settings.yaml and are set by BREAK-EVEN economics (see
+LADDER_PRICE_MIN below), not by dip frequency. The nightly job only REPORTS the
+trailing dip CDF; nothing overwrites the geometry. An operator-supplied
+memory/state/maker_ladder.json still overrides prices if present, clamped to
+[0.15, 0.95] and only when its rung count matches the config seed.
 
 After the close the ladder does NOT die: the post-close certainty phase holds it
 for post_close_s, verifies the winner from the two official TWAP boundary
-captures (not the projection), and arms one rung at post_close_price.
+captures (not the projection), and arms post_close_ladder on the settled side.
 """
 from __future__ import annotations
 
@@ -88,6 +90,7 @@ class MakerBidManager:
         self.cfg = cfg
         self.paper = paper
         self.active: dict | None = None
+        self.pending: dict | None = None   # post-close intent for a closing window
         self._last_poll = 0.0
         self._ladder_cache: tuple[float, list] | None = None  # (mtime, ladder)
 
@@ -96,16 +99,26 @@ class MakerBidManager:
     def resting_on(self, window_ts: int) -> bool:
         return self.active is not None and self.active["window_ts"] == window_ts
 
-    def holding_token(self) -> str | None:
-        """Token this ladder still has orders on, so the WS keeps it subscribed.
+    def holding_tokens(self) -> set[str]:
+        """Tokens the WS must stay subscribed to.
 
         The post-close phase rests past the window's end, but rotation used to
         unsubscribe the closed window's tokens the moment the next contract was
         discovered — leaving a live bid on a token we no longer listen to. Paper
         then cannot see a fill at all (0 of 1,015 prints for a closed window
         reached us), and live loses its print stream.
+
+        BOTH sides of a pending window are kept: the winner is unknown until the
+        closing boundary lands ~2s later, and going deaf in that gap would break
+        paper/live parity silently — live still polls its fills over REST.
         """
-        return self.active["token_id"] if self.active else None
+        out: set[str] = set()
+        if self.active:
+            out.add(self.active["token_id"])
+        if self.pending:
+            out.update(t for t in (self.pending["token_up"],
+                                   self.pending["token_down"]) if t)
+        return out
 
     def ladder(self) -> list:
         """[[price, budget_frac, min_headroom_mult], ...] — the nightly
@@ -205,31 +218,97 @@ class MakerBidManager:
             return None
         return "Up" if final >= strike else "Down"
 
-    async def _place_post_close_rung(self, a: dict) -> None:
-        """One extra bid, armed only once the winner is SETTLED FACT.
+    async def _place_post_close_ladder(self, a: dict) -> None:
+        """Bids on the SETTLED winner, armed only once the outcome is fact.
 
-        Pre-close this price is illegal — 0.999 − 0.995 is far inside the 4¢ edge
+        Pre-close these prices are illegal — all of them sit inside the 4¢ edge
         floor. Post-close the floor does not apply: the tier probability was a
-        tail bound on an unfinished average, and this is a finished one, so the
-        0.5¢ is certain rather than expected. Makers pay no fee, so it is gross.
+        tail bound on an unfinished average and this is a finished one, so the
+        margin is certain rather than expected. Makers pay no fee, so it is gross.
+
+        Geometry measured 08-11 over 150 windows / 1,364 post-close sales of the
+        winner. Sellers hit 0.990 (p05 through p50 all 0.990) and supply is
+        ~$475/window — far more than the bankroll can absorb — so the top rung
+        takes MARGIN over queue position: resting 0.995 wins the race and halves
+        the 1¢. The deep rungs are the fat tail; 8 of the 1,364 sales printed at
+        or below 0.95 and returned 22% against 1.01%, and a resting bid that
+        never fills costs nothing.
         """
-        px = float(self.cfg.get("post_close_price", 0.995))
-        frac = float(self.cfg.get("post_close_budget_frac", 0.40))
-        budget = sum(r["shares"] * r["price"] for r in a["rungs"])
-        usd = round(budget * frac, 2)
+        rungs = self.cfg.get("post_close_ladder") or [[0.99, 1.0]]
+        budget = a.get("pc_budget")        # standalone arm carries its own budget
+        if budget is None:
+            budget = (sum(r["shares"] * r["price"] for r in a["rungs"])
+                      * float(self.cfg.get("post_close_budget_frac", 0.40)))
         a["pc_placed"] = True          # set first: one attempt per window, ever
-        if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
+        placed = []
+        for px, frac in rungs:
+            px = float(px)
+            usd = round(budget * float(frac), 2)
+            if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
+                continue
+            shares = round(usd / px, 2)
+            order_id = await self.trader.place_gtc_bid(a["token_id"], px, shares)
+            if not order_id:
+                continue
+            a["rungs"].append({"price": px, "shares": shares,
+                               "order_id": order_id, "filled": 0.0})
+            placed.append((px, shares))
+        if placed:
+            logger.info("MAKER POST-CLOSE %s — %s on the settled winner",
+                        a["side"], "/".join(f"${s * p:.0f}@{p:.3f}"
+                                            for p, s in placed))
+
+    def arm_post_close(self, window_ts: int, market_id: str, question: str,
+                       token_up: str, token_down: str, budget_usd: float,
+                       snapshot: dict) -> None:
+        """Remember a closing window so post-close can arm WITHOUT a pre-close
+        ladder.
+
+        The outcome is settled fact in every window, but the pre-close ladder
+        only rests on the few that lock at max tier with k in [3,25]s — so tying
+        post-close to it threw away all but a handful of windows a day. Called
+        every tick near the close; dedupes by window_ts.
+        """
+        if self.active is not None or budget_usd < MIN_NOTIONAL_USD:
             return
-        shares = round(usd / px, 2)
-        order_id = await self.trader.place_gtc_bid(a["token_id"], px, shares)
-        if not order_id:
+        if self.pending is not None and self.pending["window_ts"] >= window_ts:
             return
-        a["rungs"].append({"price": px, "shares": shares,
-                           "order_id": order_id, "filled": 0.0})
-        logger.info("MAKER POST-CLOSE %s — $%.0f@%.3f on the settled winner",
-                    a["side"], shares * px, px)
+        self.pending = {"window_ts": window_ts, "market_id": market_id,
+                        "question": question, "token_up": token_up,
+                        "token_down": token_down, "budget": budget_usd,
+                        "snapshot": snapshot}
+
+    async def _promote_pending(self) -> None:
+        """Turn a pending intent into an active post-close-only ladder, once the
+        settled winner is known. Fails closed exactly like the ladder path."""
+        p = self.pending
+        if p is None or not self.cfg.get("post_close_enabled"):
+            return
+        now, close = time.time(), p["window_ts"] + 300
+        if now < close:
+            return
+        if now - close > float(self.cfg.get("post_close_s", 90.0)):
+            self.pending = None                    # the phase already expired
+            return
+        winner = self.certain_winner(p["window_ts"])
+        if winner is None:
+            # Normal for the first ~2s (the closing report lands p90 2.2s late);
+            # a real delivery hole gives up rather than guess a $0 token.
+            if now - close > PC_VERIFY_GRACE_S:
+                self.pending = None
+            return
+        self.pending = None
+        self.active = {
+            "window_ts": p["window_ts"], "market_id": p["market_id"],
+            "question": p["question"], "side": winner,
+            "token_id": p["token_up"] if winner == "Up" else p["token_down"],
+            "rungs": [], "placed": now, "snapshot": p["snapshot"],
+            "pc_budget": p["budget"],
+        }
 
     async def maintain(self) -> None:
+        if self.active is None:
+            await self._promote_pending()
         a = self.active
         if a is None:
             return
@@ -264,7 +343,7 @@ class MakerBidManager:
                     # unbounded loss this leg has, so it is checked every tick.
                     reason = "lock missed the winner"
                 elif not a.get("pc_placed"):
-                    await self._place_post_close_rung(a)
+                    await self._place_post_close_ladder(a)
         elif k <= self.cfg["maker_k_cancel_s"]:
             # Hold through the close only when the post-close phase will take
             # over; otherwise this is still the cancel point.

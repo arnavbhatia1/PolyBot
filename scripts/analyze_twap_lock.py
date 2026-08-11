@@ -386,13 +386,17 @@ def open_gap_read(hours: float = 26.0, min_disp: float = 10.0):
             "gap": wins / len(asks) - asks[len(asks) // 2]}
 
 
-def ladder_recalibrate(days: int = 1, write: bool = True):
-    """Nightly maker-ladder recalibration: re-derive rung PRICES from the
-    trailing tape's dip-depth CDF (min winner-ask while max-tier locked).
-    Quantiles 40/65/85 of the dip minima → rungs, hard-clamped [0.85, 0.975],
-    ≥ 2¢ apart. Fractions/headroom are frozen in settings; prices are the only
-    thing the data may move, and only inside the clamps. Too few dips → no
-    write (the seed ladder stands)."""
+def ladder_recalibrate(days: int = 1, write: bool = False):
+    """REPORT-ONLY: the trailing tape's dip-depth CDF (min winner-ask while
+    max-tier locked), as quantiles of the dip minima. It never writes the
+    ladder.
+
+    Rung prices are set by BREAK-EVEN economics, not by dip frequency: a
+    resting buy held to resolution breaks even at exactly the price paid, so a
+    0.20 rung needs 20% against a measured 77-96% win rate. A dip-quantile
+    estimator measures only how deep panic happened to reach in the trailing
+    day, so it drags the deep rungs shallow — the direction that was already
+    measured wrong. `write` is retained for call-shape parity and ignored."""
     from polybot.paths import MAKER_LADDER_PATH
     since = max(datetime.now(timezone.utc).timestamp() - days * 86400.0,
                 TWAP_SWITCH_TS)
@@ -439,22 +443,9 @@ def ladder_recalibrate(days: int = 1, write: bool = True):
         # every rung on 53 windows) — the seed ladder stands.
         return {"n_locked": len(mins), "n_dips": len(dips), "applied": False}
     def q(f):
-        px = dips[min(int(f * len(dips)), len(dips) - 1)]
-        return min(0.95, max(0.15, round(px, 2)))   # == maker_bid LADDER_PRICE_MIN/MAX
-    rungs = [q(0.40), q(0.65), q(0.85)]
-    # enforce descending, ≥2¢ apart
-    for i in range(1, 3):
-        rungs[i] = min(rungs[i], round(rungs[i - 1] - 0.02, 2))
-        rungs[i] = max(0.15, rungs[i])
-    out = {"ladder": [[rungs[0], 0.40, 1.0], [rungs[1], 0.35, 1.0],
-                      [rungs[2], 0.25, 1.5]],
-           "n_locked": len(mins), "n_dips": len(dips),
-           "asof": datetime.now(timezone.utc).isoformat()}
-    if write:
-        MAKER_LADDER_PATH.parent.mkdir(parents=True, exist_ok=True)
-        MAKER_LADDER_PATH.write_text(json.dumps(out, indent=2))
-    return {"n_locked": len(mins), "n_dips": len(dips),
-            "rungs": rungs, "applied": write}
+        return round(dips[min(int(f * len(dips)), len(dips) - 1)], 2)
+    return {"n_locked": len(mins), "n_dips": len(dips), "applied": False,
+            "dip_q": [q(0.10), q(0.25), q(0.50), q(0.75), q(0.90)]}
 
 
 def health_read(db_path=None, min_edge: float = 0.04, days: int = 1):

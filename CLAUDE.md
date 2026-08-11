@@ -256,7 +256,7 @@ sniper buys those dips and holds ≤30s to resolution.
   ping; the leg's own bar mirrors the lock bar and its kill is the operator
   flipping `open_edge_enabled: false`.
 - **POST-CLOSE CERTAINTY PHASE** (`maker_bid.certain_winner` +
-  `_place_post_close_rung`, `maker.post_close_*` in settings): the market keeps
+  `_place_post_close_ladder`, `maker.post_close_*` in settings): the market keeps
   ACCEPTING ORDERS FOR MINUTES after the close — verified live at close+143s,
   `acceptingOrders=True` on both Gamma and the CLOB, winner showing 101 bid
   levels and ZERO asks (so nothing can be lifted; only a resting bid works).
@@ -264,7 +264,36 @@ sniper buys those dips and holds ≤30s to resolution.
   window where makers win on EVERY day (takers lose it 5/5), because the outcome
   is settled fact while sellers who haven't read it yet dump the winner. So the
   ladder no longer dies at `maker_k_cancel_s` — it holds through the close for
-  `post_close_s` (120s) and arms one extra rung at `post_close_price` (0.995).
+  `post_close_s` (90s) and arms `post_close_ladder` on the settled side.
+  **It also arms with NO pre-close ladder at all** (`arm_post_close` /
+  `_promote_pending`): the outcome is settled fact in EVERY window, but the
+  ladder only rests on the few that lock at max tier inside k [3,25]s, so tying
+  the two together threw away all but a handful of windows a day. The fire path
+  arms an intent on every window (safe on any strike — `certain_winner`
+  re-verifies both boundary captures at promotion and fails closed), sized by
+  `post_close_bankroll_frac` since a settled outcome is not a Kelly bet. Both
+  sides stay WS-subscribed while pending, because the winner is unknown until
+  the closing boundary lands ~2s later and going deaf there would break
+  paper/live parity silently (live polls its fills over REST). Standalone fills
+  stamp `signal_leg="post_close"`; a ladder-promoted post-close stays
+  `maker_bid` because those fills blend with pre-close rungs into one position.
+  **Geometry measured 08-11 over 150 windows / 1,364 post-close sales of the
+  winner** (`data-api/trades`, winner from Gamma `outcomePrices`, 0
+  disagreements with `finalPrice >= priceToBeat`): ~$475/window of supply,
+  149/150 windows had some, print price 0.990 from p05 through p50, 1,115 of
+  1,364 inside the first 60s, and trades stop dead at close+300s. The window is
+  90s not 300s because the tail is dollar-rich but PROFIT-poor — $560 of the
+  $589 profit-if-all sits at ≤0.99 while the 60-300s flow prints at median 0.999
+  (0.1¢/share) — and a 300s rest would hold the single ladder slot straight
+  through the next window's k [3,25]s placement point, suppressing the pre-close
+  leg outright. Supply far
+  exceeds what the bankroll can absorb, so the top rung takes MARGIN over queue
+  position — 0.995 wins the race and halves the 1¢. Rungs 0.99/0.97/0.95/0.90
+  split 70/10/10/10: the deep ones are the fat tail (8 of 1,364 sales printed
+  ≤0.95, returning 22% against 1.01%) and a resting bid that never fills costs
+  nothing. **This leg is capital-VELOCITY bound, not supply bound** — the
+  ceiling is bankroll × turns/day, which is why manual redemption is the
+  binding constraint rather than any edge.
   **This phase does NOT use the projection.** It uses the two official TWAP
   boundary captures: `final >= strike` (tie → Up) is the exact rule Polymarket
   resolves on, and both must be captured AND `strike_reliable` or every rung is
@@ -277,14 +306,20 @@ sniper buys those dips and holds ≤30s to resolution.
   resolution. Its bar is its own; `sniper_enabled: false` still halts it.
 - **Lock-informed maker LADDER** (`execution/maker_bid.py`, §3d in settings):
   when a window locks but no dip is trading, a LADDER of GTC bids rests on
-  the locked side (seed ≈0.96/0.92/0.87, budget split 40/35/25) — the
+  the locked side (0.90/0.60/0.35/0.20, budget split 15/20/30/35) — the
   measured dip CDF (233 locked windows) says panic goes DEEP when it comes
   (touch rates: 0.96 → 5.6%, 0.93 → 4.7%, 0.86 → 3.9%), so rungs across the
   depth beat any single bid (a static 0.935 filled 0/45). Panic fills resting
   orders with ZERO latency and queue priority instead of a 0.4s FOK race, no
-  250ms taker hold. Rung PRICES re-derive nightly from the trailing tape's
-  dip quantiles (`ladder_recalibrate` → `state/maker_ladder.json`, clamped
-  [0.85, 0.975]); fractions + headroom rules stay frozen. One ladder at a
+  250ms taker hold. Rung prices are set by BREAK-EVEN economics in
+  settings.yaml — a resting buy held to resolution breaks even at exactly the
+  price paid, so a 0.20 rung needs 20% against a measured 77-96%. The nightly
+  `ladder_recalibrate` only REPORTS the trailing dip CDF and never writes the
+  geometry: a dip-frequency estimator measures how deep panic happened to reach
+  in one day, so it drags the deep rungs shallow — the direction already
+  measured wrong. An operator-supplied `state/maker_ladder.json` still
+  overrides prices, clamped [0.15, 0.95] and only when its rung count matches
+  the config. One ladder at a
   time; placed from the fire path when the taker SKIPs on a locked window
   (k within [3, 25]s) — placement demands the NEVER-BREACHED max tier, and
   the deepest rung arms only at ≥1.5× that margin (deep fills concentrate in

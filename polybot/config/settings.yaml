@@ -57,7 +57,9 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-07T21:45:00+00:00"  # maker LADDER deploy (CDF-priced rungs):
+  validation_epoch: "2026-08-11T18:30:00+00:00"  # POST-CLOSE DECOUPLED deploy:
+                               # post-close now arms on every window, not only the
+                               # few that locked, so a fill means something new —
                                # the bar scores only the code being validated.
                                # The nightly health job scores only the current mode's fills
                                # at/after this instant in BOTH modes (earlier fills ran the
@@ -119,11 +121,12 @@ open_window:
 # =============================================================================
 maker:
   maker_bid_enabled: true
-  # Rung seed: [price, budget_fraction, min_headroom_mult]. Prices re-derive
-  # NIGHTLY from the trailing tape's dip-depth CDF (state/maker_ladder.json,
-  # clamped to [0.92, 0.95]); fractions + headroom stay frozen. The deepest
-  # rung arms only when |disp| ≥ 1.5× the max-tier margin — deep fills happen
-  # in violent windows where breach risk is conditionally elevated.
+  # Rungs: [price, budget_fraction, min_headroom_mult]. THIS is the source of
+  # truth — the nightly job only reports the trailing dip CDF and never
+  # rewrites these (a dip-frequency estimator drags the deep rungs shallow).
+  # Engine clamps any operator override to [0.15, 0.95]. The deepest rung arms
+  # only when |disp| ≥ 1.5× the max-tier margin — deep fills happen in violent
+  # windows where breach risk is conditionally elevated.
   # Geometry measured 08-10 over 4 days of ladder-era tape: 0.95/0.94/0.92 books
   # the same fill count as 0.96/0.92/0.87 at +0.4¢/sh, and fixes two defects —
   # 0.96 sits outside the 4¢ edge floor (p99.5 cap is 0.955), and the 0.87 rung
@@ -160,8 +163,29 @@ maker:
   # leg's only unbounded loss. Every tick also re-checks that the side we are
   # resting on is the side that actually won.
   post_close_enabled: true
-  post_close_s: 120.0            # keep resting this long past the close
-  post_close_price: 0.995        # certain 0.5c, gross (makers pay no fee)
+  # Measured 08-11 over 150 windows / 1,364 post-close sales of the winner:
+  # $475/window of supply, 149/150 windows had some, and the print price is
+  # 0.990 from p05 all the way to p50, with 1,115 of 1,364 inside the first 60s.
+  # 90s, NOT the 300s where trades finally stop: of $589 profit-if-all, $560 is
+  # at <= 0.99, while the 60-300s tail prints at median 0.999 (0.1c/share). A
+  # 300s rest would also hold the single ladder slot straight through the next
+  # window's k in [3,25]s placement point and suppress the pre-close leg.
+  post_close_s: 90.0             # keep resting this long past the close
+  # Budget when post-close arms WITHOUT a pre-close ladder (fraction of
+  # bankroll). The outcome is settled fact, so this is not a Kelly bet — the
+  # real limit is redemption latency, since capital is locked until the winning
+  # tokens clear.
+  post_close_bankroll_frac: 0.25
+  # [price, share of the post-close budget]. Supply far exceeds what the
+  # bankroll can absorb, so the top rung takes MARGIN over queue position —
+  # 0.995 wins the race and halves the 1c. The deep rungs are the fat tail:
+  # 8 of 1,364 sales printed <= 0.95 and returned 22% against 1.01%, and a
+  # resting bid that never fills costs nothing.
+  post_close_ladder:
+    - [0.99, 0.70]
+    - [0.97, 0.10]
+    - [0.95, 0.10]
+    - [0.90, 0.10]
   post_close_budget_frac: 0.40   # of the window's original ladder budget
 
 # =============================================================================

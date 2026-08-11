@@ -940,6 +940,27 @@ async def _evaluate_signal_and_enter(
                             "token_id_up": token_up,
                             "token_id_down": token_down,
                         }, "strike_price": strike})
+            # POST-CLOSE CERTAINTY, decoupled from the ladder. The outcome is
+            # settled fact in EVERY window, but the ladder only rests on the few
+            # that lock at max tier inside k [3,25]s — tying post-close to it
+            # threw away all but a handful of windows a day. Arming is safe on
+            # any window: certain_winner re-verifies both boundary captures at
+            # promotion and fails closed. Fills book as their own leg; a
+            # ladder-promoted post-close stays "maker_bid" because those fills
+            # blend with pre-close rungs into one position.
+            if (_MAKER_MGR is not None and _mk.get("post_close_enabled")):
+                _pcb = round(bankroll
+                             * float(_mk.get("post_close_bankroll_frac", 0.25))
+                             * (breaker.kelly_multiplier if breaker else 1.0), 2)
+                _MAKER_MGR.arm_post_close(
+                    _w_ts, cid, contract.get("question", ""),
+                    token_up, token_down, _pcb,
+                    {"trade_context": {
+                        "signal_leg": "post_close",
+                        "strike_price": strike,
+                        "token_id_up": token_up,
+                        "token_id_down": token_down,
+                    }, "strike_price": strike})
             if _snipe.action in ("LATE_SNIPE_YES", "LATE_SNIPE_NO"):
                 _snipe.action = "BUY_YES" if _snipe.action == "LATE_SNIPE_YES" else "BUY_NO"
                 signal = _snipe
@@ -1540,9 +1561,8 @@ async def _discover_contract_and_subscribe(market_scanner: Any,
     # previous contract, so a deferred token still gets swept once it retires.
     if clob_ws:
         keep = set(current_tokens)
-        held = _MAKER_MGR.holding_token() if _MAKER_MGR is not None else None
-        if held:
-            keep.add(held)
+        if _MAKER_MGR is not None:
+            keep |= _MAKER_MGR.holding_tokens()
         stale_tokens = [t for t in ws_subscribed_tokens if t not in keep]
         if stale_tokens:
             await clob_ws.unsubscribe(stale_tokens)
@@ -2580,9 +2600,10 @@ async def main() -> None:
     scheduler.register_job("price_sum_retention", _price_sum_retention_job)
 
     async def _maker_ladder_job() -> dict:
-        """Nightly self-improvement: re-derive the maker rung prices from the
-        trailing tape's dip CDF (clamped; fractions frozen). The manager picks
-        the new prices up on its next placement — no restart needed."""
+        """Nightly REPORT of the trailing tape's dip-depth CDF. Diagnostic
+        only — rung prices come from break-even economics in settings.yaml and
+        this job never writes them (a dip-frequency estimator drags the deep
+        rungs shallow, the direction already measured wrong)."""
         import importlib.util as _ilu
         lp = Path(__file__).resolve().parent.parent / "scripts" / "analyze_twap_lock.py"
         spec = _ilu.spec_from_file_location("analyze_twap_lock_l", lp)
