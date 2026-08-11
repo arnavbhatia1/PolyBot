@@ -1,7 +1,7 @@
 {
-  "total_attempts": 2055,
+  "total_attempts": 2057,
   "total_fills": 354,
-  "buy_attempts": 1903,
+  "buy_attempts": 1905,
   "buy_fills": 320,
   "sell_attempts": 152,
   "sell_fills": 34,
@@ -13,8 +13,8 @@
     "below_min": 0,
     "network_error": 7,
     "auth": 0,
-    "other": 2
+    "other": 4
   },
-  "fill_rate": 0.1723,
-  "last_updated": "2026-08-08T22:24:55.394514+00:00"
+  "fill_rate": 0.1721,
+  "last_updated": "2026-08-10T04:39:59.228376+00:00"
 }
