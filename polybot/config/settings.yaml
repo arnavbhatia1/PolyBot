@@ -129,10 +129,18 @@ maker:
   # 0.96 sits outside the 4¢ edge floor (p99.5 cap is 0.955), and the 0.87 rung
   # lived in the only band where a locked side has ever LOST (1 of 7 windows
   # below 0.80, against a 4.3% break-even loss rate at a 0.92 fill).
+  # DEEP-WEIGHTED. Break-even win rate for a resting buy held to resolution is
+  # the price paid, so a 0.20 rung needs 20% while a 0.95 rung needs 95%. The
+  # market's best formable maker realizes +61c/sh at 0.09-0.21 and +41c/sh at
+  # 0.37 and LOSES 5.9c/sh at 0.95; its 124-of-814 windows is the rate a deep
+  # bid gets wicked, not a filter. Budget therefore sits mostly deep, where each
+  # dollar also buys 3-5x the shares. Shallow rungs stay small: they fill often
+  # but the margin over break-even is thin-to-negative.
   maker_ladder:
-    - [0.95, 0.40, 1.0]
-    - [0.94, 0.35, 1.0]
-    - [0.92, 0.25, 1.5]
+    - [0.90, 0.15, 1.0]
+    - [0.60, 0.20, 1.0]
+    - [0.35, 0.30, 1.5]
+    - [0.20, 0.35, 1.5]
   maker_k_place_max: 25.0       # place once locked with at most this many s left
   maker_k_place_min: 3.0        # too late to bother resting under this
   maker_k_cancel_s: 1.0         # pull all rungs before the close (post_close off)

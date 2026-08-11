@@ -2,13 +2,16 @@
 the lock-dip taker.
 
 Once the final-30s projection locks a side at the never-breached tier, a
-ladder of GTC bids rests on that side. The measured dip-depth CDF (233 locked
-windows, 08-07) says panic goes DEEP when it comes at all — P(touch|locked):
-0.96 → 5.6%, 0.93 → 4.7%, 0.86 → 3.9% — so a single shallow bid starves
-(0/45 placements) while rungs spread across the depth capture the near-full
-move at real prices. The panic seller of the winner and the momentum buyer of
-the loser are the same flow on a binary book; the ladder serves both with
-queue priority and zero reaction latency.
+DEEP-WEIGHTED ladder of GTC bids rests on that side and holds to resolution.
+Break-even win rate for such a bid is exactly the price paid, so the edge
+widens the deeper the rung sits: the market's most profitable formable maker
+(31% ROC, t 3.19, 5/5 positive days) realizes +61¢/sh at 0.09-0.21 and +41¢/sh
+at 0.37 while LOSING 5.9¢/sh at 0.95, and its 124-of-814 window count is simply
+the ~15% rate at which a deep bid gets wicked, not a filter. So most of the
+budget sits deep, where each dollar also buys 3-5x the shares; shallow rungs
+stay small because they fill often for a thin-to-negative margin. The panic
+seller of the winner and the momentum buyer of the loser are the same flow on a
+binary book; the ladder serves both with queue priority and zero latency.
 
 Lifecycle (one ladder, one window at a time): place all qualifying rungs at
 max-tier lock (deepest rungs demand extra displacement headroom — deep fills
@@ -19,8 +22,12 @@ position at the blended price (holds to resolution). PAPER fills are
 print-through conservative: only prints STRICTLY BELOW a rung count.
 
 Rung prices auto-recalibrate nightly from the trailing tape's dip CDF
-(memory/state/maker_ladder.json, hard-clamped to [0.85, 0.975]) — the engine
+(memory/state/maker_ladder.json, hard-clamped to [0.15, 0.95]) — the engine
 gets better as data accrues; the fractions and headroom rules stay frozen.
+
+After the close the ladder does NOT die: the post-close certainty phase holds it
+for post_close_s, verifies the winner from the two official TWAP boundary
+captures (not the projection), and arms one rung at post_close_price.
 """
 from __future__ import annotations
 
@@ -35,16 +42,36 @@ from polybot.paths import MAKER_LADDER_PATH
 logger = logging.getLogger("polybot")
 
 MIN_NOTIONAL_USD = 1.0          # CLOB floor — below this nothing books
-LADDER_PRICE_MIN = 0.92         # hard clamps on the nightly recalibration — no data
-LADDER_PRICE_MAX = 0.95         # artifact may quote outside these. Measured 08-10:
-                                # rungs at 0.85-0.90 filled 0 times in 285 placements
-                                # (nothing trades there once a window is locked), and
-                                # the old floor let a self-defeating loop run — rare
-                                # deep dips -> deep quantiles -> deeper rungs -> never
-                                # touched. The ceiling is 0.95, not 0.955: the p99.5
-                                # cap is 0.955 and the tick is 0.01 here, so 0.95 is
-                                # the highest tick-legal price inside the edge floor.
+LADDER_PRICE_MIN = 0.15         # hard clamps on the nightly recalibration — no data
+LADDER_PRICE_MAX = 0.95         # artifact may quote outside these.
+                                #
+                                # The band is DEEP on purpose. Break-even win
+                                # rate for a resting buy held to resolution is
+                                # exactly the price paid, so the edge widens as
+                                # the rung goes deeper: the market's most
+                                # profitable formable maker (31% ROC, t 3.19,
+                                # 5/5 days) realizes +61c/sh at 0.09-0.21 and
+                                # +41c/sh at 0.37, while LOSING 5.9c/sh at 0.95.
+                                # Its 124-of-814 window count is not selectivity
+                                # — it is the 15% rate at which a deep bid gets
+                                # wicked. A shallow ladder needs 92-95% just to
+                                # break even and collects pennies when it wins;
+                                # a deep one needs 20-40% and collects most of
+                                # the dollar. Deep rungs still demand extra lock
+                                # headroom, and every rung dies the moment the
+                                # lock weakens below p99.5.
 
+
+DEEP_HOLD_MAX_PX = 0.85         # rungs BELOW this price survive a transient lock
+                                # weakening; at/above it they pull. The wick that
+                                # fills a deep rung IS the spot move that pushes
+                                # the projection under the p99.5 margin, so a
+                                # blanket cancel runs away at exactly the moment
+                                # the trade appears. A deep rung is paid for that
+                                # risk (break-even 20-35% against a measured
+                                # 77-96% win rate) and wicks revert; a 0.90 rung
+                                # needs 90% and is not. Everything still dies if
+                                # the projection FLIPS side or goes cold.
 
 PC_VERIFY_GRACE_S = 5.0         # how long the post-close phase waits for the
                                 # closing boundary report before giving up. It
@@ -154,7 +181,7 @@ class MakerBidManager:
         # STRICTLY below a rung = the market traded through that level; a
         # print AT the rung may have gone entirely to earlier queue.
         for r in a["rungs"]:
-            if px < r["price"]:
+            if not r.get("cancelled") and px < r["price"]:
                 r["filled"] = min(r["shares"], r["filled"] + sz)
 
     # -- lifecycle (every main-loop tick; cheap float math off the hot path) --
@@ -251,10 +278,15 @@ class MakerBidManager:
                 reason = "projection cold"
             else:
                 disp = proj - a["snapshot"]["strike_price"]
-                held = disp >= twap_margin(TWAP_MARGIN_P995, k) if a["side"] == "Up" \
-                    else -disp >= twap_margin(TWAP_MARGIN_P995, k)
-                if not held:
-                    reason = "lock weakened"
+                signed = disp if a["side"] == "Up" else -disp
+                if signed <= 0.0:
+                    # Projection now points at the OTHER side — nothing is worth
+                    # holding, at any depth.
+                    reason = "projection flipped"
+                elif signed < twap_margin(TWAP_MARGIN_P995, k):
+                    # Weakened but still ours: shallow rungs pull, deep rungs stay.
+                    if await self._prune_shallow(a):
+                        reason = "lock weakened"
         if not self.paper and reason is None and now - self._last_poll >= 1.0:
             self._last_poll = now
             for r in a["rungs"]:
@@ -263,17 +295,36 @@ class MakerBidManager:
                     r["filled"] = min(r["shares"], matched)
         # Every rung fully filled -> book now; the position needs to be on
         # the books (it holds to resolution), not parked in dead order slots.
-        if reason is None and all(r["filled"] >= r["shares"] - 1e-9
-                                  for r in a["rungs"]):
+        live = [r for r in a["rungs"] if not r.get("cancelled")]
+        if reason is None and live and all(r["filled"] >= r["shares"] - 1e-9
+                                          for r in live):
             reason = "filled"
         if reason is not None:
             await self._retire(reason)
+
+    async def _prune_shallow(self, a: dict) -> bool:
+        """Cancel rungs at/above DEEP_HOLD_MAX_PX; True when none are left live.
+
+        Accumulated fills are preserved and still book at retire — only the
+        resting remainder is pulled.
+        """
+        for r in a["rungs"]:
+            if r.get("cancelled") or r["price"] < DEEP_HOLD_MAX_PX:
+                continue
+            r["cancelled"] = True
+            try:
+                await self.trader.cancel_gtc(r["order_id"])
+            except Exception as e:
+                logger.warning("MAKER CANCEL failed (%s)", e)
+        return all(r.get("cancelled") for r in a["rungs"])
 
     async def _retire(self, reason: str) -> None:
         a, self.active = self.active, None
         if a is None:
             return
         for r in a["rungs"]:
+            if r.get("cancelled"):
+                continue
             try:
                 await self.trader.cancel_gtc(r["order_id"])
             except Exception as e:

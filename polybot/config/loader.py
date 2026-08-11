@@ -95,11 +95,11 @@ def validate_config(config: dict[str, Any]) -> None:
     ladder, found = _get_nested(config, "maker.maker_ladder")
     if not found or not (isinstance(ladder, list) and 1 <= len(ladder) <= 5
                          and all(isinstance(r, list) and len(r) == 3
-                                 and 0.80 <= float(r[0]) <= 0.98
+                                 and 0.15 <= float(r[0]) <= 0.95
                                  and 0.0 < float(r[1]) <= 1.0
                                  and 1.0 <= float(r[2]) <= 3.0 for r in ladder)):
         errors.append("maker.maker_ladder: must be 1-5 rungs of "
-                      "[price 0.80-0.98, frac 0-1, headroom 1-3]")
+                      "[price 0.15-0.95, frac 0-1, headroom 1-3]")
     _check_range("maker.maker_k_place_max", 5.0, 29.0)
     _check_range("maker.maker_k_place_min", 1.0, 10.0)
     _check_range("maker.maker_k_cancel_s", 0.5, 5.0)

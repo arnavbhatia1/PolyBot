@@ -440,12 +440,12 @@ def ladder_recalibrate(days: int = 1, write: bool = True):
         return {"n_locked": len(mins), "n_dips": len(dips), "applied": False}
     def q(f):
         px = dips[min(int(f * len(dips)), len(dips) - 1)]
-        return min(0.95, max(0.92, round(px, 2)))   # == maker_bid LADDER_PRICE_MIN/MAX
+        return min(0.95, max(0.15, round(px, 2)))   # == maker_bid LADDER_PRICE_MIN/MAX
     rungs = [q(0.40), q(0.65), q(0.85)]
     # enforce descending, ≥2¢ apart
     for i in range(1, 3):
         rungs[i] = min(rungs[i], round(rungs[i - 1] - 0.02, 2))
-        rungs[i] = max(0.92, rungs[i])
+        rungs[i] = max(0.15, rungs[i])
     out = {"ladder": [[rungs[0], 0.40, 1.0], [rungs[1], 0.35, 1.0],
                       [rungs[2], 0.25, 1.5]],
            "n_locked": len(mins), "n_dips": len(dips),

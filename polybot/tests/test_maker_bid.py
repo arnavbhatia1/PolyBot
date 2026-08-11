@@ -134,12 +134,11 @@ def test_nightly_file_moves_prices_only_and_clamps(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", lp)
     mgr = _mgr()
     rungs = mgr.ladder()
-    # Prices clamped to [0.92, 0.95]; fractions + headroom stay the SEED's.
-    # The band is deliberately narrow: above 0.95 breaches the 4c edge floor
-    # (the p99.5 cap is 0.955 and the tick is 0.01), and below 0.92 nothing
-    # trades once a window is locked — rungs at 0.85-0.90 filled 0 times in
-    # 285 placements while a deep-quantile feedback loop drove them lower.
-    assert [r[0] for r in rungs] == [0.95, 0.94, 0.92]
+    # Prices clamped to [0.15, 0.95]; fractions + headroom stay the SEED's.
+    # Deep is allowed on purpose — break-even win rate equals the price paid, so
+    # a 0.20 rung needs 20% while 0.95 needs 95%. The ceiling stays 0.95: above
+    # it a resting buy is inside the 4c edge floor and measured negative.
+    assert [r[0] for r in rungs] == [0.95, 0.94, 0.15]
     assert [r[1] for r in rungs] == [0.40, 0.35, 0.25]
     assert [r[2] for r in rungs] == [1.0, 1.0, 1.5]
 
@@ -317,3 +316,61 @@ def test_holding_token_keeps_the_ws_subscribed_past_the_close(tmp_path, monkeypa
     assert mgr.holding_token() == "tokU"
     asyncio.run(mgr._retire("test"))
     assert mgr.holding_token() is None
+
+
+# ── deep rungs survive a transient lock weakening ─────────────────────────────
+DEEP_CFG = dict(CFG, maker_ladder=[[0.90, 0.15, 1.0], [0.60, 0.20, 1.0],
+                                   [0.35, 0.30, 1.5], [0.20, 0.35, 1.5]],
+                post_close_enabled=True, post_close_s=120.0,
+                post_close_price=0.995, post_close_budget_frac=0.40)
+
+
+def _deep(proj):
+    return MakerBidManager(FakeTrader(), FakeChainlink(proj), DEEP_CFG, paper=True)
+
+
+def test_weakened_lock_pulls_shallow_but_holds_deep(tmp_path, monkeypatch):
+    """The spot wick that fills a deep rung is the same move that drops the
+    projection under the p99.5 margin. Cancelling everything there runs away at
+    exactly the moment the trade appears — so only rungs at/above 0.85 pull."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _deep(proj=64000.5)                  # still Up, but inside the margin
+    w = time.time() - 150.0
+    _place(mgr, w, budget=40.0, headroom=2.0)
+    assert [p for _, p, _ in mgr.trader.placed] == [0.90, 0.60, 0.35, 0.20]
+    asyncio.run(mgr.maintain())
+    assert mgr.resting_on(w)                   # ladder survives
+    assert len(mgr.trader.cancelled) == 1      # only the 0.90 rung
+    live = [r["price"] for r in mgr.active["rungs"] if not r.get("cancelled")]
+    assert live == [0.60, 0.35, 0.20]
+    # a pruned rung stops accumulating paper fills
+    mgr.on_print("tokU", {"price": 0.88, "size": 5.0})
+    assert mgr.active["rungs"][0]["filled"] == 0.0
+
+
+def test_projection_flip_pulls_every_depth(tmp_path, monkeypatch):
+    """Still-ours-but-weak holds deep; pointing at the OTHER side does not."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _deep(proj=63999.0)                  # below strike -> Down favoured
+    w = time.time() - 150.0
+    _place(mgr, w, budget=40.0, headroom=2.0)
+    asyncio.run(mgr.maintain())
+    assert mgr.active is None
+    assert len(mgr.trader.cancelled) == 4
+
+
+def test_deep_fill_during_weakness_still_books(tmp_path, monkeypatch):
+    """The whole point: a deep rung filled while the lock was weak must book."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _deep(proj=64000.5)
+    w = time.time() - 150.0
+    _place(mgr, w, budget=40.0, headroom=2.0)
+    asyncio.run(mgr.maintain())                # prunes 0.90, holds the rest
+    # A wick to 0.19 trades THROUGH every deep rung, so all three fill and book
+    # as one position at the blend — which needs only ~38% to break even.
+    mgr.on_print("tokU", {"price": 0.19, "size": 3.0})
+    asyncio.run(mgr._retire("test"))
+    assert len(mgr.trader.booked) == 1
+    assert mgr.trader.booked[0]["shares_gross"] == pytest.approx(9.0)
+    assert mgr.trader.booked[0]["price"] == pytest.approx(
+        (3 * 0.60 + 3 * 0.35 + 3 * 0.20) / 9, abs=1e-4)
