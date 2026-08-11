@@ -176,13 +176,15 @@ maker:
   # real limit is redemption latency, since capital is locked until the winning
   # tokens clear.
   post_close_bankroll_frac: 0.25
-  # [price, share of the post-close budget]. Supply far exceeds what the
-  # bankroll can absorb, so the top rung takes MARGIN over queue position —
-  # 0.995 wins the race and halves the 1c. The deep rungs are the fat tail:
-  # 8 of 1,364 sales printed <= 0.95 and returned 22% against 1.01%, and a
-  # resting bid that never fills costs nothing.
+  # [price, share of the post-close budget]. The top rung is 0.995 and must stay
+  # there: sellers PRINT at 0.990, so 0.995 is the price-improving bid that gets
+  # hit — measured 71 fills / 71 wins in one day at exactly 0.9950. A 0.99 rung
+  # merely JOINS that crowd, and the paper matcher (prints strictly below the
+  # bid) would stop seeing fills entirely. 71 fills at 0.5c beats a handful at
+  # 1c. The deep rungs are the fat tail: 8 of 1,364 sales printed <= 0.95 and
+  # returned 22% against 1.01%, and a resting bid that never fills costs nothing.
   post_close_ladder:
-    - [0.99, 0.70]
+    - [0.995, 0.70]
     - [0.97, 0.10]
     - [0.95, 0.10]
     - [0.90, 0.10]

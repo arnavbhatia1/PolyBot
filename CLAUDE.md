@@ -286,12 +286,14 @@ sniper buys those dips and holds ≤30s to resolution.
   $589 profit-if-all sits at ≤0.99 while the 60-300s flow prints at median 0.999
   (0.1¢/share) — and a 300s rest would hold the single ladder slot straight
   through the next window's k [3,25]s placement point, suppressing the pre-close
-  leg outright. Supply far
-  exceeds what the bankroll can absorb, so the top rung takes MARGIN over queue
-  position — 0.995 wins the race and halves the 1¢. Rungs 0.99/0.97/0.95/0.90
-  split 70/10/10/10: the deep ones are the fat tail (8 of 1,364 sales printed
-  ≤0.95, returning 22% against 1.01%) and a resting bid that never fills costs
-  nothing. **This leg is capital-VELOCITY bound, not supply bound** — the
+  leg outright. Rungs 0.995/0.97/0.95/0.90 split 70/10/10/10. **The top rung is
+  0.995 and must stay there**: sellers PRINT at 0.990, so 0.995 is the
+  price-improving bid that gets hit — 71 fills / 71 wins in a single day at
+  exactly 0.9950. A 0.99 rung merely JOINS that crowd for double the margin it
+  will never collect, and the paper matcher (prints strictly below the bid) would
+  stop seeing fills at all. The deep rungs are the fat tail (8 of 1,364 sales
+  printed ≤0.95, returning 22% against 1.01%) and a resting bid that never fills
+  costs nothing. **This leg is capital-VELOCITY bound, not supply bound** — the
   ceiling is bankroll × turns/day, which is why manual redemption is the
   binding constraint rather than any edge.
   **This phase does NOT use the projection.** It uses the two official TWAP

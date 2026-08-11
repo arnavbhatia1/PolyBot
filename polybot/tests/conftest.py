@@ -68,7 +68,7 @@ SAMPLE_CONFIG = {
         "maker_k_cancel_s": 1.0,
         "post_close_enabled": True,
         "post_close_s": 120.0,
-        "post_close_ladder": [[0.99, 0.70], [0.97, 0.10],
+        "post_close_ladder": [[0.995, 0.70], [0.97, 0.10],
                               [0.95, 0.10], [0.90, 0.10]],
         "post_close_budget_frac": 0.40,
         "post_close_bankroll_frac": 0.25,

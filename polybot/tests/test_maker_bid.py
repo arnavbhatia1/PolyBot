@@ -154,7 +154,7 @@ def test_lock_held_keeps_resting(tmp_path, monkeypatch):
 
 
 # ── post-close certainty phase ────────────────────────────────────────────────
-PC_LADDER = [[0.99, 0.70], [0.97, 0.10], [0.95, 0.10], [0.90, 0.10]]
+PC_LADDER = [[0.995, 0.70], [0.97, 0.10], [0.95, 0.10], [0.90, 0.10]]
 PC_CFG = dict(CFG, post_close_enabled=True, post_close_s=120.0,
               post_close_ladder=PC_LADDER, post_close_budget_frac=0.40)
 
@@ -223,7 +223,7 @@ def test_post_close_pulls_everything_when_the_lock_missed(tmp_path, monkeypatch)
     asyncio.run(mgr.maintain())
     assert not mgr.resting_on(w)
     assert len(mgr.trader.cancelled) == 3
-    assert 0.99 not in [p for _, p, _ in mgr.trader.placed]
+    assert 0.995 not in [p for _, p, _ in mgr.trader.placed]
 
 
 def test_post_close_fails_closed_without_trusted_boundaries(tmp_path, monkeypatch):
@@ -238,7 +238,7 @@ def test_post_close_fails_closed_without_trusted_boundaries(tmp_path, monkeypatc
         _pc_place(mgr, w, side="Up")
         asyncio.run(mgr.maintain())
         assert not mgr.resting_on(w), kwargs
-        assert 0.99 not in [p for _, p, _ in mgr.trader.placed], kwargs
+        assert 0.995 not in [p for _, p, _ in mgr.trader.placed], kwargs
 
 
 def test_post_close_expires(tmp_path, monkeypatch):
@@ -260,7 +260,7 @@ def test_disabled_still_cancels_at_the_close(tmp_path, monkeypatch):
     _place(mgr, w, side="Up", budget=30.0, headroom=2.0)
     asyncio.run(mgr.maintain())
     assert not mgr.resting_on(w)
-    assert 0.99 not in [p for _, p, _ in mgr.trader.placed]
+    assert 0.995 not in [p for _, p, _ in mgr.trader.placed]
 
 
 def test_post_close_rung_fills_only_strictly_below(tmp_path, monkeypatch):
@@ -271,10 +271,12 @@ def test_post_close_rung_fills_only_strictly_below(tmp_path, monkeypatch):
     mgr = _pc_mgr(strike=64000.0, final=64010.0)
     _pc_place(mgr, w, side="Up")
     asyncio.run(mgr.maintain())
-    pc = next(r for r in mgr.active["rungs"] if r["price"] == 0.99)
-    mgr.on_print("tokU", {"price": 0.99, "size": 5.0})
+    pc = next(r for r in mgr.active["rungs"] if r["price"] == 0.995)
+    mgr.on_print("tokU", {"price": 0.995, "size": 5.0})
     assert pc["filled"] == 0.0
-    mgr.on_print("tokU", {"price": 0.98, "size": 5.0})
+    # 0.990 is where sellers actually print, and it IS strictly below 0.995 —
+    # this is the fill that makes the top rung the working one.
+    mgr.on_print("tokU", {"price": 0.99, "size": 5.0})
     assert pc["filled"] == 5.0
 
 
@@ -292,7 +294,7 @@ def test_post_close_waits_for_the_closing_boundary_report(tmp_path, monkeypatch)
     # the report arrives, and the ladder arms on the next tick
     mgr.chainlink._b["close"] = 64010.0
     asyncio.run(mgr.maintain())
-    assert 0.99 in [p for _, p, _ in mgr.trader.placed]
+    assert 0.995 in [p for _, p, _ in mgr.trader.placed]
 
 
 def test_post_close_gives_up_after_the_grace(tmp_path, monkeypatch):
@@ -303,7 +305,7 @@ def test_post_close_gives_up_after_the_grace(tmp_path, monkeypatch):
     _pc_place(mgr, w, side="Up")
     asyncio.run(mgr.maintain())
     assert not mgr.resting_on(w)
-    assert 0.99 not in [p for _, p, _ in mgr.trader.placed]
+    assert 0.995 not in [p for _, p, _ in mgr.trader.placed]
 
 
 def test_holding_tokens_keeps_the_ws_subscribed_past_the_close(tmp_path, monkeypatch):
