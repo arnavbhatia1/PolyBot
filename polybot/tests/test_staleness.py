@@ -8,7 +8,7 @@ from polybot.feeds._staleness import StalenessTracker
 
 
 def test_snapshot_distinguishes_connected_quiet_from_never_connected():
-    connected_quiet = StalenessTracker("binance_kline")
+    connected_quiet = StalenessTracker("chainlink_twap")
     connected_quiet.mark_connected()  # socket up, zero messages observed
 
     never_up = StalenessTracker("some_feed")  # nothing reported
@@ -26,7 +26,7 @@ def test_snapshot_distinguishes_connected_quiet_from_never_connected():
 
 
 def test_disconnect_marks_state_false():
-    t = StalenessTracker("binance_kline")
+    t = StalenessTracker("chainlink_twap")
     t.mark_connected()
     t.mark_disconnected()
     assert t.snapshot()["connected"] is False
