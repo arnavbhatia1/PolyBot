@@ -97,8 +97,31 @@ class MakerBidManager:
         # Set by main to clob_ws.get_book. Paper's fill model needs the real
         # book to know how much size is ahead of us in the queue.
         self.book_fn: Any = None
+        # Set by main to market_scanner.fetch_tick_size (async, 1h cache).
+        self.tick_fn: Any = None
         self._last_poll = 0.0
         self._ladder_cache: tuple[float, list] | None = None  # (mtime, ladder)
+
+    async def snap(self, token_id: str, px: float) -> float:
+        """Round a rung DOWN to the exchange's current tick.
+
+        The tick is 0.01 while a window trades and 0.001 once it closes, so
+        post-close's 0.992 is legal only after the close. Snapping makes the
+        rejection impossible rather than modelling it, and — because BOTH modes
+        snap identically — paper and live always rest the SAME price: 0.992 when
+        the tick allows it, 0.99 when it does not. Round DOWN so a snap can only
+        ever improve our margin, never overpay.
+        """
+        if self.tick_fn is None:
+            return px
+        try:
+            tick = float(await self.tick_fn(token_id))
+        except Exception:
+            return px
+        if tick <= 0:
+            return px
+        snapped = round(int(round(px / tick, 6)) * tick, 10)
+        return max(tick, min(snapped, round(1.0 - tick, 10)))
 
     # -- queries ----------------------------------------------------------
 
@@ -167,6 +190,7 @@ class MakerBidManager:
             usd = round(budget_usd * frac, 2)
             if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
                 continue
+            px = await self.snap(token_id, px)
             shares = round(usd / px, 2)
             order_id = await self.trader.place_gtc_bid(token_id, px, shares)
             if order_id:
@@ -295,6 +319,7 @@ class MakerBidManager:
             usd = round(budget * float(frac), 2)
             if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
                 continue
+            px = await self.snap(a["token_id"], px)
             shares = round(usd / px, 2)
             order_id = await self.trader.place_gtc_bid(a["token_id"], px, shares)
             if not order_id:

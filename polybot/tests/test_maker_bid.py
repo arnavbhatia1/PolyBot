@@ -102,6 +102,36 @@ def test_print_fills_per_rung_at_or_below_with_empty_queue(tmp_path, monkeypatch
     assert all(r["filled"] == pytest.approx(r["shares"]) for r in mgr.active["rungs"])
 
 
+def test_rungs_snap_to_the_live_tick_in_both_modes(tmp_path, monkeypatch):
+    """0.992 is legal only post-close, where the tick is 0.001; in-window it is
+    0.01. Snapping makes an off-tick rejection impossible instead of unmodelled,
+    and because both modes snap identically they always rest the SAME price."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _pc_mgr(strike=64000.0, final=64010.0)
+
+    async def tick_001(_tok): return "0.001"
+    async def tick_01(_tok): return "0.01"
+
+    mgr.tick_fn = tick_001
+    assert asyncio.run(mgr.snap("tokU", 0.992)) == pytest.approx(0.992)
+    mgr.tick_fn = tick_01
+    assert asyncio.run(mgr.snap("tokU", 0.992)) == pytest.approx(0.99)   # rounds DOWN
+    assert asyncio.run(mgr.snap("tokU", 0.90)) == pytest.approx(0.90)
+    mgr.tick_fn = None                       # no tick source -> unchanged
+    assert asyncio.run(mgr.snap("tokU", 0.992)) == pytest.approx(0.992)
+
+
+def test_snapping_never_overpays(tmp_path, monkeypatch):
+    """Round DOWN only: a snap may improve margin, never widen the price we pay."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _pc_mgr(strike=64000.0, final=64010.0)
+
+    async def tick_01(_tok): return "0.01"
+    mgr.tick_fn = tick_01
+    for px in (0.992, 0.9999, 0.955, 0.601):
+        assert asyncio.run(mgr.snap("tokU", px)) <= px + 1e-12
+
+
 def test_gtc_placement_pays_the_measured_post_rtt(tmp_path, monkeypatch):
     """A resting bid does not exist until the POST lands. Paper used to return an
     order id instantly, which handed the maker legs every print in that window

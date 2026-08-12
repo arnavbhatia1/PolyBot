@@ -411,12 +411,17 @@ sniper buys those dips and holds ≤30s to resolution.
   kept paper's bid out of the book ~8x longer than live and silently UNDER-filled
   the only leg that earns. Box-native, so `paper_latency_scale` does not apply. Because `queue_ahead` is measured
   AFTER the POST returns, anyone who got their bid in during our flight is
-  correctly counted ahead of us. **Residual**: the live GTC path is now PROVEN
-  (`smoke_gtc_test.py` places, polls and cancels a real resting order), but no
-  maker leg has ever FILLED in live, so GTC rejection is still unmodelled and
-  the 0.992 price itself is unverified against the exchange — the smoke test has
-  to rest at 0.01 to stay un-hittable. The first live window's
-  `MAKER POST-CLOSE` line answers the price question. Fills stamp
+  correctly counted ahead of us. The live GTC path is PROVEN (`smoke_gtc_test.py`
+  places, polls and cancels a real resting order; 12/12 accepted). **Rung prices
+  SNAP to the live tick in both modes** (`snap()` off
+  `market_scanner.fetch_tick_size`, rounding DOWN so a snap can only improve
+  margin): the tick is 0.01 in-window and 0.001 post-close, so post-close rests
+  0.992 when the exchange allows it and 0.99 when it does not — identically in
+  paper and live. That makes an off-tick rejection impossible rather than
+  unmodelled, and the other rejection cause (sub-$1 notional) is already gated by
+  MIN_NOTIONAL_USD in both modes. A rejection from any remaining cause logs
+  `MAKER BID REJECTED` at ERROR with the price and size, because a rung that
+  never rests is silent lost income. Fills stamp
   `signal_leg="maker_bid"` — its own ledger line and bar.
 - **Capital deploys ONLY through these legs** — there is no other entry
   path in the codebase. `sniper_enabled` is the shared kill-bar SAFETY across
