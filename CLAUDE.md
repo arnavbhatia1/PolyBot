@@ -3,16 +3,7 @@
 5-min BTC Up/Down trader for Polymarket, rebuilt lean for the TWAP era: the
 only feeds the STRATEGY reads are Chainlink (RTDS) + the Polymarket CLOB +
 Gamma, the only strategy is the two-leg TWAP lock system (§2), and every
-position holds to resolution. There is no other model or exit path. One feed
-records without deciding: **Coinbase spot (recording-only, §6)** — the oracle
-relay hands us each Chainlink report ~1.63s after the report's own timestamp
-(p10 1.26 / p50 1.63 / p90 2.07, both topics — it is the relay, not the
-topic), so the last ~1.6s of every resolving average is already fixed but
-unseen. Spot ticks stamped on OUR clock are the only way to measure that gap
-against the same tape's book events; a cross-venue REST pull cannot, because
-its clock is not ours. **No gate, signal, or size reads it** — promoting it to
-a decision input requires its own measured bar.
-**PAPER SHADOW since 2026-08-07**: at 00:00 UTC that day Polymarket switched
+position holds to resolution. There is no other model or exit path. **PAPER SHADOW since 2026-08-07**: at 00:00 UTC that day Polymarket switched
 resolution from the terminal Chainlink snapshot to the official **30-second
 TWAP stream** (strike = the stream's value at the open, final = its value at
 the close — both verified bit-exact against served price_to_beat/final_price,
@@ -212,7 +203,7 @@ sniper buys those dips and holds ≤30s to resolution.
   stream, and a truly flat market freezes the average honestly),
   edge cap (`sniper_max_edge` 0.50 — wider = stale phantom price), chosen-side
   depth ≥ $50 with a 50% book-fill cap, net-edge after modeled slippage ≥ the
-  floor, $1 min size, scar vetoes (graduated + operator-enabled only), and the
+  floor, $1 min size, and the
   pre-submit VWAP re-check against the live book. **Sizing is market-anchored**:
   leg Kelly is
   computed on `ask + sniper_min_edge` (the defended edge at market odds),
@@ -426,13 +417,6 @@ dust through and fail-closes only on genuinely unresolved positions.
   flowing through the process gets persisted.**
 - **Tape recorder**: every CLOB print (incl. the exchange's own timestamp +
   fee_rate_bps) → `memory/recordings/*.jsonl` (gitignored).
-- **Coinbase spot (recording-only)**: `feeds/coinbase_feed.py` streams the
-  BTC-USD ticker; `MicroTape.on_cb_tick` writes `"s"` records (our receipt ts,
-  price, and the tick's exchange-transit delay). Wired to the tape and to
-  nothing else — the callback swallows its own errors so a tape fault can never
-  reach the socket or the trading loop. It exists to measure the relay gap in
-  the header; treat any use of it in a decision path as a new leg needing a
-  bar.
 - **Micro-tape** (`MicroTape`): event-true streams the 5Hz sampler can't see —
   every CLOB best-bid/ask CHANGE (final 90s of each window) and every
   Chainlink RTDS report (always; payload + receipt ts, so delivery holes are
@@ -468,39 +452,7 @@ dust through and fail-closes only on genuinely unresolved positions.
   paper-shadow gate) side by side with their ¢/sh gap — plus a PER-LEG line
   (`signal_leg` ledgers: lock_dip / maker_bid / post_close, never collapsed)
   — and drives the kill-rule verdict off the realized ledger once
-  fills exist; alert-only, never flips config). The same ping carries the
-  **scar scan** (`polybot/core/scar_scan.py` via `scar_scan_read`) — the
-  nightly learning loop: every realized fill for the current mode is sliced
-  along a FROZEN dimension library (ask/edge/prob buckets, time-remaining,
-  signal_leg, side, DoW, session, refire class, strike displacement,
-  chosen-side depth, vig, in-window kill count, CLOB book age at fire, and
-  Chainlink-confirms-cross; dims fed by the removed feeds record None and
-  never populate cells; booked slip + submit latency are observational-only —
-  you can't veto on information the fill created); any cell passing the pre-registered flag rule (n ≥ 8, ≥ 3 ET days,
-  EW ≤ −5¢/sh, day-clustered t ≤ −1.5, ≤ 50% ledger coverage, fire-time dims
-  only, ≤ 2 new/night, ≤ 6 active) auto-registers as a zero-capital SHADOW
-  gate in `memory/state/scar_gates.json`, then each gate runs its own
-  frozen-σ SPRT (μ₁ +6¢/sh, σ from its first 4 qualifying days, which never
-  score) STRICTLY on post-discovery fills — the OOS test IS the
-  multiple-comparisons control, backed by one-active-gate-per-dimension and a
-  sibling-overlap veto (a noise cluster gets ONE SPRT, not K correlated
-  shots), and gates are mode-stamped (a mode flip PAUSES foreign-mode gates
-  rather than splicing ledgers into one frozen-σ test; a VOID restarts the
-  gate's test on fresh days per the SPRT doctrine). Accept-H1 ⇒ the ping says
-  add the gate name to `late_window.scar_enforce` (enforcement is always a
-  manual config flip, and the fire path independently requires status
-  `graduated` — a shadow gate in the list is ignored); accept-H0 ⇒
-  auto-retired, can never re-register. Enforced vetoes ghost the attempt,
-  journal ONCE per (window, gate) to `state/scar_vetoes.jsonl`, and resolve
-  nightly per-gate against `window_labels` — an UPPER-BOUND read (assumes a
-  clean fill at the decision ask) that keeps a live veto proving its keep.
-  The fire path stamps `scar_refire_class`/`scar_kill_min_ask` (from the
-  per-window killed-FOK tracker, decision-ask basis — never the padded FOK
-  limit) + `scar_cb_move` into `trade_context`; with `scar_enforce` empty
-  (default) the fire path only stamps, never vetoes, and the whole enforce
-  hook fails OPEN (a scar-machinery error can never block trading). Flag-rule
-  and SPRT constants are design-frozen — tuning them to make a pocket flag
-  (or stop flagging) is relaxing a bar. The ping also carries the
+  fills exist; alert-only, never flips config). The ping also carries the
   **resolution-mechanism watch** (`resolution_snapshot_read`): every window's
   official final_price must equal the NEXT window's price_to_beat bit-exact
   (both are the TWAP stream's value at the same boundary instant; 17/17 on
@@ -535,11 +487,9 @@ dust through and fail-closes only on genuinely unresolved positions.
 polybot/
   main.py                Trading loop; entry/exit/sizing orchestration; sniper hook
   config/                settings.yaml (THE single config source), loader.py (loads + range-validates it)
-  core/                  signal_engine (the TWAP legs — margins, calibration,
-                         Kelly), scar_scan (nightly learning loop), sprt
+  core/                  signal_engine (the TWAP legs — margins, Kelly)
   feeds/                 chainlink_feed (strike + projection + resolution),
                          clob_ws (books/tape), market_scanner (discovery + gamma fallback),
-                         coinbase_feed (spot, recording-only — §6),
                          _socket, _staleness, _json
   recording.py           WindowPathRecorder (all windows) + TapeRecorder +
                          MicroTape + retention
@@ -559,7 +509,7 @@ scripts/
   analyze_twap_lock.py   TWAP lock kill-bar harness (micro-tape replay + bit-exact
                          mechanism check; health_read feeds the nightly ping)
   analyze_late_window.py realized-ledger readers for the nightly job
-                         (live_health_read / SPRT / scar / resolution watch)
+                         (live_health_read / resolution watch)
   sniper_shadow_status.py  paper-shadow fills vs the harness
   verify_keys.py         live preflight: GET-auth + balance/allowance
   smoke_order_test.py    live preflight: one unfillable FOK proves order POSTs
@@ -574,7 +524,6 @@ scripts/
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/tick-size` | Books, tape, executable prices |
 | Polymarket Gamma | `GET /events?slug=` (deprecated upstream; auto-fallback `GET /events/slug/{slug}` — `gamma_events_by_slug`) | Discovery + resolution + labels |
 | Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` (`crypto_prices_twap_thirty` + raw `crypto_prices_chainlink`) | Strike + resolution (TWAP topic); raw stream feeds the projection. Arrives ~1.63s behind its own payload ts |
-| Coinbase (WS ticker) | `wss://ws-feed.exchange.coinbase.com` BTC-USD | **RECORDING ONLY** — measures the relay gap; no decision path reads it |
 
 ## 10. Running + invariants
 

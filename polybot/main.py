@@ -29,10 +29,9 @@ for _stream in (sys.stdout, sys.stderr):
 from polybot.config.loader import load_config, get_secret
 from polybot.paths import (
     PREV_MARGIN_PATH, DAY_OPEN_PATH, FEED_STALENESS_PATH, GATE_STATS_PATH,
-    GATE_STATS_CURRENT_PATH, PRICE_SUM_OUTLIERS_PATH, SCAR_GATES_PATH,
-    SCAR_VETOES_PATH, fold_gate_day, write_json_atomic,
+    GATE_STATS_CURRENT_PATH, PRICE_SUM_OUTLIERS_PATH,
+    fold_gate_day, write_json_atomic,
 )
-from polybot.core import scar_scan
 from polybot.execution.base import entry_fee_shares, slippage_pct, EFFECTIVE_FEE_PEAK, compute_buy_vwap
 from polybot.db.models import Database
 from polybot.feeds.market_scanner import BTCMarketScanner
@@ -169,43 +168,6 @@ _REGIME_CUTS_FRV = (4.1e-5, 6.9e-5)        # fast_realized_vol_60s
 _REGIME_BURST_HOT_RATIO = 2.0              # n_ticks_1s / (n_ticks_30s/30)
 _REGIME_MULT_TABLE = {"HOT": 1.15, "COLD": 0.80}
 _REGIME_MULT_CLAMP = (0.5, 1.5)
-
-
-def _scar_registry() -> dict:
-    global _scar_registry_cache
-    try:
-        mtime = SCAR_GATES_PATH.stat().st_mtime
-    except OSError:
-        return _scar_registry_cache[1]
-    if mtime != _scar_registry_cache[0]:
-        _scar_registry_cache = (mtime, scar_scan.load_registry(SCAR_GATES_PATH))
-    return _scar_registry_cache[1]
-
-
-def _scar_fields(cid: str, side: str, ask: float,
-                 cb_move: float | None) -> dict[str, Any]:
-    """Fire-time facts the scar dimensions need that nothing else stamps.
-
-    refire_class: an earlier kill this window means the book repriced away;
-    re-firing at/below that price means it came back. Stamp at fire time —
-    reconstructing these facts post-hoc was irreducibly ambiguous."""
-    kills: list[float] = []
-    try:
-        kills = _window_killed_asks.get(int(cid.rsplit("-", 1)[-1]), {}).get(side, [])
-    except (ValueError, IndexError):
-        pass
-    if not kills:
-        refire = "first_fire"
-    elif ask <= min(kills) + 1e-9:
-        refire = "refire_leq_kill"
-    else:
-        refire = "refire_above_kill"
-    return {
-        "scar_refire_class": refire,
-        "scar_killed_n": len(kills),
-        "scar_kill_min_ask": min(kills) if kills else None,
-        "scar_cb_move": round(abs(cb_move), 2) if cb_move is not None else None,
-    }
 
 
 # ── Single settled OPEN banner ────────────────────────────────────────────────
@@ -559,14 +521,8 @@ _window_flip_state: dict[str, dict] = {}  # window_id -> {flip_count}
 _MAKER_MGR: Any = None
 
 # Killed sniper FOKs this window: window_ts -> side -> [decision asks]. Feeds
-# the scar_refire_class stamp (was this fire a re-attempt at/below a price the
-# book already repriced away from?). Swept with the _strike_trusted 600s idiom.
+# Swept with the _strike_trusted 600s idiom.
 _window_killed_asks: dict[int, dict[str, list[float]]] = {}
-
-# Enforced scar vetoes already journaled this window: window_ts -> gate names.
-# One journal line per (window, gate) — the veto repeats every evaluation tick,
-# the evidence record must not.
-_scar_vetoed: dict[int, set] = {}
 
 def _record_killed_ask(cid: str, side: str, ask: float) -> None:
     try:
@@ -1094,7 +1050,7 @@ async def _evaluate_signal_and_enter(
                 _cl_px_at_fire = _cl_px
     snapshot: dict[str, Any] = {}
     snapshot["trade_context"] = {
-        # Entry-time facts — the per-leg ledgers, scar dims, and harness reads
+        # Entry-time facts — the per-leg ledgers and harness read
         # all key off these.
         "strike_price": strike,
         "seconds_remaining": contract["seconds_remaining"],
@@ -1129,7 +1085,6 @@ async def _evaluate_signal_and_enter(
                        if _loop_marks.get("m_tick", 0) > 0 else None),
         # Scar stamps (fire-time facts for the nightly scan), on the DECISION
         # ask — `price` is already the padded FOK limit here.
-        **_scar_fields(cid, side, signal_ask, None),
         # Fire facts per leg — what the fire stood on.
         "signal_leg": _signal_leg,
         "twap_proj": (round(_proj, 2) if _signal_leg == "lock_dip" and _proj is not None else None),
@@ -1143,37 +1098,6 @@ async def _evaluate_signal_and_enter(
         "token_id_up": contract.get("token_id_up", ""),
         "token_id_down": contract.get("token_id_down", ""),
     }
-    # Scar-gate enforcement — learned vetoes, OFF by default. A gate vetoes only
-    # if it GRADUATED its OOS SPRT AND the operator listed it in
-    # late_window.scar_enforce. Journal ONCE per (window, gate). Fail-OPEN — a
-    # scar error must never block trading (the kill rule owns shutoff).
-    _scar_enforce = lw_cfg.get("scar_enforce") or []
-    if _scar_enforce:
-        try:
-            _scar_hits = [g for g in scar_scan.fire_time_matches(
-                snapshot["trade_context"], side, datetime.now(ET).strftime("%a"),
-                _scar_registry(), statuses=("graduated",)) if g in _scar_enforce]
-        except Exception as e:
-            logger.warning("scar enforce check failed (fail-open): %s", e)
-            _scar_hits = []
-        if _scar_hits:
-            _gate = f"scar:{_scar_hits[0]}"
-            _record_skip(_gate)
-            _now_ts = int(time.time())
-            for k in [k for k in _scar_vetoed if _now_ts - k >= 600]:
-                del _scar_vetoed[k]
-            _first_new = True
-            for _hit in _scar_hits:
-                if _hit in _scar_vetoed.get(_w_ts, set()):
-                    continue
-                _scar_vetoed.setdefault(_w_ts, set()).add(_hit)
-                if _first_new:
-                    _ghost(_gate, signal, snapshot)
-                    _emit_gate_skip(cid, _gate, f"SCAR Veto ({_scar_hits[0]})")
-                    _first_new = False
-                scar_scan.record_veto(SCAR_VETOES_PATH, _hit, cid, side,
-                                      signal_ask, size)
-            return None, last_eval_log_window
     # Pre-submit edge re-check: walk the ask ladder for the actual expected FOK
     # VWAP (the book is ground truth vs the modeled slip). Book unavailable/too
     # thin → fall back to the BBA-only fresh_ask gate.
@@ -1227,7 +1151,6 @@ async def _evaluate_signal_and_enter(
         reason = result.reason or "unknown"
         # FOK killed by a repricing book — remember the DECISION ask (not the
         # padded limit in `price`) so a later fire this window can stamp its
-        # scar_refire_class against it.
         _rl = reason.lower()
         _killed = "no fill" in _rl or _rl.startswith("price moved")
         if _killed:
@@ -2006,7 +1929,7 @@ async def trading_loop(market_scanner: BTCMarketScanner, signal_engine: SignalEn
     async def _entry_pass(positions: list) -> None:
         """The single entry evaluation — one copy, two call sites in the loop.
 
-        A Coinbase-tick wake with no open position runs this FIRST (before
+        A feed wake with no open position runs this FIRST (before
         position management); every other wake runs it last, as before.
         """
         nonlocal ws_subscribed_tokens, prev_contract_tokens, last_eval_log_window, window_strikes
@@ -2495,16 +2418,13 @@ async def main() -> None:
 
     await scheduler.start()
     from polybot.feeds.chainlink_feed import ChainlinkFeed
-    from polybot.feeds.coinbase_feed import CoinbaseFeed
     chainlink_feed = ChainlinkFeed()
     await chainlink_feed.start()
-    coinbase_feed = CoinbaseFeed()          # started below, once the tape exists
 
     # Periodic feed-staleness telemetry (P50/P95/P99 inter-arrival per feed).
     _staleness_trackers = [
         chainlink_feed.staleness,
         clob_ws.staleness,
-        coinbase_feed.staleness,
     ]
     _staleness_path = FEED_STALENESS_PATH
 
@@ -2549,13 +2469,6 @@ async def main() -> None:
     clob_ws.on_bba = micro_tape.on_bba
     chainlink_feed.on_report = micro_tape.on_cl_report
     chainlink_feed.on_twap = micro_tape.on_twap_report
-    # Coinbase spot — RECORDING ONLY, deliberately wired to nothing that decides.
-    # The oracle relay delivers each Chainlink report ~1.63s after its own
-    # timestamp, so the tail of every resolving average is already fixed but
-    # unseen; a spot tick stamped on OUR clock is the only way to measure that
-    # gap against this tape's book events. No gate, signal, or size reads it.
-    coinbase_feed.on_tick = micro_tape.on_cb_tick
-    await coinbase_feed.start()
     window_recorder = WindowPathRecorder(
         db=db, clob_ws=clob_ws,
         chainlink_feed=chainlink_feed, market_scanner=market_scanner,
@@ -2639,42 +2552,6 @@ async def main() -> None:
             logger.warning("sniper health realized-ledger read failed: %s", e)
             live = None
         _real_db = None if mode == "live" else mod.PAPER_DB
-        # The scar scan — the nightly learning loop (core/scar_scan.py): mines
-        # the realized ledger for toxic cells, shadow-registers them, scores
-        # each registered gate's OOS SPRT, resolves enforced vetoes. Alert-only
-        # like everything here: enforcement is the operator's config flip.
-        try:
-            scars = await asyncio.to_thread(
-                mod.scar_scan_read, _real_db, _lw.get("validation_epoch"),
-                _lw.get("scar_enforce") or [], None, None, mode)
-        except Exception as e:
-            logger.warning("scar scan failed: %s", e)
-            scars = None
-        # Resolution-mechanism watch: every window's official final_price
-        # equals the NEXT window's price_to_beat bit-exact (both are the TWAP
-        # stream's value at the shared boundary). A systematic break means
-        # Polymarket changed the rule again — the lock premise needs re-proof.
-        try:
-            twap = await asyncio.to_thread(mod.resolution_snapshot_read, _real_db)
-        except Exception as e:
-            logger.warning("resolution snapshot read failed: %s", e)
-            twap = None
-        if sim is None and live is None:
-            if alert_manager:
-                await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
-            return {"health": "no data"}
-        today = datetime.now(ET).strftime("%Y-%m-%d")
-        # Kill-rule authority = the REALIZED ledger ONLY — the rule is defined on
-        # realized fills, and the floor-blind SIM read (no L1 edge floor, mixed-era
-        # corpus) must never trip it. An empty realized ledger is "still accruing",
-        # not a verdict; the SIM line stays in the ping as context.
-        kt = live["kill_rule_tripped"] if (live and live["n_fills"] > 0) else None
-        status = ("⏳ STILL ACCRUING" if kt is None
-                  else "⚠️ KILL RULE TRIPPED" if kt else "✅ HEALTHY")
-
-        # ── Human-first daily ping: verdict up top, one line per fact, no
-        # jargon the operator has to decode. The returned dict (below) keeps
-        # the full numbers for tests/automation.
         def _money_line(r) -> str:
             if r is None or r["n_fills"] == 0:
                 return "no realized fills yet"
@@ -2711,56 +2588,6 @@ async def main() -> None:
                      f"(win {v['win_rate']:.0%})" for name, v in legs.items()]
             return ("Per-leg: " + " · ".join(parts) + "\n") if parts else ""
 
-        def _scars_line() -> str:
-            if not scars:
-                return ""
-            parts = []
-            for name in scars.get("registered", []):
-                parts.append(f"🩹 new pocket quarantined: **{name}**")
-            per_gate = (scars.get("vetoes") or {}).get("per_gate") or {}
-            for g in scars.get("gates", []):
-                if g["status"] == "retired":
-                    # must precede the enforced branch: a retired gate no
-                    # longer vetoes even if settings still lists it
-                    parts.append(f"{g['name']} cleared by fresh data — retired"
-                                 + (" — **REMOVE it from `scar_enforce`, its veto is dead**"
-                                    if g.get("enforced") else ""))
-                elif g.get("enforced"):
-                    v = per_gate.get(g["name"]) or {}
-                    avoided = (f", vetoes avoided {v['avoided_cs']:+.1f}¢/sh × "
-                               f"{v['resolved']} (upper-bound, assumes fill)"
-                               if v.get("avoided_cs") is not None else "")
-                    parts.append(f"{g['name']} ENFORCED{avoided}")
-                elif g["sprt_state"] == "paused_other_mode":
-                    # must precede the graduated branch: a gate proven on the
-                    # OTHER mode's ledger must never be advertised for
-                    # enforcement in this one
-                    parts.append(f"{g['name']} paused (evidence from the other mode)")
-                elif g["status"] == "graduated":
-                    parts.append(f"{g['name']} ✅ PROVEN toxic — add it to "
-                                 f"`late_window.scar_enforce` to switch the veto on")
-                elif g["sprt_state"] == "accruing_sigma":
-                    parts.append(f"{g['name']} shadow-tracking "
-                                 f"({g['n_oos']} fills since discovery, baseline forming)")
-                elif g["sprt_state"] == "continue":
-                    parts.append(f"{g['name']} shadow score {g['lam']:+.2f} "
-                                 f"(proves at +2.73, clears at −1.42)")
-                elif g["sprt_state"] == "truncated":
-                    oe = f"{g['oos_ew']:+.1f}¢/sh" if g.get("oos_ew") is not None else "n/a"
-                    parts.append(f"{g['name']} ⏱ 16 scored days, no verdict "
-                                 f"(OOS {oe} over {g['n_oos']} fills) — operator call")
-                elif g["sprt_state"] == "void":
-                    parts.append(f"{g['name']} ⚠️ test voided (regime shifted) — "
-                                 f"σ re-freezes on fresh days")
-            # settings hygiene: an enforce entry with no live graduated gate is dead
-            active = {g["name"] for g in scars.get("gates", [])
-                      if g["status"] in ("graduated",)}
-            for name in (_lw.get("scar_enforce") or []):
-                if name not in active:
-                    parts.append(f"⚠️ `scar_enforce` lists **{name}** but no graduated "
-                                 f"gate matches — remove it")
-            return ("Learned scars: " + " · ".join(parts) + "\n") if parts else ""
-
         def _twap_line() -> str:
             if not twap or not twap.get("checked"):
                 return ""
@@ -2788,7 +2615,6 @@ async def main() -> None:
             f"{_legs_line()}"
             f"{_shutoff_line(live)}"
             f"{_context_line()}"
-            f"{_scars_line()}"
             f"{_twap_line()}"
             f"{action}"
         )
@@ -2810,7 +2636,7 @@ async def main() -> None:
         return {"health": status, "kill_rule_tripped": kt,
                 "live": _pick(live), "sim": _pick(sim),
                 "legs": (live or {}).get("legs"),
-                "scars": scars}
+                }
     scheduler.register_job("sniper_health", _sniper_health_job)
     # Last: the analysis jobs above read the tape, so compress only after they
     # are done with it (readers handle .gz either way).
@@ -2919,7 +2745,6 @@ async def main() -> None:
         await _stop(clob_ws.close())
         await _stop(scheduler.stop())
         await _stop(chainlink_feed.stop())
-        await _stop(coinbase_feed.stop())
         await _stop(discord_bot.close())
         bankroll = await db.get_bankroll()
         await db.close()

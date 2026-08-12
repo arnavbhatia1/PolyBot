@@ -80,10 +80,6 @@ late_window:
                                 # p99.5-tier 0.995 → ask ≤ ~0.955). Also the net-edge /
                                 # pre-submit floor (SignalEngine.min_edge) — one consistent floor.
   sniper_max_edge: 0.50         # sniper's own sanity cap, replacing the bypassed 0.20
-  scar_enforce: []              # learned-veto switch (core/scar_scan.py): gate names from
-                                # memory/state/scar_gates.json whose veto is LIVE. Only add a name
-                                # after the nightly ping reports it ✅ PROVEN (its OOS SPRT accepted);
-                                # empty = all scar gates are shadow-only (stamps, never vetoes).
   sniper_fok_slip: 0.01         # FOK limit pad: fill only within ~one tick of the decision ask, else
                                 # let the order DIE. The pad absorbs benign jitter; a genuine reprice
                                 # (the dip snapping back to 0.99+ before our order lands) kills the

@@ -205,19 +205,3 @@ def resolution_snapshot_read(db_path=None, hours: float = 26.0):
                 mismatches=mism)
 
 
-# ── Scar scan (nightly learning loop — polybot/core/scar_scan.py) ─────────────
-def scar_scan_read(db_path=None, since_iso=None, enforce=None,
-                   registry_path=None, vetoes_path=None, mode=None):
-    """Scar scan: discovery + per-gate OOS SPRT over the current mode's
-    realized ledger, plus enforced-veto resolution. Alert-only; registry
-    persists to memory/state/scar_gates.json. `mode` stamps registrations and
-    pauses foreign-mode gates on a mode flip — never splice modes into one
-    frozen-σ test."""
-    from polybot.core.scar_scan import scan, resolve_vetoes
-    from polybot.paths import SCAR_GATES_PATH, SCAR_VETOES_PATH
-    db = Path(db_path) if db_path else LIVE_DB
-    reg = Path(registry_path) if registry_path else SCAR_GATES_PATH
-    vet = Path(vetoes_path) if vetoes_path else SCAR_VETOES_PATH
-    rep = scan(db, since_iso, reg, enforce or [], mode)
-    rep["vetoes"] = resolve_vetoes(vet, db)
-    return rep

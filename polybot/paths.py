@@ -51,15 +51,6 @@ PRICE_SUM_OUTLIERS_PATH: Path = STATE_DIR / "price_sum_outliers.jsonl"
 # ET day folds into the accumulator (see fold_gate_day + main._ensure_gate_stats_day_loaded).
 GATE_STATS_PATH: Path = STATE_DIR / "gate_stats.json"                 # accumulator
 GATE_STATS_CURRENT_PATH: Path = STATE_DIR / "gate_stats_current.json"  # today only
-# Burst-alive SPRT (pre-registered application #1): write-once frozen σ + the
-# qualifying-day keys it was estimated on. Deleting this file restarts the test
-# (a VOIDed test is restarted by design, never patched mid-run).
-SPRT_BURST_PATH: Path = STATE_DIR / "sprt_burst.json"
-# Scar-gate registry (nightly learning loop, core/scar_scan.py): auto-discovered
-# toxic cells as shadow gates + their per-gate frozen-σ SPRT state. Enforced
-# vetoes journal to the JSONL and resolve nightly against window_labels.
-SCAR_GATES_PATH: Path = STATE_DIR / "scar_gates.json"
-SCAR_VETOES_PATH: Path = STATE_DIR / "scar_vetoes.jsonl"
 # Nightly-recalibrated maker ladder prices (dip-depth CDF quantiles from the
 # trailing tape; execution/maker_bid.py clamps + consumes).
 MAKER_LADDER_PATH: Path = STATE_DIR / "maker_ladder.json"
