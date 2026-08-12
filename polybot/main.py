@@ -397,12 +397,6 @@ def _twap_hot(chainlink_feed: Any, window_strikes: dict[int, float],
     return abs(proj - strike) >= 0.9 * twap_margin(TWAP_MARGIN_P995, sec_rem)
 
 
-def _fmt_secs(s: float) -> str:
-    """Seconds remaining formatted as M:SS — 298 → '4:58'. Easier to scan than '298s'."""
-    s_int = max(0, int(s))
-    return f"{s_int // 60}:{s_int % 60:02d}"
-
-
 def _fee_breakdown(result: Any) -> str:
     """Close-summary fee string: total with an entry/exit split so the line can't be
     misread as a single charge."""
@@ -2547,6 +2541,16 @@ async def main() -> None:
             logger.warning("sniper health realized-ledger read failed: %s", e)
             live = None
         _real_db = None if mode == "live" else mod.PAPER_DB
+        # Resolution-mechanism tripwire: every window's official final must equal
+        # the NEXT window's strike to the cent. Systematic divergence means
+        # Polymarket changed the resolution rule again — the one event that
+        # invalidates the whole lock premise, so it is checked nightly.
+        try:
+            twap = await asyncio.to_thread(mod.resolution_snapshot_read, _real_db)
+        except Exception as e:
+            logger.warning("resolution watch read failed: %s", e)
+            twap = None
+
         def _money_line(r) -> str:
             if r is None or r["n_fills"] == 0:
                 return "no realized fills yet"
