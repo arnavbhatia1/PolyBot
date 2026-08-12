@@ -138,7 +138,7 @@ sniper buys those dips and holds ≤30s to resolution.
   is not safe. Widening the rule below the frozen tail is also unprofitable,
   not merely unsafe: a fully calibrated continuous P(win) over the 0.85-0.99
   body loses to the CLOB ask on log score in every split, and its claimed-edge
-  gradient inverts (see the monotonicity bar under the open leg).
+  gradient inverts (see the standing monotonicity bar below).
   The main loop wakes on raw Chainlink reports (`report_event`) and CLOB book
   events; the µs pre-gate (`_twap_hot`) fast-paths any wake at ≥90% of the
   p99.5 margin so a 1s dip is never throttled past.
@@ -146,7 +146,7 @@ sniper buys those dips and holds ≤30s to resolution.
   (`_evaluate_and_exit_position` skips all `signal_leg`-stamped positions):
   all three legs' edges were MEASURED hold-to-resolution, and L1's
   short-horizon spot lens re-deciding a resolution bet sells every noise
-  bottom — night one it scalped an open_edge fill −64% forty seconds in and
+  bottom — night one it scalped an open-leg fill −64% forty seconds in and
   dumped a WINNING maker fill at 0.05 seconds before it paid $1.00 (the
   scalp was that leg's entire loss). The lock-hold projection guard remains
   for unstamped/legacy positions only. Any smarter exit needs its own
@@ -234,35 +234,11 @@ sniper buys those dips and holds ≤30s to resolution.
   mechanism failure → investigate before any deploy). Never deploy real
   capital on the harness print alone. The nightly health job (§6) re-reads
   both in production.
-- **Open head-start leg** (`SignalEngine.evaluate_open_edge`, §3c in
-  settings): the strike is the average of the 30s BEFORE the open — known at
-  t=0 — so a spot that opens displaced from it is a calibrated favorite
-  (843-window curve, lower-bounded, frozen in `signal_engine.OPEN_CALIB`:
-  0.65 @$10 → 0.82 @$50; below $5 = noise, never fires). Fires in the first
-  `open_zone_s` (20s) when calibrated prob − ask ≥ `open_min_edge` (0.06) —
-  night-one books sold $10+ favorites at 0.62 median, and the edge floor
-  silences the leg by itself the day they adapt (watch the ping's head-start
-  gauge). Trusted strike + fresh raw spot required; every execution gate
-  runs; Kelly anchors to ask + floor. **DISABLED 08-07, then REFUTED AND
-  CLOSED 08-10 — do not re-enable, and do not re-enable behind a recalibration
-  either.** Night one: 22/51 wins vs the calibrated 65% (z ≈ −3.3). The 749-window
-  re-test found the curve is approximately RIGHT and the rule is still
-  anti-predictive: bucketed by claimed edge (calib − ask), the most profitable
-  cell is where the model says DON'T buy (+16.6¢/sh, n=34) and tightening the
-  edge floor cuts 45-65% of fires without raising ¢/sh. Under TWAP the open ask
-  is at least as good a forecaster and strictly better where they disagree, so
-  `calib − ask ≥ floor` selects for windows where the book knows more. The
-  early-seconds pocket is not the answer either (paired early-vs-late t_day
-  +0.57; Gamma never serves the strike first in any TWAP window, 0/757, so the
-  head start is over Polymarket's REST layer, not over the market makers). The
-  ping's head-start gauge keeps measuring unconditionally. **The transferable
-  bar this produced, now standing for ANY new leg: net ¢/sh must rise
-  monotonically across model-edge buckets, scored against an `edge < 0` control
-  bucket — a candidate whose best cell is the control is anti-predictive no
-  matter how good its aggregate looks.** Fills stamp
-  `signal_leg="open_edge"` (+ `open_disp`) — per-leg ledgers in the nightly
-  ping; the leg's own bar mirrors the lock bar and its kill is the operator
-  flipping `open_edge_enabled: false`.
+- **The standing bar every new leg owes** (born from the open head-start leg,
+  refuted and deleted 08-11): net ¢/sh must rise monotonically across
+  model-edge buckets, scored against an `edge < 0` control bucket — a
+  candidate whose best cell is the control is anti-predictive no matter how
+  good its aggregate looks.
 - **POST-CLOSE CERTAINTY PHASE** (`maker_bid.certain_winner` +
   `_place_post_close_ladder`, `maker.post_close_*` in settings): the market keeps
   ACCEPTING ORDERS FOR MINUTES after the close — verified live at close+143s,
@@ -445,7 +421,7 @@ dust through and fail-closes only on genuinely unresolved positions.
   self-discovering). Columns from the removed feeds (Coinbase/Binance/L1)
   stay in the schema and record NULL — None-not-0.0 is load-bearing. Tables
   `window_paths` (gitignored sidecar DB) / `window_labels`; 90-day retention
-  nightly. **This feeds the head-start gauge, the label flow (labels are the
+  nightly. **This feeds the label flow (labels are the
   kill-bar ground truth), and the pivot-research corpus — everything already
   flowing through the process gets persisted.**
 - **Tape recorder**: every CLOB print (incl. the exchange's own timestamp +
@@ -490,10 +466,8 @@ dust through and fail-closes only on genuinely unresolved positions.
   the current mode (`live_health_read`: live → polybot_live.db; paper →
   polybot_paper.db scoped to `late_window.validation_epoch`, the BINDING
   paper-shadow gate) side by side with their ¢/sh gap — plus a PER-LEG line
-  (`signal_leg` ledgers: lock_dip / open_edge, never collapsed) and the
-  **head-start gauge** (`analyze_twap_lock.open_gap_read`: trailing-day
-  favorite win rate vs the median ask it traded at — the open leg's oxygen
-  meter) — and drives the kill-rule verdict off the realized ledger once
+  (`signal_leg` ledgers: lock_dip / maker_bid / post_close, never collapsed)
+  — and drives the kill-rule verdict off the realized ledger once
   fills exist; alert-only, never flips config). The same ping carries the
   **scar scan** (`polybot/core/scar_scan.py` via `scar_scan_read`) — the
   nightly learning loop: every realized fill for the current mode is sliced

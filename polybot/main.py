@@ -788,7 +788,7 @@ async def _evaluate_signal_and_enter(
     """Evaluate the TWAP legs for this window and fire/rest/skip.
 
     The whole strategy lives here: lock-dip taker + maker placement in the
-    final 30s, the (disabled) open head-start in the first 20s. No model, no
+    final 30s. No model, no
     features — frozen empirical bounds against live asks, then the execution
     gates and the FOK/GTC paths.
     """
@@ -803,9 +803,8 @@ async def _evaluate_signal_and_enter(
     aux_signals = _clob_book_aux(clob_ws, token_up, token_down, book_up, book_down)
 
     is_sniper = False
-    _signal_leg = None      # "lock_dip" | "open_edge" — per-leg ledger attribution
+    _signal_leg = None      # "lock_dip" — per-leg ledger attribution
     _proj = None
-    _odisp = None
     lw_cfg = config.get("late_window", {})
     phase = ""
     signal = TradeSignal("SKIP", 0.5, 0, 0, "no leg armed for this second")
@@ -829,7 +828,6 @@ async def _evaluate_signal_and_enter(
             "signal_leg": _signal_leg,
             "twap_proj": (round(_proj, 2) if _proj is not None else None),
             "twap_disp": (round(_proj - strike, 2) if _proj is not None else None),
-            "open_disp": (round(_odisp, 2) if _odisp is not None else None),
             **aux_signals,
         }
         merged_snap = dict(snap or {})
@@ -982,34 +980,6 @@ async def _evaluate_signal_and_enter(
                     logger.info(f"{_C.DIM}TWAP LOCK {signal.side} — disp ${abs((_proj or 0) - strike):.1f} "
                                 f"with {contract['seconds_remaining']:.0f}s left | "
                                 f"Ask edge {signal.edge:+.1%}{_C.RESET}")
-
-    # --- OPEN HEAD-START LEG (first 20s; DISABLED in settings, gauge-watched) ---
-    ow_cfg = config.get("open_window", {})
-    if (not is_sniper
-            and ow_cfg.get("open_edge_enabled")
-            and lw_cfg["sniper_enabled"]
-            and chainlink_feed is not None
-            and contract["seconds_remaining"] >= 300.0 - ow_cfg["open_zone_s"]):
-        if (_strike_trusted.get(_w_ts, False)
-                and chainlink_feed.price > 0 and chainlink_feed.age_seconds <= 3.0):
-            _odisp = chainlink_feed.price - strike
-            _osig = signal_engine.evaluate_open_edge(
-                _odisp, contract["seconds_remaining"], price_up, price_down,
-                ow_cfg["open_zone_s"], ow_cfg["open_min_edge"], fee_rate=fee_rate)
-            if _osig.action in ("LATE_SNIPE_YES", "LATE_SNIPE_NO"):
-                _osig.action = "BUY_YES" if _osig.action == "LATE_SNIPE_YES" else "BUY_NO"
-                signal = _osig
-                is_sniper = True
-                _signal_leg = "open_edge"
-                phase = "open_edge"
-                _snipe_key = (_w_ts, "open:" + signal.side)
-                _snipe_now = time.time()
-                if _snipe_now - _last_snipe_log.get(_snipe_key, 0.0) >= 10.0:
-                    if len(_last_snipe_log) > 64:
-                        _last_snipe_log.clear()
-                    _last_snipe_log[_snipe_key] = _snipe_now
-                    logger.info(f"{_C.DIM}OPEN EDGE {signal.side} — head start ${abs(_odisp):.1f} | "
-                                f"calibrated {signal.prob:.0%} vs ask edge {signal.edge:+.1%}{_C.RESET}")
 
     # Eval context for the SKIP log dedup + gate-skip lines.
     global _last_logged_action
@@ -1167,7 +1137,6 @@ async def _evaluate_signal_and_enter(
         "twap_k_s": round(contract["seconds_remaining"], 1),
         "twap_tier": (("max" if signal.prob >= 0.999 else "p995")
                       if _signal_leg == "lock_dip" else None),
-        "open_disp": (round(_odisp, 2) if _signal_leg == "open_edge" and _odisp is not None else None),
         "chainlink_price_at_fire": _cl_px_at_fire,
         "chainlink_age_s_at_fire": _cl_age_at_fire,
         # Token IDs for both outcomes — startup reconciliation and dust sweeping.
@@ -2653,15 +2622,6 @@ async def main() -> None:
         except Exception as e:
             logger.warning("sniper health SIM read failed: %s", e)
             sim = None
-        # Open-edge oxygen gauge — are the books still selling the head start
-        # cheap? The leg self-silences via its edge floor; this line is how the
-        # operator watches that happen (or not).
-        open_gap = None
-        if tmod is not None:
-            try:
-                open_gap = await asyncio.to_thread(tmod.open_gap_read)
-            except Exception as e:
-                logger.debug("open-gap gauge read failed: %s", e)
         # The realized-fill read tracks the BINDING population for the current mode:
         # live -> the live ledger; paper (re-validation) -> the paper-shadow fills
         # since the validation epoch (pre-epoch fills ran different code/config).
@@ -2751,14 +2711,6 @@ async def main() -> None:
                      f"(win {v['win_rate']:.0%})" for name, v in legs.items()]
             return ("Per-leg: " + " · ".join(parts) + "\n") if parts else ""
 
-        def _gauge_line() -> str:
-            if not open_gap or not open_gap.get("n"):
-                return ""
-            g = open_gap
-            return (f"Head-start gauge: favorites won {g['win_rate']:.0%} vs median ask "
-                    f"{g['med_ask']:.2f} over {g['n']} windows — edge left "
-                    f"{g['gap']*100:+.0f}pp\n")
-
         def _scars_line() -> str:
             if not scars:
                 return ""
@@ -2836,7 +2788,6 @@ async def main() -> None:
             f"{_legs_line()}"
             f"{_shutoff_line(live)}"
             f"{_context_line()}"
-            f"{_gauge_line()}"
             f"{_scars_line()}"
             f"{_twap_line()}"
             f"{action}"
@@ -2858,7 +2809,7 @@ async def main() -> None:
                     "kill_rule_tripped": r.get("kill_rule_tripped")}
         return {"health": status, "kill_rule_tripped": kt,
                 "live": _pick(live), "sim": _pick(sim),
-                "legs": (live or {}).get("legs"), "open_gap": open_gap,
+                "legs": (live or {}).get("legs"),
                 "scars": scars}
     scheduler.register_job("sniper_health", _sniper_health_job)
     # Last: the analysis jobs above read the tape, so compress only after they

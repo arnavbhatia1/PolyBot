@@ -331,60 +331,6 @@ def run_replay(since_ts: float, min_edge: float, rtt: float):
 PATHS_DB = ROOT / "polybot" / "db" / "window_paths.db"
 
 
-def open_gap_read(hours: float = 26.0, min_disp: float = 10.0):
-    """The open-edge leg's oxygen gauge: over the trailing window, how are the
-    books pricing the known head start? Reads the 1Hz recorder (spot + both
-    asks at open+5s) against labels. gap = head-start side's realized win rate
-    − the median ask it traded at; the leg's edge dies when this reaches ~0."""
-    if not PATHS_DB.exists():
-        return None
-    since = datetime.now(timezone.utc).timestamp() - hours * 3600.0
-    labels = load_labels(since)
-    if not labels:
-        return None
-    con = sqlite3.connect(f"file:{PATHS_DB}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
-    try:
-        rows = con.execute(
-            "SELECT window_id, elapsed_s, ask_up, ask_down, chainlink_price "
-            "FROM window_paths WHERE ts >= ? AND elapsed_s <= 6 "
-            "ORDER BY window_id, elapsed_s", (since,)).fetchall()
-    except sqlite3.OperationalError:
-        return None
-    finally:
-        con.close()
-    byw: dict[str, list] = {}
-    for r in rows:
-        byw.setdefault(r["window_id"], []).append(r)
-    asks, wins = [], 0
-    for wid, recs in byw.items():
-        try:
-            ep = int(wid.rsplit("-", 1)[1])
-        except (ValueError, IndexError):
-            continue
-        lab = labels.get(ep)
-        if lab is None or not lab["price_to_beat"]:
-            continue
-        r5 = recs[-1]
-        spot = r5["chainlink_price"]
-        if spot is None:
-            continue
-        disp = spot - lab["price_to_beat"]
-        if abs(disp) < min_disp:
-            continue
-        fav_up = disp >= 0
-        ask = r5["ask_up"] if fav_up else r5["ask_down"]
-        if ask is None or not (0.0 < ask < 1.0):
-            continue
-        asks.append(ask)
-        wins += (1 if fav_up else 0) == lab["resolved_up"]
-    if not asks:
-        return {"n": 0}
-    asks.sort()
-    return {"n": len(asks), "med_ask": asks[len(asks) // 2],
-            "win_rate": wins / len(asks),
-            "gap": wins / len(asks) - asks[len(asks) // 2]}
-
 
 def ladder_recalibrate(days: int = 1, write: bool = False):
     """REPORT-ONLY: the trailing tape's dip-depth CDF (min winner-ask while

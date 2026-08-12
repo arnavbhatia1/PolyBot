@@ -55,11 +55,6 @@ SAMPLE_CONFIG = {
         "sniper_max_edge": 0.50,
         "sniper_fok_slip": 0.01,
     },
-    "open_window": {
-        "open_edge_enabled": False,
-        "open_zone_s": 20.0,
-        "open_min_edge": 0.06,
-    },
     "maker": {
         "maker_bid_enabled": False,
         "maker_ladder": [[0.90, 0.15, 1.0], [0.60, 0.20, 1.0],

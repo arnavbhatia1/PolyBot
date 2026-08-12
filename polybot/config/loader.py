@@ -87,11 +87,6 @@ def validate_config(config: dict[str, Any]) -> None:
     _check_range("late_window.twap_zone_s", 5.0, 30.0)
     _check_range("late_window.twap_k_min_s", 0.0, 5.0)
     _check_range("late_window.sniper_min_edge", 0.02, 0.10)
-    _check_range("open_window.open_zone_s", 5.0, 30.0)
-    _check_range("open_window.open_min_edge", 0.03, 0.15)
-    val, found = _get_nested(config, "open_window.open_edge_enabled")
-    if not found or not isinstance(val, bool):
-        errors.append("open_window.open_edge_enabled: missing or not a boolean")
     ladder, found = _get_nested(config, "maker.maker_ladder")
     if not found or not (isinstance(ladder, list) and 1 <= len(ladder) <= 5
                          and all(isinstance(r, list) and len(r) == 3

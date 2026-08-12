@@ -1,11 +1,9 @@
-"""Late-window sniper: the TWAP lock signal (evaluate_twap_lock) and the live
-cb_move accessor (telemetry/scar dims still read it).
+"""The TWAP lock signal (evaluate_twap_lock) and the max-tier gate.
 
-These cover the bot-formable late-window edge in isolation (the main.py wiring
-is gated OFF by default and exercised by the integration review). The signal
-mirrors scripts/analyze_twap_lock.py exactly: displacement of the projected
-final TWAP past the frozen error margin, bought only while the winner's ask
-still clears the edge floor.
+The signal mirrors scripts/analyze_twap_lock.py exactly: displacement of the
+projected final TWAP past the frozen error margin, bought only while the
+winner's ask still clears the edge floor — and, by default, only on the tier
+that has never breached.
 """
 import ast
 import time
@@ -14,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from polybot.core.signal_engine import (
-    OPEN_CALIB, SignalEngine, TWAP_MARGIN_MAX, TWAP_MARGIN_P995,
+    SignalEngine, TWAP_MARGIN_MAX, TWAP_MARGIN_P995,
     TWAP_PROB_DETERMINISTIC, TWAP_PROB_P995, twap_margin,
 )
 
@@ -39,7 +37,7 @@ def test_phase_assigned_before_any_ghost_call():
 
     # Enclosing free vars that _ghost's base_ctx reads; each must be bound before the ghost.
     # (raw_prob_side / _closes_tail / _ghost_flip_count are local to _ghost, not checked here.)
-    for var in ("aux_signals", "phase", "_signal_leg", "_proj", "_odisp"):
+    for var in ("aux_signals", "phase", "_signal_leg", "_proj"):
         assigns = [t.lineno
                    for node in ast.walk(fn) if isinstance(node, ast.Assign)
                    for t in ast.walk(node)
@@ -221,61 +219,3 @@ def test_sniper_enabled_wired_from_settings():
     cfg = load_config()
     assert isinstance(cfg["late_window"]["sniper_enabled"], bool)
     assert cfg["late_window"]["twap_zone_s"] <= 30.0
-
-
-# ───────────────────────── evaluate_open_edge ─────────────────────────────────
-def _open(eng, disp, ask_up, ask_down, sec_rem=295.0, zone=20.0, floor=0.06):
-    return eng.evaluate_open_edge(disp, sec_rem, ask_up, ask_down, zone, floor)
-
-
-def test_open_edge_fires_on_cheap_head_start():
-    # $20 head start calibrates to 0.73; ask 0.62 leaves +11pp — fire Up.
-    sig = _open(_eng(), disp=+20.0, ask_up=0.62, ask_down=0.39)
-    assert sig.action == "LATE_SNIPE_YES"
-    assert sig.side == "Up"
-    assert sig.prob == pytest.approx(0.73)
-    assert sig.edge == pytest.approx(0.73 - 0.62)
-
-
-def test_open_edge_down_side_and_interpolation():
-    # |disp| $25 interpolates (20,0.73)-(30,0.78) -> 0.755.
-    sig = _open(_eng(), disp=-25.0, ask_up=0.40, ask_down=0.60)
-    assert sig.action == "LATE_SNIPE_NO"
-    assert sig.prob == pytest.approx(0.755)
-
-
-def test_open_edge_silences_when_book_prices_it():
-    # The self-limiting property: ask at/above calib − floor -> SKIP. The day
-    # the books adapt, this leg stops firing with no knob turned.
-    sig = _open(_eng(), disp=+20.0, ask_up=0.68, ask_down=0.33)
-    assert sig.action == "SKIP"
-    assert "prices the" in sig.reason
-
-
-def test_open_edge_no_fire_below_first_knot():
-    sig = _open(_eng(), disp=+4.9, ask_up=0.40, ask_down=0.61)
-    assert sig.action == "SKIP"
-    assert "noise" in sig.reason
-
-
-def test_open_edge_zone_and_none_guards():
-    eng = _eng()
-    assert _open(eng, +20.0, 0.62, 0.39, sec_rem=270.0).action == "SKIP"  # past the zone
-    assert _open(eng, None, 0.62, 0.39).action == "SKIP"
-    for bad in (None, 0.0, 1.0):
-        assert _open(eng, +20.0, bad, 0.39).action == "SKIP"
-
-
-def test_open_edge_kelly_market_anchored():
-    eng = _eng()
-    sig = _open(eng, +30.0, ask_up=0.65, ask_down=0.36)
-    assert sig.action == "LATE_SNIPE_YES"
-    assert sig.kelly_size == pytest.approx(eng._kelly(0.65 + 0.06, 0.65))
-    # anchored below the calibration-prob Kelly — the conservative branch
-    assert sig.kelly_size < eng._kelly(sig.prob, 0.65)
-
-
-def test_open_calib_is_monotone():
-    vals = [v for _, v in OPEN_CALIB]
-    assert vals == sorted(vals)
-    assert vals[-1] <= 0.85     # never lets the curve claim near-certainty
