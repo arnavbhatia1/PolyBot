@@ -399,17 +399,24 @@ sniper buys those dips and holds ≤30s to resolution.
   This replaced a "only prints STRICTLY BELOW the bid count" rule that was wrong
   in BOTH directions — it refused at-price fills we would really get once the
   queue drains, and granted every through-price fill in full while ignoring the
-  size sitting ahead of us. **Paper also pays the measured order-path RTT on
-  every GTC place AND cancel** (`_simulate_latency`, the same inverse-CDF draw
-  the taker uses, p50 ~436ms): a resting bid does not exist until its POST
+  size sitting ahead of us. **Paper also pays the MEASURED GTC round trip on
+  every place AND cancel** (`_simulate_gtc_latency` over
+  `_GTC_LATENCY_QUANTILES` — place min 0.049 / p50 0.056 / p90 0.060 with one
+  0.170 cold first sample, cancel p50 0.054, taken on the box 08-12 by
+  `smoke_gtc_test.py --samples 12`): a resting bid does not exist until its POST
   lands, and a cancel does not take effect until its own round trip does — so
-  live can still be filled while pulling. Because `queue_ahead` is measured
+  live can still be filled while pulling. **This is NOT the taker table and must
+  never be replaced by it**: a taker pays Polymarket's deliberate 250ms `itode`
+  hold and a resting bid never crosses, so charging GTC the FOK p50 of 436ms
+  kept paper's bid out of the book ~8x longer than live and silently UNDER-filled
+  the only leg that earns. Box-native, so `paper_latency_scale` does not apply. Because `queue_ahead` is measured
   AFTER the POST returns, anyone who got their bid in during our flight is
-  correctly counted ahead of us. **The honest residual: no maker leg has EVER
-  run in live**, so the RTT distribution is borrowed from the taker's FOK POSTs
-  (same endpoint, same signing path) and GTC rejection is not modelled at all —
-  there is no live maker data to calibrate either. Only a small live probe
-  closes that. Fills stamp
+  correctly counted ahead of us. **Residual**: the live GTC path is now PROVEN
+  (`smoke_gtc_test.py` places, polls and cancels a real resting order), but no
+  maker leg has ever FILLED in live, so GTC rejection is still unmodelled and
+  the 0.992 price itself is unverified against the exchange — the smoke test has
+  to rest at 0.01 to stay un-hittable. The first live window's
+  `MAKER POST-CLOSE` line answers the price question. Fills stamp
   `signal_leg="maker_bid"` — its own ledger line and bar.
 - **Capital deploys ONLY through these legs** — there is no other entry
   path in the codebase. `sniper_enabled` is the shared kill-bar SAFETY across

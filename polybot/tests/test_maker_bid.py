@@ -112,10 +112,14 @@ def test_gtc_placement_pays_the_measured_post_rtt(tmp_path, monkeypatch):
     pt.latency_floor_s = 0.32
     t0 = time.time()
     oid = asyncio.run(pt.place_gtc_bid("tokU", 0.992, 50.0))
-    assert oid and time.time() - t0 >= 0.32      # at least the fastest live POST
+    took = time.time() - t0
+    # The MEASURED GTC round trip (min 0.049, max 0.170) — deliberately NOT the
+    # taker table: a resting bid never crosses, so it never pays the 250ms itode
+    # hold, and charging it 436ms under-filled the leg that earns.
+    assert oid and 0.045 <= took <= 0.40
     t1 = time.time()
     asyncio.run(pt.cancel_gtc(oid))
-    assert time.time() - t1 >= 0.32              # cancels round-trip too
+    assert 0.045 <= time.time() - t1 <= 0.40     # cancels round-trip too
 
 
 def test_queue_ahead_must_drain_before_we_fill(tmp_path, monkeypatch):

@@ -57,7 +57,11 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-12T14:50:00+00:00"  # QUEUE-MODELLED PAPER FILLS.
+  validation_epoch: "2026-08-12T17:10:00+00:00"  # MEASURED GTC RTT (55ms, not
+                               # the taker's 436ms) on top of queue-modelled
+                               # fills. Paper's bid now reaches the book as fast
+                               # as live's does, so fills before this instant
+                               # came from a materially slower model.
                                # Paper now requires the same size to trade
                                # through a rung that live would (queue_ahead),
                                # so a paper fill means something different from

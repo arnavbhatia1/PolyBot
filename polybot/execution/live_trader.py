@@ -610,10 +610,17 @@ class LiveTrader(BaseTrader):
             resp = await asyncio.to_thread(_place)
             oid = (resp or {}).get("orderID") or (resp or {}).get("id")
             if not oid:
-                logger.warning("maker bid rejected: %s", resp)
+                # LOUD: a rejected rung is silent lost income — the leg simply
+                # earns nothing and nothing else complains. Price is logged
+                # because tick size is the likely culprit (0.01 in-window,
+                # 0.001 post-close, and post-close rests at 0.992).
+                logger.error("MAKER BID REJECTED at %.4f for %.2f sh — no order "
+                             "resting, this window earns nothing: %s",
+                             price, shares, resp)
             return oid or None
         except Exception as e:
-            logger.warning("maker bid POST failed: %s", e)
+            logger.error("MAKER BID POST FAILED at %.4f for %.2f sh — no order "
+                         "resting: %s", price, shares, e)
             return None
 
     async def cancel_gtc(self, order_id: str) -> None:

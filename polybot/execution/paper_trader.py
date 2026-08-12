@@ -69,15 +69,15 @@ class PaperTrader(BaseTrader):
         every print in that window for free — the one place paper was
         structurally more optimistic than live.
         """
-        await self._simulate_latency()
+        await self._simulate_gtc_latency()
         return f"paper-{int(time.time() * 1000)}"
 
     async def cancel_gtc(self, order_id: str) -> None:
         """A cancel does not take effect until ITS round trip lands either, so
-        live can still be filled while pulling. Same distribution, opposite
-        sign — modelling only the placement delay would bias paper the other
-        way."""
-        await self._simulate_latency()
+        live can still be filled while pulling. Measured p50 54ms — near enough
+        to the place RTT to share the table, and small enough that the
+        fill-while-cancelling risk is far smaller than the taker numbers implied."""
+        await self._simulate_gtc_latency()
         return None
 
     async def poll_gtc_fill(self, order_id: str) -> float | None:
@@ -285,6 +285,32 @@ class PaperTrader(BaseTrader):
         (0.00, 0.405), (0.25, 0.410), (0.50, 0.436),
         (0.75, 0.679), (0.99, 1.646), (1.00, 2.222),
     )
+
+    # GTC (resting-bid) RTT, measured directly on the box 08-12 via
+    # scripts/smoke_gtc_test.py --samples 12: place min 0.049 / p50 0.056 /
+    # p90 0.060, plus one 0.170 cold-connection first sample; cancel p50 0.054.
+    #
+    # This is NOT the taker table and must never be replaced by it. A taker pays
+    # Polymarket's deliberate 250ms itode hold — validate, hold, re-validate,
+    # match-or-kill — and a resting bid never crosses, so it never pays it.
+    # Borrowing the FOK numbers kept paper's bid out of the book ~8x longer than
+    # live, which silently UNDER-filled the leg the strategy earns through.
+    # Box-native, so latency_scale does NOT apply (that knob corrects the taker
+    # table for this host; this table was taken on this host).
+    _GTC_LATENCY_QUANTILES: tuple[tuple[float, float], ...] = (
+        (0.00, 0.049), (0.50, 0.056), (0.90, 0.060), (1.00, 0.170),
+    )
+
+    async def _simulate_gtc_latency(self) -> None:
+        """Sleep one inverse-CDF draw from the measured GTC round-trip."""
+        u = random.random()
+        qs = self._GTC_LATENCY_QUANTILES
+        lat = qs[-1][1]
+        for (q0, v0), (q1, v1) in zip(qs[:-1], qs[1:]):
+            if u <= q1:
+                lat = v0 + (v1 - v0) * (u - q0) / (q1 - q0)
+                break
+        await asyncio.sleep(lat)
 
     def _draw_latency(self) -> float:
         """One inverse-CDF sample from the measured live POST-RTT distribution."""
