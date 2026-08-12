@@ -90,8 +90,7 @@ def test_sub_dollar_budget_never_places(tmp_path, monkeypatch):
 
 
 def test_print_fills_per_rung_at_or_below_with_empty_queue(tmp_path, monkeypatch):
-    """With nothing resting ahead of us, a print AT our price fills — that is
-    what the exchange does. The old rule refused it and was wrong."""
+    """With nothing ahead of us, a print AT our price fills — what the exchange does."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr()                                    # book_fn unset -> queue 0
     _place(mgr, time.time() - 150.0, budget=30.0)
@@ -106,9 +105,7 @@ def test_print_fills_per_rung_at_or_below_with_empty_queue(tmp_path, monkeypatch
 
 
 def test_gtc_placement_pays_the_measured_post_rtt(tmp_path, monkeypatch):
-    """A resting bid does not exist until the POST lands. Paper used to return an
-    order id instantly, which handed the maker legs every print in that window
-    for free — the one place paper was more optimistic than live."""
+    """A resting bid does not exist until its POST lands, so paper must wait too."""
     from polybot.execution.paper_trader import PaperTrader
     pt = PaperTrader.__new__(PaperTrader)
     pt.latency_scale = 1.0
@@ -116,9 +113,8 @@ def test_gtc_placement_pays_the_measured_post_rtt(tmp_path, monkeypatch):
     t0 = time.time()
     oid = asyncio.run(pt.place_gtc_bid("tokU", 0.992, 50.0))
     took = time.time() - t0
-    # The MEASURED GTC round trip (min 0.049, max 0.170) — deliberately NOT the
-    # taker table: a resting bid never crosses, so it never pays the 250ms itode
-    # hold, and charging it 436ms under-filled the leg that earns.
+    # Measured GTC round trip (0.049-0.170), not the taker table: a resting bid
+    # never crosses, so it never pays the 250ms itode hold.
     assert oid and 0.045 <= took <= 0.40
     t1 = time.time()
     asyncio.run(pt.cancel_gtc(oid))
@@ -126,9 +122,8 @@ def test_gtc_placement_pays_the_measured_post_rtt(tmp_path, monkeypatch):
 
 
 def test_queue_ahead_must_drain_before_we_fill(tmp_path, monkeypatch):
-    """The whole point of the model: size resting at or better than our price
-    fills FIRST. Paper must require the same volume through the level that live
-    would — otherwise it hands us fills a real queue would have absorbed."""
+    """Size resting at or better than our price fills FIRST, so paper needs the
+    same volume through the level that live would."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr()
     # 40 shares already resting at/above the 0.96 top rung.

@@ -1,35 +1,29 @@
 """Lock-informed maker LADDER (signal_leg="maker_bid") — the resting twin of
 the lock-dip taker.
 
-Once the final-30s projection locks a side at the never-breached tier, a
-DEEP-WEIGHTED ladder of GTC bids rests on that side and holds to resolution.
-Break-even win rate for such a bid is exactly the price paid, so the edge
-widens the deeper the rung sits: the market's most profitable formable maker
-(31% ROC, t 3.19, 5/5 positive days) realizes +61¢/sh at 0.09-0.21 and +41¢/sh
-at 0.37 while LOSING 5.9¢/sh at 0.95, and its 124-of-814 window count is simply
-the ~15% rate at which a deep bid gets wicked, not a filter. So most of the
-budget sits deep, where each dollar also buys 3-5x the shares; shallow rungs
-stay small because they fill often for a thin-to-negative margin. The panic
-seller of the winner and the momentum buyer of the loser are the same flow on a
-binary book; the ladder serves both with queue priority and zero latency.
+Once the final-30s projection locks a side at the never-breached tier, a ladder
+of GTC bids rests on that side and holds to resolution. Break-even win rate for
+such a bid is the price paid, so deep rungs need 20-40% where shallow ones need
+92-95% — hence most of the budget sits deep, where a dollar also buys 3-5x the
+shares.
 
-Lifecycle (one ladder, one window at a time): place all qualifying rungs at
-max-tier lock (deepest rungs demand extra displacement headroom — deep fills
-happen in violent windows where breach risk is conditionally elevated) →
-cancel everything the moment the lock weakens below p99.5, the projection
-goes cold, or the window runs out → book ALL accumulated fills as ONE
-position at the blended price (holds to resolution). PAPER fills are
-print-through conservative: only prints STRICTLY BELOW a rung count.
+Lifecycle, one ladder per window: place qualifying rungs at max-tier lock (deep
+rungs demand extra displacement headroom) → cancel everything when the lock
+weakens below p99.5, the projection goes cold, or the window runs out → book all
+accumulated fills as ONE blended position.
 
-Rung prices live in settings.yaml and are set by BREAK-EVEN economics (see
-LADDER_PRICE_MIN below), not by dip frequency. The nightly job only REPORTS the
-trailing dip CDF; nothing overwrites the geometry. An operator-supplied
-memory/state/maker_ladder.json still overrides prices if present, clamped to
-[0.15, 0.95] and only when its rung count matches the config seed.
+Paper fills model the real price-then-time queue: a print drains the size resting
+at or better than a rung before any reaches us (`queue_ahead`), and both place
+and cancel pay the measured GTC round trip.
 
-After the close the ladder does NOT die: the post-close certainty phase holds it
-for post_close_s, verifies the winner from the two official TWAP boundary
-captures (not the projection), and arms post_close_ladder on the settled side.
+Rung prices live in settings.yaml, set by break-even economics rather than dip
+frequency; the nightly job only reports the dip CDF. An operator
+memory/state/maker_ladder.json may override prices, clamped and only when its
+rung count matches the seed.
+
+After the close the ladder does not die: the post-close phase holds it for
+post_close_s, verifies the winner from the two official TWAP boundary captures
+(not the projection), and arms post_close_ladder on the settled side.
 """
 from __future__ import annotations
 
@@ -44,42 +38,19 @@ from polybot.paths import MAKER_LADDER_PATH
 logger = logging.getLogger("polybot")
 
 MIN_NOTIONAL_USD = 1.0          # CLOB floor — below this nothing books
-LADDER_PRICE_MIN = 0.15         # hard clamps on the nightly recalibration — no data
-LADDER_PRICE_MAX = 0.95         # artifact may quote outside these.
-                                #
-                                # The band is DEEP on purpose. Break-even win
-                                # rate for a resting buy held to resolution is
-                                # exactly the price paid, so the edge widens as
-                                # the rung goes deeper: the market's most
-                                # profitable formable maker (31% ROC, t 3.19,
-                                # 5/5 days) realizes +61c/sh at 0.09-0.21 and
-                                # +41c/sh at 0.37, while LOSING 5.9c/sh at 0.95.
-                                # Its 124-of-814 window count is not selectivity
-                                # — it is the 15% rate at which a deep bid gets
-                                # wicked. A shallow ladder needs 92-95% just to
-                                # break even and collects pennies when it wins;
-                                # a deep one needs 20-40% and collects most of
-                                # the dollar. Deep rungs still demand extra lock
-                                # headroom, and every rung dies the moment the
-                                # lock weakens below p99.5.
+LADDER_PRICE_MIN = 0.15         # clamps on an operator price file. The band is
+LADDER_PRICE_MAX = 0.95         # deep on purpose: break-even win rate equals the
+                                # price paid, so a 0.20 rung needs 20% against a
+                                # measured 77-96%, while 0.95 needs 95%.
 
+DEEP_HOLD_MAX_PX = 0.85         # rungs below this survive a transient lock
+                                # weakening; the wick that fills them IS the move
+                                # that dips the projection, so cancelling would
+                                # run away exactly when the trade appears. A
+                                # flipped or cold projection still kills all.
 
-DEEP_HOLD_MAX_PX = 0.85         # rungs BELOW this price survive a transient lock
-                                # weakening; at/above it they pull. The wick that
-                                # fills a deep rung IS the spot move that pushes
-                                # the projection under the p99.5 margin, so a
-                                # blanket cancel runs away at exactly the moment
-                                # the trade appears. A deep rung is paid for that
-                                # risk (break-even 20-35% against a measured
-                                # 77-96% win rate) and wicks revert; a 0.90 rung
-                                # needs 90% and is not. Everything still dies if
-                                # the projection FLIPS side or goes cold.
-
-PC_VERIFY_GRACE_S = 5.0         # how long the post-close phase waits for the
-                                # closing boundary report before giving up. It
-                                # lands p50 1.71s / p90 2.2s / p99 2.9s after the
-                                # boundary, so anything shorter retires before
-                                # the outcome can possibly be known.
+PC_VERIFY_GRACE_S = 5.0         # wait this long for the closing boundary report;
+                                # it lands p50 1.71s / p99 2.9s after the boundary.
 
 
 class MakerBidManager:
@@ -106,17 +77,11 @@ class MakerBidManager:
         return self.active is not None and self.active["window_ts"] == window_ts
 
     def holding_tokens(self) -> set[str]:
-        """Tokens the WS must stay subscribed to.
+        """Tokens the WS must stay subscribed to, so rotation cannot unsubscribe a
+        token we still have a bid on — that blinds the paper fill matcher.
 
-        The post-close phase rests past the window's end, but rotation used to
-        unsubscribe the closed window's tokens the moment the next contract was
-        discovered — leaving a live bid on a token we no longer listen to. Paper
-        then cannot see a fill at all (0 of 1,015 prints for a closed window
-        reached us), and live loses its print stream.
-
-        BOTH sides of a pending window are kept: the winner is unknown until the
-        closing boundary lands ~2s later, and going deaf in that gap would break
-        paper/live parity silently — live still polls its fills over REST.
+        Both sides of a pending window are kept: the winner is unknown until the
+        closing boundary lands ~2s later.
         """
         out: set[str] = set()
         if self.active:
@@ -197,12 +162,8 @@ class MakerBidManager:
     # -- paper fill matcher (clob_ws print hook; sync, must not raise) ------
 
     def queue_ahead(self, token_id: str, px: float) -> float:
-        """Resting bid size at prices >= px: the size that must fill before us.
-
-        A seller walks the book DOWN from the best bid, so every share resting
-        at or better than our price is genuinely ahead of us in line. Measured
-        once at placement, which is when our time priority is set.
-        """
+        """Size that must fill before us: a seller walks the book down from the
+        best bid, so everything at or better than our price is ahead of us."""
         if self.book_fn is None:
             return 0.0
         try:
@@ -214,16 +175,8 @@ class MakerBidManager:
             return 0.0
 
     def on_print(self, asset_id: str, trade: dict) -> None:
-        """Paper fill model — price-then-time queue, not a conservative fiction.
-
-        The old rule booked only prints STRICTLY BELOW a rung, on the grounds
-        that an at-price print might have gone entirely to earlier queue. That
-        was wrong in BOTH directions: it refused at-price fills we would really
-        get once the queue drains, and it granted every through-price fill in
-        full while ignoring the size sitting ahead of us. Now a print consumes
-        the measured queue first and only the remainder reaches our order —
-        which is exactly what the exchange does.
-        """
+        """Price-then-time queue: a print drains the size ahead of us first, and
+        only the remainder reaches our order — what the exchange does."""
         a = self.active
         if a is None or not self.paper or asset_id != a["token_id"]:
             return

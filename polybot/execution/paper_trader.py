@@ -286,17 +286,10 @@ class PaperTrader(BaseTrader):
         (0.75, 0.679), (0.99, 1.646), (1.00, 2.222),
     )
 
-    # GTC (resting-bid) RTT, measured directly on the box 08-12 via
-    # scripts/smoke_gtc_test.py --samples 12: place min 0.049 / p50 0.056 /
-    # p90 0.060, plus one 0.170 cold-connection first sample; cancel p50 0.054.
-    #
-    # This is NOT the taker table and must never be replaced by it. A taker pays
-    # Polymarket's deliberate 250ms itode hold — validate, hold, re-validate,
-    # match-or-kill — and a resting bid never crosses, so it never pays it.
-    # Borrowing the FOK numbers kept paper's bid out of the book ~8x longer than
-    # live, which silently UNDER-filled the leg the strategy earns through.
-    # Box-native, so latency_scale does NOT apply (that knob corrects the taker
-    # table for this host; this table was taken on this host).
+    # Resting-bid RTT, measured on the box by smoke_gtc_test.py --samples 12.
+    # NOT the taker table: a taker pays Polymarket's 250ms itode hold and a
+    # resting bid never crosses, so it never pays it. Box-native, so
+    # latency_scale does not apply.
     _GTC_LATENCY_QUANTILES: tuple[tuple[float, float], ...] = (
         (0.00, 0.049), (0.50, 0.056), (0.90, 0.060), (1.00, 0.170),
     )
