@@ -270,6 +270,46 @@ sniper buys those dips and holds ≤30s to resolution.
   $589 profit-if-all sits at ≤0.99 while the 60-300s flow prints at median 0.999
   (0.1¢/share) — and a 300s rest would hold the single ladder slot straight
   through the next window's k [3,25]s placement point, suppressing the pre-close
+  leg outright. Rungs **0.992/0.90 split 85/15**, ranked by EV per DOLLAR
+  per window = (shares per $1) x margin x P(fill): 0.991 0.00666 · 0.993 0.00517
+  · 0.995 0.00369 · 0.90 0.00222 · 0.95 0.00105 · 0.97 0.00082 · 0.999 0.00073.
+  **Every one of the 945 buyable sales prints at 0.9900 or below**, so any bid
+  strictly above 0.9900 captures the identical flow — 0.995 and 0.991 both fill
+  in 73.3% of windows, so the four extra ticks bought nothing. 0.992 rather than
+  0.991 because the live book carries a competing bid at 0.9910. The tick is
+  0.001 post-close (0.01 while the window is live), which is what makes a
+  sub-penny rung legal at all. The 0.90 tail stays small: 2% of windows, but 10¢
+  a share when panic goes deep.
+  **It also arms with NO pre-close ladder at all** (`arm_post_close` /
+  `_promote_pending`): the outcome is settled fact in EVERY window, but the
+  ladder only rests on the few that lock at max tier inside k [3,25]s, so tying
+  the two together threw away all but a handful of windows a day. The fire path
+  arms an intent on every window (safe on any strike — `certain_winner`
+  re-verifies both boundary captures at promotion and fails closed). **Sizing is
+  `post_close_bankroll_frac` of BANKROLL for BOTH arms** — a settled outcome is
+  not a Kelly bet, and inheriting `post_close_budget_frac` of the ladder's
+  fractional-Kelly budget made every fill ~$2.15, so 71 perfect wins in one day
+  earned $0.80. Capital recycles in ~2 min (book → resolve) against 5-min windows
+  with one ladder slot, and Auto-Redeem is ON, so one full-size position per
+  window is sustainable. 0.10 is a deliberate first step (~9% of the measured
+  $475/window supply); the only loss mode is `certain_winner` being wrong, so
+  each step up multiplies that tail — raise only after a clean day at the
+  current step. `post_close_budget_frac` remains the fallback if no
+  bankroll-sized budget reaches the manager. Both
+  sides stay WS-subscribed while pending, because the winner is unknown until
+  the closing boundary lands ~2s later and going deaf there would break
+  paper/live parity silently (live polls its fills over REST). Standalone fills
+  stamp `signal_leg="post_close"`; a ladder-promoted post-close stays
+  `maker_bid` because those fills blend with pre-close rungs into one position.
+  **Geometry measured 08-11 over 150 windows / 1,364 post-close sales of the
+  winner** (`data-api/trades`, winner from Gamma `outcomePrices`, 0
+  disagreements with `finalPrice >= priceToBeat`): ~$475/window of supply,
+  149/150 windows had some, print price 0.990 from p05 through p50, 1,115 of
+  1,364 inside the first 60s, and trades stop dead at close+300s. The window is
+  90s not 300s because the tail is dollar-rich but PROFIT-poor — $560 of the
+  $589 profit-if-all sits at ≤0.99 while the 60-300s flow prints at median 0.999
+  (0.1¢/share) — and a 300s rest would hold the single ladder slot straight
+  through the next window's k [3,25]s placement point, suppressing the pre-close
   leg outright. Rungs 0.995/0.97/0.95/0.90 split 70/10/10/10. **The top rung is
   0.995 and must stay there**: sellers PRINT at 0.990, so 0.995 is the
   price-improving bid that gets hit — 71 fills / 71 wins in a single day at

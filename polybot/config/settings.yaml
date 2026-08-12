@@ -167,18 +167,21 @@ maker:
   # of fills at the current step. post_close_budget_frac below is the fallback
   # when no bankroll-sized budget reaches the manager.
   post_close_bankroll_frac: 0.10
-  # [price, share of the post-close budget]. The top rung is 0.995 and must stay
-  # there: sellers PRINT at 0.990, so 0.995 is the price-improving bid that gets
-  # hit — measured 71 fills / 71 wins in one day at exactly 0.9950. A 0.99 rung
-  # merely JOINS that crowd, and the paper matcher (prints strictly below the
-  # bid) would stop seeing fills entirely. 71 fills at 0.5c beats a handful at
-  # 1c. The deep rungs are the fat tail: 8 of 1,364 sales printed <= 0.95 and
-  # returned 22% against 1.01%, and a resting bid that never fills costs nothing.
+  # [price, share of the post-close budget]. Ranked by EV per DOLLAR per window
+  # = (shares per $1) x margin x P(fill), measured over 150 windows / 1,364
+  # post-close sales of the winner:
+  #     0.991 0.00666 | 0.993 0.00517 | 0.995 0.00369 | 0.90 0.00222
+  #     0.85  0.00235 | 0.95  0.00105 | 0.97  0.00082 | 0.999 0.00073
+  # Every one of the 945 buyable sales prints at 0.9900 or BELOW, so any bid
+  # strictly above 0.9900 captures the identical flow — 0.995 and 0.991 both
+  # fill in 73.3% of windows. Four ticks of margin were being paid for nothing.
+  # 0.992 (not 0.991) because the live book carries a competing bid at 0.9910;
+  # 0.992 clears it and the 0.990 crowd both. 0.97/0.95 are near-worthless and
+  # are gone. The 0.90 tail stays small: it fills 2% of windows but returns 10c
+  # a share when the panic goes deep.
   post_close_ladder:
-    - [0.995, 0.70]
-    - [0.97, 0.10]
-    - [0.95, 0.10]
-    - [0.90, 0.10]
+    - [0.992, 0.85]
+    - [0.90, 0.15]
   post_close_budget_frac: 0.40   # of the window's original ladder budget
 
 # =============================================================================
