@@ -1,25 +1,42 @@
 # PolyBot
 
-5-min BTC Up/Down trader for Polymarket, rebuilt lean for the TWAP era: the
+5-min BTC Up/Down trader for Polymarket, rebuilt lean for the TWAP era. The
 only feeds the STRATEGY reads are Chainlink (RTDS) + the Polymarket CLOB +
-Gamma, the only strategy is the two-leg TWAP lock system (§2), and every
-position holds to resolution. There is no other model or exit path. **PAPER SHADOW since 2026-08-07**: at 00:00 UTC that day Polymarket switched
+Gamma; every position holds to resolution. There is no other model and no exit
+path.
+
+**The edge is settled-outcome computation monetised by a resting bid — not
+speed.** We are demonstrably not the fast participant: the book reprices 0.33s
+after Binance and 2.5s BEFORE our own oracle receipt, winning 97-100% of
+sharp-move races. Capacity scales with markets x locked-seconds x panic supply
+x BANKROLL, never with latency.
+
+**Two legs, in order of what they earn:**
+1. **Post-close certainty (§2)** — the market accepts orders for minutes after
+   the close, the winner's book has bid levels and ZERO asks, and the outcome
+   is settled fact from the two official TWAP boundary captures. Sellers who
+   have not read the result dump the winner into our resting bid. ~$475/window
+   of supply in 149 of 150 windows, printing at 0.9900; we rest at 0.992 and
+   collect ~0.8¢/share, riskless, in ~73% of windows. **This leg cannot suffer
+   a projection failure — there is no unobserved tail left.**
+2. **Lock-dip taker + ladder (§2)** — in the final 30s the resolving average is
+   mostly observed, so displacement past a frozen error margin decides the
+   window. Fires on the **max tier ONLY** (`require_max_tier`): that bound has
+   never been breached in 583+ windows, while the thinner p99.5 tier has broken
+   THREE times and one breach costs ~55 post-close wins.
+
+**PAPER SHADOW since 2026-08-07**: at 00:00 UTC that day Polymarket switched
 resolution from the terminal Chainlink snapshot to the official **30-second
 TWAP stream** (strike = the stream's value at the open, final = its value at
 the close — both verified bit-exact against served price_to_beat/final_price,
-17/17 windows, and each close chains into the next strike to the cent). The
-switch killed the burst sniper that had been live since 07-19 (its own fills
-recompute to −17.5¢/sh under TWAP scoring, t −5.0) and created the current
-edge: in the final 30s the resolving average is mostly already observed, so
-the outcome is often mathematically decided while spot-reflexive traders still
-quote it — night-one books priced locked windows at 0.99-1.00 (the naive
-buy-the-lock is dead on arrival) but a late spot whipsaw dips the WINNER's
-ask to 0.84-0.93 for 1-4s in ~1 in 6 windows, well inside the ~0.4s FOK reach.
-The lock call itself has never been wrong (583/583 windows, margins frozen in
-`signal_engine.TWAP_MARGIN_*`). **No real capital until the pre-registered
-paper bar passes** (§2); the nightly health job re-reads the realized shadow
-daily. Gate-vetoed fires persist as leg-stamped ghosts — the zero-capital
-evidence stream the gate machinery reads.
+17/17 windows, each close chaining into the next strike to the cent). That
+switch killed the burst sniper (its fills recompute to −17.5¢/sh under TWAP
+scoring, t −5.0). The night-one whipsaw dip that replaced it (~1 in 6 windows)
+has since collapsed ~10x — dip supply is 2.0% of locked seconds — which is why
+the resting post-close bid, not the taker, is the business. **No real capital
+until the pre-registered paper bar passes** (§2); the nightly health job
+re-reads the realized shadow daily. Gate-vetoed fires persist as leg-stamped
+ghosts.
 
 **This file is the single source of truth — update it in the same commit as any
 behavioral change.**
@@ -135,7 +152,7 @@ sniper buys those dips and holds ≤30s to resolution.
   p99.5 margin so a 1s dip is never throttled past.
 - **Hold to resolution — every sniper leg, unconditionally**
   (`_evaluate_and_exit_position` skips all `signal_leg`-stamped positions):
-  all three legs' edges were MEASURED hold-to-resolution, and L1's
+  both legs' edges were MEASURED hold-to-resolution, and a
   short-horizon spot lens re-deciding a resolution bet sells every noise
   bottom — night one it scalped an open-leg fill −64% forty seconds in and
   dumped a WINNING maker fill at 0.05 seconds before it paid $1.00 (the
@@ -503,11 +520,11 @@ dust through and fail-closes only on genuinely unresolved positions.
 
 ## 7. Hard rules
 
-- No ML/feature-stack entry-side prediction — the CLOB price wins. The two
-  sanctioned exceptions, each through its own bar: the final-30s TWAP lock (a
-  projection of an already-observed average) and the open head-start leg (a
-  frozen calibration of a known strike's displacement). Anything else fires
-  zero capital.
+- No ML/feature-stack entry-side prediction — the CLOB price wins. The ONE
+  sanctioned exception, through its own bar, is the final-30s TWAP lock (a
+  projection of an already-observed average), and it fires only at max tier.
+  The post-close leg needs no exception: it reads a settled outcome, not a
+  forecast. Anything else fires zero capital.
 - No deployment before a kill bar passes; never relax a bar to pass it.
 - No symmetric market-making, no oracle-cadence trading, no expansion past BTC
   until the goal completes.
