@@ -343,7 +343,6 @@ def ladder_recalibrate(days: int = 1, write: bool = False):
     estimator measures only how deep panic happened to reach in the trailing
     day, so it drags the deep rungs shallow — the direction that was already
     measured wrong. `write` is retained for call-shape parity and ignored."""
-    from polybot.paths import MAKER_LADDER_PATH
     since = max(datetime.now(timezone.utc).timestamp() - days * 86400.0,
                 TWAP_SWITCH_TS)
     labels = load_labels(since)

@@ -150,15 +150,13 @@ sniper buys those dips and holds ≤30s to resolution.
   The main loop wakes on raw Chainlink reports (`report_event`) and CLOB book
   events; the µs pre-gate (`_twap_hot`) fast-paths any wake at ≥90% of the
   p99.5 margin so a 1s dip is never throttled past.
-- **Hold to resolution — every sniper leg, unconditionally**
-  (`_evaluate_and_exit_position` skips all `signal_leg`-stamped positions):
-  both legs' edges were MEASURED hold-to-resolution, and a
-  short-horizon spot lens re-deciding a resolution bet sells every noise
-  bottom — night one it scalped an open-leg fill −64% forty seconds in and
-  dumped a WINNING maker fill at 0.05 seconds before it paid $1.00 (the
-  scalp was that leg's entire loss). The lock-hold projection guard remains
-  for unstamped/legacy positions only. Any smarter exit needs its own
-  measured evidence first.
+- **Hold to resolution — structurally, not by policy.** There is NO sell path
+  in the codebase: no exit evaluation, no scalp, no `close_trade` caller. Both
+  legs' edges were MEASURED hold-to-resolution, and a short-horizon lens
+  re-deciding a resolution bet sells every noise bottom — night one it scalped
+  a fill −64% forty seconds in and dumped a WINNING maker fill at 0.05 seconds
+  before it paid $1.00 (that scalp was the leg's entire loss). Any smarter exit
+  needs its own measured evidence AND new code; none exists to re-enable.
 - **Fill**: the sniper FOK limit pads the decision ask by only `sniper_fok_slip`
   (0.01, ~one tick) then dies — the pad absorbs benign jitter, but a dip that
   snapped back to 0.99+ before the order lands KILLS it and the bot sits that
