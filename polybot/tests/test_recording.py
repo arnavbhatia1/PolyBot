@@ -34,39 +34,11 @@ class _FakeClob:
         pass
 
 
-class _FakeCoinbase:
-    def __init__(self, price=61000.0):
-        class _S: pass
-        self.state = _S()
-        self.state.price = price
-        self.state.age_seconds = 0.5
-
 
 class _FakeChainlink:
     def get_strike(self, window_ts):
         return 60990.0
 
-
-class _FakeBuffer:
-    def get_closes(self):
-        return [60000.0, 60010.0, 60005.0]
-
-
-class _FakeBinanceFeed:
-    def __init__(self):
-        self.buffer = _FakeBuffer()
-
-
-class _FakeIndicatorEngine:
-    def compute_all(self, buffer):
-        return {"atr": {"atr": 25.0, "passes": True, "candle_ts": 7}}
-
-
-class _FakeSignalEngine:
-    def compute_probability(self, btc_price, strike_price, seconds_remaining,
-                            atr, closes=None, atr_candle_ts=None):
-        assert atr == 25.0 and atr_candle_ts == 7
-        return 0.7123
 
 
 def test_top3_usd_sums_first_three_levels():
@@ -80,8 +52,7 @@ async def test_window_recorder_samples_and_flushes(db, tmp_path, monkeypatch):
     import polybot.recording as recording
     monkeypatch.setattr(recording, "PATHS_DB", tmp_path / "paths.db")
     await db.initialize()
-    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), coinbase_feed=_FakeCoinbase(),
-                             chainlink_feed=_FakeChainlink(), market_scanner=None,
+    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), chainlink_feed=_FakeChainlink(), market_scanner=None,
                              http_client=None)
     await rec.ensure_tables()
     window_ts = int(time.time() // 300) * 300
@@ -95,7 +66,7 @@ async def test_window_recorder_samples_and_flushes(db, tmp_path, monkeypatch):
     assert len(rows) == 1
     r = rows[0]
     assert r["bid_up"] == 0.55 and r["ask_down"] == 0.45
-    assert r["strike"] == 60990.0 and r["coinbase_price"] == 61000.0
+    assert r["strike"] == 60990.0 and r["coinbase_price"] is None
     assert r["traded"] == 1
     assert 0 <= r["elapsed_s"] <= 300
     # No L1-stamping deps wired -> the appended columns stay NULL (never 0.0).
@@ -104,56 +75,12 @@ async def test_window_recorder_samples_and_flushes(db, tmp_path, monkeypatch):
     await db.close()
 
 
-@pytest.mark.asyncio
-async def test_window_recorder_stamps_live_l1(db, tmp_path, monkeypatch):
-    import polybot.recording as recording
-    monkeypatch.setattr(recording, "PATHS_DB", tmp_path / "paths.db")
-    await db.initialize()
-    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), coinbase_feed=_FakeCoinbase(),
-                             chainlink_feed=_FakeChainlink(), market_scanner=None,
-                             http_client=None, binance_feed=_FakeBinanceFeed(),
-                             indicator_engine=_FakeIndicatorEngine(),
-                             signal_engine=_FakeSignalEngine())
-    await rec.ensure_tables()
-    window_ts = int(time.time() // 300) * 300
-    rec._window = {"market_id": f"btc-updown-5m-{window_ts}", "window_ts": window_ts,
-                   "token_up": "tu", "token_down": "td"}
-    rec._sample()
-    await rec._flush()
-    cur = await rec._paths_conn.execute("SELECT atr, model_prob_up FROM window_paths")
-    r = (await cur.fetchall())[0]
-    assert r["atr"] == 25.0
-    assert r["model_prob_up"] == 0.7123
-    await rec.stop()
-    await db.close()
-
 
 class _FakeChainlinkLive(_FakeChainlink):
     price = 60995.5
     age_seconds = 1.25
 
 
-class _FakeCoinbaseFull(_FakeCoinbase):
-    def __init__(self):
-        super().__init__()
-        self.state.best_bid = 60999.0
-        self.state.best_ask = 61001.0
-
-    def get_cvd(self, window_s):
-        return 3.5 if window_s == 10.0 else 7.25
-
-    def covers(self, window_s):
-        return True  # buffer continuously spans the window (no reconnect)
-
-
-class _FakeDepthFeed:
-    def __init__(self):
-        self.updated_at = time.time()
-        self.top_bids = [["60990", "2.0"], ["60980", "1.0"]]
-        self.top_asks = [["61010", "1.5"]]
-
-    def get_depth_usd(self, levels=20):
-        return 1.0  # unused here; recorder computes side-split sums itself
 
 
 @pytest.mark.asyncio
@@ -161,9 +88,8 @@ async def test_window_recorder_full_capture_columns(db, tmp_path, monkeypatch):
     import polybot.recording as recording
     monkeypatch.setattr(recording, "PATHS_DB", tmp_path / "paths.db")
     await db.initialize()
-    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), coinbase_feed=_FakeCoinbaseFull(),
-                             chainlink_feed=_FakeChainlinkLive(), market_scanner=None,
-                             http_client=None, binance_depth=_FakeDepthFeed())
+    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), chainlink_feed=_FakeChainlinkLive(), market_scanner=None,
+                             http_client=None, )
     await rec.ensure_tables()
     # Migration appended every declared column.
     cur = await rec._paths_conn.execute("PRAGMA table_info(window_paths)")
@@ -179,12 +105,13 @@ async def test_window_recorder_full_capture_columns(db, tmp_path, monkeypatch):
     r = (await cur.fetchall())[0]
     assert r["chainlink_price"] == 60995.5 and r["chainlink_age_s"] == 1.25
     assert 0 <= r["book_age_up_s"] < 5 and 0 <= r["book_age_down_s"] < 5
-    assert r["coinbase_bid"] == 60999.0 and r["coinbase_ask"] == 61001.0
-    assert r["coinbase_cvd_10s"] == 3.5 and r["coinbase_cvd_30s"] == 7.25
+    # Coinbase/Binance/L1 feeds deleted: their columns stay in the schema and
+    # record NULL — None-not-0.0 is load-bearing for the corpus.
+    assert r["coinbase_bid"] is None and r["coinbase_ask"] is None
+    assert r["coinbase_cvd_10s"] is None and r["coinbase_cvd_30s"] is None
     assert r["bid_sz_up"] == 100.0 and r["ask_sz_up"] == 80.0
     assert r["bid_sz_down"] == 60.0 and r["ask_sz_down"] == 90.0
-    assert r["depth20_bid_usd"] == pytest.approx(60990 * 2.0 + 60980 * 1.0)
-    assert r["depth20_ask_usd"] == pytest.approx(61010 * 1.5)
+    assert r["depth20_bid_usd"] is None and r["depth20_ask_usd"] is None
     await rec.stop()
     await db.close()
 
@@ -195,8 +122,7 @@ async def test_window_recorder_full_capture_null_on_cold(db, tmp_path, monkeypat
     import polybot.recording as recording
     monkeypatch.setattr(recording, "PATHS_DB", tmp_path / "paths.db")
     await db.initialize()
-    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), coinbase_feed=_FakeCoinbase(),
-                             chainlink_feed=_FakeChainlink(), market_scanner=None,
+    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), chainlink_feed=_FakeChainlink(), market_scanner=None,
                              http_client=None)  # no depth feed; plain fakes
     await rec.ensure_tables()
     window_ts = int(time.time() // 300) * 300
@@ -219,8 +145,7 @@ async def test_window_recorder_label_write(db, tmp_path, monkeypatch):
     import polybot.recording as recording
     monkeypatch.setattr(recording, "PATHS_DB", tmp_path / "paths.db")
     await db.initialize()
-    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), coinbase_feed=None,
-                             chainlink_feed=None, market_scanner=None, http_client=None)
+    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), chainlink_feed=None, market_scanner=None, http_client=None)
     await rec.ensure_tables()
     await db.conn.execute(
         "INSERT OR REPLACE INTO window_labels "

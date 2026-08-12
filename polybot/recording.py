@@ -68,26 +68,12 @@ class WindowPathRecorder:
 
     def __init__(self, db: Any, clob_ws: Any, chainlink_feed: Any,
                  market_scanner: Any, http_client: Any,
-                 coinbase_feed: Any = None,
-                 binance_trades: Any = None, binance_feed: Any = None,
-                 indicator_engine: Any = None, signal_engine: Any = None,
-                 binance_depth: Any = None) -> None:
+                 ) -> None:
         self.db = db
         self.clob_ws = clob_ws
-        self.coinbase_feed = coinbase_feed
         self.chainlink_feed = chainlink_feed
         self.market_scanner = market_scanner
         self.http_client = http_client
-        # Binance aggTrade accumulator — recorded only so the offline analyzer
-        # can test a bot-formable signal against the resolution venue. None-safe.
-        self.binance_trades = binance_trades
-        # L1 stamping deps. signal_engine/indicator_engine MUST be dedicated
-        # instances (same config, never the trading loop's own): compute_probability
-        # mutates engine state the ghost path reads. None-safe: columns stay NULL.
-        self.binance_feed = binance_feed
-        self.indicator_engine = indicator_engine
-        self.signal_engine = signal_engine
-        self.binance_depth = binance_depth
         self._window: dict[str, Any] | None = None
         self._discovering: int = 0          # window_ts a discovery task is running for
         self._tasks: set[asyncio.Task] = set()  # strong refs so GC can't drop a
@@ -340,8 +326,7 @@ class WindowPathRecorder:
             except (ValueError, TypeError):
                 return None
 
-        cb_fresh = self.coinbase_feed is not None and self.coinbase_feed.state.age_seconds < 5
-        cb = self.coinbase_feed.state.price if cb_fresh else None
+        cb = None            # Coinbase feed deleted; the column records NULL
         strike = (self.chainlink_feed.get_strike(w["window_ts"])
                   if self.chainlink_feed else None)
 
@@ -360,20 +345,8 @@ class WindowPathRecorder:
             ts = book.get("ts")
             return round(now - ts, 3) if ts else None
 
-        # Coinbase BBO + flow, fresh-feed gated. CVD 0.0 is a legitimate
-        # balanced-flow value — recorded as-is when fresh.
+        # Coinbase feed deleted; these columns record NULL by design.
         cb_bid = cb_ask = cb_cvd10 = cb_cvd30 = None
-        if cb_fresh:
-            st = self.coinbase_feed.state
-            cb_bid = getattr(st, "best_bid", 0.0) or None
-            cb_ask = getattr(st, "best_ask", 0.0) or None
-            try:
-                # covers() gates a reconnect-truncated window: an understated CVD
-                # recorded as real poisons the corpus — stamp None instead.
-                cb_cvd10 = self.coinbase_feed.get_cvd(10.0) if self.coinbase_feed.covers(10.0) else None
-                cb_cvd30 = self.coinbase_feed.get_cvd(30.0) if self.coinbase_feed.covers(30.0) else None
-            except Exception:
-                pass
 
         def _touch_sz(levels: Any) -> float | None:
             try:
@@ -381,54 +354,11 @@ class WindowPathRecorder:
             except (KeyError, IndexError, ValueError, TypeError):
                 return None
 
-        # Binance top-20 book pressure, side-split — a single total destroys
-        # direction. None when the depth WS is stale.
+        # Binance feeds deleted; these columns record NULL by design.
         d20_bid = d20_ask = None
-        bd = self.binance_depth
-        if bd is not None and getattr(bd, "updated_at", 0.0) > 0 and now - bd.updated_at < 5:
-            try:
-                d20_bid = round(sum(float(l[0]) * float(l[1]) for l in bd.top_bids[:20]), 2) or None
-                d20_ask = round(sum(float(l[0]) * float(l[1]) for l in bd.top_asks[:20]), 2) or None
-            except (IndexError, ValueError, TypeError):
-                d20_bid = d20_ask = None
-
-        # Binance aggTrade flow. None when cold, never 0.0 — the analyzer must
-        # distinguish "no flow" from "stale feed".
         bn_price = bn_cvd10 = bn_cvd30 = None
-        acc = getattr(self.binance_trades, "accumulator", None)
-        if acc is not None:
-            try:
-                if acc.latest_age_s < 5:
-                    bn_price = acc.latest_price or None
-                    # covers() gates a reconnect-truncated window (see Coinbase above)
-                    bn_cvd10 = acc.get_cvd(10.0) if acc.covers(10.0) else None
-                    bn_cvd30 = acc.get_cvd(30.0) if acc.covers(30.0) else None
-            except Exception:
-                pass
-
-        # Live-L1 stamp (same math + config as the trading engine, dedicated
-        # instance) so offline harnesses apply the exact live edge floor.
-        # None when any input is cold — never a 0.0 stand-in.
+        # L1 model deleted; these columns record NULL by design.
         atr_v = prob_up_v = None
-        if (self.binance_feed is not None and self.indicator_engine is not None
-                and cb is not None and strike is not None):
-            _atr_d: dict[str, Any] = {}
-            try:
-                _atr_d = self.indicator_engine.compute_all(
-                    self.binance_feed.buffer).get("atr", {})
-                atr_v = _atr_d.get("atr") or None
-            except Exception:
-                atr_v = None
-            # Separate guard: a prob-only failure must not null the computed ATR
-            # (that would masquerade as an ATR-feed outage in the corpus).
-            if self.signal_engine is not None and atr_v:
-                try:
-                    prob_up_v = round(self.signal_engine.compute_probability(
-                        cb, strike, max(0.0, 300.0 - elapsed), atr_v,
-                        closes=self.binance_feed.buffer.get_closes(),
-                        atr_candle_ts=_atr_d.get("candle_ts")), 4)
-                except Exception:
-                    prob_up_v = None
 
         self._rows.append((
             w["market_id"], round(now, 3), round(elapsed, 1),
