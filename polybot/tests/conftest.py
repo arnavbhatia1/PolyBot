@@ -48,6 +48,7 @@ SAMPLE_CONFIG = {
     },
     "late_window": {
         "sniper_enabled": False,
+        "require_max_tier": True,
         "twap_zone_s": 30.0,
         "twap_k_min_s": 0.8,
         "sniper_min_edge": 0.04,

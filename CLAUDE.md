@@ -121,6 +121,14 @@ sniper buys those dips and holds ≤30s to resolution.
   error → prob 0.999 (ask ≤ ~0.96); beyond p99.5 → prob 0.995 (ask ≤ ~0.955).
   The cap DERIVES from the edge floor — one knob, no separate ask-cap to
   drift. Tuning the margin tables to make a window fire is relaxing a bar.
+  **`require_max_tier: true` (default) refuses the p99.5 tier outright** —
+  p99.5 has breached THREE times, and the 08-11 13:49 breach (disp $21.90 at
+  k=19s, verified real projection error $24.83) still sat inside the max-tier
+  margin of $26.40: the max bound held through the very event that broke
+  p99.5, and max tier would not have taken the trade. One breach costs ~55
+  post-close wins. Both boundary captures for that window were verified
+  bit-exact against the recorded TWAP stream — the loss was a projection tail,
+  not a data fault.
   **The tables are correctly sized, NOT conservative — measured 08-10 on 739
   windows**: making them vol-conditional (looser on calm windows, the obvious
   volume lever) introduces 6 windows where the LOSING side clears P≥0.995

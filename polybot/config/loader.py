@@ -117,6 +117,9 @@ def validate_config(config: dict[str, Any]) -> None:
         errors.append("maker.maker_bid_enabled: missing or not a boolean")
     _check_range("late_window.sniper_max_edge", 0.20, 0.60)
     _check_range("late_window.sniper_fok_slip", 0.0, 0.05)
+    val, found = _get_nested(config, "late_window.require_max_tier")
+    if not found or not isinstance(val, bool):
+        errors.append("late_window.require_max_tier: missing or not a boolean")
     val, found = _get_nested(config, "late_window.sniper_enabled")
     if not found or not isinstance(val, bool):
         errors.append("late_window.sniper_enabled: missing or not a boolean")

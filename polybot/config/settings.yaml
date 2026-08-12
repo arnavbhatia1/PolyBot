@@ -64,6 +64,13 @@ late_window:
                                # The nightly health job scores only the current mode's fills
                                # at/after this instant in BOTH modes (earlier fills ran the
                                # snapshot-era signal). Reset when a new validation epoch starts.
+  # Refuse to fire on the p99.5 tier — only the NEVER-BREACHED max tier deploys
+  # capital. p99.5 has now breached three times; on 08-11 13:49 a $21.90
+  # displacement at k=19s carried a real projection error of $24.83, which still
+  # sat inside the max-tier margin of $26.40 — the max bound held through the
+  # very event that broke p99.5, and max tier would not have taken that trade.
+  # One breach costs ~55 post-close wins, so the thin tier is not worth its fires.
+  require_max_tier: true
   twap_zone_s: 30.0             # decision zone = the resolving 30s averaging window; the
                                 # projection is undefined earlier (never raise above 30)
   twap_k_min_s: 0.8             # no fires with less time than the FOK round-trip (~0.4s) plus

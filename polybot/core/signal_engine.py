@@ -81,7 +81,8 @@ class SignalEngine:
             self, projected_twap: float | None, strike_price: float,
             seconds_remaining: float, market_ask_up: float, market_ask_down: float,
             zone_s: float, k_min_s: float, sniper_min_edge: float,
-            fee_rate: float = DEFAULT_FEE_RATE) -> TradeSignal:
+            fee_rate: float = DEFAULT_FEE_RATE,
+            require_max_tier: bool = True) -> TradeSignal:
         """TWAP lock sniper: in the final-30s averaging zone, the window's
         resolving 30s TWAP is mostly already observed — when the projection's
         displacement from strike exceeds the frozen error margin, the outcome
@@ -93,6 +94,14 @@ class SignalEngine:
         the edge floor (ask ≤ tier_prob − sniper_min_edge) — one knob, no
         separate cap to drift. Tie rule: final ≥ strike resolves Up, so a
         non-negative displacement takes the Up side.
+
+        `require_max_tier` refuses to fire on the p99.5 tier at all. It is the
+        DEFAULT because p99.5 is measurably too thin: it has now been breached
+        three times, and the 08-11 13:49 breach (disp $21.90 at k=19s, real
+        projection error $24.83) sat inside the max-tier margin of $26.40 — so
+        the max bound held through the very event that broke p99.5, and
+        max-tier would not have taken that trade. One p99.5 breach costs ~55
+        post-close wins.
         Returns LATE_SNIPE_YES / LATE_SNIPE_NO / SKIP.
         """
         if projected_twap is None or strike_price <= 0:
@@ -104,12 +113,15 @@ class SignalEngine:
         disp = projected_twap - strike_price
         up = disp >= 0
         adisp = abs(disp)
-        m995 = twap_margin(TWAP_MARGIN_P995, k)
-        if adisp < m995:
+        mmax = twap_margin(TWAP_MARGIN_MAX, k)
+        # The gate is the MAX tier unless explicitly relaxed — a thin lock is
+        # the only way this leg loses the whole stake.
+        need = mmax if require_max_tier else twap_margin(TWAP_MARGIN_P995, k)
+        if adisp < need:
             return TradeSignal("SKIP", 0.5, 0, 0,
-                               f"sniper: not locked — |disp| ${adisp:.1f} < ${m995:.1f} @ {k:.0f}s",
+                               f"sniper: not locked — |disp| ${adisp:.1f} < ${need:.1f} @ {k:.0f}s",
                                side="Up" if up else "Down")
-        deterministic = adisp >= twap_margin(TWAP_MARGIN_MAX, k)
+        deterministic = adisp >= mmax
         prob = TWAP_PROB_DETERMINISTIC if deterministic else TWAP_PROB_P995
         ask = market_ask_up if up else market_ask_down
         if ask is None or not (0.0 < ask < 1.0):
@@ -130,7 +142,7 @@ class SignalEngine:
         return TradeSignal(
             action, prob, edge, kelly,
             f"TWAP locked {side_word}: displacement ${adisp:.1f} clears the "
-            f"${m995:.1f} margin with {k:.0f}s left and the ask is still {ask:.2f} "
+            f"${need:.1f} margin with {k:.0f}s left and the ask is still {ask:.2f} "
             f"({'max-tier' if deterministic else 'p99.5-tier'}, edge {edge:+.1%})",
             side=side_word)
 

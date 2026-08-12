@@ -53,9 +53,48 @@ def _eng():
 
 
 def _lock(eng, proj, strike, k, ask_up, ask_down, min_edge=0.04,
-          zone=30.0, k_min=0.8):
+          zone=30.0, k_min=0.8, require_max_tier=False):
+    """require_max_tier defaults FALSE here so these cases can still exercise the
+    two-tier rule; production defaults it TRUE (see the max-tier gate tests)."""
     return eng.evaluate_twap_lock(proj, strike, k, ask_up, ask_down,
-                                  zone, k_min, min_edge)
+                                  zone, k_min, min_edge,
+                                  require_max_tier=require_max_tier)
+
+
+# ───────────────────────── the max-tier gate (production default) ─────────────
+def test_max_tier_gate_refuses_the_p995_tier():
+    """The 08-11 13:49 breach: disp $21.90 at k=19s cleared p99.5 ($21.20) and
+    lost the whole stake, while the real projection error ($24.83) still sat
+    inside the max-tier margin ($26.40). Max tier must refuse that trade."""
+    eng = _eng()
+    m995 = twap_margin(TWAP_MARGIN_P995, 19.0)
+    mmax = twap_margin(TWAP_MARGIN_MAX, 19.0)
+    assert m995 < 21.9 < mmax                      # the breach sat between them
+    fired = _lock(eng, 64000.0 - 21.9, 64000.0, 19.0, 0.99, 0.80,
+                  require_max_tier=False)
+    assert fired.action == "LATE_SNIPE_NO"         # p99.5 would have taken it
+    gated = _lock(eng, 64000.0 - 21.9, 64000.0, 19.0, 0.99, 0.80,
+                  require_max_tier=True)
+    assert gated.action == "SKIP"
+    assert "not locked" in gated.reason
+
+
+def test_max_tier_gate_still_fires_beyond_the_max_margin():
+    """The gate must not silence the tier that has never breached."""
+    eng = _eng()
+    mmax = twap_margin(TWAP_MARGIN_MAX, 19.0)
+    s = _lock(eng, 64000.0 + mmax + 1.0, 64000.0, 19.0, 0.90, 0.11,
+              require_max_tier=True)
+    assert s.action == "LATE_SNIPE_YES"
+    assert s.prob == pytest.approx(TWAP_PROB_DETERMINISTIC)
+
+
+def test_production_default_is_max_tier_only():
+    """A caller that forgets the flag must get the SAFE behaviour."""
+    eng = _eng()
+    s = eng.evaluate_twap_lock(64000.0 - 21.9, 64000.0, 19.0, 0.99, 0.80,
+                               30.0, 0.8, 0.04)
+    assert s.action == "SKIP"
 
 
 # ───────────────────────── twap_margin interpolation ─────────────────────────

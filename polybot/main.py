@@ -903,7 +903,8 @@ async def _evaluate_signal_and_enter(
                 lw_cfg["twap_zone_s"],
                 lw_cfg["twap_k_min_s"],
                 lw_cfg["sniper_min_edge"],
-                fee_rate=fee_rate)
+                fee_rate=fee_rate,
+                require_max_tier=lw_cfg.get("require_max_tier", True))
             # Locked but no dip to take -> rest the maker bid where the next
             # dip lands (leg 3). Placement is one POST ~20s before close, off
             # the FOK race path entirely.
