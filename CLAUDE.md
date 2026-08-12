@@ -273,11 +273,14 @@ sniper buys those dips and holds ≤30s to resolution.
   median depth is 5× a 29-share order — and partial fills book as one blended
   position, so there is no cliff, only a diminishing curve (expected shares
   filled per window: $2.15→1.57, $28.79→17.44, $99→50.5, $298→116.9). The
-  binding limit is instead the **circuit breaker**, which reads CASH bankroll:
-  an open post-close position subtracts from it, and at frac ≥0.20 the cash
-  figure dips under the tier floor mid-trade and cuts the very Kelly multiplier
-  that sized it. 0.15 leaves it clear; raising further requires the breaker to
-  read cash + open notional. `post_close_budget_frac` remains the fallback if no
+  binding limit is **single-event survivability** — NOT supply, and NOT the
+  circuit breaker: `update_bankroll` is called only from the two resolution
+  handlers with `bankroll_after`, so an open position's cash dip never reaches
+  the breaker, and the cash that feeds sizing is restored long before the next
+  ladder arms (books close+90s, resolves ~2 min later, next arm ~close+275s).
+  What remains is the single loss mode — `certain_winner` being wrong buys a $0
+  token for the whole rung. At 0.30 the top rung is ~25% of bankroll: one
+  failure is a bad day, not the end. `post_close_budget_frac` remains the fallback if no
   bankroll-sized budget reaches the manager. Both
   sides stay WS-subscribed while pending, because the winner is unknown until
   the closing boundary lands ~2s later and going deaf there would break
@@ -319,11 +322,14 @@ sniper buys those dips and holds ≤30s to resolution.
   median depth is 5× a 29-share order — and partial fills book as one blended
   position, so there is no cliff, only a diminishing curve (expected shares
   filled per window: $2.15→1.57, $28.79→17.44, $99→50.5, $298→116.9). The
-  binding limit is instead the **circuit breaker**, which reads CASH bankroll:
-  an open post-close position subtracts from it, and at frac ≥0.20 the cash
-  figure dips under the tier floor mid-trade and cuts the very Kelly multiplier
-  that sized it. 0.15 leaves it clear; raising further requires the breaker to
-  read cash + open notional. `post_close_budget_frac` remains the fallback if no
+  binding limit is **single-event survivability** — NOT supply, and NOT the
+  circuit breaker: `update_bankroll` is called only from the two resolution
+  handlers with `bankroll_after`, so an open position's cash dip never reaches
+  the breaker, and the cash that feeds sizing is restored long before the next
+  ladder arms (books close+90s, resolves ~2 min later, next arm ~close+275s).
+  What remains is the single loss mode — `certain_winner` being wrong buys a $0
+  token for the whole rung. At 0.30 the top rung is ~25% of bankroll: one
+  failure is a bad day, not the end. `post_close_budget_frac` remains the fallback if no
   bankroll-sized budget reaches the manager. Both
   sides stay WS-subscribed while pending, because the winner is unknown until
   the closing boundary lands ~2s later and going deaf there would break

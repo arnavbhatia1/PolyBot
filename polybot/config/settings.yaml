@@ -169,15 +169,22 @@ maker:
   # no cliff, only a diminishing curve. EXPECTED shares filled per window:
   #     $2.15 -> 1.57 | $28.79 -> 17.44 | $99 -> 50.5 | $298 -> 116.9
   #
-  # 0.15 rather than more, for ONE reason: the circuit-breaker floor reads CASH
-  # bankroll, and an open post-close position subtracts from it. At 0.20+ the
-  # cash figure dips under the $340 tier floor while the trade is live, which
-  # cuts the Kelly multiplier that sized it — a leg whose capital returns in two
-  # minutes must not starve itself. 0.15 leaves $349.60 cash, just clear.
-  # Raising further needs the breaker to read cash + open notional first.
+  # The binding limit is SINGLE-EVENT SURVIVABILITY, not supply and not the
+  # circuit breaker. The breaker only ever sees bankroll at resolution
+  # (update_bankroll is called from the two resolution handlers with
+  # bankroll_after), so an open position's cash dip never reaches it; and the
+  # cash figure that does feed sizing is restored well before the next window
+  # arms — post-close books at close+90s, resolves ~2 min later, and the next
+  # ladder arms around close+275s.
+  #
+  # What remains is the one loss mode: certain_winner being wrong would buy a
+  # $0 token for the whole rung. It has never happened (both boundary captures
+  # verified bit-exact, re-checked every tick, fails closed), but it must stay
+  # survivable. At 0.30 the top rung is ~25% of bankroll — one failure is a bad
+  # day, not the end. Expected ~50 shares filled/window, ~$120/day at $411.
   # post_close_budget_frac below is the fallback when no bankroll-sized budget
   # reaches the manager.
-  post_close_bankroll_frac: 0.15
+  post_close_bankroll_frac: 0.30
   # [price, share of the post-close budget]. Ranked by EV per DOLLAR per window
   # = (shares per $1) x margin x P(fill), measured over 150 windows / 1,364
   # post-close sales of the winner:
