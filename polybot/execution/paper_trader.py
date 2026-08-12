@@ -61,9 +61,23 @@ class PaperTrader(BaseTrader):
     # — real tape prints strictly below the bid), never from these stubs.
 
     async def place_gtc_bid(self, token_id: str, price: float, shares: float) -> str | None:
+        """A resting bid does NOT exist until the POST lands.
+
+        Live pays the same measured order-path RTT here that a taker pays
+        (p50 ~436ms), so for that first stretch the order is not in the book and
+        cannot fill. Paper used to return instantly, which handed the maker legs
+        every print in that window for free — the one place paper was
+        structurally more optimistic than live.
+        """
+        await self._simulate_latency()
         return f"paper-{int(time.time() * 1000)}"
 
     async def cancel_gtc(self, order_id: str) -> None:
+        """A cancel does not take effect until ITS round trip lands either, so
+        live can still be filled while pulling. Same distribution, opposite
+        sign — modelling only the placement delay would bias paper the other
+        way."""
+        await self._simulate_latency()
         return None
 
     async def poll_gtc_fill(self, order_id: str) -> float | None:

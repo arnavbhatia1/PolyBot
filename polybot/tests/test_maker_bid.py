@@ -102,6 +102,22 @@ def test_print_fills_per_rung_at_or_below_with_empty_queue(tmp_path, monkeypatch
     assert all(r["filled"] == pytest.approx(r["shares"]) for r in mgr.active["rungs"])
 
 
+def test_gtc_placement_pays_the_measured_post_rtt(tmp_path, monkeypatch):
+    """A resting bid does not exist until the POST lands. Paper used to return an
+    order id instantly, which handed the maker legs every print in that window
+    for free — the one place paper was more optimistic than live."""
+    from polybot.execution.paper_trader import PaperTrader
+    pt = PaperTrader.__new__(PaperTrader)
+    pt.latency_scale = 1.0
+    pt.latency_floor_s = 0.32
+    t0 = time.time()
+    oid = asyncio.run(pt.place_gtc_bid("tokU", 0.992, 50.0))
+    assert oid and time.time() - t0 >= 0.32      # at least the fastest live POST
+    t1 = time.time()
+    asyncio.run(pt.cancel_gtc(oid))
+    assert time.time() - t1 >= 0.32              # cancels round-trip too
+
+
 def test_queue_ahead_must_drain_before_we_fill(tmp_path, monkeypatch):
     """The whole point of the model: size resting at or better than our price
     fills FIRST. Paper must require the same volume through the level that live

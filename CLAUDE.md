@@ -396,8 +396,17 @@ sniper buys those dips and holds ≤30s to resolution.
   This replaced a "only prints STRICTLY BELOW the bid count" rule that was wrong
   in BOTH directions — it refused at-price fills we would really get once the
   queue drains, and granted every through-price fill in full while ignoring the
-  size sitting ahead of us. NOT modelled: bids that arrive after us at better
-  prices (needs a full book replay). Fills stamp
+  size sitting ahead of us. **Paper also pays the measured order-path RTT on
+  every GTC place AND cancel** (`_simulate_latency`, the same inverse-CDF draw
+  the taker uses, p50 ~436ms): a resting bid does not exist until its POST
+  lands, and a cancel does not take effect until its own round trip does — so
+  live can still be filled while pulling. Because `queue_ahead` is measured
+  AFTER the POST returns, anyone who got their bid in during our flight is
+  correctly counted ahead of us. **The honest residual: no maker leg has EVER
+  run in live**, so the RTT distribution is borrowed from the taker's FOK POSTs
+  (same endpoint, same signing path) and GTC rejection is not modelled at all —
+  there is no live maker data to calibrate either. Only a small live probe
+  closes that. Fills stamp
   `signal_leg="maker_bid"` — its own ledger line and bar.
 - **Capital deploys ONLY through these legs** — there is no other entry
   path in the codebase. `sniper_enabled` is the shared kill-bar SAFETY across

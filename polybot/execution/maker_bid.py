@@ -168,12 +168,14 @@ class MakerBidManager:
             if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
                 continue
             shares = round(usd / px, 2)
-            q = self.queue_ahead(token_id, px)
             order_id = await self.trader.place_gtc_bid(token_id, px, shares)
             if order_id:
+                # Queue measured AFTER the POST lands: anyone who got their bid
+                # in during our flight is genuinely ahead of us, and this is the
+                # instant our time priority is actually set.
                 rungs.append({"price": px, "shares": shares,
                               "order_id": order_id, "filled": 0.0,
-                              "queue_ahead": q})
+                              "queue_ahead": self.queue_ahead(token_id, px)})
         if not rungs:
             return
         self.active = {
@@ -294,13 +296,12 @@ class MakerBidManager:
             if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
                 continue
             shares = round(usd / px, 2)
-            q = self.queue_ahead(a["token_id"], px)
             order_id = await self.trader.place_gtc_bid(a["token_id"], px, shares)
             if not order_id:
                 continue
             a["rungs"].append({"price": px, "shares": shares,
                                "order_id": order_id, "filled": 0.0,
-                               "queue_ahead": q})
+                               "queue_ahead": self.queue_ahead(a["token_id"], px)})
             placed.append((px, shares))
         if placed:
             logger.info("MAKER POST-CLOSE %s WON — resting $%.0f to buy it under "
