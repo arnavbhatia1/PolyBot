@@ -236,6 +236,17 @@ class BTCMarketScanner:
             logger.debug(f"Tick size fetch failed for {token_id}: {e}")
             return "0.01"
 
+    def invalidate_tick_size(self, token_id: str) -> None:
+        """Drop a cached tick so the next fetch is fresh.
+
+        The cache is 1h but the tick CHANGES within a window's life: 0.01 while
+        it trades, 0.001 once it closes. The post-close arm must re-read it or it
+        snaps its 0.992 rung down to 0.990 against a stale in-window value — the
+        price measured to earn 24x less, because it joins the crowd instead of
+        beating it.
+        """
+        self._tick_size_cache.pop(token_id, None)
+
     @staticmethod
     def snap_to_tick(price: float, tick_size: str) -> float:
         """Round price down to the nearest tick, clamped to [tick, 1 - tick]

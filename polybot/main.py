@@ -2492,6 +2492,7 @@ async def main() -> None:
             # post-close. Same price rests in paper and live, and an off-tick
             # rejection becomes impossible instead of unmodelled.
             _MAKER_MGR.tick_fn = market_scanner.fetch_tick_size
+            _MAKER_MGR.tick_invalidate_fn = market_scanner.invalidate_tick_size
 
     def _on_trade_mux(asset_id: str, trade: dict) -> None:
         tape_recorder.on_trade(asset_id, trade)

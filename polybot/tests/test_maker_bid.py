@@ -121,6 +121,31 @@ def test_rungs_snap_to_the_live_tick_in_both_modes(tmp_path, monkeypatch):
     assert asyncio.run(mgr.snap("tokU", 0.992)) == pytest.approx(0.992)
 
 
+def test_post_close_drops_the_stale_in_window_tick(tmp_path, monkeypatch):
+    """REGRESSION: the tick cache is 1h but the tick tightens 0.01 -> 0.001 AT the
+    close. Snapping against the stale in-window value turned the 0.992 rung into
+    0.990 — the price measured to earn 24x less — and fills went to zero."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    w = time.time() - 301.0
+    mgr = _pc_mgr(strike=64000.0, final=64010.0)
+    cache = {"tokU": "0.01"}                      # warmed in-window at 0.01
+    invalidated = []
+
+    async def tick_fn(tok): return cache.get(tok, "0.001")
+    def invalidate(tok):
+        invalidated.append(tok)
+        cache.pop(tok, None)                      # next fetch sees the real tick
+
+    mgr.tick_fn, mgr.tick_invalidate_fn = tick_fn, invalidate
+    _pc_place(mgr, w, side="Up")
+    asyncio.run(mgr.maintain())
+    assert invalidated == ["tokU"]
+    prices = [p for _, p, _ in mgr.trader.placed]
+    top = PC_LADDER[0][0]                         # 3-decimal, legal only at 0.001
+    assert top in prices, f"snapped against a stale tick: {prices}"
+    assert 0.99 not in prices                     # what the stale 0.01 tick gave
+
+
 def test_snapping_never_overpays(tmp_path, monkeypatch):
     """Round DOWN only: a snap may improve margin, never widen the price we pay."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
