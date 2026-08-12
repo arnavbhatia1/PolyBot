@@ -97,34 +97,8 @@ class MakerBidManager:
         # Set by main to clob_ws.get_book. Paper's fill model needs the real
         # book to know how much size is ahead of us in the queue.
         self.book_fn: Any = None
-        # Set by main to market_scanner.fetch_tick_size (async, 1h cache) and
-        # invalidate_tick_size. The tick CHANGES at the close (0.01 -> 0.001),
-        # so the post-close arm must drop the cached in-window value first.
-        self.tick_fn: Any = None
-        self.tick_invalidate_fn: Any = None
         self._last_poll = 0.0
         self._ladder_cache: tuple[float, list] | None = None  # (mtime, ladder)
-
-    async def snap(self, token_id: str, px: float) -> float:
-        """Round a rung DOWN to the exchange's current tick.
-
-        The tick is 0.01 while a window trades and 0.001 once it closes, so
-        post-close's 0.992 is legal only after the close. Snapping makes the
-        rejection impossible rather than modelling it, and — because BOTH modes
-        snap identically — paper and live always rest the SAME price: 0.992 when
-        the tick allows it, 0.99 when it does not. Round DOWN so a snap can only
-        ever improve our margin, never overpay.
-        """
-        if self.tick_fn is None:
-            return px
-        try:
-            tick = float(await self.tick_fn(token_id))
-        except Exception:
-            return px
-        if tick <= 0:
-            return px
-        snapped = round(int(round(px / tick, 6)) * tick, 10)
-        return max(tick, min(snapped, round(1.0 - tick, 10)))
 
     # -- queries ----------------------------------------------------------
 
@@ -193,7 +167,6 @@ class MakerBidManager:
             usd = round(budget_usd * frac, 2)
             if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
                 continue
-            px = await self.snap(token_id, px)
             shares = round(usd / px, 2)
             order_id = await self.trader.place_gtc_bid(token_id, px, shares)
             if order_id:
@@ -310,14 +283,6 @@ class MakerBidManager:
         or below 0.95 and returned 22% against 1.01%, and a resting bid that
         never fills costs nothing.
         """
-        # The tick tightens from 0.01 to 0.001 AT the close, and the tick cache
-        # is an hour long — so drop the in-window value before snapping, or the
-        # 0.992 rung silently becomes 0.990 and earns 24x less.
-        if self.tick_invalidate_fn is not None:
-            try:
-                self.tick_invalidate_fn(a["token_id"])
-            except Exception:
-                pass
         rungs = self.cfg.get("post_close_ladder") or [[0.99, 1.0]]
         budget = a.get("pc_budget") or 0.0     # bankroll-sized, set at arm time
         if budget <= 0.0:                      # fallback: fraction of the ladder
@@ -330,7 +295,6 @@ class MakerBidManager:
             usd = round(budget * float(frac), 2)
             if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
                 continue
-            px = await self.snap(a["token_id"], px)
             shares = round(usd / px, 2)
             order_id = await self.trader.place_gtc_bid(a["token_id"], px, shares)
             if not order_id:
