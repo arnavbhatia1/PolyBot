@@ -146,11 +146,15 @@ maker:
   # bid gets wicked, not a filter. Budget therefore sits mostly deep, where each
   # dollar also buys 3-5x the shares. Shallow rungs stay small: they fill often
   # but the margin over break-even is thin-to-negative.
+  # Measured 08-11 over 526 max-tier-locked windows (min locked-side ask from
+  # lock to close): 0.90 touched 2.09%, 0.60 touched 0.57%, and 0.35/0.20
+  # touched ZERO — while holding 65% of the budget and arming in only 50 of the
+  # 526 windows behind the 1.5x headroom rule. Budget now sits only where the
+  # ask actually travels. Weighted toward 0.90 because its 11 touches are real
+  # evidence and 0.60's 3 are not.
   maker_ladder:
-    - [0.90, 0.15, 1.0]
-    - [0.60, 0.20, 1.0]
-    - [0.35, 0.30, 1.5]
-    - [0.20, 0.35, 1.5]
+    - [0.90, 0.60, 1.0]
+    - [0.60, 0.40, 1.0]
   maker_k_place_max: 25.0       # place once locked with at most this many s left
   maker_k_place_min: 3.0        # too late to bother resting under this
   maker_k_cancel_s: 1.0         # pull all rungs before the close (post_close off)

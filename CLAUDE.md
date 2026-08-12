@@ -325,7 +325,7 @@ sniper buys those dips and holds ≤30s to resolution.
   resolution. Its bar is its own; `sniper_enabled: false` still halts it.
 - **Lock-informed maker LADDER** (`execution/maker_bid.py`, §3d in settings):
   when a window locks but no dip is trading, a LADDER of GTC bids rests on
-  the locked side (0.90/0.60/0.35/0.20, budget split 15/20/30/35) — the
+  the locked side (0.90/0.60, budget split 60/40) — the
   measured dip CDF (233 locked windows) says panic goes DEEP when it comes
   (touch rates: 0.96 → 5.6%, 0.93 → 4.7%, 0.86 → 3.9%), so rungs across the
   depth beat any single bid (a static 0.935 filled 0/45). Panic fills resting
