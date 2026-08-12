@@ -221,6 +221,35 @@ def _log_open_banner(ctx: dict[str, Any], entry_price: float, settled: str,
         f"{_C.YELLOW}{'=' * 69}{_C.RESET}")
 
 
+def _on_maker_fill(a: dict[str, Any], shares: float, vwap: float,
+                   reason: str) -> None:
+    """MakerBidManager.on_fill — a resting bid that fills IS an entry, so it gets
+    the same green banner and Discord ping a taker entry gets.
+
+    It used to print one uncoloured info line, which made the only leg that
+    actually earns the hardest thing in the log to find. Never raises: the fill
+    is already booked by the time this runs."""
+    try:
+        notional = shares * vwap
+        phase = "post-close" if reason.startswith("post-close") else "lock ladder"
+        logger.info(
+            f"{_C.GREEN}{'=' * 60}{_C.RESET}\n"
+            f"  {_C.GREEN}{_C.BOLD}MAKER FILLED {a['side']}{_C.RESET} @{vwap:.3f}  "
+            f"${notional:.2f}  {shares:.1f} sh  |  "
+            f"{_slug_to_window(a['market_id'])} [{phase}]\n"
+            f"  {_C.DIM}no fee (maker) · settled winner · holds to resolution"
+            f"{_C.RESET}\n"
+            f"{_C.GREEN}{'=' * 69}{_C.RESET}")
+        am = _ALERT_MANAGER
+        if am is not None:
+            asyncio.create_task(am.send_trade_opened(
+                question=a.get("question", ""), side=a["side"], size=notional,
+                entry_price=vwap, ev=round(1.0 - vwap, 4), model_prob=1.0,
+                market_price=vwap, fee=0.0, bankroll=0.0))
+    except Exception:
+        logger.exception("maker fill banner failed (the fill IS booked)")
+
+
 def _on_entry_settled(pos_id: int, final_price: float, source: str,
                       shares: float | None = None) -> None:
     """LiveTrader.on_entry_settled hook — OPEN banner + Discord OPEN ping at the settled entry.
@@ -511,6 +540,7 @@ _window_flip_state: dict[str, dict] = {}  # window_id -> {flip_count}
 # Lock-informed maker bid manager (execution.maker_bid) — set at boot when
 # maker.maker_bid_enabled; module-level like the other fire-path state.
 _MAKER_MGR: Any = None
+_ALERT_MANAGER: Any = None   # set at boot; the maker-fill ping reads it
 
 # Killed sniper FOKs this window: window_ts -> side -> [decision asks]. Feeds
 # Swept with the _strike_trusted 600s idiom.
@@ -2448,6 +2478,10 @@ async def main() -> None:
     _MAKER_MGR = (MakerBidManager(trader, chainlink_feed, _maker_cfg,
                                   paper=(mode != "live"))
                   if _maker_cfg.get("maker_bid_enabled") else None)
+    global _ALERT_MANAGER
+    _ALERT_MANAGER = alert_manager
+    if _MAKER_MGR is not None:
+        _MAKER_MGR.on_fill = _on_maker_fill
 
     def _on_trade_mux(asset_id: str, trade: dict) -> None:
         tape_recorder.on_trade(asset_id, trade)

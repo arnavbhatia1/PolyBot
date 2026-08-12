@@ -57,10 +57,13 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-11T18:30:00+00:00"  # POST-CLOSE DECOUPLED deploy:
-                               # post-close now arms on every window, not only the
-                               # few that locked, so a fill means something new —
-                               # the bar scores only the code being validated.
+  validation_epoch: "2026-08-12T04:16:00+00:00"  # 0.992 RUNGS + 0.30 SIZING +
+                               # MAX-TIER-ONLY deploy (the box came up on it at
+                               # 04:15:59Z). Everything before this ran different
+                               # rungs (0.995), different sizing (0.10, and a
+                               # ladder-derived ~$2) and allowed the p99.5 tier,
+                               # so averaging across it would mix three strategies
+                               # — the bar scores only the code being validated.
                                # The nightly health job scores only the current mode's fills
                                # at/after this instant in BOTH modes (earlier fills ran the
                                # snapshot-era signal). Reset when a new validation epoch starts.

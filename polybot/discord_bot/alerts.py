@@ -68,7 +68,10 @@ class AlertManager:
         await self._safe_send(channel,
             f"**OPEN {side}**  {window}\n"
             f"```\n"
-            f"  Price     {entry_price:.2f}  |  ${size:.2f}\n"
+            # 3 decimals: post-close rests at 0.992 and the tick up there is
+            # 0.001, so 2dp renders 0.992 and 0.995 identically — and that
+            # third decimal is the whole margin difference on this leg.
+            f"  Price     {entry_price:.3f}  |  ${size:.2f}\n"
             f"  Edge      {ev:+.0%}  (model {model_prob:.0%} vs mkt {market_price:.0%})\n"
             f"  Fee       ${fee:.2f}\n"
             f"{prov_str}{bankroll_str}```")

@@ -91,6 +91,9 @@ class MakerBidManager:
         self.paper = paper
         self.active: dict | None = None
         self.pending: dict | None = None   # post-close intent for a closing window
+        # Set by main: (active, shares, vwap, reason) -> None. A maker fill IS an
+        # entry, so it gets the same banner + Discord ping a taker entry does.
+        self.on_fill: Any = None
         self._last_poll = 0.0
         self._ladder_cache: tuple[float, list] | None = None  # (mtime, ladder)
 
@@ -177,10 +180,12 @@ class MakerBidManager:
             # inheriting a fraction of fractional Kelly made every fill ~$2.
             "pc_budget": pc_budget,
         }
-        logger.info("MAKER LADDER %s — %s resting on the locked side (%.0fs left)",
-                    side, "/".join(f"${r['shares'] * r['price']:.0f}@{r['price']:.2f}"
-                                   for r in rungs),
-                    window_ts + 300 - time.time())
+        logger.info("MAKER LADDER %s — resting $%.0f on the locked side with "
+                    "%.0fs left (%s)", side,
+                    sum(r["shares"] * r["price"] for r in rungs),
+                    window_ts + 300 - time.time(),
+                    " · ".join(f"${r['shares'] * r['price']:.0f} at {r['price']:.2f}"
+                               for r in rungs))
 
     # -- paper fill matcher (clob_ws print hook; sync, must not raise) ------
 
@@ -258,9 +263,10 @@ class MakerBidManager:
                                "order_id": order_id, "filled": 0.0})
             placed.append((px, shares))
         if placed:
-            logger.info("MAKER POST-CLOSE %s — %s on the settled winner",
-                        a["side"], "/".join(f"${s * p:.0f}@{p:.3f}"
-                                            for p, s in placed))
+            logger.info("MAKER POST-CLOSE %s WON — resting $%.0f to buy it under "
+                        "$1 (%s)", a["side"],
+                        sum(s * p for p, s in placed),
+                        " · ".join(f"${s * p:.0f} at {p:.3f}" for p, s in placed))
 
     def arm_post_close(self, window_ts: int, market_id: str, question: str,
                        token_up: str, token_down: str, budget_usd: float,
@@ -423,8 +429,14 @@ class MakerBidManager:
                     side=a["side"], price=vwap, shares_gross=filled,
                     token_id=a["token_id"], indicator_snapshot=a["snapshot"])
                 if booked:
-                    logger.info("MAKER FILLED %s — %.1f sh at %.3f blended (%s)",
-                                a["side"], filled, vwap, reason)
+                    if self.on_fill is not None:
+                        try:
+                            self.on_fill(a, filled, vwap, reason)
+                        except Exception:
+                            logger.exception("maker fill banner failed (fill IS booked)")
+                    else:
+                        logger.info("MAKER FILLED %s — %.1f sh at %.3f blended (%s)",
+                                    a["side"], filled, vwap, reason)
                     return
             except Exception:
                 logger.exception("MAKER fill booking failed — reconcile manually")
@@ -432,5 +444,5 @@ class MakerBidManager:
                            "(see the CRITICAL above; reconcile manually)",
                            a["side"], filled, vwap)
             return
-        logger.info("MAKER DONE %s — %s, %.1f sh filled (below the $1 floor "
-                    "books nothing)", a["side"], reason, filled)
+        logger.info("MAKER OFF %s — nobody sold into the bid (%s)",
+                    a["side"], reason)
