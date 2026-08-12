@@ -542,8 +542,12 @@ dust through and fail-closes only on genuinely unresolved positions.
   The post-close leg needs no exception: it reads a settled outcome, not a
   forecast. Anything else fires zero capital.
 - No deployment before a kill bar passes; never relax a bar to pass it.
-- No symmetric market-making, no oracle-cadence trading, no expansion past BTC
-  until the goal completes.
+- No symmetric market-making, no oracle-cadence trading, no expansion past
+  btc-5m. Expansion is not merely deferred, it is REFUTED: post-close supply
+  measured 08-12 over 24 windows per family gives btc-15m 7.3 sh/window
+  (20.8% of windows), eth-5m 1.8, xrp-5m 0.6, sol-5m 0.0 — against btc-5m's
+  151.5 at 73.3%. All four siblings combined ceiling ~$16/day at an impossible
+  100% capture. Scaling comes from SIZE on this one book, not more books.
 - No mid-price edge math (executable CLOB BBO only). Never skip the fee: `rate*shares*p*(1-p)`, rate 0.07
   (`DEFAULT_FEE_RATE`); flat-additive gates use `EFFECTIVE_FEE_PEAK` 0.0175 —
   never mix them.
