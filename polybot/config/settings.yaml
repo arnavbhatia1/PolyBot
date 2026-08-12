@@ -161,12 +161,23 @@ maker:
   # made every fill ~$2.15: 71 perfect wins in a day earned $0.80.
   # Capital recycles in ~2 min (book -> resolve) against 5-min windows with one
   # ladder slot, and Auto-Redeem is ON, so one full-size position per window is
-  # sustainable. 0.10 is a deliberate FIRST STEP (~20x the old size, ~9% of the
-  # measured $475/window supply). The only loss mode is certain_winner being
-  # wrong, so each step up multiplies that tail: raise only after a clean day
-  # of fills at the current step. post_close_budget_frac below is the fallback
-  # when no bankroll-sized budget reaches the manager.
-  post_close_bankroll_frac: 0.10
+  # sustainable.
+  #
+  # Size does NOT threaten the fill rate. Measured per-window supply below 0.992
+  # over 150 windows: p25 24.6 sh, p50 151.5 sh, p75 377 sh — median depth is 5x
+  # a 29-share order, and partial fills book as one blended position, so there is
+  # no cliff, only a diminishing curve. EXPECTED shares filled per window:
+  #     $2.15 -> 1.57 | $28.79 -> 17.44 | $99 -> 50.5 | $298 -> 116.9
+  #
+  # 0.15 rather than more, for ONE reason: the circuit-breaker floor reads CASH
+  # bankroll, and an open post-close position subtracts from it. At 0.20+ the
+  # cash figure dips under the $340 tier floor while the trade is live, which
+  # cuts the Kelly multiplier that sized it — a leg whose capital returns in two
+  # minutes must not starve itself. 0.15 leaves $349.60 cash, just clear.
+  # Raising further needs the breaker to read cash + open notional first.
+  # post_close_budget_frac below is the fallback when no bankroll-sized budget
+  # reaches the manager.
+  post_close_bankroll_frac: 0.15
   # [price, share of the post-close budget]. Ranked by EV per DOLLAR per window
   # = (shares per $1) x margin x P(fill), measured over 150 windows / 1,364
   # post-close sales of the winner:

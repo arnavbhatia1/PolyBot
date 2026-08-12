@@ -268,10 +268,16 @@ sniper buys those dips and holds ≤30s to resolution.
   fractional-Kelly budget made every fill ~$2.15, so 71 perfect wins in one day
   earned $0.80. Capital recycles in ~2 min (book → resolve) against 5-min windows
   with one ladder slot, and Auto-Redeem is ON, so one full-size position per
-  window is sustainable. 0.10 is a deliberate first step (~9% of the measured
-  $475/window supply); the only loss mode is `certain_winner` being wrong, so
-  each step up multiplies that tail — raise only after a clean day at the
-  current step. `post_close_budget_frac` remains the fallback if no
+  window is sustainable. **Size does not threaten the fill rate**: measured
+  per-window supply below 0.992 is p25 24.6 sh / p50 151.5 sh / p75 377 sh —
+  median depth is 5× a 29-share order — and partial fills book as one blended
+  position, so there is no cliff, only a diminishing curve (expected shares
+  filled per window: $2.15→1.57, $28.79→17.44, $99→50.5, $298→116.9). The
+  binding limit is instead the **circuit breaker**, which reads CASH bankroll:
+  an open post-close position subtracts from it, and at frac ≥0.20 the cash
+  figure dips under the tier floor mid-trade and cuts the very Kelly multiplier
+  that sized it. 0.15 leaves it clear; raising further requires the breaker to
+  read cash + open notional. `post_close_budget_frac` remains the fallback if no
   bankroll-sized budget reaches the manager. Both
   sides stay WS-subscribed while pending, because the winner is unknown until
   the closing boundary lands ~2s later and going deaf there would break
@@ -308,10 +314,16 @@ sniper buys those dips and holds ≤30s to resolution.
   fractional-Kelly budget made every fill ~$2.15, so 71 perfect wins in one day
   earned $0.80. Capital recycles in ~2 min (book → resolve) against 5-min windows
   with one ladder slot, and Auto-Redeem is ON, so one full-size position per
-  window is sustainable. 0.10 is a deliberate first step (~9% of the measured
-  $475/window supply); the only loss mode is `certain_winner` being wrong, so
-  each step up multiplies that tail — raise only after a clean day at the
-  current step. `post_close_budget_frac` remains the fallback if no
+  window is sustainable. **Size does not threaten the fill rate**: measured
+  per-window supply below 0.992 is p25 24.6 sh / p50 151.5 sh / p75 377 sh —
+  median depth is 5× a 29-share order — and partial fills book as one blended
+  position, so there is no cliff, only a diminishing curve (expected shares
+  filled per window: $2.15→1.57, $28.79→17.44, $99→50.5, $298→116.9). The
+  binding limit is instead the **circuit breaker**, which reads CASH bankroll:
+  an open post-close position subtracts from it, and at frac ≥0.20 the cash
+  figure dips under the tier floor mid-trade and cuts the very Kelly multiplier
+  that sized it. 0.15 leaves it clear; raising further requires the breaker to
+  read cash + open notional. `post_close_budget_frac` remains the fallback if no
   bankroll-sized budget reaches the manager. Both
   sides stay WS-subscribed while pending, because the winner is unknown until
   the closing boundary lands ~2s later and going deaf there would break
