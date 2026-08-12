@@ -121,12 +121,33 @@ def test_kill_rule_healthy_when_trailing4_above_floor(tmp_path):
     assert r["kill_rule_tripped"] is False
 
 
-def test_kill_rule_tripped_when_trailing4_below_floor(tmp_path):
-    # 4 days each +1c/sh -> trailing4 0.01 < 0.02 floor -> tripped.
+def test_thin_cents_per_share_is_not_a_kill(tmp_path):
+    """The rule that nearly fired on a working leg. Post-close buys a $1.00 payout
+    at 0.992, so 0.8c/sh is its CEILING — judging it on c/sh would halt a leg
+    making money every day. Dollars decide."""
     r = _read(tmp_path, [(i, 1.0, 0.0, 100.0, _ts(d)) for i, d in
                          enumerate(["07-04", "07-05", "07-06", "07-07"], 1)])
-    assert r["trailing4_mean"] == pytest.approx(0.01)
+    assert r["trailing4_mean"] == pytest.approx(0.01)     # 1c/sh — thin
+    assert r["trailing4_usd"] == pytest.approx(1.0)       # but +$1/day
+    assert r["kill_rule_tripped"] is False
+
+
+def test_kill_rule_tripped_when_trailing4_dollars_negative(tmp_path):
+    r = _read(tmp_path, [(i, -1.0, 0.0, 100.0, _ts(d)) for i, d in
+                         enumerate(["07-04", "07-05", "07-06", "07-07"], 1)])
+    assert r["trailing4_usd"] == pytest.approx(-1.0)
     assert r["kill_rule_tripped"] is True
+
+
+def test_one_post_close_loss_trips_immediately(tmp_path):
+    """A post-close loss means certain_winner named the wrong side — the outcome
+    was already settled, so this is mechanism failure, not variance. One halts."""
+    r = _read(tmp_path, [(1, 5.0, 0.0, 100.0, _ts("07-04")),
+                         (2, -8.0, 0.0, 100.0, _ts("07-04"))],
+              legs={1: "post_close", 2: "post_close"})
+    assert r["post_close_losses"] == 1
+    assert r["legs"]["post_close"]["n_losses"] == 1
+    assert r["kill_rule_tripped"] is True                 # on day 1, not day 4
 
 
 def test_trailing4_uses_only_last_4_days(tmp_path):

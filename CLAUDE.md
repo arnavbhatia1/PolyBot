@@ -234,15 +234,27 @@ sniper buys those dips and holds ≤30s to resolution.
   reachability modeled, plus the bit-exact mechanism check) is a CEILING —
   fills book the decision ask, queue depth is invisible. (2) The BINDING gate
   is the **paper-shadow's realized fills** (`sniper_shadow_status.py` /
-  `live_health_read`, scoped to `validation_epoch` 2026-08-07T21:45Z — the
-  ladder deploy; earlier fills ran different code):
-  **pre-registered 08-07** as the deadline-shortened leg-identical form of
-  the 8-day bar (07-15 precedent) — ≥ 6 clean ET days, ≥ 40 fills,
-  equal-weight net ≥ +2¢/sh, `t_day ≥ 2`, ≥ 5/6 days positive, day-bootstrap
-  `p10 > 0`, AND zero realized lock-breaches (a locked side losing =
-  mechanism failure → investigate before any deploy). Never deploy real
-  capital on the harness print alone. The nightly health job (§6) re-reads
-  both in production.
+  `live_health_read`, scoped to `validation_epoch`; earlier fills ran different
+  code). **The bar is PER LEG, because the two legs have opposite shapes and one
+  metric cannot judge both** — pre-registered 08-12, before the data existed:
+
+  | | lock-dip TAKER | post-close MAKER |
+  |---|---|---|
+  | shape | ~1 fill/day at +10¢/sh | ~120 fills/day at 0.8¢/sh |
+  | clean ET days | ≥ 6 | ≥ 6 |
+  | fills | ≥ 40 | ≥ 100 |
+  | profit | EW net ≥ +2¢/sh, `t_day ≥ 2` | `usd_per_day > 0`, `usd_p10 > 0` |
+  | days positive | ≥ 5/6 | ≥ 5/6 |
+  | win rate | — | **≥ 99%** |
+  | halt-on-sight | any max-tier lock breach | **any post-close loss** |
+
+  A ¢/sh threshold is arithmetically impossible for post-close: it buys a $1.00
+  payout at 0.992, so 0.8¢/sh is the CEILING and +2¢/sh would condemn a leg
+  returning ~25%/day. Its bar is stricter where it counts instead — the outcome
+  is already settled when the bid rests, so a win rate under 99% or a single loss
+  means `certain_winner` named the wrong side, which is mechanism failure rather
+  than variance and halts on one occurrence. Never deploy real capital on the
+  harness print alone. The nightly health job (§6) re-reads both in production.
 - **The standing bar every new leg owes** (born from the open head-start leg,
   refuted and deleted 08-11): net ¢/sh must rise monotonically across
   model-edge buckets, scored against an `edge < 0` control bucket — a
@@ -424,9 +436,13 @@ sniper buys those dips and holds ≤30s to resolution.
   path in the codebase. `sniper_enabled` is the shared kill-bar SAFETY across
   all legs — the emergency brake (set `false` to halt every leg), not a
   strategy choice. Recipe: `mode: live` + `sniper_enabled: true`.
-- **Post-live kill rule** (armed at any future go-live): trailing-4-day
-  lenient mean < +2¢/sh or trailing-8-day t < 2 → set `sniper_enabled: false`.
-  A single realized lock-breach at max tier trips it immediately.
+- **Post-live kill rule** (armed at any future go-live, and what
+  `live_health_read.kill_rule_tripped` computes): **trailing-4-day mean DOLLARS
+  < 0** → set `sniper_enabled: false`. Dollars, not ¢/sh — the old ¢/sh rule
+  would have tripped on a post-close ledger earning money every single day, since
+  0.8¢/sh sits below any ¢/sh floor worth setting. Two things trip it on ONE
+  occurrence: a max-tier lock breach, or a post-close loss (both are mechanism
+  failures, not variance).
 
 ## 3. Sizing (every leg)
 

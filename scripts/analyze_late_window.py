@@ -76,9 +76,11 @@ def live_health_read(db_path=None, since_iso=None):
     audited fill count. Every trade_history row is a sniper fire (base
     entries are always suppressed).
 
-    kill_rule_tripped: trailing-4-day mean < +0.02 once >= 4 ET days, OR
-    trailing-8-day t < 2.0 once >= 8; None before 4 days. Alert-only — the
-    caller never flips config (kill bars are operator authority)."""
+    kill_rule_tripped: any post_close loss (certain_winner named the wrong side —
+    mechanism failure), OR trailing-4-day mean DOLLARS < 0 once >= 4 ET days;
+    None before that. Dollars, not c/sh: post-close buys a $1.00 payout at 0.992,
+    so 0.8c/sh is its ceiling and a c/sh threshold would condemn a working leg.
+    Alert-only — the caller never flips config (kill bars are operator authority)."""
     db = Path(db_path) if db_path else LIVE_DB
     if not db.exists():
         return None
@@ -131,13 +133,25 @@ def live_health_read(db_path=None, since_iso=None):
     m, t, _ = tstat(daily)
     trailing4 = statistics.mean(daily[-4:]) if len(daily) >= 4 else None
     trailing8_t = tstat(daily[-8:])[1] if len(daily) >= 8 else None
-    if len(daily) < 4:
-        tripped = None                                        # too few live days to judge
+    # DOLLARS are the unit both legs share. A c/sh rule cannot judge post-close:
+    # it buys a $1.00 payout at 0.992, so 0.8c/sh is its ceiling, and a +2c/sh
+    # threshold would condemn a leg returning 25%/day.
+    usd_daily = [sum(p for _, _, p in v) for _, v in sorted(per_day.items())]
+    usd_per_day = statistics.mean(usd_daily)
+    trailing4_usd = statistics.mean(usd_daily[-4:]) if len(usd_daily) >= 4 else None
+    # A post-close loss means certain_winner named the wrong side — mechanism
+    # failure, not variance. One is enough to halt.
+    pc_losses = sum(1 for n, w in per_leg.get("post_close", []) if w == 0.0)
+    if pc_losses:
+        tripped = True
+    elif len(usd_daily) < 4:
+        tripped = None                                        # too few days to judge
     else:
-        tripped = (trailing4 < 0.02) or (trailing8_t is not None and trailing8_t < 2.0)
+        tripped = trailing4_usd < 0.0
     legs = {leg: dict(n_fills=len(v),
                       net_per_sh=statistics.mean(n for n, _ in v),
-                      win_rate=statistics.mean(w for _, w in v))
+                      win_rate=statistics.mean(w for _, w in v),
+                      n_losses=sum(1 for _, w in v if w == 0.0))
             for leg, v in sorted(per_leg.items())}
     return dict(label=f"{db.stem}(trade_history{' since ' + since_iso if since_iso else ''})",
                 n_fills=len(fills), n_days=len(daily),
@@ -147,6 +161,8 @@ def live_health_read(db_path=None, since_iso=None):
                 net_sum=sum(n for n, _, _ in fills),
                 days_pos=sum(1 for d in daily if d > 0), series=series, day_detail=day_detail,
                 trailing4_mean=trailing4, trailing8_t=trailing8_t,
+                usd_per_day=usd_per_day, usd_p10=block_bootstrap_p10(usd_daily),
+                trailing4_usd=trailing4_usd, post_close_losses=pc_losses,
                 kill_rule_tripped=tripped, legs=legs)
 
 
