@@ -82,6 +82,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--confirm", action="store_true",
                     help="actually post the resting order (refuses without this)")
+    ap.add_argument("--samples", type=int, default=1,
+                    help="place+cancel this many times to measure the GTC RTT "
+                         "distribution. Each order is un-hittable and cancelled, "
+                         "so extra samples cost nothing but time.")
     args = ap.parse_args()
     if not args.confirm:
         print(__doc__)
@@ -149,6 +153,41 @@ def main() -> int:
 
     after = asyncio.run(trader.poll_gtc_fill(order_id))
     print(f"post-cancel poll: {after}")
+
+    # Extra samples: paper's maker legs need the GTC RTT distribution, and it is
+    # NOT the taker's. A taker pays Polymarket's deliberate 250ms itode hold; a
+    # resting bid never crosses, so it never pays it. Borrowing the FOK numbers
+    # made paper ~3x too slow to get its bid into the book.
+    places, cancels = [rtt], []
+    for i in range(max(0, args.samples - 1)):
+        t = time.perf_counter()
+        try:
+            oid = asyncio.run(trader.place_gtc_bid(token_id, LIMIT_PRICE, ORDER_SHARES))
+        except Exception as e:
+            print(f"  sample {i + 2}: place FAILED {e}")
+            continue
+        if not oid:
+            print(f"  sample {i + 2}: place returned no id")
+            continue
+        places.append(time.perf_counter() - t)
+        t = time.perf_counter()
+        try:
+            asyncio.run(trader.cancel_gtc(oid))
+            cancels.append(time.perf_counter() - t)
+        except Exception as e:
+            print(f"  sample {i + 2}: CANCEL FAILED for {oid} — pull it by hand: {e}")
+        print(f"  sample {i + 2}: place {places[-1]:.3f}s"
+              + (f"  cancel {cancels[-1]:.3f}s" if cancels else ""))
+
+    def _q(v, f):
+        v = sorted(v)
+        return v[min(int(f * (len(v) - 1)), len(v) - 1)]
+    if len(places) > 1:
+        print(f"\nGTC place  RTT n={len(places)}: min {min(places):.3f} "
+              f"p50 {_q(places, .5):.3f} p90 {_q(places, .9):.3f} max {max(places):.3f}")
+    if cancels:
+        print(f"GTC cancel RTT n={len(cancels)}: min {min(cancels):.3f} "
+              f"p50 {_q(cancels, .5):.3f} max {max(cancels):.3f}")
     print("\nPASS — the live resting-bid path works end to end from this host: a GTC "
           "order posts, polls and cancels. That is the path post-close earns through.")
     return 0
