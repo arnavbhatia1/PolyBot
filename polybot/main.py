@@ -285,8 +285,6 @@ _resolve_oracle_logged: set[str] = set()  # market_id — RESOLVE oracle line pr
 _gamma_strikes: set[int] = set()   # window_ts whose strike came from Gamma (sticky)
 _tape_verdict_logged: set[str] = set()    # market_id — early TAPE VERDICT printed once
 _tape_mismatch_logged: set[str] = set()   # market_id — RESOLUTION DRIFT warned once
-_SNIPER_ONLY_QUIET = True  # base entries are always suppressed (sniper-only), so their per-gate SKIP lines are noise -> DEBUG
-_abandoned_scalp_positions: set[int] = set()  # position IDs too small to sell, hold to resolution
 
 # Window-path recorder (recording.WindowPathRecorder) — set by main() at boot.
 _window_recorder = None
@@ -758,7 +756,6 @@ async def _evaluate_signal_and_enter(
     # filled outcomes share one schema; a value or None, never a 0.0 stand-in.
     aux_signals = _clob_book_aux(clob_ws, token_up, token_down, book_up, book_down)
 
-    is_sniper = False
     _signal_leg = None      # "lock_dip" — per-leg ledger attribution
     _proj = None
     lw_cfg = config.get("late_window", {})
@@ -924,7 +921,6 @@ async def _evaluate_signal_and_enter(
             if _snipe.action in ("LATE_SNIPE_YES", "LATE_SNIPE_NO"):
                 _snipe.action = "BUY_YES" if _snipe.action == "LATE_SNIPE_YES" else "BUY_NO"
                 signal = _snipe
-                is_sniper = True
                 _signal_leg = "lock_dip"
                 phase = "late_sniper"
                 _snipe_key = (_w_ts, signal.side)
@@ -1618,7 +1614,6 @@ async def _resolve_expired_position(
             cb_event = breaker.record_win() if pnl > 0 else breaker.record_loss()
             if cb_event and alert_manager:
                 await alert_manager.send_circuit_breaker(cb_event, breaker)
-        _abandoned_scalp_positions.discard(pos["id"])
         await _record_outcome(outcome_reviewer, pos, exit_price, result.log_return or 0, gain_pct,
                               exit_reason="resolution", pnl=pnl, fees=total_fees)
         # Resolution margin (final − strike) telemetry — from event_metadata
