@@ -89,17 +89,37 @@ def test_sub_dollar_budget_never_places(tmp_path, monkeypatch):
     assert mgr.active is None
 
 
-def test_print_through_fills_per_rung_strictly_below(tmp_path, monkeypatch):
+def test_print_fills_per_rung_at_or_below_with_empty_queue(tmp_path, monkeypatch):
+    """With nothing resting ahead of us, a print AT our price fills — that is
+    what the exchange does. The old rule refused it and was wrong."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
-    mgr = _mgr()
+    mgr = _mgr()                                    # book_fn unset -> queue 0
     _place(mgr, time.time() - 150.0, budget=30.0)
-    mgr.on_print("tokU", {"price": "0.96", "size": "99"})   # AT top rung — no fill
-    assert all(r["filled"] == 0.0 for r in mgr.active["rungs"])
-    mgr.on_print("tokU", {"price": "0.93", "size": "5"})    # through rung 1 only
+    mgr.on_print("tokU", {"price": "0.96", "size": "5"})    # AT top rung -> fills
     fills = [r["filled"] for r in mgr.active["rungs"]]
-    assert fills[0] == pytest.approx(5.0) and fills[1] == 0.0 and fills[2] == 0.0
+    assert fills[0] == pytest.approx(5.0) and fills[1] == 0.0
     mgr.on_print("tokU", {"price": "0.86", "size": "999"})  # through all, capped
     assert all(r["filled"] == pytest.approx(r["shares"]) for r in mgr.active["rungs"])
+
+
+def test_queue_ahead_must_drain_before_we_fill(tmp_path, monkeypatch):
+    """The whole point of the model: size resting at or better than our price
+    fills FIRST. Paper must require the same volume through the level that live
+    would — otherwise it hands us fills a real queue would have absorbed."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _mgr()
+    # 40 shares already resting at/above the 0.96 top rung.
+    mgr.book_fn = lambda tok: {"bids": [{"price": "0.97", "size": "25"},
+                                        {"price": "0.96", "size": "15"},
+                                        {"price": "0.80", "size": "500"}]}
+    _place(mgr, time.time() - 150.0, budget=30.0)
+    top = mgr.active["rungs"][0]
+    assert top["queue_ahead"] == pytest.approx(40.0)   # 0.80 is behind us
+    mgr.on_print("tokU", {"price": "0.96", "size": "30"})
+    assert top["filled"] == 0.0                        # all 30 went to the queue
+    assert top["queue_ahead"] == pytest.approx(10.0)
+    mgr.on_print("tokU", {"price": "0.96", "size": "12"})
+    assert top["filled"] == pytest.approx(2.0)         # 10 drains, 2 reaches us
 
 
 def test_cancel_all_on_lock_weaken_books_blended(tmp_path, monkeypatch):
@@ -263,21 +283,23 @@ def test_disabled_still_cancels_at_the_close(tmp_path, monkeypatch):
     assert 0.995 not in [p for _, p, _ in mgr.trader.placed]
 
 
-def test_post_close_rung_fills_only_strictly_below(tmp_path, monkeypatch):
-    """Same conservative convention as every other rung — queue position is
-    unknowable, so a print AT the rung may have gone entirely to earlier queue."""
+def test_post_close_rung_obeys_the_measured_queue(tmp_path, monkeypatch):
+    """Post-close is where this matters most: the winner's book carries many bid
+    levels and zero asks, so whether we fill is entirely a queue question."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     w = time.time() - 301.0
     mgr = _pc_mgr(strike=64000.0, final=64010.0)
+    # 20 shares resting at 0.999 sit ahead of our 0.995 rung; 0.990 is behind it.
+    mgr.book_fn = lambda tok: {"bids": [{"price": "0.999", "size": "20"},
+                                        {"price": "0.990", "size": "900"}]}
     _pc_place(mgr, w, side="Up")
     asyncio.run(mgr.maintain())
     pc = next(r for r in mgr.active["rungs"] if r["price"] == 0.995)
-    mgr.on_print("tokU", {"price": 0.995, "size": 5.0})
+    assert pc["queue_ahead"] == pytest.approx(20.0)
+    mgr.on_print("tokU", {"price": 0.99, "size": 20.0})   # drains the 0.999 bid
     assert pc["filled"] == 0.0
-    # 0.990 is where sellers actually print, and it IS strictly below 0.995 —
-    # this is the fill that makes the top rung the working one.
-    mgr.on_print("tokU", {"price": 0.99, "size": 5.0})
-    assert pc["filled"] == 5.0
+    mgr.on_print("tokU", {"price": 0.99, "size": 5.0})    # now it reaches us
+    assert pc["filled"] == pytest.approx(5.0)
 
 
 def test_post_close_waits_for_the_closing_boundary_report(tmp_path, monkeypatch):

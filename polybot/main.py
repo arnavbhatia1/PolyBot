@@ -2482,6 +2482,11 @@ async def main() -> None:
     _ALERT_MANAGER = alert_manager
     if _MAKER_MGR is not None:
         _MAKER_MGR.on_fill = _on_maker_fill
+        # Paper's fill model reads the real book to size the queue ahead of each
+        # rung, so a paper fill requires the same size to trade through that a
+        # live fill would.
+        if clob_ws is not None:
+            _MAKER_MGR.book_fn = clob_ws.get_book
 
     def _on_trade_mux(asset_id: str, trade: dict) -> None:
         tape_recorder.on_trade(asset_id, trade)

@@ -347,8 +347,7 @@ sniper buys those dips and holds ≤30s to resolution.
   0.995 and must stay there**: sellers PRINT at 0.990, so 0.995 is the
   price-improving bid that gets hit — 71 fills / 71 wins in a single day at
   exactly 0.9950. A 0.99 rung merely JOINS that crowd for double the margin it
-  will never collect, and the paper matcher (prints strictly below the bid) would
-  stop seeing fills at all. The deep rungs are the fat tail (8 of 1,364 sales
+  will never collect. The deep rungs are the fat tail (8 of 1,364 sales
   printed ≤0.95, returning 22% against 1.01%) and a resting bid that never fills
   costs nothing. **This leg is capital-VELOCITY bound, not supply bound** — the
   ceiling is bankroll × turns/day, which is why manual redemption is the
@@ -389,9 +388,16 @@ sniper buys those dips and holds ≤30s to resolution.
   (one entry path per window — a dip must never fill both). Fills book
   through `BaseTrader.book_maker_fill` (open_trade's tail with the same
   preflight; a rejected booking is a LOUD reconcile-manually error). LIVE
-  fills poll at 1Hz off-path; PAPER fills are print-through conservative —
-  only tape prints STRICTLY BELOW the bid count, because queue position is
-  unknowable and at-price fills would flatter the shadow. Fills stamp
+  fills poll at 1Hz off-path; **PAPER models the real price-then-time QUEUE**:
+  at placement each rung records `queue_ahead` = the resting bid size at prices
+  ≥ its own (`queue_ahead()` off `clob_ws.get_book`), because a seller walks the
+  book down from the top so every share at or better than our price fills
+  first. A print then drains that queue before any of it reaches our order.
+  This replaced a "only prints STRICTLY BELOW the bid count" rule that was wrong
+  in BOTH directions — it refused at-price fills we would really get once the
+  queue drains, and granted every through-price fill in full while ignoring the
+  size sitting ahead of us. NOT modelled: bids that arrive after us at better
+  prices (needs a full book replay). Fills stamp
   `signal_leg="maker_bid"` — its own ledger line and bar.
 - **Capital deploys ONLY through these legs** — there is no other entry
   path in the codebase. `sniper_enabled` is the shared kill-bar SAFETY across

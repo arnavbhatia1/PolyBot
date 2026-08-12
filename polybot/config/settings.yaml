@@ -57,13 +57,14 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-12T04:16:00+00:00"  # 0.992 RUNGS + 0.30 SIZING +
-                               # MAX-TIER-ONLY deploy (the box came up on it at
-                               # 04:15:59Z). Everything before this ran different
-                               # rungs (0.995), different sizing (0.10, and a
-                               # ladder-derived ~$2) and allowed the p99.5 tier,
-                               # so averaging across it would mix three strategies
-                               # — the bar scores only the code being validated.
+  validation_epoch: "2026-08-12T14:50:00+00:00"  # QUEUE-MODELLED PAPER FILLS.
+                               # Paper now requires the same size to trade
+                               # through a rung that live would (queue_ahead),
+                               # so a paper fill means something different from
+                               # every fill before this instant — as did the
+                               # 0.992 rungs / 0.30 sizing / max-tier-only
+                               # deploy at 04:16Z. The bar scores only the code
+                               # being validated; never average across a change.
                                # The nightly health job scores only the current mode's fills
                                # at/after this instant in BOTH modes (earlier fills ran the
                                # snapshot-era signal). Reset when a new validation epoch starts.

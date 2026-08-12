@@ -94,6 +94,9 @@ class MakerBidManager:
         # Set by main: (active, shares, vwap, reason) -> None. A maker fill IS an
         # entry, so it gets the same banner + Discord ping a taker entry does.
         self.on_fill: Any = None
+        # Set by main to clob_ws.get_book. Paper's fill model needs the real
+        # book to know how much size is ahead of us in the queue.
+        self.book_fn: Any = None
         self._last_poll = 0.0
         self._ladder_cache: tuple[float, list] | None = None  # (mtime, ladder)
 
@@ -165,10 +168,12 @@ class MakerBidManager:
             if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
                 continue
             shares = round(usd / px, 2)
+            q = self.queue_ahead(token_id, px)
             order_id = await self.trader.place_gtc_bid(token_id, px, shares)
             if order_id:
                 rungs.append({"price": px, "shares": shares,
-                              "order_id": order_id, "filled": 0.0})
+                              "order_id": order_id, "filled": 0.0,
+                              "queue_ahead": q})
         if not rungs:
             return
         self.active = {
@@ -189,7 +194,34 @@ class MakerBidManager:
 
     # -- paper fill matcher (clob_ws print hook; sync, must not raise) ------
 
+    def queue_ahead(self, token_id: str, px: float) -> float:
+        """Resting bid size at prices >= px: the size that must fill before us.
+
+        A seller walks the book DOWN from the best bid, so every share resting
+        at or better than our price is genuinely ahead of us in line. Measured
+        once at placement, which is when our time priority is set.
+        """
+        if self.book_fn is None:
+            return 0.0
+        try:
+            book = self.book_fn(token_id) or {}
+            return sum(float(l.get("size") or 0.0)
+                       for l in (book.get("bids") or [])
+                       if float(l.get("price") or 0.0) >= px - 1e-9)
+        except Exception:
+            return 0.0
+
     def on_print(self, asset_id: str, trade: dict) -> None:
+        """Paper fill model — price-then-time queue, not a conservative fiction.
+
+        The old rule booked only prints STRICTLY BELOW a rung, on the grounds
+        that an at-price print might have gone entirely to earlier queue. That
+        was wrong in BOTH directions: it refused at-price fills we would really
+        get once the queue drains, and it granted every through-price fill in
+        full while ignoring the size sitting ahead of us. Now a print consumes
+        the measured queue first and only the remainder reaches our order —
+        which is exactly what the exchange does.
+        """
         a = self.active
         if a is None or not self.paper or asset_id != a["token_id"]:
             return
@@ -200,11 +232,17 @@ class MakerBidManager:
             return
         if not (0.0 < px and sz > 0):
             return
-        # STRICTLY below a rung = the market traded through that level; a
-        # print AT the rung may have gone entirely to earlier queue.
         for r in a["rungs"]:
-            if not r.get("cancelled") and px < r["price"]:
-                r["filled"] = min(r["shares"], r["filled"] + sz)
+            if r.get("cancelled") or px > r["price"] + 1e-9:
+                continue            # the print never reached our price
+            rem = sz
+            q = r.get("queue_ahead") or 0.0
+            if q > 0.0:
+                used = min(q, rem)
+                r["queue_ahead"] = q - used
+                rem -= used
+            if rem > 0.0:
+                r["filled"] = min(r["shares"], r["filled"] + rem)
 
     # -- lifecycle (every main-loop tick; cheap float math off the hot path) --
 
@@ -256,11 +294,13 @@ class MakerBidManager:
             if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
                 continue
             shares = round(usd / px, 2)
+            q = self.queue_ahead(a["token_id"], px)
             order_id = await self.trader.place_gtc_bid(a["token_id"], px, shares)
             if not order_id:
                 continue
             a["rungs"].append({"price": px, "shares": shares,
-                               "order_id": order_id, "filled": 0.0})
+                               "order_id": order_id, "filled": 0.0,
+                               "queue_ahead": q})
             placed.append((px, shares))
         if placed:
             logger.info("MAKER POST-CLOSE %s WON — resting $%.0f to buy it under "
