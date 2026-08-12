@@ -57,7 +57,10 @@ python -m pytest polybot/tests/           # full suite
 scripts/run_polybot.sh                    # daily cycle: trade -> nightly jobs -> commit -> restart (VPS only)
 ```
 
-**The live recipe** (only after the §2 bar passes): `settings.yaml` → `mode: live`
+**The live recipe** (only after the §2 bar passes AND `smoke_gtc_test.py --confirm`
+passes — the live ledger holds 331 taker fills and ZERO maker fills, so the
+resting-bid path the strategy now earns through has never run against the real
+exchange): `settings.yaml` → `mode: live`
 + `late_window.sniper_enabled: true` + a fresh `validation_epoch`. That is the
 complete switch; paper and live share every decision path, and the sniper is the
 only strategy either can run.
