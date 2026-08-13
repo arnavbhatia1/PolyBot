@@ -2487,6 +2487,8 @@ async def main() -> None:
         # live fill would.
         if clob_ws is not None:
             _MAKER_MGR.book_fn = clob_ws.get_book
+        if market_scanner is not None:
+            _MAKER_MGR.tick_fn = market_scanner.fetch_tick_size
 
     def _on_trade_mux(asset_id: str, trade: dict) -> None:
         tape_recorder.on_trade(asset_id, trade)

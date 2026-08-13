@@ -38,6 +38,8 @@ from polybot.paths import MAKER_LADDER_PATH
 logger = logging.getLogger("polybot")
 
 MIN_NOTIONAL_USD = 1.0          # CLOB floor — below this nothing books
+MIN_SHARES = 5.0                # exchange minimum order size; a 2.49-share rung
+                                # is rejected outright ("lower than the minimum: 5")
 LADDER_PRICE_MIN = 0.15         # clamps on an operator price file. The band is
 LADDER_PRICE_MAX = 0.95         # deep on purpose: break-even win rate equals the
                                 # price paid, so a 0.20 rung needs 20% against a
@@ -68,8 +70,29 @@ class MakerBidManager:
         # Set by main to clob_ws.get_book. Paper's fill model needs the real
         # book to know how much size is ahead of us in the queue.
         self.book_fn: Any = None
+        # Set by main to market_scanner.fetch_tick_size.
+        self.tick_fn: Any = None
         self._last_poll = 0.0
         self._ladder_cache: tuple[float, list] | None = None  # (mtime, ladder)
+
+    async def legal_price(self, token_id: str, px: float) -> float:
+        """Round DOWN to the tick and clamp to the exchange's valid range.
+
+        The valid range is [tick, 1 - tick], so a 0.01 tick caps bids at 0.99 and
+        rejects 0.992 outright. The tick is still 0.01 at close+2s when the
+        post-close arm fires, and only tightens to 0.001 later in the acceptance
+        window. Rounding DOWN can only improve margin.
+        """
+        if self.tick_fn is None:
+            return px
+        try:
+            tick = float(await self.tick_fn(token_id))
+        except Exception:
+            return px
+        if tick <= 0:
+            return px
+        snapped = round(int(round(px / tick, 6)) * tick, 10)
+        return max(tick, min(snapped, round(1.0 - tick, 10)))
 
     # -- queries ----------------------------------------------------------
 
@@ -132,7 +155,10 @@ class MakerBidManager:
             usd = round(budget_usd * frac, 2)
             if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
                 continue
+            px = await self.legal_price(token_id, px)
             shares = round(usd / px, 2)
+            if shares < MIN_SHARES:
+                continue
             order_id = await self.trader.place_gtc_bid(token_id, px, shares)
             if order_id:
                 # Queue measured AFTER the POST lands: anyone who got their bid
@@ -248,7 +274,10 @@ class MakerBidManager:
             usd = round(budget * float(frac), 2)
             if usd < MIN_NOTIONAL_USD or not (0.0 < px < 1.0):
                 continue
+            px = await self.legal_price(a["token_id"], px)
             shares = round(usd / px, 2)
+            if shares < MIN_SHARES:
+                continue
             order_id = await self.trader.place_gtc_bid(a["token_id"], px, shares)
             if not order_id:
                 continue

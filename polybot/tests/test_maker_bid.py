@@ -104,6 +104,33 @@ def test_print_fills_per_rung_at_or_below_with_empty_queue(tmp_path, monkeypatch
 
 
 
+def test_price_clamped_to_the_exchange_range(tmp_path, monkeypatch):
+    """LIVE rejected 0.992: "invalid price (0.992), min: 0.01 - max: 0.99". The
+    valid range is [tick, 1-tick], and the tick is still 0.01 at close+2s when the
+    post-close arm fires."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _pc_mgr(strike=64000.0, final=64010.0)
+
+    async def tick_01(_t): return "0.01"
+    async def tick_001(_t): return "0.001"
+
+    mgr.tick_fn = tick_01
+    assert asyncio.run(mgr.legal_price("tokU", 0.992)) == pytest.approx(0.99)
+    mgr.tick_fn = tick_001
+    assert asyncio.run(mgr.legal_price("tokU", 0.992)) == pytest.approx(0.992)
+    mgr.tick_fn = None
+    assert asyncio.run(mgr.legal_price("tokU", 0.992)) == pytest.approx(0.992)
+
+
+def test_rungs_below_the_exchange_min_size_are_skipped(tmp_path, monkeypatch):
+    """LIVE rejected a 2.49-share rung: "Size (2.49) lower than the minimum: 5".
+    $1 of notional is not enough on its own."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _mgr()
+    _place(mgr, time.time() - 150.0, budget=6.0)     # 0.96 rung -> 2.5 sh
+    assert all(s >= mb.MIN_SHARES for _, _, s in mgr.trader.placed)
+
+
 def test_gtc_placement_pays_the_measured_post_rtt(tmp_path, monkeypatch):
     """A resting bid does not exist until its POST lands, so paper must wait too."""
     from polybot.execution.paper_trader import PaperTrader
@@ -229,8 +256,9 @@ def _pc_mgr(strike, final, trusted=True):
 
 
 def _pc_place(mgr, window_ts, side="Up"):
+    # Budget large enough that every rung clears the exchange's 5-share minimum.
     mgr.chainlink.window_ts = window_ts
-    _place(mgr, window_ts, side=side, budget=30.0, headroom=2.0)
+    _place(mgr, window_ts, side=side, budget=150.0, headroom=2.0)
 
 
 def test_post_close_arms_on_the_settled_winner(tmp_path, monkeypatch):
@@ -362,7 +390,7 @@ def test_holding_tokens_keeps_the_ws_subscribed_past_the_close(tmp_path, monkeyp
 
 
 # ── post-close decoupled from the ladder ──────────────────────────────────────
-def _arm(mgr, w, budget=20.0):
+def _arm(mgr, w, budget=150.0):
     mgr.chainlink.window_ts = w
     mgr.arm_post_close(w, "cid", "q?", "tokU", "tokD", budget,
                        {"strike_price": 64000.0})
@@ -445,7 +473,7 @@ def test_post_close_falls_back_to_the_ladder_fraction_without_pc_budget(
     n_before = len(mgr.trader.placed)
     asyncio.run(mgr.maintain())
     top = next(x for x in mgr.trader.placed[n_before:] if x[1] == 0.995)
-    assert abs(top[2] * 0.995 - 30.0 * 0.40 * 0.70) < 0.05
+    assert abs(top[2] * 0.995 - 150.0 * 0.40 * 0.70) < 0.05   # ladder budget x frac
 
 
 def test_arm_is_ignored_while_a_ladder_rests_and_never_goes_backwards(tmp_path,
