@@ -129,7 +129,7 @@ class TestValidateSniperKnobs:
     @pytest.mark.parametrize("key,bad", [
         ("late_window.sniper_fok_slip", 0.10),   # 10x the calibrated pad
         ("late_window.twap_zone_s", 45.0),       # projection undefined before the 30s window
-        ("late_window.twap_k_min_s", 10.0),      # would veto the whole dip zone
+        ("late_window.twap_k_min_s", 20.0),      # would veto most of the dip zone
         ("late_window.sniper_min_edge", 0.001),  # fires on no defended edge
     ])
     def test_out_of_range_sniper_knob_rejected(self, key, bad):

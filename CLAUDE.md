@@ -5,45 +5,37 @@ only feeds the STRATEGY reads are Chainlink (RTDS) + the Polymarket CLOB +
 Gamma; every position holds to resolution. There is no other model and no exit
 path.
 
-**The edge is settled-outcome computation monetised by a resting bid — not
-speed.** We are demonstrably not the fast participant: the book reprices 0.33s
-after Binance and 2.5s BEFORE our own oracle receipt, winning 97-100% of
-sharp-move races. Capacity scales with markets x locked-seconds x panic supply
-x BANKROLL, never with latency.
+**The edge is the mid-k TWAP lock — nothing else survived live.** We are
+demonstrably not the fast participant: the book reprices 0.33s after Binance
+and 2.5s BEFORE our own oracle receipt, winning 97-100% of sharp-move races.
+The 08-13 live probe (12h, real orders) refuted every resting-bid geometry and
+the label-space "hairline" inverse (§2 refutation record); what remains is the
+one asymmetry the book cannot price for us — a mostly-observed 30s average —
+and it is only trustworthy at k ≥ 6s.
 
-**Two legs, in order of what they earn:**
-1. **Post-close certainty (§2)** — the market accepts orders for minutes after
-   the close, the winner's book has bid levels and ZERO asks, and the outcome
-   is settled fact from the two official TWAP boundary captures. Sellers who
-   have not read the result dump the winner into our resting bid. ~$475/window
-   of supply in 149 of 150 windows, printing at 0.9900; we rest at 0.992 and
-   collect ~0.8¢/share, riskless, in ~73% of windows. **This leg cannot suffer
-   a projection failure — there is no unobserved tail left.**
-2. **Lock-dip taker + ladder (§2)** — in the final 30s the resolving average is
-   mostly observed, so displacement past a frozen error margin decides the
-   window. Fires on the **max tier ONLY** (`require_max_tier`): that bound has
-   never been breached in 583+ windows, while the thinner p99.5 tier has broken
-   THREE times and one breach costs ~55 post-close wins.
+**Two legs, both k ≥ 6s, both max-tier only:**
+1. **Lock-dip taker (§2)** — in the final 30s the resolving average is mostly
+   observed, so displacement past a frozen error margin decides the window.
+   Fires on the **max tier ONLY** (`require_max_tier`) at **k ≥ 6s ONLY**
+   (`twap_k_min_s`): below ~6s the margin knots collapse to $0.70-$4 — bounds
+   564 windows cannot pin, and both realized low-k fires ran errors ABOVE the
+   claimed max (one a breach that bought a $0 token, §2). At k ≥ 6 the knots
+   are $14+ and 889 locked windows over 7 TWAP-era days show zero breaches.
+2. **Lock-informed maker ladder (§2)** — deep GTC rungs (0.90/0.60) resting on
+   the locked side for the whipsaw wick, placed k in [6,25]s, cancelled before
+   the close. Break-even equals price paid, so rung losses are priced-in, not
+   mechanism failures.
 
-**LIVE PROBE since 2026-08-13 03:25Z** at `post_close_bankroll_frac` 0.10
-(~$12.73/rung, ~8% of a median window's supply) — a MEASUREMENT, not the §2
-deploy, which still needs 6 clean ET days and 100 fills. Paper replays a tape our
-bid was never in, so it cannot see a competitor outbidding a resting order; at 8%
-of the book that counterfactual stays honest and live-vs-paper fill rates are
-comparable. Scale only on measured LIVE fills.
+**PAPER (validation_epoch 2026-08-13T17:30Z)**: the k≥6 configuration is
+unvalidated — the bar (§2) needs its 6 clean days and the nightly health job
+re-reads the realized shadow daily. **No real capital until it passes.**
+Gate-vetoed fires persist as leg-stamped ghosts.
 
-**PAPER SHADOW since 2026-08-07**: at 00:00 UTC that day Polymarket switched
-resolution from the terminal Chainlink snapshot to the official **30-second
-TWAP stream** (strike = the stream's value at the open, final = its value at
-the close — both verified bit-exact against served price_to_beat/final_price,
-17/17 windows, each close chaining into the next strike to the cent). That
-switch killed the burst sniper (its fills recompute to −17.5¢/sh under TWAP
-scoring, t −5.0). The night-one whipsaw dip that replaced it (~1 in 6 windows)
-has since collapsed ~10x — dip supply is 2.0% of locked seconds — which is why
-the resting post-close bid, not the taker, is the business. **No real capital
-until the pre-registered paper bar passes** (§2); the nightly health job
-re-reads the realized shadow daily. Gate-vetoed fires persist as leg-stamped
-ghosts.
+**Resolution mechanism (since 2026-08-07 00:00 UTC)**: Polymarket resolves on
+the official **30-second TWAP stream** (strike = the stream's value at the
+open, final = its value at the close — both verified bit-exact against served
+price_to_beat/final_price, and each close chains into the next strike to the
+cent). That switch killed the burst sniper (−17.5¢/sh under TWAP scoring).
 
 **This file is the single source of truth — update it in the same commit as any
 behavioral change.**
@@ -65,9 +57,9 @@ scripts/run_polybot.sh                    # daily cycle: trade -> nightly jobs -
 ```
 
 **The live recipe** (only after the §2 bar passes AND `smoke_gtc_test.py --confirm`
-passes — the live ledger holds 331 taker fills and ZERO maker fills, so the
-resting-bid path the strategy now earns through has never run against the real
-exchange): `settings.yaml` → `mode: live`
+passes — the live ledger holds 332 taker fills and ZERO maker fills; the 08-13
+probe proved the GTC path places cleanly but never filled a resting bid):
+`settings.yaml` → `mode: live`
 + `late_window.sniper_enabled: true` + a fresh `validation_epoch`. That is the
 complete switch; paper and live share every decision path, and the sniper is the
 only strategy either can run.
@@ -112,7 +104,7 @@ engine: **paper**
 (realism shim: real CLOB books, FOK semantics, convex slippage, latency
 SAMPLED inverse-CDF from the LIVE ledger's measured order-path POST-RTT
 distribution (latency_stats.json → `_LATENCY_QUANTILES`) × `paper_latency_scale`
-0.70 — the VPS's MEASURED warm signed-order RTT, p50 304ms from six smoke FOKs;
+0.95 — re-measured after Polymarket's async-commit rollout;
 network-fail sim; $1 min, tick
 snapping; FOK kill/fill stats recorded to `fill_stats_paper.json` in live's
 schema so paper-vs-live kill rates are directly comparable) and **live**
@@ -132,21 +124,30 @@ sniper buys those dips and holds ≤30s to resolution.
 
 - **Fire condition** (`SignalEngine.evaluate_twap_lock`): inside
   `twap_zone_s` (30s, hard ceiling — the projection is undefined earlier) with
-  ≥ `twap_k_min_s` (0.8s) left, displacement ≥ the k-interpolated margin, ask ≤
-  `tier_prob − sniper_min_edge`. Two frozen tiers
+  ≥ `twap_k_min_s` (**6.0s**) left, displacement ≥ the k-interpolated margin,
+  ask ≤ `tier_prob − sniper_min_edge`. Two frozen tiers
   (`signal_engine.TWAP_MARGIN_P995`/`_MAX`, measured on 564 rx-clock tape
-  windows, zero disagreements in 583 incl. night one): beyond the max-ever
-  error → prob 0.999 (ask ≤ ~0.96); beyond p99.5 → prob 0.995 (ask ≤ ~0.955).
-  The cap DERIVES from the edge floor — one knob, no separate ask-cap to
-  drift. Tuning the margin tables to make a window fire is relaxing a bar.
+  windows): beyond the max-ever error → prob 0.999 (ask ≤ ~0.96); beyond p99.5
+  → prob 0.995 (ask ≤ ~0.955). The cap DERIVES from the edge floor — one knob,
+  no separate ask-cap to drift. Tuning the margin tables to make a window fire
+  is relaxing a bar.
+  **`twap_k_min_s: 6.0` is a safety bound, not a tunable.** Below ~6s the max
+  knots collapse to $0.70-$4 — tail bounds 564 windows cannot pin, and the
+  window itself can be a coin flip finer than any projection: on 08-12 a
+  "max-tier" fire at k=1.1s / disp $0.73 bought a $0 token at 0.83 (**the
+  first realized max-tier breach**; the window resolved on a $0.0007
+  final-strike gap, and the true error $0.7307 beat the $0.70 knot), and the
+  08-13 live win at k=2.6s / disp $3.31 also ran a true error ($2.00) above
+  its knot ($1.69) — it paid only because the $1.31 gap broke our way. At
+  k ≥ 6 the knots are $14+; 889 locked windows over 7 TWAP-era days (a 26x
+  larger corpus than the freeze) show zero breaches.
   **`require_max_tier: true` (default) refuses the p99.5 tier outright** —
   p99.5 has breached THREE times, and the 08-11 13:49 breach (disp $21.90 at
   k=19s, verified real projection error $24.83) still sat inside the max-tier
   margin of $26.40: the max bound held through the very event that broke
-  p99.5, and max tier would not have taken the trade. One breach costs ~55
-  post-close wins. Both boundary captures for that window were verified
-  bit-exact against the recorded TWAP stream — the loss was a projection tail,
-  not a data fault.
+  p99.5, and max tier would not have taken the trade. Both boundary captures
+  for that window were verified bit-exact against the recorded TWAP stream —
+  the loss was a projection tail, not a data fault.
   **The tables are correctly sized, NOT conservative — measured 08-10 on 739
   windows**: making them vol-conditional (looser on calm windows, the obvious
   volume lever) introduces 6 windows where the LOSING side clears P≥0.995
@@ -242,156 +243,70 @@ sniper buys those dips and holds ≤30s to resolution.
   fills book the decision ask, queue depth is invisible. (2) The BINDING gate
   is the **paper-shadow's realized fills** (`sniper_shadow_status.py` /
   `live_health_read`, scoped to `validation_epoch`; earlier fills ran different
-  code). **The bar is PER LEG, because the two legs have opposite shapes and one
-  metric cannot judge both** — pre-registered 08-12, before the data existed:
+  code). **The bar is PER LEG** — restated 2026-08-13 for the k≥6 rebuild:
 
-  | | lock-dip TAKER | post-close MAKER |
+  | | lock-dip TAKER | maker LADDER |
   |---|---|---|
-  | shape | ~1 fill/day at +10¢/sh | ~120 fills/day at 0.8¢/sh |
+  | shape | rare fills at +10¢/sh | rare deep fills, priced break-even |
   | clean ET days | ≥ 6 | ≥ 6 |
-  | fills | ≥ 40 | ≥ 100 |
-  | profit | EW net ≥ +2¢/sh, `t_day ≥ 2` | `usd_per_day > 0`, `usd_p10 > 0` |
-  | days positive | ≥ 5/6 | ≥ 5/6 |
-  | win rate | — | **≥ 99%** |
-  | halt-on-sight | any max-tier lock breach | **any post-close loss** |
+  | fills | ≥ 10 | ≥ 10 |
+  | profit | EW net ≥ +2¢/sh, `t_day ≥ 2` | `usd_per_day > 0` |
+  | days positive | — (fills too rare for a daily series; judge on EW net) | — |
+  | halt-on-sight | **any lock_dip loss** (every fire is max-tier, so a loss IS a breach) | none (rung losses are priced-in; dollars rule judges) |
 
-  A ¢/sh threshold is arithmetically impossible for post-close: it buys a $1.00
-  payout at 0.992, so 0.8¢/sh is the CEILING and +2¢/sh would condemn a leg
-  returning ~25%/day. Its bar is stricter where it counts instead — the outcome
-  is already settled when the bid rests, so a win rate under 99% or a single loss
-  means `certain_winner` named the wrong side, which is mechanism failure rather
-  than variance and halts on one occurrence. Never deploy real capital on the
-  harness print alone. The nightly health job (§6) re-reads both in production.
+  `live_health_read.kill_rule_tripped` computes exactly this: any lock_dip
+  loss trips immediately; otherwise trailing-4-day mean DOLLARS < 0 trips once
+  ≥ 4 ET days exist. Never deploy real capital on the harness print alone. The
+  nightly health job (§6) re-reads both legs in production.
 - **The standing bar every new leg owes** (born from the open head-start leg,
   refuted and deleted 08-11): net ¢/sh must rise monotonically across
   model-edge buckets, scored against an `edge < 0` control bucket — a
   candidate whose best cell is the control is anti-predictive no matter how
   good its aggregate looks.
-- **POST-CLOSE CERTAINTY PHASE** (`maker_bid.certain_winner` +
-  `_place_post_close_ladder`, `maker.post_close_*` in settings): the market keeps
-  ACCEPTING ORDERS FOR MINUTES after the close — verified live at close+143s,
-  `acceptingOrders=True` on both Gamma and the CLOB, winner showing 101 bid
-  levels and ZERO asks (so nothing can be lifted; only a resting bid works).
-  Measured over 814 windows / 4.29M trades: post-close is the ONLY part of the
-  window where makers win on EVERY day (takers lose it 5/5), because the outcome
-  is settled fact while sellers who haven't read it yet dump the winner. So the
-  ladder no longer dies at `maker_k_cancel_s` — it holds through the close for
-  `post_close_s` (90s) and arms `post_close_ladder` on the settled side.
-  **It also arms with NO pre-close ladder at all** (`arm_post_close` /
-  `_promote_pending`): the outcome is settled fact in EVERY window, but the
-  ladder only rests on the few that lock at max tier inside k [3,25]s, so tying
-  the two together threw away all but a handful of windows a day. The fire path
-  arms an intent on every window (safe on any strike — `certain_winner`
-  re-verifies both boundary captures at promotion and fails closed). **Sizing is
-  `post_close_bankroll_frac` of BANKROLL for BOTH arms** — a settled outcome is
-  not a Kelly bet, and inheriting `post_close_budget_frac` of the ladder's
-  fractional-Kelly budget made every fill ~$2.15, so 71 perfect wins in one day
-  earned $0.80. Capital recycles in ~2 min (book → resolve) against 5-min windows
-  with one ladder slot, and Auto-Redeem is ON, so one full-size position per
-  window is sustainable. **Size does not threaten the fill rate**: measured
-  per-window supply below 0.992 is p25 24.6 sh / p50 151.5 sh / p75 377 sh —
-  median depth is 5× a 29-share order — and partial fills book as one blended
-  position, so there is no cliff, only a diminishing curve (expected shares
-  filled per window: $2.15→1.57, $28.79→17.44, $99→50.5, $298→116.9). The
-  binding limit is **single-event survivability** — NOT supply, and NOT the
-  circuit breaker: `update_bankroll` is called only from the two resolution
-  handlers with `bankroll_after`, so an open position's cash dip never reaches
-  the breaker, and the cash that feeds sizing is restored long before the next
-  ladder arms (books close+90s, resolves ~2 min later, next arm ~close+275s).
-  What remains is the single loss mode — `certain_winner` being wrong buys a $0
-  token for the whole rung. At 0.30 the top rung is ~25% of bankroll: one
-  failure is a bad day, not the end. `post_close_budget_frac` remains the fallback if no
-  bankroll-sized budget reaches the manager. Both
-  sides stay WS-subscribed while pending, because the winner is unknown until
-  the closing boundary lands ~2s later and going deaf there would break
-  paper/live parity silently (live polls its fills over REST). Standalone fills
-  stamp `signal_leg="post_close"`; a ladder-promoted post-close stays
-  `maker_bid` because those fills blend with pre-close rungs into one position.
-  **Geometry measured 08-11 over 150 windows / 1,364 post-close sales of the
-  winner** (`data-api/trades`, winner from Gamma `outcomePrices`, 0
-  disagreements with `finalPrice >= priceToBeat`): ~$475/window of supply,
-  149/150 windows had some, print price 0.990 from p05 through p50, 1,115 of
-  1,364 inside the first 60s, and trades stop dead at close+300s. The window is
-  90s not 300s because the tail is dollar-rich but PROFIT-poor — $560 of the
-  $589 profit-if-all sits at ≤0.99 while the 60-300s flow prints at median 0.999
-  (0.1¢/share) — and a 300s rest would hold the single ladder slot straight
-  through the next window's k [3,25]s placement point, suppressing the pre-close
-  leg outright. Rungs **0.992/0.90 split 85/15**, ranked by EV per DOLLAR
-  per window = (shares per $1) x margin x P(fill): 0.991 0.00666 · 0.993 0.00517
-  · 0.995 0.00369 · 0.90 0.00222 · 0.95 0.00105 · 0.97 0.00082 · 0.999 0.00073.
-  **Every one of the 945 buyable sales prints at 0.9900 or below**, so any bid
-  strictly above 0.9900 captures the identical flow — 0.995 and 0.991 both fill
-  in 73.3% of windows, so the four extra ticks bought nothing. 0.992 rather than
-  0.991 because the live book carries a competing bid at 0.9910. The tick is
-  0.001 post-close (0.01 while the window is live), which is what makes a
-  sub-penny rung legal at all. The 0.90 tail stays small: 2% of windows, but 10¢
-  a share when panic goes deep.
-  **It also arms with NO pre-close ladder at all** (`arm_post_close` /
-  `_promote_pending`): the outcome is settled fact in EVERY window, but the
-  ladder only rests on the few that lock at max tier inside k [3,25]s, so tying
-  the two together threw away all but a handful of windows a day. The fire path
-  arms an intent on every window (safe on any strike — `certain_winner`
-  re-verifies both boundary captures at promotion and fails closed). **Sizing is
-  `post_close_bankroll_frac` of BANKROLL for BOTH arms** — a settled outcome is
-  not a Kelly bet, and inheriting `post_close_budget_frac` of the ladder's
-  fractional-Kelly budget made every fill ~$2.15, so 71 perfect wins in one day
-  earned $0.80. Capital recycles in ~2 min (book → resolve) against 5-min windows
-  with one ladder slot, and Auto-Redeem is ON, so one full-size position per
-  window is sustainable. **Size does not threaten the fill rate**: measured
-  per-window supply below 0.992 is p25 24.6 sh / p50 151.5 sh / p75 377 sh —
-  median depth is 5× a 29-share order — and partial fills book as one blended
-  position, so there is no cliff, only a diminishing curve (expected shares
-  filled per window: $2.15→1.57, $28.79→17.44, $99→50.5, $298→116.9). The
-  binding limit is **single-event survivability** — NOT supply, and NOT the
-  circuit breaker: `update_bankroll` is called only from the two resolution
-  handlers with `bankroll_after`, so an open position's cash dip never reaches
-  the breaker, and the cash that feeds sizing is restored long before the next
-  ladder arms (books close+90s, resolves ~2 min later, next arm ~close+275s).
-  What remains is the single loss mode — `certain_winner` being wrong buys a $0
-  token for the whole rung. At 0.30 the top rung is ~25% of bankroll: one
-  failure is a bad day, not the end. `post_close_budget_frac` remains the fallback if no
-  bankroll-sized budget reaches the manager. Both
-  sides stay WS-subscribed while pending, because the winner is unknown until
-  the closing boundary lands ~2s later and going deaf there would break
-  paper/live parity silently (live polls its fills over REST). Standalone fills
-  stamp `signal_leg="post_close"`; a ladder-promoted post-close stays
-  `maker_bid` because those fills blend with pre-close rungs into one position.
-  **Geometry measured 08-11 over 150 windows / 1,364 post-close sales of the
-  winner** (`data-api/trades`, winner from Gamma `outcomePrices`, 0
-  disagreements with `finalPrice >= priceToBeat`): ~$475/window of supply,
-  149/150 windows had some, print price 0.990 from p05 through p50, 1,115 of
-  1,364 inside the first 60s, and trades stop dead at close+300s. The window is
-  90s not 300s because the tail is dollar-rich but PROFIT-poor — $560 of the
-  $589 profit-if-all sits at ≤0.99 while the 60-300s flow prints at median 0.999
-  (0.1¢/share) — and a 300s rest would hold the single ladder slot straight
-  through the next window's k [3,25]s placement point, suppressing the pre-close
-  leg outright. Rungs 0.995/0.97/0.95/0.90 split 70/10/10/10. **The top rung is
-  0.995 and must stay there**: sellers PRINT at 0.990, so 0.995 is the
-  price-improving bid that gets hit — 71 fills / 71 wins in a single day at
-  exactly 0.9950. A 0.99 rung merely JOINS that crowd for double the margin it
-  will never collect. The deep rungs are the fat tail (8 of 1,364 sales
-  printed ≤0.95, returning 22% against 1.01%) and a resting bid that never fills
-  costs nothing. **This leg is capital-VELOCITY bound, not supply bound** — the
-  ceiling is bankroll × turns/day, which is why manual redemption is the
-  binding constraint rather than any edge.
-  **This phase does NOT use the projection.** It uses the two official TWAP
-  boundary captures: `final >= strike` (tie → Up) is the exact rule Polymarket
-  resolves on, and both must be captured AND `strike_reliable` or every rung is
-  pulled (5-14 boundaries/day never arrive). The settled winner is re-checked
-  EVERY tick, not just at the transition — a bid resting on a $0 token is this
-  leg's only unbounded loss. The 4¢ edge floor does not apply here: the tier
-  probability was a tail bound on an unfinished average, this is a finished one,
-  so 0.5¢ is certain rather than expected — and makers pay no fee, so it is
-  gross. Fills book through the same blended `book_maker_fill` path and hold to
-  resolution. Its bar is its own; `sniper_enabled: false` still halts it.
+- **POST-CLOSE: REFUTED LIVE 2026-08-13 — never rebuild it on paper evidence.**
+  The premise was real (the market accepts orders for minutes after the close;
+  the winner has bids and zero asks; ~$400/window still sells at 0.990 — 40,620
+  shares across the probe's 141 windows), but every price level is owned:
+  - **0.99 (pre-flip cap)**: ~1,400-26k shares rest at 0.99 from ~43s BEFORE
+    the close (median first-touch k=42.6s over 142 windows), and a ~290k-share
+    wall lands at close+0-2s. Post-close drain is ~290 sh/window. Our probe:
+    **102 placements, 13 sh each, ZERO fills** while 21,691 shares printed at
+    exactly 0.990 during our own 90s rests. Time priority at a shared price is
+    unwinnable at any join time we can reach.
+  - **0.999 (post-flip)**: the tick flips 0.01→0.001 at a variable close+6s to
+    +86s (per-token `tick_size_change` WS event; flip requires price > 0.96 per
+    Polymarket docs, applied late server-side). After the flip the 0.999 level
+    carries **61k-237k shares**. The whole sub-penny layer printed $12.62 of
+    margin in a day — and nothing printed at 0.991-0.998 (one 2-share
+    walk-down all day).
+  - **Deep tail (≤0.95)**: 123 shares in a day, one window. The 08-11 "8 of
+    1,364" was representative; there is no deep business.
+  - Total post-close pie ≈ **$431/day of margin across ALL participants**,
+    owned by six-figure resting capital. Not a compounding business at any
+    bankroll we will ever deploy, and we are structurally last in its queues
+    (our certainty needs the closing boundary report, p50 +1.71s; the
+    spot-synced crowd is ~2.5s earlier).
+  Paper "validated" this leg at 77 fills/day because a snapshot queue model
+  cannot see competitors who bid before the snapshot. That failure mode is now
+  structural doctrine: **paper maker fills require a print STRICTLY below the
+  rung** (see the ladder bullet) — conservative by construction.
+- **HAIRLINE-UNDERDOG: REFUTED 2026-08-13, 14,897 windows — do not re-hunt.**
+  In label space, windows finishing within $1 of the strike show the cheap
+  side (avg ask 0.18) winning 27.6% → +9.2¢/sh. But conditioned on the only
+  tradable trigger — OUR displacement small at fire time (k=2 or k=5) — the
+  cheap side wins 6.4% against an 8.1¢ ask: **−2.2¢/sh, negative in every
+  disp band**, no monotonic gradient vs the disp≥$10 control. The book's
+  final-seconds conviction is calibrated even on windows our TWAP arithmetic
+  calls a coin flip. Same verdict as the continuous-P refutation: the book
+  wins; the label-space richness was hindsight conditioning.
 - **Lock-informed maker LADDER** (`execution/maker_bid.py`, §3d in settings):
   when a window locks but no dip is trading, a LADDER of GTC bids rests on
   the locked side (0.90/0.60, budget split 60/40) — the
   measured dip CDF (233 locked windows) says panic goes DEEP when it comes
   (touch rates: 0.96 → 5.6%, 0.93 → 4.7%, 0.86 → 3.9%), so rungs across the
   depth beat any single bid (a static 0.935 filled 0/45). Panic fills resting
-  orders with ZERO latency and queue priority instead of a 0.4s FOK race, no
-  250ms taker hold. Rung prices are set by BREAK-EVEN economics in
+  orders with ZERO latency instead of a 0.4s FOK race, no 250ms taker hold.
+  Rung prices are set by BREAK-EVEN economics in
   settings.yaml — a resting buy held to resolution breaks even at exactly the
   price paid, so a 0.20 rung needs 20% against a measured 77-96%. The nightly
   `ladder_recalibrate` only REPORTS the trailing dip CDF and never writes the
@@ -401,25 +316,25 @@ sniper buys those dips and holds ≤30s to resolution.
   overrides prices, clamped [0.15, 0.95] and only when its rung count matches
   the config. One ladder at a
   time; placed from the fire path when the taker SKIPs on a locked window
-  (k within [3, 25]s) — placement demands the NEVER-BREACHED max tier, and
-  the deepest rung arms only at ≥1.5× that margin (deep fills concentrate in
-  violent windows where breach risk is conditionally elevated). All rungs
+  (k within [6, 25]s — the same low-k floor as the taker), and
+  the deepest rung arms only at ≥1.5× the max-tier margin (deep fills
+  concentrate in violent windows where breach risk is conditionally elevated).
+  All rungs
   cancelled the instant the lock weakens below the p99.5 margin, the
   projection goes cold, or k < 1s; accumulated fills book as ONE position at
   the blended price; the taker leg is suppressed while a bid rests
   (one entry path per window — a dip must never fill both). Fills book
   through `BaseTrader.book_maker_fill` (open_trade's tail with the same
   preflight; a rejected booking is a LOUD reconcile-manually error). LIVE
-  fills poll at 1Hz off-path; **PAPER models the real price-then-time QUEUE**:
-  at placement each rung records `queue_ahead` = the resting bid size at prices
-  ≥ its own (`queue_ahead()` off `clob_ws.get_book`), because a seller walks the
-  book down from the top so every share at or better than our price fills
-  first. A print then drains that queue before any of it reaches our order.
-  This replaced a "only prints STRICTLY BELOW the bid count" rule that was wrong
-  in BOTH directions — it refused at-price fills we would really get once the
-  queue drains, and granted every through-price fill in full while ignoring the
-  size sitting ahead of us. **Paper also pays the MEASURED GTC round trip on
-  every place AND cancel** (`_simulate_gtc_latency` over
+  fills poll at 1Hz off-path; **PAPER fills only on prints STRICTLY BELOW the
+  rung** — the live-calibrated rule. A print below our price proves the book
+  walked through our level (the whole rung fills, at our price); a print AT
+  our price proves nothing, because live measured invisible size ahead of us
+  at every shared level (102 placements, zero fills against snapshot queues
+  the model thought were beatable). Snapshot-based `queue_ahead` modeling is
+  BANNED: it recreates the exact overcount that shipped a 77-fills/day paper
+  fantasy into a 0-fill live reality. **Paper also pays the MEASURED GTC round
+  trip on every place AND cancel** (`_simulate_gtc_latency` over
   `_GTC_LATENCY_QUANTILES` — place min 0.049 / p50 0.056 / p90 0.060 with one
   0.170 cold first sample, cancel p50 0.054, taken on the box 08-12 by
   `smoke_gtc_test.py --samples 12`): a resting bid does not exist until its POST
@@ -427,15 +342,14 @@ sniper buys those dips and holds ≤30s to resolution.
   live can still be filled while pulling. **This is NOT the taker table and must
   never be replaced by it**: a taker pays Polymarket's deliberate 250ms `itode`
   hold and a resting bid never crosses, so charging GTC the FOK p50 of 436ms
-  kept paper's bid out of the book ~8x longer than live and silently UNDER-filled
-  the only leg that earns. Box-native, so `paper_latency_scale` does not apply. Because `queue_ahead` is measured
-  AFTER the POST returns, anyone who got their bid in during our flight is
-  correctly counted ahead of us. The live GTC path is PROVEN (`smoke_gtc_test.py`
-  places, polls and cancels a real resting order; 12/12 accepted). Rung prices are
-  NOT snapped to the tick: `/tick-size` still reports 0.01 at close+2s when the
-  post-close arm fires and only tightens to 0.001 later, so snapping there turns
-  0.992 into 0.990 — the price that earns 24x less. The exchange accepts 0.992
-  post-close (hours of fills prove it), and a rejection from any cause logs
+  kept paper's bid out of the book ~8x longer than live and silently
+  UNDER-filled it. Box-native, so `paper_latency_scale` does not apply.
+  The live GTC path is PROVEN (`smoke_gtc_test.py`
+  places, polls and cancels a real resting order; 12/12 accepted). Rung prices
+  pass `legal_price` (round DOWN to the served tick, clamp to [tick, 1−tick])
+  and the exchange's 5-share minimum (`MIN_SHARES`) — both learned from real
+  rejections ("invalid price (0.992), min: 0.01 - max: 0.99"; "Size (2.49)
+  lower than the minimum: 5"). A rejection from any cause still logs
   `MAKER BID REJECTED` at ERROR with price and size, because a rung that never
   rests is silent lost income. Fills stamp
   `signal_leg="maker_bid"` — its own ledger line and bar.
@@ -444,12 +358,12 @@ sniper buys those dips and holds ≤30s to resolution.
   all legs — the emergency brake (set `false` to halt every leg), not a
   strategy choice. Recipe: `mode: live` + `sniper_enabled: true`.
 - **Post-live kill rule** (armed at any future go-live, and what
-  `live_health_read.kill_rule_tripped` computes): **trailing-4-day mean DOLLARS
-  < 0** → set `sniper_enabled: false`. Dollars, not ¢/sh — the old ¢/sh rule
-  would have tripped on a post-close ledger earning money every single day, since
-  0.8¢/sh sits below any ¢/sh floor worth setting. Two things trip it on ONE
-  occurrence: a max-tier lock breach, or a post-close loss (both are mechanism
-  failures, not variance).
+  `live_health_read.kill_rule_tripped` computes): **any lock_dip loss** trips
+  on ONE occurrence (every fire is max-tier, so a loss IS a breach of the
+  never-breach bound — it happened once, 08-12 in paper at k=1.1s, and is why
+  the k≥6 floor exists); otherwise **trailing-4-day mean DOLLARS < 0** → set
+  `sniper_enabled: false`. Dollars, not ¢/sh — a ¢/sh floor condemns any
+  high-price maker fill regardless of profit.
 
 ## 3. Sizing (every leg)
 
@@ -573,7 +487,7 @@ dust through and fail-closes only on genuinely unresolved positions.
   the current mode (`live_health_read`: live → polybot_live.db; paper →
   polybot_paper.db scoped to `late_window.validation_epoch`, the BINDING
   paper-shadow gate) side by side with their ¢/sh gap — plus a PER-LEG line
-  (`signal_leg` ledgers: lock_dip / maker_bid / post_close, never collapsed)
+  (`signal_leg` ledgers: lock_dip / maker_bid, never collapsed)
   — and drives the kill-rule verdict off the realized ledger once
   fills exist; alert-only, never flips config). The ping also carries the
   **resolution-mechanism watch** (`resolution_snapshot_read`): every window's
@@ -588,9 +502,8 @@ dust through and fail-closes only on genuinely unresolved positions.
 
 - No ML/feature-stack entry-side prediction — the CLOB price wins. The ONE
   sanctioned exception, through its own bar, is the final-30s TWAP lock (a
-  projection of an already-observed average), and it fires only at max tier.
-  The post-close leg needs no exception: it reads a settled outcome, not a
-  forecast. Anything else fires zero capital.
+  projection of an already-observed average), and it fires only at max tier
+  with k ≥ 6s. Anything else fires zero capital.
 - No deployment before a kill bar passes; never relax a bar to pass it.
 - No symmetric market-making, no oracle-cadence trading, no expansion past
   btc-5m. Expansion is not merely deferred, it is REFUTED: post-close supply

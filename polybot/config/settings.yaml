@@ -1,6 +1,8 @@
-mode: live    # LIVE PROBE at post_close_bankroll_frac 0.10 — a MEASUREMENT, not
-              # the §2 deploy (that still needs 6 clean days / 100 fills). It
-              # exists to measure the one thing paper cannot: real queue loss.
+mode: paper   # The 08-13 live probe answered its question: 102 post-close
+              # placements, ZERO fills — the 0.99 queue is a ~290k-share wall
+              # that lands at close+0-2s, and 0.999 carries 61k-237k after the
+              # tick flips. Post-close is refuted at every price. Back to paper
+              # to validate the surviving leg (lock-dip, k >= 6s) from scratch.
 
 # =============================================================================
 #  SECTION 1: MONEY / RISK - how much to bet and when to stop
@@ -59,21 +61,15 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-13T03:25:00+00:00"  # LIVE PROBE starts here. Set
-                               # AFTER the boot that carries it by more than the
-                               # ~3.4min entry-to-exit gap, because the gate
-                               # filters on EXIT time — an earlier entry
-                               # resolving later would otherwise be counted.
-                               # Paper now requires the same size to trade
-                               # through a rung that live would (queue_ahead),
-                               # so a paper fill means something different from
-                               # every fill before this instant — as did the
-                               # 0.992 rungs / 0.30 sizing / max-tier-only
-                               # deploy at 04:16Z. The bar scores only the code
-                               # being validated; never average across a change.
-                               # The nightly health job scores only the current mode's fills
-                               # at/after this instant in BOTH modes (earlier fills ran the
-                               # snapshot-era signal). Reset when a new validation epoch starts.
+  validation_epoch: "2026-08-13T17:30:00+00:00"  # k>=6 lock-dip validation
+                               # starts here. Set AFTER the boot that carries it
+                               # by more than the ~3.4min entry-to-exit gap,
+                               # because the gate filters on EXIT time — an
+                               # earlier entry resolving later would otherwise
+                               # be counted. The bar scores only the code being
+                               # validated; never average across a change. The
+                               # nightly health job scores only the current
+                               # mode's fills at/after this instant.
   # Refuse to fire on the p99.5 tier — only the NEVER-BREACHED max tier deploys
   # capital. p99.5 has now breached three times; on 08-11 13:49 a $21.90
   # displacement at k=19s carried a real projection error of $24.83, which still
@@ -83,8 +79,13 @@ late_window:
   require_max_tier: true
   twap_zone_s: 30.0             # decision zone = the resolving 30s averaging window; the
                                 # projection is undefined earlier (never raise above 30)
-  twap_k_min_s: 0.8             # no fires with less time than the FOK round-trip (~0.4s) plus
-                                # margin — a fill that can't land before the close is a coin toss
+  twap_k_min_s: 6.0             # NO LOW-K FIRES. Below ~6s the margin table's knots collapse to
+                                # $0.70-$4 — bounds 564 windows cannot pin. Both realized low-k
+                                # fires ran errors ABOVE the claimed max ($0.73 vs $0.70 at k=1.1,
+                                # a max-tier BREACH that bought a $0 token at 0.83; $2.00 vs $1.69
+                                # at k=2.6, a win only because the final gap of $1.31 broke our
+                                # way). At k >= 6 the knots are $14+, and 889 locked windows over
+                                # 7 TWAP-era days show zero breaches.
   sniper_min_edge: 0.04         # edge floor AND the ask cap in one knob: fire only when
                                 # tier_prob − ask ≥ this (max-tier 0.999 → ask ≤ ~0.96;
                                 # p99.5-tier 0.995 → ask ≤ ~0.955). Also the net-edge /
@@ -139,89 +140,13 @@ maker:
     - [0.90, 0.60, 1.0]
     - [0.60, 0.40, 1.0]
   maker_k_place_max: 25.0       # place once locked with at most this many s left
-  maker_k_place_min: 3.0        # too late to bother resting under this
-  maker_k_cancel_s: 1.0         # pull all rungs before the close (post_close off)
-  # POST-CLOSE CERTAINTY PHASE. The market keeps accepting orders for minutes
-  # after the close — verified live at close+143s, `acceptingOrders=True` on both
-  # Gamma and the CLOB, with the winner showing 101 bid levels and ZERO asks.
-  # Measured over 814 windows / 4.29M trades: post-close is the ONLY part of the
-  # window where makers win on every single day (takers lose it 5/5). The reason
-  # is mechanical — the outcome is settled fact while sellers who haven't read
-  # the result yet dump the winner, and nothing can be lifted because the winner
-  # has no asks. So we rest and let them come.
-  #
-  # This phase does NOT use the projection. It uses the two official TWAP
-  # boundary captures: final >= strike (tie -> Up) is the exact rule Polymarket
-  # resolves on. Both must be captured AND trusted or the rungs are pulled —
-  # 5-14 boundaries/day never arrive, and a bid resting on a $0 token is this
-  # leg's only unbounded loss. Every tick also re-checks that the side we are
-  # resting on is the side that actually won.
-  post_close_enabled: true
-  # Measured 08-11 over 150 windows / 1,364 post-close sales of the winner:
-  # $475/window of supply, 149/150 windows had some, and the print price is
-  # 0.990 from p05 all the way to p50, with 1,115 of 1,364 inside the first 60s.
-  # 90s, NOT the 300s where trades finally stop: of $589 profit-if-all, $560 is
-  # at <= 0.99, while the 60-300s tail prints at median 0.999 (0.1c/share). A
-  # 300s rest would also hold the single ladder slot straight through the next
-  # window's k in [3,25]s placement point and suppress the pre-close leg.
-  post_close_s: 90.0             # keep resting this long past the close
-  # Post-close budget as a fraction of BANKROLL — used by BOTH the standalone
-  # arm and the ladder-promoted one. A settled outcome is not a Kelly bet, and
-  # inheriting post_close_budget_frac of the ladder's fractional-Kelly budget
-  # made every fill ~$2.15: 71 perfect wins in a day earned $0.80.
-  # Capital recycles in ~2 min (book -> resolve) against 5-min windows with one
-  # ladder slot, and Auto-Redeem is ON, so one full-size position per window is
-  # sustainable.
-  #
-  # Size does NOT threaten the fill rate. Measured per-window supply below 0.992
-  # over 150 windows: p25 24.6 sh, p50 151.5 sh, p75 377 sh — median depth is 5x
-  # a 29-share order, and partial fills book as one blended position, so there is
-  # no cliff, only a diminishing curve. EXPECTED shares filled per window:
-  #     $2.15 -> 1.57 | $28.79 -> 17.44 | $99 -> 50.5 | $298 -> 116.9
-  #
-  # The binding limit is SINGLE-EVENT SURVIVABILITY, not supply and not the
-  # circuit breaker. The breaker only ever sees bankroll at resolution
-  # (update_bankroll is called from the two resolution handlers with
-  # bankroll_after), so an open position's cash dip never reaches it; and the
-  # cash figure that does feed sizing is restored well before the next window
-  # arms — post-close books at close+90s, resolves ~2 min later, and the next
-  # ladder arms around close+275s.
-  #
-  # What remains is the one loss mode: certain_winner being wrong would buy a
-  # $0 token for the whole rung. It has never happened (both boundary captures
-  # verified bit-exact, re-checked every tick, fails closed), but it must stay
-  # survivable. At 0.30 the top rung is ~25% of bankroll — one failure is a bad
-  # day, not the end. Expected ~50 shares filled/window, ~$120/day at $411.
-  # post_close_budget_frac below is the fallback when no bankroll-sized budget
-  # reaches the manager.
-  # LIVE PROBE size. On a $149.78 wallet this is a ~$12.73 rung (~13 shares),
-  # ~8% of a median 151-share window — small enough that paper's counterfactual
-  # (which replays a tape our bid was never in) stays honest, so live and paper
-  # fill rates are comparable. Raise only on measured LIVE fills.
-  post_close_bankroll_frac: 0.10
-  # [price, share of the post-close budget]. Ranked by EV per DOLLAR per window
-  # = (shares per $1) x margin x P(fill), measured over 150 windows / 1,364
-  # post-close sales of the winner:
-  #     0.991 0.00666 | 0.993 0.00517 | 0.995 0.00369 | 0.90 0.00222
-  #     0.85  0.00235 | 0.95  0.00105 | 0.97  0.00082 | 0.999 0.00073
-  # Every one of the 945 buyable sales prints at 0.9900 or BELOW, so any bid
-  # strictly above 0.9900 captures the identical flow — 0.995 and 0.991 both
-  # fill in 73.3% of windows. Four ticks of margin were being paid for nothing.
-  # 0.992 (not 0.991) because the live book carries a competing bid at 0.9910;
-  # 0.992 clears it and the 0.990 crowd both. 0.97/0.95 are near-worthless and
-  # are gone. The 0.90 tail stays small: it fills 2% of windows but returns 10c
-  # a share when the panic goes deep.
-  # 0.99 is the MAX LEGAL BID while the tick is 0.01, which it still is at
-  # close+2s when this arms — the exchange rejects 0.992 outright
-  # ("invalid price, min: 0.01 - max: 0.99"). There is no price improvement to
-  # buy here; the game is TIME priority at the cap. Measured over 150 windows:
-  # 41,406 shares trade at 0.990 (worth $414 to whoever owns that bid) against
-  # 29,619 at 0.999 (worth $30) — 14x the money sits at the cap, and 230 of the
-  # earliest prints land in the first 5 seconds after the close.
-  post_close_ladder:
-    - [0.99, 0.85]
-    - [0.90, 0.15]
-  post_close_budget_frac: 0.40   # of the window's original ladder budget
+  maker_k_place_min: 6.0        # same low-k floor as the taker: below ~6s the
+                                # margin knots are bounds 564 windows cannot pin
+  maker_k_cancel_s: 1.0         # pull all rungs before the close
+  # POST-CLOSE: REMOVED — refuted by the 08-13 live probe (102 placements, zero
+  # fills). The 0.99 bid is a ~290k-share wall landing at close+0-2s; after the
+  # tick flips to 0.001 the 0.999 level carries 61k-237k. The whole post-close
+  # pie is ~$431/day of margin and its queues are owned. See CLAUDE.md §2.
 
 # =============================================================================
 #  SECTION 4: SCHEDULE

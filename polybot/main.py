@@ -884,16 +884,9 @@ async def _evaluate_signal_and_enter(
             # dip lands (leg 3). Placement is one POST ~20s before close, off
             # the FOK race path entirely.
             _mk = config.get("maker", {})
-            # Post-close budget rides BANKROLL, not the ladder's Kelly budget —
-            # a settled outcome is not a probabilistic bet. Same number for the
-            # ladder-promoted and standalone arms so the common path is not
-            # sized 47x smaller than the rare one.
-            _pcb = round(bankroll
-                         * float(_mk.get("post_close_bankroll_frac", 0.10))
-                         * (breaker.kelly_multiplier if breaker else 1.0), 2)
             if (_MAKER_MGR is not None and _proj is not None
                     and _snipe.action == "SKIP"
-                    and _mk.get("maker_k_place_min", 3.0) <= contract["seconds_remaining"]
+                    and _mk.get("maker_k_place_min", 6.0) <= contract["seconds_remaining"]
                         <= _mk.get("maker_k_place_max", 25.0)):
                 _mdisp = _proj - strike
                 _mside = "Up" if _mdisp >= 0 else "Down"
@@ -922,26 +915,7 @@ async def _evaluate_signal_and_enter(
                             # startup reconciliation + dust sweep key on these
                             "token_id_up": token_up,
                             "token_id_down": token_down,
-                        }, "strike_price": strike},
-                        pc_budget=_pcb)
-            # POST-CLOSE CERTAINTY, decoupled from the ladder. The outcome is
-            # settled fact in EVERY window, but the ladder only rests on the few
-            # that lock at max tier inside k [3,25]s — tying post-close to it
-            # threw away all but a handful of windows a day. Arming is safe on
-            # any window: certain_winner re-verifies both boundary captures at
-            # promotion and fails closed. Fills book as their own leg; a
-            # ladder-promoted post-close stays "maker_bid" because those fills
-            # blend with pre-close rungs into one position.
-            if (_MAKER_MGR is not None and _mk.get("post_close_enabled")):
-                _MAKER_MGR.arm_post_close(
-                    _w_ts, cid, contract.get("question", ""),
-                    token_up, token_down, _pcb,
-                    {"trade_context": {
-                        "signal_leg": "post_close",
-                        "strike_price": strike,
-                        "token_id_up": token_up,
-                        "token_id_down": token_down,
-                    }, "strike_price": strike})
+                        }, "strike_price": strike})
             if _snipe.action in ("LATE_SNIPE_YES", "LATE_SNIPE_NO"):
                 _snipe.action = "BUY_YES" if _snipe.action == "LATE_SNIPE_YES" else "BUY_NO"
                 signal = _snipe
@@ -2482,11 +2456,6 @@ async def main() -> None:
     _ALERT_MANAGER = alert_manager
     if _MAKER_MGR is not None:
         _MAKER_MGR.on_fill = _on_maker_fill
-        # Paper's fill model reads the real book to size the queue ahead of each
-        # rung, so a paper fill requires the same size to trade through that a
-        # live fill would.
-        if clob_ws is not None:
-            _MAKER_MGR.book_fn = clob_ws.get_book
         if market_scanner is not None:
             _MAKER_MGR.tick_fn = market_scanner.fetch_tick_size
 

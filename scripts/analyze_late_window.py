@@ -76,10 +76,11 @@ def live_health_read(db_path=None, since_iso=None):
     audited fill count. Every trade_history row is a sniper fire (base
     entries are always suppressed).
 
-    kill_rule_tripped: any post_close loss (certain_winner named the wrong side —
-    mechanism failure), OR trailing-4-day mean DOLLARS < 0 once >= 4 ET days;
-    None before that. Dollars, not c/sh: post-close buys a $1.00 payout at 0.992,
-    so 0.8c/sh is its ceiling and a c/sh threshold would condemn a working leg.
+    kill_rule_tripped: any lock_dip loss (every fire is max-tier, so a loss IS a
+    breach of the never-breach bound — mechanism failure, one is enough), OR
+    trailing-4-day mean DOLLARS < 0 once >= 4 ET days; None before that.
+    Maker-ladder rungs are priced for occasional loss (break-even = price paid)
+    and only feed the dollars rule.
     Alert-only — the caller never flips config (kill bars are operator authority)."""
     db = Path(db_path) if db_path else LIVE_DB
     if not db.exists():
@@ -139,10 +140,11 @@ def live_health_read(db_path=None, since_iso=None):
     usd_daily = [sum(p for _, _, p in v) for _, v in sorted(per_day.items())]
     usd_per_day = statistics.mean(usd_daily)
     trailing4_usd = statistics.mean(usd_daily[-4:]) if len(usd_daily) >= 4 else None
-    # A post-close loss means certain_winner named the wrong side — mechanism
-    # failure, not variance. One is enough to halt.
-    pc_losses = sum(1 for n, w in per_leg.get("post_close", []) if w == 0.0)
-    if pc_losses:
+    # A lock_dip loss means the max-tier lock named the wrong side — mechanism
+    # failure, not variance (it happened once, 08-12 at k=1.1s, and cost the
+    # whole stake). One is enough to halt.
+    breach_losses = sum(1 for n, w in per_leg.get("lock_dip", []) if w == 0.0)
+    if breach_losses:
         tripped = True
     elif len(usd_daily) < 4:
         tripped = None                                        # too few days to judge
@@ -162,7 +164,7 @@ def live_health_read(db_path=None, since_iso=None):
                 days_pos=sum(1 for d in daily if d > 0), series=series, day_detail=day_detail,
                 trailing4_mean=trailing4, trailing8_t=trailing8_t,
                 usd_per_day=usd_per_day, usd_p10=block_bootstrap_p10(usd_daily),
-                trailing4_usd=trailing4_usd, post_close_losses=pc_losses,
+                trailing4_usd=trailing4_usd, breach_losses=breach_losses,
                 kill_rule_tripped=tripped, legs=legs)
 
 
