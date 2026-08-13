@@ -211,8 +211,15 @@ maker:
   # 0.992 clears it and the 0.990 crowd both. 0.97/0.95 are near-worthless and
   # are gone. The 0.90 tail stays small: it fills 2% of windows but returns 10c
   # a share when the panic goes deep.
+  # 0.99 is the MAX LEGAL BID while the tick is 0.01, which it still is at
+  # close+2s when this arms — the exchange rejects 0.992 outright
+  # ("invalid price, min: 0.01 - max: 0.99"). There is no price improvement to
+  # buy here; the game is TIME priority at the cap. Measured over 150 windows:
+  # 41,406 shares trade at 0.990 (worth $414 to whoever owns that bid) against
+  # 29,619 at 0.999 (worth $30) — 14x the money sits at the cap, and 230 of the
+  # earliest prints land in the first 5 seconds after the close.
   post_close_ladder:
-    - [0.992, 0.85]
+    - [0.99, 0.85]
     - [0.90, 0.15]
   post_close_budget_frac: 0.40   # of the window's original ladder budget
 
