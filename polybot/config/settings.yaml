@@ -1,4 +1,6 @@
-mode: paper   # paper | live — paper until the TWAP-era bar passes (§2 CLAUDE.md)
+mode: live    # LIVE PROBE at post_close_bankroll_frac 0.10 — a MEASUREMENT, not
+              # the §2 deploy (that still needs 6 clean days / 100 fills). It
+              # exists to measure the one thing paper cannot: real queue loss.
 
 # =============================================================================
 #  SECTION 1: MONEY / RISK - how much to bet and when to stop
@@ -57,11 +59,10 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-12T17:50:00+00:00"  # queue-modelled fills + the
-                               # measured 55ms GTC round trip, resting 0.992.
-                               # Set AFTER the boot that carries them, by more
-                               # than the ~3.4min entry-to-exit gap, because the
-                               # gate filters on EXIT time — an earlier entry
+  validation_epoch: "2026-08-13T03:25:00+00:00"  # LIVE PROBE starts here. Set
+                               # AFTER the boot that carries it by more than the
+                               # ~3.4min entry-to-exit gap, because the gate
+                               # filters on EXIT time — an earlier entry
                                # resolving later would otherwise be counted.
                                # Paper now requires the same size to trade
                                # through a rung that live would (queue_ahead),
@@ -193,7 +194,11 @@ maker:
   # day, not the end. Expected ~50 shares filled/window, ~$120/day at $411.
   # post_close_budget_frac below is the fallback when no bankroll-sized budget
   # reaches the manager.
-  post_close_bankroll_frac: 0.30
+  # LIVE PROBE size. On a $149.78 wallet this is a ~$12.73 rung (~13 shares),
+  # ~8% of a median 151-share window — small enough that paper's counterfactual
+  # (which replays a tape our bid was never in) stays honest, so live and paper
+  # fill rates are comparable. Raise only on measured LIVE fills.
+  post_close_bankroll_frac: 0.10
   # [price, share of the post-close budget]. Ranked by EV per DOLLAR per window
   # = (shares per $1) x margin x P(fill), measured over 150 windows / 1,364
   # post-close sales of the winner:

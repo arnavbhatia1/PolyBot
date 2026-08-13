@@ -25,6 +25,13 @@ x BANKROLL, never with latency.
    never been breached in 583+ windows, while the thinner p99.5 tier has broken
    THREE times and one breach costs ~55 post-close wins.
 
+**LIVE PROBE since 2026-08-13 03:25Z** at `post_close_bankroll_frac` 0.10
+(~$12.73/rung, ~8% of a median window's supply) — a MEASUREMENT, not the §2
+deploy, which still needs 6 clean ET days and 100 fills. Paper replays a tape our
+bid was never in, so it cannot see a competitor outbidding a resting order; at 8%
+of the book that counterfactual stays honest and live-vs-paper fill rates are
+comparable. Scale only on measured LIVE fills.
+
 **PAPER SHADOW since 2026-08-07**: at 00:00 UTC that day Polymarket switched
 resolution from the terminal Chainlink snapshot to the official **30-second
 TWAP stream** (strike = the stream's value at the open, final = its value at
