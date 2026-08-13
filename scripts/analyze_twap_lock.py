@@ -51,7 +51,10 @@ ET = ZoneInfo("America/New_York")
 FEE_RATE = 0.07
 TWAP_SWITCH_TS = 1786060800       # 2026-08-07 00:00 UTC — never score earlier windows
 ZONE_S = 30.0
-K_MIN_S = 0.8
+K_MIN_S = 6.0     # mirrors late_window.twap_k_min_s — below this the margin
+                  # knots are unpinnable tail bounds (the one realized max-tier
+                  # breach was a k=1.1s fire); the replay must not fire where
+                  # the engine cannot
 DEFAULT_RTT = 0.45                # conservative decision->exchange leg for reachability
 FOK_PAD = 0.01                    # one tick — the live sniper_fok_slip
 
@@ -360,7 +363,7 @@ def ladder_recalibrate(days: int = 1, write: bool = False):
         lock_t = lock_side = None
         for rx, p in recs:
             k = close - rx
-            if k > 25 or k < 1:
+            if k > 25 or k < K_MIN_S:
                 continue
             avg = running_avg(recs, t0, rx)
             if avg is None:
