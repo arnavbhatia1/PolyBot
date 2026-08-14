@@ -837,7 +837,9 @@ async def _evaluate_signal_and_enter(
     if chainlink_feed is not None and chainlink_feed.twap_frozen():
         _record_skip("twap_frozen")
         _log_skip_once(cid, f"twapfrozen_{cid}",
-                       "SKIP: official TWAP stream stalled — resolution source untrustworthy")
+                       "GUARD: Polymarket's oracle relay froze mid-move — standing "
+                       "down until their feed resumes (our feeds are live; trading "
+                       "through their blackout is how a $0 token gets bought)")
         return None, last_eval_log_window
 
     global _current_window_id
