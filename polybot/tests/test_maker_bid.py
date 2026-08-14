@@ -56,7 +56,7 @@ class FakeChainlink:
         self.trusted = trusted
         self.window_ts = None
 
-    def projected_final_twap(self, close_ts, now=None):
+    def projected_final_twap(self, close_ts, now=None, bridged=False):
         return self.proj
 
     def _key(self, b):

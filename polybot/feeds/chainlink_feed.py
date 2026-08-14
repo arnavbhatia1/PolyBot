@@ -69,6 +69,14 @@ class ChainlinkFeed:
         # weights by arrival spacing (rx-clock ZOH fits it 4× tighter, median
         # $0.07 vs $0.30), and the sniper's frozen margins were measured on it.
         self._reports: deque[tuple[float, float]] = deque()
+        self._last_report_obs_ts: float = 0.0   # payload ts of the latest raw report
+        # Binance ring (payload-ts, price) from the RTDS `crypto_prices` topic —
+        # the crowd's feed, ~2.2s fresher than our Chainlink receipt (measured:
+        # the book reprices 0.33s after Binance, 2.5s before our oracle receipt;
+        # lead-lag fit on 4.65M recorded pairs bottoms at lag 2.0-2.5s). Used
+        # ONLY by the bridged projection (deep_proj); never a strike source.
+        self._binance: deque[tuple[float, float]] = deque()
+        self.on_spot = None    # micro-tape hook: every Binance report
         # Strike capture: the TWAP topic's first report AT/AFTER each boundary
         # (== served price_to_beat bit-exact; the raw stream's own boundary read
         # differs from it by $10+ — never use raw for the strike).
@@ -149,12 +157,40 @@ class ChainlinkFeed:
             return None
         return self.running_avg(end - window_s, end)
 
-    def projected_final_twap(self, close_ts: float, now: float | None = None) -> float | None:
+    def spot_bridge_delta(self) -> float:
+        """Binance movement SINCE the latest raw Chainlink report, on the
+        payload clock — the stale 1.6-1.8s tail our receipt hasn't seen yet.
+        Both feeds reference the same market instant in their payload ts, so
+        the venue basis cancels in the delta. 0.0 whenever the Binance ring is
+        cold, stale, or doesn't cover the anchor — the bridge fails to PLAIN,
+        never to a guess."""
+        if not self._binance or self._last_report_obs_ts <= 0:
+            return 0.0
+        newest_ts, newest_px = self._binance[-1]
+        if newest_ts <= self._last_report_obs_ts:
+            return 0.0
+        anchor = None
+        for ts, px in self._binance:
+            if ts <= self._last_report_obs_ts:
+                anchor = px
+            else:
+                break
+        if anchor is None:
+            return 0.0
+        return newest_px - anchor
+
+    def projected_final_twap(self, close_ts: float, now: float | None = None,
+                             bridged: bool = False) -> float | None:
         """The sniper's projection of the window's resolving 30s TWAP at time
         `now`: observed-average mass + spot carried over the unobserved tail,
         proj = w·A + (1−w)·spot,  w = observed fraction of [close−30, close].
         None outside the averaging zone, on a cold ring, or on a stale spot —
-        a None here must read as "cannot fire", never as 0."""
+        a None here must read as "cannot fire", never as 0.
+
+        bridged=True adds the Binance delta since the last raw report to the
+        spot term — de-lagging the sign by ~2s for the deep_proj ladder. The
+        taker NEVER uses it: its frozen margin tables were measured on the
+        plain projection."""
         t = now if now is not None else time.time()
         t0 = close_ts - 30.0
         if t <= t0 or t > close_ts:
@@ -165,7 +201,8 @@ class ChainlinkFeed:
         avg = self.running_avg(t0, t)
         if avg is None:
             return None
-        return w * avg + (1.0 - w) * self._price
+        spot = self._price + (self.spot_bridge_delta() if bridged else 0.0)
+        return w * avg + (1.0 - w) * spot
 
     def twap_frozen(self, now: float | None = None) -> bool:
         """True when the OFFICIAL TWAP stream has stopped moving while raw spot
@@ -346,6 +383,11 @@ class ChainlinkFeed:
                             # Exact filter format per docs (compact, lowercase).
                             {"topic": "crypto_prices_twap_thirty", "type": "update",
                              "filters": "{\"symbol\":\"btc/usd\"}"},
+                            # The crowd's feed: Binance spot relayed by RTDS,
+                            # ~2.2s fresher than our Chainlink receipt. Feeds
+                            # ONLY the bridged projection's delta (deep_proj).
+                            {"topic": "crypto_prices", "type": "update",
+                             "filters": "{\"symbol\":\"btcusdt\"}"},
                         ],
                     }))
                     # backoff resets only on real data, NOT on connect — a silent socket
@@ -360,7 +402,27 @@ class ChainlinkFeed:
                         try:
                             msg = _loads(raw)
                             payload = msg.get("payload", {})
-                            if payload.get("symbol", "") != "btc/usd":
+                            _sym = payload.get("symbol", "")
+                            if _sym == "btcusdt" and msg.get("topic", "") == "crypto_prices":
+                                # Binance spot: ring on the payload clock for the
+                                # bridge delta; never touches price/strike state.
+                                _bv = payload.get("value")
+                                _bts = payload.get("timestamp") or payload.get("ts")
+                                if _bv is not None and _bts is not None:
+                                    try:
+                                        _bts_s = self._epoch_seconds(float(_bts))
+                                        self._binance.append((_bts_s, float(_bv)))
+                                        while self._binance and self._binance[0][0] < _bts_s - 10.0:
+                                            self._binance.popleft()
+                                        if self.on_spot is not None:
+                                            try:
+                                                self.on_spot(_bts_s, float(_bv), None)
+                                            except Exception:
+                                                pass
+                                    except (ValueError, TypeError):
+                                        pass
+                                continue
+                            if _sym != "btc/usd":
                                 continue
                             value = payload.get("value")
                             if value is None:
@@ -405,6 +467,7 @@ class ChainlinkFeed:
                             backoff = RECONNECT_BASE_S      # healthy data — safe to reset
                             self.staleness.observe(now)
                             self._last_report_rx = now
+                            self._last_report_obs_ts = observed_ts
                             self._reports.append((now, self._price))
                             while self._reports and self._reports[0][0] < now - 45.0:
                                 self._reports.popleft()

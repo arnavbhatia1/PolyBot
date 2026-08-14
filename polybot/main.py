@@ -884,11 +884,17 @@ async def _evaluate_signal_and_enter(
             # dip lands (leg 3). Placement is one POST ~20s before close, off
             # the FOK race path entirely.
             _mk = config.get("maker", {})
-            if (_MAKER_MGR is not None and _proj is not None
+            # The ladder decides on the BRIDGED projection — Binance-delta
+            # de-lags the sign by ~2s. The taker's _proj above stays plain
+            # (its frozen margins were measured on it). Falls back to plain
+            # when the Binance ring is cold (delta 0).
+            _proj_fast = (chainlink_feed.projected_final_twap(
+                _w_ts + 300, bridged=True) if _w_ts > 0 else None)
+            if (_MAKER_MGR is not None and _proj_fast is not None
                     and _snipe.action == "SKIP"
                     and _mk.get("maker_k_place_min", 6.0) <= contract["seconds_remaining"]
                         <= _mk.get("maker_k_place_max", 25.0)):
-                _mdisp = _proj - strike
+                _mdisp = _proj_fast - strike
                 _mside = "Up" if _mdisp >= 0 else "Down"
                 # The projection SIGN picks the side; each rung's `need` (a
                 # fraction of the max-tier margin) decides whether the sign is
@@ -910,7 +916,11 @@ async def _evaluate_signal_and_enter(
                             "signal_leg": "deep_proj",
                             "strike_price": strike,
                             "seconds_remaining": contract["seconds_remaining"],
-                            "twap_proj": round(_proj, 2),
+                            "twap_proj": round(_proj_fast, 2),
+                            # plain projection stamped beside it — the nightly
+                            # A/B of what the Binance bridge actually changed
+                            "twap_proj_plain": (round(_proj, 2)
+                                                if _proj is not None else None),
                             "twap_disp": round(_mdisp, 2),
                             # startup reconciliation + dust sweep key on these
                             "token_id_up": token_up,
@@ -2468,6 +2478,7 @@ async def main() -> None:
     clob_ws.on_bba = micro_tape.on_bba
     chainlink_feed.on_report = micro_tape.on_cl_report
     chainlink_feed.on_twap = micro_tape.on_twap_report
+    chainlink_feed.on_spot = micro_tape.on_bz_tick
     window_recorder = WindowPathRecorder(
         db=db, clob_ws=clob_ws,
         chainlink_feed=chainlink_feed, market_scanner=market_scanner,

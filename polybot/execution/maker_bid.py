@@ -242,7 +242,7 @@ class MakerBidManager:
                 elif winner != a["side"]:
                     reason = "lock missed the winner"
         else:
-            proj = self.chainlink.projected_final_twap(close)
+            proj = self.chainlink.projected_final_twap(close, bridged=True)
             if proj is None:
                 # Fail CLOSED: a cold projection means the sign is
                 # unverifiable — resting orders must never sit blind.

@@ -324,6 +324,15 @@ sniper buys those dips and holds ≤30s to resolution.
   **The mechanism**: in the final seconds spot is mostly irrelevant to the
   resolution (the average is written) but it is all of how the book prices —
   so panic dumps the projection-favored side into deep resting bids.
+  **The ladder decides on the BRIDGED projection** (`bridged=True`):
+  spot_est = latest raw Chainlink + Binance's movement since that report's
+  payload ts (`spot_bridge_delta`, RTDS `crypto_prices` topic — the crowd's
+  feed, ~2.2s fresher than our oracle receipt; lead-lag fit on 4.65M recorded
+  pairs bottoms at 2.0-2.5s). The basis cancels in the delta, and every
+  failure mode collapses to the PLAIN projection. The TAKER never uses the
+  bridge — its frozen margin tables were measured on the plain projection.
+  Each placement stamps `twap_proj` (bridged) and `twap_proj_plain` for the
+  nightly A/B; micro-tape records the Binance stream as `"s"/src:"bz"`.
   **Rungs are [price, budget_frac, need]** where `need` = the fraction of the
   max-tier margin the displacement must clear at placement (the sign-quality
   floor). The geometry [0.80/0.65/0.50/0.35/0.20], all need 0.18, IS 1723's
@@ -573,7 +582,7 @@ scripts/
 |---|---|---|
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/tick-size` | Books, tape, executable prices |
 | Polymarket Gamma | `GET /events?slug=` (deprecated upstream; auto-fallback `GET /events/slug/{slug}` — `gamma_events_by_slug`) | Discovery + resolution + labels |
-| Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` (`crypto_prices_twap_thirty` + raw `crypto_prices_chainlink`) | Strike + resolution (TWAP topic); raw stream feeds the projection. Arrives ~1.63s behind its own payload ts |
+| Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` (`crypto_prices_twap_thirty` + raw `crypto_prices_chainlink` + Binance `crypto_prices`) | Strike + resolution (TWAP topic); raw stream feeds the projection (arrives ~1.63s behind its own payload ts); the Binance relay feeds ONLY the bridge delta |
 
 ## 10. Running + invariants
 

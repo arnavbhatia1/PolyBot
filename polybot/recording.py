@@ -573,6 +573,21 @@ class MicroTape:
         except Exception:
             pass
 
+    def on_bz_tick(self, payload_ts: float, price: float,
+                   _pub_ts: float | None = None) -> None:
+        """Wired as ChainlinkFeed.on_spot — the RTDS Binance relay. Recorded so
+        the bridge delta (the ~2s the crowd sees before our oracle receipt) is
+        replayable offline against the same tape."""
+        try:
+            now = time.time()
+            self._buf.append(json.dumps({
+                "k": "s", "src": "bz", "ts": round(payload_ts, 3),
+                "rx": round(now, 3), "p": price,
+            }))
+            self._maybe_flush(now)
+        except Exception:
+            pass
+
     def on_cl_report(self, payload_ts: float, price: float,
                      pub_ts: float | None = None) -> None:
         """Wired as ChainlinkFeed.on_report.

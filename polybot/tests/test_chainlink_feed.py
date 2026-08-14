@@ -398,3 +398,53 @@ class TestTwapFrozen:
         f.twap_official = 65017.4591        # a fresh value arrives
         f._twap_value_since = now
         assert f.twap_frozen() is False
+
+
+class TestSpotBridge:
+    """The Binance delta bridge: level from Chainlink, movement from Binance —
+    the basis cancels in the delta, and every failure mode collapses to 0.0
+    (plain projection), never to a guess."""
+
+    def _feed(self, cl_obs_ts, binance):
+        f = ChainlinkFeed()
+        f._last_report_obs_ts = cl_obs_ts
+        for ts, px in binance:
+            f._binance.append((ts, px))
+        return f
+
+    def test_delta_is_binance_movement_since_the_last_report(self):
+        f = self._feed(100.0, [(99.0, 64050.0), (100.0, 64057.0), (101.5, 64087.0)])
+        # anchor = binance at/before the report's payload ts (64057), newest 64087
+        assert f.spot_bridge_delta() == pytest.approx(30.0)
+
+    def test_basis_never_enters(self):
+        # Binance trades $57 above the Chainlink composite — irrelevant: only
+        # the DELTA crosses the bridge.
+        f = self._feed(100.0, [(100.0, 64057.0), (101.5, 64057.0)])
+        assert f.spot_bridge_delta() == pytest.approx(0.0)
+
+    def test_cold_ring_fails_to_plain(self):
+        assert self._feed(100.0, []).spot_bridge_delta() == 0.0
+
+    def test_no_anchor_coverage_fails_to_plain(self):
+        # every binance tick is NEWER than the report: no anchor -> no bridge
+        f = self._feed(100.0, [(101.0, 64060.0), (102.0, 64070.0)])
+        assert f.spot_bridge_delta() == 0.0
+
+    def test_binance_older_than_report_fails_to_plain(self):
+        f = self._feed(100.0, [(98.0, 64050.0), (99.0, 64051.0)])
+        assert f.spot_bridge_delta() == 0.0
+
+    def test_bridged_projection_moves_by_weighted_delta(self):
+        now = time.time()
+        close = now + 10.0          # k=10s -> w = 2/3
+        f = self._feed(now, [(now - 1.0, 64000.0), (now, 64000.0), (now + 0.5, 64030.0)])
+        f._price = 64000.0
+        f._last_update = now
+        for i in range(25):
+            f._reports.append((now - 24 + i, 64000.0))
+        plain = f.projected_final_twap(close, now=now)
+        fast = f.projected_final_twap(close, now=now, bridged=True)
+        assert plain == pytest.approx(64000.0)
+        # spot weight (1-w) = 1/3 at k=10 -> bridged shifts by 30 * 1/3 = 10
+        assert fast - plain == pytest.approx(10.0, abs=0.5)
