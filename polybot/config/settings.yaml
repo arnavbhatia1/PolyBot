@@ -1,8 +1,11 @@
-mode: paper   # The 08-13 live probe answered its question: 102 post-close
-              # placements, ZERO fills — the 0.99 queue is a ~290k-share wall
-              # that lands at close+0-2s, and 0.999 carries 61k-237k after the
-              # tick flips. Post-close is refuted at every price. Back to paper
-              # to validate the surviving leg (lock-dip, k >= 6s) from scratch.
+mode: live    # LIVE PROBE of deep_proj at the current wallet (~$150: max
+              # ~$22.50/window exposure, bounded) — live is the only place a
+              # real maker fill can be proven (the exchange has never filled
+              # one of ours) and the only queue oracle. Probe reads,
+              # pre-registered: expect ~5-9 filled windows/day at 65%+ window
+              # win; after ~2 days, <2 fills/day or <50% win on >=10 windows
+              # means STOP and investigate. Halts: any lock_dip loss;
+              # trailing-4-day dollars < 0; sniper_enabled is the brake.
 
 # =============================================================================
 #  SECTION 1: MONEY / RISK - how much to bet and when to stop
@@ -61,7 +64,7 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-14T17:30:00+00:00"  # deep_proj + k>=6 lock-dip
+  validation_epoch: "2026-08-14T18:30:00+00:00"  # deep_proj LIVE probe
                                # starts here. Set AFTER the boot that carries it
                                # by more than the ~3.4min entry-to-exit gap,
                                # because the gate filters on EXIT time — an

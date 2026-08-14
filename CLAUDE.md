@@ -30,10 +30,15 @@ that match its confidence.
    bought a $0 token, §2). At k ≥ 6 the knots are $14+ and 889 locked windows
    over 7 TWAP-era days show zero breaches.
 
-**PAPER (validation_epoch 2026-08-14T17:30Z)**: both legs are in validation —
-the bar (§2) needs its clean days and the nightly health job re-reads the
-realized shadow daily. **No real capital until it passes.** Gate-vetoed fires
-persist as leg-stamped ghosts.
+**LIVE PROBE (validation_epoch 2026-08-14T18:30Z)**: deep_proj runs live at
+the current wallet — max ~$22.50/window exposure (`maker_bankroll_frac` 0.15
+of ~$150), bounded and pre-registered: expect ~5-9 filled windows/day at 65%+
+window win; after ~2 days, under 2 fills/day or under 50% win on ≥10 windows
+means STOP and investigate. Live is the only queue oracle and the only place
+a real maker fill can be proven (the exchange has never filled one of ours).
+Halts: any lock_dip loss; trailing-4-day dollars < 0; `sniper_enabled` false
+is the brake. The nightly health job reads the realized ledger daily.
+Gate-vetoed fires persist as leg-stamped ghosts.
 
 **Resolution mechanism (since 2026-08-07 00:00 UTC)**: Polymarket resolves on
 the official **30-second TWAP stream** (strike = the stream's value at the
