@@ -1,7 +1,7 @@
 {
   "counts": {
-    "book_freshness_skew": 1733414,
-    "stale_prices": 3591773,
+    "book_freshness_skew": 1967477,
+    "stale_prices": 3598734,
     "model:Kelly too small: 1.0% < 1.0%": 84354,
     "model:Kelly too small: 0.9% < 1.0%": 163293,
     "model:Kelly too small: 0.8% < 1.0%": 156796,
@@ -67,7 +67,7 @@
     "model:No edge: best=-0.7% < floor=4.": 1370,
     "model:Kelly too small: 0.0% < 1.0%": 7392,
     "model:No edge: best=-0.6% < floor=4.": 1441,
-    "spread_too_wide": 4461,
+    "spread_too_wide": 4467,
     "model:No edge: best=-1.0% < floor=4.": 689,
     "loss_cut_whipsaw_blocked": 5383111,
     "model:Kelly too small: 0.6% < 1.0%": 126607,
@@ -75,7 +75,7 @@
     "sprt_side_mismatch": 1897,
     "regime:quiet": 1216,
     "model:No edge: best=-0.9% < floor=4.": 1388,
-    "stale_feed": 39126,
+    "stale_feed": 39626,
     "pre_submit_edge_drift": 6,
     "model:Kelly too small: 0.5% < 1.0%": 87195,
     "model:Kelly too small: 0.4% < 1.0%": 28956,
@@ -83,15 +83,16 @@
     "spread_unavailable": 11,
     "model:ATR gate: insufficient_data": 2404,
     "thin_clob_depth": 25,
-    "thin_book_depth": 1,
+    "thin_book_depth": 5,
     "model:sniper_only: base entry suppre": 412729,
-    "model:base entry suppressed \u2014 sniper": 6033424
+    "model:base entry suppressed \u2014 sniper": 6033424,
+    "twap_frozen": 676
   },
-  "days_accumulated": 75,
+  "days_accumulated": 78,
   "first_day": "20260528",
-  "last_day": "20260810",
-  "total_skips": 34397437,
-  "updated_at": "2026-08-11T04:03:27.536629+00:00",
+  "last_day": "20260813",
+  "total_skips": 34639647,
+  "updated_at": "2026-08-14T04:02:10.968108+00:00",
   "retired_gates": {
     "note": "Frozen pre-2026-06-11-gut residue: these counters accrued before the Phase 0 dead-code purge and have no live writer. Their totals are correct cumulative history (range starts first_day 20260528), NOT active gate behavior.",
     "keys": [

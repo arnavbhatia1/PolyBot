@@ -1,8 +1,6 @@
 {
-  "timestamp": "2026-08-11T04:09:57.112543+00:00",
-  "et_date": "20260811",
-  "counts": {
-    "stale_prices": 6
-  },
-  "total_skips": 6
+  "timestamp": "2026-08-14T04:02:11.005205+00:00",
+  "et_date": "20260814",
+  "counts": {},
+  "total_skips": 0
 }

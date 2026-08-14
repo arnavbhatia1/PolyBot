@@ -1,0 +1,31 @@
+{
+  "market_id": "btc-updown-5m-1786624500",
+  "side": "Up",
+  "gate_name": "thin_book_depth",
+  "signal_prob": 0.999,
+  "signal_edge": 0.089,
+  "seconds_remaining": 3.4,
+  "indicator_snapshot": {
+    "trade_context": {
+      "model_probability": 0.999,
+      "edge": 0.08899999999999997,
+      "market_price_up": 0.91,
+      "market_price_down": 0.1,
+      "strike_price": 63525.304771836396,
+      "seconds_remaining": 3.381107,
+      "entry_phase": "late_sniper",
+      "signal_leg": "lock_dip",
+      "twap_proj": 63528.62,
+      "twap_disp": 3.31,
+      "clob_depth_top5_up_usd": null,
+      "clob_depth_top5_down_usd": 1180.11,
+      "clob_book_age_s": null
+    }
+  },
+  "recorded_at": 1786624796.6192412,
+  "resolved": true,
+  "ghost_correct": true,
+  "ghost_gain_pct": 0.001,
+  "resolved_at": 1786625160.725101,
+  "timestamp": "2026-08-13T12:46:00.725115+00:00"
+}
