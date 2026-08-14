@@ -122,19 +122,22 @@ maker:
   #
   # Rungs: [price, budget_fraction, need] where `need` is the fraction of the
   # max-tier margin the displacement must clear AT PLACEMENT for that rung —
-  # the sign-quality (SNR) requirement. 0.90 demands the full never-breached
-  # margin (its break-even is 90%); the deep rungs only need the sign outside
-  # its own noise, because their PRICE is the margin of safety (a 0.40 fill
-  # breaks even at 40% against a measured 56-93% window win rate).
-  # Backtest (strictly-below fills, feed lag embedded, stale-feed windows
-  # vetoed): in-sample 08-06..10 +47.9c/sh EW over 3.5 win/day, OOS 08-11..14
-  # +11.9c/sh over 4.0/day — while the ANTI-side control loses 37-39c/sh at
-  # t -33/-35 on identical rules. The sign carries everything.
+  # the sign-quality (SNR) floor. The PRICE is each rung's margin of safety
+  # (break-even = price paid against a measured 65-97% window win rate).
+  # THE GEOMETRY IS 1723's OWN fill distribution (it avoids >0.87 — it LOSES
+  # 5.9c/sh at 0.95 — so there is no shallow rung). Backtest (strictly-below
+  # fills, feed lag embedded, stale-feed windows vetoed): in-sample 08-06..10
+  # +26.2c/sh EW over 9.2 win/day, t_day 4.46, 4/4 days; OOS 08-11..14
+  # +5.1c/sh over 5.0/day — while the ANTI-side control loses 46-49c/sh at
+  # t -42/-21 on identical rules. The sign carries everything; sim fills are
+  # capped at print size, which under-counts winners, so these are the
+  # pessimistic reads.
   maker_ladder:
-    - [0.90, 0.25, 1.0]
-    - [0.55, 0.25, 0.18]
-    - [0.40, 0.25, 0.18]
-    - [0.25, 0.25, 0.18]
+    - [0.80, 0.20, 0.18]
+    - [0.65, 0.20, 0.18]
+    - [0.50, 0.20, 0.18]
+    - [0.35, 0.20, 0.18]
+    - [0.20, 0.20, 0.18]
   maker_k_place_max: 25.0       # place with at most this many s left
   maker_k_place_min: 6.0        # low-k floor: below ~6s the margin knots are
                                 # bounds 564 windows cannot pin (placed rungs

@@ -1,10 +1,9 @@
 """MakerBidManager — the projection-side deep ladder (execution/maker_bid.py).
 
-Money-path invariants: one ladder at a time, per-rung sign-quality needs,
-noise-floor cancel (a sign inside its own error picks nothing), deep rungs
-survive a p99.5 weakening but nothing survives a flip, paper fills ONLY on
-strictly-below prints, post-close hold gated every tick on the
-boundary-verified winner, all fills book as ONE blended position.
+Money-path invariants: one ladder at a time, the sign-quality (SNR) floor
+gates placement and cancels everything once the sign is inside its own noise,
+paper fills ONLY on strictly-below prints, post-close hold gated every tick on
+the boundary-verified winner, all fills book as ONE blended position.
 """
 import asyncio
 import json
@@ -15,11 +14,12 @@ import pytest
 from polybot.execution import maker_bid as mb
 from polybot.execution.maker_bid import MakerBidManager
 
-CFG = {"maker_bid_enabled": True,
-       "maker_ladder": [[0.90, 0.25, 1.0], [0.55, 0.25, 0.18],
-                        [0.40, 0.25, 0.18], [0.25, 0.25, 0.18]],
+LADDER = [[0.80, 0.20, 0.18], [0.65, 0.20, 0.18], [0.50, 0.20, 0.18],
+          [0.35, 0.20, 0.18], [0.20, 0.20, 0.18]]
+CFG = {"maker_bid_enabled": True, "maker_ladder": LADDER,
        "maker_k_place_max": 25.0, "maker_k_place_min": 6.0,
        "maker_bankroll_frac": 0.15, "post_close_hold_s": 60.0}
+PRICES = [r[0] for r in LADDER]
 
 
 class FakeTrader:
@@ -85,25 +85,23 @@ def _place(mgr, window_ts, side="Up", budget=40.0, headroom=2.0):
          "strike_price": 64000.0}))
 
 
-def test_full_ladder_places_with_headroom(tmp_path, monkeypatch):
+def test_full_ladder_places(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr()
     w = time.time() - 285.0                      # k = 15s
     _place(mgr, w, budget=40.0, headroom=2.0)
     assert mgr.resting_on(w)
-    assert [p for _, p, _ in mgr.trader.placed] == [0.90, 0.55, 0.40, 0.25]
-    assert mgr.trader.placed[0][2] == pytest.approx(40.0 * 0.25 / 0.90, abs=0.01)
+    assert [p for _, p, _ in mgr.trader.placed] == PRICES
+    assert mgr.trader.placed[0][2] == pytest.approx(40.0 * 0.20 / 0.80, abs=0.01)
     _place(mgr, w)                               # second ladder is a no-op
-    assert len(mgr.trader.placed) == 4
+    assert len(mgr.trader.placed) == len(PRICES)
 
 
-def test_thin_sign_drops_the_certainty_rung_keeps_deep(tmp_path, monkeypatch):
-    """headroom 0.5 = half the max-tier margin: not enough for 0.90 (need 1.0),
-    plenty for the deep rungs (need 0.18) whose price is their safety."""
+def test_sign_below_every_need_places_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr()
-    _place(mgr, time.time() - 285.0, headroom=0.5)
-    assert [p for _, p, _ in mgr.trader.placed] == [0.55, 0.40, 0.25]
+    _place(mgr, time.time() - 285.0, headroom=0.1)   # < 0.18 for every rung
+    assert mgr.active is None
 
 
 def test_min_need_is_the_ladder_floor(tmp_path, monkeypatch):
@@ -125,14 +123,13 @@ def test_at_price_prints_never_fill(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr()
     _place(mgr, time.time() - 285.0, budget=40.0)
-    mgr.on_print("tokU", {"price": "0.55", "size": "500"})
+    mgr.on_print("tokU", {"price": "0.80", "size": "500"})   # AT top rung
+    assert all(r["filled"] == 0.0 for r in mgr.active["rungs"])
+    mgr.on_print("tokU", {"price": "0.55", "size": "1"})     # below 0.80, 0.65
     fills = {r["price"]: r["filled"] for r in mgr.active["rungs"]}
-    assert fills[0.90] > 0                # 0.55 is strictly below 0.90: swept
-    assert fills[0.55] == 0.0             # AT 0.55: the invisible queue ate it
-    mgr.on_print("tokU", {"price": "0.50", "size": "1"})     # below 0.55 only
-    fills = {r["price"]: r["filled"] for r in mgr.active["rungs"]}
-    assert fills[0.55] > 0 and fills[0.40] == 0.0 and fills[0.25] == 0.0
-    mgr.on_print("tokU", {"price": "0.20", "size": "1"})     # sweeps the rest
+    assert fills[0.80] > 0 and fills[0.65] > 0
+    assert fills[0.50] == 0.0 and fills[0.35] == 0.0 and fills[0.20] == 0.0
+    mgr.on_print("tokU", {"price": "0.15", "size": "1"})     # sweeps the rest
     assert all(r["filled"] == pytest.approx(r["shares"])
                for r in mgr.active["rungs"])
 
@@ -154,7 +151,7 @@ def test_rungs_below_the_exchange_min_size_are_skipped(tmp_path, monkeypatch):
     """LIVE rejected a 2.49-share rung: "Size (2.49) lower than the minimum: 5"."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr()
-    _place(mgr, time.time() - 285.0, budget=8.0)   # 0.90 rung -> 2.2 sh
+    _place(mgr, time.time() - 285.0, budget=8.0)     # 0.80 rung -> 2 sh
     assert all(s >= mb.MIN_SHARES for _, _, s in mgr.trader.placed)
 
 
@@ -179,7 +176,7 @@ def test_sign_inside_noise_cancels_everything(tmp_path, monkeypatch):
     _place(mgr, w, budget=40.0)
     asyncio.run(mgr.maintain())
     assert mgr.active is None
-    assert len(mgr.trader.cancelled) == 4
+    assert len(mgr.trader.cancelled) == len(PRICES)
 
 
 def test_projection_flip_cancels_everything(tmp_path, monkeypatch):
@@ -188,27 +185,26 @@ def test_projection_flip_cancels_everything(tmp_path, monkeypatch):
     w = time.time() - 285.0
     _place(mgr, w, budget=40.0)
     asyncio.run(mgr.maintain())
-    assert mgr.active is None and len(mgr.trader.cancelled) == 4
+    assert mgr.active is None and len(mgr.trader.cancelled) == len(PRICES)
 
 
-def test_weakened_lock_prunes_shallow_holds_deep_and_books_fills(tmp_path, monkeypatch):
-    """Between the noise floor and p99.5 the sign still picks the side: the
-    0.90 certainty rung pulls, the priced-in deep rungs stay for the wick."""
+def test_weakening_above_the_floor_holds_every_deep_rung(tmp_path, monkeypatch):
+    """Between the noise floor and p99.5 the sign still picks the side, and
+    every rung is deep (priced-in) — nothing pulls; the wick can come."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr(proj=64005.0)                 # signed +5: floor 3.6 < 5 < p995 14
     w = time.time() - 285.0
     _place(mgr, w, budget=40.0)
     asyncio.run(mgr.maintain())
     assert mgr.resting_on(w)
-    live = [r["price"] for r in mgr.active["rungs"] if not r.get("cancelled")]
-    assert live == [0.55, 0.40, 0.25]
-    mgr.on_print("tokU", {"price": 0.19, "size": 3.0})   # sweeps the deep rungs
+    assert mgr.trader.cancelled == []
+    mgr.on_print("tokU", {"price": 0.15, "size": 3.0})   # sweeps all rungs
     asyncio.run(mgr._retire("test"))
     assert len(mgr.trader.booked) == 1
-    sh = [round(40.0 * 0.25 / p, 2) for p in (0.55, 0.40, 0.25)]
+    sh = [round(40.0 * 0.20 / p, 2) for p in PRICES]
     assert mgr.trader.booked[0]["shares_gross"] == pytest.approx(sum(sh))
-    # a pruned rung accumulates nothing
-    assert mgr.active is None
+    blend = sum(s * p for s, p in zip(sh, PRICES)) / sum(sh)
+    assert mgr.trader.booked[0]["price"] == pytest.approx(blend, abs=1e-4)
 
 
 def test_projection_cold_cancels_everything(tmp_path, monkeypatch):
@@ -216,11 +212,11 @@ def test_projection_cold_cancels_everything(tmp_path, monkeypatch):
     mgr = _mgr(proj=None)
     _place(mgr, time.time() - 285.0)
     asyncio.run(mgr.maintain())
-    assert mgr.active is None and len(mgr.trader.cancelled) == 4
+    assert mgr.active is None and len(mgr.trader.cancelled) == len(PRICES)
     assert mgr.trader.booked == []
 
 
-def test_lock_held_keeps_resting(tmp_path, monkeypatch):
+def test_sign_held_keeps_resting(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr(proj=64200.0)
     w = time.time() - 285.0
@@ -238,7 +234,7 @@ def test_post_close_holds_while_winner_verified_equal(tmp_path, monkeypatch):
     w = time.time() - 301.0
     _place(mgr, w, side="Up")
     asyncio.run(mgr.maintain())
-    assert mgr.resting_on(w)                                  # still resting
+    assert mgr.resting_on(w)
     assert mgr.trader.cancelled == []
 
 
@@ -250,7 +246,7 @@ def test_post_close_pulls_when_the_side_missed(tmp_path, monkeypatch):
     _place(mgr, w, side="Up")
     asyncio.run(mgr.maintain())
     assert not mgr.resting_on(w)
-    assert len(mgr.trader.cancelled) == 4
+    assert len(mgr.trader.cancelled) == len(PRICES)
 
 
 def test_post_close_fails_closed_on_a_delivery_hole(tmp_path, monkeypatch):
@@ -263,8 +259,6 @@ def test_post_close_fails_closed_on_a_delivery_hole(tmp_path, monkeypatch):
 
 
 def test_post_close_waits_out_the_normal_report_lag(tmp_path, monkeypatch):
-    """The closing boundary lands ~1.7s late — unverified in the first seconds
-    is NORMAL and must not retire the ladder."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr(proj=64200.0, strike=64000.0, final=None)
     w = time.time() - 300.5
@@ -276,7 +270,7 @@ def test_post_close_waits_out_the_normal_report_lag(tmp_path, monkeypatch):
 def test_post_close_hold_expires(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr(proj=64200.0, strike=64000.0, final=64010.0)
-    w = time.time() - 301.0 - 60.0                            # past the hold
+    w = time.time() - 301.0 - 60.0
     _place(mgr, w, side="Up")
     asyncio.run(mgr.maintain())
     assert not mgr.resting_on(w)
@@ -295,12 +289,13 @@ def test_holding_tokens_tracks_the_active_ladder(tmp_path, monkeypatch):
 
 def test_nightly_file_moves_prices_only_and_clamps(tmp_path, monkeypatch):
     lp = tmp_path / "maker_ladder.json"
-    lp.write_text(json.dumps({"ladder": [[0.999, 0.9, 9.0], [0.94, 0.9, 9.0],
-                                          [0.10, 0.9, 9.0], [0.30, 0.9, 9.0]]}))
+    lp.write_text(json.dumps({"ladder": [[0.999, 0.9, 9.0], [0.70, 0.9, 9.0],
+                                          [0.10, 0.9, 9.0], [0.30, 0.9, 9.0],
+                                          [0.22, 0.9, 9.0]]}))
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", lp)
     mgr = _mgr()
     rungs = mgr.ladder()
     # Prices clamped to [0.15, 0.95]; fractions + needs stay the SEED's.
-    assert [r[0] for r in rungs] == [0.95, 0.94, 0.15, 0.30]
-    assert [r[1] for r in rungs] == [0.25, 0.25, 0.25, 0.25]
-    assert [r[2] for r in rungs] == [1.0, 0.18, 0.18, 0.18]
+    assert [r[0] for r in rungs] == [0.95, 0.70, 0.15, 0.30, 0.22]
+    assert [r[1] for r in rungs] == [0.20] * 5
+    assert [r[2] for r in rungs] == [0.18] * 5

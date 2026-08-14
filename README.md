@@ -23,7 +23,7 @@ on a window that resolved by $0.0007.
 **Deep-projection ladder — the earner.** Reverse-engineered from the market's
 best late maker (+$12.9k in 4.5 days): our projection's sign matches its side
 on 89% of its deep fills, and its edge vanishes where the projection
-disagrees. Deep GTC bids (0.90/0.55/0.40/0.25) rest on the projection-favored
+disagrees. Deep GTC bids (0.80/0.65/0.50/0.35/0.20 — its own fill distribution) rest on the projection-favored
 side in the final 25 seconds and hold through the close while the verified
 winner matches. Break-even equals the price paid, so rung losses are
 priced-in. Paper fills only count when the tape prints *strictly below* a

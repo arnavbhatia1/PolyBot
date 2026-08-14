@@ -18,11 +18,11 @@ that match its confidence.
    business.** Reverse-engineered 08-14 from the market's best late maker
    (+$12.9k/4.5d, 99% maker): our projection's SIGN matches its side on 89% of
    its deep fills, and its edge is ZERO where the projection disagrees. Rungs
-   0.90/0.55/0.40/0.25 rest on the projection-favored side (k place [6,25]s),
-   hold through the close gated on the boundary-verified winner, and are
-   filled by panic crossing the spread. The deep rungs' margin of safety is
-   the PRICE (break-even = price paid, measured window win 56-93%); only the
-   0.90 rung demands the never-breached max-tier margin.
+   0.80/0.65/0.50/0.35/0.20 — 1723's OWN fill distribution (it avoids >0.87,
+   losing 5.9¢/sh at 0.95) — rest on the projection-favored side (k place
+   [6,25]s), hold through the close gated on the boundary-verified winner,
+   and are filled by panic crossing the spread. The margin of safety is the
+   PRICE: break-even = price paid, against a measured 65-97% window win.
 2. **Lock-dip taker (§2)** — fires on the **max tier ONLY**
    (`require_max_tier`) at **k ≥ 6s ONLY** (`twap_k_min_s`): below ~6s the
    margin knots collapse to $0.70-$4 — bounds 564 windows cannot pin, and both
@@ -251,11 +251,11 @@ sniper buys those dips and holds ≤30s to resolution.
 
   | | lock-dip TAKER | deep_proj LADDER |
   |---|---|---|
-  | shape | rare fills at +10¢/sh | ~4 filled windows/day, 56-93% win |
+  | shape | rare fills at +10¢/sh | ~5-9 filled windows/day, 65-97% win |
   | clean ET days | ≥ 6 | ≥ 6 |
   | fills | ≥ 10 | ≥ 20 windows |
   | profit | EW net ≥ +2¢/sh | EW net ≥ +5¢/sh, `usd_per_day > 0` |
-  | expectation | — | backtest says +12..+48¢/sh; falling under +5¢ means paper broke from the backtest — investigate before extending |
+  | expectation | — | backtest says +5..+26¢/sh; falling under +5¢ means paper broke from the backtest — investigate before extending |
   | halt-on-sight | **any lock_dip loss** (every fire is max-tier, so a loss IS a breach) | none (rung losses are priced-in; dollars rule judges) |
 
   `live_health_read.kill_rule_tripped` computes: any lock_dip loss trips
@@ -321,23 +321,25 @@ sniper buys those dips and holds ≤30s to resolution.
   so panic dumps the projection-favored side into deep resting bids.
   **Rungs are [price, budget_frac, need]** where `need` = the fraction of the
   max-tier margin the displacement must clear at placement (the sign-quality
-  floor): 0.90 needs 1.0 (its break-even is 90% — only the never-breached
-  bound justifies it); 0.55/0.40/0.25 need 0.18 (≈ the sign outside its own
-  noise; their PRICE is their margin of safety). Placement k ∈ [6,25]s while
-  the taker SKIPs; rungs keep resting to the close and beyond. Cancel-all when
-  the projection goes cold, flips, or drops under the noise floor
-  (min_need × max-margin); the p99.5 weakening prunes only rungs ≥ 0.85
-  (`DEEP_HOLD_MAX_PX` — the wick that fills a deep rung IS the move that dips
-  the projection). **Post-close hold** (`post_close_hold_s` 60): rungs keep
+  floor). The geometry [0.80/0.65/0.50/0.35/0.20], all need 0.18, IS 1723's
+  own fill distribution — it avoids >0.87 (−5.9¢/sh at 0.95), so no shallow
+  rung exists; every rung's PRICE is its margin of safety. Placement
+  k ∈ [6,25]s while the taker SKIPs; rungs keep resting to the close and
+  beyond. Cancel-all when the projection goes cold, flips, or drops under the
+  noise floor (min_need × max-margin); rungs under `DEEP_HOLD_MAX_PX` 0.85
+  survive a p99.5 weakening (the wick that fills a deep rung IS the move that
+  dips the projection). **Post-close hold** (`post_close_hold_s` 60): rungs keep
   resting after the close ONLY while the boundary-verified winner
   (`certain_winner`, fails closed, re-checked every tick) equals our side —
   this is NOT the refuted 0.99-cap camp: deep levels carry ~55-100 sh/level
   (measured live 08-14), not 290k walls.
   **Backtest, strictly-below fills, feed lag embedded (receipt-clock
   trajectories vs exchange-clock prints), stale-feed windows vetoed**:
-  in-sample 08-06..10 **+47.9¢/sh EW, 3.5 win/day, 93% win**; out-of-sample
-  08-11..14 **+11.9¢/sh, 4.0/day, 56% win** — while the ANTI-side control
-  loses 37-39¢/sh at t −33/−35 on identical rules in BOTH samples. The sign
+  in-sample 08-06..10 **+26.2¢/sh EW, 9.2 win/day, 97% win, t_day 4.46,
+  4/4 days**; out-of-sample 08-11..14 **+5.1¢/sh, 5.0/day, 65% win** — while
+  the ANTI-side control loses 46-49¢/sh at t −42/−21 on identical rules in
+  BOTH samples. Sim fills are capped at print size (under-counts winners) —
+  these are the pessimistic reads. The sign
   carries everything. Sizing: `maker_bankroll_frac` (0.15) of bankroll split
   by the frozen fractions — deep bids are not a Kelly bet on a certainty
   claim. Fills book through `BaseTrader.book_maker_fill` as ONE blended

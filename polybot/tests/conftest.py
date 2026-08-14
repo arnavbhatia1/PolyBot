@@ -57,8 +57,9 @@ SAMPLE_CONFIG = {
     },
     "maker": {
         "maker_bid_enabled": False,
-        "maker_ladder": [[0.90, 0.25, 1.0], [0.55, 0.25, 0.18],
-                         [0.40, 0.25, 0.18], [0.25, 0.25, 0.18]],
+        "maker_ladder": [[0.80, 0.20, 0.18], [0.65, 0.20, 0.18],
+                         [0.50, 0.20, 0.18], [0.35, 0.20, 0.18],
+                         [0.20, 0.20, 0.18]],
         "maker_k_place_max": 25.0,
         "maker_k_place_min": 6.0,
         "maker_bankroll_frac": 0.15,
