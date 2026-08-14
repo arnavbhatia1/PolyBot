@@ -1,16 +1,24 @@
-"""Lock-informed maker LADDER (signal_leg="maker_bid") — the resting twin of
-the lock-dip taker.
+"""Projection-side deep maker LADDER (signal_leg="deep_proj") — the 1723 mimic.
 
-Once the final-30s projection locks a side at the never-breached tier, a ladder
-of GTC bids rests on that side and holds to resolution. Break-even win rate for
-such a bid is the price paid, so deep rungs need 20-40% where shallow ones need
-92-95% — hence most of the budget sits deep, where a dollar also buys 3-5x the
-shares.
+In the final 30s the book prices off spot while the resolution is an average
+that is mostly already written. The ladder rests GTC bids on the
+projection-favored side at prices where being wrong is priced in (break-even
+win rate equals the price paid), and panic crossing the spread fills them.
+Verified against the market's best late maker (wallet 0x0a2c53bd…, +$12.9k in
+4.5 days): our projection's sign matches its side on 89% of its deep fills,
+and its edge is zero where the projection disagrees.
 
-Lifecycle, one ladder per window: place qualifying rungs at max-tier lock (deep
-rungs demand extra displacement headroom) → cancel everything when the lock
-weakens below p99.5, the projection goes cold, or the window runs out → book all
-accumulated fills as ONE blended position.
+Rungs carry per-rung sign-quality requirements (`need` = fraction of the
+max-tier margin at placement): the 0.90 rung demands the full never-breached
+margin, the deep rungs only need the sign outside its own noise — the price,
+not a tail bound, is their margin of safety.
+
+Lifecycle, one ladder per window: place when the projection clears the ladder's
+minimum need with k in [place_min, place_max] → cancel shallow rungs when the
+lock weakens below p99.5, cancel everything when the projection no longer
+clears the noise floor or goes cold → after the close, keep resting for
+post_close_hold_s ONLY while the boundary-verified winner equals our side →
+book all accumulated fills as ONE blended position.
 
 Paper fills are print-through: a rung fills only when the tape prints STRICTLY
 below its price — live proved that at any shared price level we are behind
@@ -30,7 +38,7 @@ import logging
 import time
 from typing import Any
 
-from polybot.core.signal_engine import TWAP_MARGIN_P995, twap_margin
+from polybot.core.signal_engine import TWAP_MARGIN_MAX, TWAP_MARGIN_P995, twap_margin
 from polybot.paths import MAKER_LADDER_PATH
 
 logger = logging.getLogger("polybot")
@@ -47,7 +55,12 @@ DEEP_HOLD_MAX_PX = 0.85         # rungs below this survive a transient lock
                                 # weakening; the wick that fills them IS the move
                                 # that dips the projection, so cancelling would
                                 # run away exactly when the trade appears. A
-                                # flipped or cold projection still kills all.
+                                # cold projection or one under the noise floor
+                                # still kills all.
+
+PC_VERIFY_GRACE_S = 5.0         # wait this long for the closing boundary report
+                                # (lands p50 1.71s / p99 2.9s after the boundary)
+                                # before failing closed post-close.
 
 
 class MakerBidManager:
@@ -184,6 +197,26 @@ class MakerBidManager:
 
     # -- lifecycle (every main-loop tick; cheap float math off the hot path) --
 
+    def min_need(self) -> float:
+        """The ladder's noise floor: the smallest per-rung `need` (fraction of
+        the max-tier margin) — below it the projection's sign is inside its own
+        error and picks nothing."""
+        return min((float(r[2]) for r in self.ladder()), default=1.0)
+
+    def certain_winner(self, window_ts: int) -> str | None:
+        """The window's SETTLED winner from the two official TWAP boundary
+        captures — or None if either is missing or untrusted. Fail closed: 5-14
+        boundaries/day never arrive, and a fabricated winner would keep a bid
+        resting on a token that pays $0."""
+        cl, close = self.chainlink, window_ts + 300
+        for b in (window_ts, close):
+            if not (cl.boundary_captured(b) and cl.strike_reliable(b)):
+                return None
+        strike, final = cl.get_strike(window_ts), cl.get_strike(close)
+        if strike is None or final is None:
+            return None
+        return "Up" if final >= strike else "Down"
+
     async def maintain(self) -> None:
         a = self.active
         if a is None:
@@ -192,21 +225,36 @@ class MakerBidManager:
         close = a["window_ts"] + 300
         k = close - now
         reason = None
-        if k <= self.cfg["maker_k_cancel_s"]:
-            reason = "window closing"
+        if now >= close:
+            # POST-CLOSE HOLD: 23% of the reference wallet's pnl lands just
+            # after the close, at deep prices where no queue walls exist. The
+            # projection is retired here — the boundary-verified winner rules,
+            # re-checked every tick, and anything unverified fails closed.
+            if now - close > float(self.cfg.get("post_close_hold_s", 0.0)):
+                reason = "post-close hold over"
+            else:
+                winner = self.certain_winner(a["window_ts"])
+                if winner is None:
+                    # The closing report lands ~1.7s late (p99 2.9s): "not yet"
+                    # is normal at first; a real delivery hole fails closed.
+                    if now - close > PC_VERIFY_GRACE_S:
+                        reason = "outcome unverified"
+                elif winner != a["side"]:
+                    reason = "lock missed the winner"
         else:
             proj = self.chainlink.projected_final_twap(close)
             if proj is None:
-                # Fail CLOSED: a cold projection means the lock is
+                # Fail CLOSED: a cold projection means the sign is
                 # unverifiable — resting orders must never sit blind.
                 reason = "projection cold"
             else:
                 disp = proj - a["snapshot"]["strike_price"]
                 signed = disp if a["side"] == "Up" else -disp
-                if signed <= 0.0:
-                    # Projection now points at the OTHER side — nothing is worth
-                    # holding, at any depth.
-                    reason = "projection flipped"
+                if signed < self.min_need() * twap_margin(TWAP_MARGIN_MAX, k):
+                    # Flipped, or inside the sign's own noise — either way the
+                    # side is no longer picked by anything. Nothing holds.
+                    reason = ("projection flipped" if signed <= 0.0
+                              else "sign inside noise")
                 elif signed < twap_margin(TWAP_MARGIN_P995, k):
                     # Weakened but still ours: shallow rungs pull, deep rungs stay.
                     if await self._prune_shallow(a):

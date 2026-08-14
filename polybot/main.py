@@ -890,24 +890,24 @@ async def _evaluate_signal_and_enter(
                         <= _mk.get("maker_k_place_max", 25.0)):
                 _mdisp = _proj - strike
                 _mside = "Up" if _mdisp >= 0 else "Down"
-                # A resting ladder lives through displacement decay, so it
-                # demands the NEVER-BREACHED tier (max-ever error), not p99.5;
-                # deeper rungs demand extra headroom (manager enforces).
+                # The projection SIGN picks the side; each rung's `need` (a
+                # fraction of the max-tier margin) decides whether the sign is
+                # far enough outside its own noise for that depth. The manager
+                # enforces per-rung needs; the gate here is the ladder's floor.
                 _mmargin = twap_margin(TWAP_MARGIN_MAX, contract["seconds_remaining"])
-                if abs(_mdisp) >= _mmargin:
-                    # Budget = Kelly at the ladder's mid rung, defended-edge
-                    # anchored like every leg; the manager splits it by the
-                    # frozen fractions.
-                    _mkelly = signal_engine._kelly(
-                        0.92 + lw_cfg["sniper_min_edge"], 0.92, fee_rate=fee_rate)
-                    _mbudget = round(bankroll * _mkelly
+                if _mmargin > 0 and abs(_mdisp) >= _MAKER_MGR.min_need() * _mmargin:
+                    # A deep resting bid's margin of safety is its PRICE, not a
+                    # tail bound — budget is a flat bankroll fraction, not
+                    # Kelly on a certainty claim.
+                    _mbudget = round(bankroll
+                                     * float(_mk.get("maker_bankroll_frac", 0.15))
                                      * (breaker.kelly_multiplier if breaker else 1.0), 2)
                     await _MAKER_MGR.consider_placement(
                         _w_ts, cid, contract.get("question", ""), _mside,
                         token_up if _mside == "Up" else token_down,
                         _mbudget, abs(_mdisp) / _mmargin,
                         {"trade_context": {
-                            "signal_leg": "maker_bid",
+                            "signal_leg": "deep_proj",
                             "strike_price": strike,
                             "seconds_remaining": contract["seconds_remaining"],
                             "twap_proj": round(_proj, 2),

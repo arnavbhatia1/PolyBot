@@ -61,7 +61,7 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-13T17:35:00+00:00"  # k>=6 lock-dip validation
+  validation_epoch: "2026-08-14T17:30:00+00:00"  # deep_proj + k>=6 lock-dip
                                # starts here. Set AFTER the boot that carries it
                                # by more than the ~3.4min entry-to-exit gap,
                                # because the gate filters on EXIT time — an
@@ -112,41 +112,43 @@ late_window:
 # =============================================================================
 maker:
   maker_bid_enabled: true
-  # Rungs: [price, budget_fraction, min_headroom_mult]. THIS is the source of
-  # truth — the nightly job only reports the trailing dip CDF and never
-  # rewrites these (a dip-frequency estimator drags the deep rungs shallow).
-  # Engine clamps any operator override to [0.15, 0.95]. The deepest rung arms
-  # only when |disp| ≥ 1.5× the max-tier margin — deep fills happen in violent
-  # windows where breach risk is conditionally elevated.
-  # Geometry measured 08-10 over 4 days of ladder-era tape: 0.95/0.94/0.92 books
-  # the same fill count as 0.96/0.92/0.87 at +0.4¢/sh, and fixes two defects —
-  # 0.96 sits outside the 4¢ edge floor (p99.5 cap is 0.955), and the 0.87 rung
-  # lived in the only band where a locked side has ever LOST (1 of 7 windows
-  # below 0.80, against a 4.3% break-even loss rate at a 0.92 fill).
-  # DEEP-WEIGHTED. Break-even win rate for a resting buy held to resolution is
-  # the price paid, so a 0.20 rung needs 20% while a 0.95 rung needs 95%. The
-  # market's best formable maker realizes +61c/sh at 0.09-0.21 and +41c/sh at
-  # 0.37 and LOSES 5.9c/sh at 0.95; its 124-of-814 windows is the rate a deep
-  # bid gets wicked, not a filter. Budget therefore sits mostly deep, where each
-  # dollar also buys 3-5x the shares. Shallow rungs stay small: they fill often
-  # but the margin over break-even is thin-to-negative.
-  # Measured 08-11 over 526 max-tier-locked windows (min locked-side ask from
-  # lock to close): 0.90 touched 2.09%, 0.60 touched 0.57%, and 0.35/0.20
-  # touched ZERO — while holding 65% of the budget and arming in only 50 of the
-  # 526 windows behind the 1.5x headroom rule. Budget now sits only where the
-  # ask actually travels. Weighted toward 0.90 because its 11 touches are real
-  # evidence and 0.60's 3 are not.
+  # THE DEEP-PROJECTION LADDER (signal_leg "deep_proj") — the 1723 mimic,
+  # reverse-engineered 08-14 from the market's best late maker (+$12.9k/4.5d,
+  # 99% maker, 124/814 windows): our projection's sign matches its side on 89%
+  # of its deep fills and its edge is ZERO where the projection disagrees
+  # (52.6% win). The book prices the final seconds off spot; the resolution is
+  # an average that is mostly already written; panic crossing the spread fills
+  # bids the book should never have left there.
+  #
+  # Rungs: [price, budget_fraction, need] where `need` is the fraction of the
+  # max-tier margin the displacement must clear AT PLACEMENT for that rung —
+  # the sign-quality (SNR) requirement. 0.90 demands the full never-breached
+  # margin (its break-even is 90%); the deep rungs only need the sign outside
+  # its own noise, because their PRICE is the margin of safety (a 0.40 fill
+  # breaks even at 40% against a measured 56-93% window win rate).
+  # Backtest (strictly-below fills, feed lag embedded, stale-feed windows
+  # vetoed): in-sample 08-06..10 +47.9c/sh EW over 3.5 win/day, OOS 08-11..14
+  # +11.9c/sh over 4.0/day — while the ANTI-side control loses 37-39c/sh at
+  # t -33/-35 on identical rules. The sign carries everything.
   maker_ladder:
-    - [0.90, 0.60, 1.0]
-    - [0.60, 0.40, 1.0]
-  maker_k_place_max: 25.0       # place once locked with at most this many s left
-  maker_k_place_min: 6.0        # same low-k floor as the taker: below ~6s the
-                                # margin knots are bounds 564 windows cannot pin
-  maker_k_cancel_s: 1.0         # pull all rungs before the close
-  # POST-CLOSE: REMOVED — refuted by the 08-13 live probe (102 placements, zero
-  # fills). The 0.99 bid is a ~290k-share wall landing at close+0-2s; after the
-  # tick flips to 0.001 the 0.999 level carries 61k-237k. The whole post-close
-  # pie is ~$431/day of margin and its queues are owned. See CLAUDE.md §2.
+    - [0.90, 0.25, 1.0]
+    - [0.55, 0.25, 0.18]
+    - [0.40, 0.25, 0.18]
+    - [0.25, 0.25, 0.18]
+  maker_k_place_max: 25.0       # place with at most this many s left
+  maker_k_place_min: 6.0        # low-k floor: below ~6s the margin knots are
+                                # bounds 564 windows cannot pin (placed rungs
+                                # keep resting below it; only placement stops)
+  # Deep bids are NOT a Kelly bet on a certainty claim — the budget is a flat
+  # bankroll fraction split across rungs. One ladder at a time, capital back
+  # in ~2 min at resolution.
+  maker_bankroll_frac: 0.15
+  # After the close, keep resting ONLY while the boundary-verified winner
+  # equals our side (fails closed on delivery holes) — 23% of the reference
+  # wallet's pnl lands in this tail at deep prices where no queue walls exist.
+  # This is NOT the refuted 0.99 cap camp (102 live placements, 0 fills against
+  # a ~290k wall): deep levels carry ~55-100 sh/level, measured live 08-14.
+  post_close_hold_s: 60.0
 
 # =============================================================================
 #  SECTION 4: SCHEDULE

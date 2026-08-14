@@ -20,11 +20,15 @@ the winner cheap, we take it. Fires only on the **max tier** and only with
 564 windows cannot pin, and the one realized max-tier breach was a k=1.1s fire
 on a window that resolved by $0.0007.
 
-**Lock-informed maker ladder.** When a window locks but no dip is trading,
-deep GTC bids (0.90/0.60) rest on the locked side for the wick. Break-even
-equals the price paid, so rung losses are priced-in. Paper fills only count
-when the tape prints *strictly below* a rung — a live probe proved that at any
-shared price level we sit behind size no book snapshot shows.
+**Deep-projection ladder — the earner.** Reverse-engineered from the market's
+best late maker (+$12.9k in 4.5 days): our projection's sign matches its side
+on 89% of its deep fills, and its edge vanishes where the projection
+disagrees. Deep GTC bids (0.90/0.55/0.40/0.25) rest on the projection-favored
+side in the final 25 seconds and hold through the close while the verified
+winner matches. Break-even equals the price paid, so rung losses are
+priced-in. Paper fills only count when the tape prints *strictly below* a
+rung — a live probe proved that at any shared price level we sit behind size
+no book snapshot shows.
 
 What the bot deliberately does *not* do: predict spot, race anyone, quote
 two-sided market-making, rest bids at the post-close cap (102 live placements,

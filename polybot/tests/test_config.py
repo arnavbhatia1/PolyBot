@@ -165,7 +165,7 @@ class TestValidateConfigOutOfRange:
     @pytest.mark.parametrize("key, bad_value", [
         ("math.kelly_fraction", 0.50),                       # float upper
         ("late_window.sniper_min_edge", 0.001),              # float lower
-        ("maker.maker_k_cancel_s", 10.0),                    # float upper
+        ("maker.post_close_hold_s", 500.0),                  # float upper
         ("circuit_breaker.losses_to_reduce", 0),             # positive int
         ("execution.initial_bankroll", -100),                # must be > 0
         ("execution.max_bankroll_deployed", 1.1),            # percent upper
