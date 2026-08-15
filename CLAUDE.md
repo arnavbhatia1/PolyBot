@@ -512,7 +512,11 @@ dust through and fail-closes only on genuinely unresolved positions.
   paper-shadow gate) side by side with their ¢/sh gap — plus a PER-LEG line
   (`signal_leg` ledgers: lock_dip / deep_proj, never collapsed)
   — and drives the kill-rule verdict off the realized ledger once
-  fills exist; alert-only, never flips config). The ping also carries the
+  fills exist; alert-only, never flips config). The ping carries a **regime
+  line** (trailing-day |final−strike| p25/p50/p75 + photo-finish share from
+  `resolution_snapshot_read`; p50 < $8 or >15% photo-finishes = HOSTILE for
+  deep_proj — measured 08-14..15: the massacre regime ran p50 $6.3 / 24%
+  against a market-normal $12.3) and the
   **resolution-mechanism watch** (`resolution_snapshot_read`): every window's
   official final_price must equal the NEXT window's price_to_beat bit-exact
   (both are the TWAP stream's value at the same boundary instant; 17/17 on

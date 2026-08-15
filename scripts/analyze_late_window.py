@@ -204,9 +204,12 @@ def resolution_snapshot_read(db_path=None, hours: float = 26.0):
     checked = matched = 0
     worst = 0.0
     mism = []
-    for ts, (fp, _ptb, lab) in sorted(by_ts.items()):
+    gaps = []
+    for ts, (fp, ptb, lab) in sorted(by_ts.items()):
         if ts < TWAP_SWITCH_TS:
             continue   # pre-cutover windows chain on the OLD rule — never compare
+        if fp is not None and ptb is not None and (lab or 0) >= cutoff:
+            gaps.append(abs(fp - ptb))
         nxt = by_ts.get(ts + 300)
         if nxt is None or fp is None or nxt[1] is None or (lab or 0) < cutoff:
             continue
@@ -219,7 +222,18 @@ def resolution_snapshot_read(db_path=None, hours: float = 26.0):
             if len(mism) < 3:
                 mism.append(dict(window_ts=ts, final=fp, next_ptb=nxt[1],
                                  diff=round(d, 2)))
+    # Regime readout: |final - strike| distribution over the trailing day.
+    # deep_proj's weather. Market-normal p50 is ~$12; the 08-14..15 massacre ran
+    # ~$6 with 24% of windows inside $2 (photo-finishes, which pay nobody).
+    gaps.sort()
+    regime = None
+    if len(gaps) >= 24:
+        q = lambda p: round(gaps[int(p * (len(gaps) - 1))], 2)
+        regime = dict(n=len(gaps), gap_p25=q(0.25), gap_p50=q(0.50),
+                      gap_p75=q(0.75),
+                      photo_finish_pct=round(
+                          100.0 * sum(1 for g in gaps if g < 2.0) / len(gaps), 1))
     return dict(checked=checked, matched=matched, worst=round(worst, 2),
-                mismatches=mism)
+                mismatches=mism, regime=regime)
 
 

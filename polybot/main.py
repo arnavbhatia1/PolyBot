@@ -2610,6 +2610,19 @@ async def main() -> None:
                      f"(win {v['win_rate']:.0%})" for name, v in legs.items()]
             return ("Per-leg: " + " · ".join(parts) + "\n") if parts else ""
 
+        def _regime_line() -> str:
+            r = (twap or {}).get("regime")
+            if not r:
+                return ""
+            # deep_proj's weather: it earns on wide gaps and bleeds on
+            # photo-finishes. Market-normal p50 ~$12; the 08-14..15 massacre ~$6.
+            verdict = ("HOSTILE — photo-finish chop, deep_proj earns nothing here"
+                       if r["gap_p50"] < 8 or r["photo_finish_pct"] > 15
+                       else "PAYING — whipsaw weather, deep_proj's regime")
+            return (f"Regime: window gaps p50 ${r['gap_p50']:.0f} "
+                    f"(p25 ${r['gap_p25']:.0f} / p75 ${r['gap_p75']:.0f}), "
+                    f"{r['photo_finish_pct']:.0f}% photo-finishes → {verdict}\n")
+
         def _twap_line() -> str:
             if not twap or not twap.get("checked"):
                 return ""
@@ -2637,6 +2650,7 @@ async def main() -> None:
             f"{_legs_line()}"
             f"{_shutoff_line(live)}"
             f"{_context_line()}"
+            f"{_regime_line()}"
             f"{_twap_line()}"
             f"{action}"
         )
