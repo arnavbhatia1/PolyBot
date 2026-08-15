@@ -1,11 +1,9 @@
-mode: live    # LIVE PROBE of deep_proj at the current wallet (~$150: max
-              # ~$22.50/window exposure, bounded) — live is the only place a
-              # real maker fill can be proven (the exchange has never filled
-              # one of ours) and the only queue oracle. Probe reads,
-              # pre-registered: expect ~5-9 filled windows/day at 65%+ window
-              # win; after ~2 days, <2 fills/day or <50% win on >=10 windows
-              # means STOP and investigate. Halts: any lock_dip loss;
-              # trailing-4-day dollars < 0; sniper_enabled is the brake.
+mode: paper   # deep_proj VALIDATION. The 08-14 live probe went 0-for-5
+              # (-$34.18) in a chop regime the OOS sim had already flagged —
+              # so the leg validates here, against the same live-calibrated
+              # fill rule (strictly-below prints), while the wallet sits out.
+              # Go-live again needs the §2 bar: >=6 clean days, >=20 filled
+              # windows, EW >= +5c/sh, and a trailing-3-day sim clearing +5c.
 
 # =============================================================================
 #  SECTION 1: MONEY / RISK - how much to bet and when to stop
@@ -64,7 +62,7 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-14T18:30:00+00:00"  # deep_proj LIVE probe
+  validation_epoch: "2026-08-15T01:15:00+00:00"  # deep_proj PAPER validation
                                # starts here. Set AFTER the boot that carries it
                                # by more than the ~3.4min entry-to-exit gap,
                                # because the gate filters on EXIT time — an
@@ -114,15 +112,13 @@ late_window:
 #  Fills stamp signal_leg="maker_bid" — its own ledger line in the ping.
 # =============================================================================
 maker:
-  # HALTED 2026-08-15 00:50Z after the live probe went 0-for-5 (-$34.18 in 9h,
-  # p~2% under the claimed edge). Not a mechanism failure: every fatal fill
-  # fired with disp barely above the SNR floor, in the same chop regime the
-  # OOS sim flagged as its worst day (-19c/day on 08-14) — and no floor
-  # setting (0.18/0.25/0.35 all tested) clears the +5c OOS bar in this regime.
-  # Re-enable ONLY when a trailing-3-day sim rerun on fresh tape clears
-  # +5c/sh EW, or a design change passes the bar honestly. The lock-dip taker
-  # stays live — its cell is intact.
-  maker_bid_enabled: false
+  # LIVE-HALTED 2026-08-15 after 0-for-5 (-$34.18 in 9h): every fatal fill
+  # fired with disp scraping the SNR floor in the chop regime the OOS sim had
+  # flagged (-19c/day on its own 08-14). Enabled for PAPER validation — the
+  # fill rule (strictly-below prints) is live-calibrated, so paper can only
+  # under-promise. Live again ONLY via the §2 bar plus a trailing-3-day sim
+  # clearing +5c/sh on fresh tape.
+  maker_bid_enabled: true
   # THE DEEP-PROJECTION LADDER (signal_leg "deep_proj") — the 1723 mimic,
   # reverse-engineered 08-14 from the market's best late maker (+$12.9k/4.5d,
   # 99% maker, 124/814 windows): our projection's sign matches its side on 89%
