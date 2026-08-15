@@ -19,10 +19,13 @@ that match its confidence.
    (+$12.9k/4.5d, 99% maker): our projection's SIGN matches its side on 89% of
    its deep fills, and its edge is ZERO where the projection disagrees. Rungs
    0.80/0.65/0.50/0.35/0.20 — 1723's OWN fill distribution (it avoids >0.87,
-   losing 5.9¢/sh at 0.95) — rest on the projection-favored side (k place
-   [6,25]s), hold through the close gated on the boundary-verified winner,
-   and are filled by panic crossing the spread. The margin of safety is the
-   PRICE: break-even = price paid, against a measured 65-97% window win.
+   losing 5.9¢/sh at 0.95) — rest on the projection-favored side ONLY while
+   the sign clears **2× its own p99.5 error at the current k** (placement
+   k ∈ [6,8]s; the same floor cancels resting rungs the moment it breaks).
+   The floor IS the regime filter: photo-finish chop cannot clear it, so the
+   leg self-silences where the 08-14..15 massacre bled. Hold through the
+   close gated on the boundary-verified winner. Three-regime record: rich
+   +33.8¢/sh at 100% win (~4.5/day), mixed −$4 total, massacre ZERO fills.
 2. **Lock-dip taker (§2)** — fires on the **max tier ONLY**
    (`require_max_tier`) at **k ≥ 6s ONLY** (`twap_k_min_s`): below ~6s the
    margin knots collapse to $0.70-$4 — bounds 564 windows cannot pin, and both
@@ -256,11 +259,11 @@ sniper buys those dips and holds ≤30s to resolution.
 
   | | lock-dip TAKER | deep_proj LADDER |
   |---|---|---|
-  | shape | rare fills at +10¢/sh | ~5-9 filled windows/day, 65-97% win |
+  | shape | rare fills at +10¢/sh | ~0-5 filled windows/day BY REGIME, ~100% win in its regime |
   | clean ET days | ≥ 6 | ≥ 6 |
   | fills | ≥ 10 | ≥ 20 windows |
   | profit | EW net ≥ +2¢/sh | EW net ≥ +5¢/sh, `usd_per_day > 0` |
-  | expectation | — | backtest says +5..+26¢/sh; falling under +5¢ means paper broke from the backtest — investigate before extending |
+  | expectation | — | backtest says +34¢/sh in its regime, SILENT in chop; losses at 2×-error floors mean the floor broke — investigate before extending |
   | halt-on-sight | **any lock_dip loss** (every fire is max-tier, so a loss IS a breach) | none (rung losses are priced-in; dollars rule judges) |
 
   `live_health_read.kill_rule_tripped` computes: any lock_dip loss trips
@@ -333,27 +336,29 @@ sniper buys those dips and holds ≤30s to resolution.
   bridge — its frozen margin tables were measured on the plain projection.
   Each placement stamps `twap_proj` (bridged) and `twap_proj_plain` for the
   nightly A/B; micro-tape records the Binance stream as `"s"/src:"bz"`.
-  **Rungs are [price, budget_frac, need]** where `need` = the fraction of the
-  max-tier margin the displacement must clear at placement (the sign-quality
-  floor). The geometry [0.80/0.65/0.50/0.35/0.20], all need 0.18, IS 1723's
-  own fill distribution — it avoids >0.87 (−5.9¢/sh at 0.95), so no shallow
-  rung exists; every rung's PRICE is its margin of safety. Placement
-  k ∈ [6,25]s while the taker SKIPs; rungs keep resting to the close and
-  beyond. Cancel-all when the projection goes cold, flips, or drops under the
-  noise floor (min_need × max-margin); rungs under `DEEP_HOLD_MAX_PX` 0.85
-  survive a p99.5 weakening (the wick that fills a deep rung IS the move that
-  dips the projection). **Post-close hold** (`post_close_hold_s` 60): rungs keep
+  **Rungs are [price, budget_frac, need]** where `need` = the multiple of the
+  **p99.5 projection error at the current k** the displacement must clear —
+  for placement AND survival (the same floor cancels the ladder the moment it
+  breaks). All rungs need 2.0: the sign must be twice its own error scale,
+  which photo-finish chop can never produce — the floor doubles as the regime
+  filter (measured: the 08-14..15 massacre gives ZERO qualifying fills where
+  the old 0.18×max floor bled −41¢/sh over 7 windows). The geometry
+  [0.80/0.65/0.50/0.35/0.20] IS 1723's own fill distribution — it avoids
+  >0.87 (−5.9¢/sh at 0.95); every rung's PRICE is its margin of safety.
+  Placement k ∈ [6,8]s while the taker SKIPs; rungs keep resting to the close
+  and beyond. Cancel-all when the projection goes cold, flips, or drops under
+  the floor. **Post-close hold** (`post_close_hold_s` 60): rungs keep
   resting after the close ONLY while the boundary-verified winner
   (`certain_winner`, fails closed, re-checked every tick) equals our side —
   this is NOT the refuted 0.99-cap camp: deep levels carry ~55-100 sh/level
   (measured live 08-14), not 290k walls.
   **Backtest, strictly-below fills, feed lag embedded (receipt-clock
   trajectories vs exchange-clock prints), stale-feed windows vetoed**:
-  in-sample 08-06..10 **+26.2¢/sh EW, 9.2 win/day, 97% win, t_day 4.46,
-  4/4 days**; out-of-sample 08-11..14 **+5.1¢/sh, 5.0/day, 65% win** — while
-  the ANTI-side control loses 46-49¢/sh at t −42/−21 on identical rules in
-  BOTH samples. Sim fills are capped at print size (under-counts winners) —
-  these are the pessimistic reads. The sign
+  rich 08-06..10 **+33.8¢/sh EW, ~4.5 win/day, 100% win, t 57**; mixed
+  08-11..14 four fills, −$4 total; massacre 08-14..15 **zero fills, zero
+  loss** — while the ANTI-side control loses 46-49¢/sh at t −42/−21 on
+  identical rules. Sim fills are capped at print size (under-counts
+  winners) — these are the pessimistic reads. The sign
   carries everything. Sizing: `maker_bankroll_frac` (0.15) of bankroll split
   by the frozen fractions — deep bids are not a Kelly bet on a certainty
   claim. Fills book through `BaseTrader.book_maker_fill` as ONE blended

@@ -14,10 +14,10 @@ import pytest
 from polybot.execution import maker_bid as mb
 from polybot.execution.maker_bid import MakerBidManager
 
-LADDER = [[0.80, 0.20, 0.18], [0.65, 0.20, 0.18], [0.50, 0.20, 0.18],
-          [0.35, 0.20, 0.18], [0.20, 0.20, 0.18]]
+LADDER = [[0.80, 0.20, 2.0], [0.65, 0.20, 2.0], [0.50, 0.20, 2.0],
+          [0.35, 0.20, 2.0], [0.20, 0.20, 2.0]]
 CFG = {"maker_bid_enabled": True, "maker_ladder": LADDER,
-       "maker_k_place_max": 25.0, "maker_k_place_min": 6.0,
+       "maker_k_place_max": 8.0, "maker_k_place_min": 6.0,
        "maker_bankroll_frac": 0.15, "post_close_hold_s": 60.0}
 PRICES = [r[0] for r in LADDER]
 
@@ -100,13 +100,13 @@ def test_full_ladder_places(tmp_path, monkeypatch):
 def test_sign_below_every_need_places_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr()
-    _place(mgr, time.time() - 285.0, headroom=0.1)   # < 0.18 for every rung
+    _place(mgr, time.time() - 285.0, headroom=1.5)   # < 2.0 for every rung
     assert mgr.active is None
 
 
 def test_min_need_is_the_ladder_floor(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
-    assert _mgr().min_need() == pytest.approx(0.18)
+    assert _mgr().min_need() == pytest.approx(2.0)
 
 
 def test_sub_dollar_budget_never_places(tmp_path, monkeypatch):
@@ -168,9 +168,9 @@ def test_gtc_placement_pays_the_measured_post_rtt(tmp_path, monkeypatch):
 
 
 def test_sign_inside_noise_cancels_everything(tmp_path, monkeypatch):
-    """disp under min_need x max-margin picks nothing — no depth survives."""
+    """disp under min_need x p99.5-error picks nothing — no depth survives."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
-    mgr = _mgr(proj=64000.5)                 # signed +0.5 < 0.18*20 at k=15
+    mgr = _mgr(proj=64010.0)                 # signed +10 < 2 x p995(15)=28
     w = time.time() - 285.0
     _place(mgr, w, budget=40.0)
     asyncio.run(mgr.maintain())
@@ -187,11 +187,10 @@ def test_projection_flip_cancels_everything(tmp_path, monkeypatch):
     assert mgr.active is None and len(mgr.trader.cancelled) == len(PRICES)
 
 
-def test_weakening_above_the_floor_holds_every_deep_rung(tmp_path, monkeypatch):
-    """Between the noise floor and p99.5 the sign still picks the side, and
-    every rung is deep (priced-in) — nothing pulls; the wick can come."""
+def test_above_the_floor_holds_every_rung(tmp_path, monkeypatch):
+    """Clearing the floor holds the whole ladder — the wick can come."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
-    mgr = _mgr(proj=64005.0)                 # signed +5: floor 3.6 < 5 < p995 14
+    mgr = _mgr(proj=64030.0)                 # signed +30 > 2 x p995(15)=28
     w = time.time() - 285.0
     _place(mgr, w, budget=40.0)
     asyncio.run(mgr.maintain())
@@ -217,7 +216,7 @@ def test_projection_cold_cancels_everything(tmp_path, monkeypatch):
 
 def test_sign_held_keeps_resting(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
-    mgr = _mgr(proj=64200.0)
+    mgr = _mgr(proj=64200.0)                 # signed +200, far above any floor
     w = time.time() - 285.0
     _place(mgr, w)
     asyncio.run(mgr.maintain())
@@ -297,7 +296,7 @@ def test_nightly_file_moves_prices_only_and_clamps(tmp_path, monkeypatch):
     # Prices clamped to [0.15, 0.95]; fractions + needs stay the SEED's.
     assert [r[0] for r in rungs] == [0.95, 0.70, 0.15, 0.30, 0.22]
     assert [r[1] for r in rungs] == [0.20] * 5
-    assert [r[2] for r in rungs] == [0.18] * 5
+    assert [r[2] for r in rungs] == [2.0] * 5
 
 
 def test_at_price_prints_fill_only_beyond_the_measured_queue(tmp_path, monkeypatch):

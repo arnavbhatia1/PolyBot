@@ -8,17 +8,17 @@ Verified against the market's best late maker (wallet 0x0a2c53bd…, +$12.9k in
 4.5 days): our projection's sign matches its side on 89% of its deep fills,
 and its edge is zero where the projection disagrees.
 
-Rungs carry per-rung sign-quality requirements (`need` = fraction of the
-max-tier margin at placement): the 0.90 rung demands the full never-breached
-margin, the deep rungs only need the sign outside its own noise — the price,
-not a tail bound, is their margin of safety.
+Rungs carry per-rung sign-quality requirements (`need` = multiple of the
+p99.5 projection error at the current k). The floor doubles as the regime
+filter: in photo-finish chop, displacement cannot reach 2x its own error, so
+the ladder self-silences window-by-window — measured across three regimes:
+rich +33.8c/sh at 100% win, chop ZERO fills where the old floor bled -41c/sh.
 
-Lifecycle, one ladder per window: place when the projection clears the ladder's
-minimum need with k in [place_min, place_max] → cancel shallow rungs when the
-lock weakens below p99.5, cancel everything when the projection no longer
-clears the noise floor or goes cold → after the close, keep resting for
-post_close_hold_s ONLY while the boundary-verified winner equals our side →
-book all accumulated fills as ONE blended position.
+Lifecycle, one ladder per window: place when the projection clears the
+ladder's minimum need with k in [place_min, place_max] → cancel everything
+the moment the floor breaks or the projection goes cold → after the close,
+keep resting for post_close_hold_s ONLY while the boundary-verified winner
+equals our side → book all accumulated fills as ONE blended position.
 
 Paper fills are print-through: a rung fills only when the tape prints STRICTLY
 below its price — live proved that at any shared price level we are behind
@@ -38,7 +38,7 @@ import logging
 import time
 from typing import Any
 
-from polybot.core.signal_engine import TWAP_MARGIN_MAX, TWAP_MARGIN_P995, twap_margin
+from polybot.core.signal_engine import TWAP_MARGIN_P995, twap_margin
 from polybot.paths import MAKER_LADDER_PATH
 
 logger = logging.getLogger("polybot")
@@ -57,13 +57,6 @@ LADDER_PRICE_MIN = 0.15         # clamps on an operator price file. The band is
 LADDER_PRICE_MAX = 0.95         # deep on purpose: break-even win rate equals the
                                 # price paid, so a 0.20 rung needs 20% against a
                                 # measured 77-96%, while 0.95 needs 95%.
-
-DEEP_HOLD_MAX_PX = 0.85         # rungs below this survive a transient lock
-                                # weakening; the wick that fills them IS the move
-                                # that dips the projection, so cancelling would
-                                # run away exactly when the trade appears. A
-                                # cold projection or one under the noise floor
-                                # still kills all.
 
 PC_VERIFY_GRACE_S = 5.0         # wait this long for the closing boundary report
                                 # (lands p50 1.71s / p99 2.9s after the boundary)
@@ -117,9 +110,11 @@ class MakerBidManager:
     def ladder(self) -> list:
         """[[price, budget_frac, min_headroom_mult], ...] — the nightly
         recalibration file wins when present (clamped); config is the seed."""
-        seed = self.cfg.get("maker_ladder") or [[0.96, 0.40, 1.0],
-                                                [0.92, 0.35, 1.0],
-                                                [0.87, 0.25, 1.5]]
+        seed = self.cfg.get("maker_ladder") or [[0.80, 0.20, 2.0],
+                                                [0.65, 0.20, 2.0],
+                                                [0.50, 0.20, 2.0],
+                                                [0.35, 0.20, 2.0],
+                                                [0.20, 0.20, 2.0]]
         try:
             mtime = MAKER_LADDER_PATH.stat().st_mtime
             if self._ladder_cache and self._ladder_cache[0] == mtime:
@@ -137,15 +132,14 @@ class MakerBidManager:
             pass
         return seed
 
-    # -- placement (called from the fire path at max-tier lock) -------------
+    # -- placement (called from the fire path in the late zone) -------------
 
     async def consider_placement(self, window_ts: int, market_id: str,
                                  question: str, side: str, token_id: str,
                                  budget_usd: float, headroom_mult: float,
                                  snapshot: dict) -> None:
-        """headroom_mult = |disp| / max-tier margin at placement time — deep
-        rungs only arm when the lock has real slack (deep fills concentrate
-        in violent windows)."""
+        """headroom_mult = |disp| / p99.5-error at placement time — a rung
+        arms only when the sign clears its `need` multiple of that error."""
         if self.active is not None or budget_usd < MIN_NOTIONAL_USD:
             return
         rungs = []
@@ -213,10 +207,11 @@ class MakerBidManager:
     # -- lifecycle (every main-loop tick; cheap float math off the hot path) --
 
     def min_need(self) -> float:
-        """The ladder's noise floor: the smallest per-rung `need` (fraction of
-        the max-tier margin) — below it the projection's sign is inside its own
-        error and picks nothing."""
-        return min((float(r[2]) for r in self.ladder()), default=1.0)
+        """The ladder's noise floor: the smallest per-rung `need` (multiple of
+        the p99.5 projection error at the current k) — below it the sign is
+        inside its own error and picks nothing. In photo-finish chop no window
+        can clear 2x its error, so the floor IS the regime filter."""
+        return min((float(r[2]) for r in self.ladder()), default=2.0)
 
     def certain_winner(self, window_ts: int) -> str | None:
         """The window's SETTLED winner from the two official TWAP boundary
@@ -265,15 +260,12 @@ class MakerBidManager:
             else:
                 disp = proj - a["snapshot"]["strike_price"]
                 signed = disp if a["side"] == "Up" else -disp
-                if signed < self.min_need() * twap_margin(TWAP_MARGIN_MAX, k):
+                if signed < self.min_need() * twap_margin(TWAP_MARGIN_P995, k):
                     # Flipped, or inside the sign's own noise — either way the
-                    # side is no longer picked by anything. Nothing holds.
+                    # side is no longer picked by anything. Nothing holds:
+                    # the same floor that gates placement kills the rest.
                     reason = ("projection flipped" if signed <= 0.0
                               else "sign inside noise")
-                elif signed < twap_margin(TWAP_MARGIN_P995, k):
-                    # Weakened but still ours: shallow rungs pull, deep rungs stay.
-                    if await self._prune_shallow(a):
-                        reason = "lock weakened"
         if not self.paper and reason is None and now - self._last_poll >= 1.0:
             self._last_poll = now
             for r in a["rungs"]:
@@ -289,21 +281,6 @@ class MakerBidManager:
         if reason is not None:
             await self._retire(reason)
 
-    async def _prune_shallow(self, a: dict) -> bool:
-        """Cancel rungs at/above DEEP_HOLD_MAX_PX; True when none are left live.
-
-        Accumulated fills are preserved and still book at retire — only the
-        resting remainder is pulled.
-        """
-        for r in a["rungs"]:
-            if r.get("cancelled") or r["price"] < DEEP_HOLD_MAX_PX:
-                continue
-            r["cancelled"] = True
-            try:
-                await self.trader.cancel_gtc(r["order_id"])
-            except Exception as e:
-                logger.warning("MAKER CANCEL failed (%s)", e)
-        return all(r.get("cancelled") for r in a["rungs"])
 
     async def _retire(self, reason: str) -> None:
         a, self.active = self.active, None

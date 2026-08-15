@@ -37,7 +37,7 @@ from polybot.db.models import Database
 from polybot.feeds.market_scanner import BTCMarketScanner
 from polybot.feeds.clob_ws import ClobWebSocket
 from polybot.core.signal_engine import (
-    SignalEngine, TradeSignal, TWAP_MARGIN_MAX, TWAP_MARGIN_P995, twap_margin,
+    SignalEngine, TradeSignal, TWAP_MARGIN_P995, twap_margin,
 )
 from polybot.execution.paper_trader import PaperTrader
 from polybot.execution.live_trader import AuthError, LiveTrader, OrphanPositionError, verify_auth
@@ -898,11 +898,11 @@ async def _evaluate_signal_and_enter(
                         <= _mk.get("maker_k_place_max", 25.0)):
                 _mdisp = _proj_fast - strike
                 _mside = "Up" if _mdisp >= 0 else "Down"
-                # The projection SIGN picks the side; each rung's `need` (a
-                # fraction of the max-tier margin) decides whether the sign is
-                # far enough outside its own noise for that depth. The manager
-                # enforces per-rung needs; the gate here is the ladder's floor.
-                _mmargin = twap_margin(TWAP_MARGIN_MAX, contract["seconds_remaining"])
+                # The projection SIGN picks the side; each rung's `need` is the
+                # multiple of the p99.5 PROJECTION ERROR at this k the sign
+                # must clear — the floor that self-silences photo-finish chop
+                # (disp cannot reach 2x its own error when gaps run sub-$2).
+                _mmargin = twap_margin(TWAP_MARGIN_P995, contract["seconds_remaining"])
                 if _mmargin > 0 and abs(_mdisp) >= _MAKER_MGR.min_need() * _mmargin:
                     # A deep resting bid's margin of safety is its PRICE, not a
                     # tail bound — budget is a flat bankroll fraction, not
