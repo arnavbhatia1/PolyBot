@@ -127,28 +127,28 @@ maker:
   # an average that is mostly already written; panic crossing the spread fills
   # bids the book should never have left there.
   #
-  # Rungs: [price, budget_fraction, need] where `need` is the fraction of the
-  # max-tier margin the displacement must clear AT PLACEMENT for that rung —
-  # the sign-quality (SNR) floor. The PRICE is each rung's margin of safety
-  # (break-even = price paid against a measured 65-97% window win rate).
-  # THE GEOMETRY IS 1723's OWN fill distribution (it avoids >0.87 — it LOSES
-  # 5.9c/sh at 0.95 — so there is no shallow rung). Backtest (strictly-below
-  # fills, feed lag embedded, stale-feed windows vetoed): in-sample 08-06..10
-  # +26.2c/sh EW over 9.2 win/day, t_day 4.46, 4/4 days; OOS 08-11..14
-  # +5.1c/sh over 5.0/day — while the ANTI-side control loses 46-49c/sh at
-  # t -42/-21 on identical rules. The sign carries everything; sim fills are
-  # capped at print size, which under-counts winners, so these are the
-  # pessimistic reads.
+  # Rungs: [price, budget_fraction, need] where `need` is the MULTIPLE of the
+  # p99.5 PROJECTION ERROR at the current k the displacement must clear — for
+  # placement AND survival (maintain cancels the ladder the moment the floor
+  # breaks). need 2.0 = the sign must be twice its own error scale.
+  # THE FLOOR IS THE REGIME FILTER: in photo-finish chop, displacement cannot
+  # mathematically reach 2x its error while gaps run sub-$2, so the leg
+  # self-silences window-by-window — no era gate. Three-regime record on
+  # identical strictly-below fill rules: rich 08-06..10 +33.8c/sh at 100% win
+  # (t 57, ~4.5 wins/day); mixed 08-11..14 four fills, -$4 total; massacre
+  # 08-14..15 ZERO qualifying fills — where the old 0.18x-max floor lost
+  # -41c/sh over 7 windows on the same tape. The geometry stays 1723's own
+  # fill distribution (it avoids >0.87, losing 5.9c/sh at 0.95).
   maker_ladder:
-    - [0.80, 0.20, 0.18]
-    - [0.65, 0.20, 0.18]
-    - [0.50, 0.20, 0.18]
-    - [0.35, 0.20, 0.18]
-    - [0.20, 0.20, 0.18]
-  maker_k_place_max: 25.0       # place with at most this many s left
-  maker_k_place_min: 6.0        # low-k floor: below ~6s the margin knots are
-                                # bounds 564 windows cannot pin (placed rungs
-                                # keep resting below it; only placement stops)
+    - [0.80, 0.20, 2.0]
+    - [0.65, 0.20, 2.0]
+    - [0.50, 0.20, 2.0]
+    - [0.35, 0.20, 2.0]
+    - [0.20, 0.20, 2.0]
+  maker_k_place_max: 8.0        # the late zone: disp/error is only trustworthy
+                                # once most of the average is written
+  maker_k_place_min: 6.0        # placement window [6,8]s; placed rungs keep
+                                # resting to the close + verified-winner hold
   # Deep bids are NOT a Kelly bet on a certainty claim — the budget is a flat
   # bankroll fraction split across rungs. One ladder at a time, capital back
   # in ~2 min at resolution.
