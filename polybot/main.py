@@ -226,20 +226,20 @@ def _on_maker_fill(a: dict[str, Any], shares: float, vwap: float,
     """MakerBidManager.on_fill — a resting bid that fills IS an entry, so it gets
     the same green banner and Discord ping a taker entry gets.
 
-    It used to print one uncoloured info line, which made the only leg that
-    actually earns the hardest thing in the log to find. Never raises: the fill
-    is already booked by the time this runs."""
+    Yellow like the OPEN banner: a fill is an ENTRY with an unknown outcome —
+    green is reserved for resolved wins. Never raises: the fill is already
+    booked by the time this runs."""
     try:
         notional = shares * vwap
         phase = "post-close" if reason.startswith("post-close") else "lock ladder"
         logger.info(
-            f"{_C.GREEN}{'=' * 60}{_C.RESET}\n"
-            f"  {_C.GREEN}{_C.BOLD}MAKER FILLED {a['side']}{_C.RESET} @{vwap:.3f}  "
+            f"{_C.YELLOW}{'=' * 60}{_C.RESET}\n"
+            f"  {_C.YELLOW}{_C.BOLD}MAKER FILLED {a['side']}{_C.RESET} @{vwap:.3f}  "
             f"${notional:.2f}  {shares:.1f} sh  |  "
             f"{_slug_to_window(a['market_id'])} [{phase}]\n"
-            f"  {_C.DIM}no fee (maker) · settled winner · holds to resolution"
+            f"  {_C.DIM}no fee (maker) · projection side · holds to resolution"
             f"{_C.RESET}\n"
-            f"{_C.GREEN}{'=' * 69}{_C.RESET}")
+            f"{_C.YELLOW}{'=' * 69}{_C.RESET}")
         am = _ALERT_MANAGER
         if am is not None:
             asyncio.create_task(am.send_trade_opened(
