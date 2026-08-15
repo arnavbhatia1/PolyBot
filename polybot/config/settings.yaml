@@ -114,7 +114,15 @@ late_window:
 #  Fills stamp signal_leg="maker_bid" — its own ledger line in the ping.
 # =============================================================================
 maker:
-  maker_bid_enabled: true
+  # HALTED 2026-08-15 00:50Z after the live probe went 0-for-5 (-$34.18 in 9h,
+  # p~2% under the claimed edge). Not a mechanism failure: every fatal fill
+  # fired with disp barely above the SNR floor, in the same chop regime the
+  # OOS sim flagged as its worst day (-19c/day on 08-14) — and no floor
+  # setting (0.18/0.25/0.35 all tested) clears the +5c OOS bar in this regime.
+  # Re-enable ONLY when a trailing-3-day sim rerun on fresh tape clears
+  # +5c/sh EW, or a design change passes the bar honestly. The lock-dip taker
+  # stays live — its cell is intact.
+  maker_bid_enabled: false
   # THE DEEP-PROJECTION LADDER (signal_leg "deep_proj") — the 1723 mimic,
   # reverse-engineered 08-14 from the market's best late maker (+$12.9k/4.5d,
   # 99% maker, 124/814 windows): our projection's sign matches its side on 89%
