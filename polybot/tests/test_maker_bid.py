@@ -116,14 +116,13 @@ def test_sub_dollar_budget_never_places(tmp_path, monkeypatch):
     assert mgr.active is None
 
 
-def test_at_price_prints_never_fill(tmp_path, monkeypatch):
-    """Live truth: at any shared price level we sit behind size no snapshot
-    shows. Only a print strictly BELOW a rung proves the book walked through
-    our level — and then the whole rung filled."""
+def test_fill_semantics_below_full_at_queued_above_never(tmp_path, monkeypatch):
+    """Strictly below a rung = the book walked through our level, full fill.
+    AT a rung = only the volume beyond the measured typical queue. Above = never."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr()
     _place(mgr, time.time() - 285.0, budget=40.0)
-    mgr.on_print("tokU", {"price": "0.80", "size": "500"})   # AT top rung
+    mgr.on_print("tokU", {"price": "0.80", "size": "30"})    # AT top: inside queue
     assert all(r["filled"] == 0.0 for r in mgr.active["rungs"])
     mgr.on_print("tokU", {"price": "0.55", "size": "1"})     # below 0.80, 0.65
     fills = {r["price"]: r["filled"] for r in mgr.active["rungs"]}
@@ -299,3 +298,23 @@ def test_nightly_file_moves_prices_only_and_clamps(tmp_path, monkeypatch):
     assert [r[0] for r in rungs] == [0.95, 0.70, 0.15, 0.30, 0.22]
     assert [r[1] for r in rungs] == [0.20] * 5
     assert [r[2] for r in rungs] == [0.18] * 5
+
+
+def test_at_price_prints_fill_only_beyond_the_measured_queue(tmp_path, monkeypatch):
+    """A print AT our price credits only the volume beyond the live-measured
+    typical queue (AT_PRICE_QUEUE_SH) — accumulated across the window."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _mgr()
+    _place(mgr, time.time() - 285.0, budget=200.0)      # 0.80 rung = 50 sh
+    top = mgr.active["rungs"][0]
+    mgr.on_print("tokU", {"price": "0.80", "size": "40"})   # queue eats it
+    assert top["filled"] == 0.0
+    mgr.on_print("tokU", {"price": "0.80", "size": "40"})   # 80 seen: 25 beyond
+    assert top["filled"] == pytest.approx(80 - mb.AT_PRICE_QUEUE_SH)
+    assert top.get("filled_at_px") is True
+    mgr.on_print("tokU", {"price": "0.80", "size": "500"})  # capped at rung size
+    assert top["filled"] == pytest.approx(top["shares"])
+    # a strictly-below print still fills any rung in full, regardless of queue
+    r2 = mgr.active["rungs"][1]
+    mgr.on_print("tokU", {"price": "0.60", "size": "1"})
+    assert r2["filled"] == pytest.approx(r2["shares"])

@@ -46,6 +46,13 @@ logger = logging.getLogger("polybot")
 MIN_NOTIONAL_USD = 1.0          # CLOB floor — below this nothing books
 MIN_SHARES = 5.0                # exchange minimum order size; a 2.49-share rung
                                 # is rejected outright ("lower than the minimum: 5")
+AT_PRICE_QUEUE_SH = 55.0        # measured median resting size per deep level
+                                # (live book watcher, 10 windows, 08-14). Paper
+                                # credits an AT-price print only beyond this much
+                                # typical queue ahead of us — a live-measured
+                                # constant, never a book snapshot (snapshot queue
+                                # models are BANNED; they built the 77-fills/day
+                                # fantasy). Recalibrate only from live fills.
 LADDER_PRICE_MIN = 0.15         # clamps on an operator price file. The band is
 LADDER_PRICE_MAX = 0.95         # deep on purpose: break-even win rate equals the
                                 # price paid, so a 0.20 rung needs 20% against a
@@ -173,13 +180,13 @@ class MakerBidManager:
     # -- paper fill matcher (clob_ws print hook; sync, must not raise) ------
 
     def on_print(self, asset_id: str, trade: dict) -> None:
-        """A rung fills only on a print STRICTLY below its price: the seller
-        walked through our level, so on the exchange our order filled before
-        that lower price could print. At-price prints never count — live
-        measured invisible size ahead of us at every shared level (102
-        placements, zero fills), so a snapshot queue model overcounts.
-        Conservative by construction; the paper bar can only be harder than
-        live, never easier."""
+        """A print STRICTLY below a rung fills it in full: the seller walked
+        through our level, so on the exchange our order filled before that
+        lower price could print. A print AT a rung's price fills only the
+        volume beyond AT_PRICE_QUEUE_SH — the live-measured typical queue
+        ahead of a fresh joiner at a deep level — accumulated across the
+        window's at-price prints. Both flows are tracked separately
+        (filled/filled_at_px) so live fills can recalibrate the constant."""
         a = self.active
         if a is None or not self.paper or asset_id != a["token_id"]:
             return
@@ -191,9 +198,17 @@ class MakerBidManager:
         if not (0.0 < px and sz > 0):
             return
         for r in a["rungs"]:
-            if r.get("cancelled") or px >= r["price"] - 1e-9:
-                continue            # at/above our price: the queue ate it
-            r["filled"] = r["shares"]
+            if r.get("cancelled"):
+                continue
+            if px < r["price"] - 1e-9:
+                r["filled"] = r["shares"]
+            elif abs(px - r["price"]) <= 1e-9:
+                seen = r.get("at_px_vol", 0.0) + sz
+                r["at_px_vol"] = seen
+                credit = min(r["shares"], max(0.0, seen - AT_PRICE_QUEUE_SH))
+                if credit > r["filled"]:
+                    r["filled"] = credit
+                    r["filled_at_px"] = True
 
     # -- lifecycle (every main-loop tick; cheap float math off the hot path) --
 

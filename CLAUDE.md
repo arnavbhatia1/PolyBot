@@ -358,11 +358,15 @@ sniper buys those dips and holds ≤30s to resolution.
   by the frozen fractions — deep bids are not a Kelly bet on a certainty
   claim. Fills book through `BaseTrader.book_maker_fill` as ONE blended
   position; the taker is suppressed while a bid rests (one entry path per
-  window). LIVE fills poll at 1Hz off-path; **PAPER fills only on prints
-  STRICTLY BELOW the rung** — a print below our price proves the book walked
-  through our level; a print AT our price proves nothing (102 live
-  placements, zero fills against snapshot queues the old model thought
-  beatable). Snapshot-based `queue_ahead` modeling is BANNED. **Paper pays the
+  window). LIVE fills poll at 1Hz off-path; **PAPER fills: strictly-below prints fill
+  a rung in FULL** (the book walked through our level); **AT-price prints
+  credit only the volume beyond `AT_PRICE_QUEUE_SH` (55 sh — the live-measured
+  median resting size per deep level, 10-window book watch 08-14)**,
+  accumulated across the window and tracked separately (`filled_at_px`) so
+  live fills recalibrate the constant; above-price prints never fill.
+  Snapshot-based `queue_ahead` modeling remains BANNED (102 live placements,
+  zero fills against snapshot queues the old model thought beatable) — the
+  at-price constant is a fixed live measurement, not a book snapshot. **Paper pays the
   MEASURED GTC round trip on every place AND cancel** (`_simulate_gtc_latency`,
   place p50 0.056 / cancel p50 0.054, box-measured; NEVER the taker table —
   a resting bid never pays the 250ms `itode` hold). Rung prices pass
