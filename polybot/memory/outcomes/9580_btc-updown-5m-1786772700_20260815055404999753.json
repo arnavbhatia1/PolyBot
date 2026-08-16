@@ -1,0 +1,35 @@
+{
+  "position_id": 9580,
+  "market_id": "btc-updown-5m-1786772700",
+  "question": "Bitcoin Up or Down - August 15, 1:45AM-1:50AM ET",
+  "side": "Down",
+  "signal_score": 0.0,
+  "correct": false,
+  "entry_price": 0.3954,
+  "exit_price": 0.0,
+  "log_return": 0,
+  "size": 63.69893999999999,
+  "pnl": -63.69893999999999,
+  "fees": 2.695866999999996,
+  "gain_pct": -1.0,
+  "realized_edge": -0.3954,
+  "fill_slippage": 0.0,
+  "indicator_snapshot": {
+    "trade_context": {
+      "signal_leg": "deep_proj",
+      "strike_price": 63011.94751725518,
+      "seconds_remaining": 24.960931,
+      "twap_proj": 63002.93,
+      "twap_proj_plain": 63002.94,
+      "twap_disp": -9.02,
+      "token_id_up": "71126355319064626386767303595273650691290302826623210708375173439510945712164",
+      "token_id_down": "101385180610905898562620461438519984525623065166903115439371075094869516136201"
+    },
+    "strike_price": 63011.94751725518
+  },
+  "exit_reason": "resolution",
+  "seconds_remaining_at_exit": 0.0,
+  "edge_decay": null,
+  "exit_timestamp": "2026-08-15T05:54:04.999727+00:00",
+  "timestamp": "2026-08-15T05:54:04.999727+00:00"
+}
