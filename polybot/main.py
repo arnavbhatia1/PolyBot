@@ -2542,10 +2542,15 @@ async def main() -> None:
             tspec = importlib.util.spec_from_file_location("analyze_twap_lock", tp)
             tmod = importlib.util.module_from_spec(tspec)
             tspec.loader.exec_module(tmod)
-            sim = await asyncio.to_thread(
-                tmod.health_read, None, _lw["sniper_min_edge"])
+            # Inner budget, and a hard one: the tape replay outgrew this box
+            # (~2 GB/day at 1 GB RAM) and ate the job's whole 600s five nights
+            # running — starving the SEND below it. The sim is context-only;
+            # the ping must go out with or without it.
+            sim = await asyncio.wait_for(asyncio.to_thread(
+                tmod.health_read, None, _lw["sniper_min_edge"]), timeout=240.0)
         except Exception as e:
-            logger.warning("sniper health SIM read failed: %s", e)
+            logger.warning("sniper health SIM read skipped (%s) — pinging without it",
+                           type(e).__name__ if not str(e) else e)
             sim = None
         # The realized-fill read tracks the BINDING population for the current mode:
         # live -> the live ledger; paper (re-validation) -> the paper-shadow fills
@@ -2654,6 +2659,9 @@ async def main() -> None:
             f"{_twap_line()}"
             f"{action}"
         )
+        # The journal always gets the ping verbatim — a Discord outage must
+        # never mean the night's numbers are unrecoverable.
+        logger.info("NIGHTLY PING:\n%s", msg)
         if alert_manager:
             await alert_manager.send_health(msg)
 

@@ -116,8 +116,25 @@ class AlertManager:
         await self._safe_send(channel, f"**Error**\n```{error_message}```")
 
     async def send_health(self, message: str) -> None:
-        """Nightly sniper-edge health report → daily channel (posted during wind-down, no trading)."""
-        await self._send_to_channels(message, [self.daily_channel_name])
+        """Nightly sniper-edge health report → daily channel (posted during
+        wind-down, no trading). This is the ONE message a day the operator
+        steers by, so unlike every other send it retries — and a total loss
+        logs at ERROR (the ping text is already in the journal verbatim)."""
+        import asyncio
+        for attempt in (1, 2, 3):
+            channel = self._get_channel(self.daily_channel_name)
+            if channel:
+                try:
+                    await channel.send(message)
+                    return
+                except Exception as e:
+                    logger.warning("nightly ping send failed (try %d): %s", attempt, e)
+            else:
+                logger.warning("nightly ping: #%s not found yet (try %d)",
+                               self.daily_channel_name, attempt)
+            await asyncio.sleep(20)
+        logger.error("NIGHTLY PING LOST — Discord refused 3 sends; "
+                     "tonight's numbers are in the journal (NIGHTLY PING line)")
 
     async def send_session_banner(self, mode: str, bankroll: float) -> None:
         """Send a session start banner to both channels to mark a new bot run."""
