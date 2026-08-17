@@ -154,10 +154,15 @@ maker:
     - [0.50, 0.20, 2.0]
     - [0.35, 0.20, 2.0]
     - [0.20, 0.20, 2.0]
-  maker_k_place_max: 8.0        # the late zone: disp/error is only trustworthy
-                                # once most of the average is written
-  maker_k_place_min: 6.0        # placement window [6,8]s; placed rungs keep
-                                # resting to the close + verified-winner hold
+  maker_k_place_max: 25.0       # place the moment the 2x floor clears — the
+                                # 08-17 engine-faithful grid proved k [6,25]
+                                # arms the SAME windows as [6,8] at need 2.0
+                                # (a window clear at k>8 is still clear at 8),
+                                # so this buys queue seniority at the rungs
+                                # for zero change in trade selection. 25 is
+                                # the frozen error table's edge; never higher.
+  maker_k_place_min: 6.0        # placed rungs keep resting to the close +
+                                # verified-winner hold
   # Deep bids are NOT a Kelly bet on a certainty claim — the budget is a flat
   # bankroll fraction split across rungs. One ladder at a time, capital back
   # in ~2 min at resolution.

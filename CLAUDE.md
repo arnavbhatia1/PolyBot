@@ -21,7 +21,7 @@ that match its confidence.
    0.80/0.65/0.50/0.35/0.20 — 1723's OWN fill distribution (it avoids >0.87,
    losing 5.9¢/sh at 0.95) — rest on the projection-favored side ONLY while
    the sign clears **2× its own p99.5 error at the current k** (placement
-   k ∈ [6,8]s; the same floor cancels resting rungs the moment it breaks).
+   k ∈ [6,25]s; the same floor cancels resting rungs the moment it breaks).
    The floor IS the regime filter: photo-finish chop cannot clear it, so the
    leg self-silences where the 08-14..15 massacre bled. Hold through the
    close gated on the boundary-verified winner. **Engine-true record
@@ -352,15 +352,19 @@ sniper buys those dips and holds ≤30s to resolution.
   the old 0.18×max floor bled −41¢/sh over 7 windows). The geometry
   [0.80/0.65/0.50/0.35/0.20] IS 1723's own fill distribution — it avoids
   >0.87 (−5.9¢/sh at 0.95); every rung's PRICE is its margin of safety.
-  Placement k ∈ [6,8]s while the taker SKIPs; rungs keep resting to the close
+  Placement k ∈ [6,25]s while the taker SKIPs — the moment the floor clears
+  (the 08-17 grid proved [6,25] arms the SAME windows as [6,8] at need 2.0,
+  so the wider window buys queue seniority for zero change in trade
+  selection); rungs keep resting to the close
   and beyond. Cancel-all when the projection goes cold, flips, or drops under
   the floor. **Post-close hold** (`post_close_hold_s` 60): rungs keep
   resting after the close ONLY while the boundary-verified winner
   (`certain_winner`, fails closed, re-checked every tick) equals our side —
   this is NOT the refuted 0.99-cap camp: deep levels carry ~55-100 sh/level
   (measured live 08-14), not 290k walls.
-  **Backtests for this leg MUST be engine-faithful — arm at k∈[6,8] against
-  the placement floor, then rest; per-print floor conventions are BANNED**
+  **Backtests for this leg MUST be engine-faithful — arm at the configured
+  placement window against the floor, then rest; per-print floor conventions
+  are BANNED**
   (the retired +33.8¢/4.5-win-day read tested each print against the small
   late-k floors, trades the engine can never take). Engine-true 11-day grid
   (08-17; strictly-below print-capped fills, rx-clock trajectories vs
