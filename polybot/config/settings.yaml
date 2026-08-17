@@ -21,10 +21,15 @@ execution:
   max_bankroll_deployed: 0.8  # Never deploy more than 80% of bankroll across all positions
   max_concurrent_positions: 2 # Max live positions at once (across different windows)
   max_book_fill_pct: 0.5      # Never fill more than 50% of the visible book depth (avoids moving market)
-  initial_bankroll: 150.0     # Starting bankroll for paper mode. >= 150 keeps
-                              # every deep_proj rung above the 5-share exchange
-                              # minimum (0.15 frac / 5 rungs -> $4.50 at 0.80);
-                              # at 100 the top rung silently never places.
+  initial_bankroll: 400.0     # Starting bankroll for paper mode — the measured
+                              # go-live funding knee (the level where the full
+                              # sizing population is expressible), so paper is
+                              # an exact dress rehearsal of the live config.
+                              # Rungs stay 15-60 sh, inside real panic-print
+                              # sizes (55-100 sh/level) — larger would let
+                              # paper's fill-in-full rule grant fills live
+                              # never gives. >= 150 minimum: below it the 0.80
+                              # rung falls under the 5-share exchange minimum.
 
   # Paper mode realism (ignore for live): paper fills ride the measured live
   # order path (latency sampled below), so the paper->live switch barely
@@ -65,11 +70,12 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-17T15:30:00+00:00"  # deep_proj PAPER validation
-                               # of the 2x floor + fee-free maker booking
-                               # starts at the 08-17 recovery restart. The one
-                               # earlier 2x-floor fill (9583, full-sweep loss
-                               # at a floor-scraping disp on chop 08-16) booked
+  validation_epoch: "2026-08-17T16:45:00+00:00"  # deep_proj PAPER validation
+                               # of the 2x floor + fee-free booking + $400
+                               # go-live-knee sizing + k[6,25] placement,
+                               # from the 08-17 16:xx restart. The one earlier
+                               # 2x-floor fill (9583, full-sweep loss at a
+                               # floor-scraping disp on chop 08-16) booked
                                # under the old fee model — preserved in git,
                                # scored in review, excluded from this gate.
                                # Set AFTER the boot that carries it
