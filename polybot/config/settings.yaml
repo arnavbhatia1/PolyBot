@@ -21,15 +21,12 @@ execution:
   max_bankroll_deployed: 0.8  # Never deploy more than 80% of bankroll across all positions
   max_concurrent_positions: 2 # Max live positions at once (across different windows)
   max_book_fill_pct: 0.5      # Never fill more than 50% of the visible book depth (avoids moving market)
-  initial_bankroll: 400.0     # Starting bankroll for paper mode — the measured
-                              # go-live funding knee (the level where the full
-                              # sizing population is expressible), so paper is
-                              # an exact dress rehearsal of the live config.
-                              # Rungs stay 15-60 sh, inside real panic-print
-                              # sizes (55-100 sh/level) — larger would let
-                              # paper's fill-in-full rule grant fills live
-                              # never gives. >= 150 minimum: below it the 0.80
-                              # rung falls under the 5-share exchange minimum.
+  initial_bankroll: 150.0     # Starting bankroll for paper mode — matches the
+                              # planned go-live funding (~$125-150), so paper
+                              # rehearses the exact live sizing. HARD FLOOR
+                              # ~135: below it the 0.80 rung falls under the
+                              # 5-share exchange minimum and silently drops
+                              # from the ladder — fund live to $150, not $125.
 
   # Paper mode realism (ignore for live): paper fills ride the measured live
   # order path (latency sampled below), so the paper->live switch barely
