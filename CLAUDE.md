@@ -24,8 +24,13 @@ that match its confidence.
    k ∈ [6,8]s; the same floor cancels resting rungs the moment it breaks).
    The floor IS the regime filter: photo-finish chop cannot clear it, so the
    leg self-silences where the 08-14..15 massacre bled. Hold through the
-   close gated on the boundary-verified winner. Three-regime record: rich
-   +33.8¢/sh at 100% win (~4.5/day), mixed −$4 total, massacre ZERO fills.
+   close gated on the boundary-verified winner. **Engine-true record
+   (arm-and-rest replay, 08-17, validates 1:1 vs realized fills): rich ~1-3
+   wins/day at +23-40¢/sh (80-100% win), mixed/chop negative — occasional
+   floor-scraping full-sweep losses are the priced-in tax. Deep winner-side
+   prints live in contested windows while the floor arms decided ones, so
+   fills are structurally rare; slow fill counts are the expected shape,
+   not a failure.**
 2. **Lock-dip taker (§2)** — fires on the **max tier ONLY**
    (`require_max_tier`) at **k ≥ 6s ONLY** (`twap_k_min_s`): below ~6s the
    margin knots collapse to $0.70-$4 — bounds 564 windows cannot pin, and both
@@ -261,11 +266,11 @@ sniper buys those dips and holds ≤30s to resolution.
 
   | | lock-dip TAKER | deep_proj LADDER |
   |---|---|---|
-  | shape | rare fills at +10¢/sh | ~0-5 filled windows/day BY REGIME, ~100% win in its regime |
+  | shape | rare fills at +10¢/sh | ~1-3 filled windows/day in PAYING regime, ~0 in HOSTILE; 80-100% win in its regime |
   | clean ET days | ≥ 6 | ≥ 6 |
-  | fills | ≥ 10 | ≥ 20 windows |
+  | fills | ≥ 10 | ≥ 20 windows (engine-true rates need ~2 weeks of mixed weather — slow counts are the expected shape) |
   | profit | EW net ≥ +2¢/sh | EW net ≥ +5¢/sh, `usd_per_day > 0` |
-  | expectation | — | backtest says +34¢/sh in its regime, SILENT in chop; losses at 2×-error floors mean the floor broke — investigate before extending |
+  | expectation | — | engine-true +23-40¢/sh in its regime, SILENT-to-negative in chop; a floor-scraping full-sweep loss (disp barely clearing 2×) is the known chop tax — a CLUSTER of them means the floor broke, investigate |
   | halt-on-sight | **any lock_dip loss** (every fire is max-tier, so a loss IS a breach) | none (rung losses are priced-in; dollars rule judges) |
 
   `live_health_read.kill_rule_tripped` computes: any lock_dip loss trips
@@ -354,14 +359,17 @@ sniper buys those dips and holds ≤30s to resolution.
   (`certain_winner`, fails closed, re-checked every tick) equals our side —
   this is NOT the refuted 0.99-cap camp: deep levels carry ~55-100 sh/level
   (measured live 08-14), not 290k walls.
-  **Backtest, strictly-below fills, feed lag embedded (receipt-clock
-  trajectories vs exchange-clock prints), stale-feed windows vetoed**:
-  rich 08-06..10 **+33.8¢/sh EW, ~4.5 win/day, 100% win, t 57**; mixed
-  08-11..14 four fills, −$4 total; massacre 08-14..15 **zero fills, zero
-  loss** — while the ANTI-side control loses 46-49¢/sh at t −42/−21 on
-  identical rules. Sim fills are capped at print size (under-counts
-  winners) — these are the pessimistic reads. The sign
-  carries everything. Sizing: `maker_bankroll_frac` (0.15) of bankroll split
+  **Backtests for this leg MUST be engine-faithful — arm at k∈[6,8] against
+  the placement floor, then rest; per-print floor conventions are BANNED**
+  (the retired +33.8¢/4.5-win-day read tested each print against the small
+  late-k floors, trades the engine can never take). Engine-true 11-day grid
+  (08-17; strictly-below print-capped fills, rx-clock trajectories vs
+  exchange-clock prints, stale-feed vetoed; reproduces the realized ledger
+  1:1): rich 08-06..10 ~1-3 wins/day at +23-40¢/sh, 100% win; mixed and chop
+  negative at EVERY needs level (armed chop fills are full-sweep losses);
+  ANTI-side control −40¢/sh at 40-145 fills/day in every cell. k_place_max
+  8→25 is a no-op at need 2.0; the 0.85 top rung re-closed (lower EW, deeper
+  sweeps). The sign carries everything. Sizing: `maker_bankroll_frac` (0.15) of bankroll split
   by the frozen fractions — deep bids are not a Kelly bet on a certainty
   claim. Fills book through `BaseTrader.book_maker_fill` as ONE blended
   position; the taker is suppressed while a bid rests (one entry path per
