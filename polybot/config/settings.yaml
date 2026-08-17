@@ -62,8 +62,12 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-15T01:15:00+00:00"  # deep_proj PAPER validation
-                               # starts here. Set AFTER the boot that carries it
+  validation_epoch: "2026-08-16T04:15:00+00:00"  # deep_proj PAPER validation
+                               # of the 2x-p99.5 floor starts here — the box
+                               # only picked that floor up at the 08-16
+                               # midnight-ET pull, so the four 08-15 losses ran
+                               # the old 0.18x floor and must not score it.
+                               # Set AFTER the boot that carries it
                                # by more than the ~3.4min entry-to-exit gap,
                                # because the gate filters on EXIT time — an
                                # earlier entry resolving later would otherwise

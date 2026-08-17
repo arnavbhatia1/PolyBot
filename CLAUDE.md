@@ -33,14 +33,16 @@ that match its confidence.
    bought a $0 token, §2). At k ≥ 6 the knots are $14+ and 889 locked windows
    over 7 TWAP-era days show zero breaches.
 
-**LIVE PROBE (validation_epoch 2026-08-14T18:30Z)**: deep_proj runs live at
-the current wallet — max ~$22.50/window exposure (`maker_bankroll_frac` 0.15
-of ~$150), bounded and pre-registered: expect ~5-9 filled windows/day at 65%+
-window win; after ~2 days, under 2 fills/day or under 50% win on ≥10 windows
-means STOP and investigate. Live is the only queue oracle and the only place
-a real maker fill can be proven (the exchange has never filled one of ours).
-Halts: any lock_dip loss; trailing-4-day dollars < 0; `sniper_enabled` false
-is the brake. The nightly health job reads the realized ledger daily.
+**PAPER VALIDATION (validation_epoch 2026-08-16T04:15Z)**: deep_proj
+validates on paper under the 2×-p99.5 floor. The 08-14 live probe was halted
+08-15 at 0-for-5 (−$34.18): every fatal fill fired with displacement scraping
+the old 0.18×-max floor in the chop regime the OOS sim had flagged — the
+current 2× floor vetoes all of them (disp $4-10 vs a $9-13 need at placement
+k). What the probe DID prove: real resting rungs fill live (the queue is
+reachable); the sign filter was the failure, not the mechanism. Go-live again
+needs the §2 deep_proj bar plus a trailing-3-day sim clearing +5¢/sh on fresh
+tape. Halts: any lock_dip loss; trailing-4-day dollars < 0; `sniper_enabled`
+false is the brake. The nightly health job reads the realized ledger daily.
 Gate-vetoed fires persist as leg-stamped ghosts.
 
 **Resolution mechanism (since 2026-08-07 00:00 UTC)**: Polymarket resolves on
@@ -69,8 +71,8 @@ scripts/run_polybot.sh                    # daily cycle: trade -> nightly jobs -
 ```
 
 **The live recipe** (only after the §2 bar passes AND `smoke_gtc_test.py --confirm`
-passes — the live ledger holds 332 taker fills and ZERO maker fills; the 08-13
-probe proved the GTC path places cleanly but never filled a resting bid):
+passes — the live ledger holds 332 taker fills plus the 08-14 probe's real
+deep maker fills, so the GTC place/fill path is proven end to end):
 `settings.yaml` → `mode: live`
 + `late_window.sniper_enabled: true` + a fresh `validation_epoch`. That is the
 complete switch; paper and live share every decision path, and the sniper is the
