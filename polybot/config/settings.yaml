@@ -67,14 +67,15 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-17T16:45:00+00:00"  # deep_proj PAPER validation
-                               # of the 2x floor + fee-free booking + $400
-                               # go-live-knee sizing + k[6,25] placement,
-                               # from the 08-17 16:xx restart. The one earlier
-                               # 2x-floor fill (9583, full-sweep loss at a
-                               # floor-scraping disp on chop 08-16) booked
-                               # under the old fee model — preserved in git,
-                               # scored in review, excluded from this gate.
+  validation_epoch: "2026-08-17T19:30:00+00:00"  # deep_proj PAPER validation:
+                               # 2x floor + fee-free booking + $150 go-live
+                               # sizing + k[6,25] placement + 135-sh at-price
+                               # queue (re-measured 08-17: deep-level queues
+                               # grew 2.5x from 08-14's 55 as the deep-buyer
+                               # cohort arrived). Fill 9583 (full-sweep loss,
+                               # floor-scraping disp, chop 08-16) booked under
+                               # the old fee model — preserved in git, scored
+                               # in review, excluded from this gate.
                                # Set AFTER the boot that carries it
                                # by more than the ~3.4min entry-to-exit gap,
                                # because the gate filters on EXIT time — an

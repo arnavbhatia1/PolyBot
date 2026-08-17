@@ -315,10 +315,11 @@ def test_at_price_prints_fill_only_beyond_the_measured_queue(tmp_path, monkeypat
     mgr = _mgr()
     _place(mgr, time.time() - 285.0, budget=200.0)      # 0.80 rung = 50 sh
     top = mgr.active["rungs"][0]
-    mgr.on_print("tokU", {"price": "0.80", "size": "40"})   # queue eats it
+    mgr.on_print("tokU", {"price": "0.80",
+                          "size": str(mb.AT_PRICE_QUEUE_SH - 15)})  # queue eats it
     assert top["filled"] == 0.0
-    mgr.on_print("tokU", {"price": "0.80", "size": "40"})   # 80 seen: 25 beyond
-    assert top["filled"] == pytest.approx(80 - mb.AT_PRICE_QUEUE_SH)
+    mgr.on_print("tokU", {"price": "0.80", "size": "40"})   # 25 beyond the queue
+    assert top["filled"] == pytest.approx(25.0)
     assert top.get("filled_at_px") is True
     mgr.on_print("tokU", {"price": "0.80", "size": "500"})  # capped at rung size
     assert top["filled"] == pytest.approx(top["shares"])

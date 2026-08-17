@@ -379,8 +379,9 @@ sniper buys those dips and holds ≤30s to resolution.
   position; the taker is suppressed while a bid rests (one entry path per
   window). LIVE fills poll at 1Hz off-path; **PAPER fills: strictly-below prints fill
   a rung in FULL** (the book walked through our level); **AT-price prints
-  credit only the volume beyond `AT_PRICE_QUEUE_SH` (55 sh — the live-measured
-  median resting size per deep level, 10-window book watch 08-14)**,
+  credit only the volume beyond `AT_PRICE_QUEUE_SH` (135 sh — the live-measured
+  median resting size per deep level, 49-window book watch 08-17; grew 2.5×
+  from 08-14's 55 as the deep-buyer cohort arrived)**,
   accumulated across the window and tracked separately (`filled_at_px`) so
   live fills recalibrate the constant; above-price prints never fill.
   Snapshot-based `queue_ahead` modeling remains BANNED (102 live placements,

@@ -46,13 +46,14 @@ logger = logging.getLogger("polybot")
 MIN_NOTIONAL_USD = 1.0          # CLOB floor — below this nothing books
 MIN_SHARES = 5.0                # exchange minimum order size; a 2.49-share rung
                                 # is rejected outright ("lower than the minimum: 5")
-AT_PRICE_QUEUE_SH = 55.0        # measured median resting size per deep level
-                                # (live book watcher, 10 windows, 08-14). Paper
-                                # credits an AT-price print only beyond this much
-                                # typical queue ahead of us — a live-measured
-                                # constant, never a book snapshot (snapshot queue
-                                # models are BANNED; they built the 77-fills/day
-                                # fantasy). Recalibrate only from live fills.
+AT_PRICE_QUEUE_SH = 135.0       # measured median resting size per deep level
+                                # (live book watcher, 49 windows / 30k levels,
+                                # 08-17 — up 2.5x from 08-14's 55 as the deep-
+                                # buyer cohort grew). Paper credits an AT-price
+                                # print only beyond this much typical queue
+                                # ahead of us — a live-measured constant, never
+                                # a book snapshot (snapshot queue models are
+                                # BANNED; they built the 77-fills/day fantasy).
 LADDER_PRICE_MIN = 0.15         # clamps on an operator price file. The band is
 LADDER_PRICE_MAX = 0.95         # deep on purpose: break-even win rate equals the
                                 # price paid, so a 0.20 rung needs 20% against a
