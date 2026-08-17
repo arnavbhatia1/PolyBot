@@ -317,3 +317,21 @@ def test_at_price_prints_fill_only_beyond_the_measured_queue(tmp_path, monkeypat
     r2 = mgr.active["rungs"][1]
     mgr.on_print("tokU", {"price": "0.60", "size": "1"})
     assert r2["filled"] == pytest.approx(r2["shares"])
+
+
+def test_live_retire_reads_the_final_matched_size(tmp_path, monkeypatch):
+    """A live fill can land inside the cancel round trip — the booking must
+    re-read each order's final matched size, or the wallet holds unbooked shares."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+
+    class RaceTrader(FakeTrader):
+        async def poll_gtc_fill(self, order_id):
+            # the 0.80 rung matched 10 sh, visible only after its cancel landed
+            return 10.0 if (order_id == "o1" and "o1" in self.cancelled) else 0.0
+
+    mgr = MakerBidManager(RaceTrader(), FakeChainlink(64200.0), CFG, paper=False)
+    _place(mgr, time.time() - 285.0, budget=200.0)
+    asyncio.run(mgr._retire("test"))
+    assert len(mgr.trader.booked) == 1
+    assert mgr.trader.booked[0]["shares_gross"] == pytest.approx(10.0)
+    assert mgr.trader.booked[0]["price"] == pytest.approx(0.80)
