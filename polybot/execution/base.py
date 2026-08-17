@@ -403,7 +403,11 @@ class BaseTrader(ABC):
                          "the exchange unbooked; reconcile manually.",
                          shares_gross, price, market_id, bankroll)
             return False
-        fee_in_shares = entry_fee_shares(shares_gross, price, fee_rate)
+        # Makers are never charged fees (USDC-delta verified 08-10: every
+        # zero-fee row in 1,751 live fills was a maker) — a taker-style share
+        # deduction here shaves 1.1-1.75c/sh off winning rungs, a third of the
+        # deep_proj +5c/sh bar.
+        fee_in_shares = 0.0
         if isinstance(indicator_snapshot, dict):
             indicator_snapshot = _dumps_snapshot(indicator_snapshot)
         try:

@@ -409,3 +409,19 @@ class TestAbstractEnforcement:
     def test_cannot_instantiate_base(self):
         with pytest.raises(TypeError):
             BaseTrader(db=None)
+
+
+# ---------------------------------------------------------------------------
+# book_maker_fill — maker fills are fee-free on the exchange
+# ---------------------------------------------------------------------------
+
+class TestBookMakerFill:
+    @pytest.mark.asyncio
+    async def test_maker_fill_keeps_every_share(self, trader, db):
+        ok = await trader.book_maker_fill(
+            market_id="m1", question="q", side="Up",
+            price=0.50, shares_gross=40.0)
+        assert ok is True
+        pos = (await db.get_open_positions())[0]
+        assert pos["shares_held"] == pytest.approx(40.0, abs=0.001)
+        assert (await db.get_bankroll()) == pytest.approx(100.0 - 20.0, abs=0.01)
