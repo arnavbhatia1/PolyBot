@@ -152,6 +152,12 @@ class MakerBidManager:
             px = await self.legal_price(token_id, px)
             shares = round(usd / px, 2)
             if shares < MIN_SHARES:
+                # Loud: a starved rung is silent lost geometry — the breaker
+                # or a thin bankroll can strip the top rung and nothing else
+                # would ever say so.
+                logger.info("MAKER RUNG SKIPPED at %.2f — %.2f sh is under the "
+                            "%.0f-share exchange minimum (budget $%.2f)",
+                            px, shares, MIN_SHARES, usd)
                 continue
             order_id = await self.trader.place_gtc_bid(token_id, px, shares)
             if order_id:

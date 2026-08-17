@@ -21,7 +21,10 @@ execution:
   max_bankroll_deployed: 0.8  # Never deploy more than 80% of bankroll across all positions
   max_concurrent_positions: 2 # Max live positions at once (across different windows)
   max_book_fill_pct: 0.5      # Never fill more than 50% of the visible book depth (avoids moving market)
-  initial_bankroll: 100.0     # Starting bankroll for paper mode
+  initial_bankroll: 150.0     # Starting bankroll for paper mode. >= 150 keeps
+                              # every deep_proj rung above the 5-share exchange
+                              # minimum (0.15 frac / 5 rungs -> $4.50 at 0.80);
+                              # at 100 the top rung silently never places.
 
   # Paper mode realism (ignore for live): paper fills ride the measured live
   # order path (latency sampled below), so the paper->live switch barely

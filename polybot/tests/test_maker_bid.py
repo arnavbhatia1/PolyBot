@@ -97,6 +97,15 @@ def test_full_ladder_places(tmp_path, monkeypatch):
     assert len(mgr.trader.placed) == len(PRICES)
 
 
+def test_starved_budget_skips_only_the_top_rung(tmp_path, monkeypatch):
+    """A thin budget strips rungs from the top (fewest shares per dollar) —
+    the rest of the ladder still places."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _mgr()
+    _place(mgr, time.time() - 285.0, budget=17.5)   # $3.50/rung: 0.80 -> 4.4 sh
+    assert [p for _, p, _ in mgr.trader.placed] == PRICES[1:]
+
+
 def test_sign_below_every_need_places_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
     mgr = _mgr()
