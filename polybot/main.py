@@ -2659,10 +2659,13 @@ async def main() -> None:
             r = (twap or {}).get("regime")
             if not r:
                 return ""
-            # deep_proj's weather: it earns on wide gaps and bleeds on
-            # photo-finishes. Market-normal p50 ~$12; the 08-14..15 massacre ~$6.
+            # deep_proj's weather: it earns on wide gaps and self-silences on
+            # photo-finishes. Thresholds re-derived for the 60s rule 08-18
+            # (percentile-ported: p50 floor $6, photo band $1 inside the
+            # read); a HOSTILE day means expect zero fills, not losses — the
+            # 08-18 audit found the loss tax lands on PAYING days.
             verdict = ("HOSTILE — photo-finish chop, deep_proj earns nothing here"
-                       if r["gap_p50"] < 8 or r["photo_finish_pct"] > 15
+                       if r["gap_p50"] < 6 or r["photo_finish_pct"] > 15
                        else "PAYING — whipsaw weather, deep_proj's regime")
             return (f"Regime: window gaps p50 ${r['gap_p50']:.0f} "
                     f"(p25 ${r['gap_p25']:.0f} / p75 ${r['gap_p75']:.0f}), "
