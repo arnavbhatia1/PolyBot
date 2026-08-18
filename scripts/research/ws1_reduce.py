@@ -21,7 +21,7 @@ from pathlib import Path
 SP = Path(__file__).parent
 REC = Path(__file__).resolve().parents[2] / "polybot" / "memory" / "recordings"
 TWAP_SWITCH = 1786060800
-DAYS = [f"2026-08-{d:02d}" for d in range(7, 18)]
+DAYS = [f"2026-08-{d:02d}" for d in range(7, 19)]
 
 
 def load_label_eps():
@@ -65,10 +65,14 @@ def main():
     for day in DAYS:
         path = REC / f"micro_{day}.jsonl.gz"
         if not path.exists():
+            path = REC / f"micro_{day}.jsonl"      # today's file is still plain
+        if not path.exists():
             print(f"MISSING {path}", flush=True)
             continue
         n = 0
-        with gzip.open(path, "rt", encoding="utf-8") as f:
+        opener = (lambda p: gzip.open(p, "rt", encoding="utf-8")) \
+            if path.suffix == ".gz" else (lambda p: open(p, encoding="utf-8"))
+        with opener(path) as f:
             for line in f:
                 n += 1
                 if len(line) < 9:

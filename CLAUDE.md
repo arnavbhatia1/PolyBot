@@ -8,9 +8,8 @@ resolution. There is no other model and no exit path.
 price because it prices off spot.** We are demonstrably not the fast
 participant (the book reprices 0.33s after Binance, 2.5s before our oracle
 receipt); the projection's information is harvested at prices that match its
-confidence. Under the 60s rule the projection's sign, wherever it clears even
-half its own p99.5 error, named the winner in 873/873 armed windows
-(engine-true, 08-14..17).
+confidence. The sign record and its out-of-fit bounds live in RESEARCH.md —
+quote those, not an in-sample count.
 
 **Resolution mechanism (since 2026-08-14 00:00 UTC)**: Polymarket resolves on
 the official **60-second TWAP stream** (RTDS topic `crypto_prices_twap_sixty`;
@@ -99,56 +98,63 @@ CLOB; balance + allowance verified at boot).
 ## 2. The two legs (one signal, risk priced two ways)
 
 Margin tables (`signal_engine.TWAP_MARGIN_P995/_MAX`): frozen 2026-08-18 on
-970 real-final 60s-rule windows + 1,651 synthetic (max-union only); estimator
-= rx-clock ZOH + coverage guard. p99.5 at k=6 is $1.5; knots run to k=58.
-Re-fit at ≥14 real-final days is re-measurement, not bar-relaxing
-(RESEARCH.md #2). Tuning them to make a window fire IS bar-relaxing.
+970 real-final 60s-rule windows + 1,651 synthetic (max-union only — synthetic
+finals are our own a60 reconstruction re-targeted onto pre-rule tape, which
+makes low-k errors self-referentially SMALL, so synthetic windows may only
+ever WIDEN the max knots, never tighten anything); estimator = rx-clock ZOH +
+coverage guard, MAX from per-tick interval maxima. p99.5 at k=6 is $1.5;
+knots run to k=58. Re-fit at ≥14 real-final days is re-measurement, not
+bar-relaxing (RESEARCH.md). Tuning them to make a window fire IS bar-relaxing.
 
 **Deep-projection maker ladder (`signal_leg="deep_proj"`) — the business.**
 Rungs 0.80/0.65/0.50/0.35/0.20 × 20% of `maker_bankroll_frac` (0.15) rest on
 the projection-favored side while the BRIDGED projection's displacement clears
-`need` × p99.5(k) — need 0.5 since 08-18 (pre-registered grid: 7/7 wins +$81
-vs 1 fill at the old 2.0; ANTI-side control −$17k at 0/796; every rung ≥
-break-even+10pp). Placement k ∈ [6,25] — the grid's only losses came from
-k>25 arms (contested flow the sign cannot yet call; 79% of deep winner-side
-volume prints there and is deliberately left — RESEARCH.md #6). The same
-floor cancels resting rungs when it breaks. Post-close hold 60s gated on the
-boundary-verified winner (`certain_winner`, fails closed). The bridge:
-spot_est = latest raw report + Binance movement since that report's payload
-ts (`spot_bridge_delta`, RTDS `crypto_prices`); every failure mode collapses
-to the plain projection. Fills book through `book_maker_fill` as ONE blended
-position; the taker is suppressed while a bid rests. **Paper fill rule
+`need` × p99.5(k) — need 1.0, the interim floor from the 08-18 walk-forward
+audit (the in-sample 0.5 grid could not be validated out-of-fit; the ≥14-day
+re-fit re-decides — RESEARCH.md #1). Placement k ∈ [6,25]: the k>25 flow is
+REFUTED as harvestable (sweeps traverse the whole ladder inside ~1s and
+outrun any cancel; flip-race loss probability exceeds every rung's price
+margin — REFUTATIONS.md). The same floor cancels resting rungs when it
+breaks. Post-close hold 60s gated on the boundary-verified winner
+(`certain_winner`, fails closed). The bridge: spot_est = latest raw report +
+Binance movement since that report's payload ts (`spot_bridge_delta`); every
+failure mode collapses to the plain projection. Fills book through
+`book_maker_fill` as ONE blended position. **Paper fill rule
 (live-calibrated, conservative)**: strictly-below prints fill a rung in FULL;
 at-price prints credit only volume beyond `AT_PRICE_QUEUE_SH` (135 sh);
 snapshot queue models are BANNED (REFUTATIONS.md). Paper pays the measured
-GTC round trip on place and cancel. **Bar (unchanged)**: ≥6 clean ET days,
-≥20 filled windows, EW ≥ +5¢/sh, `usd_per_day > 0`, on realized paper fills
-since `validation_epoch` — re-pin the epoch at the migration deploy; every
-fill before it is a wrong-rule artifact.
+GTC round trip on place and cancel. Maker fills are genuinely fee-free
+(re-verified on post-rule fills 08-18: 274/274 USDC deltas exact).
+**Bar (unchanged)**: ≥6 clean ET days, ≥20 filled windows, EW ≥ +5¢/sh,
+`usd_per_day > 0`, on realized paper fills since `validation_epoch`.
 
-**Lock-dip taker (`lock_dip`)** — fires on the **max tier ONLY**
-(`require_max_tier`: p99.5 broke three times in the 30s era while max held
-through every one) at **k ≥ 6s** (`twap_k_min_s`, the k=1.1 breach scar) with
-the PLAIN projection (tables are plain-measured; bridged adoption bar in
-RESEARCH.md #4). Zone = the full 60s averaging window. Ask ≤ tier_prob −
-`sniper_min_edge`; FOK pads one tick and dies (never chase a vanished dip).
-Sizing is market-anchored: Kelly on `ask + sniper_min_edge`, never the tier
-prob. Gates: trusted strike, raw freshness ≤60s, coverage guard, official-
-stream stall veto (`twap_frozen`), depth ≥ $50, 50% book-fill cap, net-edge
-floor, $1 min, pre-submit VWAP re-check. Booking: chain-truth via the +8s
-audit (the indexer loses the race on nearly every fill); the `fees` column is
-share-denominated, NOT the charged taker fee — takers pay ~0.5-0.9¢/sh via
-the USDC debit; makers are genuinely fee-free.
+**Lock-dip taker (`lock_dip`) — DORMANT (`taker_enabled: false`, 08-18).**
+Its whipsaw supply died with the 60s rule: 4 winner-side max-lock dips in
+1,184 windows, one FOK-reachable, vs a ≥1-per-3-days bar — a 60s average
+moves too slowly to produce panicked max-lock asks. Not refuted: the code
+stays, the signal still evaluates and logs would-be fires, and the re-arm
+condition is in RESEARCH.md. Its mechanics when armed: max tier ONLY
+(`require_max_tier` — p99.5 tiers realize breaches; the 60s sim's one loss
+was a p99.5 fire), k ≥ 6s, PLAIN projection, ask ≤ tier_prob −
+`sniper_min_edge`, one-tick FOK pad, market-anchored Kelly, all §1 gates.
+Booking: chain-truth via the +8s audit; the `fees` column is
+share-denominated, NOT the charged taker fee — takers pay the documented
+curve via the USDC debit (re-verified post-rule 08-18: 326 rows at fee/model
+median 1.000).
 
 **Hold to resolution — structurally.** No sell path exists in the codebase;
 both legs' edges were measured hold-to-resolution (REFUTATIONS.md: exits).
 
 **Kill rules** (`live_health_read.kill_rule_tripped`, armed at any go-live):
 any `lock_dip` loss trips on ONE occurrence (every fire is max-tier — a loss
-IS a breach); otherwise trailing-4-day mean DOLLARS < 0 once ≥4 ET days.
-`trading_enabled: false` is the shared emergency brake for every leg. Never
-deploy on a harness print alone — the paper shadow's realized fills are the
-binding gate. Capital deploys ONLY through these two legs.
+IS a breach); otherwise trailing-4-day mean DOLLARS < 0, judged only once the
+trailing window holds ≥4 ET days AND ≥5 fills — sparse fills keep accruing
+(one −$4.50 rung loss after three quiet days must not halt a leg that is up
+on the week; measured 08-18). `trading_enabled: false` is the shared
+emergency brake for every leg; the per-window SOURCE gate (§6) flips it
+in-process on a resolution-source mismatch. Never deploy on a harness print
+alone — the paper shadow's realized fills are the binding gate. Capital
+deploys ONLY through these two legs.
 
 ## 3. Sizing (every leg)
 
@@ -202,18 +208,29 @@ the only on-chain thing the bot signs).
 - **Tape recorder**: every CLOB print (+ exchange ts, fee bps) →
   `memory/recordings/tape_*.jsonl` (gitignored).
 - **Micro-tape**: every CLOB BBO change (final 90s) + every raw report ("l")
-  + the official 60s stream ("t") + Binance relay ("s"/src "bz"), payload+
-  receipt ts → `micro_*.jsonl`; nightly gzip (~39×); readers take .jsonl(.gz).
+  + the official 60s stream ("t") + the RETIRED 30s stream ("t3", recorded
+  only — A/B evidence for the next silent source swap) + Binance relay
+  ("s"/src "bz"), payload+receipt ts → `micro_*.jsonl`; nightly gzip (~39×);
+  readers take .jsonl(.gz).
 - **Per-decision records**: `trade_context` on fills AND ghosts (`signal_leg`
   is the per-leg ledger key). **None-vs-0.0 is load-bearing** — cold inputs
   record None, never 0.0.
+- **The per-window SOURCE hard gate** (`recording._check_resolution_source`):
+  every labeled window's served strike/final is compared against our TRUSTED
+  stream captures; a >$0.005 mismatch flips `trading_enabled` false
+  in-process and pages Discord (settings on disk unchanged — the operator
+  re-arms by restart after re-pointing the feed). The one wired exception to
+  "watches never flip config": a source mismatch means every leg is
+  computing fiction.
 - **NightlyScheduler** (23:45 ET): rollups + retention + the sniper health
   ping (`_sniper_health_job` → Discord `#polybot-daily`): realized per-leg
   ledger + kill-rule verdict (realized-only authority), SIM ceiling read,
-  regime line (trailing gaps p25/50/75 + photo-finish share), chain watch
-  (final==next strike) AND the SOURCE watch (`mechanism_read` — served values
-  vs our captured boundaries; the check that catches a silent source swap).
-  Alert-only; never flips config.
+  regime line (trailing gaps p25/50/75 + photo-finish share <$1; HOSTILE =
+  p50 < $6 or photo > 15%, percentile-ported to the 60s rule 08-18 — HOSTILE
+  predicts zero fills, not losses), chain watch (final==next strike), the
+  nightly SOURCE summary (`mechanism_read`), and the ops watch (POST RTT p50
+  vs the 436ms table ±25%; trailing-7d sweep-consumed deep-queue p75 vs the
+  135-sh at-price constant). Alert-only.
 
 ## 7. Hard rules
 
@@ -225,7 +242,9 @@ the only on-chain thing the bot signs).
   Re-measurement on a bigger corpus/better estimator is not relaxing
   (RESEARCH.md register).
 - No symmetric market-making, no oracle-cadence trading, no expansion past
-  btc-5m (REFUTATIONS.md). Scaling is SIZE on this one book.
+  btc-5m. What is actually refuted is post-close camping on the siblings
+  (30s era, REFUTATIONS.md); their in-window deep flow is unmeasured and low
+  priority (RESEARCH.md). Scaling is SIZE on this one book.
 - No mid-price edge math (executable CLOB BBO only). Never skip the fee:
   `rate*shares*p*(1-p)`, rate 0.07; flat-additive gates use 0.0175 — never
   mix them.
