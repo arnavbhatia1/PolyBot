@@ -37,12 +37,14 @@ which come from the counterparty cannot detect the counterparty changing.**
    ~14 real days (~4,000 windows); re-fit with ws1_measure60 conventions
    (rx-clock ZOH + 10s coverage guard, one sample per window per k). Also
    re-derive `need` for the ladder from the fresh tables.
-3. **Taker under the 60s rule** — the harness (new tables, zone 60) reads 14
-   fills / 93% win / EW +4.18¢/sh / 579 kills on 08-14..17 tape — a CEILING,
-   and one losing fill whose tier must be identified before trusting max-tier
-   semantics (if that loss was max-tier, the never-breach premise needs the
-   k-region mapped out before any live thought). Status: fire-level dump in
-   flight 08-18; then the paper shadow accrues alongside deep_proj.
+3. **Taker under the 60s rule** — the harness (final interval-max tables,
+   zone 60) reads 14 fills / 93% win / EW +4.18¢/sh on 08-14..17 tape, ALL
+   p99.5-tier at k 9-60 with ONE breach-loss (08-14 13:35, k=54, −95.3¢ —
+   one breach nearly erased thirteen ~+5¢ wins, the doctrine's arithmetic
+   exactly). The PRODUCTION tier (max-only) fired ZERO times: under the
+   interval-max knots the taker is effectively dormant — the correct posture
+   on a 3.3-day corpus (the k=1.1 scar). Reopens with the ≥14-day table
+   re-fit (#2); the p99.5 tier stays refused.
 4. **Bridged projection for the taker** — 08-18 measurement: bz-bridge p99.5
    ≤ plain at 12/13 knots (one ~tie), max never wider on real-final days;
    kline-sim (validated ≡ live bz at p99 $0.000) tighter at ALL knots on the
