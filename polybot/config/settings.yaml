@@ -68,21 +68,14 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-17T19:30:00+00:00"  # STALE - every fill before the
-                               # 60s-rule migration deploys was decided on the
-                               # 30s stream (wrong strike + wrong projection
-                               # horizon since 08-14): re-pin this AT the
-                               # migration boot, and read pre-migration fills
-                               # as wrong-rule artifacts, never as evidence.
-                               # Original note: deep_proj PAPER validation:
-                               # 2x floor + fee-free booking + $150 go-live
-                               # sizing + k[6,25] placement + 135-sh at-price
-                               # queue (re-measured 08-17: deep-level queues
-                               # grew 2.5x from 08-14's 55 as the deep-buyer
-                               # cohort arrived). Fill 9583 (full-sweep loss,
-                               # floor-scraping disp, chop 08-16) booked under
-                               # the old fee model — preserved in git, scored
-                               # in review, excluded from this gate.
+  validation_epoch: "2026-08-18T16:45:00+00:00"  # deep_proj PAPER validation
+                               # under the 60s-RULE ENGINE (sixty topic, 60s
+                               # projection + coverage guard, 08-18 tables,
+                               # need 0.5, k[6,25], 135-sh at-price queue,
+                               # $150 go-live sizing). Every fill before this
+                               # instant ran wrong-rule code (the bot traded
+                               # the 30s stream 08-14..18) — wrong-rule
+                               # artifacts, never evidence.
                                # Set AFTER the boot that carries it
                                # by more than the ~3.4min entry-to-exit gap,
                                # because the gate filters on EXIT time — an
@@ -92,11 +85,10 @@ late_window:
                                # nightly health job scores only the current
                                # mode's fills at/after this instant.
   # Refuse to fire on the p99.5 tier — only the NEVER-BREACHED max tier deploys
-  # capital. p99.5 has now breached three times; on 08-11 13:49 a $21.90
-  # displacement at k=19s carried a real projection error of $24.83, which still
-  # sat inside the max-tier margin of $26.40 — the max bound held through the
-  # very event that broke p99.5, and max tier would not have taken that trade.
-  # One breach costs ~55 post-close wins, so the thin tier is not worth its fires.
+  # capital. p99.5 broke three times in the 30s era while max held through every
+  # one, and the 60s-rule sim replayed the same shape on day one (one p99.5
+  # breach-loss at -95c vs thirteen +5c wins). One breach erases ~20 wins; the
+  # thin tier is not worth its fires.
   require_max_tier: true
   twap_zone_s: 60.0             # decision zone = the resolving 60s averaging window (rule
                                 # since 08-14); the projection is undefined earlier (never
