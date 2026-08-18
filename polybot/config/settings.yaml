@@ -149,28 +149,28 @@ maker:
   # Rungs: [price, budget_fraction, need] where `need` is the MULTIPLE of the
   # p99.5 PROJECTION ERROR at the current k the displacement must clear — for
   # placement AND survival (maintain cancels the ladder the moment the floor
-  # breaks). need 2.0 = the sign must be twice its own error scale.
-  # THE FLOOR IS THE REGIME FILTER: in photo-finish chop, displacement cannot
-  # mathematically reach 2x its error while gaps run sub-$2, so the leg
-  # self-silences window-by-window — no era gate. Three-regime record on
-  # identical strictly-below fill rules: rich 08-06..10 +33.8c/sh at 100% win
-  # (t 57, ~4.5 wins/day); mixed 08-11..14 four fills, -$4 total; massacre
-  # 08-14..15 ZERO qualifying fills — where the old 0.18x-max floor lost
-  # -41c/sh over 7 windows on the same tape. The geometry stays 1723's own
-  # fill distribution (it avoids >0.87, losing 5.9c/sh at 0.95).
+  # breaks). Under the 60s-rule tables (frozen 08-18) the projection's sign
+  # is near-infallible wherever it clears even HALF its own error (engine-true
+  # 08-14..17: sign 873/873 armed windows at need 0.5), so the floor's job is
+  # only to refuse photo-finishes; the rung PRICE carries the risk (break-even
+  # win rate equals the price paid — 1723's own model). need 0.5 selected by
+  # the pre-registered 08-18 grid: 7/7 wins +$81 vs 1 fill +$34 at the old
+  # 2.0, every rung >= break-even+10pp, ANTI-side control -$17k. This is the
+  # PAPER-VALIDATION candidate — the §2 bar on fresh tape remains the
+  # deployment authority; the geometry stays 1723's fill distribution.
   maker_ladder:
-    - [0.80, 0.20, 2.0]
-    - [0.65, 0.20, 2.0]
-    - [0.50, 0.20, 2.0]
-    - [0.35, 0.20, 2.0]
-    - [0.20, 0.20, 2.0]
-  maker_k_place_max: 25.0       # place the moment the 2x floor clears — the
-                                # 08-17 engine-faithful grid proved k [6,25]
-                                # arms the SAME windows as [6,8] at need 2.0
-                                # (a window clear at k>8 is still clear at 8),
-                                # so this buys queue seniority at the rungs
-                                # for zero change in trade selection. 25 is
-                                # the frozen error table's edge; never higher.
+    - [0.80, 0.20, 0.5]
+    - [0.65, 0.20, 0.5]
+    - [0.50, 0.20, 0.5]
+    - [0.35, 0.20, 0.5]
+    - [0.20, 0.20, 0.5]
+  maker_k_place_max: 25.0       # rest from k=25 only: the 08-18 grid's ONLY
+                                # losses came from k>25 arms (early moves that
+                                # revert before the close); 79% of deep winner
+                                # -side volume prints at k>25 but it is
+                                # contested flow the sign cannot yet call —
+                                # extending k_max buys those losses, not that
+                                # volume.
   maker_k_place_min: 6.0        # placed rungs keep resting to the close +
                                 # verified-winner hold
   # Deep bids are NOT a Kelly bet on a certainty claim — the budget is a flat
