@@ -240,23 +240,23 @@ class TestTwap:
     estimator the frozen margins bind to), the sniper projection, and strict
     topic routing (the TWAP topic owns the strike; raw ticks own the price)."""
 
-    def test_twap_30_time_weighted_step_function(self):
+    def test_twap_60_time_weighted_step_function(self):
         f = ChainlinkFeed()
         end = 1786060000.0
-        # Value 100 holds [end-30, end-20], 200 holds [end-20, end-10], 300 holds [end-10, end]
+        # Value 100 holds [end-60, end-40], 200 holds [end-40, end-20], 300 holds [end-20, end]
         f._reports.extend([
-            (end - 42.0, 100.0),   # anchor at/before window start
-            (end - 20.0, 200.0),
-            (end - 10.0, 300.0),
+            (end - 72.0, 100.0),   # anchor at/before window start
+            (end - 40.0, 200.0),
+            (end - 20.0, 300.0),
         ])
-        assert f.twap_30(end_ts=end) == pytest.approx((100 + 200 + 300) / 3)
+        assert f.twap_60(end_ts=end) == pytest.approx((100 + 200 + 300) / 3)
 
-    def test_twap_30_none_until_window_fully_covered(self):
+    def test_twap_60_none_until_window_fully_covered(self):
         f = ChainlinkFeed()
         end = 1786060000.0
         f._reports.append((end - 12.0, 500.0))   # no anchor near the window start
-        assert f.twap_30(end_ts=end) is None     # partial average must not masquerade
-        assert ChainlinkFeed().twap_30(end_ts=end) is None
+        assert f.twap_60(end_ts=end) is None     # partial average must not masquerade
+        assert ChainlinkFeed().twap_60(end_ts=end) is None
 
     def test_running_avg_accepts_anchor_shortly_after_start(self):
         """The margins were measured with a ≤2s post-start anchor allowed — the
@@ -272,25 +272,45 @@ class TestTwap:
     def test_projected_final_twap_blends_observed_and_spot(self):
         f = ChainlinkFeed()
         now = time.time()
-        close = now + 10.0                        # 10s remaining -> w = 2/3
-        t0 = close - 30.0
-        f._reports.extend([(t0 - 1.0, 64000.0), (t0 + 5.0, 64060.0)])
+        close = now + 10.0                        # 10s remaining -> w = 5/6
+        t0 = close - 60.0
+        # 64000 holds [t0, t0+30), 64060 holds [t0+30, now]; reports every <=10s
+        # so the coverage guard passes. A = (64000*30 + 64060*20) / 50 = 64024.
+        f._reports.append((t0 - 1.0, 64000.0))
+        for off in (9.0, 18.0, 27.0):
+            f._reports.append((t0 + off, 64000.0))
+        for off in (30.0, 38.0, 46.0, 50.0):
+            f._reports.append((t0 + off, 64060.0))
         f._price = 64120.0
         f._last_update = now
-        # A over [t0, now]: 64000 holds 5s, 64060 holds 15s -> 64045
         proj = f.projected_final_twap(close, now=now)
-        assert proj == pytest.approx((2 / 3) * 64045.0 + (1 / 3) * 64120.0)
+        assert proj == pytest.approx((5 / 6) * 64024.0 + (1 / 6) * 64120.0)
 
     def test_projected_final_twap_none_outside_zone_or_stale(self):
         f = ChainlinkFeed()
         now = time.time()
-        f._reports.append((now - 40.0, 64000.0))
+        f._reports.append((now - 70.0, 64000.0))
         f._price = 64100.0
         f._last_update = now
-        assert f.projected_final_twap(now + 31.0, now=now) is None   # zone not started
+        assert f.projected_final_twap(now + 61.0, now=now) is None   # zone not started
         assert f.projected_final_twap(now - 1.0, now=now) is None    # window closed
         f._last_update = now - 10.0                                  # stale spot
         assert f.projected_final_twap(now + 10.0, now=now) is None
+
+    def test_projected_final_twap_none_on_delivery_hole(self):
+        """A raw outage inside the averaging span leaves a poisoned average
+        behind a perfectly fresh spot — the freshness gate cannot see it
+        (measured: a 68s hole projected a $24 error onto a $0.14 photo-finish).
+        The coverage guard must void the projection instead."""
+        f = ChainlinkFeed()
+        now = time.time()
+        close = now + 10.0
+        t0 = close - 60.0
+        f._reports.extend([(t0 - 1.0, 64000.0), (t0 + 2.0, 64000.0)])
+        f._reports.extend([(now - 1.0, 64180.0), (now, 64183.0)])  # resumes late
+        f._price = 64183.0
+        f._last_update = now
+        assert f.projected_final_twap(close, now=now) is None
 
     def test_twap_topic_owns_strike_raw_owns_price(self):
         """Both topics carry the same btc/usd symbol — a routing slip would
@@ -315,10 +335,10 @@ class TestTwap:
             raw_report = _j.dumps({"topic": "crypto_prices_chainlink",
                                    "payload": {"symbol": "btc/usd", "value": 64000.0,
                                                "timestamp": (boundary + 1) * 1000}})
-            twap_report = _j.dumps({"topic": "crypto_prices_twap_thirty",
+            twap_report = _j.dumps({"topic": "crypto_prices_twap_sixty",
                                     "payload": {"symbol": "btc/usd", "value": 63990.5,
                                                 "timestamp": (boundary + 2) * 1000,
-                                                "window_s": 30}})
+                                                "window_s": 60}})
             ws = FakeWS([raw_report, twap_report])
             import websockets as _wslib
             class _Ctx:
@@ -437,14 +457,14 @@ class TestSpotBridge:
 
     def test_bridged_projection_moves_by_weighted_delta(self):
         now = time.time()
-        close = now + 10.0          # k=10s -> w = 2/3
+        close = now + 10.0          # k=10s -> w = 5/6
         f = self._feed(now, [(now - 1.0, 64000.0), (now, 64000.0), (now + 0.5, 64030.0)])
         f._price = 64000.0
         f._last_update = now
-        for i in range(25):
-            f._reports.append((now - 24 + i, 64000.0))
+        for i in range(56):
+            f._reports.append((now - 55 + i, 64000.0))
         plain = f.projected_final_twap(close, now=now)
         fast = f.projected_final_twap(close, now=now, bridged=True)
         assert plain == pytest.approx(64000.0)
-        # spot weight (1-w) = 1/3 at k=10 -> bridged shifts by 30 * 1/3 = 10
-        assert fast - plain == pytest.approx(10.0, abs=0.5)
+        # spot weight (1-w) = 1/6 at k=10 -> bridged shifts by 30 * 1/6 = 5
+        assert fast - plain == pytest.approx(5.0, abs=0.5)

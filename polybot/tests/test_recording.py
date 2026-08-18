@@ -336,13 +336,13 @@ def test_replay_loader_reads_gzipped_tape(tmp_path, monkeypatch):
         "atl_gz", Path(__file__).resolve().parents[2] / "scripts" / "analyze_twap_lock.py")
     atl = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(atl)
-    plain = tmp_path / "micro_2026-08-08.jsonl"
+    plain = tmp_path / "micro_2026-08-14.jsonl"
     plain.write_text('{"k": "l", "ts": 1.0, "rx": 1.0, "p": 64500.0}\n')
-    gz = tmp_path / "micro_2026-08-09.jsonl.gz"
+    gz = tmp_path / "micro_2026-08-15.jsonl.gz"
     with gzip.open(gz, "wt", encoding="utf-8") as f:
         f.write('{"k": "l", "ts": 2.0, "rx": 2.0, "p": 64510.0}\n')
     assert atl._open_tape(plain).read().startswith('{"k": "l"')
     assert atl._open_tape(gz).read().startswith('{"k": "l"')
     monkeypatch.setattr(atl, "RECORDINGS", tmp_path)
     found = {p.name for p in atl._tape_files(atl.TWAP_SWITCH_TS)}
-    assert "micro_2026-08-09.jsonl.gz" in found and "micro_2026-08-08.jsonl" in found
+    assert "micro_2026-08-15.jsonl.gz" in found and "micro_2026-08-14.jsonl" in found

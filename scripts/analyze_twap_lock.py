@@ -49,8 +49,12 @@ LABEL_DBS = [PAPER_DB, LIVE_DB]   # labels accrue in the ACTIVE mode's DB — re
 RECORDINGS = ROOT / "polybot" / "memory" / "recordings"
 ET = ZoneInfo("America/New_York")
 FEE_RATE = 0.07
-TWAP_SWITCH_TS = 1786060800       # 2026-08-07 00:00 UTC — never score earlier windows
-ZONE_S = 30.0
+TWAP_SWITCH_TS = 1786665600       # 2026-08-14 00:00 UTC — the 60s-rule cutover;
+                                  # never score earlier windows (they resolved on
+                                  # the 30s stream and would poison the mechanism
+                                  # check and every error read)
+ZONE_S = 60.0
+HORIZON_S = 60.0                  # the resolving average's window (60s rule)
 K_MIN_S = 6.0     # mirrors late_window.twap_k_min_s — below this the margin
                   # knots are unpinnable tail bounds (the one realized max-tier
                   # breach was a k=1.1s fire); the replay must not fire where
@@ -171,7 +175,7 @@ def load_windows(labels: dict[int, dict], since_ts: float):
                     i = bisect.bisect_right(eps, rx) - 1
                     if i >= 0:
                         ep = eps[i]
-                        if ep + 300 - ZONE_S - 10 <= rx <= ep + 301:
+                        if ep + 300 - ZONE_S - 25 <= rx <= ep + 301:
                             lrec[ep].append((rx, r["p"]))
                 elif '"k": "t"' in head:
                     r = json.loads(line)
@@ -179,6 +183,24 @@ def load_windows(labels: dict[int, dict], since_ts: float):
                         if ep in trec and (r["ts"] == ep or r["ts"] == ep + 300):
                             trec[ep][int(r["ts"])] = r["p"]
     return lrec, trec, books
+
+
+RAW_GAP_MAX_S = 10.0    # engine coverage guard (chainlink_feed.RAW_GAP_MAX_S):
+                        # a raw delivery hole in the span voids the projection
+
+
+def span_covered(recs: list, start: float, end: float) -> bool:
+    """Engine-faithful coverage guard: no boundary-inclusive rx-gap > 10s."""
+    prev = start
+    for rx, _p in recs:
+        if rx <= start:
+            continue
+        if rx > end:
+            break
+        if rx - prev > RAW_GAP_MAX_S:
+            return False
+        prev = rx
+    return end - prev <= RAW_GAP_MAX_S
 
 
 def running_avg(recs: list, start: float, end: float) -> float | None:
@@ -218,7 +240,7 @@ def replay_window(ep: int, lab: dict, recs: list, books: dict[int, list],
 
     Returns (fire dict | None, kills:int, locked_wrong:bool)."""
     close = ep + 300
-    t0 = close - 30.0
+    t0 = close - HORIZON_S
     strike = lab["price_to_beat"]
     recs = sorted(recs)
     if len(recs) < 3 or not strike or strike <= 0:
@@ -240,10 +262,12 @@ def replay_window(ep: int, lab: dict, recs: list, books: dict[int, list],
                 break
         if spot is None:
             continue
+        if not span_covered(recs, t0, t):
+            continue
         avg = running_avg(recs, t0, t)
         if avg is None:
             continue
-        w = (t - t0) / 30.0
+        w = (t - t0) / HORIZON_S
         proj = w * avg + (1 - w) * spot
         disp = proj - strike
         side = 1 if disp >= 0 else 0
@@ -357,7 +381,7 @@ def ladder_recalibrate(days: int = 1, write: bool = False):
         recs = sorted(lrec[ep])
         strike = lab["price_to_beat"]
         close = ep + 300
-        t0 = close - 30.0
+        t0 = close - HORIZON_S
         if len(recs) < 3 or not strike:
             continue
         lock_t = lock_side = None
@@ -365,10 +389,12 @@ def ladder_recalibrate(days: int = 1, write: bool = False):
             k = close - rx
             if k > 25 or k < K_MIN_S:
                 continue
+            if not span_covered(recs, t0, rx):
+                continue
             avg = running_avg(recs, t0, rx)
             if avg is None:
                 continue
-            w = (rx - t0) / 30.0
+            w = (rx - t0) / HORIZON_S
             disp = w * avg + (1 - w) * p - strike
             if abs(disp) >= twap_margin(TWAP_MARGIN_MAX, k):
                 lock_t, lock_side = rx, (1 if disp >= 0 else 0)

@@ -50,11 +50,22 @@ tape. Halts: any lock_dip loss; trailing-4-day dollars < 0; `sniper_enabled`
 false is the brake. The nightly health job reads the realized ledger daily.
 Gate-vetoed fires persist as leg-stamped ghosts.
 
-**Resolution mechanism (since 2026-08-07 00:00 UTC)**: Polymarket resolves on
-the official **30-second TWAP stream** (strike = the stream's value at the
-open, final = its value at the close — both verified bit-exact against served
-price_to_beat/final_price, and each close chains into the next strike to the
-cent). That switch killed the burst sniper (−17.5¢/sh under TWAP scoring).
+**Resolution mechanism (since 2026-08-14 00:00 UTC)**: Polymarket resolves on
+the official **60-second TWAP stream** (RTDS topic `crypto_prices_twap_sixty`;
+strike = the stream's value at the open, final = its value at the close —
+verified bit-exact against served price_to_beat/final_price, including a live
+probe on 08-18). The prior 30s rule ran 08-07..08-13; the 08-14 switch was
+SILENT — the chain invariant (final == next strike) stayed green because both
+served values moved to the new source together, and the bot traded the wrong
+stream for 4 days (wrong strikes by ~$0.3 med / $3 p90, wrong projection
+horizon, wrong post-close winner checks — the 08-14..15 "massacre" and the
+halted live probe are partly THIS, not just chop). The nightly ping now
+carries a SOURCE watch (served values vs our own captured boundaries,
+`mechanism_read`) that turns red the same night this ever happens again. All
+margin tables are re-frozen for the 60s rule (2026-08-18, signal_engine.py);
+every 30s-era ¢/sh number quoted below predates the rule change — treat as
+historical until re-validated. Every paper fill 08-14..the migration deploy
+is a wrong-rule artifact: re-pin `validation_epoch` at deploy.
 
 **This file is the single source of truth — update it in the same commit as any
 behavioral change.**
@@ -97,11 +108,11 @@ only strategy either can run.
 
 ## 1. The market + the two modes
 
-Every 5 min, Polymarket runs a market: will BTC's **30-second TWAP** at the
+Every 5 min, Polymarket runs a market: will BTC's **60-second TWAP** at the
 window close be ≥ its value at the open (tie → Up)? Up/Down ERC-1155 tokens
 trade $0-$1; the winning side pays $1/share. The resolution source is
-Chainlink's official BTC/USD 30s-TWAP stream (via Polymarket RTDS topic
-`crypto_prices_twap_thirty`, ~1Hz on integer seconds, delivered ~1.6-1.8s
+Chainlink's official BTC/USD 60s-TWAP stream (via Polymarket RTDS topic
+`crypto_prices_twap_sixty`, ~1Hz on integer seconds, delivered ~1.6-1.8s
 behind observation); Gamma mirrors it for discovery. The per-window **decision
 strike** is the TWAP stream's **first report at/after the window-boundary
 timestamp** (`chainlink_feed.get_strike`; `_compute_strike`) — the
@@ -610,7 +621,7 @@ scripts/
 |---|---|---|
 | Polymarket CLOB | WS + `GET /price`, `/book`, `/spread`, `/tick-size` | Books, tape, executable prices |
 | Polymarket Gamma | `GET /events?slug=` (deprecated upstream; auto-fallback `GET /events/slug/{slug}` — `gamma_events_by_slug`) | Discovery + resolution + labels |
-| Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` (`crypto_prices_twap_thirty` + raw `crypto_prices_chainlink` + Binance `crypto_prices`) | Strike + resolution (TWAP topic); raw stream feeds the projection (arrives ~1.63s behind its own payload ts); the Binance relay feeds ONLY the bridge delta |
+| Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` (`crypto_prices_twap_sixty` + raw `crypto_prices_chainlink` + Binance `crypto_prices`) | Strike + resolution (TWAP topic); raw stream feeds the projection (arrives ~1.63s behind its own payload ts); the Binance relay feeds ONLY the bridge delta |
 
 ## 10. Running + invariants
 

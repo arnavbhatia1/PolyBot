@@ -169,6 +169,57 @@ def live_health_read(db_path=None, since_iso=None):
 
 
 # ── Resolution-mechanism watch ─────────────────────────────────────────────────
+def mechanism_read(boundaries: dict, db_path=None):
+    """Served resolution values vs OUR recorded stream boundaries, bit-exact.
+
+    This is the check the chain invariant cannot do: final==next-strike stays
+    intact when Polymarket swaps the whole resolution source (both served
+    values move together — exactly what happened on 08-14 when the 30s stream
+    became the 60s stream and the watch stayed green for four days). Here the
+    served value must equal the value WE captured from the subscribed topic;
+    any systematic gap means the bot is trading a rule it no longer computes.
+
+    boundaries: {window_ts: captured_value} — trusted captures only
+    (ChainlinkFeed.boundary_snapshot). Compares each against the label's
+    price_to_beat and the previous window's final_price."""
+    if not boundaries:
+        return None
+    db = Path(db_path) if db_path else LIVE_DB
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        rows = con.execute(
+            "SELECT window_id, final_price, price_to_beat FROM window_labels "
+            "WHERE labeled_at >= ?", (min(boundaries) - 3600,)).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        con.close()
+    checked = exact = 0
+    worst = 0.0
+    worst_ts = None
+    for wid, fp, ptb in rows:
+        try:
+            ts = int(str(wid).rsplit("-", 1)[-1])
+        except ValueError:
+            continue
+        for served, b in ((ptb, ts), (fp, ts + 300)):
+            cap = boundaries.get(b)
+            if served is None or cap is None:
+                continue
+            checked += 1
+            d = abs(served - cap)
+            if d < 0.005:
+                exact += 1
+            elif d > worst:
+                worst, worst_ts = d, b
+    if checked == 0:
+        return None
+    return dict(checked=checked, exact=exact, worst=round(worst, 2),
+                worst_ts=worst_ts)
+
+
 def resolution_snapshot_read(db_path=None, hours: float = 26.0):
     """Is the resolution rule still the one the sniper is built on?
 

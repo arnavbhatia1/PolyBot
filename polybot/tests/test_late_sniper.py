@@ -61,17 +61,18 @@ def _lock(eng, proj, strike, k, ask_up, ask_down, min_edge=0.04,
 
 # ───────────────────────── the max-tier gate (production default) ─────────────
 def test_max_tier_gate_refuses_the_p995_tier():
-    """The 08-11 13:49 breach: disp $21.90 at k=19s cleared p99.5 ($21.20) and
-    lost the whole stake, while the real projection error ($24.83) still sat
-    inside the max-tier margin ($26.40). Max tier must refuse that trade."""
+    """The p99.5 band has realized breaches (the 08-11 30s-era one lost a whole
+    stake while the max bound held through it). A displacement between the two
+    margins is exactly that trade — max tier must refuse it."""
     eng = _eng()
     m995 = twap_margin(TWAP_MARGIN_P995, 19.0)
     mmax = twap_margin(TWAP_MARGIN_MAX, 19.0)
-    assert m995 < 21.9 < mmax                      # the breach sat between them
-    fired = _lock(eng, 64000.0 - 21.9, 64000.0, 19.0, 0.99, 0.80,
+    disp = (m995 + mmax) / 2.0                     # between the tiers
+    assert m995 < disp < mmax
+    fired = _lock(eng, 64000.0 - disp, 64000.0, 19.0, 0.99, 0.80,
                   require_max_tier=False)
     assert fired.action == "LATE_SNIPE_NO"         # p99.5 would have taken it
-    gated = _lock(eng, 64000.0 - 21.9, 64000.0, 19.0, 0.99, 0.80,
+    gated = _lock(eng, 64000.0 - disp, 64000.0, 19.0, 0.99, 0.80,
                   require_max_tier=True)
     assert gated.action == "SKIP"
     assert "not locked" in gated.reason
@@ -90,22 +91,24 @@ def test_max_tier_gate_still_fires_beyond_the_max_margin():
 def test_production_default_is_max_tier_only():
     """A caller that forgets the flag must get the SAFE behaviour."""
     eng = _eng()
-    s = eng.evaluate_twap_lock(64000.0 - 21.9, 64000.0, 19.0, 0.99, 0.80,
+    disp = (twap_margin(TWAP_MARGIN_P995, 19.0)
+            + twap_margin(TWAP_MARGIN_MAX, 19.0)) / 2.0
+    s = eng.evaluate_twap_lock(64000.0 - disp, 64000.0, 19.0, 0.99, 0.80,
                                30.0, 0.8, 0.04)
     assert s.action == "SKIP"
 
 
 # ───────────────────────── twap_margin interpolation ─────────────────────────
 def test_margin_knots_exact_and_linear_between():
-    assert twap_margin(TWAP_MARGIN_P995, 4.0) == pytest.approx(1.6)
-    assert twap_margin(TWAP_MARGIN_MAX, 4.0) == pytest.approx(4.0)
-    # midpoint of (4, 1.6)-(6, 4.5)
-    assert twap_margin(TWAP_MARGIN_P995, 5.0) == pytest.approx(3.05)
+    assert twap_margin(TWAP_MARGIN_P995, 4.0) == pytest.approx(1.0)
+    assert twap_margin(TWAP_MARGIN_MAX, 4.0) == pytest.approx(2.0)
+    # midpoint of (4, 1.0)-(6, 1.5)
+    assert twap_margin(TWAP_MARGIN_P995, 5.0) == pytest.approx(1.25)
 
 
 def test_margin_clamps_to_end_knots():
-    assert twap_margin(TWAP_MARGIN_P995, 0.5) == pytest.approx(0.6)   # below k=2
-    assert twap_margin(TWAP_MARGIN_P995, 60.0) == pytest.approx(32.0)  # above k=29
+    assert twap_margin(TWAP_MARGIN_P995, 0.5) == pytest.approx(1.0)    # below k=2
+    assert twap_margin(TWAP_MARGIN_P995, 60.0) == pytest.approx(38.0)  # above k=58
 
 
 def test_margins_monotone_nondecreasing():
@@ -144,16 +147,16 @@ def test_zero_displacement_takes_up_side():
 
 
 def test_skips_when_not_locked():
-    # k=4: p99.5 margin $1.6 — disp $1 is inside the error band.
-    sig = _lock(_eng(), proj=60001.0, strike=60000.0, k=4.0,
+    # k=4: p99.5 margin $1.0 — disp $0.5 is inside the error band.
+    sig = _lock(_eng(), proj=60000.5, strike=60000.0, k=4.0,
                 ask_up=0.60, ask_down=0.41)
     assert sig.action == "SKIP"
     assert "not locked" in sig.reason
 
 
 def test_p995_tier_prob_between_margins():
-    # disp $2 at k=4: beyond p99.5 ($1.6) but inside max-ever ($4.0).
-    sig = _lock(_eng(), proj=60002.0, strike=60000.0, k=4.0,
+    # disp $1.5 at k=4: beyond p99.5 ($1.0) but inside max-ever ($2.0).
+    sig = _lock(_eng(), proj=60001.5, strike=60000.0, k=4.0,
                 ask_up=0.90, ask_down=0.11)
     assert sig.action == "LATE_SNIPE_YES"
     assert sig.prob == pytest.approx(TWAP_PROB_P995)
@@ -175,7 +178,7 @@ def test_p995_tier_caps_tighter_than_max_tier():
     # (0.995-0.958 < 0.04) — the riskier tier demands the deeper discount.
     eng = _eng()
     assert _lock(eng, 60006.0, 60000.0, 4.0, 0.958, 0.05).action == "LATE_SNIPE_YES"
-    assert _lock(eng, 60002.0, 60000.0, 4.0, 0.958, 0.05).action == "SKIP"
+    assert _lock(eng, 60001.5, 60000.0, 4.0, 0.958, 0.05).action == "SKIP"
 
 
 def test_skips_outside_zone_and_below_k_min():
@@ -218,4 +221,4 @@ def test_sniper_enabled_wired_from_settings():
     from polybot.config.loader import load_config
     cfg = load_config()
     assert isinstance(cfg["late_window"]["sniper_enabled"], bool)
-    assert cfg["late_window"]["twap_zone_s"] <= 30.0
+    assert cfg["late_window"]["twap_zone_s"] <= 60.0

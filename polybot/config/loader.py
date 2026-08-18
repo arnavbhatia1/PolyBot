@@ -82,9 +82,9 @@ def validate_config(config: dict[str, Any]) -> None:
     _check_range("execution.fok_spread_cross_floor", 0.0, 0.20)
 
     # Sniper knobs — the ONLY capital-deploying strategy, so a typo here deploys.
-    # twap_zone_s hard-caps at 30: the projection is undefined before the
-    # resolving 30s averaging window even starts.
-    _check_range("late_window.twap_zone_s", 5.0, 30.0)
+    # twap_zone_s hard-caps at 60: the projection is undefined before the
+    # resolving 60s averaging window even starts.
+    _check_range("late_window.twap_zone_s", 5.0, 60.0)
     _check_range("late_window.twap_k_min_s", 0.0, 15.0)
     _check_range("late_window.sniper_min_edge", 0.02, 0.10)
     ladder, found = _get_nested(config, "maker.maker_ladder")
@@ -153,7 +153,7 @@ def load_config(config_path: str | Path | None = None, env_path: str | Path | No
     load_dotenv(env_path)
     if config_path is None:
         config_path = config_dir / "settings.yaml"
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         _config = yaml.load(f, Loader=_NoDuplicateKeysLoader)
     validate_config(_config)
     return _config

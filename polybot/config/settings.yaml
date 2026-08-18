@@ -51,23 +51,30 @@ execution:
 # =============================================================================
 #  SECTION 3b: LATE-WINDOW SNIPER — the TWAP lock (gated)
 #
-#  The market resolves on the official 30s TWAP (strike = the stream's value at
-#  the open, final = its value at the close; both verified bit-exact). In the
-#  final 30s the resolving average is mostly already observed: when the
-#  projection w·A + (1−w)·spot sits further from strike than the frozen error
-#  margin (signal_engine.TWAP_MARGIN_*), the outcome is decided — and a late
-#  spot whipsaw still dips the WINNER's ask to 0.84-0.93 for 1-4s (measured
-#  3/19 windows on night one). The sniper buys those dips, bypassing ONLY
-#  max_edge (-> sniper_max_edge) and the late-window time penalty; every safety
-#  gate (adverse, edge-decay, depth, net-edge, min-size, pre-submit VWAP,
-#  freshness) stays. Kill bar: scripts/analyze_twap_lock.py is the sim ceiling;
-#  the BINDING gate is the paper-shadow's realized fills. DO NOT enable on faith.
+#  The market resolves on the official 60s TWAP (crypto_prices_twap_sixty,
+#  rule since 08-14; strike = the stream's value at the open, final = its
+#  value at the close; both verified bit-exact). In the final 60s the
+#  resolving average is mostly already observed: when the projection
+#  w·A + (1−w)·spot sits further from strike than the frozen error margin
+#  (signal_engine.TWAP_MARGIN_*), the outcome is decided — and a late spot
+#  whipsaw still dips the WINNER's ask below $1. The sniper buys those dips,
+#  bypassing ONLY max_edge (-> sniper_max_edge) and the late-window time
+#  penalty; every safety gate (adverse, edge-decay, depth, net-edge, min-size,
+#  pre-submit VWAP, freshness, raw-coverage) stays. Kill bar:
+#  scripts/analyze_twap_lock.py is the sim ceiling; the BINDING gate is the
+#  paper-shadow's realized fills. DO NOT enable on faith.
 # =============================================================================
 late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-17T19:30:00+00:00"  # deep_proj PAPER validation:
+  validation_epoch: "2026-08-17T19:30:00+00:00"  # STALE - every fill before the
+                               # 60s-rule migration deploys was decided on the
+                               # 30s stream (wrong strike + wrong projection
+                               # horizon since 08-14): re-pin this AT the
+                               # migration boot, and read pre-migration fills
+                               # as wrong-rule artifacts, never as evidence.
+                               # Original note: deep_proj PAPER validation:
                                # 2x floor + fee-free booking + $150 go-live
                                # sizing + k[6,25] placement + 135-sh at-price
                                # queue (re-measured 08-17: deep-level queues
@@ -91,15 +98,14 @@ late_window:
   # very event that broke p99.5, and max tier would not have taken that trade.
   # One breach costs ~55 post-close wins, so the thin tier is not worth its fires.
   require_max_tier: true
-  twap_zone_s: 30.0             # decision zone = the resolving 30s averaging window; the
-                                # projection is undefined earlier (never raise above 30)
-  twap_k_min_s: 6.0             # NO LOW-K FIRES. Below ~6s the margin table's knots collapse to
-                                # $0.70-$4 — bounds 564 windows cannot pin. Both realized low-k
-                                # fires ran errors ABOVE the claimed max ($0.73 vs $0.70 at k=1.1,
-                                # a max-tier BREACH that bought a $0 token at 0.83; $2.00 vs $1.69
-                                # at k=2.6, a win only because the final gap of $1.31 broke our
-                                # way). At k >= 6 the knots are $14+, and 889 locked windows over
-                                # 7 TWAP-era days show zero breaches.
+  twap_zone_s: 60.0             # decision zone = the resolving 60s averaging window (rule
+                                # since 08-14); the projection is undefined earlier (never
+                                # raise above 60)
+  twap_k_min_s: 6.0             # NO LOW-K FIRES. Low-k margin knots are tail bounds too thin for
+                                # the corpus to pin (the 30s era realized a k=1.1 max-tier breach
+                                # that bought a $0 token — the scar this floor carries). The 60s
+                                # tables tighten every knot but the floor stays 6.0 until the
+                                # real-final corpus reaches ~14 days (see RESEARCH.md).
   sniper_min_edge: 0.04         # edge floor AND the ask cap in one knob: fire only when
                                 # tier_prob − ask ≥ this (max-tier 0.999 → ask ≤ ~0.96;
                                 # p99.5-tier 0.995 → ask ≤ ~0.955). Also the net-edge /
