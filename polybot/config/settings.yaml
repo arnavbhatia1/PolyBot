@@ -51,31 +51,31 @@ execution:
 # =============================================================================
 #  SECTION 3b: LATE-WINDOW SNIPER — the TWAP lock (gated)
 #
-#  The market resolves on the official 30s TWAP (strike = the stream's value at
-#  the open, final = its value at the close; both verified bit-exact). In the
-#  final 30s the resolving average is mostly already observed: when the
-#  projection w·A + (1−w)·spot sits further from strike than the frozen error
-#  margin (signal_engine.TWAP_MARGIN_*), the outcome is decided — and a late
-#  spot whipsaw still dips the WINNER's ask to 0.84-0.93 for 1-4s (measured
-#  3/19 windows on night one). The sniper buys those dips, bypassing ONLY
-#  max_edge (-> sniper_max_edge) and the late-window time penalty; every safety
-#  gate (adverse, edge-decay, depth, net-edge, min-size, pre-submit VWAP,
-#  freshness) stays. Kill bar: scripts/analyze_twap_lock.py is the sim ceiling;
-#  the BINDING gate is the paper-shadow's realized fills. DO NOT enable on faith.
+#  The market resolves on the official 60s TWAP (crypto_prices_twap_sixty,
+#  rule since 08-14; strike = the stream's value at the open, final = its
+#  value at the close; both verified bit-exact). In the final 60s the
+#  resolving average is mostly already observed: when the projection
+#  w·A + (1−w)·spot sits further from strike than the frozen error margin
+#  (signal_engine.TWAP_MARGIN_*), the outcome is decided — and a late spot
+#  whipsaw still dips the WINNER's ask below $1. The sniper buys those dips,
+#  bypassing ONLY max_edge (-> sniper_max_edge) and the late-window time
+#  penalty; every safety gate (adverse, edge-decay, depth, net-edge, min-size,
+#  pre-submit VWAP, freshness, raw-coverage) stays. Kill bar:
+#  scripts/analyze_twap_lock.py is the sim ceiling; the BINDING gate is the
+#  paper-shadow's realized fills. DO NOT enable on faith.
 # =============================================================================
 late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
-  validation_epoch: "2026-08-17T19:30:00+00:00"  # deep_proj PAPER validation:
-                               # 2x floor + fee-free booking + $150 go-live
-                               # sizing + k[6,25] placement + 135-sh at-price
-                               # queue (re-measured 08-17: deep-level queues
-                               # grew 2.5x from 08-14's 55 as the deep-buyer
-                               # cohort arrived). Fill 9583 (full-sweep loss,
-                               # floor-scraping disp, chop 08-16) booked under
-                               # the old fee model — preserved in git, scored
-                               # in review, excluded from this gate.
+  validation_epoch: "2026-08-18T16:45:00+00:00"  # deep_proj PAPER validation
+                               # under the 60s-RULE ENGINE (sixty topic, 60s
+                               # projection + coverage guard, 08-18 tables,
+                               # need 0.5, k[6,25], 135-sh at-price queue,
+                               # $150 go-live sizing). Every fill before this
+                               # instant ran wrong-rule code (the bot traded
+                               # the 30s stream 08-14..18) — wrong-rule
+                               # artifacts, never evidence.
                                # Set AFTER the boot that carries it
                                # by more than the ~3.4min entry-to-exit gap,
                                # because the gate filters on EXIT time — an
@@ -85,21 +85,19 @@ late_window:
                                # nightly health job scores only the current
                                # mode's fills at/after this instant.
   # Refuse to fire on the p99.5 tier — only the NEVER-BREACHED max tier deploys
-  # capital. p99.5 has now breached three times; on 08-11 13:49 a $21.90
-  # displacement at k=19s carried a real projection error of $24.83, which still
-  # sat inside the max-tier margin of $26.40 — the max bound held through the
-  # very event that broke p99.5, and max tier would not have taken that trade.
-  # One breach costs ~55 post-close wins, so the thin tier is not worth its fires.
+  # capital. p99.5 broke three times in the 30s era while max held through every
+  # one, and the 60s-rule sim replayed the same shape on day one (one p99.5
+  # breach-loss at -95c vs thirteen +5c wins). One breach erases ~20 wins; the
+  # thin tier is not worth its fires.
   require_max_tier: true
-  twap_zone_s: 30.0             # decision zone = the resolving 30s averaging window; the
-                                # projection is undefined earlier (never raise above 30)
-  twap_k_min_s: 6.0             # NO LOW-K FIRES. Below ~6s the margin table's knots collapse to
-                                # $0.70-$4 — bounds 564 windows cannot pin. Both realized low-k
-                                # fires ran errors ABOVE the claimed max ($0.73 vs $0.70 at k=1.1,
-                                # a max-tier BREACH that bought a $0 token at 0.83; $2.00 vs $1.69
-                                # at k=2.6, a win only because the final gap of $1.31 broke our
-                                # way). At k >= 6 the knots are $14+, and 889 locked windows over
-                                # 7 TWAP-era days show zero breaches.
+  twap_zone_s: 60.0             # decision zone = the resolving 60s averaging window (rule
+                                # since 08-14); the projection is undefined earlier (never
+                                # raise above 60)
+  twap_k_min_s: 6.0             # NO LOW-K FIRES. Low-k margin knots are tail bounds too thin for
+                                # the corpus to pin (the 30s era realized a k=1.1 max-tier breach
+                                # that bought a $0 token — the scar this floor carries). The 60s
+                                # tables tighten every knot but the floor stays 6.0 until the
+                                # real-final corpus reaches ~14 days (see RESEARCH.md).
   sniper_min_edge: 0.04         # edge floor AND the ask cap in one knob: fire only when
                                 # tier_prob − ask ≥ this (max-tier 0.999 → ask ≤ ~0.96;
                                 # p99.5-tier 0.995 → ask ≤ ~0.955). Also the net-edge /
@@ -143,28 +141,28 @@ maker:
   # Rungs: [price, budget_fraction, need] where `need` is the MULTIPLE of the
   # p99.5 PROJECTION ERROR at the current k the displacement must clear — for
   # placement AND survival (maintain cancels the ladder the moment the floor
-  # breaks). need 2.0 = the sign must be twice its own error scale.
-  # THE FLOOR IS THE REGIME FILTER: in photo-finish chop, displacement cannot
-  # mathematically reach 2x its error while gaps run sub-$2, so the leg
-  # self-silences window-by-window — no era gate. Three-regime record on
-  # identical strictly-below fill rules: rich 08-06..10 +33.8c/sh at 100% win
-  # (t 57, ~4.5 wins/day); mixed 08-11..14 four fills, -$4 total; massacre
-  # 08-14..15 ZERO qualifying fills — where the old 0.18x-max floor lost
-  # -41c/sh over 7 windows on the same tape. The geometry stays 1723's own
-  # fill distribution (it avoids >0.87, losing 5.9c/sh at 0.95).
+  # breaks). Under the 60s-rule tables (frozen 08-18) the projection's sign
+  # is near-infallible wherever it clears even HALF its own error (engine-true
+  # 08-14..17: sign 873/873 armed windows at need 0.5), so the floor's job is
+  # only to refuse photo-finishes; the rung PRICE carries the risk (break-even
+  # win rate equals the price paid — 1723's own model). need 0.5 selected by
+  # the pre-registered 08-18 grid: 7/7 wins +$81 vs 1 fill +$34 at the old
+  # 2.0, every rung >= break-even+10pp, ANTI-side control -$17k. This is the
+  # PAPER-VALIDATION candidate — the §2 bar on fresh tape remains the
+  # deployment authority; the geometry stays 1723's fill distribution.
   maker_ladder:
-    - [0.80, 0.20, 2.0]
-    - [0.65, 0.20, 2.0]
-    - [0.50, 0.20, 2.0]
-    - [0.35, 0.20, 2.0]
-    - [0.20, 0.20, 2.0]
-  maker_k_place_max: 25.0       # place the moment the 2x floor clears — the
-                                # 08-17 engine-faithful grid proved k [6,25]
-                                # arms the SAME windows as [6,8] at need 2.0
-                                # (a window clear at k>8 is still clear at 8),
-                                # so this buys queue seniority at the rungs
-                                # for zero change in trade selection. 25 is
-                                # the frozen error table's edge; never higher.
+    - [0.80, 0.20, 0.5]
+    - [0.65, 0.20, 0.5]
+    - [0.50, 0.20, 0.5]
+    - [0.35, 0.20, 0.5]
+    - [0.20, 0.20, 0.5]
+  maker_k_place_max: 25.0       # rest from k=25 only: the 08-18 grid's ONLY
+                                # losses came from k>25 arms (early moves that
+                                # revert before the close); 79% of deep winner
+                                # -side volume prints at k>25 but it is
+                                # contested flow the sign cannot yet call —
+                                # extending k_max buys those losses, not that
+                                # volume.
   maker_k_place_min: 6.0        # placed rungs keep resting to the close +
                                 # verified-winner hold
   # Deep bids are NOT a Kelly bet on a certainty claim — the budget is a flat

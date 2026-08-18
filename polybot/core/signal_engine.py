@@ -13,18 +13,32 @@ from dataclasses import dataclass
 
 from polybot.execution.base import DEFAULT_FEE_RATE
 
-# ---- TWAP lock sniper (design-frozen 2026-08-07) ------------------------------
+# ---- TWAP lock sniper (60s-rule tables, frozen 2026-08-18) ---------------------
 # Projection-error margins for |final_TWAP − (w·A + (1−w)·spot)| by seconds
-# remaining, measured on 564 windows of rx-clock micro-tape (08-05..08-07).
-# P995 = the p99.5 percentile; MAX = the worst error ever observed (rounded up,
-# monotone-enforced). Tuning these to make a window fire is relaxing a bar.
+# remaining, for the 60s resolution rule (crypto_prices_twap_sixty, live since
+# 08-14 00:00 UTC). Corpus: 970 real-final windows (08-14..17) for p99.5;
+# MAX additionally unions 1,651 pre-rule windows re-targeted to the synthetic
+# 60s average (target noise med $0.03). Estimator: rx-clock ZOH + the 10s
+# coverage guard (chainlink_feed.RAW_GAP_MAX_S) — the guard is part of the
+# measurement and must stay wired wherever these tables gate capital.
+# P995 = fitted p99.5 rounded up to $0.5, one sample per (window, k-knot).
+# MAX = per-tick INTERVAL maxima: each knot carries the larger of its two
+# adjacent intervals' worst-ever error (so the linear interpolation between
+# knots bounds every tick of both intervals — a grid-point fit under-bounds
+# between knots), rounded up to $1, monotone-enforced. Tuning these to make a
+# window fire is relaxing a bar; re-fit on >=14 real-final days is
+# re-measurement, not relaxing.
 TWAP_MARGIN_P995: tuple[tuple[float, float], ...] = (
-    (2.0, 0.6), (4.0, 1.6), (6.0, 4.5), (8.0, 6.5), (10.0, 11.0),
-    (12.0, 11.5), (15.0, 14.0), (20.0, 23.0), (25.0, 26.0), (29.0, 32.0),
+    (2.0, 1.0), (4.0, 1.0), (6.0, 1.5), (8.0, 2.0), (10.0, 3.5),
+    (12.0, 3.5), (15.0, 5.0), (20.0, 6.0), (25.0, 8.0), (29.0, 10.5),
+    (35.0, 13.0), (40.0, 18.0), (45.0, 26.5), (50.0, 30.5), (55.0, 36.5),
+    (58.0, 38.0),
 )
 TWAP_MARGIN_MAX: tuple[tuple[float, float], ...] = (
-    (2.0, 0.7), (4.0, 4.0), (6.0, 14.0), (8.0, 14.5), (10.0, 14.5),
-    (12.0, 14.5), (15.0, 20.0), (20.0, 28.0), (25.0, 42.0), (29.0, 50.0),
+    (2.0, 2.0), (4.0, 2.0), (6.0, 3.0), (8.0, 5.0), (10.0, 11.0),
+    (12.0, 11.0), (15.0, 18.0), (20.0, 24.0), (25.0, 24.0), (29.0, 36.0),
+    (35.0, 50.0), (40.0, 112.0), (45.0, 119.0), (50.0, 120.0), (55.0, 120.0),
+    (58.0, 120.0),
 )
 # Mechanical win-prob floors per tier: displacement beyond the max-ever error
 # had never lost pre-deploy; beyond p99.5 the one-sided breach-and-cross risk
@@ -70,8 +84,8 @@ class SignalEngine:
             zone_s: float, k_min_s: float, sniper_min_edge: float,
             fee_rate: float = DEFAULT_FEE_RATE,
             require_max_tier: bool = True) -> TradeSignal:
-        """TWAP lock sniper: in the final-30s averaging zone, the window's
-        resolving 30s TWAP is mostly already observed — when the projection's
+        """TWAP lock sniper: in the final-60s averaging zone, the window's
+        resolving 60s TWAP is mostly already observed — when the projection's
         displacement from strike exceeds the frozen error margin, the outcome
         is decided while spot-reflexive traders still quote the winner below
         $1 (late whipsaws dip the winning ask to 0.84-0.93 for 1-4s).
@@ -83,12 +97,10 @@ class SignalEngine:
         non-negative displacement takes the Up side.
 
         `require_max_tier` refuses to fire on the p99.5 tier at all. It is the
-        DEFAULT because p99.5 is measurably too thin: it has now been breached
-        three times, and the 08-11 13:49 breach (disp $21.90 at k=19s, real
-        projection error $24.83) sat inside the max-tier margin of $26.40 — so
-        the max bound held through the very event that broke p99.5, and
-        max-tier would not have taken that trade. One p99.5 breach costs ~55
-        post-close wins.
+        DEFAULT because p99.5 is measurably too thin: under the 30s-rule
+        tables it was breached three times while the max bound held through
+        every one of those events — only the never-breached tier deploys
+        capital.
         Returns LATE_SNIPE_YES / LATE_SNIPE_NO / SKIP.
         """
         if projected_twap is None or strike_price <= 0:

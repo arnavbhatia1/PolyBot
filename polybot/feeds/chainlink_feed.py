@@ -1,11 +1,12 @@
 """Chainlink BTC/USD oracle (via Polymarket RTDS WS). Resolution price source + 5-min strike capture.
 
-Since 2026-08-07 00:00 UTC the market resolves on the official 30s-TWAP stream:
-strike = the stream's value AT the window open, final = its value AT the close
-(verified bit-exact against served price_to_beat/final_price, 17/17 windows).
-The boundary capture therefore locks the TWAP topic's first report at/after the
-boundary; the raw ~1Hz stream feeds the running reconstruction the sniper
-projects the final average from."""
+Since 2026-08-14 00:00 UTC the market resolves on the official 60s-TWAP stream
+(RTDS topic crypto_prices_twap_sixty; the market description names
+btc-usd-twap-60s-streams): strike = the stream's value AT the window open,
+final = its value AT the close (verified bit-exact against served
+price_to_beat/final_price). The boundary capture locks the TWAP topic's first
+report at/after the boundary; the raw ~1Hz stream feeds the running
+reconstruction the sniper projects the final average from."""
 from __future__ import annotations
 
 import asyncio
@@ -35,6 +36,13 @@ STRIKE_TRUST_GAP_S = 0.5       # The TWAP topic ticks ~1Hz ON integer seconds, s
                                # mid-burst — never bless it). Pre-boundary gaps don't veto.
 SPOT_STALE_S = 3.0             # projected_final_twap refuses a raw price older than this — a stale spot
                                # projects a stale displacement, and the sniper would fire on fiction.
+TWAP_HORIZON_S = 60.0          # the resolving average's window (60s rule since 08-14)
+RAW_GAP_MAX_S = 10.0           # projection coverage guard: a raw delivery hole bigger than this
+                               # anywhere in [close-60, now] (boundary-inclusive) poisons the
+                               # reconstruction while the freshness gate sees only the newest report —
+                               # measured: a 68s hole passed every gate and projected a $24 error onto
+                               # a $0.14 photo-finish. The guard voids the projection instead.
+RAW_RING_S = 75.0              # raw-report ring retention: horizon + seed lookback + slack
 TWAP_FROZEN_S = 20.0           # official-TWAP stall detector (twap_frozen): seconds of an EXACTLY unchanged
                                # official value before we distrust the resolution source. The observed stall
                                # ran 35s; ~11% single repeats are normal relay polling, so this sits between.
@@ -64,10 +72,10 @@ class ChainlinkFeed:
         self.twap_official: float = 0.0
         self.twap_official_ts: float = 0.0
         self.twap_official_rx: float = 0.0
-        # Raw-report ring (~45s of receipt-ts, price) — feeds the running TWAP
-        # reconstruction. RECEIPT clock, not payload: the official aggregator
-        # weights by arrival spacing (rx-clock ZOH fits it 4× tighter, median
-        # $0.07 vs $0.30), and the sniper's frozen margins were measured on it.
+        # Raw-report ring (RAW_RING_S of receipt-ts, price) — feeds the running
+        # TWAP reconstruction. RECEIPT clock, not payload: rx-clock ZOH matches
+        # the served 60s final at median $0.028 / p90 $0.22 (08-14..17), and
+        # the frozen margins were measured on this exact convention.
         self._reports: deque[tuple[float, float]] = deque()
         self._last_report_obs_ts: float = 0.0   # payload ts of the latest raw report
         # Binance ring (payload-ts, price) from the RTDS `crypto_prices` topic —
@@ -148,8 +156,8 @@ class ChainlinkFeed:
         acc += prev_p * (end - prev_t)
         return acc / (end - start)
 
-    def twap_30(self, end_ts: float | None = None, window_s: float = 30.0) -> float | None:
-        """Our reconstruction of the official 30s TWAP over [end−window, end],
+    def twap_60(self, end_ts: float | None = None, window_s: float = TWAP_HORIZON_S) -> float | None:
+        """Our reconstruction of the official 60s TWAP over [end−window, end],
         rx-clock. None until the buffer covers the window. Research/cross-check
         helper — the live projection path calls running_avg directly."""
         end = end_ts if end_ts is not None else (self._last_report_rx or 0.0)
@@ -181,10 +189,11 @@ class ChainlinkFeed:
 
     def projected_final_twap(self, close_ts: float, now: float | None = None,
                              bridged: bool = False) -> float | None:
-        """The sniper's projection of the window's resolving 30s TWAP at time
+        """The sniper's projection of the window's resolving 60s TWAP at time
         `now`: observed-average mass + spot carried over the unobserved tail,
-        proj = w·A + (1−w)·spot,  w = observed fraction of [close−30, close].
-        None outside the averaging zone, on a cold ring, or on a stale spot —
+        proj = w·A + (1−w)·spot,  w = observed fraction of [close−60, close].
+        None outside the averaging zone, on a cold ring, on a stale spot, or
+        when a raw delivery hole > RAW_GAP_MAX_S sits anywhere in the span —
         a None here must read as "cannot fire", never as 0.
 
         bridged=True adds the Binance delta since the last raw report to the
@@ -192,12 +201,27 @@ class ChainlinkFeed:
         taker NEVER uses it: its frozen margin tables were measured on the
         plain projection."""
         t = now if now is not None else time.time()
-        t0 = close_ts - 30.0
+        t0 = close_ts - TWAP_HORIZON_S
         if t <= t0 or t > close_ts:
             return None
         if self._price <= 0 or self.age_seconds > SPOT_STALE_S:
             return None
-        w = (t - t0) / 30.0
+        # Coverage guard, boundary-inclusive: the freshness gate reads only the
+        # NEWEST report, so an outage covering the middle of the averaging span
+        # (reports resuming just before the fire) leaves a garbage average
+        # behind a fresh spot.
+        prev = t0
+        for rx, _p in self._reports:
+            if rx <= t0:
+                continue
+            if rx > t:
+                break
+            if rx - prev > RAW_GAP_MAX_S:
+                return None
+            prev = rx
+        if t - prev > RAW_GAP_MAX_S:
+            return None
+        w = (t - t0) / TWAP_HORIZON_S
         avg = self.running_avg(t0, t)
         if avg is None:
             return None
@@ -259,6 +283,14 @@ class ChainlinkFeed:
         if prev_ts is None:          # boundary was the feed's first-ever report
             return False
         return (first_ts - window_ts) <= STRIKE_TRUST_GAP_S
+
+    def boundary_snapshot(self) -> dict[int, float]:
+        """Trusted boundary captures (last ~2h) for the nightly mechanism watch:
+        served price_to_beat/final_price must equal these bit-exact, or the
+        resolution source moved. Only strike_reliable captures — a delivery
+        hole must not read as a rule change."""
+        return {b: v for b, v in self._boundary_prices.items()
+                if self.strike_reliable(b)}
 
     @staticmethod
     def _epoch_seconds(ts: float) -> float:
@@ -379,9 +411,9 @@ class ChainlinkFeed:
                         "action": "subscribe",
                         "subscriptions": [
                             {"topic": "crypto_prices_chainlink", "type": "*"},
-                            # The resolution source from 2026-08-07: 30s TWAP.
+                            # The resolution source from 2026-08-14: 60s TWAP.
                             # Exact filter format per docs (compact, lowercase).
-                            {"topic": "crypto_prices_twap_thirty", "type": "update",
+                            {"topic": "crypto_prices_twap_sixty", "type": "update",
                              "filters": "{\"symbol\":\"btc/usd\"}"},
                             # The crowd's feed: Binance spot relayed by RTDS,
                             # ~2.2s fresher than our Chainlink receipt. Feeds
@@ -445,7 +477,7 @@ class ChainlinkFeed:
                                 pub_ts = None
                             # TWAP messages carry the same symbol — route by topic
                             # STRICTLY, or raw ticks poison the strike capture.
-                            if msg.get("topic", "") == "crypto_prices_twap_thirty":
+                            if msg.get("topic", "") == "crypto_prices_twap_sixty":
                                 _v = float(value)
                                 if _v != self.twap_official:
                                     self._twap_value_since = now
@@ -469,7 +501,7 @@ class ChainlinkFeed:
                             self._last_report_rx = now
                             self._last_report_obs_ts = observed_ts
                             self._reports.append((now, self._price))
-                            while self._reports and self._reports[0][0] < now - 45.0:
+                            while self._reports and self._reports[0][0] < now - RAW_RING_S:
                                 self._reports.popleft()
                             self.report_event.set()   # sniper decision clock
                             # Optional micro-tape hook — must not raise into the feed.

@@ -1,18 +1,15 @@
-"""Projection-side deep maker LADDER (signal_leg="deep_proj") — the 1723 mimic.
+"""Projection-side deep maker LADDER (signal_leg="deep_proj").
 
-In the final 30s the book prices off spot while the resolution is an average
-that is mostly already written. The ladder rests GTC bids on the
+In the final minute the book prices off spot while the resolution is a 60s
+average that is mostly already written. The ladder rests GTC bids on the
 projection-favored side at prices where being wrong is priced in (break-even
 win rate equals the price paid), and panic crossing the spread fills them.
-Verified against the market's best late maker (wallet 0x0a2c53bd…, +$12.9k in
-4.5 days): our projection's sign matches its side on 89% of its deep fills,
-and its edge is zero where the projection disagrees.
 
 Rungs carry per-rung sign-quality requirements (`need` = multiple of the
-p99.5 projection error at the current k). The floor doubles as the regime
-filter: in photo-finish chop, displacement cannot reach 2x its own error, so
-the ladder self-silences window-by-window — measured across three regimes:
-rich +33.8c/sh at 100% win, chop ZERO fills where the old floor bled -41c/sh.
+p99.5 projection error at the current k). The floor's only job is refusing
+photo-finishes — under the 60s-rule tables the sign named the winner in
+873/873 armed windows at need 0.5 (engine-true 08-14..17); the rung price
+carries the risk (see WALLETS.md / RESEARCH.md for provenance).
 
 Lifecycle, one ladder per window: place when the projection clears the
 ladder's minimum need with k in [place_min, place_max] → cancel everything
@@ -216,9 +213,10 @@ class MakerBidManager:
     def min_need(self) -> float:
         """The ladder's noise floor: the smallest per-rung `need` (multiple of
         the p99.5 projection error at the current k) — below it the sign is
-        inside its own error and picks nothing. In photo-finish chop no window
-        can clear 2x its error, so the floor IS the regime filter."""
-        return min((float(r[2]) for r in self.ladder()), default=2.0)
+        inside its own error and picks nothing. Photo-finish windows cannot
+        clear any fraction of the error scale, so the floor refuses exactly
+        the windows that pay nobody."""
+        return min((float(r[2]) for r in self.ladder()), default=0.5)
 
     def certain_winner(self, window_ts: int) -> str | None:
         """The window's SETTLED winner from the two official TWAP boundary

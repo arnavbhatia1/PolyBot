@@ -1928,7 +1928,7 @@ async def trading_loop(market_scanner: BTCMarketScanner, signal_engine: SignalEn
     # Closure captures clob_ws once — reused across all book-update ticks.
 
     _pg_lw = config.get("late_window", {})
-    _pg_zone = float(_pg_lw.get("twap_zone_s", 30.0))
+    _pg_zone = float(_pg_lw.get("twap_zone_s", 60.0))
     _last_full_eval = 0.0
 
     async def _entry_pass(positions: list) -> None:
@@ -2578,7 +2578,32 @@ async def main() -> None:
         except Exception as e:
             logger.warning("resolution watch read failed: %s", e)
             twap = None
+        # Source watch: served values vs OUR captured stream boundaries. The
+        # chain invariant above cannot see a source swap (both served values
+        # move together — the 08-14 30s->60s switch kept it green for four
+        # days); this one turns red the same night.
+        try:
+            mech = await asyncio.to_thread(
+                mod.mechanism_read, chainlink_feed.boundary_snapshot(), _real_db)
+        except Exception as e:
+            logger.warning("mechanism watch read failed: %s", e)
+            mech = None
+        if sim is None and live is None:
+            if alert_manager:
+                await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
+            return {"health": "no data"}
+        today = datetime.now(ET).strftime("%Y-%m-%d")
+        # Kill-rule authority = the REALIZED ledger ONLY — the rule is defined
+        # on realized fills, and the decision-ask SIM read must never trip it.
+        # An empty realized ledger is "still accruing", not a verdict; the SIM
+        # line stays in the ping as context.
+        kt = live["kill_rule_tripped"] if (live and live["n_fills"] > 0) else None
+        status = ("⏳ STILL ACCRUING" if kt is None
+                  else "⚠️ KILL RULE TRIPPED" if kt else "✅ HEALTHY")
 
+        # ── Human-first daily ping: verdict up top, one line per fact, no
+        # jargon the operator has to decode. The returned dict (below) keeps
+        # the full numbers for tests/automation.
         def _money_line(r) -> str:
             if r is None or r["n_fills"] == 0:
                 return "no realized fills yet"
@@ -2641,6 +2666,20 @@ async def main() -> None:
                     f"**Set `late_window.sniper_enabled: false` now** and verify "
                     f"a resolved market by hand before re-enabling.\n")
 
+        def _mech_line() -> str:
+            if not mech:
+                return ""
+            c, e = mech["checked"], mech["exact"]
+            if e == c:
+                return (f"Source watch: served strikes/finals match our stream "
+                        f"{e}/{c} bit-exact\n")
+            return (f"🚨 **RESOLUTION SOURCE CHANGED: only {e}/{c} served values "
+                    f"match the stream we subscribe (worst ${mech['worst']:.2f} "
+                    f"off)** — Polymarket moved the resolution to a different "
+                    f"feed. **Set `late_window.sniper_enabled: false` now**; the "
+                    f"strike, projection, and post-close winner checks are all "
+                    f"computing the wrong rule until the feed is re-pointed.\n")
+
         if kt:
             action = ("**→ ACTION: the pre-registered shut-off line is crossed. "
                       "Set `sniper_enabled: false` in settings.yaml and restart.**")
@@ -2657,6 +2696,7 @@ async def main() -> None:
             f"{_context_line()}"
             f"{_regime_line()}"
             f"{_twap_line()}"
+            f"{_mech_line()}"
             f"{action}"
         )
         # The journal always gets the ping verbatim — a Discord outage must
@@ -2680,6 +2720,7 @@ async def main() -> None:
         return {"health": status, "kill_rule_tripped": kt,
                 "live": _pick(live), "sim": _pick(sim),
                 "legs": (live or {}).get("legs"),
+                "mechanism": mech,
                 }
     scheduler.register_job("sniper_health", _sniper_health_job)
     # Last: the analysis jobs above read the tape, so compress only after they

@@ -533,8 +533,8 @@ class MicroTape:
 
     def on_twap_report(self, payload_ts: float, value: float,
                        pub_ts: float | None = None) -> None:
-        """Wired as ChainlinkFeed.on_twap. Official 30s-TWAP stream (the resolution
-        source from 2026-08-07), always recorded with receipt ts so the topic's
+        """Wired as ChainlinkFeed.on_twap. Official 60s-TWAP stream (the resolution
+        source from 2026-08-14), always recorded with receipt ts so the topic's
         delivery lag stays measurable.
 
         `pub` = the RTDS envelope's own timestamp (when Polymarket published).

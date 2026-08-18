@@ -179,7 +179,7 @@ def test_gtc_placement_pays_the_measured_post_rtt(tmp_path, monkeypatch):
 def test_sign_inside_noise_cancels_everything(tmp_path, monkeypatch):
     """disp under min_need x p99.5-error picks nothing — no depth survives."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
-    mgr = _mgr(proj=64010.0)                 # signed +10 < 2 x p995(15)=28
+    mgr = _mgr(proj=64004.0)                 # signed +4 < 2 x p995(15)=10
     w = time.time() - 285.0
     _place(mgr, w, budget=40.0)
     asyncio.run(mgr.maintain())
@@ -199,7 +199,7 @@ def test_projection_flip_cancels_everything(tmp_path, monkeypatch):
 def test_above_the_floor_holds_every_rung(tmp_path, monkeypatch):
     """Clearing the floor holds the whole ladder — the wick can come."""
     monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
-    mgr = _mgr(proj=64030.0)                 # signed +30 > 2 x p995(15)=28
+    mgr = _mgr(proj=64030.0)                 # signed +30 > 2 x p995(15)=10
     w = time.time() - 285.0
     _place(mgr, w, budget=40.0)
     asyncio.run(mgr.maintain())
