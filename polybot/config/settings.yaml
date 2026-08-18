@@ -68,6 +68,13 @@ late_window:
   sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
                                # false = stop sniping when the post-live kill rule trips. The sniper
                                # is the bot's ONLY strategy — base entries are always suppressed.
+  taker_enabled: false         # lock-dip taker DORMANT-PENDING-REGIME (08-18 audit):
+                               # its dip supply died with the 60s rule — 4 events / 1
+                               # FOK-reachable over 5 days and 1,184 windows (bar:
+                               # >=1 per 3 days), zero max-tier fires. The signal
+                               # still evaluates and logs would-be fires; re-arm by
+                               # flipping this once the nightly dip count says the
+                               # whipsaw supply returned (RESEARCH.md).
   validation_epoch: "2026-08-18T16:45:00+00:00"  # deep_proj PAPER validation
                                # under the 60s-RULE ENGINE (sixty topic, 60s
                                # projection + coverage guard, 08-18 tables,

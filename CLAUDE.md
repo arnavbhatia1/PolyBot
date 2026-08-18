@@ -75,7 +75,12 @@ official BTC/USD 60s-TWAP stream (`crypto_prices_twap_sixty`, ~1Hz on integer
 seconds, delivered ~1.6-1.8s behind observation); Gamma mirrors it for
 discovery. The **decision strike** is that stream's first report at/after the
 window boundary (`chainlink_feed._record_boundary`); Gamma's served
-`price_to_beat` WINS when present. The RAW ~1Hz stream
+`price_to_beat` WINS when present. Boundary trust runs on the **payload
+clock**: a capture is trusted iff its report's OWN timestamp is within 0.5s
+of the boundary (the topic ticks on integer seconds, so the true boundary
+report carries ts == boundary exactly) — delivery lag (rx − ts, ~1.6-1.8s)
+never enters the comparison, so normal delivery cannot veto a capture; only
+a genuine hole can. The RAW ~1Hz stream
 (`crypto_prices_chainlink`) is NOT the strike source — it feeds the running
 reconstruction (`running_avg`, rx-clock ZOH: matches the served 60s final at
 median $0.028 / p90 $0.22) and the projection (`projected_final_twap`,

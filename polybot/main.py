@@ -882,6 +882,21 @@ async def _evaluate_signal_and_enter(
                 lw_cfg["sniper_min_edge"],
                 fee_rate=fee_rate,
                 require_max_tier=lw_cfg.get("require_max_tier", True))
+            # taker_enabled=false: the lock-dip leg is DORMANT (its dip supply
+            # died with the 30s rule — 1 reachable dip per 5 days measured
+            # 08-14..18, vs 1-per-3-days on its bar). The signal still
+            # evaluates so a would-be fire is visible in the logs, but no
+            # taker capital deploys; the ladder path reads the same SKIP it
+            # would on a dipless lock.
+            if (_snipe.action != "SKIP"
+                    and not lw_cfg.get("taker_enabled", True)):
+                _emit_gate_skip(cid, "taker_dormant",
+                                f"taker dormant: would have fired {_snipe.action} "
+                                f"({_snipe.reason})")
+                _snipe = TradeSignal(
+                    "SKIP", _snipe.prob, _snipe.edge, 0.0,
+                    "taker dormant (late_window.taker_enabled false)",
+                    side=_snipe.side)
             # Locked but no dip to take -> rest the maker bid where the next
             # dip lands (leg 3). Placement is one POST ~20s before close, off
             # the FOK race path entirely.
