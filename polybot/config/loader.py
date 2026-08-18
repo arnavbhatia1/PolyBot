@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -107,9 +108,18 @@ def validate_config(config: dict[str, Any]) -> None:
     val, found = _get_nested(config, "late_window.require_max_tier")
     if not found or not isinstance(val, bool):
         errors.append("late_window.require_max_tier: missing or not a boolean")
-    val, found = _get_nested(config, "late_window.sniper_enabled")
+    # trading_enabled is THE master brake. sniper_enabled is its retired name
+    # (the burst sniper is long deleted) — aliased with a warning so an old
+    # settings file still halts/runs correctly instead of KeyError-ing at boot.
+    lw = config.get("late_window")
+    if isinstance(lw, dict) and "trading_enabled" not in lw and "sniper_enabled" in lw:
+        lw["trading_enabled"] = lw["sniper_enabled"]
+        logging.getLogger("polybot").warning(
+            "settings: late_window.sniper_enabled is deprecated — rename it to "
+            "trading_enabled (aliased for this run)")
+    val, found = _get_nested(config, "late_window.trading_enabled")
     if not found or not isinstance(val, bool):
-        errors.append("late_window.sniper_enabled: missing or not a boolean")
+        errors.append("late_window.trading_enabled: missing or not a boolean")
     epoch, found = _get_nested(config, "late_window.validation_epoch")
     if found and epoch is not None:
         from datetime import datetime as _dt

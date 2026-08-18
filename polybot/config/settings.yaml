@@ -65,9 +65,10 @@ execution:
 #  paper-shadow's realized fills. DO NOT enable on faith.
 # =============================================================================
 late_window:
-  sniper_enabled: true         # kill-bar SAFETY (the emergency brake, not a strategy lever):
-                               # false = stop sniping when the post-live kill rule trips. The sniper
-                               # is the bot's ONLY strategy — base entries are always suppressed.
+  trading_enabled: true        # THE master brake (kill-bar SAFETY, not a strategy lever):
+                               # false = no leg deploys capital — set it when the kill rule
+                               # or the resolution-source gate trips. (Old name sniper_enabled
+                               # is aliased with a deprecation warning.)
   taker_enabled: false         # lock-dip taker DORMANT-PENDING-REGIME (08-18 audit):
                                # its dip supply died with the 60s rule — 4 events / 1
                                # FOK-reachable over 5 days and 1,184 windows (bar:

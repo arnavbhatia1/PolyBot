@@ -20,7 +20,7 @@ verified bit-exact against served price_to_beat/final_price incl. a live probe
 stream for 4 days — the full incident, and why both watchers missed it, is in
 RESEARCH.md. The nightly ping now carries a SOURCE watch (`mechanism_read`:
 served values vs our own captured boundaries) that turns red the same night
-this ever happens again. **On any mechanism alarm: set `sniper_enabled:
+this ever happens again. **On any mechanism alarm: set `trading_enabled:
 false`, then run `scripts/research/ws1_boundary_autopsy.py` before anything
 else.**
 
@@ -51,7 +51,7 @@ scripts/run_polybot.sh                    # daily cycle: trade -> nightly jobs -
 
 **The live recipe** (only after the per-leg bar passes AND
 `smoke_gtc_test.py --confirm` passes): `settings.yaml` → `mode: live` +
-`late_window.sniper_enabled: true` + a fresh `validation_epoch`. That is the
+`late_window.trading_enabled: true` + a fresh `validation_epoch`. That is the
 complete switch; paper and live share every decision path.
 
 ### Secrets
@@ -146,7 +146,7 @@ both legs' edges were measured hold-to-resolution (REFUTATIONS.md: exits).
 **Kill rules** (`live_health_read.kill_rule_tripped`, armed at any go-live):
 any `lock_dip` loss trips on ONE occurrence (every fire is max-tier — a loss
 IS a breach); otherwise trailing-4-day mean DOLLARS < 0 once ≥4 ET days.
-`sniper_enabled: false` is the shared emergency brake for every leg. Never
+`trading_enabled: false` is the shared emergency brake for every leg. Never
 deploy on a harness print alone — the paper shadow's realized fills are the
 binding gate. Capital deploys ONLY through these two legs.
 

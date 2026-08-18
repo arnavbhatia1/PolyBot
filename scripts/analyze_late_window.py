@@ -233,7 +233,7 @@ def resolution_snapshot_read(db_path=None, hours: float = 26.0):
     price_to_beat are the SAME value — the 30s-TWAP stream's report at their
     shared boundary — so they match bit-exact. Systematic divergence means
     Polymarket changed the resolution rule again: kill the sniper
-    (sniper_enabled: false) and re-verify the mechanism by hand. Checks
+    (trading_enabled: false) and re-verify the mechanism by hand. Checks
     windows labeled in the trailing ``hours``; alert-only.
     """
     import time as _t

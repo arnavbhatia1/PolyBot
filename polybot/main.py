@@ -858,7 +858,7 @@ async def _evaluate_signal_and_enter(
         _w_ts = -1
 
     # --- LOCK-DIP TAKER + MAKER PLACEMENT (final-30s averaging zone) ------------
-    if (lw_cfg["sniper_enabled"]
+    if (lw_cfg["trading_enabled"]
             and chainlink_feed is not None
             and contract["seconds_remaining"] <= lw_cfg["twap_zone_s"]):
         # Capital only deploys on a TRUSTED strike (Gamma price_to_beat, or a
@@ -2035,12 +2035,12 @@ async def trading_loop(market_scanner: BTCMarketScanner, signal_engine: SignalEn
         if scheduler and getattr(scheduler, '_shutdown_requested', False):
             break
 
-        # Sniper legs (brake: sniper_enabled): also wake on raw Chainlink
+        # Sniper legs (brake: trading_enabled): also wake on raw Chainlink
         # reports — the resolution stream is the sniper's decision clock; a
         # displacement is acted on within one report, not the 100ms housekeeping
         # fallback. No effect on the loop when the brake is off.
         _sniper_wake = chainlink_feed is not None and bool(
-            config.get("late_window", {})["sniper_enabled"])
+            config.get("late_window", {})["trading_enabled"])
 
         _sig_woke = False  # this wake was a Chainlink report (set below)
         # Event-driven: react instantly to WebSocket book/resolution updates; short timeout for housekeeping
@@ -2537,7 +2537,7 @@ async def main() -> None:
         Reports the SIM corpus AND the realized fills with their gap; the
         kill-rule verdict is driven by the realized ledger once fills exist
         (the sim can't see live execution quality). Skipped when disabled."""
-        if not config.get("late_window", {}).get("sniper_enabled"):
+        if not config.get("late_window", {}).get("trading_enabled"):
             return {"skipped": "sniper disabled"}
         import importlib.util
         hp = Path(__file__).resolve().parent.parent / "scripts" / "analyze_late_window.py"
@@ -2681,7 +2681,7 @@ async def main() -> None:
             return (f"🚨 **RESOLUTION MECHANISM SHIFT: {c - m}/{c} windows broke "
                     f"the final==next-strike chain (worst ${twap['worst']:.2f} "
                     f"off)** — Polymarket changed the resolution rule again. "
-                    f"**Set `late_window.sniper_enabled: false` now** and verify "
+                    f"**Set `late_window.trading_enabled: false` now** and verify "
                     f"a resolved market by hand before re-enabling.\n")
 
         def _mech_line() -> str:
@@ -2694,13 +2694,13 @@ async def main() -> None:
             return (f"🚨 **RESOLUTION SOURCE CHANGED: only {e}/{c} served values "
                     f"match the stream we subscribe (worst ${mech['worst']:.2f} "
                     f"off)** — Polymarket moved the resolution to a different "
-                    f"feed. **Set `late_window.sniper_enabled: false` now**; the "
+                    f"feed. **Set `late_window.trading_enabled: false` now**; the "
                     f"strike, projection, and post-close winner checks are all "
                     f"computing the wrong rule until the feed is re-pointed.\n")
 
         if kt:
             action = ("**→ ACTION: the pre-registered shut-off line is crossed. "
-                      "Set `sniper_enabled: false` in settings.yaml and restart.**")
+                      "Set `trading_enabled: false` in settings.yaml and restart.**")
         elif kt is None:
             action = "→ Too few live days for a verdict yet — nothing to do."
         else:

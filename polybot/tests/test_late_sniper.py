@@ -213,12 +213,26 @@ def test_kelly_sized_on_market_anchored_prob_not_tier_prob():
     assert anchored < tier          # the anchor is the conservative branch
 
 
-def test_sniper_enabled_wired_from_settings():
-    # The sniper is the bot's only strategy; sniper_enabled is the kill-bar SAFETY
-    # (emergency brake), read straight from settings.yaml — the single config source
-    # (there is no param_registry default any more). This also smoke-tests that the
-    # loader validates and surfaces the live config end-to-end.
+def test_trading_enabled_wired_from_settings():
+    # trading_enabled is THE master brake, read straight from settings.yaml —
+    # the single config source. This also smoke-tests that the loader
+    # validates and surfaces the live config end-to-end.
     from polybot.config.loader import load_config
     cfg = load_config()
-    assert isinstance(cfg["late_window"]["sniper_enabled"], bool)
+    assert isinstance(cfg["late_window"]["trading_enabled"], bool)
     assert cfg["late_window"]["twap_zone_s"] <= 60.0
+
+
+def test_sniper_enabled_alias_still_halts(tmp_path, monkeypatch):
+    """An old settings file using the retired key must still run (aliased with
+    a deprecation warning), never KeyError at boot — the brake must work under
+    either name."""
+    import polybot.config.loader as loader_mod
+    src = (Path(loader_mod.__file__).resolve().parents[0] / "settings.yaml").read_text(
+        encoding="utf-8")
+    old = src.replace("trading_enabled: true", "sniper_enabled: false")
+    p = tmp_path / "settings.yaml"
+    p.write_text(old, encoding="utf-8")
+    monkeypatch.setattr(loader_mod, "_config", None, raising=False)
+    cfg = loader_mod.load_config(config_path=str(p))
+    assert cfg["late_window"]["trading_enabled"] is False

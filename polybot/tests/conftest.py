@@ -47,7 +47,7 @@ SAMPLE_CONFIG = {
         "max_spread": 0.10,
     },
     "late_window": {
-        "sniper_enabled": False,
+        "trading_enabled": False,
         "require_max_tier": True,
         "twap_zone_s": 30.0,
         "twap_k_min_s": 6.0,
