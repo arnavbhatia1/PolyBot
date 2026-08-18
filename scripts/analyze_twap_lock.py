@@ -458,8 +458,8 @@ def main() -> None:
           f"final {m['final_exact'][0]}/{m['final_exact'][1]} exact, "
           f"chain {m['chain'][0]}/{m['chain'][1]}  (worst ${m['worst']:.4f})")
     if m["worst"] > 0.005:
-        print("🚨 MECHANISM MISMATCH — Polymarket changed the resolution rule again. "
-              "Set late_window.sniper_enabled: false and verify by hand.")
+        print("ALARM: MECHANISM MISMATCH - Polymarket changed the resolution rule "
+              "again. Set late_window.sniper_enabled: false and verify by hand.")
     for f in r["fires"]:
         print(f"  {f['ep']}  k={f['k']:4.1f}s  {'UP' if f['side'] else 'DN'}  "
               f"ask {f['ask']:.3f}  {f['tier']:4s}  "
