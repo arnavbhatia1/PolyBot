@@ -21,9 +21,13 @@ from polybot.execution.base import DEFAULT_FEE_RATE
 # 60s average (target noise med $0.03). Estimator: rx-clock ZOH + the 10s
 # coverage guard (chainlink_feed.RAW_GAP_MAX_S) — the guard is part of the
 # measurement and must stay wired wherever these tables gate capital.
-# P995 = fitted p99.5 rounded up to $0.5; MAX = worst-ever rounded up to $1,
-# both monotone-enforced. Tuning these to make a window fire is relaxing a
-# bar; re-fit on >=14 real-final days is re-measurement, not relaxing.
+# P995 = fitted p99.5 rounded up to $0.5, one sample per (window, k-knot).
+# MAX = per-tick INTERVAL maxima: each knot carries the larger of its two
+# adjacent intervals' worst-ever error (so the linear interpolation between
+# knots bounds every tick of both intervals — a grid-point fit under-bounds
+# between knots), rounded up to $1, monotone-enforced. Tuning these to make a
+# window fire is relaxing a bar; re-fit on >=14 real-final days is
+# re-measurement, not relaxing.
 TWAP_MARGIN_P995: tuple[tuple[float, float], ...] = (
     (2.0, 1.0), (4.0, 1.0), (6.0, 1.5), (8.0, 2.0), (10.0, 3.5),
     (12.0, 3.5), (15.0, 5.0), (20.0, 6.0), (25.0, 8.0), (29.0, 10.5),
@@ -31,9 +35,9 @@ TWAP_MARGIN_P995: tuple[tuple[float, float], ...] = (
     (58.0, 38.0),
 )
 TWAP_MARGIN_MAX: tuple[tuple[float, float], ...] = (
-    (2.0, 2.0), (4.0, 2.0), (6.0, 3.0), (8.0, 4.0), (10.0, 11.0),
-    (12.0, 11.0), (15.0, 11.0), (20.0, 18.0), (25.0, 24.0), (29.0, 24.0),
-    (35.0, 35.0), (40.0, 52.0), (45.0, 115.0), (50.0, 119.0), (55.0, 120.0),
+    (2.0, 2.0), (4.0, 2.0), (6.0, 3.0), (8.0, 5.0), (10.0, 11.0),
+    (12.0, 11.0), (15.0, 18.0), (20.0, 24.0), (25.0, 24.0), (29.0, 36.0),
+    (35.0, 50.0), (40.0, 112.0), (45.0, 119.0), (50.0, 120.0), (55.0, 120.0),
     (58.0, 120.0),
 )
 # Mechanical win-prob floors per tier: displacement beyond the max-ever error
