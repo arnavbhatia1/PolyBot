@@ -91,13 +91,15 @@ which come from the counterparty cannot detect the counterparty changing.**
 | kelly_fraction 0.08, maker_bankroll_frac 0.15 | settings | pre-era | post-gate playbook | after a §2 bar pass |
 | fee model 0.07 / 0.0175 | base.py | 07-22 | 1,751 live fills vs documented curve | Polymarket fee change |
 
-## Tooling (session 08-18, scratchpad scripts — rebuild from these names)
+## Tooling
 
-`ws1_reduce.py` (micro-tape → per-window streams), `ws1_measure60.py` (error
-tables, all estimators), `ws1_freeze_tables.py`, `ws1_boundary_autopsy.py`
-(which stream instant equals the served final — run this FIRST on any future
-mechanism alarm), `ws2_ladder_replay.py` (engine-true grid + ANTI controls),
-`ws2_supply*.py` (panic-supply attribution), `ws3_census.py` /
-`ws3_behavior.py` / `ws3_queue.py` (WALLETS.md), `klines_download.py` /
+Everything lives in `scripts/research/` (see its README for the run order and
+the `data/` layout): `ws1_reduce.py` (micro-tape → per-window streams),
+`ws1_measure60.py` (error tables, all estimators), `ws1_freeze_tables.py`,
+`ws1_interval_max.py` (per-tick MAX knots — the shipped convention),
+`ws1_boundary_autopsy.py` (which stream instant equals the served final — run
+FIRST on any mechanism alarm), `ws2_ladder_replay.py` (engine-true grid +
+ANTI controls), `ws2_supply*.py` (panic-supply attribution), `ws3_census.py`
+/ `ws3_behavior.py` / `ws3_queue.py` (WALLETS.md), `klines_download.py` /
 `pm_trades_download.py` (Binance 1s mirror; data-api both-counterparty pull,
 offset caps at 3,500 rows/window).
