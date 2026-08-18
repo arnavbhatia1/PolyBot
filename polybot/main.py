@@ -2578,7 +2578,22 @@ async def main() -> None:
         except Exception as e:
             logger.warning("resolution watch read failed: %s", e)
             twap = None
+        if sim is None and live is None:
+            if alert_manager:
+                await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
+            return {"health": "no data"}
+        today = datetime.now(ET).strftime("%Y-%m-%d")
+        # Kill-rule authority = the REALIZED ledger ONLY — the rule is defined
+        # on realized fills, and the decision-ask SIM read must never trip it.
+        # An empty realized ledger is "still accruing", not a verdict; the SIM
+        # line stays in the ping as context.
+        kt = live["kill_rule_tripped"] if (live and live["n_fills"] > 0) else None
+        status = ("⏳ STILL ACCRUING" if kt is None
+                  else "⚠️ KILL RULE TRIPPED" if kt else "✅ HEALTHY")
 
+        # ── Human-first daily ping: verdict up top, one line per fact, no
+        # jargon the operator has to decode. The returned dict (below) keeps
+        # the full numbers for tests/automation.
         def _money_line(r) -> str:
             if r is None or r["n_fills"] == 0:
                 return "no realized fills yet"
