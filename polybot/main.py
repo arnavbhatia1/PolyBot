@@ -11,7 +11,7 @@ import os
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -2495,6 +2495,7 @@ async def main() -> None:
     clob_ws.on_bba = micro_tape.on_bba
     chainlink_feed.on_report = micro_tape.on_cl_report
     chainlink_feed.on_twap = micro_tape.on_twap_report
+    chainlink_feed.on_twap30 = micro_tape.on_twap30_report
     chainlink_feed.on_spot = micro_tape.on_bz_tick
     window_recorder = WindowPathRecorder(
         db=db, clob_ws=clob_ws,
@@ -2502,6 +2503,27 @@ async def main() -> None:
         http_client=http_client)
     global _window_recorder
     _window_recorder = window_recorder
+
+    def _on_source_mismatch(window_id: str, kind: str, served: float,
+                            captured: float) -> None:
+        """The per-window SOURCE hard gate: Polymarket's served resolution no
+        longer matches the stream we subscribe — every leg is computing a
+        fiction. Halt in-process NOW (settings on disk still say enabled, so
+        the operator re-arms by restart after re-pointing the feed) and page."""
+        config.get("late_window", {})["trading_enabled"] = False
+        logger.critical(
+            "RESOLUTION SOURCE MISMATCH %s: served %s $%.4f vs our captured "
+            "$%.4f — trading HALTED in-process. Polymarket moved the "
+            "resolution stream; run scripts/research/ws1_boundary_autopsy.py "
+            "before re-arming.", window_id, kind, served, captured)
+        if alert_manager:
+            asyncio.create_task(alert_manager.send_health(
+                f"🚨 **TRADING HALTED — resolution source mismatch** on "
+                f"{window_id}: served {kind} ${served:,.4f} vs our stream "
+                f"${captured:,.4f}. Polymarket moved the resolution stream "
+                f"again. The bot stands down until the feed is re-pointed "
+                f"and it is restarted."))
+    window_recorder.on_source_mismatch = _on_source_mismatch
 
     # Nightly jobs: window-path retention sweep + price-sum retention + the
     # sniper-edge health report (runs at 23:45 ET, during the wind-down).
@@ -2603,6 +2625,26 @@ async def main() -> None:
         except Exception as e:
             logger.warning("mechanism watch read failed: %s", e)
             mech = None
+        # Ops trend watches: constants drift while nobody looks (POST RTT ran
+        # 356->436ms uncommented; the at-price queue 2.5x'd in three days).
+        try:
+            qd = await asyncio.wait_for(asyncio.to_thread(
+                mod.queue_depth_read, 7.0, _real_db), timeout=120.0)
+        except Exception as e:
+            logger.warning("queue depth read skipped (%s)", e)
+            qd = None
+        lat = None
+        try:
+            from polybot.paths import LATENCY_STATS_PATH
+            import json as _json
+            _ls = _json.loads(LATENCY_STATS_PATH.read_text())
+            _age_d = (datetime.now(timezone.utc)
+                      - datetime.fromisoformat(_ls["last_updated"])).days
+            post = _ls.get("post") or {}
+            if post.get("n", 0) >= 10 and _age_d <= 7:
+                lat = dict(p50=post["p50_ms"], n=post["n"])
+        except Exception:
+            pass
         if sim is None and live is None:
             if alert_manager:
                 await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
@@ -2684,6 +2726,27 @@ async def main() -> None:
                     f"**Set `late_window.trading_enabled: false` now** and verify "
                     f"a resolved market by hand before re-enabling.\n")
 
+        def _ops_line() -> str:
+            # Stated tolerances: POST p50 within +-25% of the paper table's
+            # 436ms (else re-measure paper_latency_scale); trailing sweep-
+            # consumed queue p75 must stay UNDER the 135-sh at-price constant
+            # (else paper over-credits at-price fills).
+            parts = []
+            if lat:
+                drift = (lat["p50"] - 436.0) / 436.0
+                parts.append(
+                    f"POST p50 {lat['p50']:.0f}ms (n={lat['n']})"
+                    + (f" ⚠️ {drift:+.0%} off the paper table — re-measure "
+                       f"paper_latency_scale" if abs(drift) > 0.25 else ""))
+            if qd:
+                warn = qd["p75"] > 135.0
+                parts.append(
+                    f"deep-queue consumed med {qd['med']:.0f}/p75 {qd['p75']:.0f} sh "
+                    f"({qd['n']} sweeps/{qd['days']:.0f}d)"
+                    + (" ⚠️ p75 over the 135-sh constant — paper may over-credit "
+                       "at-price fills, re-measure" if warn else ""))
+            return ("Ops watch: " + " · ".join(parts) + "\n") if parts else ""
+
         def _mech_line() -> str:
             if not mech:
                 return ""
@@ -2715,6 +2778,7 @@ async def main() -> None:
             f"{_regime_line()}"
             f"{_twap_line()}"
             f"{_mech_line()}"
+            f"{_ops_line()}"
             f"{action}"
         )
         # The journal always gets the ping verbatim — a Discord outage must

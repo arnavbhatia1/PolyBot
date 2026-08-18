@@ -226,6 +226,85 @@ def mechanism_read(boundaries: dict, db_path=None):
                 worst_ts=worst_ts)
 
 
+def queue_depth_read(days: float = 7.0, db_path=None):
+    """Trailing sweep-consumed depth per deep level — the live check on the
+    paper fill rule's AT_PRICE_QUEUE_SH constant (135 sh, book-watch 08-17).
+
+    Estimator: volume printed AT a level immediately before the tape trades
+    strictly through it ~= the resting size that was consumed (a LOWER bound;
+    the book-watch resting estimate runs higher because size cancels before
+    sweeps). The constant is deliberately conservative — the UNSAFE drift is
+    real queues growing PAST it (paper would over-credit at-price fills), so
+    the alarm tolerance is pooled p75 > the constant."""
+    import gzip as _gz
+    import json as _json
+    import time as _t
+    from collections import defaultdict as _dd
+    rec_dir = ROOT / "polybot" / "memory" / "recordings"
+    db = Path(db_path) if db_path else LIVE_DB
+    toks = set()
+    if db.exists():
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            for tu, td in con.execute(
+                    "SELECT token_up, token_down FROM window_labels "
+                    "WHERE labeled_at >= ?", (_t.time() - days * 86400,)):
+                if tu:
+                    toks.add(tu)
+                if td:
+                    toks.add(td)
+        except sqlite3.OperationalError:
+            return None
+        finally:
+            con.close()
+    if not toks:
+        return None
+    levels = [0.80, 0.65, 0.50, 0.35, 0.20]
+    consumed = []
+    cur = {}
+    cutoff = _t.time() - days * 86400
+    for f in sorted(rec_dir.glob("tape_*.jsonl*")):
+        day = f.name.split("_")[1][:10]
+        try:
+            if datetime.fromisoformat(day).timestamp() < cutoff - 86400:
+                continue
+        except ValueError:
+            continue
+        opener = (lambda p: _gz.open(p, "rt")) if f.suffix == ".gz" \
+            else (lambda p: open(p, encoding="utf-8"))
+        try:
+            with opener(f) as fh:
+                for line in fh:
+                    r = _json.loads(line)
+                    if r.get("token") not in toks:
+                        continue
+                    try:
+                        ts, px, sz = float(r["ts"]), float(r["price"]), float(r["size"])
+                    except (TypeError, ValueError):
+                        continue
+                    for L in levels:
+                        key = (r["token"], L)
+                        st = cur.get(key)
+                        if st and ts - st[0] > 60.0:
+                            del cur[key]
+                            st = None
+                        if abs(px - L) <= 1e-9:
+                            if st is None:
+                                cur[key] = [ts, sz]
+                            else:
+                                st[1] += sz
+                        elif px < L - 1e-9 and st is not None:
+                            consumed.append(st[1])
+                            del cur[key]
+        except (OSError, EOFError):
+            continue
+    if len(consumed) < 50:
+        return None
+    consumed.sort()
+    q = lambda f: round(consumed[min(int(f * len(consumed)), len(consumed) - 1)], 1)
+    return dict(n=len(consumed), med=q(0.5), p75=q(0.75), days=days)
+
+
 def resolution_snapshot_read(db_path=None, hours: float = 26.0):
     """Is the resolution rule still the one the sniper is built on?
 

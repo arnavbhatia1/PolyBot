@@ -82,7 +82,7 @@ def main():
                     ep = bucket(rx)
                     if ep is not None:
                         win[ep]["l"].append((round(rx, 3), r["ts"], r["p"]))
-                elif kind == "t":
+                elif kind == "t" and line[8] == '"':   # "t" only — never "t3" (the retired-stream A/B record)
                     r = json.loads(line)
                     ts = r["ts"]
                     B = int(ts // 300) * 300
