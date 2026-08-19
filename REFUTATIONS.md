@@ -51,6 +51,17 @@ survives its own pre-registered bar. Dates are 2026.
   a winner at 0.05 seconds before it paid $1.00): every leg's edge was
   measured hold-to-resolution; there is deliberately NO sell path in the
   codebase. Any exit needs its own measured evidence AND new code.
+- **The k>25 ladder window ("early rungs are cheap optionality")** (08-18):
+  refuted by kinematics on 60s-era tape. Deep winner-side walk-downs are
+  AVALANCHES — median time from the first sub-0.90 print to the 0.80 rung is
+  0.00s (same batch), and even the 0.20 rung is reached at median 1.79s
+  (338 clusters); the flip race (10 flips at k∈[6,58]) fills rungs before the
+  cancel lands at rates EXCEEDING every rung's price margin (0.80: 90% vs 80%
+  allowed; 0.20: 50% vs 20%). The [6,58] engine-true counterfactual never
+  beats [6,25] on EW and dollars together (split A: −$35.82 vs −$2.25).
+  Queue seniority buys nothing against sweeps that traverse the whole ladder
+  inside one second. The 79%-of-volume-at-k>25 pool is adverse-selection
+  candy, not opportunity.
 - **deep_proj regime gate** (08-18, this session): the gate's target
   population is EMPTY under the corrected 60s-rule engine — engine-true
   replay of 08-14..17 (991 windows; the exact tape that motivated the gate)
@@ -59,8 +70,12 @@ survives its own pre-registered bar. Dates are 2026.
   arms). The 08-14..15 "massacre" losses the gate was designed to remove were
   wrong-rule artifacts: the bot traded the 30s stream for 4 days after the
   60s switch (wrong strikes med $0.3/p90 $3, wrong projection horizon, wrong
-  post-close winner checks). The trailing-4-day dollars kill rule therefore
-  no longer contradicts expected leg behavior; it stands unmodified.
+  post-close winner checks). Re-confirmed 08-18 with recalibrated 60s-era
+  thresholds: coin-flip arms at the staged floor never fill (32 arms, 0
+  fills), and the only realized OOS loss landed on a PAYING day the gate
+  would not have suppressed (confusion matrix TP=0 / FN=1 / wins-cost=0).
+  A day-level trailing regime cannot see window-level reversals; the regime
+  line stays alert-only.
 
 ## Methodology bans (they fake edges)
 

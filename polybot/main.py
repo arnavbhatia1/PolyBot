@@ -11,7 +11,7 @@ import os
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -858,7 +858,7 @@ async def _evaluate_signal_and_enter(
         _w_ts = -1
 
     # --- LOCK-DIP TAKER + MAKER PLACEMENT (final-30s averaging zone) ------------
-    if (lw_cfg["sniper_enabled"]
+    if (lw_cfg["trading_enabled"]
             and chainlink_feed is not None
             and contract["seconds_remaining"] <= lw_cfg["twap_zone_s"]):
         # Capital only deploys on a TRUSTED strike (Gamma price_to_beat, or a
@@ -882,6 +882,21 @@ async def _evaluate_signal_and_enter(
                 lw_cfg["sniper_min_edge"],
                 fee_rate=fee_rate,
                 require_max_tier=lw_cfg.get("require_max_tier", True))
+            # taker_enabled=false: the lock-dip leg is DORMANT (its dip supply
+            # died with the 30s rule — 1 reachable dip per 5 days measured
+            # 08-14..18, vs 1-per-3-days on its bar). The signal still
+            # evaluates so a would-be fire is visible in the logs, but no
+            # taker capital deploys; the ladder path reads the same SKIP it
+            # would on a dipless lock.
+            if (_snipe.action != "SKIP"
+                    and not lw_cfg.get("taker_enabled", True)):
+                _emit_gate_skip(cid, "taker_dormant",
+                                f"taker dormant: would have fired {_snipe.action} "
+                                f"({_snipe.reason})")
+                _snipe = TradeSignal(
+                    "SKIP", _snipe.prob, _snipe.edge, 0.0,
+                    "taker dormant (late_window.taker_enabled false)",
+                    side=_snipe.side)
             # Locked but no dip to take -> rest the maker bid where the next
             # dip lands (leg 3). Placement is one POST ~20s before close, off
             # the FOK race path entirely.
@@ -2020,12 +2035,12 @@ async def trading_loop(market_scanner: BTCMarketScanner, signal_engine: SignalEn
         if scheduler and getattr(scheduler, '_shutdown_requested', False):
             break
 
-        # Sniper legs (brake: sniper_enabled): also wake on raw Chainlink
+        # Sniper legs (brake: trading_enabled): also wake on raw Chainlink
         # reports — the resolution stream is the sniper's decision clock; a
         # displacement is acted on within one report, not the 100ms housekeeping
         # fallback. No effect on the loop when the brake is off.
         _sniper_wake = chainlink_feed is not None and bool(
-            config.get("late_window", {})["sniper_enabled"])
+            config.get("late_window", {})["trading_enabled"])
 
         _sig_woke = False  # this wake was a Chainlink report (set below)
         # Event-driven: react instantly to WebSocket book/resolution updates; short timeout for housekeeping
@@ -2480,6 +2495,7 @@ async def main() -> None:
     clob_ws.on_bba = micro_tape.on_bba
     chainlink_feed.on_report = micro_tape.on_cl_report
     chainlink_feed.on_twap = micro_tape.on_twap_report
+    chainlink_feed.on_twap30 = micro_tape.on_twap30_report
     chainlink_feed.on_spot = micro_tape.on_bz_tick
     window_recorder = WindowPathRecorder(
         db=db, clob_ws=clob_ws,
@@ -2487,6 +2503,27 @@ async def main() -> None:
         http_client=http_client)
     global _window_recorder
     _window_recorder = window_recorder
+
+    def _on_source_mismatch(window_id: str, kind: str, served: float,
+                            captured: float) -> None:
+        """The per-window SOURCE hard gate: Polymarket's served resolution no
+        longer matches the stream we subscribe — every leg is computing a
+        fiction. Halt in-process NOW (settings on disk still say enabled, so
+        the operator re-arms by restart after re-pointing the feed) and page."""
+        config.get("late_window", {})["trading_enabled"] = False
+        logger.critical(
+            "RESOLUTION SOURCE MISMATCH %s: served %s $%.4f vs our captured "
+            "$%.4f — trading HALTED in-process. Polymarket moved the "
+            "resolution stream; run scripts/research/ws1_boundary_autopsy.py "
+            "before re-arming.", window_id, kind, served, captured)
+        if alert_manager:
+            asyncio.create_task(alert_manager.send_health(
+                f"🚨 **TRADING HALTED — resolution source mismatch** on "
+                f"{window_id}: served {kind} ${served:,.4f} vs our stream "
+                f"${captured:,.4f}. Polymarket moved the resolution stream "
+                f"again. The bot stands down until the feed is re-pointed "
+                f"and it is restarted."))
+    window_recorder.on_source_mismatch = _on_source_mismatch
 
     # Nightly jobs: window-path retention sweep + price-sum retention + the
     # sniper-edge health report (runs at 23:45 ET, during the wind-down).
@@ -2522,7 +2559,7 @@ async def main() -> None:
         Reports the SIM corpus AND the realized fills with their gap; the
         kill-rule verdict is driven by the realized ledger once fills exist
         (the sim can't see live execution quality). Skipped when disabled."""
-        if not config.get("late_window", {}).get("sniper_enabled"):
+        if not config.get("late_window", {}).get("trading_enabled"):
             return {"skipped": "sniper disabled"}
         import importlib.util
         hp = Path(__file__).resolve().parent.parent / "scripts" / "analyze_late_window.py"
@@ -2588,6 +2625,26 @@ async def main() -> None:
         except Exception as e:
             logger.warning("mechanism watch read failed: %s", e)
             mech = None
+        # Ops trend watches: constants drift while nobody looks (POST RTT ran
+        # 356->436ms uncommented; the at-price queue 2.5x'd in three days).
+        try:
+            qd = await asyncio.wait_for(asyncio.to_thread(
+                mod.queue_depth_read, 7.0, _real_db), timeout=120.0)
+        except Exception as e:
+            logger.warning("queue depth read skipped (%s)", e)
+            qd = None
+        lat = None
+        try:
+            from polybot.paths import LATENCY_STATS_PATH
+            import json as _json
+            _ls = _json.loads(LATENCY_STATS_PATH.read_text())
+            _age_d = (datetime.now(timezone.utc)
+                      - datetime.fromisoformat(_ls["last_updated"])).days
+            post = _ls.get("post") or {}
+            if post.get("n", 0) >= 10 and _age_d <= 7:
+                lat = dict(p50=post["p50_ms"], n=post["n"])
+        except Exception:
+            pass
         if sim is None and live is None:
             if alert_manager:
                 await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
@@ -2644,10 +2701,13 @@ async def main() -> None:
             r = (twap or {}).get("regime")
             if not r:
                 return ""
-            # deep_proj's weather: it earns on wide gaps and bleeds on
-            # photo-finishes. Market-normal p50 ~$12; the 08-14..15 massacre ~$6.
+            # deep_proj's weather: it earns on wide gaps and self-silences on
+            # photo-finishes. Thresholds re-derived for the 60s rule 08-18
+            # (percentile-ported: p50 floor $6, photo band $1 inside the
+            # read); a HOSTILE day means expect zero fills, not losses — the
+            # 08-18 audit found the loss tax lands on PAYING days.
             verdict = ("HOSTILE — photo-finish chop, deep_proj earns nothing here"
-                       if r["gap_p50"] < 8 or r["photo_finish_pct"] > 15
+                       if r["gap_p50"] < 6 or r["photo_finish_pct"] > 15
                        else "PAYING — whipsaw weather, deep_proj's regime")
             return (f"Regime: window gaps p50 ${r['gap_p50']:.0f} "
                     f"(p25 ${r['gap_p25']:.0f} / p75 ${r['gap_p75']:.0f}), "
@@ -2663,8 +2723,29 @@ async def main() -> None:
             return (f"🚨 **RESOLUTION MECHANISM SHIFT: {c - m}/{c} windows broke "
                     f"the final==next-strike chain (worst ${twap['worst']:.2f} "
                     f"off)** — Polymarket changed the resolution rule again. "
-                    f"**Set `late_window.sniper_enabled: false` now** and verify "
+                    f"**Set `late_window.trading_enabled: false` now** and verify "
                     f"a resolved market by hand before re-enabling.\n")
+
+        def _ops_line() -> str:
+            # Stated tolerances: POST p50 within +-25% of the paper table's
+            # 436ms (else re-measure paper_latency_scale); trailing sweep-
+            # consumed queue p75 must stay UNDER the 135-sh at-price constant
+            # (else paper over-credits at-price fills).
+            parts = []
+            if lat:
+                drift = (lat["p50"] - 436.0) / 436.0
+                parts.append(
+                    f"POST p50 {lat['p50']:.0f}ms (n={lat['n']})"
+                    + (f" ⚠️ {drift:+.0%} off the paper table — re-measure "
+                       f"paper_latency_scale" if abs(drift) > 0.25 else ""))
+            if qd:
+                warn = qd["p75"] > 135.0
+                parts.append(
+                    f"deep-queue consumed med {qd['med']:.0f}/p75 {qd['p75']:.0f} sh "
+                    f"({qd['n']} sweeps/{qd['days']:.0f}d)"
+                    + (" ⚠️ p75 over the 135-sh constant — paper may over-credit "
+                       "at-price fills, re-measure" if warn else ""))
+            return ("Ops watch: " + " · ".join(parts) + "\n") if parts else ""
 
         def _mech_line() -> str:
             if not mech:
@@ -2676,13 +2757,13 @@ async def main() -> None:
             return (f"🚨 **RESOLUTION SOURCE CHANGED: only {e}/{c} served values "
                     f"match the stream we subscribe (worst ${mech['worst']:.2f} "
                     f"off)** — Polymarket moved the resolution to a different "
-                    f"feed. **Set `late_window.sniper_enabled: false` now**; the "
+                    f"feed. **Set `late_window.trading_enabled: false` now**; the "
                     f"strike, projection, and post-close winner checks are all "
                     f"computing the wrong rule until the feed is re-pointed.\n")
 
         if kt:
             action = ("**→ ACTION: the pre-registered shut-off line is crossed. "
-                      "Set `sniper_enabled: false` in settings.yaml and restart.**")
+                      "Set `trading_enabled: false` in settings.yaml and restart.**")
         elif kt is None:
             action = "→ Too few live days for a verdict yet — nothing to do."
         else:
@@ -2697,6 +2778,7 @@ async def main() -> None:
             f"{_regime_line()}"
             f"{_twap_line()}"
             f"{_mech_line()}"
+            f"{_ops_line()}"
             f"{action}"
         )
         # The journal always gets the ping verbatim — a Discord outage must

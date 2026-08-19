@@ -19,7 +19,7 @@ scripts preserved in RESEARCH.md's tooling note.
 | 0x0cb03848… | — | +$40,020 | +46,439 | **−6,419** | 95% | 2,218 | 0.35→0.30 | 180s | two-sided flow (49,885 sells); rule-change CASUALTY — win% fell 45%→30% |
 | 0xc2ad03f7… | bosona | +$38,765 | +17,794 | +20,972 | 99% | 1,766 | 0.28→0.26 | 60→104s | cushion buyer, same operator profile as almach/mo-money |
 | 0x32ed2e54… | mo-money | +$35,695 | +16,926 | +18,769 | 99% | 1,834 | 0.30→0.25 | 65→98s | third of the triplet |
-| 0xfc369971… | gesinimen | +$26,314 | 0 | **+26,314** | 82% | 577 | 0.74 | 119s | **born at the rule change**; 74% win at 0.74 median, prefers CONTESTED windows (gap-med $6.1); sign-match 65% — information we don't have |
+| 0xfc369971… | gesinimen | +$26,314 | 0 | **+26,314** | ~0%* | 577 | 0.74 | 119s | **born at the rule change**; 74% win at 0.74 median, prefers CONTESTED windows (gap-med $6.1); sign-match 65% — information we don't have. *Census's 82% maker read was a tx-group artifact: its 300 newest /activity rows are ALL fee-paying taker BUYs (USDC-delta verified 08-18) — it pays full taker fees and still nets $5.7k/day |
 | 0xce50c96b… | honey-spot | +$26,274 | +21,007 | +5,267 | 93% | 190 | 0.74→0.76 | 117→135s | selective mid-window, 73-74% win |
 | 0xe0229e10… | JetFadil | +$25,655 | +16,055 | +9,600 | 91% | 2,284 | 0.50 | 146→168s | whole-window maker |
 | 0x48ac40fc… | BoneOhio | +$24,383 | +20,328 | +4,054 | 93% | 1,615 | 0.99 | — | the 0.99-wall camper (the lane we refuted live); still alive, 5× smaller post-rule |

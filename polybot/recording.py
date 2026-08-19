@@ -84,6 +84,12 @@ class WindowPathRecorder:
         self._rows: list[tuple] = []
         self._running = False
         self._paths_conn = None
+        # Set by main: called ONCE per served-vs-captured resolution mismatch
+        # (window_id, kind, served, captured). The per-window SOURCE hard gate
+        # — the chain invariant cannot see Polymarket swapping the resolution
+        # stream (both served values move together); this can, the same window.
+        self.on_source_mismatch: Any = None
+        self._source_mismatch_fired = False
 
     async def ensure_tables(self) -> None:
         import aiosqlite
@@ -305,6 +311,32 @@ class WindowPathRecorder:
                 await self.db.conn.commit()
             except Exception as e:
                 logger.warning(f"window label write failed for {market_id}: {e}")
+            self._check_resolution_source(market_id, fp, ptb)
+
+    def _check_resolution_source(self, market_id: str, fp: float, ptb: float) -> None:
+        """Served strike/final vs our TRUSTED stream captures, every window.
+
+        A mismatch means Polymarket resolves on a stream we are not reading —
+        the strike, projection, and post-close winner checks are all fiction
+        until the feed is re-pointed (the 08-14 30s->60s swap ran undetected
+        for 4 days because the chain invariant is source-internal). Trusted
+        captures only: a delivery hole must not read as a rule change."""
+        if self.on_source_mismatch is None or self._source_mismatch_fired:
+            return
+        try:
+            ep = int(market_id.rsplit("-", 1)[-1])
+            caps = self.chainlink_feed.boundary_snapshot()
+        except Exception:
+            return
+        for kind, served, b in (("strike", ptb, ep), ("final", fp, ep + 300)):
+            cap = caps.get(b)
+            if served is not None and cap is not None and abs(served - cap) > 0.005:
+                self._source_mismatch_fired = True
+                try:
+                    self.on_source_mismatch(market_id, kind, served, cap)
+                except Exception:
+                    logger.exception("source-mismatch handler failed (mismatch stands)")
+                return
 
     def _sample(self) -> None:
         w = self._window
@@ -548,6 +580,22 @@ class MicroTape:
             self._buf.append(json.dumps({
                 "k": "t", "ts": round(payload_ts, 3), "rx": round(now, 3), "p": value,
                 "pub": round(pub_ts, 3) if pub_ts else None,
+            }))
+            self._maybe_flush(now)
+        except Exception:
+            pass
+
+    def on_twap30_report(self, payload_ts: float, value: float,
+                         pub_ts: float | None = None) -> None:
+        """Wired as ChainlinkFeed.on_twap30 — the RETIRED 30s stream, recorded
+        only. When Polymarket moves the resolution source again, this is the
+        A/B evidence that says which stream the new rule matches (the 08-14
+        swap took a day of offline archaeology to identify without it)."""
+        try:
+            now = time.time()
+            self._buf.append(json.dumps({
+                "k": "t3", "ts": round(payload_ts, 3), "rx": round(now, 3),
+                "p": value,
             }))
             self._maybe_flush(now)
         except Exception:

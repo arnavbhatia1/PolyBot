@@ -46,11 +46,11 @@ SPOT_STALE_S = 3.0
 RAW_GAP_MAX = 10.0
 FROZEN_S = 20.0
 FROZEN_RAW_MOVE = 2.0
-DAYS = ["2026-08-14", "2026-08-15", "2026-08-16", "2026-08-17"]
+DAYS = ["2026-08-14", "2026-08-15", "2026-08-16", "2026-08-17", "2026-08-18"]
 
 
-def margin(k):
-    kn = P995
+def margin(k, kn=None):
+    kn = kn or P995
     if k <= kn[0][0]:
         return kn[0][1]
     for (x0, y0), (x1, y1) in zip(kn, kn[1:]):
@@ -184,8 +184,12 @@ def load_corpus():
     for day in DAYS:
         p = REC / f"tape_{day}.jsonl.gz"
         if not p.exists():
+            p = REC / f"tape_{day}.jsonl"
+        if not p.exists():
             continue
-        with gzip.open(p, "rt") as f:
+        opener = (lambda q: gzip.open(q, "rt")) if p.suffix == ".gz" \
+            else (lambda q: open(q, encoding="utf-8"))
+        with opener(p) as f:
             for line in f:
                 r = json.loads(line)
                 if r["token"] not in tok_map:
@@ -202,12 +206,19 @@ def load_corpus():
     return _CACHE
 
 
-def run(need=2.0, k_min=6.0, k_max=25.0, anti=False, verbose=False):
-    """Engine-true replay; returns list of per-window results."""
+def run(need=2.0, k_min=6.0, k_max=25.0, anti=False, verbose=False,
+        table=None, eps=None):
+    """Engine-true replay; returns list of per-window results.
+
+    table: p99.5 knots to arm against (default = the frozen P995).
+    eps:   restrict scoring to this set of window epochs (walk-forward)."""
+    tab = table or P995
     c = load_corpus()
     results = []
     for wd in sorted(c["wins"], key=lambda w: w["ep"]):
         ep = wd["ep"]
+        if eps is not None and ep not in eps:
+            continue
         close = ep + 300
         t0 = close - HORIZON
         strike = wd["strike"]
@@ -226,6 +237,7 @@ def run(need=2.0, k_min=6.0, k_max=25.0, anti=False, verbose=False):
         winner = "Up" if wd["up"] else "Down"
 
         place_t = side = None
+        place_mult = None
         for rx, _p in l_rx:
             k = close - rx
             if k > k_max or k < k_min:
@@ -236,8 +248,10 @@ def run(need=2.0, k_min=6.0, k_max=25.0, anti=False, verbose=False):
             if pr is None:
                 continue
             disp = pr - strike
-            if abs(disp) >= need * margin(k):
+            m = margin(k, tab)
+            if abs(disp) >= need * m:
                 place_t = rx
+                place_mult = abs(disp) / m if m > 0 else None
                 side = "Up" if disp >= 0 else "Down"
                 if anti:
                     side = "Down" if side == "Up" else "Up"
@@ -257,7 +271,7 @@ def run(need=2.0, k_min=6.0, k_max=25.0, anti=False, verbose=False):
             signed = (pr - strike) if side == "Up" else (strike - pr)
             if anti:
                 signed = -signed
-            if signed < need * margin(max(k, 0.01)):
+            if signed < need * margin(max(k, 0.01), tab):
                 cancel_t, cancel_why = rx, "floor"
                 break
         if cancel_t is None:
@@ -289,6 +303,7 @@ def run(need=2.0, k_min=6.0, k_max=25.0, anti=False, verbose=False):
         tot = sum(filled.values())
         row = dict(ep=ep, side=side, winner=winner, place_k=close - place_t,
                    why=cancel_why, gap=abs(final - strike),
+                   place_mult=round(place_mult, 3) if place_mult else None,
                    rungs={rp: filled[rp] for rp in filled if filled[rp] > 0})
         if tot <= 0:
             row.update(win=None, pnl=0.0, filled=0.0)

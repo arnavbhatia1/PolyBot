@@ -140,14 +140,20 @@ def live_health_read(db_path=None, since_iso=None):
     usd_daily = [sum(p for _, _, p in v) for _, v in sorted(per_day.items())]
     usd_per_day = statistics.mean(usd_daily)
     trailing4_usd = statistics.mean(usd_daily[-4:]) if len(usd_daily) >= 4 else None
+    fills_trailing4 = sum(len(v) for _, v in sorted(per_day.items())[-4:])
     # A lock_dip loss means the max-tier lock named the wrong side — mechanism
     # failure, not variance (it happened once, 08-12 at k=1.1s, and cost the
     # whole stake). One is enough to halt.
     breach_losses = sum(1 for n, w in per_leg.get("lock_dip", []) if w == 0.0)
     if breach_losses:
         tripped = True
-    elif len(usd_daily) < 4:
-        tripped = None                                        # too few days to judge
+    elif len(usd_daily) < 4 or fills_trailing4 < 5:
+        # Sparse fills cannot judge a dollars rule: one -$4.50 rung loss after
+        # three quiet days reads as trailing-negative on a leg that is up on
+        # the week (measured 08-18 on the engine-true series). Persistent
+        # bleeding still trips: 5+ fills net-negative over 4 days is a
+        # verdict; 1 fill is an anecdote — keep accruing.
+        tripped = None
     else:
         tripped = trailing4_usd < 0.0
     legs = {leg: dict(n_fills=len(v),
@@ -220,6 +226,85 @@ def mechanism_read(boundaries: dict, db_path=None):
                 worst_ts=worst_ts)
 
 
+def queue_depth_read(days: float = 7.0, db_path=None):
+    """Trailing sweep-consumed depth per deep level — the live check on the
+    paper fill rule's AT_PRICE_QUEUE_SH constant (135 sh, book-watch 08-17).
+
+    Estimator: volume printed AT a level immediately before the tape trades
+    strictly through it ~= the resting size that was consumed (a LOWER bound;
+    the book-watch resting estimate runs higher because size cancels before
+    sweeps). The constant is deliberately conservative — the UNSAFE drift is
+    real queues growing PAST it (paper would over-credit at-price fills), so
+    the alarm tolerance is pooled p75 > the constant."""
+    import gzip as _gz
+    import json as _json
+    import time as _t
+    from collections import defaultdict as _dd
+    rec_dir = ROOT / "polybot" / "memory" / "recordings"
+    db = Path(db_path) if db_path else LIVE_DB
+    toks = set()
+    if db.exists():
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            for tu, td in con.execute(
+                    "SELECT token_up, token_down FROM window_labels "
+                    "WHERE labeled_at >= ?", (_t.time() - days * 86400,)):
+                if tu:
+                    toks.add(tu)
+                if td:
+                    toks.add(td)
+        except sqlite3.OperationalError:
+            return None
+        finally:
+            con.close()
+    if not toks:
+        return None
+    levels = [0.80, 0.65, 0.50, 0.35, 0.20]
+    consumed = []
+    cur = {}
+    cutoff = _t.time() - days * 86400
+    for f in sorted(rec_dir.glob("tape_*.jsonl*")):
+        day = f.name.split("_")[1][:10]
+        try:
+            if datetime.fromisoformat(day).timestamp() < cutoff - 86400:
+                continue
+        except ValueError:
+            continue
+        opener = (lambda p: _gz.open(p, "rt")) if f.suffix == ".gz" \
+            else (lambda p: open(p, encoding="utf-8"))
+        try:
+            with opener(f) as fh:
+                for line in fh:
+                    r = _json.loads(line)
+                    if r.get("token") not in toks:
+                        continue
+                    try:
+                        ts, px, sz = float(r["ts"]), float(r["price"]), float(r["size"])
+                    except (TypeError, ValueError):
+                        continue
+                    for L in levels:
+                        key = (r["token"], L)
+                        st = cur.get(key)
+                        if st and ts - st[0] > 60.0:
+                            del cur[key]
+                            st = None
+                        if abs(px - L) <= 1e-9:
+                            if st is None:
+                                cur[key] = [ts, sz]
+                            else:
+                                st[1] += sz
+                        elif px < L - 1e-9 and st is not None:
+                            consumed.append(st[1])
+                            del cur[key]
+        except (OSError, EOFError):
+            continue
+    if len(consumed) < 50:
+        return None
+    consumed.sort()
+    q = lambda f: round(consumed[min(int(f * len(consumed)), len(consumed) - 1)], 1)
+    return dict(n=len(consumed), med=q(0.5), p75=q(0.75), days=days)
+
+
 def resolution_snapshot_read(db_path=None, hours: float = 26.0):
     """Is the resolution rule still the one the sniper is built on?
 
@@ -227,7 +312,7 @@ def resolution_snapshot_read(db_path=None, hours: float = 26.0):
     price_to_beat are the SAME value — the 30s-TWAP stream's report at their
     shared boundary — so they match bit-exact. Systematic divergence means
     Polymarket changed the resolution rule again: kill the sniper
-    (sniper_enabled: false) and re-verify the mechanism by hand. Checks
+    (trading_enabled: false) and re-verify the mechanism by hand. Checks
     windows labeled in the trailing ``hours``; alert-only.
     """
     import time as _t
@@ -274,8 +359,9 @@ def resolution_snapshot_read(db_path=None, hours: float = 26.0):
                 mism.append(dict(window_ts=ts, final=fp, next_ptb=nxt[1],
                                  diff=round(d, 2)))
     # Regime readout: |final - strike| distribution over the trailing day.
-    # deep_proj's weather. Market-normal p50 is ~$12; the 08-14..15 massacre ran
-    # ~$6 with 24% of windows inside $2 (photo-finishes, which pay nobody).
+    # deep_proj's weather. 60s-rule era: gap p50 runs ~$13 market-wide; the
+    # photo-finish band is $1 (the same percentile the 30s era's $2 sat at —
+    # a 60s average compresses gaps; re-derived 08-18 on 1,186 windows).
     gaps.sort()
     regime = None
     if len(gaps) >= 24:
@@ -283,7 +369,7 @@ def resolution_snapshot_read(db_path=None, hours: float = 26.0):
         regime = dict(n=len(gaps), gap_p25=q(0.25), gap_p50=q(0.50),
                       gap_p75=q(0.75),
                       photo_finish_pct=round(
-                          100.0 * sum(1 for g in gaps if g < 2.0) / len(gaps), 1))
+                          100.0 * sum(1 for g in gaps if g < 1.0) / len(gaps), 1))
     return dict(checked=checked, matched=matched, worst=round(worst, 2),
                 mismatches=mism, regime=regime)
 

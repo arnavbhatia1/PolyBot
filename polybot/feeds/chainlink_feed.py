@@ -69,6 +69,8 @@ class ChainlinkFeed:
         # observation ts + local receipt (the topic delivers ~1.6s behind
         # observation — receipt-vs-ts measures that lag continuously).
         self.on_twap = None    # micro-tape hook: every official TWAP report
+        self.on_twap30 = None  # micro-tape hook: the RETIRED 30s stream, recorded
+                               # only — A/B evidence for the next silent source swap
         self.twap_official: float = 0.0
         self.twap_official_ts: float = 0.0
         self.twap_official_rx: float = 0.0
@@ -415,6 +417,11 @@ class ChainlinkFeed:
                             # Exact filter format per docs (compact, lowercase).
                             {"topic": "crypto_prices_twap_sixty", "type": "update",
                              "filters": "{\"symbol\":\"btc/usd\"}"},
+                            # The retired 30s stream, RECORDED ONLY (~free
+                            # post-gzip): when the source moves again, the
+                            # tape shows which stream the new rule matches.
+                            {"topic": "crypto_prices_twap_thirty", "type": "update",
+                             "filters": "{\"symbol\":\"btc/usd\"}"},
                             # The crowd's feed: Binance spot relayed by RTDS,
                             # ~2.2s fresher than our Chainlink receipt. Feeds
                             # ONLY the bridged projection's delta (deep_proj).
@@ -477,6 +484,14 @@ class ChainlinkFeed:
                                 pub_ts = None
                             # TWAP messages carry the same symbol — route by topic
                             # STRICTLY, or raw ticks poison the strike capture.
+                            if msg.get("topic", "") == "crypto_prices_twap_thirty":
+                                # recorded only — never touches price/strike state
+                                if self.on_twap30 is not None:
+                                    try:
+                                        self.on_twap30(observed_ts, float(value), pub_ts)
+                                    except Exception:
+                                        pass
+                                continue
                             if msg.get("topic", "") == "crypto_prices_twap_sixty":
                                 _v = float(value)
                                 if _v != self.twap_official:

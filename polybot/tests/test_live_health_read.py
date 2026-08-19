@@ -112,9 +112,11 @@ def test_kill_rule_none_under_4_days(tmp_path):
 
 
 def test_kill_rule_healthy_when_trailing4_above_floor(tmp_path):
-    # 4 days each +5c/sh -> trailing4 0.05 > 0.02 floor, <8 days so t-leg n/a.
-    r = _read(tmp_path, [(i, 5.0, 0.0, 100.0, _ts(d)) for i, d in
-                         enumerate(["07-04", "07-05", "07-06", "07-07"], 1)])
+    # 4 days x 2 fills each +5c/sh -> trailing4 0.05 > floor, <8 days so t-leg n/a.
+    rows = [(i * 2 + j, 5.0, 0.0, 100.0, _ts(d))
+            for i, d in enumerate(["07-04", "07-05", "07-06", "07-07"])
+            for j in (1, 2)]
+    r = _read(tmp_path, rows)
     assert r["n_days"] == 4
     assert r["trailing4_mean"] == pytest.approx(0.05)
     assert r["trailing8_t"] is None
@@ -124,18 +126,33 @@ def test_kill_rule_healthy_when_trailing4_above_floor(tmp_path):
 def test_thin_cents_per_share_is_not_a_kill(tmp_path):
     """A high-price maker fill earns sub-1c/sh by construction — judging it on
     c/sh would halt a leg making money every day. Dollars decide."""
-    r = _read(tmp_path, [(i, 1.0, 0.0, 100.0, _ts(d)) for i, d in
-                         enumerate(["07-04", "07-05", "07-06", "07-07"], 1)])
+    rows = [(i * 2 + j, 1.0, 0.0, 100.0, _ts(d))
+            for i, d in enumerate(["07-04", "07-05", "07-06", "07-07"])
+            for j in (1, 2)]
+    r = _read(tmp_path, rows)
     assert r["trailing4_mean"] == pytest.approx(0.01)     # 1c/sh — thin
-    assert r["trailing4_usd"] == pytest.approx(1.0)       # but +$1/day
+    assert r["trailing4_usd"] == pytest.approx(2.0)       # but +$2/day
     assert r["kill_rule_tripped"] is False
 
 
 def test_kill_rule_tripped_when_trailing4_dollars_negative(tmp_path):
+    rows = [(i * 2 + j, -1.0, 0.0, 100.0, _ts(d))
+            for i, d in enumerate(["07-04", "07-05", "07-06", "07-07"])
+            for j in (1, 2)]
+    r = _read(tmp_path, rows)
+    assert r["trailing4_usd"] == pytest.approx(-2.0)
+    assert r["kill_rule_tripped"] is True
+
+
+def test_sparse_fills_keep_accruing_not_tripping(tmp_path):
+    """One rung loss after quiet days is an anecdote, not a verdict: with
+    fewer than 5 fills in the trailing 4 days the dollars rule keeps accruing
+    (measured 08-18: a -$4.50 loss after three zero days read as
+    trailing-negative on a leg +$64 on the week)."""
     r = _read(tmp_path, [(i, -1.0, 0.0, 100.0, _ts(d)) for i, d in
                          enumerate(["07-04", "07-05", "07-06", "07-07"], 1)])
     assert r["trailing4_usd"] == pytest.approx(-1.0)
-    assert r["kill_rule_tripped"] is True
+    assert r["kill_rule_tripped"] is None                 # 4 fills < 5 — accruing
 
 
 def test_one_lock_dip_loss_trips_immediately(tmp_path):
@@ -162,8 +179,9 @@ def test_maker_ladder_loss_does_not_trip_the_breach_clause(tmp_path):
 def test_trailing4_uses_only_last_4_days(tmp_path):
     # 5 days: a bad first day must not drag the trailing-4 window.
     rows = [(1, -20.0, 0.0, 100.0, _ts("07-03"))]                 # -0.20/sh (dropped)
-    rows += [(i, 5.0, 0.0, 100.0, _ts(d)) for i, d in
-             enumerate(["07-04", "07-05", "07-06", "07-07"], 2)]  # last 4 = +0.05
+    rows += [(i * 2 + j, 5.0, 0.0, 100.0, _ts(d))
+             for i, d in enumerate(["07-04", "07-05", "07-06", "07-07"])
+             for j in (2, 3)]                                     # last 4 = +0.05
     r = _read(tmp_path, rows)
     assert r["n_days"] == 5
     assert r["trailing4_mean"] == pytest.approx(0.05)
