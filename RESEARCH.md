@@ -41,9 +41,11 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    single adverse event decides every clause. Evidence FOR 0.5 recorded for
    the re-decision: its 4 marginal OOS fills were all wins (+$11.42), the
    one loss cleared 1.0 anyway (clause-iv: zero 0.5-only losses), and 0.5
-   accrues the ≥20-fill paper bar ~2.3× faster. Unblock: ≥14 real-final
-   days (~4,000 windows), then walk-forward re-run (ws1_oos.py) decides
-   0.5 vs 1.0 on the full pre-registered bar. The §2 paper bar (≥6d, ≥20
+   accrues the ≥20-fill paper bar ~2.3× faster. The 0.5 shadow's own brief
+   realized record (epoch 08-18 16:45Z → 08-19 13:00Z): 2 fills, 2 wins,
+   +$20.34 — evidence for the re-decision, excluded from the 1.0 gate.
+   Unblock: ≥14 real-final days (~4,000 windows), then walk-forward re-run
+   (ws1_oos.py) decides 0.5 vs 1.0 on the full pre-registered bar. The §2 paper bar (≥6d, ≥20
    windows, EW ≥ +5¢/sh, dollars > 0) judges deployment as ever.
 2. **60s margin-table re-fit at ≥14 real-final days** — the 08-18 freeze
    stands on 970 real-final windows (p99.5 ≈ 5th-from-top order stat) +

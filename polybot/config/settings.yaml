@@ -76,14 +76,15 @@ late_window:
                                # still evaluates and logs would-be fires; re-arm by
                                # flipping this once the nightly dip count says the
                                # whipsaw supply returned (RESEARCH.md).
-  validation_epoch: "2026-08-18T16:45:00+00:00"  # deep_proj PAPER validation
-                               # under the 60s-RULE ENGINE (sixty topic, 60s
-                               # projection + coverage guard, 08-18 tables,
-                               # need 0.5, k[6,25], 135-sh at-price queue,
-                               # $150 go-live sizing). Every fill before this
-                               # instant ran wrong-rule code (the bot traded
-                               # the 30s stream 08-14..18) — wrong-rule
-                               # artifacts, never evidence.
+  validation_epoch: "2026-08-19T13:00:00+00:00"  # deep_proj PAPER validation
+                               # under the recalibrated config (60s engine,
+                               # 08-18 tables, need 1.0 interim floor,
+                               # k[6,25], taker dormant, 135-sh at-price
+                               # queue, $150 go-live sizing). The 08-18
+                               # 16:45Z epoch's two fills (+$16.41, +$3.94,
+                               # both wins) ran need 0.5 — recorded in
+                               # RESEARCH.md #1 for the >=14-day floor
+                               # re-decision, excluded from this gate.
                                # Set AFTER the boot that carries it
                                # by more than the ~3.4min entry-to-exit gap,
                                # because the gate filters on EXIT time — an
