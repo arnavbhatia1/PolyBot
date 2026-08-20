@@ -1699,11 +1699,13 @@ async def _manage_orphaned_position(
             window_ts = int(pos["market_id"].rsplit("-", 1)[-1])
         except (ValueError, IndexError):
             window_ts = 0
+        # strike_reliable, not just captured: an untrusted capture is a LATER
+        # second's average, and it would decide a real position's winner.
         strike_at_boundary = (chainlink_feed.get_strike(window_ts)
-                              if window_ts and chainlink_feed.boundary_captured(window_ts)
+                              if window_ts and chainlink_feed.strike_reliable(window_ts)
                               else None)
         final_at_expiry = (chainlink_feed.get_strike(window_ts + 300)
-                           if window_ts and chainlink_feed.boundary_captured(window_ts + 300)
+                           if window_ts and chainlink_feed.strike_reliable(window_ts + 300)
                            else None)
         if (strike_at_boundary is None or strike_at_boundary <= 0
                 or final_at_expiry is None or final_at_expiry <= 0):
