@@ -229,7 +229,8 @@ class ChainlinkFeed:
         t0 = close_ts - TWAP_HORIZON_S
         if t <= t0 or t > close_ts:
             return None
-        if self._price <= 0 or self.age_seconds > SPOT_STALE_S:
+        # Spot age against `t`, not the wall clock — replays pass their own now.
+        if self._price <= 0 or self._last_update <= 0 or (t - self._last_update) > SPOT_STALE_S:
             return None
         # Coverage guard, boundary-inclusive: the freshness gate reads only the
         # NEWEST report, so an outage covering the middle of the averaging span

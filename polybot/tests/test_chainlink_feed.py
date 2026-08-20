@@ -326,6 +326,22 @@ class TestTwap:
         f._last_update = now - 10.0                                  # stale spot
         assert f.projected_final_twap(now + 10.0, now=now) is None
 
+    def test_spot_age_gate_uses_the_supplied_clock(self):
+        """Every other gate honours now=; a wall-clock staleness read hands
+        each replayed window a verdict about the present instead."""
+        f = ChainlinkFeed()
+        t = time.time() - 3600.0                  # a replayed instant
+        close = t + 10.0
+        t0 = close - 60.0
+        f._reports.append((t0 - 1.0, 64000.0))
+        for off in (10.0, 20.0, 30.0, 40.0, 50.0):
+            f._reports.append((t0 + off, 64000.0))
+        f._price = 64000.0
+        f._last_update = t                        # fresh on the replay clock
+        assert f.projected_final_twap(close, now=t) == pytest.approx(64000.0)
+        f._last_update = t - 10.0                 # stale on the replay clock
+        assert f.projected_final_twap(close, now=t) is None
+
     def test_projected_final_twap_none_on_delivery_hole(self):
         """A raw outage inside the averaging span leaves a poisoned average
         behind a perfectly fresh spot — the freshness gate cannot see it
