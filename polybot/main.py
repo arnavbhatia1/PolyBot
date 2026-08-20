@@ -434,6 +434,53 @@ def _fee_breakdown(result: Any) -> str:
     return f"${total:.2f}  (entry ${entry:.2f} + exit ${exit_:.2f})"
 
 
+def _latency_watch(path: Path, now: datetime | None = None) -> tuple[dict | None, str | None]:
+    """POST-RTT stats for the nightly ops watch, or the reason there are none.
+
+    Never returns both None: a watch that stays silent because its input is
+    unusable reads exactly like a watch that is happy."""
+    try:
+        stats = json.loads(path.read_text())
+        post = stats.get("post") or {}
+        n = int(post.get("n", 0) or 0)
+        age_d = ((now or datetime.now(timezone.utc))
+                 - datetime.fromisoformat(stats["last_updated"])).days
+    except Exception as e:
+        return None, f"no usable order-latency file ({type(e).__name__})"
+    if n < 10:
+        return None, f"only {n} order samples"
+    if age_d > 7:
+        return None, f"last measured {age_d} days ago"
+    return {"p50": post["p50_ms"], "n": n}, None
+
+
+def _ops_watch_line(lat: dict | None, lat_dark: str | None, qd: dict | None) -> str:
+    """Ops trend watches: constants drift while nobody looks (POST RTT ran
+    356->436ms uncommented; the at-price queue 2.5x'd in three days).
+
+    Stated tolerances: POST p50 within +-25% of the paper table's 436ms (else
+    re-measure paper_latency_scale); trailing sweep-consumed queue p75 must
+    stay UNDER the 135-sh at-price constant (else paper over-credits at-price
+    fills)."""
+    parts = []
+    if lat:
+        drift = (lat["p50"] - 436.0) / 436.0
+        parts.append(
+            f"POST p50 {lat['p50']:.0f}ms (n={lat['n']})"
+            + (f" ⚠️ {drift:+.0%} off the paper table — re-measure "
+               f"paper_latency_scale" if abs(drift) > 0.25 else ""))
+    elif lat_dark:
+        parts.append(f"POST p50 unknown — {lat_dark}")
+    if qd:
+        warn = qd["p75"] > 135.0
+        parts.append(
+            f"deep-queue consumed med {qd['med']:.0f}/p75 {qd['p75']:.0f} sh "
+            f"({qd['n']} sweeps/{qd['days']:.0f}d)"
+            + (" ⚠️ p75 over the 135-sh constant — paper may over-credit "
+               "at-price fills, re-measure" if warn else ""))
+    return ("Ops watch: " + " · ".join(parts) + "\n") if parts else ""
+
+
 def _emit_gate_skip(cid: str, gate_key: str, reason: str, quiet: bool = False) -> None:
     """Emit one combined SKIP line (signal context + gate reason).
 
@@ -2653,18 +2700,8 @@ async def main() -> None:
         except Exception as e:
             logger.warning("queue depth read skipped (%s)", e)
             qd = None
-        lat = None
-        try:
-            from polybot.paths import LATENCY_STATS_PATH
-            import json as _json
-            _ls = _json.loads(LATENCY_STATS_PATH.read_text())
-            _age_d = (datetime.now(timezone.utc)
-                      - datetime.fromisoformat(_ls["last_updated"])).days
-            post = _ls.get("post") or {}
-            if post.get("n", 0) >= 10 and _age_d <= 7:
-                lat = dict(p50=post["p50_ms"], n=post["n"])
-        except Exception:
-            pass
+        from polybot.paths import LATENCY_STATS_PATH
+        lat, lat_dark = _latency_watch(LATENCY_STATS_PATH)
         if sim is None and live is None:
             if alert_manager:
                 await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
@@ -2746,27 +2783,6 @@ async def main() -> None:
                     f"**Set `late_window.trading_enabled: false` now** and verify "
                     f"a resolved market by hand before re-enabling.\n")
 
-        def _ops_line() -> str:
-            # Stated tolerances: POST p50 within +-25% of the paper table's
-            # 436ms (else re-measure paper_latency_scale); trailing sweep-
-            # consumed queue p75 must stay UNDER the 135-sh at-price constant
-            # (else paper over-credits at-price fills).
-            parts = []
-            if lat:
-                drift = (lat["p50"] - 436.0) / 436.0
-                parts.append(
-                    f"POST p50 {lat['p50']:.0f}ms (n={lat['n']})"
-                    + (f" ⚠️ {drift:+.0%} off the paper table — re-measure "
-                       f"paper_latency_scale" if abs(drift) > 0.25 else ""))
-            if qd:
-                warn = qd["p75"] > 135.0
-                parts.append(
-                    f"deep-queue consumed med {qd['med']:.0f}/p75 {qd['p75']:.0f} sh "
-                    f"({qd['n']} sweeps/{qd['days']:.0f}d)"
-                    + (" ⚠️ p75 over the 135-sh constant — paper may over-credit "
-                       "at-price fills, re-measure" if warn else ""))
-            return ("Ops watch: " + " · ".join(parts) + "\n") if parts else ""
-
         def _mech_line() -> str:
             if not mech:
                 return ""
@@ -2801,7 +2817,7 @@ async def main() -> None:
             f"{_regime_line()}"
             f"{_twap_line()}"
             f"{_mech_line()}"
-            f"{_ops_line()}"
+            f"{_ops_watch_line(lat, lat_dark, qd)}"
             f"{action}"
         )
         # The journal always gets the ping verbatim — a Discord outage must
