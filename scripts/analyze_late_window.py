@@ -195,7 +195,7 @@ def live_health_read(db_path=None, since_iso=None):
 
 
 # ── Resolution-mechanism watch ─────────────────────────────────────────────────
-def mechanism_read(boundaries: dict, db_path=None):
+def mechanism_read(boundaries: dict, db_path=None, unchecked: int = 0):
     """Served resolution values vs OUR recorded stream boundaries, bit-exact.
 
     This is the check the chain invariant cannot do: final==next-strike stays
@@ -243,7 +243,7 @@ def mechanism_read(boundaries: dict, db_path=None):
     if checked == 0:
         return None
     return dict(checked=checked, exact=exact, worst=round(worst, 2),
-                worst_ts=worst_ts)
+                worst_ts=worst_ts, unchecked=unchecked)
 
 
 def queue_depth_read(days: float = 7.0, db_path=None):

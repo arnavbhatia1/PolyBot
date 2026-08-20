@@ -346,3 +346,45 @@ def test_replay_loader_reads_gzipped_tape(tmp_path, monkeypatch):
     monkeypatch.setattr(atl, "RECORDINGS", tmp_path)
     found = {p.name for p in atl._tape_files(atl.TWAP_SWITCH_TS)}
     assert "micro_2026-08-15.jsonl.gz" in found and "micro_2026-08-14.jsonl" in found
+
+
+class _CapFeed:
+    def __init__(self, caps):
+        self._caps = caps
+
+    def boundary_snapshot(self):
+        return self._caps
+
+
+def _src_rec(caps):
+    rec = WindowPathRecorder(db=None, clob_ws=None, chainlink_feed=_CapFeed(caps),
+                             market_scanner=None, http_client=None)
+    fired = []
+    rec.on_source_mismatch = lambda *a: fired.append(a)
+    return rec, fired
+
+
+def test_unparseable_slug_is_loud_and_counted(caplog):
+    """The one gate that catches an unannounced upstream change must never fail
+    in silence — an unreadable window id is an ERROR, not a shrug."""
+    import logging
+    rec, fired = _src_rec({1786800000: 64000.0})
+    with caplog.at_level(logging.ERROR):
+        rec._check_resolution_source("btc-updown-5m-1786800000-v2", 64100.0, 64000.0)
+    assert rec.source_unchecked == 1
+    assert not fired
+    assert any("SOURCE CHECK SKIPPED" in r.getMessage() for r in caplog.records)
+
+
+def test_missing_captures_are_counted_unchecked():
+    rec, fired = _src_rec({})
+    rec._check_resolution_source("btc-updown-5m-1786800000", 64100.0, 64000.0)
+    assert rec.source_unchecked == 1
+    assert not fired
+
+
+def test_numeric_slug_still_fires_the_mismatch(caplog):
+    rec, fired = _src_rec({1786800000: 63000.0})
+    rec._check_resolution_source("btc-updown-5m-1786800000", 64100.0, 64000.0)
+    assert rec.source_unchecked == 0
+    assert fired and fired[0][1] == "strike"

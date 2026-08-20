@@ -90,6 +90,7 @@ class WindowPathRecorder:
         # stream (both served values move together); this can, the same window.
         self.on_source_mismatch: Any = None
         self._source_mismatch_fired = False
+        self.source_unchecked = 0       # windows the gate could not compare
 
     async def ensure_tables(self) -> None:
         import aiosqlite
@@ -326,17 +327,29 @@ class WindowPathRecorder:
         try:
             ep = int(market_id.rsplit("-", 1)[-1])
             caps = self.chainlink_feed.boundary_snapshot()
-        except Exception:
+        except Exception as e:
+            # Silence here would disable the gate the day the format changes.
+            self.source_unchecked += 1
+            logger.error("SOURCE CHECK SKIPPED %s — cannot read the window id or "
+                         "our captures (%s)", market_id, e)
             return
+        compared = False
         for kind, served, b in (("strike", ptb, ep), ("final", fp, ep + 300)):
             cap = caps.get(b)
-            if served is not None and cap is not None and abs(served - cap) > 0.005:
+            if served is None or cap is None:
+                continue
+            compared = True
+            if abs(served - cap) > 0.005:
                 self._source_mismatch_fired = True
                 try:
                     self.on_source_mismatch(market_id, kind, served, cap)
                 except Exception:
                     logger.exception("source-mismatch handler failed (mismatch stands)")
                 return
+        if not compared:
+            self.source_unchecked += 1
+            logger.error("SOURCE CHECK SKIPPED %s — no trusted boundary capture "
+                         "to compare", market_id)
 
     def _sample(self) -> None:
         w = self._window

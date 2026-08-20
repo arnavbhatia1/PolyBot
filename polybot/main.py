@@ -2623,7 +2623,8 @@ async def main() -> None:
         # days); this one turns red the same night.
         try:
             mech = await asyncio.to_thread(
-                mod.mechanism_read, chainlink_feed.boundary_snapshot(), _real_db)
+                mod.mechanism_read, chainlink_feed.boundary_snapshot(), _real_db,
+                window_recorder.source_unchecked)
         except Exception as e:
             logger.warning("mechanism watch read failed: %s", e)
             mech = None
@@ -2753,9 +2754,12 @@ async def main() -> None:
             if not mech:
                 return ""
             c, e = mech["checked"], mech["exact"]
+            unchecked = mech.get("unchecked") or 0
+            skipped = (f" · {unchecked} window(s) could not be checked"
+                       if unchecked else "")
             if e == c:
                 return (f"Source watch: served strikes/finals match our stream "
-                        f"{e}/{c} bit-exact\n")
+                        f"{e}/{c} bit-exact{skipped}\n")
             return (f"🚨 **RESOLUTION SOURCE CHANGED: only {e}/{c} served values "
                     f"match the stream we subscribe (worst ${mech['worst']:.2f} "
                     f"off)** — Polymarket moved the resolution to a different "
