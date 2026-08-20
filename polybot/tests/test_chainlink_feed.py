@@ -534,6 +534,38 @@ class TestSpotBridge:
         f = self._feed(100.0, [(94.0, 64050.0), (101.5, 64080.0)])
         assert f.spot_bridge_delta() == 0.0
 
+    def _spot_frame(self, ts, px):
+        import json as _j
+        return _j.dumps({"topic": "crypto_prices",
+                         "payload": {"symbol": "btcusdt", "value": px,
+                                     "timestamp": ts * 1000}})
+
+    def test_out_of_order_tick_keeps_the_ring_in_ts_order(self):
+        """Nothing upstream guarantees arrival order, and both the anchor scan
+        and the newest read walk the ring in ts order — one late tick would
+        otherwise silently revert the ladder to the plain projection."""
+        f = ChainlinkFeed()
+        base = float(int(time.time()))
+        _drive_frames(f, [self._spot_frame(base - 1, 64050.0),
+                          self._spot_frame(base, 64057.0),
+                          self._spot_frame(base + 2, 64087.0),
+                          self._spot_frame(base + 1, 64070.0)])   # arrives late
+        assert [ts for ts, _ in f._binance] == sorted(ts for ts, _ in f._binance)
+        f._last_report_obs_ts = base
+        assert f.spot_bridge_delta() == pytest.approx(30.0)       # newest 64087 - anchor 64057
+
+    def test_future_dated_tick_does_not_evict_the_ring(self):
+        """Retention keys off the ring's own newest, and a tick dated ahead of
+        our receipt is dropped — either way the anchor history survives."""
+        f = ChainlinkFeed()
+        base = float(int(time.time()))
+        _drive_frames(f, [self._spot_frame(base - 3, 64050.0),
+                          self._spot_frame(base - 2, 64052.0),
+                          self._spot_frame(base - 1, 64055.0),
+                          self._spot_frame(base, 64057.0),
+                          self._spot_frame(base + 3600, 64060.0)])   # an hour ahead
+        assert [ts for ts, _ in f._binance] == [base - 3, base - 2, base - 1, base]
+
     def test_bridged_projection_moves_by_weighted_delta(self):
         now = time.time()
         close = now + 10.0          # k=10s -> w = 5/6

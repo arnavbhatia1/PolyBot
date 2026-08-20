@@ -43,6 +43,8 @@ RAW_GAP_MAX_S = 10.0           # projection coverage guard: a raw delivery hole 
                                # measured: a 68s hole passed every gate and projected a $24 error onto
                                # a $0.14 photo-finish. The guard voids the projection instead.
 RAW_RING_S = 75.0              # raw-report ring retention: horizon + seed lookback + slack
+BINANCE_RING_S = 10.0          # Binance ring retention: the bridge only ever spans the ~2s tail
+                               # since the last raw report, so 10s is anchor cover plus slack.
 BRIDGE_ANCHOR_MAX_AGE_S = 2.0  # spot_bridge_delta: an anchor older than the report's own delivery lag
                                # means a ring hole, and the delta re-adds movement the report already has.
 BRIDGE_MAX_DELTA_FRAC = 0.01   # the bridge spans ~2s of Binance, so >1% of spot is a bad tick (a 10x
@@ -91,6 +93,7 @@ class ChainlinkFeed:
         # the book reprices 0.33s after Binance, 2.5s before our oracle receipt;
         # lead-lag fit on 4.65M recorded pairs bottoms at lag 2.0-2.5s). Used
         # ONLY by the bridged projection (deep_proj); never a strike source.
+        # Kept in ts order at the write site — the anchor scan depends on it.
         self._binance: deque[tuple[float, float]] = deque()
         self._bridge_band_warned = False
         self.on_spot = None    # micro-tape hook: every Binance report
@@ -468,14 +471,23 @@ class ChainlinkFeed:
                                 if _bv is not None and _bts is not None:
                                     try:
                                         _bts_s = self._epoch_seconds(float(_bts))
-                                        self._binance.append((_bts_s, float(_bv)))
-                                        while self._binance and self._binance[0][0] < _bts_s - 10.0:
-                                            self._binance.popleft()
-                                        if self.on_spot is not None:
-                                            try:
-                                                self.on_spot(_bts_s, float(_bv), None)
-                                            except Exception:
-                                                pass
+                                        # The relay's payload clock cannot legitimately lead our
+                                        # receipt: a future-dated tick would own retention and
+                                        # evict every anchor the bridge needs.
+                                        if _bts_s <= time.time() + BINANCE_RING_S:
+                                            self._binance.append((_bts_s, float(_bv)))
+                                            # Relay ticks can arrive out of order; the anchor scan
+                                            # and the newest read both walk the ring in ts order.
+                                            if len(self._binance) > 1 and _bts_s < self._binance[-2][0]:
+                                                self._binance = deque(sorted(self._binance))
+                                            _newest = self._binance[-1][0]
+                                            while self._binance and self._binance[0][0] < _newest - BINANCE_RING_S:
+                                                self._binance.popleft()
+                                            if self.on_spot is not None:
+                                                try:
+                                                    self.on_spot(_bts_s, float(_bv), None)
+                                                except Exception:
+                                                    pass
                                     except (ValueError, TypeError):
                                         pass
                                 continue
