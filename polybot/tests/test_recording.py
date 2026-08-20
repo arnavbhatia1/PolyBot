@@ -36,8 +36,13 @@ class _FakeClob:
 
 
 class _FakeChainlink:
+    trusted = True
+
     def get_strike(self, window_ts):
         return 60990.0
+
+    def strike_reliable(self, window_ts):
+        return self.trusted
 
 
 
@@ -136,6 +141,33 @@ async def test_window_recorder_full_capture_null_on_cold(db, tmp_path, monkeypat
         "FROM window_paths")
     r = (await cur.fetchall())[0]
     assert all(r[k] is None for k in r.keys())
+    await rec.stop()
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_window_recorder_marks_strike_trust(db, tmp_path, monkeypatch):
+    """get_strike serves untrusted captures and the live fallback too, so the
+    corpus must say which one the row holds."""
+    import polybot.recording as recording
+    monkeypatch.setattr(recording, "PATHS_DB", tmp_path / "paths.db")
+    await db.initialize()
+    feed = _FakeChainlink()
+    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), chainlink_feed=feed,
+                             market_scanner=None, http_client=None)
+    await rec.ensure_tables()
+    window_ts = int(time.time() // 300) * 300
+    rec._window = {"market_id": f"btc-updown-5m-{window_ts}", "window_ts": window_ts,
+                   "token_up": "tu", "token_down": "td"}
+    rec._sample()
+    feed.trusted = False
+    rec._sample()
+    await rec._flush()
+    cur = await rec._paths_conn.execute(
+        "SELECT strike, strike_trusted FROM window_paths")
+    rows = await cur.fetchall()
+    assert sorted(r["strike_trusted"] for r in rows) == [0, 1]
+    assert all(r["strike"] == 60990.0 for r in rows)   # the value is kept either way
     await rec.stop()
     await db.close()
 

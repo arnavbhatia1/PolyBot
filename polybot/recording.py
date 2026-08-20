@@ -164,6 +164,9 @@ class WindowPathRecorder:
         ("ask_sz_down", "REAL"),
         ("depth20_bid_usd", "REAL"),     # Binance book pressure, side-split
         ("depth20_ask_usd", "REAL"),
+        ("strike_trusted", "INTEGER"),   # 1 = the sampled strike is the trusted boundary
+                                         # capture; 0 = an untrusted capture or the live
+                                         # fallback. Research must be able to tell.
     )
 
     async def _add_appended_columns(self) -> None:
@@ -374,6 +377,11 @@ class WindowPathRecorder:
         cb = None            # Coinbase feed deleted; the column records NULL
         strike = (self.chainlink_feed.get_strike(w["window_ts"])
                   if self.chainlink_feed else None)
+        # get_strike serves untrusted captures and the live fallback too, so the
+        # corpus records which one it got — nothing else in the row can tell.
+        strike_trusted = None
+        if strike is not None and self.chainlink_feed is not None:
+            strike_trusted = 1 if self.chainlink_feed.strike_reliable(w["window_ts"]) else 0
 
         # Resolution-venue live price (Chainlink RTDS) + its age
         cl_px = cl_age = None
@@ -420,7 +428,7 @@ class WindowPathRecorder:
             cb_bid, cb_ask, cb_cvd10, cb_cvd30,
             _touch_sz(book_up.get("bids")), _touch_sz(book_up.get("asks")),
             _touch_sz(book_dn.get("bids")), _touch_sz(book_dn.get("asks")),
-            d20_bid, d20_ask,
+            d20_bid, d20_ask, strike_trusted,
         ))
 
     async def _flush(self) -> None:
@@ -436,8 +444,8 @@ class WindowPathRecorder:
                 "chainlink_price, chainlink_age_s, book_age_up_s, book_age_down_s, "
                 "coinbase_bid, coinbase_ask, coinbase_cvd_10s, coinbase_cvd_30s, "
                 "bid_sz_up, ask_sz_up, bid_sz_down, ask_sz_down, "
-                "depth20_bid_usd, depth20_ask_usd) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "depth20_bid_usd, depth20_ask_usd, strike_trusted) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows)
             await self._paths_conn.commit()
         except Exception as e:

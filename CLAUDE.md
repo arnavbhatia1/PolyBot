@@ -202,7 +202,8 @@ the only on-chain thing the bot signs).
 ## 6. Recorders + nightly
 
 - **Window-path recorder** (1 Hz, 5 Hz final 45s): both tokens' BBO/depth +
-  Chainlink price + strike for EVERY window → `window_paths` (gitignored
+  Chainlink price + strike (with `strike_trusted`, since `get_strike` also
+  serves untrusted captures) for EVERY window → `window_paths` (gitignored
   sidecar DB) / `window_labels`; 90-day retention. Labels are the kill-bar
   ground truth.
 - **Tape recorder**: every CLOB print (+ exchange ts, fee bps) →
