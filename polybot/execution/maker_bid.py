@@ -199,8 +199,6 @@ class MakerBidManager:
         if not (0.0 < px and sz > 0):
             return
         for r in a["rungs"]:
-            if r.get("cancelled"):
-                continue
             if px < r["price"] - 1e-9:
                 r["filled"] = r["shares"]
             elif abs(px - r["price"]) <= 1e-9:
@@ -282,9 +280,8 @@ class MakerBidManager:
                     r["filled"] = min(r["shares"], matched)
         # Every rung fully filled -> book now; the position needs to be on
         # the books (it holds to resolution), not parked in dead order slots.
-        live = [r for r in a["rungs"] if not r.get("cancelled")]
-        if reason is None and live and all(r["filled"] >= r["shares"] - 1e-9
-                                          for r in live):
+        if reason is None and all(r["filled"] >= r["shares"] - 1e-9
+                                  for r in a["rungs"]):
             reason = "filled"
         if reason is not None:
             await self._retire(reason)
@@ -297,8 +294,6 @@ class MakerBidManager:
         try:
             try:
                 for r in a["rungs"]:
-                    if r.get("cancelled"):
-                        continue
                     try:
                         await self.trader.cancel_gtc(r["order_id"])
                     except Exception as e:
@@ -309,8 +304,6 @@ class MakerBidManager:
                     # round trip itself — re-read each order's final matched size
                     # so the booking can never run short of what the wallet holds.
                     for r in a["rungs"]:
-                        if r.get("cancelled"):
-                            continue
                         try:
                             matched = await self.trader.poll_gtc_fill(r["order_id"])
                         except Exception as e:

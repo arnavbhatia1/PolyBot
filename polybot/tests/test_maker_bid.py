@@ -419,3 +419,11 @@ def test_booked_notional_equals_the_sum_of_the_rungs(tmp_path, monkeypatch):
     asyncio.run(mgr._retire("test"))
     booked = mgr.trader.booked[0]
     assert booked["shares_gross"] * booked["price"] == pytest.approx(truth, abs=1e-9)
+
+
+def test_no_rung_reads_a_flag_nothing_writes():
+    """The ladder retires whole — there is no partial-cancel state — so the
+    four `cancelled` reads were dead money-path branches, not a missing writer."""
+    from pathlib import Path
+    src = Path(mb.__file__).read_text(encoding="utf-8")
+    assert "cancelled" not in src
