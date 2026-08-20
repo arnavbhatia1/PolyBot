@@ -434,6 +434,30 @@ def _fee_breakdown(result: Any) -> str:
     return f"${total:.2f}  (entry ${entry:.2f} + exit ${exit_:.2f})"
 
 
+async def _boot_order_sweep(client: Any) -> None:
+    """Cancel any resting order a crashed process left on the exchange — a fill
+    in the gap is unbooked shares with no DB row.
+
+    A live-money precondition, so every outcome is stated: what was swept, what
+    refused, and a failure loudly enough that boot cannot look clean."""
+    try:
+        res = await asyncio.to_thread(client.cancel_all)
+    except Exception as e:
+        logger.error("BOOT SWEEP FAILED (%s) — the exchange may still hold resting "
+                     "orders from the last run; cancel them by hand.", e)
+        return
+    res = res if isinstance(res, dict) else {}
+    stuck, swept = res.get("not_canceled") or {}, res.get("canceled") or []
+    if stuck:
+        logger.error("BOOT SWEEP — %d resting order(s) would not cancel; cancel "
+                     "them by hand before trading (%s)", len(stuck), stuck)
+    elif swept:
+        logger.info("Boot order sweep — cancelled %d resting order(s) from the "
+                    "last run", len(swept))
+    else:
+        logger.info("Boot order sweep — no resting orders carried over")
+
+
 def _latency_watch(path: Path, now: datetime | None = None) -> tuple[dict | None, str | None]:
     """POST-RTT stats for the nightly ops watch, or the reason there are none.
 
@@ -2365,13 +2389,7 @@ async def main() -> None:
         trader = LiveTrader(db=db,
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
             max_concurrent_positions=exec_cfg["max_concurrent_positions"])
-        # Boot hygiene: cancel any resting order a crashed process left on the
-        # exchange — a fill in the gap would be unbooked shares with no DB row.
-        try:
-            await asyncio.to_thread(trader.client.cancel_all)
-            logger.info("Boot order sweep — no resting orders carried over")
-        except Exception as e:
-            logger.warning("boot cancel_all failed (check open orders by hand): %s", e)
+        await _boot_order_sweep(trader.client)
         # The +8s chain audit reports the settled entry here → the OPEN banner
         # prints once, with the real fill (see _log_open_banner).
         trader.on_entry_settled = _on_entry_settled
