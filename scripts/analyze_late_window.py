@@ -195,7 +195,8 @@ def live_health_read(db_path=None, since_iso=None):
 
 
 # ── Resolution-mechanism watch ─────────────────────────────────────────────────
-def mechanism_read(boundaries: dict, db_path=None, unchecked: int = 0):
+def mechanism_read(boundaries: dict, db_path=None, unchecked: int = 0,
+                   t3_records: int | None = None):
     """Served resolution values vs OUR recorded stream boundaries, bit-exact.
 
     This is the check the chain invariant cannot do: final==next-strike stays
@@ -207,7 +208,11 @@ def mechanism_read(boundaries: dict, db_path=None, unchecked: int = 0):
 
     boundaries: {window_ts: captured_value} — trusted captures only
     (ChainlinkFeed.boundary_snapshot). Compares each against the label's
-    price_to_beat and the previous window's final_price."""
+    price_to_beat and the previous window's final_price.
+
+    t3_records: rows the retired 30s stream wrote today (MicroTape.t3_records).
+    That tape is the A/B evidence for the NEXT source swap, so a zero has to be
+    stated rather than assumed."""
     if not boundaries:
         return None
     db = Path(db_path) if db_path else LIVE_DB
@@ -243,7 +248,7 @@ def mechanism_read(boundaries: dict, db_path=None, unchecked: int = 0):
     if checked == 0:
         return None
     return dict(checked=checked, exact=exact, worst=round(worst, 2),
-                worst_ts=worst_ts, unchecked=unchecked)
+                worst_ts=worst_ts, unchecked=unchecked, t3_records=t3_records)
 
 
 def queue_depth_read(days: float = 7.0, db_path=None):

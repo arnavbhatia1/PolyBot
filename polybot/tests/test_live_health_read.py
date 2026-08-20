@@ -302,3 +302,39 @@ def test_quiet_days_then_one_loss_still_does_not_trip(tmp_path):
     r = _read(tmp_path, rows)
     assert r["tripped_legs"] == []
     assert r["kill_rule_tripped"] is None
+
+
+def test_mechanism_read_states_the_30s_ab_tape_count(tmp_path):
+    """CLAUDE.md documents the retired-30s tape as the net against the next
+    silent source swap. It has zero records on every day of the corpus, so the
+    source watch must state the count instead of assuming the net exists."""
+    mod = _load()
+    db = tmp_path / "labels.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE window_labels (window_id TEXT, final_price REAL, "
+                "price_to_beat REAL, labeled_at REAL)")
+    con.execute("INSERT INTO window_labels VALUES ('btc-updown-5m-1787000000', "
+                "64100.0, 64000.0, 1787000400)")
+    con.commit()
+    con.close()
+    caps = {1787000000: 64000.0, 1787000300: 64100.0}
+
+    out = mod.mechanism_read(caps, db, 0, 0)
+    assert out["exact"] == out["checked"] == 2
+    assert out["t3_records"] == 0
+
+    assert mod.mechanism_read(caps, db, 0, 1720)["t3_records"] == 1720
+    assert mod.mechanism_read(caps, db)["t3_records"] is None
+
+
+def test_micro_tape_counts_the_30s_records_it_writes(tmp_path):
+    from polybot.recording import MicroTape
+    mt = MicroTape(dir_path=tmp_path)
+    assert mt.t3_records == 0
+    mt.on_twap30_report(1786334400.0, 64500.25)
+    mt.on_twap30_report(1786334401.0, 64500.50)
+    assert mt.t3_records == 2
+    mt.on_twap_report(1786334401.0, 64500.50)     # the LIVE stream is not t3
+    assert mt.t3_records == 2
+    mt.flush()
+    mt._writer.shutdown(wait=True)

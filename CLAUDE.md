@@ -210,7 +210,8 @@ the only on-chain thing the bot signs).
   `memory/recordings/tape_*.jsonl` (gitignored).
 - **Micro-tape**: every CLOB BBO change (final 90s) + every raw report ("l")
   + the official 60s stream ("t") + the RETIRED 30s stream ("t3", recorded
-  only — A/B evidence for the next silent source swap) + Binance relay
+  only — A/B evidence for the next silent source swap; RTDS is not currently
+  serving it, and the nightly SOURCE line states the count) + Binance relay
   ("s"/src "bz"), payload+receipt ts → `micro_*.jsonl`; nightly gzip (~39×);
   readers take .jsonl(.gz).
 - **Per-decision records**: `trade_context` on fills AND ghosts (`signal_leg`

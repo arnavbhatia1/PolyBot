@@ -565,6 +565,9 @@ class MicroTape:
         self._buf: list[str] = []
         self._last_flush = time.time()
         self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="micro-writer")
+        # Rows the RETIRED 30s stream has written this run — the nightly source
+        # watch states it, because a zero means that A/B evidence does not exist.
+        self.t3_records = 0
 
     @classmethod
     def _late(cls, ts: float) -> bool:
@@ -618,6 +621,7 @@ class MicroTape:
                 "k": "t3", "ts": round(payload_ts, 3), "rx": round(now, 3),
                 "p": value,
             }))
+            self.t3_records += 1
             self._maybe_flush(now)
         except Exception:
             pass

@@ -2688,7 +2688,7 @@ async def main() -> None:
         try:
             mech = await asyncio.to_thread(
                 mod.mechanism_read, chainlink_feed.boundary_snapshot(), _real_db,
-                window_recorder.source_unchecked)
+                window_recorder.source_unchecked, micro_tape.t3_records)
         except Exception as e:
             logger.warning("mechanism watch read failed: %s", e)
             mech = None
@@ -2790,6 +2790,13 @@ async def main() -> None:
             unchecked = mech.get("unchecked") or 0
             skipped = (f" · {unchecked} window(s) could not be checked"
                        if unchecked else "")
+            # The retired-30s tape is the A/B evidence for the NEXT source
+            # swap — an empty one has to be said, not assumed.
+            t3 = mech.get("t3_records")
+            if t3 == 0:
+                skipped += " · 30s A/B tape EMPTY — nothing to compare if the source moves again"
+            elif t3:
+                skipped += f" · 30s A/B tape {t3} records"
             if e == c:
                 return (f"Source watch: served strikes/finals match our stream "
                         f"{e}/{c} bit-exact{skipped}\n")
