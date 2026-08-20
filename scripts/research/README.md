@@ -8,7 +8,9 @@ Recordings are read from polybot/memory/recordings (scp from the box first —
 heavy compute never runs on the box).
 
 Run order: klines_download + pm_trades_download (background) -> ws1_reduce ->
-ws1_measure60 / ws1_freeze_tables -> ws2_ladder_replay (engine-true grid) ->
+ws1_measure60 / ws1_freeze_tables (its MAX comes from ws1_interval_max — the
+per-tick interval maxima; a grid-point fit under-bounds between knots) ->
+ws2_ladder_replay (engine-true grid) ->
 ws3_census / ws3_behavior / ws3_queue. On any future mechanism alarm run
 ws1_boundary_autopsy FIRST — it tells you which stream instant the served
 final equals.
