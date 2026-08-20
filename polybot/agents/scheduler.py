@@ -13,6 +13,7 @@ from typing import Any, Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 NightlyJob = Callable[[], Awaitable[dict[str, Any] | None]]
+JOB_BUDGET_S = 600.0            # per-job wall clock before we stop waiting
 
 
 class NightlyScheduler:
@@ -58,10 +59,12 @@ class NightlyScheduler:
                 # Hard per-job budget: a slow tape read must degrade, never eat
                 # the midnight restart window (the 08-09 overrun cost a full
                 # trading day).
-                result = await asyncio.wait_for(job(), timeout=600.0)
+                result = await asyncio.wait_for(job(), timeout=JOB_BUDGET_S)
                 logger.info(f"  Nightly job '{name}': {result if result else 'ok'}")
             except asyncio.TimeoutError:
-                logger.error(f"Nightly job '{name}' timed out at 600s — skipped")
+                # Dropping the await stops the wait, never the to_thread body.
+                logger.error(f"Nightly job '{name}' abandoned after "
+                             f"{JOB_BUDGET_S:.0f}s — it may still be running")
             except Exception as e:
                 logger.error(f"Nightly job '{name}' failed: {e}")
                 if self.alert_manager:
