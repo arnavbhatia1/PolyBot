@@ -2901,6 +2901,23 @@ async def main() -> None:
     except asyncio.CancelledError:
         pass
     finally:
+        # Armed FIRST: a wedged worker thread (asyncio.to_thread survives the
+        # wait_for cancel) can hang any step below, including db.close(), and a
+        # watchdog created after the hang never exists — a 10h zombie on 08-17
+        # held the nightly commit AND the next trading day. Daemon timer, so a
+        # clean exit dies before it ever fires.
+        import threading
+
+        def _force_exit():
+            try:
+                logger.warning("EXIT FORCED — a worker thread outlived shutdown")
+                logging.shutdown()
+            finally:
+                os._exit(0)
+
+        _watchdog = threading.Timer(30.0, _force_exit)
+        _watchdog.daemon = True
+        _watchdog.start()
         for t in background_tasks:
             t.cancel()
         async def _stop_rec(coro, timeout=2.0):
@@ -2932,24 +2949,6 @@ async def main() -> None:
         bankroll = await db.get_bankroll()
         await db.close()
         logger.info(f"PolyBot stopped — Bankroll ${bankroll:.2f} · Feeds/WS/DB closed")
-        # A nightly job that outlives its 600s budget leaves a blocked worker
-        # thread (asyncio.to_thread survives the wait_for cancel), and the
-        # interpreter's exit join then hangs forever — a 10h zombie on 08-17
-        # held the nightly commit AND the next trading day. Everything is
-        # flushed by here: a daemon watchdog gives the normal exit 30s, then
-        # forces it. Clean exits die before the timer and never see it.
-        import threading
-
-        def _force_exit():
-            try:
-                logger.warning("EXIT FORCED — a worker thread outlived shutdown")
-                logging.shutdown()
-            finally:
-                os._exit(0)
-
-        _watchdog = threading.Timer(30.0, _force_exit)
-        _watchdog.daemon = True
-        _watchdog.start()
 
 
 _SINGLE_INSTANCE_SOCK = None

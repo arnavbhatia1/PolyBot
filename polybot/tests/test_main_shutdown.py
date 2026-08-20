@@ -28,3 +28,30 @@ def test_third_press_still_force_quits():
     handler()
     handler()
     assert exits == [130, 130]
+
+
+def test_shutdown_watchdog_is_armed_before_anything_that_can_hang():
+    """A wedged aiosqlite worker hangs shutdown at db.close(); a watchdog armed
+    after that call never exists. Static guard on the arming order."""
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "main")
+    try_node = next(n for n in ast.walk(fn)
+                    if isinstance(n, ast.Try) and n.finalbody)
+
+    def _calls(attr):
+        return [n.lineno for stmt in try_node.finalbody for n in ast.walk(stmt)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == attr]
+
+    armed = _calls("start")
+    assert armed, "no shutdown watchdog armed in the finally block"
+    assert _calls("Timer"), "the watchdog is not a threading.Timer"
+    awaits = [n.lineno for stmt in try_node.finalbody for n in ast.walk(stmt)
+              if isinstance(n, ast.Await)]
+    assert awaits, "no awaits in the finally — test is stale"
+    assert min(awaits) > armed[0], \
+        "shutdown awaits something before the watchdog is armed"
