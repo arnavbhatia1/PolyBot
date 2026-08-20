@@ -406,3 +406,16 @@ def test_fill_is_stamped_when_a_print_gap_ran_under_the_ladder(tmp_path, monkeyp
     mgr2.clob_ws.last_print_gap_ts = time.time()              # dropped mid-rest
     asyncio.run(mgr2._retire("test"))
     assert mgr2.trader.booked[0]["indicator_snapshot"]["print_gap"] == 1
+
+
+def test_booked_notional_equals_the_sum_of_the_rungs(tmp_path, monkeypatch):
+    """book_maker_fill re-derives the debit as shares x price, so a rounded
+    vwap makes the booked cost disagree with what the rungs actually cost."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _mgr(64200.0)
+    _place(mgr, time.time() - 285.0, budget=197.0)     # awkward per-rung share counts
+    mgr.on_print("tokU", {"price": "0.10", "size": "1"})   # sweeps every rung
+    truth = sum(r["filled"] * r["price"] for r in mgr.active["rungs"])
+    asyncio.run(mgr._retire("test"))
+    booked = mgr.trader.booked[0]
+    assert booked["shares_gross"] * booked["price"] == pytest.approx(truth, abs=1e-9)

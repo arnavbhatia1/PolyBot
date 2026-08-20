@@ -330,7 +330,9 @@ class MakerBidManager:
         filled = sum(r["filled"] for r in a["rungs"])
         notional = sum(r["filled"] * r["price"] for r in a["rungs"])
         if filled > 0 and notional >= MIN_NOTIONAL_USD:
-            vwap = round(notional / filled, 4)
+            # Unrounded: the booking re-derives the debit as shares x price, so
+            # a 4dp vwap makes it disagree with what the rungs actually cost.
+            vwap = notional / filled
             # Mark the sample when the print stream had a hole under us.
             gap_ts = getattr(self.clob_ws, "last_print_gap_ts", None)
             if isinstance(a["snapshot"], dict):
