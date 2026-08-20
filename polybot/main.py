@@ -458,10 +458,11 @@ def _ops_watch_line(lat: dict | None, lat_dark: str | None, qd: dict | None) -> 
     """Ops trend watches: constants drift while nobody looks (POST RTT ran
     356->436ms uncommented; the at-price queue 2.5x'd in three days).
 
-    Stated tolerances: POST p50 within +-25% of the paper table's 436ms (else
-    re-measure paper_latency_scale); trailing sweep-consumed queue p75 must
-    stay UNDER the 135-sh at-price constant (else paper over-credits at-price
-    fills)."""
+    Stated tolerances, both +-25% and both DIRECTIONS: POST p50 against the
+    paper table's 436ms, and the trailing sweep-consumed queue p75 against the
+    135-sh at-price constant — a queue that grew makes paper over-credit
+    at-price fills, one that shrank makes it under-credit them, and both
+    distort a gate that counts fills."""
     parts = []
     if lat:
         drift = (lat["p50"] - 436.0) / 436.0
@@ -472,12 +473,13 @@ def _ops_watch_line(lat: dict | None, lat_dark: str | None, qd: dict | None) -> 
     elif lat_dark:
         parts.append(f"POST p50 unknown — {lat_dark}")
     if qd:
-        warn = qd["p75"] > 135.0
+        drift = (qd["p75"] - 135.0) / 135.0
         parts.append(
             f"deep-queue consumed med {qd['med']:.0f}/p75 {qd['p75']:.0f} sh "
             f"({qd['n']} sweeps/{qd['days']:.0f}d)"
-            + (" ⚠️ p75 over the 135-sh constant — paper may over-credit "
-               "at-price fills, re-measure" if warn else ""))
+            + (f" ⚠️ p75 {drift:+.0%} off the 135-sh constant — paper "
+               f"{'over' if drift > 0 else 'under'}-credits at-price fills, "
+               f"re-measure" if abs(drift) > 0.25 else ""))
     return ("Ops watch: " + " · ".join(parts) + "\n") if parts else ""
 
 

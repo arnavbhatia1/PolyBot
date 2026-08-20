@@ -49,3 +49,24 @@ def test_usable_stats_report_the_number(tmp_path):
 def test_drifted_stats_warn(tmp_path):
     lat, dark = _latency_watch(_stats(tmp_path, n=50, p50=700.0))
     assert "⚠️" in _ops_watch_line(lat, dark, None)
+
+
+def _qd(p75):
+    return {"med": 31.0, "p75": p75, "n": 56333, "days": 14.0}
+
+
+def test_queue_watch_warns_on_a_shrink_too():
+    """14-day p75 is 99 sh — 0.73x the 135 constant — and the one-sided watch
+    stayed silent, so paper under-credits fills on a gate that counts fills."""
+    line = _ops_watch_line(None, None, _qd(99.0))
+    assert "⚠️" in line and "under-credits" in line
+
+
+def test_queue_watch_still_warns_on_growth():
+    line = _ops_watch_line(None, None, _qd(400.0))
+    assert "⚠️" in line and "over-credits" in line
+
+
+def test_queue_watch_quiet_inside_the_band():
+    line = _ops_watch_line(None, None, _qd(140.0))
+    assert "deep-queue consumed" in line and "⚠️" not in line
