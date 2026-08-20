@@ -918,7 +918,16 @@ async def _evaluate_signal_and_enter(
                 # must clear — the floor that self-silences photo-finish chop
                 # (disp cannot reach 2x its own error when gaps run sub-$2).
                 _mmargin = twap_margin(TWAP_MARGIN_P995, contract["seconds_remaining"])
-                if _mmargin > 0 and abs(_mdisp) >= _MAKER_MGR.min_need() * _mmargin:
+                # A same-window position makes book_maker_fill refuse, leaving
+                # filled shares on the exchange with no DB row.
+                _mhas = (db.has_open_or_pending_market(cid)
+                         if db is not None else None)
+                if _mhas is None and db is not None:
+                    _mhas = await db.has_position_for_market(cid)
+                if _mhas:
+                    _emit_gate_skip(cid, "maker_position_open",
+                                    "ladder held back: this window already has a position")
+                elif _mmargin > 0 and abs(_mdisp) >= _MAKER_MGR.min_need() * _mmargin:
                     # A deep resting bid's margin of safety is its PRICE, not a
                     # tail bound — budget is a flat bankroll fraction, not
                     # Kelly on a certainty claim.

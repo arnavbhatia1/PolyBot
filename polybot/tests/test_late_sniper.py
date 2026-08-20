@@ -246,3 +246,23 @@ def test_sniper_enabled_alias_still_halts(tmp_path, monkeypatch):
     monkeypatch.setattr(loader_mod, "_config", None, raising=False)
     cfg = loader_mod.load_config(config_path=str(p))
     assert cfg["late_window"]["trading_enabled"] is False
+
+
+def test_ladder_checks_open_positions_before_placing():
+    """A same-window position makes book_maker_fill refuse, so filled rungs
+    would sit on the exchange with no DB row. Static guard: the open-position
+    read must precede the placement call in the fire path."""
+    src = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "_evaluate_signal_and_enter")
+
+    def _call_lines(name):
+        return [n.lineno for n in ast.walk(fn)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == name]
+
+    place = _call_lines("consider_placement")
+    checks = _call_lines("has_open_or_pending_market") + _call_lines("has_position_for_market")
+    assert place, "no consider_placement call found — test is stale"
+    assert checks, "the ladder places without ever reading open positions"
+    assert min(checks) < min(place), "the open-position check runs after placement"
