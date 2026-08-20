@@ -113,6 +113,35 @@ class TestChainlinkFeed:
         assert ChainlinkFeed._epoch_seconds(1781031482000.0) == 1781031482.0
         assert ChainlinkFeed._epoch_seconds(1781031482.0) == 1781031482.0
 
+    def test_epoch_seconds_refuses_an_out_of_band_scale(self):
+        """A µs- or ns-scaled payload survives the ms rescale as ~1.79e12 —
+        believable to the parser, absurd as a clock. Refuse it."""
+        assert ChainlinkFeed._epoch_seconds(1781031482000000.0) is None
+        assert ChainlinkFeed._epoch_seconds(1781031482000000000.0) is None
+        assert ChainlinkFeed._epoch_seconds(0.0) is None
+
+    def test_out_of_band_timestamp_cannot_evict_boundary_captures(self, caplog):
+        """One rescaled-but-absurd ts would push the 2h cutoff past every
+        capture, so certain_winner goes None and both source watches go dark."""
+        import json as _j
+
+        f = ChainlinkFeed()
+        boundary = ((int(time.time()) // 300) - 1) * 300
+
+        def frame(ts, value):
+            return _j.dumps({"topic": "crypto_prices_twap_sixty",
+                             "payload": {"symbol": "btc/usd", "value": value,
+                                         "timestamp": ts}})
+
+        with caplog.at_level(logging.ERROR):
+            _drive_frames(f, [frame((boundary - 1) * 1000, 63980.0),
+                              frame(boundary * 1000, 63990.5),
+                              frame(boundary * 1000000, 64000.0)])   # microseconds
+        assert f.boundary_snapshot() == {boundary: 63990.5}
+        assert f.twap_official == 63990.5          # the bad report mutated nothing
+        assert f._last_twap_ts == boundary
+        assert any("FEED TIMESTAMP" in r.getMessage() for r in caplog.records)
+
     def test_boundary_capture_from_ms_payload(self):
         """A boundary recorded from a normalized ms timestamp must be retrievable
         by a second-space get_strike lookup — un-normalized ms keys never match."""

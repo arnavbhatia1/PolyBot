@@ -56,6 +56,8 @@ TWAP_FROZEN_RAW_MOVE_USD = 2.0 # ...and the raw travel required inside that span
                                # flat market freezes the average legitimately.
 TWAP_FROZEN_EPS_USD = 0.005    # ...and how much the official value must move to count as moving at all:
                                # last-digit jitter on a stalled relay is not a live average.
+EPOCH_MIN_S = 1e9              # plausible epoch-seconds band (2001..2286) after the ms rescale — a
+EPOCH_MAX_S = 1e10             # µs/ns-scaled payload still parses, and would evict every capture.
 
 
 class ChainlinkFeed:
@@ -110,6 +112,7 @@ class ChainlinkFeed:
         # twap_frozen() measures a resolution-source stall against.
         self._twap_value_since: float = 0.0
         self._last_report_rx: float | None = None
+        self._bad_ts_logged: bool = False
         self._start_window_ts: int = int(time.time() // 300) * 300
         self.staleness = StalenessTracker("chainlink")
 
@@ -316,12 +319,22 @@ class ChainlinkFeed:
                 if self.strike_reliable(b)}
 
     @staticmethod
-    def _epoch_seconds(ts: float) -> float:
-        """Normalize an epoch timestamp to seconds.
+    def _epoch_seconds(ts: float) -> float | None:
+        """Normalize an epoch timestamp to seconds, or None if it is not one.
 
         RTDS payloads carry milliseconds; boundary keys are seconds — an
-        un-normalized value can never match a get_strike() lookup."""
-        return ts / 1000.0 if ts > 1e11 else ts
+        un-normalized value can never match a get_strike() lookup. A µs- or
+        ns-scaled value survives the ms rescale as ~1.79e12 and would evict
+        every boundary capture through the 2h cutoff, so anything outside the
+        plausible band is refused rather than believed."""
+        secs = ts / 1000.0 if ts > 1e11 else ts
+        return secs if EPOCH_MIN_S < secs < EPOCH_MAX_S else None
+
+    def _bad_ts(self, raw: Any) -> None:
+        """One line per run — a broken clock repeats every message."""
+        if not self._bad_ts_logged:
+            self._bad_ts_logged = True
+            logger.error("FEED TIMESTAMP out of range (%s) — ignoring those reports", raw)
 
     def _record_boundary(self, observed_ts: float, value: float) -> None:
         if value <= 0:
@@ -471,10 +484,12 @@ class ChainlinkFeed:
                                 if _bv is not None and _bts is not None:
                                     try:
                                         _bts_s = self._epoch_seconds(float(_bts))
+                                        if _bts_s is None:
+                                            self._bad_ts(_bts)
                                         # The relay's payload clock cannot legitimately lead our
                                         # receipt: a future-dated tick would own retention and
                                         # evict every anchor the bridge needs.
-                                        if _bts_s <= time.time() + BINANCE_RING_S:
+                                        elif _bts_s <= time.time() + BINANCE_RING_S:
                                             self._binance.append((_bts_s, float(_bv)))
                                             # Relay ticks can arrive out of order; the anchor scan
                                             # and the newest read both walk the ring in ts order.
@@ -499,6 +514,11 @@ class ChainlinkFeed:
                             now = time.time()
                             payload_ts = payload.get("timestamp") or payload.get("ts")
                             observed_ts = self._epoch_seconds(float(payload_ts)) if payload_ts is not None else now
+                            if observed_ts is None:
+                                # Drop the report whole: a bad ts here would evict every
+                                # boundary capture and blind the source watches.
+                                self._bad_ts(payload_ts)
+                                continue
                             # The ENVELOPE's own timestamp = when Polymarket's
                             # publisher pushed to RTDS. Recorded (never used to
                             # decide) because it splits our ~1.63s report lag
