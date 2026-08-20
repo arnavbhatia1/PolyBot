@@ -441,3 +441,29 @@ class TestBookMakerFill:
         assert await trader.book_maker_fill(
             market_id="m2", question="q", side="Up",
             price=0.50, shares_gross=20.0) is True
+
+
+class TestMakerFillFlag:
+    """Fill type must survive to trade_history: it was only recoverable by
+    re-parsing trade_context.signal_leg in every downstream read."""
+
+    @pytest.mark.asyncio
+    async def test_maker_fill_is_recorded_on_the_history_row(self, trader, db):
+        await trader.book_maker_fill(
+            market_id="m1", question="q", side="Up", price=0.50,
+            shares_gross=40.0, indicator_snapshot={"trade_context": {
+                "signal_leg": "deep_proj"}})
+        pos = (await db.get_open_positions())[0]
+        await db.close_position(pos["id"], exit_price=1.0, pnl=20.0)
+        row = (await db.get_trade_history(limit=1))[0]
+        assert row["maker_fill"] == 1
+        assert row["maker_rebate"] == 0.0      # we never collect one — deliberate
+
+    @pytest.mark.asyncio
+    async def test_taker_entry_is_not_flagged_as_maker(self, trader, db):
+        await trader.open_trade(**_trade_params(market_id="m2"))
+        pos = (await db.get_open_positions())[0]
+        await db.close_position(pos["id"], exit_price=1.0, pnl=5.0)
+        row = (await db.get_trade_history(limit=1))[0]
+        assert row["maker_fill"] == 0
+        assert row["maker_rebate"] == 0.0

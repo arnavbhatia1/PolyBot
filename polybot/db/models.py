@@ -6,6 +6,7 @@ Bankroll is the single source of truth for capital — never reconstruct it from
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -85,6 +86,12 @@ class Database:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0")
         if "exit_reason" not in th_cols:
             await self.conn.execute("ALTER TABLE trade_history ADD COLUMN exit_reason TEXT NOT NULL DEFAULT 'resolution'")
+        if "maker_fill" not in th_cols:
+            await self.conn.execute("ALTER TABLE trade_history ADD COLUMN maker_fill INTEGER DEFAULT 0")
+        if "maker_rebate" not in th_cols:
+            # Always 0.0: maker rebates ride matched volume on Polymarket's side
+            # and we never receive one — the column records that, not a gap.
+            await self.conn.execute("ALTER TABLE trade_history ADD COLUMN maker_rebate REAL DEFAULT 0")
         if "position_id" not in th_cols:
             # The true link to positions: an implicit t.id = p.id join only holds
             # while both AUTOINCREMENT sequences run in lockstep — any drift
@@ -248,13 +255,22 @@ class Database:
             "SELECT * FROM positions WHERE id=?", (position_id,)
         )
         pos = dict(await cursor.fetchone())
+        # Fill type, stamped at booking — otherwise it is only recoverable by
+        # re-parsing the snapshot in every downstream read.
+        maker = 0
+        try:
+            snap = json.loads(pos.get("indicator_snapshot") or "{}")
+            maker = int(bool((snap.get("trade_context") or {}).get("maker_fill")))
+        except (ValueError, TypeError, AttributeError):
+            pass
         await self.conn.execute(
             """INSERT INTO trade_history
             (side, entry_price, exit_price, size,
-             exit_timestamp, pnl, fees, exit_reason, position_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             exit_timestamp, pnl, fees, exit_reason, position_id,
+             maker_fill, maker_rebate)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (pos["side"], pos["entry_price"], exit_price, pos["size"],
-             now, pnl, fees, exit_reason, position_id),
+             now, pnl, fees, exit_reason, position_id, maker, 0.0),
         )
 
     async def close_position(

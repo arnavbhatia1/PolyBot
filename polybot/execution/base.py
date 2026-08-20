@@ -414,6 +414,9 @@ class BaseTrader(ABC):
         # deep_proj +5c/sh bar.
         fee_in_shares = 0.0
         if isinstance(indicator_snapshot, dict):
+            # Stamp the fill type here — the trade_history row is written at
+            # close, long after anything knows how these shares were bought.
+            indicator_snapshot.setdefault("trade_context", {})["maker_fill"] = 1
             indicator_snapshot = _dumps_snapshot(indicator_snapshot)
         try:
             await self.db.open_position_and_debit_bankroll(
