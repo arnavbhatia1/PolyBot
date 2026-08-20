@@ -425,3 +425,19 @@ class TestBookMakerFill:
         pos = (await db.get_open_positions())[0]
         assert pos["shares_held"] == pytest.approx(40.0, abs=0.001)
         assert (await db.get_bankroll()) == pytest.approx(100.0 - 20.0, abs=0.01)
+
+    @pytest.mark.asyncio
+    async def test_maker_fill_respects_the_deployed_cap(self, trader, db, caplog):
+        """A maker fill is capital like any other — free cash alone let the
+        ladder reach 95% of equity on a cap open_trade holds at 80%."""
+        await trader.open_trade(**_trade_params(market_id="m0", size=65.0))
+        ok = await trader.book_maker_fill(
+            market_id="m1", question="q", side="Up",
+            price=0.50, shares_gross=60.0)          # $30: free cash yes, cap no
+        assert ok is False
+        assert await db.get_open_positions() and len(await db.get_open_positions()) == 1
+        assert any("CRITICAL: maker fill" in r.getMessage() for r in caplog.records)
+        # ...and a fill that fits the cap still books.
+        assert await trader.book_maker_fill(
+            market_id="m2", question="q", side="Up",
+            price=0.50, shares_gross=20.0) is True

@@ -397,11 +397,16 @@ class BaseTrader(ABC):
         else:
             has_pos, pos_count, bankroll, deployed = await self.db.get_open_trade_preflight(market_id)
         notional = shares_gross * price
-        if has_pos or pos_count >= self.max_concurrent_positions or notional > bankroll:
+        # Same deployed cap open_trade enforces — a maker fill is capital too.
+        max_deployable = (bankroll + deployed) * self.max_bankroll_deployed
+        if (has_pos or pos_count >= self.max_concurrent_positions
+                or notional > bankroll or deployed + notional > max_deployable):
             logger.error("CRITICAL: maker fill (%.1f sh @ %.3f, %s) has no free "
-                         "position slot or cash (bankroll %.2f) — shares are on "
-                         "the exchange unbooked; reconcile manually.",
-                         shares_gross, price, market_id, bankroll)
+                         "position slot or cash (bankroll %.2f, deployed %.2f of "
+                         "%.2f) — shares are on the exchange unbooked; reconcile "
+                         "manually.",
+                         shares_gross, price, market_id, bankroll, deployed,
+                         max_deployable)
             return False
         # Makers are never charged fees (USDC-delta verified 08-10: every
         # zero-fee row in 1,751 live fills was a maker) — a taker-style share
