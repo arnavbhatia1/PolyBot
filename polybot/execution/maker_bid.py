@@ -288,27 +288,42 @@ class MakerBidManager:
 
 
     async def _retire(self, reason: str) -> None:
-        a, self.active = self.active, None
+        a = self.active
         if a is None:
             return
-        for r in a["rungs"]:
-            if r.get("cancelled"):
-                continue
+        try:
             try:
-                await self.trader.cancel_gtc(r["order_id"])
-            except Exception as e:
-                logger.warning("MAKER CANCEL failed (%s) — exchange closes "
-                               "resting orders at market close", e)
-        if not self.paper:
-            # A live fill can land inside the 1Hz poll gap or the cancel round
-            # trip itself — re-read each order's final matched size so the
-            # booking can never run short of what the wallet actually holds.
-            for r in a["rungs"]:
-                if r.get("cancelled"):
-                    continue
-                matched = await self.trader.poll_gtc_fill(r["order_id"])
-                if matched is not None and matched > r["filled"]:
-                    r["filled"] = min(r["shares"], matched)
+                for r in a["rungs"]:
+                    if r.get("cancelled"):
+                        continue
+                    try:
+                        await self.trader.cancel_gtc(r["order_id"])
+                    except Exception as e:
+                        logger.warning("MAKER CANCEL failed (%s) — exchange closes "
+                                       "resting orders at market close", e)
+                if not self.paper:
+                    # A live fill can land inside the 1Hz poll gap or the cancel
+                    # round trip itself — re-read each order's final matched size
+                    # so the booking can never run short of what the wallet holds.
+                    for r in a["rungs"]:
+                        if r.get("cancelled"):
+                            continue
+                        try:
+                            matched = await self.trader.poll_gtc_fill(r["order_id"])
+                        except Exception as e:
+                            logger.warning("MAKER POLL failed (%s) — booking what "
+                                           "is already known filled", e)
+                            continue
+                        if matched is not None and matched > r["filled"]:
+                            r["filled"] = min(r["shares"], matched)
+            finally:
+                # Shutdown cancels this mid-round-trip: shares already filled are
+                # real on the exchange and must reach the DB before we unwind.
+                await self._book(a, reason)
+        finally:
+            self.active = None
+
+    async def _book(self, a: dict, reason: str) -> None:
         filled = sum(r["filled"] for r in a["rungs"])
         notional = sum(r["filled"] * r["price"] for r in a["rungs"])
         if filled > 0 and notional >= MIN_NOTIONAL_USD:

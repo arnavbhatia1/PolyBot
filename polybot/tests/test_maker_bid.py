@@ -345,3 +345,39 @@ def test_live_retire_reads_the_final_matched_size(tmp_path, monkeypatch):
     assert len(mgr.trader.booked) == 1
     assert mgr.trader.booked[0]["shares_gross"] == pytest.approx(10.0)
     assert mgr.trader.booked[0]["price"] == pytest.approx(0.80)
+
+
+def test_shutdown_cancellation_still_books_accrued_fills(tmp_path, monkeypatch):
+    """Shutdown time-boxes the retire: a CancelledError landing mid-cancel must
+    not strand filled shares on the exchange with no DB row."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+
+    class CancelKiller(FakeTrader):
+        async def cancel_gtc(self, order_id):
+            self.cancelled.append(order_id)
+            raise asyncio.CancelledError()
+
+    mgr = MakerBidManager(CancelKiller(), FakeChainlink(64200.0), CFG, paper=True)
+    _place(mgr, time.time() - 285.0, budget=200.0)
+    mgr.on_print("tokU", {"price": "0.60", "size": "1"})      # 0.80 rung fills
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(mgr._retire("shutdown"))
+    assert len(mgr.trader.booked) == 1
+    assert mgr.trader.booked[0]["shares_gross"] > 0
+    assert mgr.active is None
+
+
+def test_poll_failure_still_books_accrued_fills(tmp_path, monkeypatch):
+    """A network error in the final matched-size re-read must not skip booking."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+
+    class PollKiller(FakeTrader):
+        async def poll_gtc_fill(self, order_id):
+            raise ConnectionError("boom")
+
+    mgr = MakerBidManager(PollKiller(), FakeChainlink(64200.0), CFG, paper=False)
+    _place(mgr, time.time() - 285.0, budget=200.0)
+    mgr.active["rungs"][0]["filled"] = 20.0
+    asyncio.run(mgr._retire("test"))
+    assert len(mgr.trader.booked) == 1
+    assert mgr.trader.booked[0]["shares_gross"] == pytest.approx(20.0)
