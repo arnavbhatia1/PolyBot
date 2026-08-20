@@ -43,6 +43,10 @@ RAW_GAP_MAX_S = 10.0           # projection coverage guard: a raw delivery hole 
                                # measured: a 68s hole passed every gate and projected a $24 error onto
                                # a $0.14 photo-finish. The guard voids the projection instead.
 RAW_RING_S = 75.0              # raw-report ring retention: horizon + seed lookback + slack
+BRIDGE_ANCHOR_MAX_AGE_S = 2.0  # spot_bridge_delta: an anchor older than the report's own delivery lag
+                               # means a ring hole, and the delta re-adds movement the report already has.
+BRIDGE_MAX_DELTA_FRAC = 0.01   # the bridge spans ~2s of Binance, so >1% of spot is a bad tick (a 10x
+                               # decimal slip once injected -$58,509), not a market move.
 TWAP_FROZEN_S = 20.0           # official-TWAP stall detector (twap_frozen): seconds of an EXACTLY unchanged
                                # official value before we distrust the resolution source. The observed stall
                                # ran 35s; ~11% single repeats are normal relay polling, so this sits between.
@@ -86,6 +90,7 @@ class ChainlinkFeed:
         # lead-lag fit on 4.65M recorded pairs bottoms at lag 2.0-2.5s). Used
         # ONLY by the bridged projection (deep_proj); never a strike source.
         self._binance: deque[tuple[float, float]] = deque()
+        self._bridge_band_warned = False
         self.on_spot = None    # micro-tape hook: every Binance report
         # Strike capture: the TWAP topic's first report AT/AFTER each boundary
         # (== served price_to_beat bit-exact; the raw stream's own boundary read
@@ -179,15 +184,25 @@ class ChainlinkFeed:
         newest_ts, newest_px = self._binance[-1]
         if newest_ts <= self._last_report_obs_ts:
             return 0.0
-        anchor = None
+        anchor = anchor_ts = None
         for ts, px in self._binance:
             if ts <= self._last_report_obs_ts:
-                anchor = px
+                anchor, anchor_ts = px, ts
             else:
                 break
         if anchor is None:
             return 0.0
-        return newest_px - anchor
+        if self._last_report_obs_ts - anchor_ts > BRIDGE_ANCHOR_MAX_AGE_S:
+            # A hole in the ring double-counts movement the report already has.
+            return 0.0
+        delta = newest_px - anchor
+        if abs(delta) > BRIDGE_MAX_DELTA_FRAC * anchor:
+            if not self._bridge_band_warned:
+                self._bridge_band_warned = True
+                logger.warning("BRIDGE OFF — a Binance tick is far outside the "
+                               "plausible band, using the plain projection")
+            return 0.0
+        return delta
 
     def projected_final_twap(self, close_ts: float, now: float | None = None,
                              bridged: bool = False) -> float | None:

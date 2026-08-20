@@ -455,6 +455,21 @@ class TestSpotBridge:
         f = self._feed(100.0, [(98.0, 64050.0), (99.0, 64051.0)])
         assert f.spot_bridge_delta() == 0.0
 
+    def test_decimal_slip_tick_fails_to_plain_and_warns(self, caplog):
+        # A 10x slip in one relay tick once injected a -$58,509 delta straight
+        # into the side the ladder rests on.
+        import logging
+        f = self._feed(100.0, [(100.0, 64050.0), (101.5, 6405.0)])
+        with caplog.at_level(logging.WARNING):
+            assert f.spot_bridge_delta() == 0.0
+        assert any("BRIDGE OFF" in r.getMessage() for r in caplog.records)
+
+    def test_stale_anchor_fails_to_plain(self):
+        # A ring hole leaves the anchor 6s behind the report: the delta would
+        # re-add movement the Chainlink report already carries.
+        f = self._feed(100.0, [(94.0, 64050.0), (101.5, 64080.0)])
+        assert f.spot_bridge_delta() == 0.0
+
     def test_bridged_projection_moves_by_weighted_delta(self):
         now = time.time()
         close = now + 10.0          # k=10s -> w = 5/6
