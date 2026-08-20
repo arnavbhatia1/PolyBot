@@ -264,6 +264,41 @@ class TestChainlinkFeed:
         assert sleeps[0] >= cf_mod.RECONNECT_MAX_S / 2, f"429 must back off hard, got {sleeps[:2]}"
 
 
+class TestDropCounters:
+    """A schema change can drop 100% of a topic with only the 60s watchdog as
+    a backstop — count what we throw away, and say so once."""
+
+    def test_unreadable_reports_are_counted_per_topic(self, caplog):
+        import json as _j
+
+        f = ChainlinkFeed()
+        base = ((int(time.time()) // 300) - 1) * 300
+        frames = [
+            "{not json",                                           # unparsed
+            _j.dumps({"topic": "crypto_prices_twap_sixty",         # value field renamed
+                      "payload": {"symbol": "btc/usd", "px": 65000.0,
+                                  "timestamp": base * 1000}}),
+            _j.dumps({"topic": "crypto_prices_chainlink",          # value not a number
+                      "payload": {"symbol": "btc/usd", "value": "n/a",
+                                  "timestamp": base * 1000}}),
+            _j.dumps({"topic": "crypto_prices",                    # binance tick, no ts
+                      "payload": {"symbol": "btcusdt", "value": 65000.0}}),
+        ]
+        with caplog.at_level(logging.WARNING):
+            _drive_frames(f, frames)
+        assert f.drops == {"unparsed": 1, "crypto_prices_twap_sixty": 1,
+                           "crypto_prices_chainlink": 1, "crypto_prices": 1}
+        assert any("FEED DROPS" in r.getMessage() for r in caplog.records)
+
+    def test_the_drop_warning_is_rate_limited(self, caplog):
+        f = ChainlinkFeed()
+        with caplog.at_level(logging.WARNING):
+            for _ in range(50):
+                f._note_drop("crypto_prices_twap_sixty")
+        assert f.drops["crypto_prices_twap_sixty"] == 50
+        assert len([r for r in caplog.records if "FEED DROPS" in r.getMessage()]) == 1
+
+
 class TestTwap:
     """The 30s-TWAP machinery: the running reconstruction (rx-clock, the
     estimator the frozen margins bind to), the sniper projection, and strict

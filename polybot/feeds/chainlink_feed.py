@@ -58,6 +58,8 @@ TWAP_FROZEN_EPS_USD = 0.005    # ...and how much the official value must move to
                                # last-digit jitter on a stalled relay is not a live average.
 EPOCH_MIN_S = 1e9              # plausible epoch-seconds band (2001..2286) after the ms rescale — a
 EPOCH_MAX_S = 1e10             # µs/ns-scaled payload still parses, and would evict every capture.
+DROP_LOG_EVERY_S = 300.0       # rate limit on the dropped-message warning: a schema change drops
+                               # every report of a topic, and per-message logs would flood.
 
 
 class ChainlinkFeed:
@@ -113,6 +115,8 @@ class ChainlinkFeed:
         self._twap_value_since: float = 0.0
         self._last_report_rx: float | None = None
         self._bad_ts_logged: bool = False
+        self.drops: dict[str, int] = {}     # unreadable messages per topic
+        self._drops_logged: float = 0.0
         self._start_window_ts: int = int(time.time() // 300) * 300
         self.staleness = StalenessTracker("chainlink")
 
@@ -337,6 +341,15 @@ class ChainlinkFeed:
             self._bad_ts_logged = True
             logger.error("FEED TIMESTAMP out of range (%s) — ignoring those reports", raw)
 
+    def _note_drop(self, topic: str) -> None:
+        """Count what we throw away — a schema change drops 100% of a topic."""
+        self.drops[topic] = self.drops.get(topic, 0) + 1
+        now = time.time()
+        if now - self._drops_logged >= DROP_LOG_EVERY_S:
+            self._drops_logged = now
+            logger.warning("FEED DROPS — unreadable reports so far: %s",
+                           ", ".join(f"{k} {v}" for k, v in sorted(self.drops.items())))
+
     def _record_boundary(self, observed_ts: float, value: float) -> None:
         if value <= 0:
             return
@@ -473,6 +486,7 @@ class ChainlinkFeed:
                             break
                         if raw == "PONG":
                             continue
+                        msg = None
                         try:
                             msg = _loads(raw)
                             payload = msg.get("payload", {})
@@ -482,7 +496,9 @@ class ChainlinkFeed:
                                 # bridge delta; never touches price/strike state.
                                 _bv = payload.get("value")
                                 _bts = payload.get("timestamp") or payload.get("ts")
-                                if _bv is not None and _bts is not None:
+                                if _bv is None or _bts is None:
+                                    self._note_drop("crypto_prices")
+                                else:
                                     try:
                                         _bts_s = self._epoch_seconds(float(_bts))
                                         if _bts_s is None:
@@ -505,12 +521,13 @@ class ChainlinkFeed:
                                                 except Exception:
                                                     pass
                                     except (ValueError, TypeError):
-                                        pass
+                                        self._note_drop("crypto_prices")
                                 continue
                             if _sym != "btc/usd":
                                 continue
                             value = payload.get("value")
                             if value is None:
+                                self._note_drop(msg.get("topic", "?"))
                                 continue
                             now = time.time()
                             payload_ts = payload.get("timestamp") or payload.get("ts")
@@ -577,7 +594,8 @@ class ChainlinkFeed:
                                 except Exception:
                                     pass
                         except (ValueError, TypeError):
-                            pass
+                            self._note_drop(msg.get("topic", "?")
+                                            if isinstance(msg, dict) else "unparsed")
             except (websockets.ConnectionClosed, websockets.InvalidHandshake,
                     ConnectionError, OSError) as e:
                 # InvalidHandshake = server-side rejection (500 outage / 429 limit) —

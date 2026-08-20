@@ -265,3 +265,20 @@ async def test_disconnect_stamps_a_print_gap_and_warns(ws, monkeypatch, caplog):
 
     assert ws.last_print_gap_ts > 0.0
     assert any("CLOB feed dropped" in r.getMessage() for r in caplog.records)
+
+
+# --- Dropped-message counters ---
+
+def test_unreadable_messages_are_counted_and_warned(ws, caplog):
+    """A schema change can drop 100% of a message kind silently; count it and
+    say so once, never per message."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="polybot.feeds.clob_ws"):
+        ws._handle_message("{not json")
+        ws._handle_message(json.dumps({"event_type": "brand_new_thing",
+                                       "asset_id": "tokU"}))
+        for _ in range(20):
+            ws._handle_message("{not json")
+    assert ws.drops == {"unparsed": 21, "event:brand_new_thing": 1}
+    assert len([r for r in caplog.records
+                if "CLOB DROPS" in r.getMessage()]) == 1
