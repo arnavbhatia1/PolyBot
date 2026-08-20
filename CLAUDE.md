@@ -84,7 +84,9 @@ a genuine hole can. The RAW ~1Hz stream
 reconstruction (`running_avg`, rx-clock ZOH: matches the served 60s final at
 median $0.028 / p90 $0.22) and the projection (`projected_final_twap`,
 horizon 60s). A boundary capture landing > 0.5s past the boundary is
-UNTRUSTED — no leg deploys capital on it (`_strike_trusted`). The projection
+UNTRUSTED — no leg deploys capital on OUR capture (`_strike_trusted`); a
+served Gamma `price_to_beat` is the resolution source itself, so it restores
+trust when it arrives. The projection
 additionally refuses: spot older than 3s, and any raw delivery hole > 10s
 inside the averaging span (`RAW_GAP_MAX_S` — a 68s hole once projected a $24
 error onto a $0.14 photo-finish behind a perfectly fresh spot).
@@ -122,8 +124,10 @@ failure mode collapses to the plain projection. Fills book through
 `book_maker_fill` as ONE blended position. **Paper fill rule
 (live-calibrated, conservative)**: strictly-below prints fill a rung in FULL;
 at-price prints credit only volume beyond `AT_PRICE_QUEUE_SH` (135 sh);
-snapshot queue models are BANNED (REFUTATIONS.md). Paper pays the measured
-GTC round trip on place and cancel. Maker fills are genuinely fee-free
+snapshot queue models are BANNED (REFUTATIONS.md). Paper pays a GTC round
+trip on place and cancel that is **not measured** — 56ms/rung against ~500ms
+reconstructed from the one live ladder, so paper's rungs become matchable
+about twice as fast as the real ones (RESEARCH.md). Maker fills are fee-free
 (re-verified on post-rule fills 08-18: 274/274 USDC deltas exact).
 **Bar (unchanged)**: ≥6 clean ET days, ≥20 filled windows, EW ≥ +5¢/sh,
 `usd_per_day > 0`, on realized paper fills since `validation_epoch`.

@@ -52,6 +52,34 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    synthetic max-union, MAX from per-tick interval maxima. Re-fit with
    ws1_measure60/ws1_interval_max conventions; also re-decide the ladder
    floor (#1) and the taker's dormancy (#3) from the fresh tables.
+   **The 08-20 audit says expect a WIDENING, not a formality.** An
+   independent re-derivation reproduced 15/16 frozen p99.5 knots on the
+   freeze span, but adding 08-18 — the day the freeze excluded — puts
+   several knots outside the envelope: **k=25 $10.0 vs frozen $8.0 (+25%)**,
+   k=40 $24 vs $18, k=12 $4.5 vs $3.5, with k=8/20/29/35 also thin. k=25 is
+   `maker_k_place_max` and 5 of the first 7 paper fills armed at k≈24.99-25.0,
+   so live arming sits exactly where the table is thinnest and `need 1.0` is
+   absorbing an under-stated error. Tables were deliberately NOT touched by
+   the audit — editing knots outside the scheduled re-fit is measurement by
+   fiat. Note before re-fitting: `ws1_freeze_tables.py` fitted MAX at grid
+   points rather than per-tick interval maxima (under-bounding); fixed 08-20
+   to import `ws1_interval_max`, and its input `data/ws1_errors60.csv` must
+   be regenerated — the freeze is not currently reproducible from the repo.
+
+2b. **Measure the GTC place/cancel round trip** — blocking, and the only
+   audit finding on the binding gate that no amount of paper accrual can
+   settle. `paper_trader._GTC_LATENCY_QUANTILES` pays 56ms/rung and its
+   commit claims it is measured, but `latency_stats.json` has no `gtc`
+   section and never had one. Reconstructing live fill 334 from tape needs
+   ~500ms to reproduce the real outcome: paper credited it $11.21 against
+   $3.74 actual, because rungs become matchable roughly twice as fast as
+   the real ones and collect fills in the tenths of a second while the
+   triggering sweep is still printing (+21.9% over the 5-fill probe). The
+   error is two-sided — it flatters winners and punishes losers — so the
+   direction of the distortion on ¢/sh is unknown, not conservative.
+   Unblocks on either `smoke_gtc_test.py --confirm` persisting its samples
+   or a `t_post_return − t_post_start` stamp in the ladder snapshot; until
+   then the ≥20-fill bar is measured against an unvalidated fill clock.
 3. **Lock-dip taker: DORMANT-pending-regime** (`taker_enabled: false`,
    staged 08-18). The 60s rule killed its supply: 4 winner-side max-lock
    dips / 1 FOK-reachable over 1,184 windows (bar: ≥1 reachable per 3

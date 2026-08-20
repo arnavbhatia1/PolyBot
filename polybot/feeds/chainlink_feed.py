@@ -75,9 +75,9 @@ class ChainlinkFeed:
         self._running: bool = False
         self.on_report = None  # micro-tape hook: every RTDS report (recording.MicroTape)
         # Wakes the main loop on every raw report — the sniper's decision clock
-        # in the final-30s averaging zone (cleared by the consumer).
+        # in the final-60s averaging zone (cleared by the consumer).
         self.report_event: asyncio.Event = asyncio.Event()
-        # Official 30s-TWAP stream (THE resolution source): observed value + its
+        # Official 60s-TWAP stream (THE resolution source): observed value + its
         # observation ts + local receipt (the topic delivers ~1.6s behind
         # observation — receipt-vs-ts measures that lag continuously).
         self.on_twap = None    # micro-tape hook: every official TWAP report
