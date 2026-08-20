@@ -215,7 +215,8 @@ the only on-chain thing the bot signs).
   readers take .jsonl(.gz).
 - **Per-decision records**: `trade_context` on fills AND ghosts (`signal_leg`
   is the per-leg ledger key). **None-vs-0.0 is load-bearing** — cold inputs
-  record None, never 0.0.
+  record None, never 0.0. Ladder fills carry `print_gap`: 1 when the CLOB feed
+  reconnected while the rungs rested, so paper's fill count is short there.
 - **The per-window SOURCE hard gate** (`recording._check_resolution_source`):
   every labeled window's served strike/final is compared against our TRUSTED
   stream captures; a >$0.005 mismatch flips `trading_enabled` false

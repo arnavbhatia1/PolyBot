@@ -2485,6 +2485,7 @@ async def main() -> None:
     _ALERT_MANAGER = alert_manager
     if _MAKER_MGR is not None:
         _MAKER_MGR.on_fill = _on_maker_fill
+        _MAKER_MGR.clob_ws = clob_ws
         if market_scanner is not None:
             _MAKER_MGR.tick_fn = market_scanner.fetch_tick_size
 

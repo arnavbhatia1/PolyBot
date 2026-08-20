@@ -381,3 +381,28 @@ def test_poll_failure_still_books_accrued_fills(tmp_path, monkeypatch):
     asyncio.run(mgr._retire("test"))
     assert len(mgr.trader.booked) == 1
     assert mgr.trader.booked[0]["shares_gross"] == pytest.approx(20.0)
+
+
+def test_fill_is_stamped_when_a_print_gap_ran_under_the_ladder(tmp_path, monkeypatch):
+    """Paper's whole fill mechanism is the print stream, so a CLOB reconnect
+    while rungs rested makes the sample an under-count — the fill record has
+    to say so."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+
+    class FakeWS:
+        last_print_gap_ts = 0.0
+
+    mgr = _mgr(64200.0)
+    mgr.clob_ws = FakeWS()
+    _place(mgr, time.time() - 285.0, budget=200.0)
+    mgr.on_print("tokU", {"price": "0.60", "size": "1"})      # 0.80 rung fills
+    asyncio.run(mgr._retire("test"))
+    assert mgr.trader.booked[0]["indicator_snapshot"]["print_gap"] == 0
+
+    mgr2 = _mgr(64200.0)
+    mgr2.clob_ws = FakeWS()
+    _place(mgr2, time.time() - 285.0, budget=200.0)
+    mgr2.on_print("tokU", {"price": "0.60", "size": "1"})
+    mgr2.clob_ws.last_print_gap_ts = time.time()              # dropped mid-rest
+    asyncio.run(mgr2._retire("test"))
+    assert mgr2.trader.booked[0]["indicator_snapshot"]["print_gap"] == 1

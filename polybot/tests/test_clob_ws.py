@@ -218,3 +218,50 @@ def test_trade_buffer_accumulates(ws):
 
 def test_trade_buffer_empty_token(ws):
     assert ws.get_trade_history("nonexistent") == []
+
+
+# --- Reconnect print gap ---
+
+@pytest.mark.asyncio
+async def test_disconnect_stamps_a_print_gap_and_warns(ws, monkeypatch, caplog):
+    """A reconnect drops every print that lands while we are away and the
+    resubscribe replays the book only, so paper's fill count is short. Loud,
+    and stamped so a ladder resting across it can mark its sample."""
+    import asyncio
+    import logging
+    from polybot.feeds import clob_ws as cw
+
+    attempts = 0
+
+    class _Dropping:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            nonlocal attempts
+            attempts += 1
+            raise ConnectionError("connection reset")
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(cw.websockets, "connect", _Dropping)
+    _real_sleep = asyncio.sleep
+
+    async def _instant_sleep(s):
+        await _real_sleep(0)
+
+    monkeypatch.setattr(cw.asyncio, "sleep", _instant_sleep)
+    ws._subscribed_ids = ["tokU"]
+    assert ws.last_print_gap_ts == 0.0
+
+    async def _stop_after_two():
+        while attempts < 2:
+            await _real_sleep(0)
+        ws._closing = True
+
+    with caplog.at_level(logging.WARNING, logger="polybot.feeds.clob_ws"):
+        await asyncio.gather(ws._run_forever(), _stop_after_two())
+
+    assert ws.last_print_gap_ts > 0.0
+    assert any("CLOB feed dropped" in r.getMessage() for r in caplog.records)

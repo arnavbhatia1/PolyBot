@@ -74,6 +74,9 @@ class MakerBidManager:
         self.on_fill: Any = None
         # Set by main to market_scanner.fetch_tick_size.
         self.tick_fn: Any = None
+        # Set by main to the CLOB feed — paper's whole fill mechanism is the
+        # print stream, so a reconnect while we rested poisons the sample.
+        self.clob_ws: Any = None
         self._last_poll = 0.0
         self._ladder_cache: tuple[float, list] | None = None  # (mtime, ladder)
 
@@ -328,6 +331,11 @@ class MakerBidManager:
         notional = sum(r["filled"] * r["price"] for r in a["rungs"])
         if filled > 0 and notional >= MIN_NOTIONAL_USD:
             vwap = round(notional / filled, 4)
+            # Mark the sample when the print stream had a hole under us.
+            gap_ts = getattr(self.clob_ws, "last_print_gap_ts", None)
+            if isinstance(a["snapshot"], dict):
+                a["snapshot"]["print_gap"] = (None if gap_ts is None
+                                              else int(gap_ts >= a["placed"]))
             try:
                 booked = await self.trader.book_maker_fill(
                     market_id=a["market_id"], question=a["question"],

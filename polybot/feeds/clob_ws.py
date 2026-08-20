@@ -49,6 +49,11 @@ class ClobWebSocket:
         self.on_trade = None
         self.on_bba = None   # micro-tape hook: every best-bid/ask change
 
+        # Receipt time of the last print gap. A reconnect drops every trade that
+        # printed while we were away and the resubscribe replays the book only,
+        # so anything resting across this timestamp saw an incomplete tape.
+        self.last_print_gap_ts: float = 0.0
+
         self.connected: bool = False
         self._ws: Any = None
         self._subscribed_ids: list[str] = []
@@ -198,7 +203,9 @@ class ClobWebSocket:
                 if self._heartbeat_task:
                     self._heartbeat_task.cancel()
                 if not self._closing:
-                    logger.debug("CLOB WS disconnected: %s — reconnecting in %ds", e, backoff)
+                    self.last_print_gap_ts = time.time()
+                    logger.warning("CLOB feed dropped — prints are lost until it "
+                                   "reconnects in %ds (%s)", backoff, e)
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, RECONNECT_MAX)
 
