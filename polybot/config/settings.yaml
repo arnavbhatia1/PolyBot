@@ -99,9 +99,9 @@ late_window:
   # breach-loss at -95c vs thirteen +5c wins). One breach erases ~20 wins; the
   # thin tier is not worth its fires.
   require_max_tier: true
-  twap_zone_s: 60.0             # decision zone = the resolving 60s averaging window (rule
-                                # since 08-14); the projection is undefined earlier (never
-                                # raise above 60)
+  twap_zone_s: 58.0             # decision zone stops at the last FITTED margin knot (k=58):
+                                # past it the tables clamp to k=58 while the true error is
+                                # larger — margin thinning. Never raise above 58.
   twap_k_min_s: 6.0             # NO LOW-K FIRES. Low-k margin knots are tail bounds too thin for
                                 # the corpus to pin (the 30s era realized a k=1.1 max-tier breach
                                 # that bought a $0 token — the scar this floor carries). The 60s

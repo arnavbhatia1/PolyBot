@@ -223,6 +223,16 @@ def test_trading_enabled_wired_from_settings():
     assert cfg["late_window"]["twap_zone_s"] <= 60.0
 
 
+def test_decision_zone_stops_at_the_last_fitted_knot():
+    """Past k=58 the margin tables clamp to their last knot while the true
+    error keeps growing — the zone must not reach unfitted k."""
+    from polybot.config.loader import load_config
+    from polybot.core.signal_engine import TWAP_MARGIN_P995
+    zone = load_config()["late_window"]["twap_zone_s"]
+    assert zone == TWAP_MARGIN_P995[-1][0]
+    assert 59.0 > zone          # a k in (58, 60] is outside the decision zone
+
+
 def test_sniper_enabled_alias_still_halts(tmp_path, monkeypatch):
     """An old settings file using the retired key must still run (aliased with
     a deprecation warning), never KeyError at boot — the brake must work under
