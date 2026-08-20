@@ -52,6 +52,8 @@ TWAP_FROZEN_S = 20.0           # official-TWAP stall detector (twap_frozen): sec
                                # ran 35s; ~11% single repeats are normal relay polling, so this sits between.
 TWAP_FROZEN_RAW_MOVE_USD = 2.0 # ...and the raw travel required inside that span. Both must hold: a genuinely
                                # flat market freezes the average legitimately.
+TWAP_FROZEN_EPS_USD = 0.005    # ...and how much the official value must move to count as moving at all:
+                               # last-digit jitter on a stalled relay is not a live average.
 
 
 class ChainlinkFeed:
@@ -259,9 +261,10 @@ class ChainlinkFeed:
 
         Both conditions are required. A repeat or two is normal — the relay
         appears to poll rather than stream, so ~11% of consecutive reports
-        legitimately carry the previous value. But an EXACTLY unchanged average
-        across many seconds while spot genuinely moves is not a flat market; a
-        30s mean cannot hold to 4dp through real movement. Hence: sustained
+        legitimately carry the previous value. But an average pinned inside
+        TWAP_FROZEN_EPS_USD across many seconds while spot genuinely moves is
+        not a flat market — a stalled relay can still jitter its last digit,
+        and that must not read as movement. Hence: sustained
         value freeze AND material raw travel inside that same span.
         """
         t = now if now is not None else time.time()
@@ -509,7 +512,7 @@ class ChainlinkFeed:
                                 continue
                             if msg.get("topic", "") == "crypto_prices_twap_sixty":
                                 _v = float(value)
-                                if _v != self.twap_official:
+                                if abs(_v - self.twap_official) >= TWAP_FROZEN_EPS_USD:
                                     self._twap_value_since = now
                                 elif self._twap_value_since <= 0:
                                     self._twap_value_since = now

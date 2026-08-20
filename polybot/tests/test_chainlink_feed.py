@@ -370,6 +370,44 @@ class TestTwap:
         assert f.get_strike(boundary) == 63990.5
 
 
+def _drive_frames(f, frames):
+    """Run the feed's message loop over a fixed list of RTDS frames."""
+    async def run():
+        class FakeWS:
+            def __init__(self, fr):
+                self._frames = list(fr)
+            async def send(self, _): pass
+            def __aiter__(self): return self
+            async def __anext__(self):
+                if not self._frames:
+                    raise StopAsyncIteration
+                return self._frames.pop(0)
+
+        ws = FakeWS(frames)
+        import websockets as _wslib
+
+        class _Ctx:
+            async def __aenter__(self): return ws
+            async def __aexit__(self, *a): return False
+
+        orig = _wslib.connect
+        _wslib.connect = lambda *a, **k: _Ctx()
+        try:
+            f._running = True
+            t = asyncio.create_task(f._run())
+            await asyncio.sleep(0.1)
+            f._running = False
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        finally:
+            _wslib.connect = orig
+
+    asyncio.run(run())
+
+
 class TestTwapFrozen:
     """The resolution source stalling is invisible to the raw-stream freshness
     gate and to the receipt-based reconnect watchdog, so it needs its own guard.
@@ -410,6 +448,32 @@ class TestTwapFrozen:
     def test_cold_feed_does_not_fire(self):
         f = ChainlinkFeed()
         assert f.twap_frozen() is False
+
+    def _twap_frame(self, value, i):
+        import json as _j
+        base = ((int(time.time()) // 300) - 1) * 300
+        return _j.dumps({"topic": "crypto_prices_twap_sixty",
+                         "payload": {"symbol": "btc/usd", "value": value,
+                                     "timestamp": (base + i) * 1000}})
+
+    def test_last_digit_jitter_does_not_rearm_the_clock(self):
+        """A stalled relay still jitters its last digit: raw travelled $19.50
+        over 40s while the official value held 65003.4548 +/- 1e-9 and the
+        stall veto never fired. Sub-cent wobble is not movement."""
+        f = ChainlinkFeed()
+        _drive_frames(f, [self._twap_frame(65003.4548, 0)])
+        armed = f._twap_value_since
+        assert armed > 0
+        _drive_frames(f, [self._twap_frame(65003.45480001, 1),
+                          self._twap_frame(65003.4548, 2)])
+        assert f._twap_value_since == armed         # stall clock still running
+
+    def test_real_move_rearms_the_clock(self):
+        f = ChainlinkFeed()
+        _drive_frames(f, [self._twap_frame(65003.4548, 0)])
+        armed = f._twap_value_since
+        _drive_frames(f, [self._twap_frame(65004.4548, 1)])
+        assert f._twap_value_since > armed
 
     def test_value_change_resets_the_clock(self):
         f = self._feed(35.0, [(30.0, 65000.79), (1.0, 65019.19)])
