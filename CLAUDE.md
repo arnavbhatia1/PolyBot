@@ -182,7 +182,9 @@ sign 17.5ms pure-python on the box (coincurve on Linux ~10× faster; dev boxes
 skip it). SELL signatures pre-armed; BUY pre-signs concurrently. WS-only book
 pre-check; warm pooled HTTP/2; gc.freeze() post-boot. GTC rungs pass
 `legal_price` (round DOWN to tick, clamp [tick, 1−tick]) and the 5-share
-exchange minimum; any rejection logs `MAKER BID REJECTED` at ERROR.
+exchange minimum. A rung that cannot be rested logs `MAKER BID REJECTED` at
+ERROR, refusal and POST failure alike; a rung the budget cannot afford is
+`MAKER RUNG SKIPPED` at INFO — routine, not a rejection.
 `cl_report_to_submit_ms` + `lat_*` stamps measure the race per fill. Live
 boot: key+funder, balance/allowance preflight, allowance recheck every 10
 fills. `fill.fill_size` is always USDC notional.

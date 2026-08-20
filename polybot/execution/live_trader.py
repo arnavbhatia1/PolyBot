@@ -619,8 +619,10 @@ class LiveTrader(BaseTrader):
                              price, shares, resp)
             return oid or None
         except Exception as e:
-            logger.error("MAKER BID POST FAILED at %.4f for %.2f sh — no order "
-                         "resting: %s", price, shares, e)
+            # Same literal as the refusal above — one phrase for every rung
+            # that cannot be placed, whatever stopped it.
+            logger.error("MAKER BID REJECTED at %.4f for %.2f sh — the order POST "
+                         "failed, no order resting: %s", price, shares, e)
             return None
 
     async def cancel_gtc(self, order_id: str) -> None:

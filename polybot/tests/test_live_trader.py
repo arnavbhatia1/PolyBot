@@ -1036,3 +1036,31 @@ async def test_close_trade_schedules_sell_audit_only_on_fallback(trader, monkeyp
     # Only the fallback-priced close needs the audit; the trades-priced one is truth.
     assert len(calls) == 1
     assert calls[0][1] == "ord-9"
+
+
+# ---------------------------------------------------------------------------
+# Maker rung placement — CLAUDE.md §4's rejection contract
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["refused", "post_failed"])
+async def test_unrestable_rung_logs_the_documented_rejection(db, caplog, outcome):
+    """Either way the rung is not resting and the window earns nothing, so both
+    carry the one literal §4 promises at ERROR."""
+    import logging
+    sys.modules.pop("polybot.execution.live_trader", None)
+    with patch.dict("os.environ", {
+        "POLYMARKET_PRIVATE_KEY": "0x" + "ab" * 32,
+        "POLYMARKET_FUNDER": "0x863DB57D4a54fA306091D53B4Fe19f1611221Be8",
+    }):
+        with patch("py_clob_client_v2.client.ClobClient", return_value=_mock_clob_client()):
+            from polybot.execution.live_trader import LiveTrader
+            trader = LiveTrader(db=db)
+    if outcome == "refused":
+        trader.client.post_order.return_value = {"error": "invalid price"}
+    else:
+        trader.client.create_order.side_effect = RuntimeError("gateway down")
+    with caplog.at_level(logging.ERROR):
+        assert await trader.place_gtc_bid("tokU", 0.992, 20.0) is None
+    errs = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any("MAKER BID REJECTED" in m for m in errs), errs

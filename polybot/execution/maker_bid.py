@@ -164,6 +164,8 @@ class MakerBidManager:
             if order_id:
                 rungs.append({"price": px, "shares": shares,
                               "order_id": order_id, "filled": 0.0})
+            # No else: place_gtc_bid already logged MAKER BID REJECTED for
+            # every rung it could not rest. One line per event.
         if not rungs:
             return
         self.active = {
