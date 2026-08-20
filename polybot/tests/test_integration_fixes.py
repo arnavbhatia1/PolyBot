@@ -59,3 +59,24 @@ def test_bybit_completely_removed():
 
 def test_bybit_feed_module_deleted():
     assert not Path("polybot/feeds/bybit_feed.py").exists()
+
+
+def test_paper_boot_reports_carried_over_positions():
+    """PAPER-RESTART: PaperTrader has no detect_orphan_positions, so a mid-day
+    restart drops a kill-bar sample. Boot must at least say what it carried."""
+    import ast
+
+    src = Path("polybot/main.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "main")
+    paper_branches = [
+        ast.dump(ast.Module(body=n.orelse, type_ignores=[]))
+        for n in ast.walk(fn)
+        if isinstance(n, ast.If) and n.orelse and isinstance(n.test, ast.Compare)
+        and isinstance(n.test.left, ast.Name) and n.test.left.id == "mode"
+        and any(isinstance(c, ast.Constant) and c.value == "live"
+                for c in n.test.comparators)]
+    body = next((b for b in paper_branches if "PAPER RESTART" in b), None)
+    assert body is not None, "paper boot never says what the restart carried"
+    assert "get_open_positions" in body, "paper boot never reads open positions"
+    assert "attr='warning'" in body, "the paper-restart line must be a WARNING"

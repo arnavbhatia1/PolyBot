@@ -2422,6 +2422,13 @@ async def main() -> None:
                 await trader.reconcile_dust(db, max_age_hours=24)
         except Exception as e:
             logger.warning(f"Startup reconciliation failed (non-blocking): {e}")
+    else:
+        # Paper has no orphan resolution, and the kill bar counts fills — say
+        # what the restart is carrying instead of losing the sample in silence.
+        _carried = await db.get_open_positions()
+        if _carried:
+            logger.warning("PAPER RESTART — %d open position(s) carried over; any "
+                           "ladder resting at shutdown is gone", len(_carried))
 
     clob_ws_url = market_cfg.get("clob_ws_url", "wss://ws-subscriptions-clob.polymarket.com/ws/market")
     clob_ws = ClobWebSocket(url=clob_ws_url)
