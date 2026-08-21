@@ -46,10 +46,15 @@ class _FakeChainlink:
 
 
 
-def test_top3_usd_sums_first_three_levels():
+def test_top3_usd_takes_the_levels_nearest_the_touch():
+    """The WS sends BOTH sides price-ascending — raw [0] is the best ask but
+    the WORST bid. 539k/569k era rows recorded worst-level bid depth before
+    the per-side sort."""
     levels = [{"price": "0.5", "size": "10"}, {"price": "0.6", "size": "10"},
               {"price": "0.7", "size": "10"}, {"price": "0.9", "size": "1000"}]
-    assert _top3_usd(levels) == 0.5 * 10 + 0.6 * 10 + 0.7 * 10
+    assert _top3_usd(levels, "ask") == 0.5 * 10 + 0.6 * 10 + 0.7 * 10
+    assert _top3_usd(levels, "bid") == 0.9 * 1000 + 0.7 * 10 + 0.6 * 10
+    assert _top3_usd([], "bid") is None
 
 
 @pytest.mark.asyncio

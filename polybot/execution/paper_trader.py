@@ -174,12 +174,16 @@ class PaperTrader(BaseTrader):
         if mid <= 0:
             return self.network_fail_rate
         spread_pct = (best_ask - best_bid) / mid
-        # Top-of-book depth on the side we're hitting (asks for buy, bids for sell).
+        # Top-of-book depth on the side we're hitting (asks for buy, bids for
+        # sell). The WS sends both sides price-ascending, so the touch is the
+        # MIN ask but the MAX bid — raw [0] on bids is the worst level.
         side_levels = asks if side == "buy" else bids
         try:
-            top = side_levels[0]
-            top_depth_usd = float(top["price"]) * float(top["size"])
-        except (TypeError, ValueError, KeyError, IndexError):
+            parsed_side = [(float(l["price"]), float(l["size"]))
+                           for l in side_levels]
+            top_p, top_sz = min(parsed_side) if side == "buy" else max(parsed_side)
+            top_depth_usd = top_p * top_sz
+        except (TypeError, ValueError, KeyError):
             return self.network_fail_rate
         rate = self._STATE_FAIL_RATE_BASE
         if spread_pct > 0.05:

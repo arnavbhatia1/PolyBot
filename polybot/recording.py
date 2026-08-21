@@ -35,15 +35,20 @@ _LABEL_RETRY_S = 60.0
 _LABEL_GIVE_UP_S = 2400.0  # stop asking Gamma 40 min after window end
 
 
-def _top3_usd(levels: list[dict[str, Any]]) -> float | None:
-    """USD notional of the top-3 levels; None when the book is missing/unparseable.
+def _top3_usd(levels: list[dict[str, Any]], side: str) -> float | None:
+    """USD notional of the 3 levels NEAREST THE TOUCH; None when missing.
 
     None, never 0.0 — 0.0 would read as real zero liquidity downstream.
+    Sorted here because the WS delivers BOTH sides price-ascending: raw [0]
+    is the best ask but the WORST bid (539k/569k era rows recorded the wrong
+    bid level before the sort — pre-08-21 bid-size columns are worst-level).
     """
     if not levels:
         return None
     try:
-        return round(sum(float(l["price"]) * float(l["size"]) for l in levels[:3]), 2)
+        lv = sorted(((float(l["price"]), float(l["size"])) for l in levels),
+                    reverse=(side == "bid"))
+        return round(sum(p * s for p, s in lv[:3]), 2)
     except (KeyError, ValueError, TypeError):
         return None
 
@@ -401,10 +406,15 @@ class WindowPathRecorder:
         # Coinbase feed deleted; these columns record NULL by design.
         cb_bid = cb_ask = cb_cvd10 = cb_cvd30 = None
 
-        def _touch_sz(levels: Any) -> float | None:
+        def _touch_sz(levels: Any, side: str) -> float | None:
+            """Shares at the true touch — best bid is the MAX price (the WS
+            sends both sides ascending; [0] would be the worst bid)."""
             try:
-                return float(levels[0]["size"]) if levels else None
-            except (KeyError, IndexError, ValueError, TypeError):
+                if not levels:
+                    return None
+                lv = [(float(l["price"]), float(l["size"])) for l in levels]
+                return (max(lv) if side == "bid" else min(lv))[1]
+            except (KeyError, ValueError, TypeError):
                 return None
 
         # Binance feeds deleted; these columns record NULL by design.
@@ -417,8 +427,10 @@ class WindowPathRecorder:
             w["market_id"], round(now, 3), round(elapsed, 1),
             _f(bba_up, "best_bid"), _f(bba_up, "best_ask"),
             _f(bba_dn, "best_bid"), _f(bba_dn, "best_ask"),
-            _top3_usd(book_up.get("bids") or []), _top3_usd(book_up.get("asks") or []),
-            _top3_usd(book_dn.get("bids") or []), _top3_usd(book_dn.get("asks") or []),
+            _top3_usd(book_up.get("bids") or [], "bid"),
+            _top3_usd(book_up.get("asks") or [], "ask"),
+            _top3_usd(book_dn.get("bids") or [], "bid"),
+            _top3_usd(book_dn.get("asks") or [], "ask"),
             cb, strike,
             1 if w["market_id"] in self._traded else 0,
             bn_price, bn_cvd10, bn_cvd30,
@@ -426,8 +438,8 @@ class WindowPathRecorder:
             cl_px, cl_age,
             _book_age(book_up), _book_age(book_dn),
             cb_bid, cb_ask, cb_cvd10, cb_cvd30,
-            _touch_sz(book_up.get("bids")), _touch_sz(book_up.get("asks")),
-            _touch_sz(book_dn.get("bids")), _touch_sz(book_dn.get("asks")),
+            _touch_sz(book_up.get("bids"), "bid"), _touch_sz(book_up.get("asks"), "ask"),
+            _touch_sz(book_dn.get("bids"), "bid"), _touch_sz(book_dn.get("asks"), "ask"),
             d20_bid, d20_ask, strike_trusted,
         ))
 
