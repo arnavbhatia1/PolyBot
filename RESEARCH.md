@@ -59,7 +59,10 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    k=40 $24 vs $18, k=12 $4.5 vs $3.5, with k=8/20/29/35 also thin. k=25 is
    `maker_k_place_max` and 5 of the first 7 paper fills armed at k≈24.99-25.0,
    so live arming sits exactly where the table is thinnest and `need 1.0` is
-   absorbing an under-stated error. Tables were deliberately NOT touched by
+   absorbing an under-stated error. 08-20 added a realized case: a filled
+   paper window's projection error ran $13.7 at k≈25 (proj 72,780.6 vs final
+   72,766.9; −$16.80 loss) — beyond both the frozen $8 and the re-derived
+   $10. One tail event, but it landed exactly where fills arm. Tables were deliberately NOT touched by
    the audit — editing knots outside the scheduled re-fit is measurement by
    fiat. Note before re-fitting: `ws1_freeze_tables.py` fitted MAX at grid
    points rather than per-tick interval maxima (under-bounding); fixed 08-20
@@ -157,6 +160,15 @@ session.
   Bar: ≥ 300 windows with an executable opening ask, EW ≥ +5¢/sh after taker
   fee at ≥ $5 FOK size, net ¢/sh monotone across model-edge buckets with an
   edge<0 control, anti-side ≤ 0, ≥ $10/day at $400.
+  **VERDICT 08-21: REFUTED** (h2_report.md, 1,972 windows; chain invariant
+  verified 1,956/1,956). Held-out EW −2.1..−4.4¢/sh at every δ ∈ [2,30]s —
+  the favored side wins 56-64% but its ask (0.57-0.63) already exceeds
+  breakeven: the book prices the incoming strike within 2s of open.
+  Monotonicity fails at all δ; the edge<0 control cell wins MOST at 3 of 5 δ
+  (the 30s-era anti-predictive failure mode, reproduced). Larger |d| loses
+  more. Pre-open leak NOT MEASURABLE: the recorder subscribes N+1's tokens
+  at open (1/1,972 windows with pre-open BBO; 2 boundary-jitter prints);
+  unblock = subscribe N+1 ≥60s early in the micro-tape, re-measure at ≥14d.
 - **H3 complement structure**: (a) pure arb: Up-ask + Down-ask < 1 − both
   legs' taker fees at ≥ $2/leg executable on event-true books; bar: ≥ 1
   event/day AND ≥ $5/day at depth. (b) cheaper-route: 1 − bid_down vs ask_up
