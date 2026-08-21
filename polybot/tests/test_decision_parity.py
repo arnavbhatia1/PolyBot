@@ -194,7 +194,7 @@ async def _mk_paper(db: Database, monkeypatch) -> PaperTrader:
 
 
 async def _mk_live(db: Database, fakews: FakeClobWS, oracle: FillOracle,
-                   monkeypatch):
+                   monkeypatch, wire: list | None = None):
     import polybot.execution.live_trader as lt
 
     client = MagicMock()
@@ -210,8 +210,25 @@ async def _mk_live(db: Database, fakews: FakeClobWS, oracle: FillOracle,
         return {"success": True, "status": "matched", "orderID": "fok-1"}
 
     client.post_order.side_effect = post_order
-    client.create_order.side_effect = lambda args: ("signed", args)
-    client.create_market_order.side_effect = lambda args: ("signed-mo", args)
+
+    # Wire capture: what the exchange would actually receive. The decision
+    # trace records intents at the manager→trader boundary — a live-side
+    # transformation BELOW that boundary (rounding, unit slip) is invisible
+    # to it, so the test also asserts wire == intents.
+    def create_order(args):
+        if wire is not None:
+            wire.append(("gtc", args.token_id[-8:],
+                         round(args.price, 10), round(args.size, 6)))
+        return ("signed", args)
+
+    def create_market_order(args):
+        if wire is not None:
+            wire.append(("fok", args.token_id[-8:],
+                         round(args.price, 10), round(args.amount, 2)))
+        return ("signed-mo", args)
+
+    client.create_order.side_effect = create_order
+    client.create_market_order.side_effect = create_market_order
     client.get_order.side_effect = lambda oid: {"size_matched": oracle.matched(oid)}
     client.cancel_orders.side_effect = lambda oids: {"canceled": oids}
 
@@ -326,7 +343,8 @@ def _reset_main_globals():
     main._open_positions_cache = []
 
 
-async def _replay(window: dict, variant: str, mode: str, monkeypatch) -> tuple[list, float]:
+async def _replay(window: dict, variant: str, mode: str,
+                  monkeypatch) -> tuple[list, float, list]:
     """Run one window's stream through one trader. Returns (trace, bankroll)."""
     clock = FrozenClock(window["events"][0][0] - 1.0)
     monkeypatch.setattr(_time, "time", clock)
@@ -348,11 +366,12 @@ async def _replay(window: dict, variant: str, mode: str, monkeypatch) -> tuple[l
     breaker = SimpleNamespace(kelly_multiplier=1.0)
 
     oracle = None
+    wire: list = []
     if mode == "paper":
         trader = await _mk_paper(db, monkeypatch)
     else:
         oracle = FillOracle()
-        trader = await _mk_live(db, fakews, oracle, monkeypatch)
+        trader = await _mk_live(db, fakews, oracle, monkeypatch, wire=wire)
     trader.set_clob_ws(fakews)
 
     mgr = MakerBidManager(trader, feed, MAKER_CFG, paper=(mode == "paper"))
@@ -441,7 +460,7 @@ async def _replay(window: dict, variant: str, mode: str, monkeypatch) -> tuple[l
 
     bankroll = await db.get_bankroll()
     await db.close()
-    return trace, bankroll
+    return trace, bankroll, wire
 
 
 @pytest.mark.parametrize("variant", list(VARIANTS))
@@ -450,8 +469,8 @@ async def _replay(window: dict, variant: str, mode: str, monkeypatch) -> tuple[l
 async def test_paper_and_live_decide_identically(w_idx, variant, monkeypatch):
     windows = _load_windows()
     window = windows[w_idx]
-    paper_trace, paper_bankroll = await _replay(window, variant, "paper", monkeypatch)
-    live_trace, live_bankroll = await _replay(window, variant, "live", monkeypatch)
+    paper_trace, paper_bankroll, _ = await _replay(window, variant, "paper", monkeypatch)
+    live_trace, live_bankroll, wire = await _replay(window, variant, "live", monkeypatch)
     assert len(paper_trace) == len(live_trace), (
         f"trace length {len(paper_trace)} vs {len(live_trace)}; first delta: "
         f"{next((i, a, b) for i, (a, b) in enumerate(zip(paper_trace, live_trace)) if a != b)}"
@@ -459,6 +478,15 @@ async def test_paper_and_live_decide_identically(w_idx, variant, monkeypatch):
     for i, (p, l) in enumerate(zip(paper_trace, live_trace)):
         assert p == l, f"decision divergence at trace[{i}]: paper={p} live={l}"
     assert paper_bankroll == pytest.approx(live_bankroll, abs=1e-9)
+    # The wire must carry the traced intents unchanged — a live-side
+    # transformation between the manager boundary and the exchange (rounding,
+    # unit slip) is exactly the divergence the trace alone cannot see.
+    intents_gtc = [(t[1], t[2], t[3]) for t in live_trace if t[0] == "gtc_place"]
+    wire_gtc = [(w[1], w[2], w[3]) for w in wire if w[0] == "gtc"]
+    assert wire_gtc == intents_gtc, f"wire != intents: {wire_gtc} vs {intents_gtc}"
+    intents_fok = [(t[1], t[2], t[3]) for t in live_trace if t[0] == "fok_buy"]
+    wire_fok = [(w[1], w[2], w[3]) for w in wire if w[0] == "fok"]
+    assert wire_fok == intents_fok, f"wire != intents: {wire_fok} vs {intents_fok}"
 
 
 @pytest.mark.parametrize("w_idx", [0, 1, 2])
@@ -468,7 +496,7 @@ async def test_replay_exercises_the_ladder(w_idx, monkeypatch):
     fixture window was a real armed-and-filled window, so the paper replay
     must place rungs and book a fill."""
     windows = _load_windows()
-    trace, _ = await _replay(windows[w_idx], "ladder", "paper", monkeypatch)
+    trace, _, _ = await _replay(windows[w_idx], "ladder", "paper", monkeypatch)
     kinds = {t[0] for t in trace}
     assert "gtc_place" in kinds, f"replay never placed rungs: {sorted(kinds)}"
     assert "retire" in kinds
