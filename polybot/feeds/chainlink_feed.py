@@ -350,6 +350,70 @@ class ChainlinkFeed:
             logger.warning("FEED DROPS — unreadable reports so far: %s",
                            ", ".join(f"{k} {v}" for k, v in sorted(self.drops.items())))
 
+    # -- per-topic ingestion (the replay seam: _run validates and routes here;
+    # the decision-parity replay calls these directly with the recorded clock,
+    # so paper/live replays exercise the exact production state transitions) --
+
+    def ingest_binance(self, bts_s: float, value: float,
+                       now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        # The relay's payload clock cannot legitimately lead our receipt: a
+        # future-dated tick would own retention and evict every bridge anchor.
+        if bts_s > now + BINANCE_RING_S:
+            return
+        self._binance.append((bts_s, value))
+        # Relay ticks can arrive out of order; the anchor scan and the newest
+        # read both walk the ring in ts order.
+        if len(self._binance) > 1 and bts_s < self._binance[-2][0]:
+            self._binance = deque(sorted(self._binance))
+        _newest = self._binance[-1][0]
+        while self._binance and self._binance[0][0] < _newest - BINANCE_RING_S:
+            self._binance.popleft()
+        if self.on_spot is not None:
+            try:
+                self.on_spot(bts_s, value, None)
+            except Exception:
+                pass
+
+    def ingest_sixty(self, observed_ts: float, value: float,
+                     pub_ts: float | None = None,
+                     now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        if abs(value - self.twap_official) >= TWAP_FROZEN_EPS_USD:
+            self._twap_value_since = now
+        elif self._twap_value_since <= 0:
+            self._twap_value_since = now
+        self.twap_official = value
+        self.twap_official_ts = observed_ts
+        self.twap_official_rx = now
+        # The strike IS this stream's boundary value.
+        self._record_boundary(observed_ts, self.twap_official)
+        if self.on_twap is not None:
+            try:
+                self.on_twap(observed_ts, self.twap_official, pub_ts)
+            except Exception:
+                pass
+
+    def ingest_raw(self, observed_ts: float, value: float,
+                   pub_ts: float | None = None,
+                   now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        self._price = value
+        self._last_update = now
+        self.staleness.observe(now)
+        self._last_report_rx = now
+        self._last_report_obs_ts = observed_ts
+        self._reports.append((now, self._price))
+        while self._reports and self._reports[0][0] < now - RAW_RING_S:
+            self._reports.popleft()
+        self.report_event.set()   # sniper decision clock
+        # Optional micro-tape hook — must not raise into the feed.
+        if self.on_report is not None:
+            try:
+                self.on_report(observed_ts, self._price, pub_ts)
+            except Exception:
+                pass
+
     def _record_boundary(self, observed_ts: float, value: float) -> None:
         if value <= 0:
             return
@@ -503,23 +567,8 @@ class ChainlinkFeed:
                                         _bts_s = self._epoch_seconds(float(_bts))
                                         if _bts_s is None:
                                             self._bad_ts(_bts)
-                                        # The relay's payload clock cannot legitimately lead our
-                                        # receipt: a future-dated tick would own retention and
-                                        # evict every anchor the bridge needs.
-                                        elif _bts_s <= time.time() + BINANCE_RING_S:
-                                            self._binance.append((_bts_s, float(_bv)))
-                                            # Relay ticks can arrive out of order; the anchor scan
-                                            # and the newest read both walk the ring in ts order.
-                                            if len(self._binance) > 1 and _bts_s < self._binance[-2][0]:
-                                                self._binance = deque(sorted(self._binance))
-                                            _newest = self._binance[-1][0]
-                                            while self._binance and self._binance[0][0] < _newest - BINANCE_RING_S:
-                                                self._binance.popleft()
-                                            if self.on_spot is not None:
-                                                try:
-                                                    self.on_spot(_bts_s, float(_bv), None)
-                                                except Exception:
-                                                    pass
+                                        else:
+                                            self.ingest_binance(_bts_s, float(_bv))
                                     except (ValueError, TypeError):
                                         self._note_drop("crypto_prices")
                                 continue
@@ -561,38 +610,10 @@ class ChainlinkFeed:
                                         pass
                                 continue
                             if msg.get("topic", "") == "crypto_prices_twap_sixty":
-                                _v = float(value)
-                                if abs(_v - self.twap_official) >= TWAP_FROZEN_EPS_USD:
-                                    self._twap_value_since = now
-                                elif self._twap_value_since <= 0:
-                                    self._twap_value_since = now
-                                self.twap_official = _v
-                                self.twap_official_ts = observed_ts
-                                self.twap_official_rx = now
-                                # The strike IS this stream's boundary value.
-                                self._record_boundary(observed_ts, self.twap_official)
-                                if self.on_twap is not None:
-                                    try:
-                                        self.on_twap(observed_ts, self.twap_official, pub_ts)
-                                    except Exception:
-                                        pass
+                                self.ingest_sixty(observed_ts, float(value), pub_ts, now)
                                 continue
-                            self._price = float(value)
-                            self._last_update = now
                             backoff = RECONNECT_BASE_S      # healthy data — safe to reset
-                            self.staleness.observe(now)
-                            self._last_report_rx = now
-                            self._last_report_obs_ts = observed_ts
-                            self._reports.append((now, self._price))
-                            while self._reports and self._reports[0][0] < now - RAW_RING_S:
-                                self._reports.popleft()
-                            self.report_event.set()   # sniper decision clock
-                            # Optional micro-tape hook — must not raise into the feed.
-                            if self.on_report is not None:
-                                try:
-                                    self.on_report(observed_ts, self._price, pub_ts)
-                                except Exception:
-                                    pass
+                            self.ingest_raw(observed_ts, float(value), pub_ts, now)
                         except (ValueError, TypeError):
                             self._note_drop(msg.get("topic", "?")
                                             if isinstance(msg, dict) else "unparsed")

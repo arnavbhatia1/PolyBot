@@ -44,7 +44,7 @@ cp polybot/config/.env.example polybot/config/.env
 python -m polybot.main --mode paper       # paper trading
 python -m polybot.main --mode live        # real USDC (needs allowance)
 python -m polybot.main --run-pipeline     # one nightly cycle, no trading
-python -m pytest polybot/tests/           # full suite
+python -m pytest polybot/tests/           # full suite (also CI on every push)
 scripts/run_polybot.sh                    # daily cycle: trade -> nightly jobs -> commit -> restart (VPS only)
 ```
 
@@ -95,7 +95,10 @@ Two modes, one engine: **paper** (realism shim: real CLOB books, FOK
 semantics, latency sampled from the live ledger's measured POST-RTT
 distribution, network-fail sim, tick snapping; maker fills are print-through
 conservative — see §2) and **live** (`py-clob-client-v2` against the real
-CLOB; balance + allowance verified at boot).
+CLOB; balance + allowance verified at boot). Decision parity is a CI
+invariant: `test_decision_parity.py` replays real recorded windows through
+both traders and asserts bit-identical gates, signals, sizing, and order
+intents (fixture regenerates via `scripts/research/parity_fixture_gen.py`).
 
 ## 2. The two legs (one signal, risk priced two ways)
 
