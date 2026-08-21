@@ -126,3 +126,44 @@ def test_gtc_recorder_merges_with_the_fok_writer(tmp_path, monkeypatch):
     assert stats["gtc"]["place"]["n"] == 1
     assert stats["gtc"]["place"]["p50_ms"] == 500.0
     assert stats["post"]["n"] >= 1
+
+
+def test_gtc_ks_flags_a_shape_drift_p50_misses(tmp_path):
+    """Bimodal live RTTs with a table-matching median: p50 watch quiet, KS loud."""
+    from polybot.main import _gtc_watch
+    samples = [20.0] * 6 + [56.0] + [900.0] * 5   # median ~56ms, shape nothing like the table
+    p = tmp_path / "latency_stats.json"
+    p.write_text(json.dumps({"gtc": {
+        "place": {"n": 12, "p50_ms": 56.0, "samples_ms": samples},
+        "cancel": {"n": 12, "p50_ms": 54.0},
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }}))
+    gtc, dark = _gtc_watch(p)
+    assert dark is None and gtc["ks"] > 0.30
+    line = _ops_watch_line(None, None, None, gtc, dark)
+    assert "⚠️" in line
+
+
+def test_gtc_ks_quiet_when_samples_match_the_table(tmp_path):
+    from polybot.main import _gtc_watch
+    from polybot.execution.paper_trader import PaperTrader
+    import random
+    rng = random.Random(7)
+    qs = PaperTrader._GTC_LATENCY_QUANTILES
+
+    def draw():
+        u = rng.random()
+        for (q0, v0), (q1, v1) in zip(qs[:-1], qs[1:]):
+            if u <= q1:
+                return (v0 + (v1 - v0) * (u - q0) / (q1 - q0)) * 1000.0
+        return qs[-1][1] * 1000.0
+    samples = sorted(draw() for _ in range(60))
+    p = tmp_path / "latency_stats.json"
+    p.write_text(json.dumps({"gtc": {
+        "place": {"n": 60, "p50_ms": 56.0, "samples_ms": samples},
+        "cancel": {"n": 60, "p50_ms": 54.0},
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }}))
+    gtc, dark = _gtc_watch(p)
+    assert gtc["ks"] <= 0.30
+    assert "⚠️" not in _ops_watch_line(None, None, None, gtc, dark)

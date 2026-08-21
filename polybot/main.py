@@ -478,6 +478,27 @@ def _latency_watch(path: Path, now: datetime | None = None) -> tuple[dict | None
     return {"p50": post["p50_ms"], "n": n}, None
 
 
+def _gtc_table_ks(samples_ms: list[float]) -> float:
+    """KS statistic of measured GTC RTTs against paper's inverse-CDF table —
+    p50 alone can't see a shape drift (a bimodal live RTT with the right
+    median would still make paper's fill clock fiction)."""
+    from polybot.execution.paper_trader import PaperTrader
+    qs = [(q, v * 1000.0) for q, v in PaperTrader._GTC_LATENCY_QUANTILES]
+
+    def table_cdf(x_ms: float) -> float:
+        if x_ms <= qs[0][1]:
+            return 0.0
+        for (q0, v0), (q1, v1) in zip(qs, qs[1:]):
+            if x_ms <= v1:
+                return q0 + (q1 - q0) * (x_ms - v0) / max(v1 - v0, 1e-9)
+        return 1.0
+
+    s = sorted(samples_ms)
+    n = len(s)
+    return max(max(abs((i + 1) / n - table_cdf(x)), abs(i / n - table_cdf(x)))
+               for i, x in enumerate(s))
+
+
 def _gtc_watch(path: Path, now: datetime | None = None) -> tuple[dict | None, str | None]:
     """Measured GTC place/cancel RTTs for the ops watch, or why there are none.
 
@@ -495,7 +516,9 @@ def _gtc_watch(path: Path, now: datetime | None = None) -> tuple[dict | None, st
         return None, f"only {n} GTC samples — run smoke_gtc_test.py --samples 12"
     if age_d > 14:
         return None, f"GTC last measured {age_d} days ago"
+    samples = place.get("samples_ms") or []
     return {"p50": place["p50_ms"], "n": n,
+            "ks": (round(_gtc_table_ks(samples), 3) if len(samples) >= 10 else None),
             "cancel_p50": (g.get("cancel") or {}).get("p50_ms")}, None
 
 
@@ -535,12 +558,16 @@ def _ops_watch_line(lat: dict | None, lat_dark: str | None, qd: dict | None,
                f"re-measure" if abs(drift) > 0.25 else ""))
     if gtc:
         drift = (gtc["p50"] - 56.0) / 56.0   # paper's _GTC_LATENCY_QUANTILES p50
+        ks = gtc.get("ks")
+        # Two tolerances, both stated: p50 band ±25%, distribution KS D ≤ 0.30.
+        off = (abs(drift) > 0.25) or (ks is not None and ks > 0.30)
         parts.append(
             f"GTC place p50 {gtc['p50']:.0f}ms (n={gtc['n']}"
+            + (f", KS {ks:.2f}" if ks is not None else "")
             + (f", cancel {gtc['cancel_p50']:.0f}ms" if gtc.get("cancel_p50") else "")
             + ")"
-            + (f" ⚠️ {drift:+.0%} off paper's 56ms table — re-derive "
-               f"_GTC_LATENCY_QUANTILES" if abs(drift) > 0.25 else ""))
+            + (f" ⚠️ off paper's 56ms table (p50 {drift:+.0%}) — re-derive "
+               f"_GTC_LATENCY_QUANTILES" if off else ""))
     elif gtc_dark:
         parts.append(f"GTC RTT unmeasured — {gtc_dark}")
     if _owned_lat_breaches:
