@@ -418,3 +418,31 @@ def test_numeric_slug_still_fires_the_mismatch(caplog):
     rec._check_resolution_source("btc-updown-5m-1786800000", 64100.0, 64000.0)
     assert rec.source_unchecked == 0
     assert fired and fired[0][1] == "strike"
+
+
+def test_compress_job_respects_its_budget(tmp_path, monkeypatch):
+    """wait_for can't kill a to_thread body: on a starved night the abandoned
+    compress thread died mid-write at the midnight restart (08-20's .gz.part
+    orphan). The deadline now lives inside the copy loop — out of budget means
+    the raw stays whole, the partial is removed, and the report names it."""
+    import asyncio
+    import gzip
+    import polybot.recording as rec
+    monkeypatch.setattr(rec, "RECORDINGS_DIR", tmp_path)
+    big = tmp_path / "micro_2020-01-01.jsonl"
+    big.write_bytes(b'{"k":"l"}\n' * 300_000)   # a few MB, multiple chunks
+    small = tmp_path / "tape_2020-01-01.jsonl"
+    small.write_bytes(b'{"ts":1}\n' * 10)
+
+    job = rec.compress_recordings_job(budget_s=0.0)   # already expired
+    result = asyncio.run(job())
+    assert result["compressed"] == 0 and result["left_raw"] == 2
+    assert big.exists() and small.exists()
+    assert not list(tmp_path.glob("*.part"))
+
+    job = rec.compress_recordings_job(budget_s=60.0)  # plenty
+    result = asyncio.run(job())
+    assert result["compressed"] == 2 and "left_raw" not in result
+    assert not big.exists() and not small.exists()
+    with gzip.open(tmp_path / "micro_2020-01-01.jsonl.gz", "rb") as f:
+        assert f.read(10) == b'{"k":"l"}\n'

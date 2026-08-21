@@ -683,22 +683,29 @@ class MicroTape:
             logger.warning(f"micro-tape flush failed ({len(buf)} events): {e}")
 
 
-def compress_recordings_job(level: int = 3):
+def compress_recordings_job(level: int = 3, budget_s: float = 540.0):
     """Nightly: gzip every finished tape file (today's stays open for appends).
 
     The tape is repetitive JSON and compresses ~39x at ~40 MB/s, so a day's
     micro-tape goes 1.9 GB -> ~50 MB in under a minute. That is what makes a
     multi-day research corpus (and recording more than one market) fit the
     45 GB host at all. Readers open .jsonl and .jsonl.gz interchangeably.
+
+    The deadline is checked INSIDE the copy loop: the scheduler's wait_for
+    cannot stop a to_thread body, so on a starved night the abandoned thread
+    used to die mid-write at the midnight restart (a .gz.part orphan and an
+    uncompressed 2.2 GB day proved it, 08-20). Out of budget -> drop the
+    partial, keep the raw, retry tomorrow; raws accumulating unpaged is how
+    the 45 GB host fills, so a WARNING names every file left behind.
     """
     async def _job() -> dict[str, Any]:
         import asyncio as _aio
 
         def _compress() -> dict[str, Any]:
             import gzip
-            import shutil
+            deadline = time.monotonic() + budget_s
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            done, saved = 0, 0
+            done, saved, left = 0, 0, []
             try:
                 files = sorted(RECORDINGS_DIR.glob("*.jsonl"))
             except OSError:
@@ -707,18 +714,35 @@ def compress_recordings_job(level: int = 3):
                 if today in f.name:
                     continue                      # still being appended to
                 gz = f.with_suffix(".jsonl.gz")
+                tmp = gz.with_suffix(".gz.part")
+                if time.monotonic() >= deadline:
+                    left.append(f.name)
+                    continue
                 try:
                     raw = f.stat().st_size
-                    tmp = gz.with_suffix(".gz.part")
+                    expired = False
                     with open(f, "rb") as src, gzip.open(tmp, "wb", compresslevel=level) as dst:
-                        shutil.copyfileobj(src, dst, length=1 << 20)
+                        while chunk := src.read(1 << 20):
+                            dst.write(chunk)
+                            if time.monotonic() >= deadline:
+                                expired = True
+                                break
+                    if expired:
+                        tmp.unlink(missing_ok=True)
+                        left.append(f.name)
+                        continue
                     tmp.replace(gz)               # atomic: never leave a half file
                     f.unlink()
                     done += 1
                     saved += raw - gz.stat().st_size
                 except OSError as e:
+                    tmp.unlink(missing_ok=True)
                     logger.warning(f"tape compress failed for {f.name}: {e}")
-            return {"compressed": done, "mb_saved": round(saved / 1e6)}
+            if left:
+                logger.warning("tape compress out of budget (%.0fs) — left raw, "
+                               "retrying tomorrow: %s", budget_s, ", ".join(left))
+            return {"compressed": done, "mb_saved": round(saved / 1e6),
+                    **({"left_raw": len(left)} if left else {})}
 
         return await _aio.to_thread(_compress)
     return _job
