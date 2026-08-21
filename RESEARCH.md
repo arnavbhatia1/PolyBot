@@ -77,9 +77,15 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    triggering sweep is still printing (+21.9% over the 5-fill probe). The
    error is two-sided — it flatters winners and punishes losers — so the
    direction of the distortion on ¢/sh is unknown, not conservative.
-   Unblocks on either `smoke_gtc_test.py --confirm` persisting its samples
-   or a `t_post_return − t_post_start` stamp in the ladder snapshot; until
-   then the ≥20-fill bar is measured against an unvalidated fill clock.
+   Instrumentation shipped 08-21 (both unblock paths): live place/cancel
+   record RTTs to `latency_stats.json` (gtc section, raw samples kept),
+   every rung stamps `gtc_place_ms`/`gtc_cancel_ms` into the booked
+   snapshot, `smoke_gtc_test.py --samples` persists too, and the nightly
+   ops watch validates paper's 56ms table against measured p50 (±25%, dark
+   until n ≥ 10). Still open until real samples exist: run
+   `smoke_gtc_test.py --confirm --samples 12` on the box, or wait for the
+   first live ladder. Until then the ≥20-fill bar is measured against an
+   unvalidated fill clock.
 3. **Lock-dip taker: DORMANT-pending-regime** (`taker_enabled: false`,
    staged 08-18). The 60s rule killed its supply: 4 winner-side max-lock
    dips / 1 FOK-reachable over 1,184 windows (bar: ≥1 reachable per 3
@@ -161,6 +167,20 @@ session.
   net expected ≥ +$5/day at $400 (freed capital × next-ladder-arm
   probability × ladder EW, minus haircut), p95 haircut ≤ 2¢/sh incl. taker
   fee, ≥ 100 boundary-certain windows, rule keys on `certain_winner` only.
+
+## Latency: the stop line (08-21, do not gold-plate past this)
+
+Measured from every stamped fill in existence (36 live fills, 08-05..13;
+report in the session data dir): owned compute — wake→eval + positions +
+tick + context — runs ~3ms p50 / ~5ms p99 on current code. End-to-end
+report-rx→submit p50 ≈ 1.05s decomposes as raw-report age at decision
+(~1s: the raw stream ticks ~1Hz and fires wake on book events between
+reports) + owned ~5ms + sign 4.3ms + POST ~303ms (itode ~250ms policy
+floor inside it). Every remaining millisecond we own is already bought;
+the residuals are Polymarket's deliberate taker hold, Chainlink delivery
+(1.6-1.8s, REFUTATIONS.md: we are not the fast participant), and the raw
+cadence itself. The 25ms owned budget + WARNING regression guard the
+floor; further latency engineering buys nothing measurable — stop here.
 
 ## 08-18 recalibration audit — closed items (evidence in place)
 

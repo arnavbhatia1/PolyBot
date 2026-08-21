@@ -160,10 +160,16 @@ class MakerBidManager:
                             "%.0f-share exchange minimum (budget $%.2f)",
                             px, shares, MIN_SHARES, usd)
                 continue
+            _t0 = time.perf_counter()
             order_id = await self.trader.place_gtc_bid(token_id, px, shares)
+            _rtt_ms = round((time.perf_counter() - _t0) * 1000.0, 1)
             if order_id:
+                # place_ms rides into the booked snapshot: the ladder's fill
+                # clock (how long a rung isn't in the book) was never measured
+                # live — these stamps are the RESEARCH.md 2b evidence.
                 rungs.append({"price": px, "shares": shares,
-                              "order_id": order_id, "filled": 0.0})
+                              "order_id": order_id, "filled": 0.0,
+                              "place_ms": _rtt_ms})
             # No else: place_gtc_bid already logged MAKER BID REJECTED for
             # every rung it could not rest. One line per event.
         if not rungs:
@@ -297,7 +303,10 @@ class MakerBidManager:
             try:
                 for r in a["rungs"]:
                     try:
+                        _t0 = time.perf_counter()
                         await self.trader.cancel_gtc(r["order_id"])
+                        r["cancel_ms"] = round((time.perf_counter() - _t0)
+                                               * 1000.0, 1)
                     except Exception as e:
                         logger.warning("MAKER CANCEL failed (%s) — exchange closes "
                                        "resting orders at market close", e)
@@ -333,6 +342,9 @@ class MakerBidManager:
             if isinstance(a["snapshot"], dict):
                 a["snapshot"]["print_gap"] = (None if gap_ts is None
                                               else int(gap_ts >= a["placed"]))
+                tc = a["snapshot"].setdefault("trade_context", {})
+                tc["gtc_place_ms"] = [r.get("place_ms") for r in a["rungs"]]
+                tc["gtc_cancel_ms"] = [r.get("cancel_ms") for r in a["rungs"]]
             try:
                 booked = await self.trader.book_maker_fill(
                     market_id=a["market_id"], question=a["question"],

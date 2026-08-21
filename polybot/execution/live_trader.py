@@ -171,6 +171,40 @@ def _bucket_counts(samples_ms: list[float]) -> dict[str, int]:
     return counts
 
 
+_GTC_PLACE_SAMPLES: deque[float] = deque(maxlen=400)
+_GTC_CANCEL_SAMPLES: deque[float] = deque(maxlen=400)
+
+
+def _record_gtc_latency(kind: str, secs: float) -> None:
+    """Persist GTC place/cancel round trips (the ladder's fill clock).
+
+    Paper's _GTC_LATENCY_QUANTILES validates against these — until this
+    section holds samples, paper's 56ms/rung is an unmeasured claim
+    (RESEARCH.md 2b). Raw samples kept so the drift check can test the whole
+    distribution, not just p50. Merge-preserving write: the FOK writer owns
+    the other keys."""
+    try:
+        buf = _GTC_PLACE_SAMPLES if kind == "place" else _GTC_CANCEL_SAMPLES
+        buf.append(secs)
+        try:
+            stats = _json.loads(_LATENCY_STATS_PATH.read_text())
+        except Exception:
+            stats = {}
+        s = sorted(buf)
+        g = stats.setdefault("gtc", {})
+        g[kind] = {
+            "n": len(s),
+            "p50_ms": round(_percentile(s, 50) * 1000, 1),
+            "p90_ms": round(_percentile(s, 90) * 1000, 1),
+            "max_ms": round(s[-1] * 1000, 1),
+            "samples_ms": [round(v * 1000, 1) for v in buf],
+        }
+        g["last_updated"] = _dt.now(_tz.utc).isoformat()
+        write_json_atomic(_LATENCY_STATS_PATH, stats)
+    except Exception:
+        pass
+
+
 def _record_submit_latency(total_secs: float, sign_secs: float, post_secs: float) -> None:
     """Persist combined + per-leg latencies. ``sign_secs == 0`` for presigned SELL FOKs."""
     try:
@@ -184,7 +218,12 @@ def _record_submit_latency(total_secs: float, sign_secs: float, post_secs: float
         sign_sorted = sorted(_SIGN_LATENCY_SAMPLES)
         post_sorted = sorted(_POST_LATENCY_SAMPLES)
         post_ms = [v * 1000 for v in post_sorted]
+        try:
+            _prev_gtc = _json.loads(_LATENCY_STATS_PATH.read_text()).get("gtc")
+        except Exception:
+            _prev_gtc = None
         stats = {
+            **({"gtc": _prev_gtc} if _prev_gtc else {}),
             "n": len(total_sorted),
             "p50_ms": round(_percentile(total_sorted, 50) * 1000, 1),
             "p99_ms": round(_percentile(total_sorted, 99) * 1000, 1),
@@ -607,7 +646,9 @@ class LiveTrader(BaseTrader):
                 signed = self.client.create_order(OrderArgs(
                     token_id=token_id, price=price, size=shares, side=BUY))
                 return self.client.post_order(signed, OrderType.GTC)
+            _t0 = time.perf_counter()
             resp = await asyncio.to_thread(_place)
+            _record_gtc_latency("place", time.perf_counter() - _t0)
             oid = (resp or {}).get("orderID") or (resp or {}).get("id")
             if not oid:
                 # LOUD: a rejected rung is silent lost income — the leg simply
@@ -626,7 +667,9 @@ class LiveTrader(BaseTrader):
             return None
 
     async def cancel_gtc(self, order_id: str) -> None:
+        _t0 = time.perf_counter()
         await asyncio.to_thread(self.client.cancel_orders, [order_id])
+        _record_gtc_latency("cancel", time.perf_counter() - _t0)
 
     async def poll_gtc_fill(self, order_id: str) -> float | None:
         """Matched shares so far, or None when the lookup fails (a dead order

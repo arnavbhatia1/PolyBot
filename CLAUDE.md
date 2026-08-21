@@ -192,9 +192,13 @@ pre-check; warm pooled HTTP/2; gc.freeze() post-boot. GTC rungs pass
 exchange minimum. A rung that cannot be rested logs `MAKER BID REJECTED` at
 ERROR, refusal and POST failure alike; a rung the budget cannot afford is
 `MAKER RUNG SKIPPED` at INFO — routine, not a rejection.
-`cl_report_to_submit_ms` + `lat_*` stamps measure the race per fill. Live
-boot: key+funder, balance/allowance preflight, allowance recheck every 10
-fills. `fill.fill_size` is always USDC notional.
+`cl_report_to_submit_ms` + `lat_*` stamps measure the race per fill; GTC
+place/cancel RTTs stamp per rung (`gtc_place_ms`/`gtc_cancel_ms`, plus the
+`latency_stats.json` gtc section — `smoke_gtc_test.py --samples` feeds it
+too), and a fill whose owned segments exceed 1.5× the 25ms budget logs
+LATENCY BUDGET at WARNING. Live boot: key+funder, balance/allowance
+preflight, allowance recheck every 10 fills. `fill.fill_size` is always USDC
+notional.
 
 ## 5. Resolution
 
@@ -242,7 +246,8 @@ the only on-chain thing the bot signs).
   predicts zero fills, not losses), chain watch (final==next strike), the
   nightly SOURCE summary (`mechanism_read`), and the ops watch (POST RTT p50
   vs the 436ms table ±25%; trailing-7d sweep-consumed deep-queue p75 vs the
-  135-sh at-price constant). Alert-only.
+  135-sh at-price constant; measured GTC place p50 vs paper's 56ms table
+  ±25%, dark until samples exist; owned-latency budget breaches). Alert-only.
 
 ## 7. Hard rules
 

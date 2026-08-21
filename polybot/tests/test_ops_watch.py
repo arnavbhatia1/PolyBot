@@ -70,3 +70,59 @@ def test_queue_watch_still_warns_on_growth():
 def test_queue_watch_quiet_inside_the_band():
     line = _ops_watch_line(None, None, _qd(140.0))
     assert "deep-queue consumed" in line and "⚠️" not in line
+
+
+# ── GTC RTT watch (the ladder's fill clock — RESEARCH.md 2b) ─────────────────
+
+def _gtc_stats(tmp_path, n, p50=500.0, age_days=0, cancel_p50=54.0):
+    from polybot.main import _gtc_watch  # noqa: F401 — import check
+    p = tmp_path / "latency_stats.json"
+    p.write_text(json.dumps({
+        "gtc": {
+            "place": {"n": n, "p50_ms": p50},
+            "cancel": {"n": n, "p50_ms": cancel_p50},
+            "last_updated": (datetime.now(timezone.utc)
+                             - timedelta(days=age_days)).isoformat(),
+        },
+    }))
+    return p
+
+
+def test_gtc_watch_dark_until_samples_exist(tmp_path):
+    from polybot.main import _gtc_watch
+    p = tmp_path / "latency_stats.json"
+    p.write_text(json.dumps({"post": {"n": 50}}))
+    gtc, dark = _gtc_watch(p)
+    assert gtc is None and "smoke_gtc_test" in dark
+    line = _ops_watch_line(None, None, None, gtc, dark)
+    assert "GTC RTT unmeasured" in line
+
+
+def test_gtc_watch_warns_when_paper_table_drifts(tmp_path):
+    from polybot.main import _gtc_watch
+    gtc, dark = _gtc_watch(_gtc_stats(tmp_path, n=12, p50=500.0))
+    assert dark is None
+    line = _ops_watch_line(None, None, None, gtc, dark)
+    assert "⚠️" in line and "_GTC_LATENCY_QUANTILES" in line
+
+
+def test_gtc_watch_quiet_inside_the_band(tmp_path):
+    from polybot.main import _gtc_watch
+    gtc, dark = _gtc_watch(_gtc_stats(tmp_path, n=12, p50=58.0))
+    line = _ops_watch_line(None, None, None, gtc, dark)
+    assert "GTC place p50 58ms" in line and "⚠️" not in line
+
+
+def test_gtc_recorder_merges_with_the_fok_writer(tmp_path, monkeypatch):
+    """The FOK writer replaces the whole stats file; a GTC section it does not
+    preserve would vanish on the next taker POST."""
+    import polybot.execution.live_trader as lt
+    p = tmp_path / "latency_stats.json"
+    monkeypatch.setattr(lt, "_LATENCY_STATS_PATH", p)
+    monkeypatch.setattr(lt, "_GTC_PLACE_SAMPLES", type(lt._GTC_PLACE_SAMPLES)(maxlen=400))
+    lt._record_gtc_latency("place", 0.5)
+    lt._record_submit_latency(0.44, 0.004, 0.436)
+    stats = json.loads(p.read_text())
+    assert stats["gtc"]["place"]["n"] == 1
+    assert stats["gtc"]["place"]["p50_ms"] == 500.0
+    assert stats["post"]["n"] >= 1

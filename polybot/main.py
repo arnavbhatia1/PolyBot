@@ -478,7 +478,36 @@ def _latency_watch(path: Path, now: datetime | None = None) -> tuple[dict | None
     return {"p50": post["p50_ms"], "n": n}, None
 
 
-def _ops_watch_line(lat: dict | None, lat_dark: str | None, qd: dict | None) -> str:
+def _gtc_watch(path: Path, now: datetime | None = None) -> tuple[dict | None, str | None]:
+    """Measured GTC place/cancel RTTs for the ops watch, or why there are none.
+
+    Paper charges 56ms/rung from a table whose live counterpart was never
+    measured (RESEARCH.md 2b) — this goes dark, loudly, until samples exist."""
+    try:
+        g = json.loads(path.read_text()).get("gtc") or {}
+        place = g.get("place") or {}
+        n = int(place.get("n", 0) or 0)
+        age_d = ((now or datetime.now(timezone.utc))
+                 - datetime.fromisoformat(g["last_updated"])).days if g else 999
+    except Exception as e:
+        return None, f"no gtc section ({type(e).__name__})"
+    if n < 10:
+        return None, f"only {n} GTC samples — run smoke_gtc_test.py --samples 12"
+    if age_d > 14:
+        return None, f"GTC last measured {age_d} days ago"
+    return {"p50": place["p50_ms"], "n": n,
+            "cancel_p50": (g.get("cancel") or {}).get("p50_ms")}, None
+
+
+# Owned-latency budget (wake→eval + pos + tick + ctx, ms). Measured 08-21:
+# p50 ~3ms / p99 ~5ms on the current code — 25ms is generous headroom that
+# still catches the 90ms-class regressions the 08-05 fix removed.
+_OWNED_LAT_BUDGET_MS = 25.0
+_owned_lat_breaches = 0
+
+
+def _ops_watch_line(lat: dict | None, lat_dark: str | None, qd: dict | None,
+                    gtc: dict | None = None, gtc_dark: str | None = None) -> str:
     """Ops trend watches: constants drift while nobody looks (POST RTT ran
     356->436ms uncommented; the at-price queue 2.5x'd in three days).
 
@@ -504,6 +533,19 @@ def _ops_watch_line(lat: dict | None, lat_dark: str | None, qd: dict | None) -> 
             + (f" ⚠️ p75 {drift:+.0%} off the 135-sh constant — paper "
                f"{'over' if drift > 0 else 'under'}-credits at-price fills, "
                f"re-measure" if abs(drift) > 0.25 else ""))
+    if gtc:
+        drift = (gtc["p50"] - 56.0) / 56.0   # paper's _GTC_LATENCY_QUANTILES p50
+        parts.append(
+            f"GTC place p50 {gtc['p50']:.0f}ms (n={gtc['n']}"
+            + (f", cancel {gtc['cancel_p50']:.0f}ms" if gtc.get("cancel_p50") else "")
+            + ")"
+            + (f" ⚠️ {drift:+.0%} off paper's 56ms table — re-derive "
+               f"_GTC_LATENCY_QUANTILES" if abs(drift) > 0.25 else ""))
+    elif gtc_dark:
+        parts.append(f"GTC RTT unmeasured — {gtc_dark}")
+    if _owned_lat_breaches:
+        parts.append(f"⚠️ {_owned_lat_breaches} fills over the "
+                     f"{_OWNED_LAT_BUDGET_MS:.0f}ms owned-latency budget today")
     return ("Ops watch: " + " · ".join(parts) + "\n") if parts else ""
 
 
@@ -1267,6 +1309,23 @@ async def _evaluate_signal_and_enter(
 
     # Drop the open-positions cache so the next tick sees this position immediately.
     _invalidate_open_positions_cache()
+    _tc = snapshot["trade_context"]
+    _owned_ms = sum(v for v in (
+        _tc.get("lat_wake_to_eval_ms"),
+        (_tc.get("lat_segs_ms") or {}).get("pos"),
+        (_tc.get("lat_segs_ms") or {}).get("tick"),
+        _tc.get("lat_ctx_ms")) if v is not None)
+    if _owned_ms > _OWNED_LAT_BUDGET_MS * 1.5:
+        global _owned_lat_breaches
+        _owned_lat_breaches += 1
+        logger.warning(
+            "LATENCY BUDGET — owned segments took %.0fms against the %.0fms "
+            "budget (wake→eval %s · pos %s · tick %s · ctx %s)",
+            _owned_ms, _OWNED_LAT_BUDGET_MS,
+            _tc.get("lat_wake_to_eval_ms"),
+            (_tc.get("lat_segs_ms") or {}).get("pos"),
+            (_tc.get("lat_segs_ms") or {}).get("tick"),
+            _tc.get("lat_ctx_ms"))
     if _window_recorder is not None:
         _window_recorder.mark_traded(cid)
     fill_price = result.fill_price if result.fill_price > 0 else price
@@ -2722,6 +2781,7 @@ async def main() -> None:
             qd = None
         from polybot.paths import LATENCY_STATS_PATH
         lat, lat_dark = _latency_watch(LATENCY_STATS_PATH)
+        gtc, gtc_dark = _gtc_watch(LATENCY_STATS_PATH)
         if sim is None and live is None:
             if alert_manager:
                 await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
@@ -2844,7 +2904,7 @@ async def main() -> None:
             f"{_regime_line()}"
             f"{_twap_line()}"
             f"{_mech_line()}"
-            f"{_ops_watch_line(lat, lat_dark, qd)}"
+            f"{_ops_watch_line(lat, lat_dark, qd, gtc, gtc_dark)}"
             f"{action}"
         )
         # The journal always gets the ping verbatim — a Discord outage must
