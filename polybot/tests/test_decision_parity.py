@@ -349,6 +349,12 @@ async def _replay(window: dict, variant: str, mode: str,
     monkeypatch.setattr(_time, "time", clock)
 
     _reset_main_globals()
+    # The ladder prefers an operator maker_ladder.json when one exists — pin
+    # the replay to the config seed so a box-committed recalibration file can
+    # never silently change what CI replays.
+    import polybot.execution.maker_bid as mb
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH",
+                        Path("nonexistent-parity-ladder.json"))
     trace: list = []
     monkeypatch.setattr(main, "_record_skip", lambda gate: trace.append(("skip", gate)))
     monkeypatch.setattr(main, "_emit_gate_skip",
