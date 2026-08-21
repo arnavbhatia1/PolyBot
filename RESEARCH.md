@@ -118,12 +118,16 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    taught exactly this overconfidence at low k). Proposal-only either way.
 7. **Queue-constant estimator discrepancy** — sweep-consumed depth at deep
    levels is stable (med 19-46 sh, p75 62-120, pooled med 31, NO trend across
-   11 days) while the book-resting watch grew 55→135. The shipped 135
+   11 days) while the book-resting watch grew 55→135. Re-measured 08-21 on
+   the full 60s era (8 days, 56,523 sweeps): med 29 / p75 77 — unchanged,
+   still well under the constant. The shipped 135
    over-states typical queues → paper under-credits at-price fills →
    conservative, correct direction. The nightly ops watch now alarms when
    trailing p75 exceeds the constant (the unsafe direction). Reopen only if
    live deep fills land that paper refuses to credit (recalibrate from
    `filled_at_px` live/paper attribution, never from book snapshots).
+   Fill-rule verification against live/paper fill PAIRS stays blocked: zero
+   live ladder fills exist post-era — unblocks on the first live flow.
 8. **Candidate A — cushion dip-buyer** (WALLETS.md): both-sides deep rungs
    0.10-0.35, no sign filter. Bar written in WALLETS.md. NOTE from the WS4
    kinematics: any such leg eats the avalanche sweeps deliberately — its
