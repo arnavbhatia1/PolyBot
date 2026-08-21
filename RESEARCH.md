@@ -131,6 +131,37 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
     measurement would mirror ws2_supply over sibling tapes; nothing licenses
     it before btc-5m's own paper bar passes.
 
+## 08-21 charter — pre-registered bars (written BEFORE measurement)
+
+Corpus: the full 60s era (08-14..21, ~8 ET days of tape/micro/window_paths,
+pulled to `scripts/research/data/vps-0821/`). Dollar bars anchor at the $400
+go-live bankroll. At most TWO surviving mechanisms get proposed for
+implementation; the rest rank here. Verdicts land in this file the same
+session.
+
+- **H1 market P&L decomposition**: a flow pocket qualifies only if (i) total
+  systematic flow ≥ $200/day, (ii) the capturing position is one we can
+  occupy — no shared-price queue seniority (08-13 live probe is binding) and
+  no sub-410ms reaction requirement, (iii) our capturable slice ≥ $10/day at
+  $400 under print-through fill physics, (iv) it persists in both era halves
+  (08-14..17 vs 08-18..21) and survives a shuffled-window control.
+- **H2 cross-window seam** (adjacent refutation: open head-start, 30s era —
+  any contradicting evidence routes through this file, never straight to
+  code): N's projection as N+1's strike, traded against N+1's opening book.
+  Bar: ≥ 300 windows with an executable opening ask, EW ≥ +5¢/sh after taker
+  fee at ≥ $5 FOK size, net ¢/sh monotone across model-edge buckets with an
+  edge<0 control, anti-side ≤ 0, ≥ $10/day at $400.
+- **H3 complement structure**: (a) pure arb: Up-ask + Down-ask < 1 − both
+  legs' taker fees at ≥ $2/leg executable on event-true books; bar: ≥ 1
+  event/day AND ≥ $5/day at depth. (b) cheaper-route: 1 − bid_down vs ask_up
+  at our ladder arm times; bar: ≥ 1 tick median improvement on ≥ 20% of
+  arms. Control for both: ±30s time-shuffled books must produce ≈ zero.
+- **H4 sell-at-certainty inventory** (exit refutation adjacent — different
+  mechanism: boundary-verified certain winners only, never spot-lens): bar:
+  net expected ≥ +$5/day at $400 (freed capital × next-ladder-arm
+  probability × ladder EW, minus haircut), p95 haircut ≤ 2¢/sh incl. taker
+  fee, ≥ 100 boundary-certain windows, rule keys on `certain_winner` only.
+
 ## 08-18 recalibration audit — closed items (evidence in place)
 
 - **WS0 boundary-trust clock**: payload-ts by construction (rx never enters
