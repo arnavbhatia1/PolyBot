@@ -237,6 +237,9 @@ async def _mk_live(db: Database, fakews: FakeClobWS, oracle: FillOracle,
 
     monkeypatch.setattr(lt, "_record_submit_latency",
                         lambda total, sign, post: None)
+    # The GTC recorder too — a stub round trip must never write the real
+    # latency_stats.json (its samples would read as measured live RTTs).
+    monkeypatch.setattr(lt, "_record_gtc_latency", lambda kind, secs: None)
     monkeypatch.setattr(lt, "_update_fill_stats",
                         lambda filled, side, reason="": None)
 
