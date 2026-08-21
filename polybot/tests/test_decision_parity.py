@@ -202,33 +202,29 @@ async def _mk_live(db: Database, fakews: FakeClobWS, oracle: FillOracle,
     client.derive_api_key.return_value = creds
     seq = {"n": 0}
 
+    # Wire capture happens at post_order — what the exchange actually
+    # receives. Capturing at the sign step double-counts warm pre-signs that
+    # are never posted (every post-fill tick warm-signs, then open_trade
+    # rejects on duplicate market). The decision trace records intents at the
+    # manager→trader boundary — a live-side transformation BELOW that
+    # boundary (rounding, unit slip) is invisible to it, so the test also
+    # asserts wire == intents.
     def post_order(signed, order_type):
-        if getattr(order_type, "name", str(order_type)).upper().endswith("GTC") \
-                or str(order_type).upper().endswith("GTC"):
+        tag, args = signed
+        if tag == "signed":     # GTC (create_order)
+            if wire is not None:
+                wire.append(("gtc", args.token_id[-8:],
+                             round(args.price, 10), round(args.size, 6)))
             seq["n"] += 1
             return {"orderID": f"live-{seq['n']}", "success": True}
+        if wire is not None:    # FOK (create_market_order)
+            wire.append(("fok", args.token_id[-8:],
+                         round(args.price, 10), round(args.amount, 2)))
         return {"success": True, "status": "matched", "orderID": "fok-1"}
 
     client.post_order.side_effect = post_order
-
-    # Wire capture: what the exchange would actually receive. The decision
-    # trace records intents at the manager→trader boundary — a live-side
-    # transformation BELOW that boundary (rounding, unit slip) is invisible
-    # to it, so the test also asserts wire == intents.
-    def create_order(args):
-        if wire is not None:
-            wire.append(("gtc", args.token_id[-8:],
-                         round(args.price, 10), round(args.size, 6)))
-        return ("signed", args)
-
-    def create_market_order(args):
-        if wire is not None:
-            wire.append(("fok", args.token_id[-8:],
-                         round(args.price, 10), round(args.amount, 2)))
-        return ("signed-mo", args)
-
-    client.create_order.side_effect = create_order
-    client.create_market_order.side_effect = create_market_order
+    client.create_order.side_effect = lambda args: ("signed", args)
+    client.create_market_order.side_effect = lambda args: ("signed-mo", args)
     client.get_order.side_effect = lambda oid: {"size_matched": oracle.matched(oid)}
     client.cancel_orders.side_effect = lambda oids: {"canceled": oids}
 
