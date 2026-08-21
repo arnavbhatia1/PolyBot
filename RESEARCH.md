@@ -158,6 +158,34 @@ session.
   no sub-410ms reaction requirement, (iii) our capturable slice ≥ $10/day at
   $400 under print-through fill physics, (iv) it persists in both era halves
   (08-14..17 vs 08-18..21) and survives a shuffled-window control.
+  **VERDICT 08-21** (h1_report.md; 3.32M prints, fee_bps 0 on all; makers as
+  a class net −$7.8k/day on $6.62M/day notional — every day-stable pocket is
+  bid-side; pipeline reproduced all three known pockets, incl. our own seat:
+  signal-free deep bids k∈(6,25] are worth −$100/day — the edge is entirely
+  the projection):
+  - **STAGED (the one proposal): 0.85-0.95 rungs on the deep_proj ladder,
+    k∈[6,25]** — winner-side maker capture on 0.8-1.0 bids is +$1,423/day,
+    positive 8/8 days, both halves, shuffle-destroyed (outcome edge — the
+    projection supplies it), print-through physics, ~$18/day per rung at
+    $400. Staging condition BEFORE any settings change: ws2_ladder_replay
+    engine-true over the full era with the extended rungs — the flip-race is
+    the killer at high prices (a 0.95 rung's whole margin is 5%), so the
+    replay's fill-on-flip accounting decides, then the normal §2 paper bar.
+    Warning prior: 1723 ran −5.9¢/sh at 0.95 pre-rule.
+  - REFUTED — mid-window bid wall ($11.9k/day, k>60, the market's largest
+    pocket): same-book touch bids behind 2.3-8.3k-share shared-price queues
+    (the exact 0/102 live refutation; symmetric-MM ban); top-5 wallets take
+    78%, plausibly reward-farming (makers class-negative in h1).
+  - REFUTED — terminal lottery counterflow ($854/day, final 6s): 98.9% of
+    the capture is the winner-book 0.99 wall matched cross-book via the mint
+    adapter — joining a refuted shared-price wall + a k<6 certainty claim
+    (unpinnable floor); the same seat at k∈(6,25] nets −$165/day.
+  - REFUTED — underdog-ask longshot tax (+$14.1k/day mean at 0.0-0.2):
+    sign-flips daily (−$32k on 08-17) — not systematic; needs pair-minting.
+  - BLOCKED — post-close bands: the tape unsubscribes p50 +12s after close;
+    unblock = a post-close collector (occupation refuted regardless).
+  - Calibration: k>25 lock bids reproduced their refutation (incumbents ate
+    −$3.3k/−$6.3k flip-race days).
 - **H2 cross-window seam** (adjacent refutation: open head-start, 30s era —
   any contradicting evidence routes through this file, never straight to
   code): N's projection as N+1's strike, traded against N+1's opening book.
