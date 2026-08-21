@@ -183,6 +183,14 @@ session.
   net expected ≥ +$5/day at $400 (freed capital × next-ladder-arm
   probability × ladder EW, minus haircut), p95 haircut ≤ 2¢/sh incl. taker
   fee, ≥ 100 boundary-certain windows, rule keys on `certain_winner` only.
+  **VERDICT 08-21: REFUTED on timing** (h4_report.md). Auto-redeem credits
+  winners at p50 +100s / p90 110-130s after close (5,736 on-chain REDEEM
+  rows, 6 wallets) vs the close+275s redeploy deadline — capital is back
+  before the next ladder arms. The haircut itself passes (0.99 exec p50,
+  1.07¢/sh incl. fee, depth ample), but per freed dollar it costs 1.07% vs
+  a 0.19% benefit (5.5×, bankroll-invariant): net −$0.75/day at $400.
+  Reopen only if redeem p50 degrades past 275s AND ladder EW/$ × P(arm)
+  exceeds ~1.1% — both, EW noise alone cannot close a 5.5× gap.
 
 ## Latency: the stop line (08-21, do not gold-plate past this)
 
