@@ -211,6 +211,20 @@ session.
   event/day AND ≥ $5/day at depth. (b) cheaper-route: 1 − bid_down vs ask_up
   at our ladder arm times; bar: ≥ 1 tick median improvement on ≥ 20% of
   arms. Control for both: ±30s time-shuffled books must produce ≈ zero.
+  **VERDICT 08-21: BOTH REFUTED** (h3_report.md). (a) zero post-fee
+  violations in 973,302 synchronized ask pairs; event-true violations are
+  book-update transients only — 949 events / 8 days, median < 1ms, max
+  21ms, total violating time 0.14s, $0.00/day realizable. The ±30s control
+  manufactures 6.8-8.9× the event-true rate — any arb this scanner "finds"
+  on unsynchronized books is staleness. (b) median route improvement
+  $0.0000; ≥1 tick on 0.01% of arm-seconds (bar: 20%); parity is enforced
+  tick-tight (47.7% of prints have a complementary-priced print within
+  ±0.5s, 10-20× the shifted base rate). Route choice is illusory.
+  Fill-realism side-finding: unmirrored complement-BUY prints at
+  rung-compatible prices bound paper's invisible-fill undercount at ≤14-17%
+  of deep flow — CONSERVATIVE direction, unconfirmed as real (all 5 era
+  live fills had own-token prints); unblock = reconcile the next live
+  ladder session's fills against own-token tape prints.
 - **H4 sell-at-certainty inventory** (exit refutation adjacent — different
   mechanism: boundary-verified certain winners only, never spot-lens): bar:
   net expected ≥ +$5/day at $400 (freed capital × next-ladder-arm
