@@ -172,6 +172,11 @@ session.
     the killer at high prices (a 0.95 rung's whole margin is 5%), so the
     replay's fill-on-flip accounting decides, then the normal §2 paper bar.
     Warning prior: 1723 ran −5.9¢/sh at 0.95 pre-rule.
+    Pre-registered replay bar (written before the run): each NEW rung needs
+    ≥10 fills, win% ≥ its price + 5pp, and positive dollars over the era;
+    the extended ladder's total dollars must be ≥ the baseline ladder's;
+    the ANTI-side extended ladder must be ≤ 0. Rungs judge individually —
+    a failing rung dies alone; all three failing kills the proposal.
   - REFUTED — mid-window bid wall ($11.9k/day, k>60, the market's largest
     pocket): same-book touch bids behind 2.3-8.3k-share shared-price queues
     (the exact 0/102 live refutation; symmetric-MM ban); top-5 wallets take
