@@ -177,6 +177,20 @@ session.
     the extended ladder's total dollars must be ≥ the baseline ladder's;
     the ANTI-side extended ladder must be ≤ 0. Rungs judge individually —
     a failing rung dies alone; all three failing kills the proposal.
+    **REPLAY VERDICT 08-21: KILLED — all three rungs fail individually**
+    (h1b_extended_rungs.md; engine-true, 2,066 windows / 1,827 armed, $60
+    go-live budget): 0.95 → 39 fills 92.3% (needs 100) −$8.62; 0.90 → 24
+    fills 87.5% (needs 95) −$5.00; 0.85 → 17 fills 82.4% (needs 90) −$3.97.
+    Extended total < baseline at both budgets; ANTI −$75.9k (the projection
+    is real — the high rungs lose anyway). Mechanism confirmed: sign
+    accuracy 99.8% on armed windows, but win% AT FILLS pins to the rung
+    price — the fill channel adversely selects the sign failures; all three
+    rungs' losses are the same 3 flip windows placed at k≈24.4-24.7, and one
+    95¢ loss erases 19 wins. Re-decision evidence for #1: the baseline 0.80
+    rung ran exactly break-even (80.0% on fills) on this corpus — the
+    price-margin geometry, not the sign, is what pays. Also structural: at
+    the $150 paper bankroll an 8-rung split ($2.81/rung) starves every rung
+    ≥0.65 under the 5-share exchange minimum.
   - REFUTED — mid-window bid wall ($11.9k/day, k>60, the market's largest
     pocket): same-book touch bids behind 2.3-8.3k-share shared-price queues
     (the exact 0/102 live refutation; symmetric-MM ban); top-5 wallets take
