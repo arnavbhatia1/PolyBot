@@ -99,3 +99,60 @@ def test_oracle_book_disagreement_is_logged_but_oracle_decides(caplog):
         px, log = _resolved_exit_price(live, "Up")
     assert px == 1.0  # oracle still decides (Up wins)
     assert any("disagreement" in r.getMessage().lower() for r in caplog.records)
+
+
+# --- Orphan Chainlink fallback: only TRUSTED captures may decide a winner ---
+
+class _OrphanFeed:
+    """Boundary captures for one window; `trusted` flips the payload-trust gate."""
+
+    def __init__(self, window_ts, trusted):
+        self._b = {window_ts: 64000.0, window_ts + 300: 64100.0}
+        self._trusted = trusted
+
+    def boundary_captured(self, b):
+        return b in self._b
+
+    def strike_reliable(self, b):
+        return self._trusted and b in self._b
+
+    def get_strike(self, b):
+        return self._b.get(b)
+
+
+def _orphan(trusted, monkeypatch):
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+
+    from polybot import main as m
+
+    async def _no_contract(*a, **kw):
+        return None
+
+    monkeypatch.setattr(m, "_get_contract_prices", _no_contract)
+    w = 1786800000
+    pos = {"id": 1, "market_id": f"btc-5m-{w}", "side": "Up", "entry_price": 0.5,
+           "question": "q",
+           "entry_timestamp": (datetime.now(timezone.utc)
+                               - timedelta(seconds=2400)).isoformat()}
+
+    class _Trader:
+        async def resolve_position(self, pid, exit_price):
+            return type("R", (), {"pending": True})()
+
+    return asyncio.run(m._manage_orphaned_position(
+        pos, None, None, _Trader(), None, None, None, None, 0, 0, 0.0,
+        chainlink_feed=_OrphanFeed(w, trusted)))
+
+
+def test_orphan_waits_on_an_untrusted_boundary_capture(monkeypatch):
+    # A captured-but-untrusted boundary is a later second's average — it must
+    # never decide a real position's winner.
+    keep_waiting, _, _, _ = _orphan(False, monkeypatch)
+    assert keep_waiting is True
+
+
+def test_orphan_resolves_on_a_trusted_boundary_capture(monkeypatch):
+    # trader.resolve_position is reached (pending → False, retry next tick).
+    keep_waiting, _, _, _ = _orphan(True, monkeypatch)
+    assert keep_waiting is False

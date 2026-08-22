@@ -35,15 +35,20 @@ _LABEL_RETRY_S = 60.0
 _LABEL_GIVE_UP_S = 2400.0  # stop asking Gamma 40 min after window end
 
 
-def _top3_usd(levels: list[dict[str, Any]]) -> float | None:
-    """USD notional of the top-3 levels; None when the book is missing/unparseable.
+def _top3_usd(levels: list[dict[str, Any]], side: str) -> float | None:
+    """USD notional of the 3 levels NEAREST THE TOUCH; None when missing.
 
     None, never 0.0 — 0.0 would read as real zero liquidity downstream.
+    Sorted here because the WS delivers BOTH sides price-ascending: raw [0]
+    is the best ask but the WORST bid (539k/569k era rows recorded the wrong
+    bid level before the sort — pre-08-21 bid-size columns are worst-level).
     """
     if not levels:
         return None
     try:
-        return round(sum(float(l["price"]) * float(l["size"]) for l in levels[:3]), 2)
+        lv = sorted(((float(l["price"]), float(l["size"])) for l in levels),
+                    reverse=(side == "bid"))
+        return round(sum(p * s for p, s in lv[:3]), 2)
     except (KeyError, ValueError, TypeError):
         return None
 
@@ -90,6 +95,7 @@ class WindowPathRecorder:
         # stream (both served values move together); this can, the same window.
         self.on_source_mismatch: Any = None
         self._source_mismatch_fired = False
+        self.source_unchecked = 0       # windows the gate could not compare
 
     async def ensure_tables(self) -> None:
         import aiosqlite
@@ -163,6 +169,9 @@ class WindowPathRecorder:
         ("ask_sz_down", "REAL"),
         ("depth20_bid_usd", "REAL"),     # Binance book pressure, side-split
         ("depth20_ask_usd", "REAL"),
+        ("strike_trusted", "INTEGER"),   # 1 = the sampled strike is the trusted boundary
+                                         # capture; 0 = an untrusted capture or the live
+                                         # fallback. Research must be able to tell.
     )
 
     async def _add_appended_columns(self) -> None:
@@ -326,17 +335,29 @@ class WindowPathRecorder:
         try:
             ep = int(market_id.rsplit("-", 1)[-1])
             caps = self.chainlink_feed.boundary_snapshot()
-        except Exception:
+        except Exception as e:
+            # Silence here would disable the gate the day the format changes.
+            self.source_unchecked += 1
+            logger.error("SOURCE CHECK SKIPPED %s — cannot read the window id or "
+                         "our captures (%s)", market_id, e)
             return
+        compared = False
         for kind, served, b in (("strike", ptb, ep), ("final", fp, ep + 300)):
             cap = caps.get(b)
-            if served is not None and cap is not None and abs(served - cap) > 0.005:
+            if served is None or cap is None:
+                continue
+            compared = True
+            if abs(served - cap) > 0.005:
                 self._source_mismatch_fired = True
                 try:
                     self.on_source_mismatch(market_id, kind, served, cap)
                 except Exception:
                     logger.exception("source-mismatch handler failed (mismatch stands)")
                 return
+        if not compared:
+            self.source_unchecked += 1
+            logger.error("SOURCE CHECK SKIPPED %s — no trusted boundary capture "
+                         "to compare", market_id)
 
     def _sample(self) -> None:
         w = self._window
@@ -361,6 +382,11 @@ class WindowPathRecorder:
         cb = None            # Coinbase feed deleted; the column records NULL
         strike = (self.chainlink_feed.get_strike(w["window_ts"])
                   if self.chainlink_feed else None)
+        # get_strike serves untrusted captures and the live fallback too, so the
+        # corpus records which one it got — nothing else in the row can tell.
+        strike_trusted = None
+        if strike is not None and self.chainlink_feed is not None:
+            strike_trusted = 1 if self.chainlink_feed.strike_reliable(w["window_ts"]) else 0
 
         # Resolution-venue live price (Chainlink RTDS) + its age
         cl_px = cl_age = None
@@ -380,10 +406,15 @@ class WindowPathRecorder:
         # Coinbase feed deleted; these columns record NULL by design.
         cb_bid = cb_ask = cb_cvd10 = cb_cvd30 = None
 
-        def _touch_sz(levels: Any) -> float | None:
+        def _touch_sz(levels: Any, side: str) -> float | None:
+            """Shares at the true touch — best bid is the MAX price (the WS
+            sends both sides ascending; [0] would be the worst bid)."""
             try:
-                return float(levels[0]["size"]) if levels else None
-            except (KeyError, IndexError, ValueError, TypeError):
+                if not levels:
+                    return None
+                lv = [(float(l["price"]), float(l["size"])) for l in levels]
+                return (max(lv) if side == "bid" else min(lv))[1]
+            except (KeyError, ValueError, TypeError):
                 return None
 
         # Binance feeds deleted; these columns record NULL by design.
@@ -396,8 +427,10 @@ class WindowPathRecorder:
             w["market_id"], round(now, 3), round(elapsed, 1),
             _f(bba_up, "best_bid"), _f(bba_up, "best_ask"),
             _f(bba_dn, "best_bid"), _f(bba_dn, "best_ask"),
-            _top3_usd(book_up.get("bids") or []), _top3_usd(book_up.get("asks") or []),
-            _top3_usd(book_dn.get("bids") or []), _top3_usd(book_dn.get("asks") or []),
+            _top3_usd(book_up.get("bids") or [], "bid"),
+            _top3_usd(book_up.get("asks") or [], "ask"),
+            _top3_usd(book_dn.get("bids") or [], "bid"),
+            _top3_usd(book_dn.get("asks") or [], "ask"),
             cb, strike,
             1 if w["market_id"] in self._traded else 0,
             bn_price, bn_cvd10, bn_cvd30,
@@ -405,9 +438,9 @@ class WindowPathRecorder:
             cl_px, cl_age,
             _book_age(book_up), _book_age(book_dn),
             cb_bid, cb_ask, cb_cvd10, cb_cvd30,
-            _touch_sz(book_up.get("bids")), _touch_sz(book_up.get("asks")),
-            _touch_sz(book_dn.get("bids")), _touch_sz(book_dn.get("asks")),
-            d20_bid, d20_ask,
+            _touch_sz(book_up.get("bids"), "bid"), _touch_sz(book_up.get("asks"), "ask"),
+            _touch_sz(book_dn.get("bids"), "bid"), _touch_sz(book_dn.get("asks"), "ask"),
+            d20_bid, d20_ask, strike_trusted,
         ))
 
     async def _flush(self) -> None:
@@ -423,8 +456,8 @@ class WindowPathRecorder:
                 "chainlink_price, chainlink_age_s, book_age_up_s, book_age_down_s, "
                 "coinbase_bid, coinbase_ask, coinbase_cvd_10s, coinbase_cvd_30s, "
                 "bid_sz_up, ask_sz_up, bid_sz_down, ask_sz_down, "
-                "depth20_bid_usd, depth20_ask_usd) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "depth20_bid_usd, depth20_ask_usd, strike_trusted) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows)
             await self._paths_conn.commit()
         except Exception as e:
@@ -544,6 +577,9 @@ class MicroTape:
         self._buf: list[str] = []
         self._last_flush = time.time()
         self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="micro-writer")
+        # Rows the RETIRED 30s stream has written this run — the nightly source
+        # watch states it, because a zero means that A/B evidence does not exist.
+        self.t3_records = 0
 
     @classmethod
     def _late(cls, ts: float) -> bool:
@@ -597,27 +633,8 @@ class MicroTape:
                 "k": "t3", "ts": round(payload_ts, 3), "rx": round(now, 3),
                 "p": value,
             }))
+            self.t3_records += 1
             self._maybe_flush(now)
-        except Exception:
-            pass
-
-    def on_cb_tick(self, rx: float, price: float, feed_delay_ms: float | None) -> None:
-        """Wired as CoinbaseFeed.on_tick. RECORDING ONLY — no decision path reads
-        spot.
-
-        Why it is recorded at all: Polymarket's oracle relay hands us each
-        Chainlink report ~1.63s after the report's own timestamp, so the last
-        ~1.6s of every resolving average is already determined but unseen. A
-        spot tick stamped on OUR clock is what makes that gap measurable
-        against the book events in this same tape — a cross-venue REST pull
-        cannot, because its clock is not ours.
-        """
-        try:
-            self._buf.append(json.dumps({
-                "k": "s", "src": "cb", "rx": round(rx, 3), "p": price,
-                "d": feed_delay_ms,
-            }))
-            self._maybe_flush(rx)
         except Exception:
             pass
 
@@ -678,22 +695,29 @@ class MicroTape:
             logger.warning(f"micro-tape flush failed ({len(buf)} events): {e}")
 
 
-def compress_recordings_job(level: int = 3):
+def compress_recordings_job(level: int = 3, budget_s: float = 540.0):
     """Nightly: gzip every finished tape file (today's stays open for appends).
 
     The tape is repetitive JSON and compresses ~39x at ~40 MB/s, so a day's
     micro-tape goes 1.9 GB -> ~50 MB in under a minute. That is what makes a
     multi-day research corpus (and recording more than one market) fit the
     45 GB host at all. Readers open .jsonl and .jsonl.gz interchangeably.
+
+    The deadline is checked INSIDE the copy loop: the scheduler's wait_for
+    cannot stop a to_thread body, so on a starved night the abandoned thread
+    used to die mid-write at the midnight restart (a .gz.part orphan and an
+    uncompressed 2.2 GB day proved it, 08-20). Out of budget -> drop the
+    partial, keep the raw, retry tomorrow; raws accumulating unpaged is how
+    the 45 GB host fills, so a WARNING names every file left behind.
     """
     async def _job() -> dict[str, Any]:
         import asyncio as _aio
 
         def _compress() -> dict[str, Any]:
             import gzip
-            import shutil
+            deadline = time.monotonic() + budget_s
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            done, saved = 0, 0
+            done, saved, left = 0, 0, []
             try:
                 files = sorted(RECORDINGS_DIR.glob("*.jsonl"))
             except OSError:
@@ -702,18 +726,35 @@ def compress_recordings_job(level: int = 3):
                 if today in f.name:
                     continue                      # still being appended to
                 gz = f.with_suffix(".jsonl.gz")
+                tmp = gz.with_suffix(".gz.part")
+                if time.monotonic() >= deadline:
+                    left.append(f.name)
+                    continue
                 try:
                     raw = f.stat().st_size
-                    tmp = gz.with_suffix(".gz.part")
+                    expired = False
                     with open(f, "rb") as src, gzip.open(tmp, "wb", compresslevel=level) as dst:
-                        shutil.copyfileobj(src, dst, length=1 << 20)
+                        while chunk := src.read(1 << 20):
+                            dst.write(chunk)
+                            if time.monotonic() >= deadline:
+                                expired = True
+                                break
+                    if expired:
+                        tmp.unlink(missing_ok=True)
+                        left.append(f.name)
+                        continue
                     tmp.replace(gz)               # atomic: never leave a half file
                     f.unlink()
                     done += 1
                     saved += raw - gz.stat().st_size
                 except OSError as e:
+                    tmp.unlink(missing_ok=True)
                     logger.warning(f"tape compress failed for {f.name}: {e}")
-            return {"compressed": done, "mb_saved": round(saved / 1e6)}
+            if left:
+                logger.warning("tape compress out of budget (%.0fs) — left raw, "
+                               "retrying tomorrow: %s", budget_s, ", ".join(left))
+            return {"compressed": done, "mb_saved": round(saved / 1e6),
+                    **({"left_raw": len(left)} if left else {})}
 
         return await _aio.to_thread(_compress)
     return _job

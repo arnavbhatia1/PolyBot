@@ -188,6 +188,8 @@ def main() -> int:
     if cancels:
         print(f"GTC cancel RTT n={len(cancels)}: min {min(cancels):.3f} "
               f"p50 {_q(cancels, .5):.3f} max {max(cancels):.3f}")
+    print("samples persisted to latency_stats.json (gtc section) — the nightly "
+          "ops watch validates paper's GTC table against them")
     print("\nPASS — the live resting-bid path works end to end from this host: a GTC "
           "order posts, polls and cancels. That is the path post-close earns through.")
     return 0

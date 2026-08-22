@@ -27,6 +27,8 @@ RECONNECT_BASE = 1
 RECONNECT_MAX = 30
 TRADE_BUFFER_MAXLEN = 500          # ≥120s of trades at peak Polymarket BTC rate
 FRESHNESS_S = 10.0                 # Default per-token freshness gate
+DROP_LOG_EVERY_S = 300.0           # rate limit on the dropped-message warning: a schema change
+                                   # drops every message of a kind, and per-message logs would flood.
 
 
 class ClobWebSocket:
@@ -48,6 +50,14 @@ class ClobWebSocket:
         # Optional per-print tape hook: fn(asset_id, trade) (recording.TapeRecorder).
         self.on_trade = None
         self.on_bba = None   # micro-tape hook: every best-bid/ask change
+
+        # Receipt time of the last print gap. A reconnect drops every trade that
+        # printed while we were away and the resubscribe replays the book only,
+        # so anything resting across this timestamp saw an incomplete tape.
+        self.last_print_gap_ts: float = 0.0
+
+        self.drops: dict[str, int] = {}   # unreadable/unrouted messages per kind
+        self._drops_logged: float = 0.0
 
         self.connected: bool = False
         self._ws: Any = None
@@ -198,7 +208,9 @@ class ClobWebSocket:
                 if self._heartbeat_task:
                     self._heartbeat_task.cancel()
                 if not self._closing:
-                    logger.debug("CLOB WS disconnected: %s — reconnecting in %ds", e, backoff)
+                    self.last_print_gap_ts = time.time()
+                    logger.warning("CLOB feed dropped — prints are lost until it "
+                                   "reconnects in %ds (%s)", backoff, e)
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, RECONNECT_MAX)
 
@@ -219,6 +231,15 @@ class ClobWebSocket:
         except (asyncio.CancelledError, websockets.ConnectionClosed):
             pass
 
+    def _note_drop(self, kind: str) -> None:
+        """Count what we throw away — a schema change drops 100% of a kind."""
+        self.drops[kind] = self.drops.get(kind, 0) + 1
+        now = time.time()
+        if now - self._drops_logged >= DROP_LOG_EVERY_S:
+            self._drops_logged = now
+            logger.warning("CLOB DROPS — unreadable messages so far: %s",
+                           ", ".join(f"{k} {v}" for k, v in sorted(self.drops.items())))
+
     def _handle_message(self, raw: str) -> None:
         if raw == "PONG":
             self._last_pong_ts = time.time()
@@ -226,6 +247,7 @@ class ClobWebSocket:
         try:
             msg = _loads(raw)
         except (json.JSONDecodeError, ValueError):
+            self._note_drop("unparsed")
             return
         self.staleness.observe()
         if isinstance(msg, list):
@@ -251,6 +273,8 @@ class ClobWebSocket:
         elif event_type == "tick_size_change":
             logger.debug("Tick size changed: %s -> %s for %s",
                          msg.get("old_tick_size"), msg.get("new_tick_size"), msg.get("asset_id"))
+        else:
+            self._note_drop(f"event:{event_type}" if event_type else "no event_type")
 
     def _stamp_feed_delay(self, msg: dict[str, Any], now: float) -> None:
         try:

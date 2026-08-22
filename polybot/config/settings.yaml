@@ -76,15 +76,16 @@ late_window:
                                # still evaluates and logs would-be fires; re-arm by
                                # flipping this once the nightly dip count says the
                                # whipsaw supply returned (RESEARCH.md).
-  validation_epoch: "2026-08-19T13:00:00+00:00"  # deep_proj PAPER validation
-                               # under the recalibrated config (60s engine,
-                               # 08-18 tables, need 1.0 interim floor,
-                               # k[6,25], taker dormant, 135-sh at-price
-                               # queue, $150 go-live sizing). The 08-18
-                               # 16:45Z epoch's two fills (+$16.41, +$3.94,
-                               # both wins) ran need 0.5 — recorded in
-                               # RESEARCH.md #1 for the >=14-day floor
-                               # re-decision, excluded from this gate.
+  validation_epoch: "2026-08-21T04:30:00+00:00"  # deep_proj PAPER validation
+                               # under the 08-20 audit fixes (bridge sanity
+                               # band + anchor guard, zone 58, trusted-only
+                               # orphan resolution, retire books under
+                               # cancellation). Set past the midnight-ET boot
+                               # that carries them. The 08-19 13:00Z epoch's
+                               # 5 fills (5 wins, +23.3¢/sh, 1 ET day) ran the
+                               # pre-audit engine; the 08-18 16:45Z epoch's 2
+                               # ran need 0.5 — both recorded in RESEARCH.md,
+                               # excluded from this gate.
                                # Set AFTER the boot that carries it
                                # by more than the ~3.4min entry-to-exit gap,
                                # because the gate filters on EXIT time — an
@@ -99,9 +100,9 @@ late_window:
   # breach-loss at -95c vs thirteen +5c wins). One breach erases ~20 wins; the
   # thin tier is not worth its fires.
   require_max_tier: true
-  twap_zone_s: 60.0             # decision zone = the resolving 60s averaging window (rule
-                                # since 08-14); the projection is undefined earlier (never
-                                # raise above 60)
+  twap_zone_s: 58.0             # decision zone stops at the last FITTED margin knot (k=58):
+                                # past it the tables clamp to k=58 while the true error is
+                                # larger — margin thinning. Never raise above 58.
   twap_k_min_s: 6.0             # NO LOW-K FIRES. Low-k margin knots are tail bounds too thin for
                                 # the corpus to pin (the 30s era realized a k=1.1 max-tier breach
                                 # that bought a $0 token — the scar this floor carries). The 60s

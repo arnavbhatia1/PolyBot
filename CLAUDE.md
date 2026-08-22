@@ -44,7 +44,7 @@ cp polybot/config/.env.example polybot/config/.env
 python -m polybot.main --mode paper       # paper trading
 python -m polybot.main --mode live        # real USDC (needs allowance)
 python -m polybot.main --run-pipeline     # one nightly cycle, no trading
-python -m pytest polybot/tests/           # full suite
+python -m pytest polybot/tests/           # full suite (also CI on every push)
 scripts/run_polybot.sh                    # daily cycle: trade -> nightly jobs -> commit -> restart (VPS only)
 ```
 
@@ -84,7 +84,9 @@ a genuine hole can. The RAW ~1Hz stream
 reconstruction (`running_avg`, rx-clock ZOH: matches the served 60s final at
 median $0.028 / p90 $0.22) and the projection (`projected_final_twap`,
 horizon 60s). A boundary capture landing > 0.5s past the boundary is
-UNTRUSTED — no leg deploys capital on it (`_strike_trusted`). The projection
+UNTRUSTED — no leg deploys capital on OUR capture (`_strike_trusted`); a
+served Gamma `price_to_beat` is the resolution source itself, so it restores
+trust when it arrives. The projection
 additionally refuses: spot older than 3s, and any raw delivery hole > 10s
 inside the averaging span (`RAW_GAP_MAX_S` — a 68s hole once projected a $24
 error onto a $0.14 photo-finish behind a perfectly fresh spot).
@@ -93,7 +95,10 @@ Two modes, one engine: **paper** (realism shim: real CLOB books, FOK
 semantics, latency sampled from the live ledger's measured POST-RTT
 distribution, network-fail sim, tick snapping; maker fills are print-through
 conservative — see §2) and **live** (`py-clob-client-v2` against the real
-CLOB; balance + allowance verified at boot).
+CLOB; balance + allowance verified at boot). Decision parity is a CI
+invariant: `test_decision_parity.py` replays real recorded windows through
+both traders and asserts bit-identical gates, signals, sizing, and order
+intents (fixture regenerates via `scripts/research/parity_fixture_gen.py`).
 
 ## 2. The two legs (one signal, risk priced two ways)
 
@@ -122,8 +127,10 @@ failure mode collapses to the plain projection. Fills book through
 `book_maker_fill` as ONE blended position. **Paper fill rule
 (live-calibrated, conservative)**: strictly-below prints fill a rung in FULL;
 at-price prints credit only volume beyond `AT_PRICE_QUEUE_SH` (135 sh);
-snapshot queue models are BANNED (REFUTATIONS.md). Paper pays the measured
-GTC round trip on place and cancel. Maker fills are genuinely fee-free
+snapshot queue models are BANNED (REFUTATIONS.md). Paper pays a GTC round
+trip on place and cancel that is **not measured** — 56ms/rung against ~500ms
+reconstructed from the one live ladder, so paper's rungs become matchable
+about twice as fast as the real ones (RESEARCH.md). Maker fills are fee-free
 (re-verified on post-rule fills 08-18: 274/274 USDC deltas exact).
 **Bar (unchanged)**: ≥6 clean ET days, ≥20 filled windows, EW ≥ +5¢/sh,
 `usd_per_day > 0`, on realized paper fills since `validation_epoch`.
@@ -182,10 +189,16 @@ sign 17.5ms pure-python on the box (coincurve on Linux ~10× faster; dev boxes
 skip it). SELL signatures pre-armed; BUY pre-signs concurrently. WS-only book
 pre-check; warm pooled HTTP/2; gc.freeze() post-boot. GTC rungs pass
 `legal_price` (round DOWN to tick, clamp [tick, 1−tick]) and the 5-share
-exchange minimum; any rejection logs `MAKER BID REJECTED` at ERROR.
-`cl_report_to_submit_ms` + `lat_*` stamps measure the race per fill. Live
-boot: key+funder, balance/allowance preflight, allowance recheck every 10
-fills. `fill.fill_size` is always USDC notional.
+exchange minimum. A rung that cannot be rested logs `MAKER BID REJECTED` at
+ERROR, refusal and POST failure alike; a rung the budget cannot afford is
+`MAKER RUNG SKIPPED` at INFO — routine, not a rejection.
+`cl_report_to_submit_ms` + `lat_*` stamps measure the race per fill; GTC
+place/cancel RTTs stamp per rung (`gtc_place_ms`/`gtc_cancel_ms`, plus the
+`latency_stats.json` gtc section — `smoke_gtc_test.py --samples` feeds it
+too), and a fill whose owned segments exceed 1.5× the 25ms budget logs
+LATENCY BUDGET at WARNING. Live boot: key+funder, balance/allowance
+preflight, allowance recheck every 10 fills. `fill.fill_size` is always USDC
+notional.
 
 ## 5. Resolution
 
@@ -202,19 +215,22 @@ the only on-chain thing the bot signs).
 ## 6. Recorders + nightly
 
 - **Window-path recorder** (1 Hz, 5 Hz final 45s): both tokens' BBO/depth +
-  Chainlink price + strike for EVERY window → `window_paths` (gitignored
+  Chainlink price + strike (with `strike_trusted`, since `get_strike` also
+  serves untrusted captures) for EVERY window → `window_paths` (gitignored
   sidecar DB) / `window_labels`; 90-day retention. Labels are the kill-bar
   ground truth.
 - **Tape recorder**: every CLOB print (+ exchange ts, fee bps) →
   `memory/recordings/tape_*.jsonl` (gitignored).
 - **Micro-tape**: every CLOB BBO change (final 90s) + every raw report ("l")
   + the official 60s stream ("t") + the RETIRED 30s stream ("t3", recorded
-  only — A/B evidence for the next silent source swap) + Binance relay
+  only — A/B evidence for the next silent source swap; RTDS is not currently
+  serving it, and the nightly SOURCE line states the count) + Binance relay
   ("s"/src "bz"), payload+receipt ts → `micro_*.jsonl`; nightly gzip (~39×);
   readers take .jsonl(.gz).
 - **Per-decision records**: `trade_context` on fills AND ghosts (`signal_leg`
   is the per-leg ledger key). **None-vs-0.0 is load-bearing** — cold inputs
-  record None, never 0.0.
+  record None, never 0.0. Ladder fills carry `print_gap`: 1 when the CLOB feed
+  reconnected while the rungs rested, so paper's fill count is short there.
 - **The per-window SOURCE hard gate** (`recording._check_resolution_source`):
   every labeled window's served strike/final is compared against our TRUSTED
   stream captures; a >$0.005 mismatch flips `trading_enabled` false
@@ -230,7 +246,8 @@ the only on-chain thing the bot signs).
   predicts zero fills, not losses), chain watch (final==next strike), the
   nightly SOURCE summary (`mechanism_read`), and the ops watch (POST RTT p50
   vs the 436ms table ±25%; trailing-7d sweep-consumed deep-queue p75 vs the
-  135-sh at-price constant). Alert-only.
+  135-sh at-price constant; measured GTC place p50 vs paper's 56ms table
+  ±25%, dark until samples exist; owned-latency budget breaches). Alert-only.
 
 ## 7. Hard rules
 

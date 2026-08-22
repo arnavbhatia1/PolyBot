@@ -257,3 +257,84 @@ def test_legs_breakdown_groups_by_signal_leg(tmp_path):
     assert legs["lock_dip"]["net_per_sh"] == pytest.approx(0.4)
     assert legs["open_edge"]["net_per_sh"] == pytest.approx(-0.2)
     assert legs["open_edge"]["win_rate"] == 0.0
+
+
+def test_trailing_window_is_calendar_days_not_active_days(tmp_path):
+    """A quiet leg must not be judged on tape from three weeks ago: the window
+    is the last 4 CALENDAR ET days, zero-filled where nothing filled."""
+    rows = [(i, 5.0, 0.0, 100.0, _ts(d)) for i, d in
+            enumerate(["07-01", "07-02", "07-03", "07-04"], 1)]
+    rows.append((5, -4.0, 0.0, 100.0, _ts("07-20")))
+    r = _read(tmp_path, rows)
+    assert r["trailing4_days"] == ["2026-07-17", "2026-07-18", "2026-07-19", "2026-07-20"]
+    assert r["trailing4_usd"] == pytest.approx(-1.0)      # (0+0+0-4)/4, not the 4 active days
+    assert r["kill_rule_tripped"] is None                 # 1 fill < 5 — accruing
+
+
+def test_one_fill_a_day_bleeding_keeps_the_unchanged_fill_threshold(tmp_path):
+    """30 days of a single losing fill a day: the window is the last 4 calendar
+    days and the 5-fill floor still says accrue."""
+    rows = [(i, -1.0, 0.0, 100.0, _ts(f"07-{i:02d}")) for i in range(1, 31)]
+    r = _read(tmp_path, rows)
+    assert r["trailing4_days"] == ["2026-07-27", "2026-07-28", "2026-07-29", "2026-07-30"]
+    assert r["kill_rule_tripped"] is None
+
+
+def test_a_bleeding_leg_trips_even_when_the_aggregate_is_positive(tmp_path):
+    """Per-leg verdict: a leg losing $9/day must not hide behind one making $10."""
+    rows, legs = [], {}
+    for i, d in enumerate(["07-04", "07-05", "07-06", "07-07"]):
+        for j, (pnl, leg) in enumerate([(-4.5, "A"), (-4.5, "A"),
+                                        (5.0, "B"), (5.0, "B")]):
+            rid = i * 4 + j + 1
+            rows.append((rid, pnl, 0.0, 100.0, _ts(d)))
+            legs[rid] = leg
+    r = _read(tmp_path, rows, legs=legs)
+    assert r["trailing4_usd"] == pytest.approx(1.0)       # aggregate is POSITIVE
+    assert r["tripped_legs"] == ["A"]
+    assert r["kill_rule_tripped"] is True
+
+
+def test_quiet_days_then_one_loss_still_does_not_trip(tmp_path):
+    rows = [(i, 5.0, 0.0, 100.0, _ts(d)) for i, d in
+            enumerate(["07-04", "07-05", "07-06"], 1)]
+    rows.append((4, -4.5, 0.0, 100.0, _ts("07-10")))
+    r = _read(tmp_path, rows)
+    assert r["tripped_legs"] == []
+    assert r["kill_rule_tripped"] is None
+
+
+def test_mechanism_read_states_the_30s_ab_tape_count(tmp_path):
+    """CLAUDE.md documents the retired-30s tape as the net against the next
+    silent source swap. It has zero records on every day of the corpus, so the
+    source watch must state the count instead of assuming the net exists."""
+    mod = _load()
+    db = tmp_path / "labels.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE window_labels (window_id TEXT, final_price REAL, "
+                "price_to_beat REAL, labeled_at REAL)")
+    con.execute("INSERT INTO window_labels VALUES ('btc-updown-5m-1787000000', "
+                "64100.0, 64000.0, 1787000400)")
+    con.commit()
+    con.close()
+    caps = {1787000000: 64000.0, 1787000300: 64100.0}
+
+    out = mod.mechanism_read(caps, db, 0, 0)
+    assert out["exact"] == out["checked"] == 2
+    assert out["t3_records"] == 0
+
+    assert mod.mechanism_read(caps, db, 0, 1720)["t3_records"] == 1720
+    assert mod.mechanism_read(caps, db)["t3_records"] is None
+
+
+def test_micro_tape_counts_the_30s_records_it_writes(tmp_path):
+    from polybot.recording import MicroTape
+    mt = MicroTape(dir_path=tmp_path)
+    assert mt.t3_records == 0
+    mt.on_twap30_report(1786334400.0, 64500.25)
+    mt.on_twap30_report(1786334401.0, 64500.50)
+    assert mt.t3_records == 2
+    mt.on_twap_report(1786334401.0, 64500.50)     # the LIVE stream is not t3
+    assert mt.t3_records == 2
+    mt.flush()
+    mt._writer.shutdown(wait=True)

@@ -79,6 +79,21 @@ capture, cross-market inventory) rather than informational. Its scale
 (+$45k/11d on $1.5M notional) against measured rebate rates (~0.4%/day of
 maker notional ≈ a tenth of its P&L) says informational. Do not build.
 
+## 08-21 H1 decomposition notes (full-era, our own tape)
+
+- Makers as a CLASS net −$7.8k/day post-rule ($6.62M/day notional): ask-side
+  makers pay −$24.8k/day to informed buyers; bid-side collects +$17.0k/day
+  from wrong-way sellers. Every day-stable pocket is bid-side.
+- The mid-window touch-bid wall ($11.9k/day capture, k>60) is 78% five
+  wallets: a pseudonym cluster + BoneOhio + the almach triplet — behind
+  2.3-8.3k-share shared-price queues, plausibly reward-farming given the
+  class-negative first half. Not occupiable (the 0/102 live probe binds).
+- Uncensused wall-scale wallet `0x6fc44EC445D73c…` took 36% of the sampled
+  terminal counterflow — add at the next census run.
+- The 0.99 wall's harvest includes ~$854/day of PRE-close lottery flow
+  matched cross-book via the mint adapter — invisible to post-close-only
+  reads; a post-close-camping read understates that wallet class's income.
+
 ## Standing discipline
 
 Re-run the census after every regime shift and at least weekly during any

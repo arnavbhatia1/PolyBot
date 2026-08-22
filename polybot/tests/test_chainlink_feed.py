@@ -113,6 +113,35 @@ class TestChainlinkFeed:
         assert ChainlinkFeed._epoch_seconds(1781031482000.0) == 1781031482.0
         assert ChainlinkFeed._epoch_seconds(1781031482.0) == 1781031482.0
 
+    def test_epoch_seconds_refuses_an_out_of_band_scale(self):
+        """A µs- or ns-scaled payload survives the ms rescale as ~1.79e12 —
+        believable to the parser, absurd as a clock. Refuse it."""
+        assert ChainlinkFeed._epoch_seconds(1781031482000000.0) is None
+        assert ChainlinkFeed._epoch_seconds(1781031482000000000.0) is None
+        assert ChainlinkFeed._epoch_seconds(0.0) is None
+
+    def test_out_of_band_timestamp_cannot_evict_boundary_captures(self, caplog):
+        """One rescaled-but-absurd ts would push the 2h cutoff past every
+        capture, so certain_winner goes None and both source watches go dark."""
+        import json as _j
+
+        f = ChainlinkFeed()
+        boundary = ((int(time.time()) // 300) - 1) * 300
+
+        def frame(ts, value):
+            return _j.dumps({"topic": "crypto_prices_twap_sixty",
+                             "payload": {"symbol": "btc/usd", "value": value,
+                                         "timestamp": ts}})
+
+        with caplog.at_level(logging.ERROR):
+            _drive_frames(f, [frame((boundary - 1) * 1000, 63980.0),
+                              frame(boundary * 1000, 63990.5),
+                              frame(boundary * 1000000, 64000.0)])   # microseconds
+        assert f.boundary_snapshot() == {boundary: 63990.5}
+        assert f.twap_official == 63990.5          # the bad report mutated nothing
+        assert f._last_twap_ts == boundary
+        assert any("FEED TIMESTAMP" in r.getMessage() for r in caplog.records)
+
     def test_boundary_capture_from_ms_payload(self):
         """A boundary recorded from a normalized ms timestamp must be retrievable
         by a second-space get_strike lookup — un-normalized ms keys never match."""
@@ -235,6 +264,41 @@ class TestChainlinkFeed:
         assert sleeps[0] >= cf_mod.RECONNECT_MAX_S / 2, f"429 must back off hard, got {sleeps[:2]}"
 
 
+class TestDropCounters:
+    """A schema change can drop 100% of a topic with only the 60s watchdog as
+    a backstop — count what we throw away, and say so once."""
+
+    def test_unreadable_reports_are_counted_per_topic(self, caplog):
+        import json as _j
+
+        f = ChainlinkFeed()
+        base = ((int(time.time()) // 300) - 1) * 300
+        frames = [
+            "{not json",                                           # unparsed
+            _j.dumps({"topic": "crypto_prices_twap_sixty",         # value field renamed
+                      "payload": {"symbol": "btc/usd", "px": 65000.0,
+                                  "timestamp": base * 1000}}),
+            _j.dumps({"topic": "crypto_prices_chainlink",          # value not a number
+                      "payload": {"symbol": "btc/usd", "value": "n/a",
+                                  "timestamp": base * 1000}}),
+            _j.dumps({"topic": "crypto_prices",                    # binance tick, no ts
+                      "payload": {"symbol": "btcusdt", "value": 65000.0}}),
+        ]
+        with caplog.at_level(logging.WARNING):
+            _drive_frames(f, frames)
+        assert f.drops == {"unparsed": 1, "crypto_prices_twap_sixty": 1,
+                           "crypto_prices_chainlink": 1, "crypto_prices": 1}
+        assert any("FEED DROPS" in r.getMessage() for r in caplog.records)
+
+    def test_the_drop_warning_is_rate_limited(self, caplog):
+        f = ChainlinkFeed()
+        with caplog.at_level(logging.WARNING):
+            for _ in range(50):
+                f._note_drop("crypto_prices_twap_sixty")
+        assert f.drops["crypto_prices_twap_sixty"] == 50
+        assert len([r for r in caplog.records if "FEED DROPS" in r.getMessage()]) == 1
+
+
 class TestTwap:
     """The 30s-TWAP machinery: the running reconstruction (rx-clock, the
     estimator the frozen margins bind to), the sniper projection, and strict
@@ -296,6 +360,22 @@ class TestTwap:
         assert f.projected_final_twap(now - 1.0, now=now) is None    # window closed
         f._last_update = now - 10.0                                  # stale spot
         assert f.projected_final_twap(now + 10.0, now=now) is None
+
+    def test_spot_age_gate_uses_the_supplied_clock(self):
+        """Every other gate honours now=; a wall-clock staleness read hands
+        each replayed window a verdict about the present instead."""
+        f = ChainlinkFeed()
+        t = time.time() - 3600.0                  # a replayed instant
+        close = t + 10.0
+        t0 = close - 60.0
+        f._reports.append((t0 - 1.0, 64000.0))
+        for off in (10.0, 20.0, 30.0, 40.0, 50.0):
+            f._reports.append((t0 + off, 64000.0))
+        f._price = 64000.0
+        f._last_update = t                        # fresh on the replay clock
+        assert f.projected_final_twap(close, now=t) == pytest.approx(64000.0)
+        f._last_update = t - 10.0                 # stale on the replay clock
+        assert f.projected_final_twap(close, now=t) is None
 
     def test_projected_final_twap_none_on_delivery_hole(self):
         """A raw outage inside the averaging span leaves a poisoned average
@@ -370,6 +450,44 @@ class TestTwap:
         assert f.get_strike(boundary) == 63990.5
 
 
+def _drive_frames(f, frames):
+    """Run the feed's message loop over a fixed list of RTDS frames."""
+    async def run():
+        class FakeWS:
+            def __init__(self, fr):
+                self._frames = list(fr)
+            async def send(self, _): pass
+            def __aiter__(self): return self
+            async def __anext__(self):
+                if not self._frames:
+                    raise StopAsyncIteration
+                return self._frames.pop(0)
+
+        ws = FakeWS(frames)
+        import websockets as _wslib
+
+        class _Ctx:
+            async def __aenter__(self): return ws
+            async def __aexit__(self, *a): return False
+
+        orig = _wslib.connect
+        _wslib.connect = lambda *a, **k: _Ctx()
+        try:
+            f._running = True
+            t = asyncio.create_task(f._run())
+            await asyncio.sleep(0.1)
+            f._running = False
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        finally:
+            _wslib.connect = orig
+
+    asyncio.run(run())
+
+
 class TestTwapFrozen:
     """The resolution source stalling is invisible to the raw-stream freshness
     gate and to the receipt-based reconnect watchdog, so it needs its own guard.
@@ -410,6 +528,32 @@ class TestTwapFrozen:
     def test_cold_feed_does_not_fire(self):
         f = ChainlinkFeed()
         assert f.twap_frozen() is False
+
+    def _twap_frame(self, value, i):
+        import json as _j
+        base = ((int(time.time()) // 300) - 1) * 300
+        return _j.dumps({"topic": "crypto_prices_twap_sixty",
+                         "payload": {"symbol": "btc/usd", "value": value,
+                                     "timestamp": (base + i) * 1000}})
+
+    def test_last_digit_jitter_does_not_rearm_the_clock(self):
+        """A stalled relay still jitters its last digit: raw travelled $19.50
+        over 40s while the official value held 65003.4548 +/- 1e-9 and the
+        stall veto never fired. Sub-cent wobble is not movement."""
+        f = ChainlinkFeed()
+        _drive_frames(f, [self._twap_frame(65003.4548, 0)])
+        armed = f._twap_value_since
+        assert armed > 0
+        _drive_frames(f, [self._twap_frame(65003.45480001, 1),
+                          self._twap_frame(65003.4548, 2)])
+        assert f._twap_value_since == armed         # stall clock still running
+
+    def test_real_move_rearms_the_clock(self):
+        f = ChainlinkFeed()
+        _drive_frames(f, [self._twap_frame(65003.4548, 0)])
+        armed = f._twap_value_since
+        _drive_frames(f, [self._twap_frame(65004.4548, 1)])
+        assert f._twap_value_since > armed
 
     def test_value_change_resets_the_clock(self):
         f = self._feed(35.0, [(30.0, 65000.79), (1.0, 65019.19)])
@@ -454,6 +598,53 @@ class TestSpotBridge:
     def test_binance_older_than_report_fails_to_plain(self):
         f = self._feed(100.0, [(98.0, 64050.0), (99.0, 64051.0)])
         assert f.spot_bridge_delta() == 0.0
+
+    def test_decimal_slip_tick_fails_to_plain_and_warns(self, caplog):
+        # A 10x slip in one relay tick once injected a -$58,509 delta straight
+        # into the side the ladder rests on.
+        import logging
+        f = self._feed(100.0, [(100.0, 64050.0), (101.5, 6405.0)])
+        with caplog.at_level(logging.WARNING):
+            assert f.spot_bridge_delta() == 0.0
+        assert any("BRIDGE OFF" in r.getMessage() for r in caplog.records)
+
+    def test_stale_anchor_fails_to_plain(self):
+        # A ring hole leaves the anchor 6s behind the report: the delta would
+        # re-add movement the Chainlink report already carries.
+        f = self._feed(100.0, [(94.0, 64050.0), (101.5, 64080.0)])
+        assert f.spot_bridge_delta() == 0.0
+
+    def _spot_frame(self, ts, px):
+        import json as _j
+        return _j.dumps({"topic": "crypto_prices",
+                         "payload": {"symbol": "btcusdt", "value": px,
+                                     "timestamp": ts * 1000}})
+
+    def test_out_of_order_tick_keeps_the_ring_in_ts_order(self):
+        """Nothing upstream guarantees arrival order, and both the anchor scan
+        and the newest read walk the ring in ts order — one late tick would
+        otherwise silently revert the ladder to the plain projection."""
+        f = ChainlinkFeed()
+        base = float(int(time.time()))
+        _drive_frames(f, [self._spot_frame(base - 1, 64050.0),
+                          self._spot_frame(base, 64057.0),
+                          self._spot_frame(base + 2, 64087.0),
+                          self._spot_frame(base + 1, 64070.0)])   # arrives late
+        assert [ts for ts, _ in f._binance] == sorted(ts for ts, _ in f._binance)
+        f._last_report_obs_ts = base
+        assert f.spot_bridge_delta() == pytest.approx(30.0)       # newest 64087 - anchor 64057
+
+    def test_future_dated_tick_does_not_evict_the_ring(self):
+        """Retention keys off the ring's own newest, and a tick dated ahead of
+        our receipt is dropped — either way the anchor history survives."""
+        f = ChainlinkFeed()
+        base = float(int(time.time()))
+        _drive_frames(f, [self._spot_frame(base - 3, 64050.0),
+                          self._spot_frame(base - 2, 64052.0),
+                          self._spot_frame(base - 1, 64055.0),
+                          self._spot_frame(base, 64057.0),
+                          self._spot_frame(base + 3600, 64060.0)])   # an hour ahead
+        assert [ts for ts, _ in f._binance] == [base - 3, base - 2, base - 1, base]
 
     def test_bridged_projection_moves_by_weighted_delta(self):
         now = time.time()

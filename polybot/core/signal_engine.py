@@ -1,6 +1,6 @@
 """The TWAP strategy's decision math — the ONLY signal source in the bot.
 
-One thesis (compute the resolving 30s average first): the lock-dip taker buys
+One thesis (compute the resolving 60s average first): the lock-dip taker buys
 panic on a mathematically decided window, and the maker leg shares the same
 lock math via main's placement hook. There is no other model — no spot
 prediction, no feature stack; the CLOB price wins everywhere this doesn't

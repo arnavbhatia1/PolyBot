@@ -36,15 +36,25 @@ class _FakeClob:
 
 
 class _FakeChainlink:
+    trusted = True
+
     def get_strike(self, window_ts):
         return 60990.0
 
+    def strike_reliable(self, window_ts):
+        return self.trusted
 
 
-def test_top3_usd_sums_first_three_levels():
+
+def test_top3_usd_takes_the_levels_nearest_the_touch():
+    """The WS sends BOTH sides price-ascending — raw [0] is the best ask but
+    the WORST bid. 539k/569k era rows recorded worst-level bid depth before
+    the per-side sort."""
     levels = [{"price": "0.5", "size": "10"}, {"price": "0.6", "size": "10"},
               {"price": "0.7", "size": "10"}, {"price": "0.9", "size": "1000"}]
-    assert _top3_usd(levels) == 0.5 * 10 + 0.6 * 10 + 0.7 * 10
+    assert _top3_usd(levels, "ask") == 0.5 * 10 + 0.6 * 10 + 0.7 * 10
+    assert _top3_usd(levels, "bid") == 0.9 * 1000 + 0.7 * 10 + 0.6 * 10
+    assert _top3_usd([], "bid") is None
 
 
 @pytest.mark.asyncio
@@ -136,6 +146,33 @@ async def test_window_recorder_full_capture_null_on_cold(db, tmp_path, monkeypat
         "FROM window_paths")
     r = (await cur.fetchall())[0]
     assert all(r[k] is None for k in r.keys())
+    await rec.stop()
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_window_recorder_marks_strike_trust(db, tmp_path, monkeypatch):
+    """get_strike serves untrusted captures and the live fallback too, so the
+    corpus must say which one the row holds."""
+    import polybot.recording as recording
+    monkeypatch.setattr(recording, "PATHS_DB", tmp_path / "paths.db")
+    await db.initialize()
+    feed = _FakeChainlink()
+    rec = WindowPathRecorder(db=db, clob_ws=_FakeClob(), chainlink_feed=feed,
+                             market_scanner=None, http_client=None)
+    await rec.ensure_tables()
+    window_ts = int(time.time() // 300) * 300
+    rec._window = {"market_id": f"btc-updown-5m-{window_ts}", "window_ts": window_ts,
+                   "token_up": "tu", "token_down": "td"}
+    rec._sample()
+    feed.trusted = False
+    rec._sample()
+    await rec._flush()
+    cur = await rec._paths_conn.execute(
+        "SELECT strike, strike_trusted FROM window_paths")
+    rows = await cur.fetchall()
+    assert sorted(r["strike_trusted"] for r in rows) == [0, 1]
+    assert all(r["strike"] == 60990.0 for r in rows)   # the value is kept either way
     await rec.stop()
     await db.close()
 
@@ -256,21 +293,19 @@ async def test_recordings_cleanup_job_prunes_old_files(tmp_path, monkeypatch):
     assert micro_fresh.exists() and tape_aged.exists() and fresh.exists() and keepme.exists()
 
 
-def test_micro_tape_records_coinbase_spot_ticks(tmp_path):
-    """Spot ticks land in the tape stamped on OUR clock, carrying the exchange
-    feed delay — that pairing is what makes the oracle relay's ~1.63s gap
-    measurable against this same tape's book events."""
+def test_micro_tape_records_binance_relay_ticks(tmp_path):
+    """The relay's spot ticks land with both clocks, so the bridge delta (the
+    ~2s the crowd sees before our oracle receipt) replays offline."""
     from polybot.recording import MicroTape
     mt = MicroTape(dir_path=tmp_path)
-    mt.on_cb_tick(1786334400.123456, 64512.5, 41.3)
-    mt.on_cb_tick(1786334400.987, 64513.0, None)      # missing exchange ts is allowed
+    mt.on_bz_tick(1786334400.123456, 64512.5)
     mt.flush()
     mt._writer.shutdown(wait=True)
     rows = [json.loads(x) for x in
             next(tmp_path.glob("micro_*.jsonl")).read_text().splitlines()]
-    assert [r["k"] for r in rows] == ["s", "s"]
-    assert rows[0] == {"k": "s", "src": "cb", "rx": 1786334400.123, "p": 64512.5, "d": 41.3}
-    assert rows[1]["d"] is None
+    assert rows[0]["k"] == "s" and rows[0]["src"] == "bz"
+    assert rows[0]["ts"] == 1786334400.123 and rows[0]["p"] == 64512.5
+    assert rows[0]["rx"] > rows[0]["ts"]
 
 
 def test_micro_tape_records_rtds_publish_timestamp(tmp_path):
@@ -295,14 +330,14 @@ def test_micro_tape_records_rtds_publish_timestamp(tmp_path):
     assert round(rows[0]["pub"] - rows[0]["ts"], 2) == 1.38
 
 
-def test_coinbase_tick_hook_never_raises_into_the_feed():
+def test_spot_tick_hook_never_raises_into_the_feed():
     """The spot feed is recording-only; a tape failure must never propagate into
     a feed callback and take the socket (or the trading loop) down with it."""
     from pathlib import Path
     from polybot.recording import MicroTape
     mt = MicroTape(dir_path=Path("/nonexistent-dir-for-test"))
     mt._maybe_flush = lambda now: (_ for _ in ()).throw(RuntimeError("disk gone"))
-    mt.on_cb_tick(1786334400.0, 64512.5, 12.0)        # must swallow
+    mt.on_bz_tick(1786334400.0, 64512.5)              # must swallow
 
 
 @pytest.mark.asyncio
@@ -346,3 +381,73 @@ def test_replay_loader_reads_gzipped_tape(tmp_path, monkeypatch):
     monkeypatch.setattr(atl, "RECORDINGS", tmp_path)
     found = {p.name for p in atl._tape_files(atl.TWAP_SWITCH_TS)}
     assert "micro_2026-08-15.jsonl.gz" in found and "micro_2026-08-14.jsonl" in found
+
+
+class _CapFeed:
+    def __init__(self, caps):
+        self._caps = caps
+
+    def boundary_snapshot(self):
+        return self._caps
+
+
+def _src_rec(caps):
+    rec = WindowPathRecorder(db=None, clob_ws=None, chainlink_feed=_CapFeed(caps),
+                             market_scanner=None, http_client=None)
+    fired = []
+    rec.on_source_mismatch = lambda *a: fired.append(a)
+    return rec, fired
+
+
+def test_unparseable_slug_is_loud_and_counted(caplog):
+    """The one gate that catches an unannounced upstream change must never fail
+    in silence — an unreadable window id is an ERROR, not a shrug."""
+    import logging
+    rec, fired = _src_rec({1786800000: 64000.0})
+    with caplog.at_level(logging.ERROR):
+        rec._check_resolution_source("btc-updown-5m-1786800000-v2", 64100.0, 64000.0)
+    assert rec.source_unchecked == 1
+    assert not fired
+    assert any("SOURCE CHECK SKIPPED" in r.getMessage() for r in caplog.records)
+
+
+def test_missing_captures_are_counted_unchecked():
+    rec, fired = _src_rec({})
+    rec._check_resolution_source("btc-updown-5m-1786800000", 64100.0, 64000.0)
+    assert rec.source_unchecked == 1
+    assert not fired
+
+
+def test_numeric_slug_still_fires_the_mismatch(caplog):
+    rec, fired = _src_rec({1786800000: 63000.0})
+    rec._check_resolution_source("btc-updown-5m-1786800000", 64100.0, 64000.0)
+    assert rec.source_unchecked == 0
+    assert fired and fired[0][1] == "strike"
+
+
+def test_compress_job_respects_its_budget(tmp_path, monkeypatch):
+    """wait_for can't kill a to_thread body: on a starved night the abandoned
+    compress thread died mid-write at the midnight restart (08-20's .gz.part
+    orphan). The deadline now lives inside the copy loop — out of budget means
+    the raw stays whole, the partial is removed, and the report names it."""
+    import asyncio
+    import gzip
+    import polybot.recording as rec
+    monkeypatch.setattr(rec, "RECORDINGS_DIR", tmp_path)
+    big = tmp_path / "micro_2020-01-01.jsonl"
+    big.write_bytes(b'{"k":"l"}\n' * 300_000)   # a few MB, multiple chunks
+    small = tmp_path / "tape_2020-01-01.jsonl"
+    small.write_bytes(b'{"ts":1}\n' * 10)
+
+    job = rec.compress_recordings_job(budget_s=0.0)   # already expired
+    result = asyncio.run(job())
+    assert result["compressed"] == 0 and result["left_raw"] == 2
+    assert big.exists() and small.exists()
+    assert not list(tmp_path.glob("*.part"))
+
+    job = rec.compress_recordings_job(budget_s=60.0)  # plenty
+    result = asyncio.run(job())
+    assert result["compressed"] == 2 and "left_raw" not in result
+    assert not big.exists() and not small.exists()
+    with gzip.open(tmp_path / "micro_2020-01-01.jsonl.gz", "rb") as f:
+        assert f.read(10) == b'{"k":"l"}\n'

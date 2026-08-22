@@ -434,6 +434,148 @@ def _fee_breakdown(result: Any) -> str:
     return f"${total:.2f}  (entry ${entry:.2f} + exit ${exit_:.2f})"
 
 
+async def _boot_order_sweep(client: Any) -> None:
+    """Cancel any resting order a crashed process left on the exchange — a fill
+    in the gap is unbooked shares with no DB row.
+
+    A live-money precondition, so every outcome is stated: what was swept, what
+    refused, and a failure loudly enough that boot cannot look clean."""
+    try:
+        res = await asyncio.to_thread(client.cancel_all)
+    except Exception as e:
+        logger.error("BOOT SWEEP FAILED (%s) — the exchange may still hold resting "
+                     "orders from the last run; cancel them by hand.", e)
+        return
+    res = res if isinstance(res, dict) else {}
+    stuck, swept = res.get("not_canceled") or {}, res.get("canceled") or []
+    if stuck:
+        logger.error("BOOT SWEEP — %d resting order(s) would not cancel; cancel "
+                     "them by hand before trading (%s)", len(stuck), stuck)
+    elif swept:
+        logger.info("Boot order sweep — cancelled %d resting order(s) from the "
+                    "last run", len(swept))
+    else:
+        logger.info("Boot order sweep — no resting orders carried over")
+
+
+def _latency_watch(path: Path, now: datetime | None = None) -> tuple[dict | None, str | None]:
+    """POST-RTT stats for the nightly ops watch, or the reason there are none.
+
+    Never returns both None: a watch that stays silent because its input is
+    unusable reads exactly like a watch that is happy."""
+    try:
+        stats = json.loads(path.read_text())
+        post = stats.get("post") or {}
+        n = int(post.get("n", 0) or 0)
+        age_d = ((now or datetime.now(timezone.utc))
+                 - datetime.fromisoformat(stats["last_updated"])).days
+    except Exception as e:
+        return None, f"no usable order-latency file ({type(e).__name__})"
+    if n < 10:
+        return None, f"only {n} order samples"
+    if age_d > 7:
+        return None, f"last measured {age_d} days ago"
+    return {"p50": post["p50_ms"], "n": n}, None
+
+
+def _gtc_table_ks(samples_ms: list[float]) -> float:
+    """KS statistic of measured GTC RTTs against paper's inverse-CDF table —
+    p50 alone can't see a shape drift (a bimodal live RTT with the right
+    median would still make paper's fill clock fiction)."""
+    from polybot.execution.paper_trader import PaperTrader
+    qs = [(q, v * 1000.0) for q, v in PaperTrader._GTC_LATENCY_QUANTILES]
+
+    def table_cdf(x_ms: float) -> float:
+        if x_ms <= qs[0][1]:
+            return 0.0
+        for (q0, v0), (q1, v1) in zip(qs, qs[1:]):
+            if x_ms <= v1:
+                return q0 + (q1 - q0) * (x_ms - v0) / max(v1 - v0, 1e-9)
+        return 1.0
+
+    s = sorted(samples_ms)
+    n = len(s)
+    return max(max(abs((i + 1) / n - table_cdf(x)), abs(i / n - table_cdf(x)))
+               for i, x in enumerate(s))
+
+
+def _gtc_watch(path: Path, now: datetime | None = None) -> tuple[dict | None, str | None]:
+    """Measured GTC place/cancel RTTs for the ops watch, or why there are none.
+
+    Paper charges 56ms/rung from a table whose live counterpart was never
+    measured (RESEARCH.md 2b) — this goes dark, loudly, until samples exist."""
+    try:
+        g = json.loads(path.read_text()).get("gtc") or {}
+        place = g.get("place") or {}
+        n = int(place.get("n", 0) or 0)
+        age_d = ((now or datetime.now(timezone.utc))
+                 - datetime.fromisoformat(g["last_updated"])).days if g else 999
+    except Exception as e:
+        return None, f"no gtc section ({type(e).__name__})"
+    if n < 10:
+        return None, f"only {n} GTC samples — run smoke_gtc_test.py --samples 12"
+    if age_d > 14:
+        return None, f"GTC last measured {age_d} days ago"
+    samples = place.get("samples_ms") or []
+    return {"p50": place["p50_ms"], "n": n,
+            "ks": (round(_gtc_table_ks(samples), 3) if len(samples) >= 10 else None),
+            "cancel_p50": (g.get("cancel") or {}).get("p50_ms")}, None
+
+
+# Owned-latency budget (wake→eval + pos + tick + ctx, ms). Measured 08-21:
+# p50 ~3ms / p99 ~5ms on the current code — 25ms is generous headroom that
+# still catches the 90ms-class regressions the 08-05 fix removed.
+_OWNED_LAT_BUDGET_MS = 25.0
+_owned_lat_breaches = 0
+
+
+def _ops_watch_line(lat: dict | None, lat_dark: str | None, qd: dict | None,
+                    gtc: dict | None = None, gtc_dark: str | None = None) -> str:
+    """Ops trend watches: constants drift while nobody looks (POST RTT ran
+    356->436ms uncommented; the at-price queue 2.5x'd in three days).
+
+    Stated tolerances, both +-25% and both DIRECTIONS: POST p50 against the
+    paper table's 436ms, and the trailing sweep-consumed queue p75 against the
+    135-sh at-price constant — a queue that grew makes paper over-credit
+    at-price fills, one that shrank makes it under-credit them, and both
+    distort a gate that counts fills."""
+    parts = []
+    if lat:
+        drift = (lat["p50"] - 436.0) / 436.0
+        parts.append(
+            f"POST p50 {lat['p50']:.0f}ms (n={lat['n']})"
+            + (f" ⚠️ {drift:+.0%} off the paper table — re-measure "
+               f"paper_latency_scale" if abs(drift) > 0.25 else ""))
+    elif lat_dark:
+        parts.append(f"POST p50 unknown — {lat_dark}")
+    if qd:
+        drift = (qd["p75"] - 135.0) / 135.0
+        parts.append(
+            f"deep-queue consumed med {qd['med']:.0f}/p75 {qd['p75']:.0f} sh "
+            f"({qd['n']} sweeps/{qd['days']:.0f}d)"
+            + (f" ⚠️ p75 {drift:+.0%} off the 135-sh constant — paper "
+               f"{'over' if drift > 0 else 'under'}-credits at-price fills, "
+               f"re-measure" if abs(drift) > 0.25 else ""))
+    if gtc:
+        drift = (gtc["p50"] - 56.0) / 56.0   # paper's _GTC_LATENCY_QUANTILES p50
+        ks = gtc.get("ks")
+        # Two tolerances, both stated: p50 band ±25%, distribution KS D ≤ 0.30.
+        off = (abs(drift) > 0.25) or (ks is not None and ks > 0.30)
+        parts.append(
+            f"GTC place p50 {gtc['p50']:.0f}ms (n={gtc['n']}"
+            + (f", KS {ks:.2f}" if ks is not None else "")
+            + (f", cancel {gtc['cancel_p50']:.0f}ms" if gtc.get("cancel_p50") else "")
+            + ")"
+            + (f" ⚠️ off paper's 56ms table (p50 {drift:+.0%}) — re-derive "
+               f"_GTC_LATENCY_QUANTILES" if off else ""))
+    elif gtc_dark:
+        parts.append(f"GTC RTT unmeasured — {gtc_dark}")
+    if _owned_lat_breaches:
+        parts.append(f"⚠️ {_owned_lat_breaches} fills over the "
+                     f"{_OWNED_LAT_BUDGET_MS:.0f}ms owned-latency budget today")
+    return ("Ops watch: " + " · ".join(parts) + "\n") if parts else ""
+
+
 def _emit_gate_skip(cid: str, gate_key: str, reason: str, quiet: bool = False) -> None:
     """Emit one combined SKIP line (signal context + gate reason).
 
@@ -918,7 +1060,16 @@ async def _evaluate_signal_and_enter(
                 # must clear — the floor that self-silences photo-finish chop
                 # (disp cannot reach 2x its own error when gaps run sub-$2).
                 _mmargin = twap_margin(TWAP_MARGIN_P995, contract["seconds_remaining"])
-                if _mmargin > 0 and abs(_mdisp) >= _MAKER_MGR.min_need() * _mmargin:
+                # A same-window position makes book_maker_fill refuse, leaving
+                # filled shares on the exchange with no DB row.
+                _mhas = (db.has_open_or_pending_market(cid)
+                         if db is not None else None)
+                if _mhas is None and db is not None:
+                    _mhas = await db.has_position_for_market(cid)
+                if _mhas:
+                    _emit_gate_skip(cid, "maker_position_open",
+                                    "ladder held back: this window already has a position")
+                elif _mmargin > 0 and abs(_mdisp) >= _MAKER_MGR.min_need() * _mmargin:
                     # A deep resting bid's margin of safety is its PRICE, not a
                     # tail bound — budget is a flat bankroll fraction, not
                     # Kelly on a certainty claim.
@@ -1185,6 +1336,23 @@ async def _evaluate_signal_and_enter(
 
     # Drop the open-positions cache so the next tick sees this position immediately.
     _invalidate_open_positions_cache()
+    _tc = snapshot["trade_context"]
+    _owned_ms = sum(v for v in (
+        _tc.get("lat_wake_to_eval_ms"),
+        (_tc.get("lat_segs_ms") or {}).get("pos"),
+        (_tc.get("lat_segs_ms") or {}).get("tick"),
+        _tc.get("lat_ctx_ms")) if v is not None)
+    if _owned_ms > _OWNED_LAT_BUDGET_MS * 1.5:
+        global _owned_lat_breaches
+        _owned_lat_breaches += 1
+        logger.warning(
+            "LATENCY BUDGET — owned segments took %.0fms against the %.0fms "
+            "budget (wake→eval %s · pos %s · tick %s · ctx %s)",
+            _owned_ms, _OWNED_LAT_BUDGET_MS,
+            _tc.get("lat_wake_to_eval_ms"),
+            (_tc.get("lat_segs_ms") or {}).get("pos"),
+            (_tc.get("lat_segs_ms") or {}).get("tick"),
+            _tc.get("lat_ctx_ms"))
     if _window_recorder is not None:
         _window_recorder.mark_traded(cid)
     fill_price = result.fill_price if result.fill_price > 0 else price
@@ -1699,11 +1867,13 @@ async def _manage_orphaned_position(
             window_ts = int(pos["market_id"].rsplit("-", 1)[-1])
         except (ValueError, IndexError):
             window_ts = 0
+        # strike_reliable, not just captured: an untrusted capture is a LATER
+        # second's average, and it would decide a real position's winner.
         strike_at_boundary = (chainlink_feed.get_strike(window_ts)
-                              if window_ts and chainlink_feed.boundary_captured(window_ts)
+                              if window_ts and chainlink_feed.strike_reliable(window_ts)
                               else None)
         final_at_expiry = (chainlink_feed.get_strike(window_ts + 300)
-                           if window_ts and chainlink_feed.boundary_captured(window_ts + 300)
+                           if window_ts and chainlink_feed.strike_reliable(window_ts + 300)
                            else None)
         if (strike_at_boundary is None or strike_at_boundary <= 0
                 or final_at_expiry is None or final_at_expiry <= 0):
@@ -2305,13 +2475,7 @@ async def main() -> None:
         trader = LiveTrader(db=db,
             max_bankroll_deployed=exec_cfg["max_bankroll_deployed"],
             max_concurrent_positions=exec_cfg["max_concurrent_positions"])
-        # Boot hygiene: cancel any resting order a crashed process left on the
-        # exchange — a fill in the gap would be unbooked shares with no DB row.
-        try:
-            await asyncio.to_thread(trader.client.cancel_all)
-            logger.info("Boot order sweep — no resting orders carried over")
-        except Exception as e:
-            logger.warning("boot cancel_all failed (check open orders by hand): %s", e)
+        await _boot_order_sweep(trader.client)
         # The +8s chain audit reports the settled entry here → the OPEN banner
         # prints once, with the real fill (see _log_open_banner).
         trader.on_entry_settled = _on_entry_settled
@@ -2411,6 +2575,13 @@ async def main() -> None:
                 await trader.reconcile_dust(db, max_age_hours=24)
         except Exception as e:
             logger.warning(f"Startup reconciliation failed (non-blocking): {e}")
+    else:
+        # Paper has no orphan resolution, and the kill bar counts fills — say
+        # what the restart is carrying instead of losing the sample in silence.
+        _carried = await db.get_open_positions()
+        if _carried:
+            logger.warning("PAPER RESTART — %d open position(s) carried over; any "
+                           "ladder resting at shutdown is gone", len(_carried))
 
     clob_ws_url = market_cfg.get("clob_ws_url", "wss://ws-subscriptions-clob.polymarket.com/ws/market")
     clob_ws = ClobWebSocket(url=clob_ws_url)
@@ -2483,6 +2654,7 @@ async def main() -> None:
     _ALERT_MANAGER = alert_manager
     if _MAKER_MGR is not None:
         _MAKER_MGR.on_fill = _on_maker_fill
+        _MAKER_MGR.clob_ws = clob_ws
         if market_scanner is not None:
             _MAKER_MGR.tick_fn = market_scanner.fetch_tick_size
 
@@ -2621,7 +2793,8 @@ async def main() -> None:
         # days); this one turns red the same night.
         try:
             mech = await asyncio.to_thread(
-                mod.mechanism_read, chainlink_feed.boundary_snapshot(), _real_db)
+                mod.mechanism_read, chainlink_feed.boundary_snapshot(), _real_db,
+                window_recorder.source_unchecked, micro_tape.t3_records)
         except Exception as e:
             logger.warning("mechanism watch read failed: %s", e)
             mech = None
@@ -2633,18 +2806,9 @@ async def main() -> None:
         except Exception as e:
             logger.warning("queue depth read skipped (%s)", e)
             qd = None
-        lat = None
-        try:
-            from polybot.paths import LATENCY_STATS_PATH
-            import json as _json
-            _ls = _json.loads(LATENCY_STATS_PATH.read_text())
-            _age_d = (datetime.now(timezone.utc)
-                      - datetime.fromisoformat(_ls["last_updated"])).days
-            post = _ls.get("post") or {}
-            if post.get("n", 0) >= 10 and _age_d <= 7:
-                lat = dict(p50=post["p50_ms"], n=post["n"])
-        except Exception:
-            pass
+        from polybot.paths import LATENCY_STATS_PATH
+        lat, lat_dark = _latency_watch(LATENCY_STATS_PATH)
+        gtc, gtc_dark = _gtc_watch(LATENCY_STATS_PATH)
         if sim is None and live is None:
             if alert_manager:
                 await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
@@ -2726,34 +2890,23 @@ async def main() -> None:
                     f"**Set `late_window.trading_enabled: false` now** and verify "
                     f"a resolved market by hand before re-enabling.\n")
 
-        def _ops_line() -> str:
-            # Stated tolerances: POST p50 within +-25% of the paper table's
-            # 436ms (else re-measure paper_latency_scale); trailing sweep-
-            # consumed queue p75 must stay UNDER the 135-sh at-price constant
-            # (else paper over-credits at-price fills).
-            parts = []
-            if lat:
-                drift = (lat["p50"] - 436.0) / 436.0
-                parts.append(
-                    f"POST p50 {lat['p50']:.0f}ms (n={lat['n']})"
-                    + (f" ⚠️ {drift:+.0%} off the paper table — re-measure "
-                       f"paper_latency_scale" if abs(drift) > 0.25 else ""))
-            if qd:
-                warn = qd["p75"] > 135.0
-                parts.append(
-                    f"deep-queue consumed med {qd['med']:.0f}/p75 {qd['p75']:.0f} sh "
-                    f"({qd['n']} sweeps/{qd['days']:.0f}d)"
-                    + (" ⚠️ p75 over the 135-sh constant — paper may over-credit "
-                       "at-price fills, re-measure" if warn else ""))
-            return ("Ops watch: " + " · ".join(parts) + "\n") if parts else ""
-
         def _mech_line() -> str:
             if not mech:
                 return ""
             c, e = mech["checked"], mech["exact"]
+            unchecked = mech.get("unchecked") or 0
+            skipped = (f" · {unchecked} window(s) could not be checked"
+                       if unchecked else "")
+            # The retired-30s tape is the A/B evidence for the NEXT source
+            # swap — an empty one has to be said, not assumed.
+            t3 = mech.get("t3_records")
+            if t3 == 0:
+                skipped += " · 30s A/B tape EMPTY — nothing to compare if the source moves again"
+            elif t3:
+                skipped += f" · 30s A/B tape {t3} records"
             if e == c:
                 return (f"Source watch: served strikes/finals match our stream "
-                        f"{e}/{c} bit-exact\n")
+                        f"{e}/{c} bit-exact{skipped}\n")
             return (f"🚨 **RESOLUTION SOURCE CHANGED: only {e}/{c} served values "
                     f"match the stream we subscribe (worst ${mech['worst']:.2f} "
                     f"off)** — Polymarket moved the resolution to a different "
@@ -2778,7 +2931,7 @@ async def main() -> None:
             f"{_regime_line()}"
             f"{_twap_line()}"
             f"{_mech_line()}"
-            f"{_ops_line()}"
+            f"{_ops_watch_line(lat, lat_dark, qd, gtc, gtc_dark)}"
             f"{action}"
         )
         # The journal always gets the ping verbatim — a Discord outage must
@@ -2885,6 +3038,23 @@ async def main() -> None:
     except asyncio.CancelledError:
         pass
     finally:
+        # Armed FIRST: a wedged worker thread (asyncio.to_thread survives the
+        # wait_for cancel) can hang any step below, including db.close(), and a
+        # watchdog created after the hang never exists — a 10h zombie on 08-17
+        # held the nightly commit AND the next trading day. Daemon timer, so a
+        # clean exit dies before it ever fires.
+        import threading
+
+        def _force_exit():
+            try:
+                logger.warning("EXIT FORCED — a worker thread outlived shutdown")
+                logging.shutdown()
+            finally:
+                os._exit(0)
+
+        _watchdog = threading.Timer(30.0, _force_exit)
+        _watchdog.daemon = True
+        _watchdog.start()
         for t in background_tasks:
             t.cancel()
         async def _stop_rec(coro, timeout=2.0):
@@ -2916,24 +3086,6 @@ async def main() -> None:
         bankroll = await db.get_bankroll()
         await db.close()
         logger.info(f"PolyBot stopped — Bankroll ${bankroll:.2f} · Feeds/WS/DB closed")
-        # A nightly job that outlives its 600s budget leaves a blocked worker
-        # thread (asyncio.to_thread survives the wait_for cancel), and the
-        # interpreter's exit join then hangs forever — a 10h zombie on 08-17
-        # held the nightly commit AND the next trading day. Everything is
-        # flushed by here: a daemon watchdog gives the normal exit 30s, then
-        # forces it. Clean exits die before the timer and never see it.
-        import threading
-
-        def _force_exit():
-            try:
-                logger.warning("EXIT FORCED — a worker thread outlived shutdown")
-                logging.shutdown()
-            finally:
-                os._exit(0)
-
-        _watchdog = threading.Timer(30.0, _force_exit)
-        _watchdog.daemon = True
-        _watchdog.start()
 
 
 _SINGLE_INSTANCE_SOCK = None

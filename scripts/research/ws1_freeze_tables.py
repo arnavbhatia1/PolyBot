@@ -1,17 +1,20 @@
 """Freeze the 60s-rule margin tables from ws1_errors60.csv.
 
-Convention (matches the original 08-07 freeze): P995 = fitted p99.5 rounded UP
-to the next $0.5, monotone-enforced in k; MAX = worst observed rounded UP to
-the next $1, monotone-enforced. Binding population: REAL finals (08-14+),
+P995 = fitted p99.5 rounded UP to the next $0.5, monotone-enforced in k, one
+sample per (window, k-knot). Binding population: REAL finals (08-14+),
 stall-veto passing, coverage-gated (boundary-inclusive raw gap <= 10s).
-MAX additionally takes the union with the synthetic-target corpus (its target
-noise <= $4.3 p995 only UNDERSTATES low-k error; at high k its violent-window
-maxes are real observations of the same estimator).
+
+MAX comes from ws1_interval_max — per-tick INTERVAL maxima over the same
+corpus plus the synthetic union. The engine interpolates margin(k) at every
+tick, so a MAX fitted at grid points sits BELOW the true error between knots;
+this script must never derive it from grid-point worsts.
 Also prints the ladder-floor translation (2 x p995) old vs new.
 """
 import csv
 import math
 from pathlib import Path
+
+from ws1_interval_max import interval_max_knots
 
 SP = Path(__file__).parent
 KNOTS = [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 29.0,
@@ -42,17 +45,18 @@ def main():
     p995_r, max_r = fit(real)
     p995_a, max_a = fit(rows)
 
-    # freeze: p995 from real finals; max = union of both populations
+    # freeze: p995 from real finals; MAX from the per-tick interval maxima
     def up(x, step):
         return math.ceil(x / step) * step
 
+    interval_max = dict(interval_max_knots())
     frozen_p, frozen_m = {}, {}
     prev_p = prev_m = 0.0
     for k in KNOTS:
         if k not in p995_r:
             continue
         p = up(p995_r[k], 0.5)
-        m = up(max(max_r[k], max_a.get(k, 0.0)), 1.0)
+        m = interval_max[k]
         p = max(p, prev_p)
         m = max(m, prev_m, p + 0.5)      # max knot never below p995
         frozen_p[k], frozen_m[k] = p, m
@@ -69,7 +73,10 @@ def main():
     print("    " + ", ".join(f"({k:.0f}.0, {frozen_m[k]:.1f})" for k in KNOTS if k in frozen_m) + ",")
     print(")")
 
-    print("\nfit detail: k  p995_real  p995_all  max_real  max_all  -> frozen p995/max")
+    # grid-point maxima are printed as DIAGNOSTIC only — they are the
+    # under-bounding fit the frozen MAX deliberately does not use.
+    print("\nfit detail: k  p995_real  p995_all  gridmax_real  gridmax_all"
+          "  -> frozen p995/max")
     for k in KNOTS:
         if k in frozen_p:
             print(f"k={k:4.1f}  {p995_r[k]:7.2f}  {p995_a.get(k, float('nan')):7.2f}  "

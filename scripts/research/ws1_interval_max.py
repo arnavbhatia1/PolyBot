@@ -76,8 +76,10 @@ def twap_frozen_at(trecs, l_rx, t):
     return len(spanned) >= 2 and (max(spanned) - min(spanned)) >= FROZEN_RAW_MOVE
 
 
-def main():
-    # interval i covers (KNOTS[i-1], KNOTS[i]]; interval 0 covers (0, KNOTS[0]]
+def scan():
+    """Per-tick |err_plain60| bucketed into knot intervals — (real, all, ticks).
+
+    Interval i covers (KNOTS[i-1], KNOTS[i]]; interval 0 covers (0, KNOTS[0]]."""
     imax_real = [0.0] * len(KNOTS)
     imax_all = [0.0] * len(KNOTS)
     n_ticks = 0
@@ -119,13 +121,15 @@ def main():
                 if real and err > imax_real[b]:
                     imax_real[b] = err
                 n_ticks += 1
-    print(f"{n_ticks} veto/coverage-passing ticks")
-    print("interval (k range]   max_real   max_all")
-    lo = 0.0
-    for i, kk in enumerate(KNOTS):
-        print(f"({lo:4.1f},{kk:5.1f}]   {imax_real[i]:8.2f}  {imax_all[i]:8.2f}")
-        lo = kk
-    # knot value = max of adjacent intervals (both populations), rounded up $1
+    return imax_real, imax_all, n_ticks
+
+
+def interval_max_knots(imax_real=None, imax_all=None):
+    """MAX knots: each carries the larger of its two adjacent intervals' worst
+    error (both populations), rounded up to $1 and monotone-enforced — so the
+    engine's linear interpolation between knots bounds every tick of both."""
+    if imax_real is None or imax_all is None:
+        imax_real, imax_all, _ = scan()
     out = []
     prev = 0.0
     for i, kk in enumerate(KNOTS):
@@ -135,6 +139,18 @@ def main():
         v = max(math.ceil(v), prev)
         out.append((kk, float(v)))
         prev = v
+    return out
+
+
+def main():
+    imax_real, imax_all, n_ticks = scan()
+    print(f"{n_ticks} veto/coverage-passing ticks")
+    print("interval (k range]   max_real   max_all")
+    lo = 0.0
+    for i, kk in enumerate(KNOTS):
+        print(f"({lo:4.1f},{kk:5.1f}]   {imax_real[i]:8.2f}  {imax_all[i]:8.2f}")
+        lo = kk
+    out = interval_max_knots(imax_real, imax_all)
     print("\nTWAP60_MARGIN_MAX (interval-max convention) = (")
     print("    " + ", ".join(f"({k:.0f}.0, {v:.1f})" for k, v in out) + ",")
     print(")")

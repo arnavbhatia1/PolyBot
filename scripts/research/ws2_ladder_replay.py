@@ -19,6 +19,7 @@ share) and per-window sign quality, old engine (realized paper ledger) vs new.
 import gzip
 import json
 import math
+import sys
 from bisect import bisect_right
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,7 +47,8 @@ SPOT_STALE_S = 3.0
 RAW_GAP_MAX = 10.0
 FROZEN_S = 20.0
 FROZEN_RAW_MOVE = 2.0
-DAYS = ["2026-08-14", "2026-08-15", "2026-08-16", "2026-08-17", "2026-08-18"]
+DAYS = [f"2026-08-{d:02d}" for d in range(14, 22)]
+EXT_RUNGS = [0.95, 0.90, 0.85, 0.80, 0.65, 0.50, 0.35, 0.20]
 
 
 def margin(k, kn=None):
@@ -207,12 +209,17 @@ def load_corpus():
 
 
 def run(need=2.0, k_min=6.0, k_max=25.0, anti=False, verbose=False,
-        table=None, eps=None):
+        table=None, eps=None, rungs=None, budget=None):
     """Engine-true replay; returns list of per-window results.
 
     table: p99.5 knots to arm against (default = the frozen P995).
-    eps:   restrict scoring to this set of window epochs (walk-forward)."""
+    eps:   restrict scoring to this set of window epochs (walk-forward).
+    rungs: ladder prices (default RUNGS); budget split equally per rung.
+    budget: ladder dollars (default BUDGET); rungs under MIN_SHARES skip."""
     tab = table or P995
+    rungs = rungs or RUNGS
+    budget = budget or BUDGET
+    frac = 1.0 / len(rungs)
     c = load_corpus()
     results = []
     for wd in sorted(c["wins"], key=lambda w: w["ep"]):
@@ -272,7 +279,7 @@ def run(need=2.0, k_min=6.0, k_max=25.0, anti=False, verbose=False,
             if anti:
                 signed = -signed
             if signed < need * margin(max(k, 0.01), tab):
-                cancel_t, cancel_why = rx, "floor"
+                cancel_t, cancel_why = rx, ("flip" if signed < 0 else "floor")
                 break
         if cancel_t is None:
             if winner != side:
@@ -281,7 +288,7 @@ def run(need=2.0, k_min=6.0, k_max=25.0, anti=False, verbose=False,
                 cancel_t, cancel_why = close + POST_CLOSE_HOLD, "hold-expiry"
 
         tok = wd["token_up"] if side == "Up" else wd["token_down"]
-        shares = {px: round(BUDGET * 0.20 / px, 2) for px in RUNGS}
+        shares = {px: round(budget * frac / px, 2) for px in rungs}
         shares = {px: s for px, s in shares.items() if s >= MIN_SHARES}
         filled = {px: 0.0 for px in shares}
         at_vol = {px: 0.0 for px in shares}
@@ -304,6 +311,7 @@ def run(need=2.0, k_min=6.0, k_max=25.0, anti=False, verbose=False,
         row = dict(ep=ep, side=side, winner=winner, place_k=close - place_t,
                    why=cancel_why, gap=abs(final - strike),
                    place_mult=round(place_mult, 3) if place_mult else None,
+                   placed=sorted(shares, reverse=True),
                    rungs={rp: filled[rp] for rp in filled if filled[rp] > 0})
         if tot <= 0:
             row.update(win=None, pnl=0.0, filled=0.0)
@@ -338,6 +346,79 @@ def summarize(results, label):
     return pnl, len(fills), wins_n
 
 
+def rung_stats(results, rungs):
+    """Per-rung economics: placements, fills, flip-cancel fills, wins, $."""
+    st = {rp: dict(placements=0, fills=0, flip=0, floor=0, wins=0, sh=0.0,
+                   dollars=0.0) for rp in rungs}
+    for r in results:
+        for rp in r.get("placed", []):
+            st[rp]["placements"] += 1
+        for rp, sh in r["rungs"].items():
+            s = st[rp]
+            s["fills"] += 1
+            if r["why"] == "flip":
+                s["flip"] += 1
+            elif r["why"] == "floor":
+                s["floor"] += 1
+            if r["win"]:
+                s["wins"] += 1
+            s["sh"] += sh
+            s["dollars"] += sh * ((1 - rp) if r["win"] else -rp)
+    return st
+
+
+def day_split(results):
+    """Dollars per ET day (August => EDT, fixed UTC-4)."""
+    days = {}
+    for r in results:
+        d = datetime.fromtimestamp(r["ep"] - 4 * 3600,
+                                   tz=timezone.utc).strftime("%m-%d")
+        days[d] = round(days.get(d, 0.0) + r["pnl"], 2)
+    return dict(sorted(days.items()))
+
+
+def print_run(name, res, rungs):
+    summarize(res, name)
+    st = rung_stats(res, rungs)
+    for rp in rungs:
+        s = st[rp]
+        wpct = 100.0 * s["wins"] / s["fills"] if s["fills"] else float("nan")
+        cps = 100.0 * s["dollars"] / s["sh"] if s["sh"] else float("nan")
+        print(f"  rung {rp:.2f}: placed {s['placements']:4d}  fills {s['fills']:3d}"
+              f"  flip {s['flip']:2d}  floor {s['floor']:2d}"
+              f"  win% {wpct:5.1f} (be {100 * rp + 5:.0f})"
+              f"  sh {s['sh']:8.1f}  c/sh {cps:+7.2f}  $ {s['dollars']:+8.2f}")
+    ds = day_split(res)
+    print(f"  by-day $: {json.dumps(ds)}")
+    h1 = sum(v for d, v in ds.items() if d <= "08-17")
+    h2 = sum(v for d, v in ds.items() if d >= "08-18")
+    print(f"  halves $: 08-14..17 {h1:+.2f} | 08-18..21 {h2:+.2f}")
+    return st
+
+
+def h1b_main():
+    """H1B extended-rung measurement: 6 runs, all need 1.0 k[6,25]."""
+    c = load_corpus()
+    print(f"{len(c['wins'])} 60s-rule windows, {len(c['kl_ts'])} klines, "
+          f"bz median lag {c['bz_lag']:.2f}s")
+    runs = {
+        "base_b22": dict(need=1.0),
+        "base_b60": dict(need=1.0, budget=60.0),
+        "ext_b22": dict(need=1.0, rungs=EXT_RUNGS),
+        "ext_b60": dict(need=1.0, rungs=EXT_RUNGS, budget=60.0),
+        "anti_ext_b22": dict(need=1.0, rungs=EXT_RUNGS, anti=True),
+        "anti_ext_b60": dict(need=1.0, rungs=EXT_RUNGS, budget=60.0, anti=True),
+    }
+    out = {}
+    for name, kw in runs.items():
+        res = run(**kw)
+        out[name] = dict(params={k: v for k, v in kw.items()}, results=res)
+        print_run(name, res, kw.get("rungs", RUNGS))
+    p = DATA / "vps-0821" / "h1b_results.json"
+    json.dump(out, open(p, "w"))
+    print(f"saved {p}")
+
+
 def main():
     c = load_corpus()
     print(f"{len(c['wins'])} 60s-rule windows, {len(c['kl_ts'])} klines")
@@ -353,4 +434,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    h1b_main() if len(sys.argv) > 1 and sys.argv[1] == "h1b" else main()

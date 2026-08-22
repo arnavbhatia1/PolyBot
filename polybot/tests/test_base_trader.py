@@ -425,3 +425,45 @@ class TestBookMakerFill:
         pos = (await db.get_open_positions())[0]
         assert pos["shares_held"] == pytest.approx(40.0, abs=0.001)
         assert (await db.get_bankroll()) == pytest.approx(100.0 - 20.0, abs=0.01)
+
+    @pytest.mark.asyncio
+    async def test_maker_fill_respects_the_deployed_cap(self, trader, db, caplog):
+        """A maker fill is capital like any other — free cash alone let the
+        ladder reach 95% of equity on a cap open_trade holds at 80%."""
+        await trader.open_trade(**_trade_params(market_id="m0", size=65.0))
+        ok = await trader.book_maker_fill(
+            market_id="m1", question="q", side="Up",
+            price=0.50, shares_gross=60.0)          # $30: free cash yes, cap no
+        assert ok is False
+        assert await db.get_open_positions() and len(await db.get_open_positions()) == 1
+        assert any("CRITICAL: maker fill" in r.getMessage() for r in caplog.records)
+        # ...and a fill that fits the cap still books.
+        assert await trader.book_maker_fill(
+            market_id="m2", question="q", side="Up",
+            price=0.50, shares_gross=20.0) is True
+
+
+class TestMakerFillFlag:
+    """Fill type must survive to trade_history: it was only recoverable by
+    re-parsing trade_context.signal_leg in every downstream read."""
+
+    @pytest.mark.asyncio
+    async def test_maker_fill_is_recorded_on_the_history_row(self, trader, db):
+        await trader.book_maker_fill(
+            market_id="m1", question="q", side="Up", price=0.50,
+            shares_gross=40.0, indicator_snapshot={"trade_context": {
+                "signal_leg": "deep_proj"}})
+        pos = (await db.get_open_positions())[0]
+        await db.close_position(pos["id"], exit_price=1.0, pnl=20.0)
+        row = (await db.get_trade_history(limit=1))[0]
+        assert row["maker_fill"] == 1
+        assert row["maker_rebate"] == 0.0      # we never collect one — deliberate
+
+    @pytest.mark.asyncio
+    async def test_taker_entry_is_not_flagged_as_maker(self, trader, db):
+        await trader.open_trade(**_trade_params(market_id="m2"))
+        pos = (await db.get_open_positions())[0]
+        await db.close_position(pos["id"], exit_price=1.0, pnl=5.0)
+        row = (await db.get_trade_history(limit=1))[0]
+        assert row["maker_fill"] == 0
+        assert row["maker_rebate"] == 0.0

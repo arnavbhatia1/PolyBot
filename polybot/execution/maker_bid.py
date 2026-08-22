@@ -74,6 +74,9 @@ class MakerBidManager:
         self.on_fill: Any = None
         # Set by main to market_scanner.fetch_tick_size.
         self.tick_fn: Any = None
+        # Set by main to the CLOB feed — paper's whole fill mechanism is the
+        # print stream, so a reconnect while we rested poisons the sample.
+        self.clob_ws: Any = None
         self._last_poll = 0.0
         self._ladder_cache: tuple[float, list] | None = None  # (mtime, ladder)
 
@@ -157,10 +160,18 @@ class MakerBidManager:
                             "%.0f-share exchange minimum (budget $%.2f)",
                             px, shares, MIN_SHARES, usd)
                 continue
+            _t0 = time.perf_counter()
             order_id = await self.trader.place_gtc_bid(token_id, px, shares)
+            _rtt_ms = round((time.perf_counter() - _t0) * 1000.0, 1)
             if order_id:
+                # place_ms rides into the booked snapshot: the ladder's fill
+                # clock (how long a rung isn't in the book) was never measured
+                # live — these stamps are the RESEARCH.md 2b evidence.
                 rungs.append({"price": px, "shares": shares,
-                              "order_id": order_id, "filled": 0.0})
+                              "order_id": order_id, "filled": 0.0,
+                              "place_ms": _rtt_ms})
+            # No else: place_gtc_bid already logged MAKER BID REJECTED for
+            # every rung it could not rest. One line per event.
         if not rungs:
             return
         self.active = {
@@ -196,8 +207,6 @@ class MakerBidManager:
         if not (0.0 < px and sz > 0):
             return
         for r in a["rungs"]:
-            if r.get("cancelled"):
-                continue
             if px < r["price"] - 1e-9:
                 r["filled"] = r["shares"]
             elif abs(px - r["price"]) <= 1e-9:
@@ -279,40 +288,63 @@ class MakerBidManager:
                     r["filled"] = min(r["shares"], matched)
         # Every rung fully filled -> book now; the position needs to be on
         # the books (it holds to resolution), not parked in dead order slots.
-        live = [r for r in a["rungs"] if not r.get("cancelled")]
-        if reason is None and live and all(r["filled"] >= r["shares"] - 1e-9
-                                          for r in live):
+        if reason is None and all(r["filled"] >= r["shares"] - 1e-9
+                                  for r in a["rungs"]):
             reason = "filled"
         if reason is not None:
             await self._retire(reason)
 
 
     async def _retire(self, reason: str) -> None:
-        a, self.active = self.active, None
+        a = self.active
         if a is None:
             return
-        for r in a["rungs"]:
-            if r.get("cancelled"):
-                continue
+        try:
             try:
-                await self.trader.cancel_gtc(r["order_id"])
-            except Exception as e:
-                logger.warning("MAKER CANCEL failed (%s) — exchange closes "
-                               "resting orders at market close", e)
-        if not self.paper:
-            # A live fill can land inside the 1Hz poll gap or the cancel round
-            # trip itself — re-read each order's final matched size so the
-            # booking can never run short of what the wallet actually holds.
-            for r in a["rungs"]:
-                if r.get("cancelled"):
-                    continue
-                matched = await self.trader.poll_gtc_fill(r["order_id"])
-                if matched is not None and matched > r["filled"]:
-                    r["filled"] = min(r["shares"], matched)
+                for r in a["rungs"]:
+                    try:
+                        _t0 = time.perf_counter()
+                        await self.trader.cancel_gtc(r["order_id"])
+                        r["cancel_ms"] = round((time.perf_counter() - _t0)
+                                               * 1000.0, 1)
+                    except Exception as e:
+                        logger.warning("MAKER CANCEL failed (%s) — exchange closes "
+                                       "resting orders at market close", e)
+                if not self.paper:
+                    # A live fill can land inside the 1Hz poll gap or the cancel
+                    # round trip itself — re-read each order's final matched size
+                    # so the booking can never run short of what the wallet holds.
+                    for r in a["rungs"]:
+                        try:
+                            matched = await self.trader.poll_gtc_fill(r["order_id"])
+                        except Exception as e:
+                            logger.warning("MAKER POLL failed (%s) — booking what "
+                                           "is already known filled", e)
+                            continue
+                        if matched is not None and matched > r["filled"]:
+                            r["filled"] = min(r["shares"], matched)
+            finally:
+                # Shutdown cancels this mid-round-trip: shares already filled are
+                # real on the exchange and must reach the DB before we unwind.
+                await self._book(a, reason)
+        finally:
+            self.active = None
+
+    async def _book(self, a: dict, reason: str) -> None:
         filled = sum(r["filled"] for r in a["rungs"])
         notional = sum(r["filled"] * r["price"] for r in a["rungs"])
         if filled > 0 and notional >= MIN_NOTIONAL_USD:
-            vwap = round(notional / filled, 4)
+            # Unrounded: the booking re-derives the debit as shares x price, so
+            # a 4dp vwap makes it disagree with what the rungs actually cost.
+            vwap = notional / filled
+            # Mark the sample when the print stream had a hole under us.
+            gap_ts = getattr(self.clob_ws, "last_print_gap_ts", None)
+            if isinstance(a["snapshot"], dict):
+                a["snapshot"]["print_gap"] = (None if gap_ts is None
+                                              else int(gap_ts >= a["placed"]))
+                tc = a["snapshot"].setdefault("trade_context", {})
+                tc["gtc_place_ms"] = [r.get("place_ms") for r in a["rungs"]]
+                tc["gtc_cancel_ms"] = [r.get("cancel_ms") for r in a["rungs"]]
             try:
                 booked = await self.trader.book_maker_fill(
                     market_id=a["market_id"], question=a["question"],

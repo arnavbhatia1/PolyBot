@@ -43,11 +43,23 @@ RAW_GAP_MAX_S = 10.0           # projection coverage guard: a raw delivery hole 
                                # measured: a 68s hole passed every gate and projected a $24 error onto
                                # a $0.14 photo-finish. The guard voids the projection instead.
 RAW_RING_S = 75.0              # raw-report ring retention: horizon + seed lookback + slack
+BINANCE_RING_S = 10.0          # Binance ring retention: the bridge only ever spans the ~2s tail
+                               # since the last raw report, so 10s is anchor cover plus slack.
+BRIDGE_ANCHOR_MAX_AGE_S = 2.0  # spot_bridge_delta: an anchor older than the report's own delivery lag
+                               # means a ring hole, and the delta re-adds movement the report already has.
+BRIDGE_MAX_DELTA_FRAC = 0.01   # the bridge spans ~2s of Binance, so >1% of spot is a bad tick (a 10x
+                               # decimal slip once injected -$58,509), not a market move.
 TWAP_FROZEN_S = 20.0           # official-TWAP stall detector (twap_frozen): seconds of an EXACTLY unchanged
                                # official value before we distrust the resolution source. The observed stall
                                # ran 35s; ~11% single repeats are normal relay polling, so this sits between.
 TWAP_FROZEN_RAW_MOVE_USD = 2.0 # ...and the raw travel required inside that span. Both must hold: a genuinely
                                # flat market freezes the average legitimately.
+TWAP_FROZEN_EPS_USD = 0.005    # ...and how much the official value must move to count as moving at all:
+                               # last-digit jitter on a stalled relay is not a live average.
+EPOCH_MIN_S = 1e9              # plausible epoch-seconds band (2001..2286) after the ms rescale — a
+EPOCH_MAX_S = 1e10             # µs/ns-scaled payload still parses, and would evict every capture.
+DROP_LOG_EVERY_S = 300.0       # rate limit on the dropped-message warning: a schema change drops
+                               # every report of a topic, and per-message logs would flood.
 
 
 class ChainlinkFeed:
@@ -63,9 +75,9 @@ class ChainlinkFeed:
         self._running: bool = False
         self.on_report = None  # micro-tape hook: every RTDS report (recording.MicroTape)
         # Wakes the main loop on every raw report — the sniper's decision clock
-        # in the final-30s averaging zone (cleared by the consumer).
+        # in the final-60s averaging zone (cleared by the consumer).
         self.report_event: asyncio.Event = asyncio.Event()
-        # Official 30s-TWAP stream (THE resolution source): observed value + its
+        # Official 60s-TWAP stream (THE resolution source): observed value + its
         # observation ts + local receipt (the topic delivers ~1.6s behind
         # observation — receipt-vs-ts measures that lag continuously).
         self.on_twap = None    # micro-tape hook: every official TWAP report
@@ -85,7 +97,9 @@ class ChainlinkFeed:
         # the book reprices 0.33s after Binance, 2.5s before our oracle receipt;
         # lead-lag fit on 4.65M recorded pairs bottoms at lag 2.0-2.5s). Used
         # ONLY by the bridged projection (deep_proj); never a strike source.
+        # Kept in ts order at the write site — the anchor scan depends on it.
         self._binance: deque[tuple[float, float]] = deque()
+        self._bridge_band_warned = False
         self.on_spot = None    # micro-tape hook: every Binance report
         # Strike capture: the TWAP topic's first report AT/AFTER each boundary
         # (== served price_to_beat bit-exact; the raw stream's own boundary read
@@ -100,6 +114,9 @@ class ChainlinkFeed:
         # twap_frozen() measures a resolution-source stall against.
         self._twap_value_since: float = 0.0
         self._last_report_rx: float | None = None
+        self._bad_ts_logged: bool = False
+        self.drops: dict[str, int] = {}     # unreadable messages per topic
+        self._drops_logged: float = 0.0
         self._start_window_ts: int = int(time.time() // 300) * 300
         self.staleness = StalenessTracker("chainlink")
 
@@ -179,15 +196,25 @@ class ChainlinkFeed:
         newest_ts, newest_px = self._binance[-1]
         if newest_ts <= self._last_report_obs_ts:
             return 0.0
-        anchor = None
+        anchor = anchor_ts = None
         for ts, px in self._binance:
             if ts <= self._last_report_obs_ts:
-                anchor = px
+                anchor, anchor_ts = px, ts
             else:
                 break
         if anchor is None:
             return 0.0
-        return newest_px - anchor
+        if self._last_report_obs_ts - anchor_ts > BRIDGE_ANCHOR_MAX_AGE_S:
+            # A hole in the ring double-counts movement the report already has.
+            return 0.0
+        delta = newest_px - anchor
+        if abs(delta) > BRIDGE_MAX_DELTA_FRAC * anchor:
+            if not self._bridge_band_warned:
+                self._bridge_band_warned = True
+                logger.warning("BRIDGE OFF — a Binance tick is far outside the "
+                               "plausible band, using the plain projection")
+            return 0.0
+        return delta
 
     def projected_final_twap(self, close_ts: float, now: float | None = None,
                              bridged: bool = False) -> float | None:
@@ -206,7 +233,8 @@ class ChainlinkFeed:
         t0 = close_ts - TWAP_HORIZON_S
         if t <= t0 or t > close_ts:
             return None
-        if self._price <= 0 or self.age_seconds > SPOT_STALE_S:
+        # Spot age against `t`, not the wall clock — replays pass their own now.
+        if self._price <= 0 or self._last_update <= 0 or (t - self._last_update) > SPOT_STALE_S:
             return None
         # Coverage guard, boundary-inclusive: the freshness gate reads only the
         # NEWEST report, so an outage covering the middle of the averaging span
@@ -244,9 +272,10 @@ class ChainlinkFeed:
 
         Both conditions are required. A repeat or two is normal — the relay
         appears to poll rather than stream, so ~11% of consecutive reports
-        legitimately carry the previous value. But an EXACTLY unchanged average
-        across many seconds while spot genuinely moves is not a flat market; a
-        30s mean cannot hold to 4dp through real movement. Hence: sustained
+        legitimately carry the previous value. But an average pinned inside
+        TWAP_FROZEN_EPS_USD across many seconds while spot genuinely moves is
+        not a flat market — a stalled relay can still jitter its last digit,
+        and that must not read as movement. Hence: sustained
         value freeze AND material raw travel inside that same span.
         """
         t = now if now is not None else time.time()
@@ -295,12 +324,95 @@ class ChainlinkFeed:
                 if self.strike_reliable(b)}
 
     @staticmethod
-    def _epoch_seconds(ts: float) -> float:
-        """Normalize an epoch timestamp to seconds.
+    def _epoch_seconds(ts: float) -> float | None:
+        """Normalize an epoch timestamp to seconds, or None if it is not one.
 
         RTDS payloads carry milliseconds; boundary keys are seconds — an
-        un-normalized value can never match a get_strike() lookup."""
-        return ts / 1000.0 if ts > 1e11 else ts
+        un-normalized value can never match a get_strike() lookup. A µs- or
+        ns-scaled value survives the ms rescale as ~1.79e12 and would evict
+        every boundary capture through the 2h cutoff, so anything outside the
+        plausible band is refused rather than believed."""
+        secs = ts / 1000.0 if ts > 1e11 else ts
+        return secs if EPOCH_MIN_S < secs < EPOCH_MAX_S else None
+
+    def _bad_ts(self, raw: Any) -> None:
+        """One line per run — a broken clock repeats every message."""
+        if not self._bad_ts_logged:
+            self._bad_ts_logged = True
+            logger.error("FEED TIMESTAMP out of range (%s) — ignoring those reports", raw)
+
+    def _note_drop(self, topic: str) -> None:
+        """Count what we throw away — a schema change drops 100% of a topic."""
+        self.drops[topic] = self.drops.get(topic, 0) + 1
+        now = time.time()
+        if now - self._drops_logged >= DROP_LOG_EVERY_S:
+            self._drops_logged = now
+            logger.warning("FEED DROPS — unreadable reports so far: %s",
+                           ", ".join(f"{k} {v}" for k, v in sorted(self.drops.items())))
+
+    # -- per-topic ingestion (the replay seam: _run validates and routes here;
+    # the decision-parity replay calls these directly with the recorded clock,
+    # so paper/live replays exercise the exact production state transitions) --
+
+    def ingest_binance(self, bts_s: float, value: float,
+                       now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        # The relay's payload clock cannot legitimately lead our receipt: a
+        # future-dated tick would own retention and evict every bridge anchor.
+        if bts_s > now + BINANCE_RING_S:
+            return
+        self._binance.append((bts_s, value))
+        # Relay ticks can arrive out of order; the anchor scan and the newest
+        # read both walk the ring in ts order.
+        if len(self._binance) > 1 and bts_s < self._binance[-2][0]:
+            self._binance = deque(sorted(self._binance))
+        _newest = self._binance[-1][0]
+        while self._binance and self._binance[0][0] < _newest - BINANCE_RING_S:
+            self._binance.popleft()
+        if self.on_spot is not None:
+            try:
+                self.on_spot(bts_s, value, None)
+            except Exception:
+                pass
+
+    def ingest_sixty(self, observed_ts: float, value: float,
+                     pub_ts: float | None = None,
+                     now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        if abs(value - self.twap_official) >= TWAP_FROZEN_EPS_USD:
+            self._twap_value_since = now
+        elif self._twap_value_since <= 0:
+            self._twap_value_since = now
+        self.twap_official = value
+        self.twap_official_ts = observed_ts
+        self.twap_official_rx = now
+        # The strike IS this stream's boundary value.
+        self._record_boundary(observed_ts, self.twap_official)
+        if self.on_twap is not None:
+            try:
+                self.on_twap(observed_ts, self.twap_official, pub_ts)
+            except Exception:
+                pass
+
+    def ingest_raw(self, observed_ts: float, value: float,
+                   pub_ts: float | None = None,
+                   now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        self._price = value
+        self._last_update = now
+        self.staleness.observe(now)
+        self._last_report_rx = now
+        self._last_report_obs_ts = observed_ts
+        self._reports.append((now, self._price))
+        while self._reports and self._reports[0][0] < now - RAW_RING_S:
+            self._reports.popleft()
+        self.report_event.set()   # sniper decision clock
+        # Optional micro-tape hook — must not raise into the feed.
+        if self.on_report is not None:
+            try:
+                self.on_report(observed_ts, self._price, pub_ts)
+            except Exception:
+                pass
 
     def _record_boundary(self, observed_ts: float, value: float) -> None:
         if value <= 0:
@@ -438,6 +550,7 @@ class ChainlinkFeed:
                             break
                         if raw == "PONG":
                             continue
+                        msg = None
                         try:
                             msg = _loads(raw)
                             payload = msg.get("payload", {})
@@ -447,28 +560,32 @@ class ChainlinkFeed:
                                 # bridge delta; never touches price/strike state.
                                 _bv = payload.get("value")
                                 _bts = payload.get("timestamp") or payload.get("ts")
-                                if _bv is not None and _bts is not None:
+                                if _bv is None or _bts is None:
+                                    self._note_drop("crypto_prices")
+                                else:
                                     try:
                                         _bts_s = self._epoch_seconds(float(_bts))
-                                        self._binance.append((_bts_s, float(_bv)))
-                                        while self._binance and self._binance[0][0] < _bts_s - 10.0:
-                                            self._binance.popleft()
-                                        if self.on_spot is not None:
-                                            try:
-                                                self.on_spot(_bts_s, float(_bv), None)
-                                            except Exception:
-                                                pass
+                                        if _bts_s is None:
+                                            self._bad_ts(_bts)
+                                        else:
+                                            self.ingest_binance(_bts_s, float(_bv))
                                     except (ValueError, TypeError):
-                                        pass
+                                        self._note_drop("crypto_prices")
                                 continue
                             if _sym != "btc/usd":
                                 continue
                             value = payload.get("value")
                             if value is None:
+                                self._note_drop(msg.get("topic", "?"))
                                 continue
                             now = time.time()
                             payload_ts = payload.get("timestamp") or payload.get("ts")
                             observed_ts = self._epoch_seconds(float(payload_ts)) if payload_ts is not None else now
+                            if observed_ts is None:
+                                # Drop the report whole: a bad ts here would evict every
+                                # boundary capture and blind the source watches.
+                                self._bad_ts(payload_ts)
+                                continue
                             # The ENVELOPE's own timestamp = when Polymarket's
                             # publisher pushed to RTDS. Recorded (never used to
                             # decide) because it splits our ~1.63s report lag
@@ -493,40 +610,13 @@ class ChainlinkFeed:
                                         pass
                                 continue
                             if msg.get("topic", "") == "crypto_prices_twap_sixty":
-                                _v = float(value)
-                                if _v != self.twap_official:
-                                    self._twap_value_since = now
-                                elif self._twap_value_since <= 0:
-                                    self._twap_value_since = now
-                                self.twap_official = _v
-                                self.twap_official_ts = observed_ts
-                                self.twap_official_rx = now
-                                # The strike IS this stream's boundary value.
-                                self._record_boundary(observed_ts, self.twap_official)
-                                if self.on_twap is not None:
-                                    try:
-                                        self.on_twap(observed_ts, self.twap_official, pub_ts)
-                                    except Exception:
-                                        pass
+                                self.ingest_sixty(observed_ts, float(value), pub_ts, now)
                                 continue
-                            self._price = float(value)
-                            self._last_update = now
                             backoff = RECONNECT_BASE_S      # healthy data — safe to reset
-                            self.staleness.observe(now)
-                            self._last_report_rx = now
-                            self._last_report_obs_ts = observed_ts
-                            self._reports.append((now, self._price))
-                            while self._reports and self._reports[0][0] < now - RAW_RING_S:
-                                self._reports.popleft()
-                            self.report_event.set()   # sniper decision clock
-                            # Optional micro-tape hook — must not raise into the feed.
-                            if self.on_report is not None:
-                                try:
-                                    self.on_report(observed_ts, self._price, pub_ts)
-                                except Exception:
-                                    pass
+                            self.ingest_raw(observed_ts, float(value), pub_ts, now)
                         except (ValueError, TypeError):
-                            pass
+                            self._note_drop(msg.get("topic", "?")
+                                            if isinstance(msg, dict) else "unparsed")
             except (websockets.ConnectionClosed, websockets.InvalidHandshake,
                     ConnectionError, OSError) as e:
                 # InvalidHandshake = server-side rejection (500 outage / 429 limit) —

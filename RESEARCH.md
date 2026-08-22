@@ -52,6 +52,43 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    synthetic max-union, MAX from per-tick interval maxima. Re-fit with
    ws1_measure60/ws1_interval_max conventions; also re-decide the ladder
    floor (#1) and the taker's dormancy (#3) from the fresh tables.
+   **The 08-20 audit says expect a WIDENING, not a formality.** An
+   independent re-derivation reproduced 15/16 frozen p99.5 knots on the
+   freeze span, but adding 08-18 — the day the freeze excluded — puts
+   several knots outside the envelope: **k=25 $10.0 vs frozen $8.0 (+25%)**,
+   k=40 $24 vs $18, k=12 $4.5 vs $3.5, with k=8/20/29/35 also thin. k=25 is
+   `maker_k_place_max` and 5 of the first 7 paper fills armed at k≈24.99-25.0,
+   so live arming sits exactly where the table is thinnest and `need 1.0` is
+   absorbing an under-stated error. 08-20 added a realized case: a filled
+   paper window's projection error ran $13.7 at k≈25 (proj 72,780.6 vs final
+   72,766.9; −$16.80 loss) — beyond both the frozen $8 and the re-derived
+   $10. One tail event, but it landed exactly where fills arm. Tables were deliberately NOT touched by
+   the audit — editing knots outside the scheduled re-fit is measurement by
+   fiat. Note before re-fitting: `ws1_freeze_tables.py` fitted MAX at grid
+   points rather than per-tick interval maxima (under-bounding); fixed 08-20
+   to import `ws1_interval_max`, and its input `data/ws1_errors60.csv` must
+   be regenerated — the freeze is not currently reproducible from the repo.
+
+2b. **Measure the GTC place/cancel round trip** — blocking, and the only
+   audit finding on the binding gate that no amount of paper accrual can
+   settle. `paper_trader._GTC_LATENCY_QUANTILES` pays 56ms/rung and its
+   commit claims it is measured, but `latency_stats.json` has no `gtc`
+   section and never had one. Reconstructing live fill 334 from tape needs
+   ~500ms to reproduce the real outcome: paper credited it $11.21 against
+   $3.74 actual, because rungs become matchable roughly twice as fast as
+   the real ones and collect fills in the tenths of a second while the
+   triggering sweep is still printing (+21.9% over the 5-fill probe). The
+   error is two-sided — it flatters winners and punishes losers — so the
+   direction of the distortion on ¢/sh is unknown, not conservative.
+   Instrumentation shipped 08-21 (both unblock paths): live place/cancel
+   record RTTs to `latency_stats.json` (gtc section, raw samples kept),
+   every rung stamps `gtc_place_ms`/`gtc_cancel_ms` into the booked
+   snapshot, `smoke_gtc_test.py --samples` persists too, and the nightly
+   ops watch validates paper's 56ms table against measured p50 (±25%, dark
+   until n ≥ 10). Still open until real samples exist: run
+   `smoke_gtc_test.py --confirm --samples 12` on the box, or wait for the
+   first live ladder. Until then the ≥20-fill bar is measured against an
+   unvalidated fill clock.
 3. **Lock-dip taker: DORMANT-pending-regime** (`taker_enabled: false`,
    staged 08-18). The 60s rule killed its supply: 4 winner-side max-lock
    dips / 1 FOK-reachable over 1,184 windows (bar: ≥1 reachable per 3
@@ -81,12 +118,16 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    taught exactly this overconfidence at low k). Proposal-only either way.
 7. **Queue-constant estimator discrepancy** — sweep-consumed depth at deep
    levels is stable (med 19-46 sh, p75 62-120, pooled med 31, NO trend across
-   11 days) while the book-resting watch grew 55→135. The shipped 135
+   11 days) while the book-resting watch grew 55→135. Re-measured 08-21 on
+   the full 60s era (8 days, 56,523 sweeps): med 29 / p75 77 — unchanged,
+   still well under the constant. The shipped 135
    over-states typical queues → paper under-credits at-price fills →
    conservative, correct direction. The nightly ops watch now alarms when
    trailing p75 exceeds the constant (the unsafe direction). Reopen only if
    live deep fills land that paper refuses to credit (recalibrate from
    `filled_at_px` live/paper attribution, never from book snapshots).
+   Fill-rule verification against live/paper fill PAIRS stays blocked: zero
+   live ladder fills exist post-era — unblocks on the first live flow.
 8. **Candidate A — cushion dip-buyer** (WALLETS.md): both-sides deep rungs
    0.10-0.35, no sign filter. Bar written in WALLETS.md. NOTE from the WS4
    kinematics: any such leg eats the avalanche sweeps deliberately — its
@@ -102,6 +143,129 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
     What IS refuted is post-close camping on the siblings (30s era). A
     measurement would mirror ws2_supply over sibling tapes; nothing licenses
     it before btc-5m's own paper bar passes.
+
+## 08-21 charter — pre-registered bars (written BEFORE measurement)
+
+Corpus: the full 60s era (08-14..21, ~8 ET days of tape/micro/window_paths,
+pulled to `scripts/research/data/vps-0821/`). Dollar bars anchor at the $400
+go-live bankroll. At most TWO surviving mechanisms get proposed for
+implementation; the rest rank here. Verdicts land in this file the same
+session.
+
+- **H1 market P&L decomposition**: a flow pocket qualifies only if (i) total
+  systematic flow ≥ $200/day, (ii) the capturing position is one we can
+  occupy — no shared-price queue seniority (08-13 live probe is binding) and
+  no sub-410ms reaction requirement, (iii) our capturable slice ≥ $10/day at
+  $400 under print-through fill physics, (iv) it persists in both era halves
+  (08-14..17 vs 08-18..21) and survives a shuffled-window control.
+  **VERDICT 08-21** (h1_report.md; 3.32M prints, fee_bps 0 on all; makers as
+  a class net −$7.8k/day on $6.62M/day notional — every day-stable pocket is
+  bid-side; pipeline reproduced all three known pockets, incl. our own seat:
+  signal-free deep bids k∈(6,25] are worth −$100/day — the edge is entirely
+  the projection):
+  - **STAGED (the one proposal): 0.85-0.95 rungs on the deep_proj ladder,
+    k∈[6,25]** — winner-side maker capture on 0.8-1.0 bids is +$1,423/day,
+    positive 8/8 days, both halves, shuffle-destroyed (outcome edge — the
+    projection supplies it), print-through physics, ~$18/day per rung at
+    $400. Staging condition BEFORE any settings change: ws2_ladder_replay
+    engine-true over the full era with the extended rungs — the flip-race is
+    the killer at high prices (a 0.95 rung's whole margin is 5%), so the
+    replay's fill-on-flip accounting decides, then the normal §2 paper bar.
+    Warning prior: 1723 ran −5.9¢/sh at 0.95 pre-rule.
+    Pre-registered replay bar (written before the run): each NEW rung needs
+    ≥10 fills, win% ≥ its price + 5pp, and positive dollars over the era;
+    the extended ladder's total dollars must be ≥ the baseline ladder's;
+    the ANTI-side extended ladder must be ≤ 0. Rungs judge individually —
+    a failing rung dies alone; all three failing kills the proposal.
+    **REPLAY VERDICT 08-21: KILLED — all three rungs fail individually**
+    (h1b_extended_rungs.md; engine-true, 2,066 windows / 1,827 armed, $60
+    go-live budget): 0.95 → 39 fills 92.3% (needs 100) −$8.62; 0.90 → 24
+    fills 87.5% (needs 95) −$5.00; 0.85 → 17 fills 82.4% (needs 90) −$3.97.
+    Extended total < baseline at both budgets; ANTI −$75.9k (the projection
+    is real — the high rungs lose anyway). Mechanism confirmed: sign
+    accuracy 99.8% on armed windows, but win% AT FILLS pins to the rung
+    price — the fill channel adversely selects the sign failures; all three
+    rungs' losses are the same 3 flip windows placed at k≈24.4-24.7, and one
+    95¢ loss erases 19 wins. Re-decision evidence for #1: the baseline 0.80
+    rung ran exactly break-even (80.0% on fills) on this corpus — the
+    price-margin geometry, not the sign, is what pays. Also structural: at
+    the $150 paper bankroll an 8-rung split ($2.81/rung) starves every rung
+    ≥0.65 under the 5-share exchange minimum.
+  - REFUTED — mid-window bid wall ($11.9k/day, k>60, the market's largest
+    pocket): same-book touch bids behind 2.3-8.3k-share shared-price queues
+    (the exact 0/102 live refutation; symmetric-MM ban); top-5 wallets take
+    78%, plausibly reward-farming (makers class-negative in h1).
+  - REFUTED — terminal lottery counterflow ($854/day, final 6s): 98.9% of
+    the capture is the winner-book 0.99 wall matched cross-book via the mint
+    adapter — joining a refuted shared-price wall + a k<6 certainty claim
+    (unpinnable floor); the same seat at k∈(6,25] nets −$165/day.
+  - REFUTED — underdog-ask longshot tax (+$14.1k/day mean at 0.0-0.2):
+    sign-flips daily (−$32k on 08-17) — not systematic; needs pair-minting.
+  - BLOCKED — post-close bands: the tape unsubscribes p50 +12s after close;
+    unblock = a post-close collector (occupation refuted regardless).
+  - Calibration: k>25 lock bids reproduced their refutation (incumbents ate
+    −$3.3k/−$6.3k flip-race days).
+- **H2 cross-window seam** (adjacent refutation: open head-start, 30s era —
+  any contradicting evidence routes through this file, never straight to
+  code): N's projection as N+1's strike, traded against N+1's opening book.
+  Bar: ≥ 300 windows with an executable opening ask, EW ≥ +5¢/sh after taker
+  fee at ≥ $5 FOK size, net ¢/sh monotone across model-edge buckets with an
+  edge<0 control, anti-side ≤ 0, ≥ $10/day at $400.
+  **VERDICT 08-21: REFUTED** (h2_report.md, 1,972 windows; chain invariant
+  verified 1,956/1,956). Held-out EW −2.1..−4.4¢/sh at every δ ∈ [2,30]s —
+  the favored side wins 56-64% but its ask (0.57-0.63) already exceeds
+  breakeven: the book prices the incoming strike within 2s of open.
+  Monotonicity fails at all δ; the edge<0 control cell wins MOST at 3 of 5 δ
+  (the 30s-era anti-predictive failure mode, reproduced). Larger |d| loses
+  more. Pre-open leak NOT MEASURABLE: the recorder subscribes N+1's tokens
+  at open (1/1,972 windows with pre-open BBO; 2 boundary-jitter prints);
+  unblock = subscribe N+1 ≥60s early in the micro-tape, re-measure at ≥14d.
+- **H3 complement structure**: (a) pure arb: Up-ask + Down-ask < 1 − both
+  legs' taker fees at ≥ $2/leg executable on event-true books; bar: ≥ 1
+  event/day AND ≥ $5/day at depth. (b) cheaper-route: 1 − bid_down vs ask_up
+  at our ladder arm times; bar: ≥ 1 tick median improvement on ≥ 20% of
+  arms. Control for both: ±30s time-shuffled books must produce ≈ zero.
+  **VERDICT 08-21: BOTH REFUTED** (h3_report.md). (a) zero post-fee
+  violations in 973,302 synchronized ask pairs; event-true violations are
+  book-update transients only — 949 events / 8 days, median < 1ms, max
+  21ms, total violating time 0.14s, $0.00/day realizable. The ±30s control
+  manufactures 6.8-8.9× the event-true rate — any arb this scanner "finds"
+  on unsynchronized books is staleness. (b) median route improvement
+  $0.0000; ≥1 tick on 0.01% of arm-seconds (bar: 20%); parity is enforced
+  tick-tight (47.7% of prints have a complementary-priced print within
+  ±0.5s, 10-20× the shifted base rate). Route choice is illusory.
+  Fill-realism side-finding: unmirrored complement-BUY prints at
+  rung-compatible prices bound paper's invisible-fill undercount at ≤14-17%
+  of deep flow — CONSERVATIVE direction, unconfirmed as real (all 5 era
+  live fills had own-token prints); unblock = reconcile the next live
+  ladder session's fills against own-token tape prints.
+- **H4 sell-at-certainty inventory** (exit refutation adjacent — different
+  mechanism: boundary-verified certain winners only, never spot-lens): bar:
+  net expected ≥ +$5/day at $400 (freed capital × next-ladder-arm
+  probability × ladder EW, minus haircut), p95 haircut ≤ 2¢/sh incl. taker
+  fee, ≥ 100 boundary-certain windows, rule keys on `certain_winner` only.
+  **VERDICT 08-21: REFUTED on timing** (h4_report.md). Auto-redeem credits
+  winners at p50 +100s / p90 110-130s after close (5,736 on-chain REDEEM
+  rows, 6 wallets) vs the close+275s redeploy deadline — capital is back
+  before the next ladder arms. The haircut itself passes (0.99 exec p50,
+  1.07¢/sh incl. fee, depth ample), but per freed dollar it costs 1.07% vs
+  a 0.19% benefit (5.5×, bankroll-invariant): net −$0.75/day at $400.
+  Reopen only if redeem p50 degrades past 275s AND ladder EW/$ × P(arm)
+  exceeds ~1.1% — both, EW noise alone cannot close a 5.5× gap.
+
+## Latency: the stop line (08-21, do not gold-plate past this)
+
+Measured from every stamped fill in existence (36 live fills, 08-05..13;
+report in the session data dir): owned compute — wake→eval + positions +
+tick + context — runs ~3ms p50 / ~5ms p99 on current code. End-to-end
+report-rx→submit p50 ≈ 1.05s decomposes as raw-report age at decision
+(~1s: the raw stream ticks ~1Hz and fires wake on book events between
+reports) + owned ~5ms + sign 4.3ms + POST ~303ms (itode ~250ms policy
+floor inside it). Every remaining millisecond we own is already bought;
+the residuals are Polymarket's deliberate taker hold, Chainlink delivery
+(1.6-1.8s, REFUTATIONS.md: we are not the fast participant), and the raw
+cadence itself. The 25ms owned budget + WARNING regression guard the
+floor; further latency engineering buys nothing measurable — stop here.
 
 ## 08-18 recalibration audit — closed items (evidence in place)
 

@@ -14,7 +14,7 @@ import random
 import sqlite3
 import statistics
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -109,6 +109,7 @@ def live_health_read(db_path=None, since_iso=None):
         con.close()
     per_day = defaultdict(list)     # ET day -> list of (net_per_sh, win, pnl$)
     per_leg = defaultdict(list)     # signal_leg -> list of (net_per_sh, win)
+    per_leg_day = defaultdict(lambda: defaultdict(list))   # leg -> ET day -> [pnl$]
     for r in rows:
         try:
             ts = datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00")).timestamp()
@@ -122,6 +123,7 @@ def live_health_read(db_path=None, since_iso=None):
         except (ValueError, json.JSONDecodeError):
             leg = "unstamped"
         per_leg[leg].append((nps, 1.0 if (r["pnl"] or 0) > 0 else 0.0))
+        per_leg_day[leg][et_day(ts)].append(r["pnl"] or 0.0)
     if not per_day:
         return None
     fills = [x for v in per_day.values() for x in v]
@@ -139,23 +141,40 @@ def live_health_read(db_path=None, since_iso=None):
     # threshold would condemn a leg returning 25%/day.
     usd_daily = [sum(p for _, _, p in v) for _, v in sorted(per_day.items())]
     usd_per_day = statistics.mean(usd_daily)
-    trailing4_usd = statistics.mean(usd_daily[-4:]) if len(usd_daily) >= 4 else None
-    fills_trailing4 = sum(len(v) for _, v in sorted(per_day.items())[-4:])
+    # The trailing window is CALENDAR ET days, zero-filled: "the last 4 days that
+    # happened to fill" can span weeks on a quiet leg and judge stale tape.
+    days_sorted = sorted(per_day)
+    _last = datetime.strptime(days_sorted[-1], "%Y-%m-%d")
+    trailing4_days = [(_last - timedelta(days=i)).strftime("%Y-%m-%d")
+                      for i in (3, 2, 1, 0)]
+    n_cal_days = (_last - datetime.strptime(days_sorted[0], "%Y-%m-%d")).days + 1
+    usd_by_day = {d: sum(p for _, _, p in v) for d, v in per_day.items()}
+    trailing4_usd = (statistics.mean(usd_by_day.get(d, 0.0) for d in trailing4_days)
+                     if n_cal_days >= 4 else None)
+    fills_trailing4 = sum(len(per_day.get(d, ())) for d in trailing4_days)
     # A lock_dip loss means the max-tier lock named the wrong side — mechanism
     # failure, not variance (it happened once, 08-12 at k=1.1s, and cost the
     # whole stake). One is enough to halt.
     breach_losses = sum(1 for n, w in per_leg.get("lock_dip", []) if w == 0.0)
-    if breach_losses:
+    # Per LEG: a leg bleeding $9/day must not hide inside an aggregate another
+    # leg carries. Sparse fills cannot judge a dollars rule: one -$4.50 rung
+    # loss after three quiet days reads as trailing-negative on a leg that is
+    # up on the week (measured 08-18 on the engine-true series). Persistent
+    # bleeding still trips: 5+ fills net-negative over 4 days is a verdict;
+    # 1 fill is an anecdote — keep accruing.
+    tripped_legs = []
+    for leg, by_day in sorted(per_leg_day.items()):
+        leg_fills = sum(len(by_day.get(d, ())) for d in trailing4_days)
+        if n_cal_days < 4 or leg_fills < 5:
+            continue
+        if statistics.mean(sum(by_day.get(d, ())) for d in trailing4_days) < 0.0:
+            tripped_legs.append(leg)
+    if breach_losses or tripped_legs:
         tripped = True
-    elif len(usd_daily) < 4 or fills_trailing4 < 5:
-        # Sparse fills cannot judge a dollars rule: one -$4.50 rung loss after
-        # three quiet days reads as trailing-negative on a leg that is up on
-        # the week (measured 08-18 on the engine-true series). Persistent
-        # bleeding still trips: 5+ fills net-negative over 4 days is a
-        # verdict; 1 fill is an anecdote — keep accruing.
+    elif n_cal_days < 4 or fills_trailing4 < 5:
         tripped = None
     else:
-        tripped = trailing4_usd < 0.0
+        tripped = False
     legs = {leg: dict(n_fills=len(v),
                       net_per_sh=statistics.mean(n for n, _ in v),
                       win_rate=statistics.mean(w for _, w in v),
@@ -171,11 +190,13 @@ def live_health_read(db_path=None, since_iso=None):
                 trailing4_mean=trailing4, trailing8_t=trailing8_t,
                 usd_per_day=usd_per_day, usd_p10=block_bootstrap_p10(usd_daily),
                 trailing4_usd=trailing4_usd, breach_losses=breach_losses,
+                trailing4_days=trailing4_days, tripped_legs=tripped_legs,
                 kill_rule_tripped=tripped, legs=legs)
 
 
 # ── Resolution-mechanism watch ─────────────────────────────────────────────────
-def mechanism_read(boundaries: dict, db_path=None):
+def mechanism_read(boundaries: dict, db_path=None, unchecked: int = 0,
+                   t3_records: int | None = None):
     """Served resolution values vs OUR recorded stream boundaries, bit-exact.
 
     This is the check the chain invariant cannot do: final==next-strike stays
@@ -187,7 +208,11 @@ def mechanism_read(boundaries: dict, db_path=None):
 
     boundaries: {window_ts: captured_value} — trusted captures only
     (ChainlinkFeed.boundary_snapshot). Compares each against the label's
-    price_to_beat and the previous window's final_price."""
+    price_to_beat and the previous window's final_price.
+
+    t3_records: rows the retired 30s stream wrote today (MicroTape.t3_records).
+    That tape is the A/B evidence for the NEXT source swap, so a zero has to be
+    stated rather than assumed."""
     if not boundaries:
         return None
     db = Path(db_path) if db_path else LIVE_DB
@@ -223,7 +248,7 @@ def mechanism_read(boundaries: dict, db_path=None):
     if checked == 0:
         return None
     return dict(checked=checked, exact=exact, worst=round(worst, 2),
-                worst_ts=worst_ts)
+                worst_ts=worst_ts, unchecked=unchecked, t3_records=t3_records)
 
 
 def queue_depth_read(days: float = 7.0, db_path=None):

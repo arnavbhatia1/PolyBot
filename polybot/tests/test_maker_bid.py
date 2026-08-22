@@ -345,3 +345,85 @@ def test_live_retire_reads_the_final_matched_size(tmp_path, monkeypatch):
     assert len(mgr.trader.booked) == 1
     assert mgr.trader.booked[0]["shares_gross"] == pytest.approx(10.0)
     assert mgr.trader.booked[0]["price"] == pytest.approx(0.80)
+
+
+def test_shutdown_cancellation_still_books_accrued_fills(tmp_path, monkeypatch):
+    """Shutdown time-boxes the retire: a CancelledError landing mid-cancel must
+    not strand filled shares on the exchange with no DB row."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+
+    class CancelKiller(FakeTrader):
+        async def cancel_gtc(self, order_id):
+            self.cancelled.append(order_id)
+            raise asyncio.CancelledError()
+
+    mgr = MakerBidManager(CancelKiller(), FakeChainlink(64200.0), CFG, paper=True)
+    _place(mgr, time.time() - 285.0, budget=200.0)
+    mgr.on_print("tokU", {"price": "0.60", "size": "1"})      # 0.80 rung fills
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(mgr._retire("shutdown"))
+    assert len(mgr.trader.booked) == 1
+    assert mgr.trader.booked[0]["shares_gross"] > 0
+    assert mgr.active is None
+
+
+def test_poll_failure_still_books_accrued_fills(tmp_path, monkeypatch):
+    """A network error in the final matched-size re-read must not skip booking."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+
+    class PollKiller(FakeTrader):
+        async def poll_gtc_fill(self, order_id):
+            raise ConnectionError("boom")
+
+    mgr = MakerBidManager(PollKiller(), FakeChainlink(64200.0), CFG, paper=False)
+    _place(mgr, time.time() - 285.0, budget=200.0)
+    mgr.active["rungs"][0]["filled"] = 20.0
+    asyncio.run(mgr._retire("test"))
+    assert len(mgr.trader.booked) == 1
+    assert mgr.trader.booked[0]["shares_gross"] == pytest.approx(20.0)
+
+
+def test_fill_is_stamped_when_a_print_gap_ran_under_the_ladder(tmp_path, monkeypatch):
+    """Paper's whole fill mechanism is the print stream, so a CLOB reconnect
+    while rungs rested makes the sample an under-count — the fill record has
+    to say so."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+
+    class FakeWS:
+        last_print_gap_ts = 0.0
+
+    mgr = _mgr(64200.0)
+    mgr.clob_ws = FakeWS()
+    _place(mgr, time.time() - 285.0, budget=200.0)
+    mgr.on_print("tokU", {"price": "0.60", "size": "1"})      # 0.80 rung fills
+    asyncio.run(mgr._retire("test"))
+    assert mgr.trader.booked[0]["indicator_snapshot"]["print_gap"] == 0
+
+    mgr2 = _mgr(64200.0)
+    mgr2.clob_ws = FakeWS()
+    _place(mgr2, time.time() - 285.0, budget=200.0)
+    mgr2.on_print("tokU", {"price": "0.60", "size": "1"})
+    mgr2.clob_ws.last_print_gap_ts = time.time()              # dropped mid-rest
+    asyncio.run(mgr2._retire("test"))
+    assert mgr2.trader.booked[0]["indicator_snapshot"]["print_gap"] == 1
+
+
+def test_booked_notional_equals_the_sum_of_the_rungs(tmp_path, monkeypatch):
+    """book_maker_fill re-derives the debit as shares x price, so a rounded
+    vwap makes the booked cost disagree with what the rungs actually cost."""
+    monkeypatch.setattr(mb, "MAKER_LADDER_PATH", tmp_path / "none.json")
+    mgr = _mgr(64200.0)
+    _place(mgr, time.time() - 285.0, budget=197.0)     # awkward per-rung share counts
+    mgr.on_print("tokU", {"price": "0.10", "size": "1"})   # sweeps every rung
+    truth = sum(r["filled"] * r["price"] for r in mgr.active["rungs"])
+    asyncio.run(mgr._retire("test"))
+    booked = mgr.trader.booked[0]
+    assert booked["shares_gross"] * booked["price"] == pytest.approx(truth, abs=1e-9)
+
+
+def test_no_rung_reads_a_flag_nothing_writes():
+    """The ladder retires whole — there is no partial-cancel state — so the
+    four `cancelled` reads were dead money-path branches, not a missing writer."""
+    from pathlib import Path
+    src = Path(mb.__file__).read_text(encoding="utf-8")
+    assert "cancelled" not in src
