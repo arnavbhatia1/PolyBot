@@ -76,16 +76,15 @@ late_window:
                                # still evaluates and logs would-be fires; re-arm by
                                # flipping this once the nightly dip count says the
                                # whipsaw supply returned (RESEARCH.md).
-  validation_epoch: "2026-08-21T04:30:00+00:00"  # deep_proj PAPER validation
-                               # under the 08-20 audit fixes (bridge sanity
-                               # band + anchor guard, zone 58, trusted-only
-                               # orphan resolution, retire books under
-                               # cancellation). Set past the midnight-ET boot
-                               # that carries them. The 08-19 13:00Z epoch's
-                               # 5 fills (5 wins, +23.3¢/sh, 1 ET day) ran the
-                               # pre-audit engine; the 08-18 16:45Z epoch's 2
-                               # ran need 0.5 — both recorded in RESEARCH.md,
-                               # excluded from this gate.
+  validation_epoch: "2026-08-22T02:40:00+00:00"  # deep_proj PAPER validation
+                               # under the 08-20 audit fixes + 08-21 charter
+                               # session (bridge sanity band + anchor guard,
+                               # zone 58, trusted-only orphan resolution,
+                               # retire books under cancellation, bid-touch
+                               # fix, GTC instrumentation), set past the
+                               # 08-22 02:2xZ deploy boot. Earlier epochs'
+                               # fills ran pre-audit engines — recorded in
+                               # RESEARCH.md, excluded from this gate.
                                # Set AFTER the boot that carries it
                                # by more than the ~3.4min entry-to-exit gap,
                                # because the gate filters on EXIT time — an
