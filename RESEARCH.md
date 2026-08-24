@@ -47,6 +47,16 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    Unblock: ≥14 real-final days (~4,000 windows), then walk-forward re-run
    (ws1_oos.py) decides 0.5 vs 1.0 on the full pre-registered bar. The §2 paper bar (≥6d, ≥20
    windows, EW ≥ +5¢/sh, dollars > 0) judges deployment as ever.
+   Epoch history: the 08-22 02:40Z epoch (audited-code deploy) accrued 3
+   fills / 3 wins / +$20.39 / +36.5¢/sh in 2.5 days — but 08-22..23 rested
+   ~260 ladders/day with the 0.80/0.65 rungs STARVED under the 5-share
+   minimum (breaker-scaled $2.65/rung at the $132 paper bankroll; 0-4
+   ladders/day carried 0.80), so zero fills landed until the bankroll
+   recovered. Sub-$150 validation censors the rungs where fills live
+   (H1b: win% at fills pins to rung price; fills concentrate at 0.80).
+   Re-pinned 08-24 15:40Z at the $400 go-live bankroll so the gate
+   measures the deployment that would actually ship. The 3 excluded fills
+   are evidence-recorded here.
 2. **60s margin-table re-fit at ≥14 real-final days** — the 08-18 freeze
    stands on 970 real-final windows (p99.5 ≈ 5th-from-top order stat) +
    synthetic max-union, MAX from per-tick interval maxima. Re-fit with

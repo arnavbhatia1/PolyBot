@@ -2699,7 +2699,12 @@ async def main() -> None:
 
     # Nightly jobs: window-path retention sweep + price-sum retention + the
     # sniper-edge health report (runs at 23:45 ET, during the wind-down).
-    from polybot.recording import cleanup_job
+    # Compress runs FIRST: the analysis jobs stream the same tape, and raw
+    # multi-GB days starved them past their budgets three nights running
+    # (maker_ladder abandoned at 600s, zombie threads into the restart);
+    # gz-first cuts their I/O ~39×. Readers open .jsonl(.gz) either way.
+    from polybot.recording import cleanup_job, compress_recordings_job, recordings_cleanup_job
+    scheduler.register_job("compress_recordings", compress_recordings_job())
     scheduler.register_job("window_paths_retention", cleanup_job(db))
 
     async def _price_sum_retention_job() -> dict:
@@ -2721,7 +2726,6 @@ async def main() -> None:
         return await asyncio.to_thread(lmod.ladder_recalibrate)
     scheduler.register_job("maker_ladder", _maker_ladder_job)
 
-    from polybot.recording import compress_recordings_job, recordings_cleanup_job
     scheduler.register_job("recordings_retention", recordings_cleanup_job())
 
     async def _sniper_health_job() -> dict:
@@ -2809,10 +2813,10 @@ async def main() -> None:
         from polybot.paths import LATENCY_STATS_PATH
         lat, lat_dark = _latency_watch(LATENCY_STATS_PATH)
         gtc, gtc_dark = _gtc_watch(LATENCY_STATS_PATH)
-        if sim is None and live is None:
-            if alert_manager:
-                await alert_manager.send_health("🎯 Sniper health: no data yet (sim corpus + live ledger both empty).")
-            return {"health": "no data"}
+        # An empty ledger must NOT shrink the ping: the source/resolution/regime
+        # watches are the point of the nightly on exactly those nights (three
+        # empty-ledger nights post-epoch shipped one contentless line each and
+        # left every watch unreported).
         today = datetime.now(ET).strftime("%Y-%m-%d")
         # Kill-rule authority = the REALIZED ledger ONLY — the rule is defined
         # on realized fills, and the decision-ask SIM read must never trip it.
@@ -2958,9 +2962,6 @@ async def main() -> None:
                 "mechanism": mech,
                 }
     scheduler.register_job("sniper_health", _sniper_health_job)
-    # Last: the analysis jobs above read the tape, so compress only after they
-    # are done with it (readers handle .gz either way).
-    scheduler.register_job("compress_recordings", compress_recordings_job())
 
     async def run_discord():
         backoff = 5
