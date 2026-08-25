@@ -136,9 +136,16 @@ def _open_tape(path: Path):
     return open(path)
 
 
-def load_windows(labels: dict[int, dict], since_ts: float):
+def load_windows(labels: dict[int, dict], since_ts: float,
+                 deadline: float | None = None):
     """Stream the micro-tape once; bucket per-window raw reports, official TWAP
-    boundary values, and both sides' book (ask) events for the final zone."""
+    boundary values, and both sides' book (ask) events for the final zone.
+
+    `deadline` (time.monotonic) stops the stream early: the nightly scheduler
+    cannot kill a to_thread body, so an over-budget read used to run on as a
+    zombie into the midnight restart. Partial data is flagged by the caller."""
+    import time as _time
+    _n = 0
     toks: dict[str, tuple[int, int]] = {}
     for ep, lab in labels.items():
         toks[lab["token_up"]] = (ep, 1)
@@ -150,6 +157,9 @@ def load_windows(labels: dict[int, dict], since_ts: float):
     for path in _tape_files(since_ts):
         with _open_tape(path) as f:
             for line in f:
+                _n += 1
+                if deadline is not None and _n % 20000 == 0 and _time.monotonic() >= deadline:
+                    return lrec, trec, books, True
                 head = line[:12]
                 if '"k": "b"' in head:
                     i = line.find('"token": "')
@@ -182,7 +192,7 @@ def load_windows(labels: dict[int, dict], since_ts: float):
                     for ep in (int(r["ts"]) - 300, int(r["ts"])):
                         if ep in trec and (r["ts"] == ep or r["ts"] == ep + 300):
                             trec[ep][int(r["ts"])] = r["p"]
-    return lrec, trec, books
+    return lrec, trec, books, False
 
 
 RAW_GAP_MAX_S = 10.0    # engine coverage guard (chainlink_feed.RAW_GAP_MAX_S):
@@ -324,7 +334,7 @@ def run_replay(since_ts: float, min_edge: float, rtt: float):
     labels = load_labels(since_ts)
     if not labels:
         return None
-    lrec, trec, books = load_windows(labels, since_ts)
+    lrec, trec, books, _partial = load_windows(labels, since_ts)
     fires, kills_total, breaches = [], 0, 0
     scored = 0
     for ep, lab in sorted(labels.items()):
@@ -359,7 +369,7 @@ PATHS_DB = ROOT / "polybot" / "db" / "window_paths.db"
 
 
 
-def ladder_recalibrate(days: int = 1, write: bool = False):
+def ladder_recalibrate(days: int = 1, write: bool = False, budget_s: float = 480.0):
     """REPORT-ONLY: the trailing tape's dip-depth CDF (min winner-ask while
     max-tier locked), as quantiles of the dip minima. It never writes the
     ladder.
@@ -375,7 +385,9 @@ def ladder_recalibrate(days: int = 1, write: bool = False):
     labels = load_labels(since)
     if not labels:
         return {"n_dips": 0, "applied": False}
-    lrec, _trec, books = load_windows(labels, since)
+    import time as _time
+    lrec, _trec, books, partial = load_windows(
+        labels, since, deadline=_time.monotonic() + budget_s)
     mins = []
     for ep, lab in sorted(labels.items()):
         recs = sorted(lrec[ep])
@@ -415,11 +427,13 @@ def ladder_recalibrate(days: int = 1, write: bool = False):
     if len(mins) < 150 or len(dips) < 8:
         # Small samples move prices on noise (a partial-tape day once shifted
         # every rung on 53 windows) — the seed ladder stands.
-        return {"n_locked": len(mins), "n_dips": len(dips), "applied": False}
+        return {"n_locked": len(mins), "n_dips": len(dips), "applied": False,
+                **({"partial": True} if partial else {})}
     def q(f):
         return round(dips[min(int(f * len(dips)), len(dips) - 1)], 2)
     return {"n_locked": len(mins), "n_dips": len(dips), "applied": False,
-            "dip_q": [q(0.10), q(0.25), q(0.50), q(0.75), q(0.90)]}
+            "dip_q": [q(0.10), q(0.25), q(0.50), q(0.75), q(0.90)],
+            **({"partial": True} if partial else {})}
 
 
 def health_read(db_path=None, min_edge: float = 0.04, days: int = 1):
