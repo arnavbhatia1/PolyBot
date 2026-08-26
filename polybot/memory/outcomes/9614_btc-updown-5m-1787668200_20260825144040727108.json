@@ -1,0 +1,51 @@
+{
+  "position_id": 9614,
+  "market_id": "btc-updown-5m-1787668200",
+  "question": "Bitcoin Up or Down - August 25, 10:30AM-10:35AM ET",
+  "side": "Up",
+  "signal_score": 0.0,
+  "correct": true,
+  "entry_price": 0.7999999999999999,
+  "exit_price": 1.0,
+  "log_return": 0.22314355131420976,
+  "size": 4.736,
+  "pnl": 1.1840000000000002,
+  "fees": 0.0,
+  "gain_pct": 0.25,
+  "realized_edge": -0.8,
+  "fill_slippage": 0.0,
+  "indicator_snapshot": {
+    "trade_context": {
+      "signal_leg": "deep_proj",
+      "strike_price": 79233.50451521577,
+      "seconds_remaining": 24.989629,
+      "twap_proj": 79251.46,
+      "twap_proj_plain": 79259.32,
+      "twap_disp": 17.95,
+      "token_id_up": "114502029076641809140888606207398684328708058091560353754489299052551388881805",
+      "token_id_down": "100166522706302964799094802609091187070170633210869398947280034401573208182759",
+      "gtc_place_ms": [
+        54.0,
+        56.8,
+        56.8,
+        56.4,
+        58.1
+      ],
+      "gtc_cancel_ms": [
+        48.7,
+        55.2,
+        55.6,
+        52.2,
+        55.7
+      ],
+      "maker_fill": 1
+    },
+    "strike_price": 79233.50451521577,
+    "print_gap": 0
+  },
+  "exit_reason": "resolution",
+  "seconds_remaining_at_exit": 0.0,
+  "edge_decay": null,
+  "exit_timestamp": "2026-08-25T14:40:40.727084+00:00",
+  "timestamp": "2026-08-25T14:40:40.727084+00:00"
+}
