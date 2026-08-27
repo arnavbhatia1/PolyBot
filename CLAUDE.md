@@ -183,8 +183,11 @@ not Kelly — deep bids are not a certainty claim.
 
 FOK via `py-clob-client-v2` (pinned <1.1.0 — 1.1.0 wraps post_order in a
 blocking 30s hash-poll), 3 attempts, only provably-unposted failures retry.
-Order-POST RTT p50 ~410-436ms; ~250ms is Polymarket's DELIBERATE taker hold on
-crypto up/down markets (`itode: true` — a policy floor no host beats). EIP-712
+Order-POST RTT p50 ~410-436ms as last measured (pre-08-13); that table embeds
+Polymarket's DELIBERATE taker hold on crypto up/down markets (`itode: true`),
+which the changelog cut from 250ms to 50ms on 08-17 11:00 UTC — the paper
+RTT table is stale by route change and re-derives from the next measured
+POST samples (`smoke_order_test.py --confirm`), never by hand. EIP-712
 sign 17.5ms pure-python on the box (coincurve on Linux ~10× faster; dev boxes
 skip it). SELL signatures pre-armed; BUY pre-signs concurrently. WS-only book
 pre-check; warm pooled HTTP/2; gc.freeze() post-boot. GTC rungs pass
@@ -223,8 +226,8 @@ the only on-chain thing the bot signs).
   `memory/recordings/tape_*.jsonl` (gitignored).
 - **Micro-tape**: every CLOB BBO change (final 90s) + every raw report ("l")
   + the official 60s stream ("t") + the RETIRED 30s stream ("t3", recorded
-  only — A/B evidence for the next silent source swap; RTDS is not currently
-  serving it, and the nightly SOURCE line states the count) + Binance relay
+  only — A/B evidence for the next silent source swap; RTDS resumed serving
+  it by 08-27, and the nightly SOURCE line states the count) + Binance relay
   ("s"/src "bz"), payload+receipt ts → `micro_*.jsonl`; nightly gzip (~39×);
   readers take .jsonl(.gz).
 - **Per-decision records**: `trade_context` on fills AND ghosts (`signal_leg`

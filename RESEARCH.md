@@ -299,7 +299,9 @@ tick + context — runs ~3ms p50 / ~5ms p99 on current code. End-to-end
 report-rx→submit p50 ≈ 1.05s decomposes as raw-report age at decision
 (~1s: the raw stream ticks ~1Hz and fires wake on book events between
 reports) + owned ~5ms + sign 4.3ms + POST ~303ms (itode ~250ms policy
-floor inside it). Every remaining millisecond we own is already bought;
+floor inside it at measurement time; Polymarket cut that hold to 50ms on
+08-17 — the floor moved, nothing we own did). Every remaining millisecond
+we own is already bought;
 the residuals are Polymarket's deliberate taker hold, Chainlink delivery
 (1.6-1.8s, REFUTATIONS.md: we are not the fast participant), and the raw
 cadence itself. The 25ms owned budget + WARNING regression guard the
@@ -344,7 +346,7 @@ floor; further latency engineering buys nothing measurable — stop here.
 | RAW_GAP_MAX_S | 10s | 08-18 (re-derived) | conditional p99.5 err $0.79 at gap≤10; cliff ≥15-30s | 60s-era hole population change |
 | twap_k_min_s | 6.0 | 08-12 scar (30s era) | k=1.1 realized max-tier breach | queue #6 above |
 | bz relay lag | p50 0.421s | 08-18 | 74,184 bz records rx−ts | new relay behavior |
-| GTC/taker latency tables | paper_trader | 08-07..08 | box-measured; nightly ops watch alarms at ±25% POST p50 drift | any Polymarket pipeline change (smoke tests) |
+| GTC/taker latency tables | paper_trader | 08-07..08 | box-measured; nightly ops watch alarms at ±25% POST p50 drift | REOPENED 08-27: taker hold 250→50ms on 08-17 (changelog) — re-derive the POST table from smoke_order_test samples; GTC table still unmeasured |
 | kelly_fraction 0.08, maker_bankroll_frac 0.15 | settings | pre-era | post-gate playbook | after a §2 bar pass |
 | fee model 0.07 / 0.0175 | base.py | 07-22, re-verified 08-18 post-rule | 1,751 live fills + 600 post-rule USDC deltas vs documented curve | Polymarket fee change |
 

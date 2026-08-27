@@ -94,6 +94,26 @@ maker notional ≈ a tenth of its P&L) says informational. Do not build.
   matched cross-book via the mint adapter — invisible to post-close-only
   reads; a post-close-camping read understates that wallet class's income.
 
+## 08-27 weekly census (08-21..27, 159 sampled windows, r5_report.md)
+
+- **0xAAAAA and JetFadil both STOPPED at 2026-08-20 15:43Z — the identical
+  minute, zero rows since**: one operator, two pseudonyms. gesinimen
+  collapsed to ~$2k/day notional. 0x0cb03848 (the 08-18 "casualty") is the
+  week's top earner again as a two-sided MM (~18% of market notional).
+  Cushion triplet and BoneOhio unchanged; 1723 at break-even (−$192).
+- **Our seat** (winner-side 0.65-0.80 bids, k∈[6,25]): ~123 sh/window, 78%
+  win across all occupants, +$1,063 in the sample — small and near
+  break-even at the 0.80 end, positive at 0.65-0.75. One deep_proj
+  look-alike (0x44832d0d: 326 fills, 66% win, px 0.74-0.80, k med 32s)
+  earns; two look-alikes lose. No new occupant.
+- **0x6fc44… confirmed** (Caring-Kingfish): 100% BUY at 0.99 straddling the
+  close, ~$55k/day notional, 61% btc-5m — a pure winner-wall buyer.
+- Field (sourced, r5_report.md): taker delay 250→50ms since 08-17; RTDS
+  serves the 30s stream again; CLOB maintenance degraded trading 08-25/26
+  04:00-07:30 UTC (inside our day); fees/tick/min-size/rewards unchanged.
+- Coverage caveat: 142/159 windows hit the 3,500-row cap (oldest surviving
+  row k≈218s) — whole-window makers under-counted, late window complete.
+
 ## Standing discipline
 
 Re-run the census after every regime shift and at least weekly during any
