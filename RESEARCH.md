@@ -154,6 +154,34 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
     measurement would mirror ws2_supply over sibling tapes; nothing licenses
     it before btc-5m's own paper bar passes.
 
+## 08-27 optimization pass — pre-registered bars (written BEFORE measurement)
+
+Corpus: 60s era 08-14..27 (~14 real-final days, the #2 unblock). Every
+change below is re-measurement or a stricter filter, never a threshold
+lowered to make a window fire. OOS = alternating-ET-day halves; ANTI-side
+control mandatory. Engine-true only (ws2_ladder_replay conventions).
+
+- **R1 table re-fit (RESEARCH.md #2, due)**: p99.5 = fitted p99.5 rounded up
+  to $0.5 per knot on real-final windows; MAX = per-tick interval maxima
+  ∪ synthetic (widen-only), rounded up to $1, monotone. Adopt as the frozen
+  tables if reproducible from the repo. Then re-decide the floor (#1) with
+  ws1_oos: 0.5 replaces 1.0 only on the #1 bar.
+- **R2 placement window**: k_place_max ∈ {15, 20, 25} at need 1.0. A tighter
+  k_max is adopted only if EW/sh AND total dollars improve in BOTH halves,
+  ANTI ≤ 0, and the fill count stays ≥ 70% of k=25's (a filter that removes
+  the fills removes the record). Otherwise 25 stands.
+- **R3 per-rung verdicts**: a rung is dropped from the seed only if its own
+  fills are net-negative in BOTH halves with ≥ 15 fills per half; budget
+  re-weighting toward a rung only if that rung's win% ≥ price + 5pp in BOTH
+  halves. Both must hold on the re-fit tables, not the frozen ones.
+- **R4 Candidate A (cushion dip-buyer)**: bar as written in WALLETS.md —
+  both-sides rungs 0.10-0.35, no sign filter; win% ≥ price + 8pp per rung
+  at ≥ 10 fills, positive dollars in two disjoint 3-day splits, and the
+  sign-gated variant must not dominate (else it is a deep_proj config).
+- **R5 field + census**: weekly census (#10, due) over 08-21..27; web scan
+  for Polymarket rule/fee/reward changes. Findings are context — nothing
+  here changes config without one of R1-R4 passing.
+
 ## 08-21 charter — pre-registered bars (written BEFORE measurement)
 
 Corpus: the full 60s era (08-14..21, ~8 ET days of tape/micro/window_paths,
