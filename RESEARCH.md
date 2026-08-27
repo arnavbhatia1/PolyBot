@@ -166,6 +166,21 @@ control mandatory. Engine-true only (ws2_ladder_replay conventions).
   ∪ synthetic (widen-only), rounded up to $1, monotone. Adopt as the frozen
   tables if reproducible from the repo. Then re-decide the floor (#1) with
   ws1_oos: 0.5 replaces 1.0 only on the #1 bar.
+  **VERDICT 08-27: ADOPTED — every knot widens 2-4×** (r1_report.md; 3,695
+  real-final windows, 15 ET days; the chain reproduces the 08-18 freeze
+  16/16 on its own span). k=25 $8 → $28.5, k=12 $3.5 → $9, k=6 $1.5 → $4;
+  MAX k=25 $24 → $100. LODO k=25 $27.5-29.9 on all 15 folds — regime, not
+  a day: median |final−strike| ran $5-28/day on the freeze week and
+  $43-106/day since. The frozen p99.5 was exceeded on 11.1% of k=25
+  samples (design 0.5%); frozen MAX breached per-tick in 75 windows incl.
+  one wrong-side max-tier lock (08-21 00:25Z). **Floor: need 1.0 STANDS;
+  0.5 fails #1 clauses i (0.80 rung 84.2% vs 90%) and iv (a 0.5-only arm
+  swept 4 rungs, −$18).** Consequence, stated plainly: re-fit × 1.0 armed 4
+  windows in 14 days (4/4 wins, +$37.78) — the honest sign-confidence
+  pocket is ~0.3 windows/day in this regime; the shipped frozen × 1.0 took
+  39 fills / 30 wins / +$22.14 on the same days with 9 sign flips and
+  halves of +$68.80 / −$46.74 — a floor that fails 11% of the time, paid in
+  the losses this week. Deployed 08-27 with a fresh validation_epoch.
 - **R2 placement window**: k_place_max ∈ {15, 20, 25} at need 1.0. A tighter
   k_max is adopted only if EW/sh AND total dollars improve in BOTH halves,
   ANTI ≤ 0, and the fill count stays ≥ 70% of k=25's (a filter that removes
@@ -178,6 +193,17 @@ control mandatory. Engine-true only (ws2_ladder_replay conventions).
   both-sides rungs 0.10-0.35, no sign filter; win% ≥ price + 8pp per rung
   at ≥ 10 fills, positive dollars in two disjoint 3-day splits, and the
   sign-gated variant must not dominate (else it is a deep_proj config).
+  **VERDICT 08-27: REFUTED** (r4_report.md; 3,787 windows, every variant:
+  6-rung and 3-rung bands, k_place [6,25]/[6,60]/[6,120]). Every rung wins
+  LESS than its own price (0.35 rung 22% vs 43% needed; 0.10 rung 4.5%);
+  −$1,852 at k[6,25], −$11,844 at k[6,120]; 0 of 11 three-day blocks
+  positive. Clause 3 fires both ways: the projection-favoured slice is the
+  only money (+$245 on 20 fills vs −$2,176 on 739 anti-projection fills) —
+  what survives IS deep_proj. The triplet's real seat is the k>60 touch-bid
+  queue wall (H1), unreachable print-through. Method note: unconditional
+  both-sides resting crosses dead tokens at k≤25 (0.01/0.99 books) — a
+  resting rule (rung strictly below the token's last print) was required;
+  the unconditional −$77k row is kept as the record.
 - **R5 field + census**: weekly census (#10, due) over 08-21..27; web scan
   for Polymarket rule/fee/reward changes. Findings are context — nothing
   here changes config without one of R1-R4 passing.
@@ -336,8 +362,8 @@ floor; further latency engineering buys nothing measurable — stop here.
 
 | constant | value | frozen | corpus / estimator | reopening condition |
 |---|---|---|---|---|
-| TWAP_MARGIN_P995/_MAX | signal_engine.py | 08-18 | 970 real-final windows (08-14..17) + 1,651 synthetic max-union; rx-clock ZOH + 10s coverage guard; MAX = per-tick interval maxima | ≥14 real-final days, or any resolution-rule change (SOURCE gate red) |
-| ladder need | 1.0 (interim) | 08-18 | walk-forward audit: 0.5 unvalidatable OOS at 17 fills; evidence both ways in queue #1 | ≥14 real-final days → ws1_oos re-run decides |
+| TWAP_MARGIN_P995/_MAX | signal_engine.py | 08-27 (re-fit) | 3,695 real-final windows (08-14..27) + 1,651 synthetic max-union; rx-clock ZOH + 10s coverage guard; MAX = per-tick interval maxima; LODO k=25 $27.5-29.9; freeze-span reproduction 16/16 | ≥28 real-final days, or any resolution-rule change (SOURCE gate red), or a nightly regime line sustaining gaps p50 < $10 for 7 days (the calm regime that fit the 08-18 knots) |
+| ladder need | 1.0 | 08-27 (re-decided) | ws1_oos LODO on the re-fit tables: 0.5 fails clause i (0.80 rung 84.2% vs 90%) and iv (a 0.5-only arm swept 4 rungs, −$18.00); 1.0 OOS 4/4 wins, 0 flips in 3,210 arms | ≥28 real-final days re-run |
 | k_place [6,25] | settings | 08-18 | k>25 REFUTED by kinematics (REFUTATIONS.md) | a mechanism that prices avalanche sweeps (Candidate A), never extension of the sign-gated ladder |
 | taker_enabled | false (dormant) | 08-18 | 4 dips / 1 reachable / 1,184 windows vs ≥1-per-3-days bar | queue #3 re-arm condition |
 | HOSTILE thresholds | p50<$6, photo<$1 >15% | 08-18 | percentile-ported from 30s-era positions; 1,186 60s windows | regime distribution shift (nightly line drifting) |

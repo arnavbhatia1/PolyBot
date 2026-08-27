@@ -100,15 +100,16 @@ def test_production_default_is_max_tier_only():
 
 # ───────────────────────── twap_margin interpolation ─────────────────────────
 def test_margin_knots_exact_and_linear_between():
-    assert twap_margin(TWAP_MARGIN_P995, 4.0) == pytest.approx(1.0)
-    assert twap_margin(TWAP_MARGIN_MAX, 4.0) == pytest.approx(2.0)
-    # midpoint of (4, 1.0)-(6, 1.5)
-    assert twap_margin(TWAP_MARGIN_P995, 5.0) == pytest.approx(1.25)
+    assert twap_margin(TWAP_MARGIN_P995, 4.0) == pytest.approx(TWAP_MARGIN_P995[1][1])
+    assert twap_margin(TWAP_MARGIN_MAX, 4.0) == pytest.approx(TWAP_MARGIN_MAX[1][1])
+    # midpoint of the (4, ·)-(6, ·) knots
+    mid = (TWAP_MARGIN_P995[1][1] + TWAP_MARGIN_P995[2][1]) / 2.0
+    assert twap_margin(TWAP_MARGIN_P995, 5.0) == pytest.approx(mid)
 
 
 def test_margin_clamps_to_end_knots():
-    assert twap_margin(TWAP_MARGIN_P995, 0.5) == pytest.approx(1.0)    # below k=2
-    assert twap_margin(TWAP_MARGIN_P995, 60.0) == pytest.approx(38.0)  # above k=58
+    assert twap_margin(TWAP_MARGIN_P995, 0.5) == pytest.approx(TWAP_MARGIN_P995[0][1])   # below k=2
+    assert twap_margin(TWAP_MARGIN_P995, 60.0) == pytest.approx(TWAP_MARGIN_P995[-1][1])  # above k=58
 
 
 def test_margins_monotone_nondecreasing():
@@ -121,8 +122,9 @@ def test_margins_monotone_nondecreasing():
 
 # ───────────────────────── evaluate_twap_lock ─────────────────────────────────
 def test_fires_up_on_max_tier_lock_with_cheap_ask():
-    # k=4: max margin $4.0 — disp +$6 is beyond the worst error ever observed.
-    sig = _lock(_eng(), proj=60006.0, strike=60000.0, k=4.0,
+    # k=4: a displacement one dollar past the MAX knot is beyond the worst error ever observed.
+    _beyond = twap_margin(TWAP_MARGIN_MAX, 4.0) + 1.0
+    sig = _lock(_eng(), proj=60000.0 + _beyond, strike=60000.0, k=4.0,
                 ask_up=0.90, ask_down=0.11)
     assert sig.action == "LATE_SNIPE_YES"
     assert sig.side == "Up"
@@ -131,7 +133,7 @@ def test_fires_up_on_max_tier_lock_with_cheap_ask():
 
 
 def test_fires_down_on_negative_displacement():
-    sig = _lock(_eng(), proj=59994.0, strike=60000.0, k=4.0,
+    sig = _lock(_eng(), proj=60000.0 - twap_margin(TWAP_MARGIN_MAX, 4.0) - 1.0, strike=60000.0, k=4.0,
                 ask_up=0.11, ask_down=0.90)
     assert sig.action == "LATE_SNIPE_NO"
     assert sig.side == "Down"
@@ -155,8 +157,9 @@ def test_skips_when_not_locked():
 
 
 def test_p995_tier_prob_between_margins():
-    # disp $1.5 at k=4: beyond p99.5 ($1.0) but inside max-ever ($2.0).
-    sig = _lock(_eng(), proj=60001.5, strike=60000.0, k=4.0,
+    # k=4: a displacement midway between the p99.5 and MAX knots — beyond p99.5, inside max-ever.
+    _mid = (twap_margin(TWAP_MARGIN_P995, 4.0) + twap_margin(TWAP_MARGIN_MAX, 4.0)) / 2.0
+    sig = _lock(_eng(), proj=60000.0 + _mid, strike=60000.0, k=4.0,
                 ask_up=0.90, ask_down=0.11)
     assert sig.action == "LATE_SNIPE_YES"
     assert sig.prob == pytest.approx(TWAP_PROB_P995)
@@ -166,10 +169,11 @@ def test_ask_cap_derives_from_edge_floor():
     # max tier (prob 0.999): ask 0.96 -> edge 0.039 < 0.04 floor -> SKIP;
     # ask 0.95 -> edge 0.049 -> fire. One knob, no separate cap to drift.
     eng = _eng()
-    rich = _lock(eng, 60006.0, 60000.0, 4.0, ask_up=0.96, ask_down=0.05)
+    _beyond = 60000.0 + twap_margin(TWAP_MARGIN_MAX, 4.0) + 1.0
+    rich = _lock(eng, _beyond, 60000.0, 4.0, ask_up=0.96, ask_down=0.05)
     assert rich.action == "SKIP"
     assert "prices it" in rich.reason
-    ok = _lock(eng, 60006.0, 60000.0, 4.0, ask_up=0.95, ask_down=0.06)
+    ok = _lock(eng, _beyond, 60000.0, 4.0, ask_up=0.95, ask_down=0.06)
     assert ok.action == "LATE_SNIPE_YES"
 
 
@@ -177,8 +181,10 @@ def test_p995_tier_caps_tighter_than_max_tier():
     # Same ask 0.958: max tier fires (0.999-0.958 >= 0.04), p99.5 tier must not
     # (0.995-0.958 < 0.04) — the riskier tier demands the deeper discount.
     eng = _eng()
-    assert _lock(eng, 60006.0, 60000.0, 4.0, 0.958, 0.05).action == "LATE_SNIPE_YES"
-    assert _lock(eng, 60001.5, 60000.0, 4.0, 0.958, 0.05).action == "SKIP"
+    _beyond = 60000.0 + twap_margin(TWAP_MARGIN_MAX, 4.0) + 1.0
+    _mid = 60000.0 + (twap_margin(TWAP_MARGIN_P995, 4.0) + twap_margin(TWAP_MARGIN_MAX, 4.0)) / 2.0
+    assert _lock(eng, _beyond, 60000.0, 4.0, 0.958, 0.05).action == "LATE_SNIPE_YES"
+    assert _lock(eng, _mid, 60000.0, 4.0, 0.958, 0.05).action == "SKIP"
 
 
 def test_skips_outside_zone_and_below_k_min():
@@ -190,13 +196,13 @@ def test_skips_outside_zone_and_below_k_min():
 def test_skips_on_none_projection_or_bad_strike():
     eng = _eng()
     assert _lock(eng, None, 60000.0, 4.0, 0.80, 0.21).action == "SKIP"
-    assert _lock(eng, 60006.0, 0.0, 4.0, 0.80, 0.21).action == "SKIP"
+    assert _lock(eng, 60020.0, 0.0, 4.0, 0.80, 0.21).action == "SKIP"
 
 
 def test_skips_on_unexecutable_ask():
     eng = _eng()
     for bad in (None, 0.0, 1.0):
-        sig = _lock(eng, 60006.0, 60000.0, 4.0, bad, 0.05)
+        sig = _lock(eng, 60000.0 + twap_margin(TWAP_MARGIN_MAX, 4.0) + 1.0, 60000.0, 4.0, bad, 0.05)
         assert sig.action == "SKIP"
 
 

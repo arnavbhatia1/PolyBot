@@ -58,5 +58,5 @@ def test_freeze_script_sources_max_from_the_interval_maxima():
 def test_engine_tables_untouched():
     """The re-fit is a scheduled measurement; this fix must not move a knot."""
     from polybot.core.signal_engine import TWAP_MARGIN_MAX, TWAP_MARGIN_P995
-    assert TWAP_MARGIN_P995[2] == (6.0, 1.5) and TWAP_MARGIN_P995[8] == (25.0, 8.0)
-    assert TWAP_MARGIN_MAX[8] == (25.0, 24.0) and TWAP_MARGIN_MAX[-1] == (58.0, 120.0)
+    assert TWAP_MARGIN_P995[2] == (6.0, 4.0) and TWAP_MARGIN_P995[8] == (25.0, 28.5)
+    assert TWAP_MARGIN_MAX[8] == (25.0, 100.0) and TWAP_MARGIN_MAX[-1] == (58.0, 371.0)

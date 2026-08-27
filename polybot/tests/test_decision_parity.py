@@ -57,8 +57,11 @@ LW_BASE = {
 MAKER_CFG = {
     "maker_bid_enabled": True, "maker_k_place_min": 6.0, "maker_k_place_max": 25.0,
     "maker_bankroll_frac": 0.15, "post_close_hold_s": 60.0,
-    "maker_ladder": [[0.80, 0.20, 1.0], [0.65, 0.20, 1.0], [0.50, 0.20, 1.0],
-                     [0.35, 0.20, 1.0], [0.20, 0.20, 1.0]],
+    # need 0.25 (production 1.0): the 08-27 re-fit widened the p99.5 knots
+    # 2-4x, and parity needs the recorded windows to ARM in both traders —
+    # the arming threshold is a test parameter here, not a trading bar.
+    "maker_ladder": [[0.80, 0.20, 0.25], [0.65, 0.20, 0.25], [0.50, 0.20, 0.25],
+                     [0.35, 0.20, 0.25], [0.20, 0.20, 0.25]],
 }
 VARIANTS = {
     "ladder": dict(LW_BASE),

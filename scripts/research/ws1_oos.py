@@ -70,14 +70,17 @@ def cp_upper(f, n, alpha=0.05):
     return hi
 
 
-def fit_p995(fit_days):
-    """p99.5 knots from real-final windows of fit_days only."""
-    samples = {k: [] for k in KNOTS}
+_KNOT_ERR = {}   # ep -> {k: |err_plain60|}  (gated samples, computed once)
+
+
+def _load_knot_errors():
+    if _KNOT_ERR:
+        return _KNOT_ERR
     with gzip.open(DATA / "win_streams.jsonl.gz", "rt") as f:
         for line in f:
             wd = json.loads(line)
             ep = wd["ep"]
-            if ep < RULE_TS or day_of(ep) not in fit_days:
+            if ep < RULE_TS:
                 continue
             final, strike = wd["final"], wd["strike"]
             if not final or not strike:
@@ -87,6 +90,7 @@ def fit_p995(fit_days):
             l = sorted(wd["l"])
             l_rx = [(rx, p) for rx, _ts, p in l]
             trecs = sorted(wd.get("t") or [])
+            errs = {}
             for k in KNOTS:
                 t = close - k
                 i = bisect_right(l_rx, (t, float("inf"))) - 1
@@ -100,7 +104,19 @@ def fit_p995(fit_days):
                 if A is None:
                     continue
                 w = (t - t0) / lr.HORIZON
-                samples[k].append(abs(final - (w * A + (1 - w) * l_rx[i][1])))
+                errs[k] = abs(final - (w * A + (1 - w) * l_rx[i][1]))
+            _KNOT_ERR[ep] = errs
+    return _KNOT_ERR
+
+
+def fit_p995(fit_days):
+    """p99.5 knots from real-final windows of fit_days only."""
+    samples = {k: [] for k in KNOTS}
+    for ep, errs in _load_knot_errors().items():
+        if day_of(ep) not in fit_days:
+            continue
+        for k, e in errs.items():
+            samples[k].append(e)
     knots = []
     prev = 0.0
     for k in KNOTS:
@@ -138,6 +154,10 @@ def score(label, table, scored_eps, need, anti=False):
 
 
 def main():
+    import sys
+    global NEEDS
+    if len(sys.argv) > 1:
+        NEEDS = [float(x) for x in sys.argv[1].split(",")]
     # window epochs per day
     eps_by_day = {}
     with gzip.open(DATA / "win_streams.jsonl.gz", "rt") as f:
@@ -148,8 +168,13 @@ def main():
     days = sorted(eps_by_day)
     print("real-final days:", {d: len(eps_by_day[d]) for d in days})
 
-    splits = [("A fit 14-15 / score 16-18", days[:2], days[2:]),
-              ("B fit 16-18 / score 14-15", days[2:], days[:2])]
+    h = len(days) // 2
+    first, second = days[:h], days[h:]
+    odd, even = days[0::2], days[1::2]
+    splits = [(f"A fit {first[0]}..{first[-1]} / score {second[0]}..{second[-1]}", first, second),
+              (f"B fit {second[0]}..{second[-1]} / score {first[0]}..{first[-1]}", second, first),
+              ("C fit odd days / score even", odd, even),
+              ("D fit even days / score odd", even, odd)]
     for d in days:
         splits.append((f"LODO score {d}", [x for x in days if x != d], [d]))
 

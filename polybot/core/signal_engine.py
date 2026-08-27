@@ -13,12 +13,15 @@ from dataclasses import dataclass
 
 from polybot.execution.base import DEFAULT_FEE_RATE
 
-# ---- TWAP lock sniper (60s-rule tables, frozen 2026-08-18) ---------------------
+# ---- TWAP lock sniper (60s-rule tables, re-fit 2026-08-27) ---------------------
 # Projection-error margins for |final_TWAP − (w·A + (1−w)·spot)| by seconds
 # remaining, for the 60s resolution rule (crypto_prices_twap_sixty, live since
-# 08-14 00:00 UTC). Corpus: 970 real-final windows (08-14..17) for p99.5;
-# MAX additionally unions 1,651 pre-rule windows re-targeted to the synthetic
-# 60s average (target noise med $0.03). Estimator: rx-clock ZOH + the 10s
+# 08-14 00:00 UTC). Corpus: 3,695 real-final windows (08-14..27, 15 ET days)
+# for p99.5; MAX additionally unions 1,651 pre-rule windows re-targeted to
+# the synthetic 60s average (widened nothing this fit). The 08-18 freeze
+# (970 windows, one calm week) was exceeded on 11% of k=25 samples once the
+# regime turned — every knot re-fit 2-4x wider; the chain reproduces the
+# 08-18 knots 16/16 on their own span, so the widening is the market. Estimator: rx-clock ZOH + the 10s
 # coverage guard (chainlink_feed.RAW_GAP_MAX_S) — the guard is part of the
 # measurement and must stay wired wherever these tables gate capital.
 # P995 = fitted p99.5 rounded up to $0.5, one sample per (window, k-knot).
@@ -29,16 +32,16 @@ from polybot.execution.base import DEFAULT_FEE_RATE
 # window fire is relaxing a bar; re-fit on >=14 real-final days is
 # re-measurement, not relaxing.
 TWAP_MARGIN_P995: tuple[tuple[float, float], ...] = (
-    (2.0, 1.0), (4.0, 1.0), (6.0, 1.5), (8.0, 2.0), (10.0, 3.5),
-    (12.0, 3.5), (15.0, 5.0), (20.0, 6.0), (25.0, 8.0), (29.0, 10.5),
-    (35.0, 13.0), (40.0, 18.0), (45.0, 26.5), (50.0, 30.5), (55.0, 36.5),
-    (58.0, 38.0),
+    (2.0, 2.5), (4.0, 3.5), (6.0, 4.0), (8.0, 5.0), (10.0, 7.5),
+    (12.0, 9.0), (15.0, 12.5), (20.0, 20.0), (25.0, 28.5), (29.0, 36.0),
+    (35.0, 48.0), (40.0, 57.0), (45.0, 68.5), (50.0, 88.0), (55.0, 107.5),
+    (58.0, 107.5),
 )
 TWAP_MARGIN_MAX: tuple[tuple[float, float], ...] = (
-    (2.0, 2.0), (4.0, 2.0), (6.0, 3.0), (8.0, 5.0), (10.0, 11.0),
-    (12.0, 11.0), (15.0, 18.0), (20.0, 24.0), (25.0, 24.0), (29.0, 36.0),
-    (35.0, 50.0), (40.0, 112.0), (45.0, 119.0), (50.0, 120.0), (55.0, 120.0),
-    (58.0, 120.0),
+    (2.0, 18.0), (4.0, 19.0), (6.0, 19.0), (8.0, 19.0), (10.0, 32.0),
+    (12.0, 36.0), (15.0, 61.0), (20.0, 63.0), (25.0, 100.0), (29.0, 100.0),
+    (35.0, 208.0), (40.0, 231.0), (45.0, 279.0), (50.0, 304.0), (55.0, 371.0),
+    (58.0, 371.0),
 )
 # Mechanical win-prob floors per tier: displacement beyond the max-ever error
 # had never lost pre-deploy; beyond p99.5 the one-sided breach-and-cross risk

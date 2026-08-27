@@ -102,14 +102,16 @@ intents (fixture regenerates via `scripts/research/parity_fixture_gen.py`).
 
 ## 2. The two legs (one signal, risk priced two ways)
 
-Margin tables (`signal_engine.TWAP_MARGIN_P995/_MAX`): frozen 2026-08-18 on
-970 real-final 60s-rule windows + 1,651 synthetic (max-union only — synthetic
+Margin tables (`signal_engine.TWAP_MARGIN_P995/_MAX`): re-fit 2026-08-27 on
+3,695 real-final 60s-rule windows (15 ET days) + 1,651 synthetic (max-union only — synthetic
 finals are our own a60 reconstruction re-targeted onto pre-rule tape, which
 makes low-k errors self-referentially SMALL, so synthetic windows may only
 ever WIDEN the max knots, never tighten anything); estimator = rx-clock ZOH +
-coverage guard, MAX from per-tick interval maxima. p99.5 at k=6 is $1.5;
-knots run to k=58. Re-fit at ≥14 real-final days is re-measurement, not
-bar-relaxing (RESEARCH.md). Tuning them to make a window fire IS bar-relaxing.
+coverage guard, MAX from per-tick interval maxima. p99.5 at k=6 is $4.0 and
+at k=25 $28.5 (the 08-18 freeze's $8 was exceeded on 11% of k=25 samples —
+fit on one calm week); knots run to k=58. Re-fit on a bigger corpus is
+re-measurement, not bar-relaxing (RESEARCH.md). Tuning them to make a
+window fire IS bar-relaxing.
 
 **Deep-projection maker ladder (`signal_leg="deep_proj"`) — the business.**
 Rungs 0.80/0.65/0.50/0.35/0.20 × 20% of `maker_bankroll_frac` (0.15) rest on

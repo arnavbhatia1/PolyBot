@@ -18,9 +18,10 @@ async def test_full_trade_flow(db):
     """End-to-end: lock leg fires -> paper trade placed -> resolves at $1."""
     engine = SignalEngine(min_edge=0.04, kelly_fraction=0.15)
 
-    # Locked window (disp $6 > max margin at k=4) with the winner ask dipped.
+    # Locked window (disp one dollar past the MAX knot at k=4) with the winner ask dipped.
+    from polybot.core.signal_engine import TWAP_MARGIN_MAX, twap_margin
     signal = engine.evaluate_twap_lock(
-        66406.0, 66400.0, 4.0, market_ask_up=0.90, market_ask_down=0.11,
+        66400.0 + twap_margin(TWAP_MARGIN_MAX, 4.0) + 1.0, 66400.0, 4.0, market_ask_up=0.90, market_ask_down=0.11,
         zone_s=30.0, k_min_s=0.8, sniper_min_edge=0.04)
     assert signal.action == "LATE_SNIPE_YES"
     assert signal.edge >= 0.04
