@@ -175,9 +175,11 @@ control mandatory. Engine-true only (ws2_ladder_replay conventions).
   samples (design 0.5%); frozen MAX breached per-tick in 75 windows incl.
   one wrong-side max-tier lock (08-21 00:25Z). **Floor: need 1.0 STANDS;
   0.5 fails #1 clauses i (0.80 rung 84.2% vs 90%) and iv (a 0.5-only arm
-  swept 4 rungs, −$18).** Consequence, stated plainly: re-fit × 1.0 armed 4
-  windows in 14 days (4/4 wins, +$37.78) — the honest sign-confidence
-  pocket is ~0.3 windows/day in this regime; the shipped frozen × 1.0 took
+  swept 4 rungs, −$18).** Consequence, stated plainly: re-fit × 1.0 still ARMS ~3,200 of 3,700
+  windows but FILLS 4 in 14 days (4/4 wins, +$37.78 ws1_oos / +$100.75
+  ws2 replay) — by the time the sign clears an honest floor the book has
+  priced the winner and nobody sells into 0.80; the fill pocket is ~0.3
+  windows/day in this regime; the shipped frozen × 1.0 took
   39 fills / 30 wins / +$22.14 on the same days with 9 sign flips and
   halves of +$68.80 / −$46.74 — a floor that fails 11% of the time, paid in
   the losses this week. Deployed 08-27 with a fresh validation_epoch.
@@ -185,10 +187,25 @@ control mandatory. Engine-true only (ws2_ladder_replay conventions).
   k_max is adopted only if EW/sh AND total dollars improve in BOTH halves,
   ANTI ≤ 0, and the fill count stays ≥ 70% of k=25's (a filter that removes
   the fills removes the record). Otherwise 25 stands.
+  **VERDICT 08-27: 25 STANDS** (r23_tables.md): k15 and k20 both lose
+  half B (k15 +$3 vs +$97.75; k20 +$15.46 vs +$97.75) — fails the
+  both-halves clause at need 1.0 and again at 0.5.
 - **R3 per-rung verdicts**: a rung is dropped from the seed only if its own
   fills are net-negative in BOTH halves with ≥ 15 fills per half; budget
   re-weighting toward a rung only if that rung's win% ≥ price + 5pp in BOTH
   halves. Both must hold on the re-fit tables, not the frozen ones.
+  **VERDICT 08-27: NO CHANGE — undecidable at honest tables** (re-fit ×
+  1.0: 4/1/1/1/1 fills per rung, all wins; no rung reaches 15 fills per
+  half). The FROZEN reference row is the autopsy of the past two weeks:
+  0.80 rung 76.9% (be 80) −$18; 0.65 rung 52.9% (be 65) −$37.84; 0.50
+  rung 36.4% (be 50) −$36; only 0.35/0.20 paid (+$18.86/+$132) — under
+  a thin floor the mid rungs were adverse-selected bleeders and one deep
+  rung carried the ledger. Descriptive, for the ≥28-day re-decision only:
+  re-fit × need 0.75 = 8 fills, 100%, +$201.50, halves +$104/+$98, 0
+  flips; re-fit × 0.5 = 19 fills, 84.2%, +$225.63 (0.80 rung 84.2% vs 85
+  be+5). Eight fills decide nothing — recorded, not adopted. Tape
+  coverage caveat: reconnect holes on 08-19/21/26 (242-250 of 288 windows
+  with prints) under-count fills for every row.
 - **R4 Candidate A (cushion dip-buyer)**: bar as written in WALLETS.md —
   both-sides rungs 0.10-0.35, no sign filter; win% ≥ price + 8pp per rung
   at ≥ 10 fills, positive dollars in two disjoint 3-day splits, and the
