@@ -203,7 +203,13 @@ control mandatory. Engine-true only (ws2_ladder_replay conventions).
   rung carried the ledger. Descriptive, for the ≥28-day re-decision only:
   re-fit × need 0.75 = 8 fills, 100%, +$201.50, halves +$104/+$98, 0
   flips; re-fit × 0.5 = 19 fills, 84.2%, +$225.63 (0.80 rung 84.2% vs 85
-  be+5). Eight fills decide nothing — recorded, not adopted. Tape
+  be+5). Eight fills decide nothing — recorded, not adopted. Fills nest
+  across needs (1.0 ⊂ 0.75 ⊂ 0.5) and every need's dollars are the
+  full-sweep windows where the winner printed below $0.20 while the ladder
+  rested (tape-verified); fill-on-flip lost 100% of the time it occurred
+  (2/2 at 0.5, 5/5 frozen). At current rates the ≥20-fill paper bar needs
+  ~74 days at need 1.0 (~38 at 0.75, ~16 at 0.5) — a bar clock, not a
+  reason to lower the floor. Tape
   coverage caveat: reconnect holes on 08-19/21/26 (242-250 of 288 windows
   with prints) under-count fills for every row.
 - **R4 Candidate A (cushion dip-buyer)**: bar as written in WALLETS.md —
