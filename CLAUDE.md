@@ -1,328 +1,258 @@
 # PolyBot
 
-5-min BTC Up/Down trader for Polymarket. The only feeds the STRATEGY reads are
-Chainlink (RTDS) + the Polymarket CLOB + Gamma; every position holds to
-resolution. There is no other model and no exit path.
+Evidence tags: **[code path:line]** deployed code (main @ 03349951, the VPS
+revision) · **[data source, range, N]** recorded artifact · **[cfg key]**
+`polybot/config/settings.yaml` · **[test file]** enforced property.
+Full traces and every claim's disposition: `docs/audit/`. Deep analysis:
+`SYSTEM_ANALYSIS.md`. Research register: `RESEARCH.md`; counterparty census:
+`WALLETS.md`. Prior version of this file: `CLAUDE.md.archive-2026-08-27`.
 
-**The edge is the projection — the mostly-written 60s average the book cannot
-price because it prices off spot.** We are demonstrably not the fast
-participant (the book reprices 0.33s after Binance, 2.5s before our oracle
-receipt); the projection's information is harvested at prices that match its
-confidence. The sign record and its out-of-fit bounds live in RESEARCH.md —
-quote those, not an in-sample count.
+## 1. WHAT THIS IS
 
-**Resolution mechanism (since 2026-08-14 00:00 UTC)**: Polymarket resolves on
-the official **60-second TWAP stream** (RTDS topic `crypto_prices_twap_sixty`;
-strike = the stream's value at the open, final = its value at the close, both
-verified bit-exact against served price_to_beat/final_price incl. a live probe
-08-18). The switch from the 30s stream was SILENT and the bot traded the wrong
-stream for 4 days — the full incident, and why both watchers missed it, is in
-RESEARCH.md. The nightly ping now carries a SOURCE watch (`mechanism_read`:
-served values vs our own captured boundaries) that turns red the same night
-this ever happens again. **On any mechanism alarm: set `trading_enabled:
-false`, then run `scripts/research/ws1_boundary_autopsy.py` before anything
-else.**
+A maker bot for Polymarket's 5-minute BTC Up/Down markets. Each window
+resolves on Chainlink's 60-second BTC/USD TWAP (final ≥ strike → Up, tie →
+Up) [code main.py:1692; feeds/chainlink_feed.py:522-543]. In the final 25 s
+the bot reconstructs the mostly-written average from the raw Chainlink stream,
+and when its projection clears a calibrated error margin it rests five GTC
+bids (0.80/0.65/0.50/0.35/0.20) on the projected winner, filled by sellers
+panicking through the book, held to resolution [code execution/maker_bid.py;
+main.py:1050-1096]. No sell path is wired (the sell code exists with zero production callers) and there is no entry-side model. Mode:
+**paper** [cfg mode]; paper bankroll $396 (set to $400 on 08-25, the planned
+go-live size) [data polybot_paper_audit.db 08-27]; live wallet $123, idle
+since 08-15 [data polybot_live_audit.db]. The edge is small and not yet
+established: 0 fills since the current epoch, and makers as a class lose in
+this market [data r1_report.md; h1_report.md] — see §5.
 
-**Sibling docs — this file stays lean:**
-- `REFUTATIONS.md` — the graveyard (binding; killed lanes + methodology bans)
-- `RESEARCH.md` — ranked open problems, frozen-measurement register with
-  reopening conditions, the 08-14 incident record
-- `WALLETS.md` — the counterparty census (who is extracting, how, era-split)
+## 2. ARCHITECTURE AS-BUILT
 
-**This file is the single source of truth for how the bot works — update it in
-the same commit as any behavioral change.**
+**Process.** One Python process on one Oracle VM (954 MB RAM), supervised by
+systemd → `scripts/run_polybot.sh` → `python -m polybot.main --mode <mode>
+--auto-restart` [code scripts/polybot.service:17; run_polybot.sh:35]. Trading
+hours 00:01–23:30 ET [cfg schedule.*]; nightly jobs at 23:45 ET, then exit 0,
+git commit+push of `settings.yaml`/`memory/`/`db/`, relaunch at 00:01 ET
+[code run_polybot.sh:41-79; agents/scheduler.py:83-106]. Any exit before
+23:30 ET relaunches (nonzero after 60 s, zero after 10 s) [code
+run_polybot.sh:56-79]. Single-instance lock on `127.0.0.1:49653` [code
+main.py:3092-3112].
 
-## Quick Start
+**Feeds** [code feeds/]. `ChainlinkFeed`: one RTDS socket
+(`wss://ws-live-data.polymarket.com`) carrying four topics — raw
+`crypto_prices_chainlink` (~1 Hz; the decision clock and the reconstruction
+input), `crypto_prices_twap_sixty` (THE strike/final source; first report at
+or after each boundary is captured, first write wins), `crypto_prices_twap_thirty`
+(recorded only, as A/B evidence), and Binance `crypto_prices btcusdt`
+(feeds only the projection's spot bridge) [chainlink_feed.py:357-436,
+522-543]. `ClobWebSocket`: L2 books, BBO, prints for the two subscribed
+tokens; every reconnect wipes books and print buffers and stamps
+`last_print_gap_ts` [clob_ws.py:159-215]. `BTCMarketScanner`: Gamma
+`/events?slug=` (fallback `/events/slug/{slug}`) for discovery,
+`price_to_beat`, `final_price`; CLOB REST `/book`, `/tick-size`, `/spread`;
+`fetch_fee_rate` returns the constant 0.07 [market_scanner.py:74-99, 189-259].
 
-```bash
-pip install -r requirements.txt
+**Decision path** (identical in paper and live) [code main.py:895-1392;
+full 26-gate table in docs/audit/01b §3]. Wake → throttle (4 Hz in the 58 s
+zone, 1 Hz outside, unthrottled when |disp| ≥ 0.9 × margin) → discovery →
+book gates (freshness ≤ 10 s, price sum ∈ [0.98, 1.02], depth ≥ $50, spread)
+→ strike (Gamma wins; else our capture, trusted only if its payload ts is
+within 0.5 s of the boundary; untrusted → no capital) → feed guards (raw
+> 60 s stale; official value frozen 20 s while raw moved ≥ $2; spot > 3 s;
+raw hole > 10 s) → taker signal (dormant, §3) → **ladder placement**: at the
+first tick with 6 ≤ k ≤ 25 where `|proj_bridged − strike| ≥ 1.0 × p99.5(k)`
+and no position in the window, rest `budget = bankroll × 0.15 × breaker_mult`
+split 20% per rung, each rung ≥ 5 shares or skipped. `maintain()` every tick
+cancels all rungs when the signed displacement drops below the floor
+("flipped"/"inside noise") or the projection goes cold; after the close it
+keeps resting ≤ 60 s only while both boundary captures are trusted and name
+our side, failing closed after 5 s [code execution/maker_bid.py:138-295].
 
-cp polybot/config/.env.example polybot/config/.env
-# Required: DISCORD_BOT_TOKEN (monitoring)
-# Live mode also needs: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER
+**Fills and booking.** Paper: a print strictly below a rung fills it in
+full; at-price prints credit only volume beyond 135 shares [maker_bid.py:191-218].
+Live: `size_matched` polled at 1 Hz plus a final poll at retire
+[maker_bid.py:283-325; live_trader.py:674-683]. Accrued fills book as ONE
+blended position with zero maker fee; a booking that fails the deployed cap
+logs CRITICAL and leaves the shares unbooked [code base.py:379-438].
+Resolution: Gamma `final ≥ strike` → $1/$0; else a coherent closed book at an
+extreme; never Binance; orphans resolve only from two trusted captures
+[main.py:1673-1716, 1823-1956]. Live bankroll = wallet balance, wins wait
+for on-chain redeem [live_trader.py:685-758]; paper = arithmetic.
 
-python -m polybot.main --mode paper       # paper trading
-python -m polybot.main --mode live        # real USDC (needs allowance)
-python -m polybot.main --run-pipeline     # one nightly cycle, no trading
-python -m pytest polybot/tests/           # full suite (also CI on every push)
-scripts/run_polybot.sh                    # daily cycle: trade -> nightly jobs -> commit -> restart (VPS only)
-```
+**Persistence.** Per-mode SQLite (`positions`, `trade_history`, `bankroll`,
+`peak_bankroll`, `window_labels`) [code db/models.py]; sidecar
+`window_paths.db` (1 Hz, 5 Hz final 45 s, 90-day retention); recordings
+`tape_*.jsonl` (every print) and `micro_*.jsonl` (BBO changes final 90 s +
+every report of all four topics), gzipped nightly, 30-day retention
+[recording.py]. State survives restarts via the DB; an in-flight ladder and
+boundary trust do not (first windows after any boot cannot deploy) [docs/audit/01a §5.3].
 
-**The live recipe** (only after the per-leg bar passes AND
-`smoke_gtc_test.py --confirm` passes): `settings.yaml` → `mode: live` +
-`late_window.trading_enabled: true` + a fresh `validation_epoch`. That is the
-complete switch; paper and live share every decision path.
+**Nightly** (23:45 ET, 600 s per job, over-budget jobs are abandoned not
+stopped): compress → retention ×3 → `maker_ladder` (report-only) →
+`sniper_health` → one Discord ping to `#polybot-daily`: realized per-leg
+ledger since `validation_epoch`, kill-rule verdict, regime line, chain and
+SOURCE watches, ops watch (POST/GTC latency drift, at-price queue drift,
+owned-latency breaches) [code main.py:2707-2964]. Nothing retrains; no nightly
+output is read by the decision path [docs/audit/01c §4.6].
 
-### Secrets
+**Parity.** `polybot/tests/test_decision_parity.py` replays real recorded
+windows through both traders (live wire mocked) and asserts identical gates,
+signals, sizing, intents, cancels, bookings, and wire == intents; CI runs the
+481-test suite on every push [test tests.yml]. It proves identical decisions
+*given* paper's fill rule; the one decision-level divergence it cannot see is
+a live GTC rejection (paper never rejects) [docs/audit/01b §7-8].
 
-| Key | When |
-|---|---|
-| `DISCORD_BOT_TOKEN` | Always (monitoring) |
-| `POLYMARKET_PRIVATE_KEY` | Live mode (EIP-712 signing) |
-| `POLYMARKET_FUNDER` | Live mode (USDC funding address) |
+**Discord.** `!status !history [n] !pause !resume !clear … confirm !session
+!pipeline !commands`; `!pause` blocks new entries only, in memory [code
+discord_bot/bot.py:57-265].
 
----
+## 3. LIVE CONFIGURATION
 
-# Part A — Trading Logic
-
-## 1. The market + the two modes
-
-Every 5 min, Polymarket runs a market: will BTC's **60-second TWAP** at the
-window close be ≥ its value at the open (tie → Up)? Up/Down ERC-1155 tokens
-trade $0-$1; the winner pays $1/share. The resolution source is Chainlink's
-official BTC/USD 60s-TWAP stream (`crypto_prices_twap_sixty`, ~1Hz on integer
-seconds, delivered ~1.6-1.8s behind observation); Gamma mirrors it for
-discovery. The **decision strike** is that stream's first report at/after the
-window boundary (`chainlink_feed._record_boundary`); Gamma's served
-`price_to_beat` WINS when present. Boundary trust runs on the **payload
-clock**: a capture is trusted iff its report's OWN timestamp is within 0.5s
-of the boundary (the topic ticks on integer seconds, so the true boundary
-report carries ts == boundary exactly) — delivery lag (rx − ts, ~1.6-1.8s)
-never enters the comparison, so normal delivery cannot veto a capture; only
-a genuine hole can. The RAW ~1Hz stream
-(`crypto_prices_chainlink`) is NOT the strike source — it feeds the running
-reconstruction (`running_avg`, rx-clock ZOH: matches the served 60s final at
-median $0.028 / p90 $0.22) and the projection (`projected_final_twap`,
-horizon 60s). A boundary capture landing > 0.5s past the boundary is
-UNTRUSTED — no leg deploys capital on OUR capture (`_strike_trusted`); a
-served Gamma `price_to_beat` is the resolution source itself, so it restores
-trust when it arrives. The projection
-additionally refuses: spot older than 3s, and any raw delivery hole > 10s
-inside the averaging span (`RAW_GAP_MAX_S` — a 68s hole once projected a $24
-error onto a $0.14 photo-finish behind a perfectly fresh spot).
-
-Two modes, one engine: **paper** (realism shim: real CLOB books, FOK
-semantics, latency sampled from the live ledger's measured POST-RTT
-distribution, network-fail sim, tick snapping; maker fills are print-through
-conservative — see §2) and **live** (`py-clob-client-v2` against the real
-CLOB; balance + allowance verified at boot). Decision parity is a CI
-invariant: `test_decision_parity.py` replays real recorded windows through
-both traders and asserts bit-identical gates, signals, sizing, and order
-intents (fixture regenerates via `scripts/research/parity_fixture_gen.py`).
-
-## 2. The two legs (one signal, risk priced two ways)
-
-Margin tables (`signal_engine.TWAP_MARGIN_P995/_MAX`): re-fit 2026-08-27 on
-3,695 real-final 60s-rule windows (15 ET days) + 1,651 synthetic (max-union only — synthetic
-finals are our own a60 reconstruction re-targeted onto pre-rule tape, which
-makes low-k errors self-referentially SMALL, so synthetic windows may only
-ever WIDEN the max knots, never tighten anything); estimator = rx-clock ZOH +
-coverage guard, MAX from per-tick interval maxima. p99.5 at k=6 is $4.0 and
-at k=25 $28.5 (the 08-18 freeze's $8 was exceeded on 11% of k=25 samples —
-fit on one calm week); knots run to k=58. Re-fit on a bigger corpus is
-re-measurement, not bar-relaxing (RESEARCH.md). Tuning them to make a
-window fire IS bar-relaxing.
-
-**Deep-projection maker ladder (`signal_leg="deep_proj"`) — the business.**
-Rungs 0.80/0.65/0.50/0.35/0.20 × 20% of `maker_bankroll_frac` (0.15) rest on
-the projection-favored side while the BRIDGED projection's displacement clears
-`need` × p99.5(k) — need 1.0, the interim floor from the 08-18 walk-forward
-audit (the in-sample 0.5 grid could not be validated out-of-fit; the ≥14-day
-re-fit re-decides — RESEARCH.md #1). Placement k ∈ [6,25]: the k>25 flow is
-REFUTED as harvestable (sweeps traverse the whole ladder inside ~1s and
-outrun any cancel; flip-race loss probability exceeds every rung's price
-margin — REFUTATIONS.md). The same floor cancels resting rungs when it
-breaks. Post-close hold 60s gated on the boundary-verified winner
-(`certain_winner`, fails closed). The bridge: spot_est = latest raw report +
-Binance movement since that report's payload ts (`spot_bridge_delta`); every
-failure mode collapses to the plain projection. Fills book through
-`book_maker_fill` as ONE blended position. **Paper fill rule
-(live-calibrated, conservative)**: strictly-below prints fill a rung in FULL;
-at-price prints credit only volume beyond `AT_PRICE_QUEUE_SH` (135 sh);
-snapshot queue models are BANNED (REFUTATIONS.md). Paper pays a GTC round
-trip on place and cancel that is **not measured** — 56ms/rung against ~500ms
-reconstructed from the one live ladder, so paper's rungs become matchable
-about twice as fast as the real ones (RESEARCH.md). Maker fills are fee-free
-(re-verified on post-rule fills 08-18: 274/274 USDC deltas exact).
-**Bar (unchanged)**: ≥6 clean ET days, ≥20 filled windows, EW ≥ +5¢/sh,
-`usd_per_day > 0`, on realized paper fills since `validation_epoch`.
-
-**Lock-dip taker (`lock_dip`) — DORMANT (`taker_enabled: false`, 08-18).**
-Its whipsaw supply died with the 60s rule: 4 winner-side max-lock dips in
-1,184 windows, one FOK-reachable, vs a ≥1-per-3-days bar — a 60s average
-moves too slowly to produce panicked max-lock asks. Not refuted: the code
-stays, the signal still evaluates and logs would-be fires, and the re-arm
-condition is in RESEARCH.md. Its mechanics when armed: max tier ONLY
-(`require_max_tier` — p99.5 tiers realize breaches; the 60s sim's one loss
-was a p99.5 fire), k ≥ 6s, PLAIN projection, ask ≤ tier_prob −
-`sniper_min_edge`, one-tick FOK pad, market-anchored Kelly, all §1 gates.
-Booking: chain-truth via the +8s audit; the `fees` column is
-share-denominated, NOT the charged taker fee — takers pay the documented
-curve via the USDC debit (re-verified post-rule 08-18: 326 rows at fee/model
-median 1.000).
-
-**Hold to resolution — structurally.** No sell path exists in the codebase;
-both legs' edges were measured hold-to-resolution (REFUTATIONS.md: exits).
-
-**Kill rules** (`live_health_read.kill_rule_tripped`, armed at any go-live):
-any `lock_dip` loss trips on ONE occurrence (every fire is max-tier — a loss
-IS a breach); otherwise trailing-4-day mean DOLLARS < 0, judged only once the
-trailing window holds ≥4 ET days AND ≥5 fills — sparse fills keep accruing
-(one −$4.50 rung loss after three quiet days must not halt a leg that is up
-on the week; measured 08-18). `trading_enabled: false` is the shared
-emergency brake for every leg; the per-window SOURCE gate (§6) flips it
-in-process on a resolution-source mismatch. Never deploy on a harness print
-alone — the paper shadow's realized fills are the binding gate. Capital
-deploys ONLY through these two legs.
-
-## 3. Sizing (every leg)
-
-```
-size  = bankroll * kelly * circuit_breaker_mult
-size *= concurrent_multiplier(side, market, opens)     # correlation-aware
-size  = min(size, bankroll * max_bankroll_deployed)    # 0.80
-size  = min(size, side_depth * max_book_fill_pct)      # 0.50
-if size < 1.0: skip                                    # CLOB $1 floor
-```
-
-`kelly` = fee-aware Kelly on the market-anchored defended edge, scaled by
-`kelly_fraction` (0.08). Circuit breaker: tier-locked floor at $100/150/200…
-milestones (floor = tier × 0.85, sqrt interpolation to 0.40×, never resets
-down, persists via `peak_bankroll`). The ladder budget is a flat fraction,
-not Kelly — deep bids are not a certainty claim.
-
-## 4. Orders
-
-FOK via `py-clob-client-v2` (pinned <1.1.0 — 1.1.0 wraps post_order in a
-blocking 30s hash-poll), 3 attempts, only provably-unposted failures retry.
-Order-POST RTT p50 ~410-436ms as last measured (pre-08-13); that table embeds
-Polymarket's DELIBERATE taker hold on crypto up/down markets (`itode: true`),
-which the changelog cut from 250ms to 50ms on 08-17 11:00 UTC — the paper
-RTT table is stale by route change and re-derives from the next measured
-POST samples (`smoke_order_test.py --confirm`), never by hand. EIP-712
-sign 17.5ms pure-python on the box (coincurve on Linux ~10× faster; dev boxes
-skip it). SELL signatures pre-armed; BUY pre-signs concurrently. WS-only book
-pre-check; warm pooled HTTP/2; gc.freeze() post-boot. GTC rungs pass
-`legal_price` (round DOWN to tick, clamp [tick, 1−tick]) and the 5-share
-exchange minimum. A rung that cannot be rested logs `MAKER BID REJECTED` at
-ERROR, refusal and POST failure alike; a rung the budget cannot afford is
-`MAKER RUNG SKIPPED` at INFO — routine, not a rejection.
-`cl_report_to_submit_ms` + `lat_*` stamps measure the race per fill; GTC
-place/cancel RTTs stamp per rung (`gtc_place_ms`/`gtc_cancel_ms`, plus the
-`latency_stats.json` gtc section — `smoke_gtc_test.py --samples` feeds it
-too), and a fill whose owned segments exceed 1.5× the 25ms budget logs
-LATENCY BUDGET at WARNING. Live boot: key+funder, balance/allowance
-preflight, allowance recheck every 10 fills. `fill.fill_size` is always USDC
-notional.
-
-## 5. Resolution
-
-The TWAP oracle decides; winner $1/loser $0 credited atomically. Exit price is
-oracle-first (Gamma `event_metadata`; coherent resolved CLOB book fallback;
-never Binance); the orphan fallback resolves ONLY from genuine boundary
-captures — it waits and pages rather than fabricate. Our tape prints a TAPE
-VERDICT before Gamma serves; per-window RESOLUTION DRIFT warns when Gamma
-disagrees with a reliable capture (log-level; the nightly SOURCE watch is the
-systematic net). Winner payouts book via Polymarket auto-redeem; losing $0
-stubs sit inert on the wallet (deliberately not automated — CLOB orders are
-the only on-chain thing the bot signs).
-
-## 6. Recorders + nightly
-
-- **Window-path recorder** (1 Hz, 5 Hz final 45s): both tokens' BBO/depth +
-  Chainlink price + strike (with `strike_trusted`, since `get_strike` also
-  serves untrusted captures) for EVERY window → `window_paths` (gitignored
-  sidecar DB) / `window_labels`; 90-day retention. Labels are the kill-bar
-  ground truth.
-- **Tape recorder**: every CLOB print (+ exchange ts, fee bps) →
-  `memory/recordings/tape_*.jsonl` (gitignored).
-- **Micro-tape**: every CLOB BBO change (final 90s) + every raw report ("l")
-  + the official 60s stream ("t") + the RETIRED 30s stream ("t3", recorded
-  only — A/B evidence for the next silent source swap; RTDS resumed serving
-  it by 08-27, and the nightly SOURCE line states the count) + Binance relay
-  ("s"/src "bz"), payload+receipt ts → `micro_*.jsonl`; nightly gzip (~39×);
-  readers take .jsonl(.gz).
-- **Per-decision records**: `trade_context` on fills AND ghosts (`signal_leg`
-  is the per-leg ledger key). **None-vs-0.0 is load-bearing** — cold inputs
-  record None, never 0.0. Ladder fills carry `print_gap`: 1 when the CLOB feed
-  reconnected while the rungs rested, so paper's fill count is short there.
-- **The per-window SOURCE hard gate** (`recording._check_resolution_source`):
-  every labeled window's served strike/final is compared against our TRUSTED
-  stream captures; a >$0.005 mismatch flips `trading_enabled` false
-  in-process and pages Discord (settings on disk unchanged — the operator
-  re-arms by restart after re-pointing the feed). The one wired exception to
-  "watches never flip config": a source mismatch means every leg is
-  computing fiction.
-- **NightlyScheduler** (23:45 ET): rollups + retention + the sniper health
-  ping (`_sniper_health_job` → Discord `#polybot-daily`): realized per-leg
-  ledger + kill-rule verdict (realized-only authority), SIM ceiling read,
-  regime line (trailing gaps p25/50/75 + photo-finish share <$1; HOSTILE =
-  p50 < $6 or photo > 15%, percentile-ported to the 60s rule 08-18 — HOSTILE
-  predicts zero fills, not losses), chain watch (final==next strike), the
-  nightly SOURCE summary (`mechanism_read`), and the ops watch (POST RTT p50
-  vs the 436ms table ±25%; trailing-7d sweep-consumed deep-queue p75 vs the
-  135-sh at-price constant; measured GTC place p50 vs paper's 56ms table
-  ±25%, dark until samples exist; owned-latency budget breaches). Alert-only.
-
-## 7. Hard rules
-
-- No ML/feature-stack entry-side prediction — the CLOB price wins everywhere
-  our arithmetic doesn't. The ONE sanctioned exception is the TWAP-lock
-  projection (an already-observed average). Measurement of observed
-  quantities is always in scope; prediction of unobserved ones is not.
-- No deployment before a kill bar passes; never relax a bar to pass it.
-  Re-measurement on a bigger corpus/better estimator is not relaxing
-  (RESEARCH.md register).
-- No symmetric market-making, no oracle-cadence trading, no expansion past
-  btc-5m. What is actually refuted is post-close camping on the siblings
-  (30s era, REFUTATIONS.md); their in-window deep flow is unmeasured and low
-  priority (RESEARCH.md). Scaling is SIZE on this one book.
-- No mid-price edge math (executable CLOB BBO only). Never skip the fee:
-  `rate*shares*p*(1-p)`, rate 0.07; flat-additive gates use 0.0175 — never
-  mix them.
-- `gain_pct = pnl/size`, never log_return. Don't bypass the circuit breaker.
-  Don't delete `polybot/db/polybot_*.db`.
-
----
-
-# Part B — Operations
-
-## 8. Project layout
-
-```
-polybot/
-  main.py                Trading loop; gates; ladder hook; nightly health job
-  config/                settings.yaml (THE single config source), loader.py
-  core/signal_engine.py  Margin tables (60s-rule freeze 08-18) + lock math
-  feeds/                 chainlink_feed (sixty topic, strike, projection,
-                         bridge, coverage guard), clob_ws, market_scanner
-  recording.py           WindowPathRecorder + TapeRecorder + MicroTape
-  execution/             base (fee math), paper_trader, live_trader,
-                         maker_bid (deep_proj ladder), circuit_breaker
-  agents/, memory/, discord_bot/, db/models.py (per-mode SQLite + labels)
-scripts/
-  run_polybot.sh         Daily supervisor (systemd unit: polybot)
-  analyze_twap_lock.py   Lock replay harness (60s) + bit-exact mechanism check
-  analyze_late_window.py Realized-ledger readers + resolution/SOURCE watches
-  sniper_shadow_status.py, verify_keys.py, smoke_order_test.py,
-  smoke_gtc_test.py, reset_paper_clean.py
-  research/              Offline analysis tooling (see its README; data/ is
-                         gitignored) — census, error tables, engine-true grid
-REFUTATIONS.md  RESEARCH.md  WALLETS.md
-```
-
-## 9. Data sources
-
-| Source | Feed | What |
+| item | value | provenance |
 |---|---|---|
-| Polymarket CLOB | WS + `GET /price /book /spread /tick-size` | Books, tape, executable prices |
-| Polymarket Gamma | `GET /events?slug=` (fallback `/events/slug/{slug}`) | Discovery + resolution + labels |
-| Chainlink (RTDS WS) | `wss://ws-live-data.polymarket.com` (`crypto_prices_twap_sixty` + raw `crypto_prices_chainlink` + Binance `crypto_prices`) | Strike + resolution (sixty topic); raw feeds the projection; Binance feeds ONLY the bridge delta |
+| mode / brake / taker | `paper` / `trading_enabled: true` / `taker_enabled: false` | [cfg]; if `taker_enabled` is absent the code default is **True** [code main.py:1034] |
+| validation_epoch | 2026-08-27T19:28:00Z | [cfg late_window.validation_epoch] |
+| zone / k floor / placement | 58 s / 6 s / k ∈ [6, 25] | [cfg twap_zone_s, twap_k_min_s, maker_k_place_min/max] |
+| ladder | 0.80/0.65/0.50/0.35/0.20 × 20%, need 1.0 each; budget 15% of bankroll × breaker | [cfg maker.maker_ladder, maker_bankroll_frac] |
+| post-close hold | 60 s, `certain_winner` gated | [cfg maker.post_close_hold_s] |
+| margin tables | p99.5: $4.0@6 · 7.5@10 · 12.5@15 · 20.0@20 · 28.5@25 · 107.5@58; MAX: $19@6 · 100@25 · 371@58 | [code core/signal_engine.py:34-45]; re-fit 08-27, 3,695 real-final windows, 15 ET days [data r1_report.md] |
+| taker (dormant) | max tier only (0.999), ask ≤ prob − 0.04, edge cap 0.50, FOK pad 0.01, Kelly `(b'p−q)/b'`, `b' = b(1−0.07)`, `p = ask+0.04`, × 0.08 | [cfg late_window.*, math.kelly_fraction; code signal_engine.py:84-160] |
+| circuit breaker | tiers 100/150/200/300/400/600…; floor = tier × 0.85; multiplier 1.0 → 0.40 (√) between tier and floor; ratchets up only | [code circuit_breaker.py:17-98; cfg circuit_breaker.*]; locked $400 → floor $340 [data polybot.log 08-27] |
+| position caps | 2 concurrent (open only); one ladder; deployed ≤ 0.80 × equity; ≤ 50% of side depth (taker); $1 min | [cfg execution.*; code base.py:316-326, 399-410] |
+| paper realism | POST RTT quantiles p50 436 ms × 0.95, floor 0.32 s; fail rate 0.5–3%; GTC 56 ms/rung; at-price queue 135 sh | [code paper_trader.py:284-299; cfg execution.paper_*]; POST table = the 07-08 live ledger (n=20; later ledgers p50 312–432 ms, last 302.9 ms n=2 on 08-13) and **expired** by the 08-17 taker-hold cut 250→50 ms [data git history of latency_stats.json; r5_report.md]; GTC table = 12-sample idle smoke test, live in-anger samples 0 [data latency_stats.json] |
+| fees | taker `0.07·sh·p·(1−p)`; spread gate flat 0.0175; maker 0; rebate not modeled | [code base.py:140-173]; venue schedule unchanged 08-27 [data r5_report.md] |
+| feed constants | trust gap 0.5 s; spot stale 3 s; raw hole 10 s; horizon 60 s; bridge anchor 2 s / 1%; stall 20 s / $2 / $0.005 | [code chainlink_feed.py:33-57] |
+| kill rule (alert-only) | any `lock_dip` loss; or trailing-4-calendar-day mean $ < 0 with ≥ 4 days and ≥ 5 fills, per leg | [code scripts/analyze_late_window.py:146-177; test test_live_health_read.py] |
+| SOURCE hard gate | per labeled window: served strike/final vs trusted capture, `|Δ| > 0.005` → `trading_enabled=False` in-process + CRITICAL + Discord; latches per process. The nightly source line re-checks only the last ~2 h of captures (41–45 windows) | [code recording.py:325-360; main.py:2679-2698; chainlink_feed.py:429-436]; 0 fires ever [data logs 07-13..08-27] |
+| secrets | `DISCORD_BOT_TOKEN` (monitoring — without it the bot still trades after a 15 s wait, Discord retries forever); `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER` (live) in `polybot/config/.env` | [code main.py:2966-2984; loader.py:176-180; live_trader.py:261-270] |
+| host | Python 3.12.3, coincurve 21.0.0, orjson; 954 MB RAM / 4 GB swap; service peak 711 MB RSS / 1.6 GB swap | [data latency_report.md; journalctl 08-27] |
 
-## 10. Running + invariants
+Config drift worth knowing: `execution.fok_spread_cross_floor` and
+`market.entry_window_seconds` are validator-required but read by nothing;
+in-code defaults differ from yaml for `post_close_hold_s` (0 vs 60), the
+ladder seed `need` (2.0 vs 1.0), one `twap_zone_s` site (60 vs 58) and one
+`max_concurrent_positions` site (1 vs 2) [docs/audit/01a §3.4].
 
-The bot runs ONLY on the VPS (Oracle Stockholm, systemd `polybot`): starts
-12:01 AM ET, stops 11:30 PM ET, nightly jobs 11:45 PM ET, commits + pushes
-`origin main` on clean exit, pulls + restarts at midnight; mid-day crash
-restarts after 60s. **Never run the bot on a workstation** (single-host lock
-only). Live preflight: `verify_keys.py` then `smoke_order_test.py --confirm`.
+## 4. INVARIANTS
 
-- UTC for storage; ET only for date-bucketing + trading windows.
-- Recordings are gitignored; `memory/` records + per-mode DBs + settings.yaml
-  commit nightly. Heavy analysis never runs on the box — scp the tape local.
-- Kill bars are the deployment authority.
+Properties of the running system, each verified in code or data.
 
-## 11. Discord
+- Every position is held to resolution: `close_trade` and the sell chain
+  have zero production callers; `resolve_position` is the only close
+  [code base.py:442-556; docs/audit/01b §6.4].
+- Capital deploys only through `book_maker_fill` (ladder) and, if
+  `taker_enabled`, `open_trade`; both apply the duplicate-market, position-count
+  and 0.80 deployed-cap preflight [code base.py:293-438].
+- No capital on an untrusted strike: `_strike_trusted[window]` gates both
+  legs; trust needs a Gamma `price_to_beat` or a boundary capture within 0.5 s
+  (payload clock) [code main.py:1009-1014; chainlink_feed.py:299-316].
+- The ladder's placement floor and its cancel floor are the same number
+  (`min_need × p99.5(k)`); post-close resting requires a boundary-verified
+  winner and fails closed [code maker_bid.py:216-282].
+- The projection returns None (and the ladder cancels) on spot > 3 s old or
+  any raw-receipt hole > 10 s inside the averaging span [code chainlink_feed.py:237-253].
+- `trading_enabled` is the single brake: false removes the signal block and
+  the Chainlink wake; the SOURCE gate is the only code that flips it, and only
+  in-process [code main.py:1003, 2212-2213, 2685].
+- The circuit-breaker floor never moves down; it persists via `peak_bankroll`
+  [code circuit_breaker.py:100-124; main.py:2509-2527].
+- Maker fills book at zero fee; taker fees use `0.07·sh·p·(1−p)` in shares on
+  entry and USDC on exit; `gain_pct = pnl/size` [code base.py:140-173, 415, 489, 540].
+- Paper and live decisions are bit-identical on recorded windows given paper's
+  fill rule, enforced in CI [test test_decision_parity.py].
+- Fills, ghosts and resolutions record None for cold inputs, never 0.0 [code main.py:1223-1272].
+- Live boot: auth/allowance preflight, `cancel_all` sweep of resting orders,
+  orphan-token detection fails closed unless `--allow-orphans`
+  [code main.py:2462-2564; live_trader.py:1325-1500].
+- The bot process runs only on the VPS (single-instance lock + `pkill` in the
+  supervisor); the workstation is for analysis on pulled copies [code main.py:3092-3112; run_polybot.sh:31].
+- Recording never rides the money path: tape/micro writes go through
+  single-thread executors, flushed every 200 rows or 10 s [code recording.py:32-33, 531-546].
 
-`!status` `!history [n]` `!pause` `!resume` `!clear [trades|control|all]
-confirm` `!session` `!pipeline` `!commands` — `!pause` halts new entries only.
+## 5. OPEN CALIBRATION
+
+What is unmeasured or expired, the N that exists, and what resolves it.
+
+1. **The edge itself.** Realized on the current tables: 0 fills since
+   2026-08-27 19:28Z. On the era replay the honest floor fills ~0.3
+   windows/day (4 fills / 14 days, 4/4 wins, +$100.75 at $60 budget); the
+   ≥20-fill paper bar needs ~74 days at that rate [data r23_report.md,
+   2,066 windows]. Prior paper epochs (thin tables): 36 fills, +$3.17 since
+   08-19; 16 fills, +$21.12, −0.9¢/sh since 08-24 [data polybot_paper_audit.db].
+   The deployment bar (≥6 clean ET days, ≥20 filled windows, EW ≥ +5¢/sh,
+   $/day > 0) is operator policy — not computed in code; three code texts
+   state three different bars [code sniper_shadow_status.py:11-14; main.py:2838-2846; settings.yaml:5-6].
+2. **GTC round trip (paper's fill clock).** Live samples: 0. Paper charges
+   56 ms/rung from a 12-sample smoke-test measurement (08-07, not persisted)
+   [code paper_trader.py:293-299; data latency_stats.json]; live in-anger
+   samples: 0. Resolves with `scripts/smoke_gtc_test.py --confirm
+   --samples 12` on the box; the nightly watch lights at n ≥ 10 (p50 ±25%,
+   KS D ≤ 0.30) [code main.py:502-576].
+3. **Paper fill rule vs live.** Strictly-below full fill and the 135-share
+   at-price credit have no live ladder pairs to check against (0 live fills
+   post-era). At-price depth re-measured med 29 / p75 77 on 56,523 sweeps
+   (08-14..21) — the constant is conservative [data 08-21 re-measurement].
+   Complement-cross fills invisible to paper: ≤ 14–17% of deep flow, direction
+   conservative, unconfirmed [data h3_report.md]. Paper fills during CLOB gaps
+   (73 drops / 31 h) are unobservable [data polybot.log].
+4. **Per-rung economics at honest tables**: undecidable (4/1/1/1/1 fills in
+   14 days). Descriptive only: need 0.75 = 8 fills, 100%, +$201.50; the frozen
+   tables' 0.65/0.50 rungs ran 53%/36% win against 65%/50% break-evens
+   [data r23_tables.md]. Re-decision at ≥ 28 real-final days.
+5. **Taker latency table** (`_LATENCY_QUANTILES`, p50 436 ms, scale 0.95):
+   a hand-maintained literal equal to the 07-08 live ledger (n=20); later
+   nightly ledgers read p50 312–432 ms; the embedded 250 ms venue hold is
+   now 50 ms [data latency_stats.json git history; r5_report.md]. No code
+   re-derives it (`smoke_order_test.py` bypasses the recorder and writes
+   nothing); only live taker POSTs recorded by `_record_submit_latency`
+   produce new samples. Matters only if the taker re-arms.
+6. **`twap_k_min_s` 6.0** — carried from a 30 s-era realized breach; 60 s-era
+   knots at k ∈ [2,6) are $2.5–4.0 p99.5 / $18–19 MAX [data r1_tables.json].
+   Not re-decided.
+7. **Regime thresholds** (HOSTILE if gap p50 < $6 or photo < $1 > 15%):
+   percentile-ported from 30 s-era data; alert-only; no 60 s-era validation
+   as a predictor [code main.py:2868-2882].
+8. **Latency narrative.** The race numbers ("book reprices 0.33 s after
+   Binance / 2.5 s before our receipt") are 08-10 pre-era measurements with
+   no artifact retained. Re-established on era data: sixty-topic delivery lag
+   p50 1.70–1.77 s (158,676 records, integer-second payload ts); raw
+   inter-report gaps p50 0.938 s / p99 2.16 s [data 03_verify_C001-C088;
+   feed_staleness.json 08-27, n=2,000]. Reconstruction error vs the served
+   final: median $0.11–0.18 / p90 $0.51–0.67 (08-19/20/26, n≈273/day) — the
+   $0.028/$0.22 figure was the calm 08-14..17 span [data 03_verify_C001-C088]. Owned compute is ~3 ms p50 /
+   5 ms p99 (n=27, pre-era fills) — nothing left to buy [data latency_report.md].
+9. **Lock-dip taker re-arm**: dormancy rested on 4 winner-side max-lock dips /
+   1 FOK-reachable in 1,184 windows (08-14..18) — artifact not in the data
+   set; re-run `scripts/research/ws3_dips.py` on the 14-day corpus before any
+   re-arm.
+10. **Census cadence**: weekly. Last run 08-21..27 (159 windows): two of the
+    three largest whole-window makers stopped at the identical minute on
+    08-20; no new occupant in our seat [data r5_report.md].
+
+## 6. APPENDIX: DEAD ENDS
+
+Revisiting any entry requires new evidence exceeding the cited evidence.
+
+- Extended 0.85/0.90/0.95 rungs — engine-true replay, 2,066 windows 08-14..27 → every rung wins less than its price (0.95: 92.3% on 39 fills; 0.90: 87.5%/24; 0.85: 82.4%/17), total < baseline → killed 08-21 [data h1b_extended_rungs.md].
+- Cross-window strike knowledge (N's final = N+1's strike, traded on N+1's open) — 1,972 windows, held-out EW −2.1..−4.4¢/sh at every δ ∈ [2,30] s, monotonicity control anti-predictive → refuted 08-21 [data h2_report.md].
+- Complement arbitrage (Up-ask + Down-ask < 1 − fees) — 973,302 synchronized pairs, event-true violating time 0.14 s in 8 days, $0.00/day → refuted 08-21 [data h3_report.md].
+- Cheaper complement route into a position — median improvement $0.0000, ≥1 tick on 0.01% of arm-seconds → refuted 08-21 [data h3_report.md].
+- Sell the boundary-certain winner post-close — auto-redeem lands p50 +100 s vs a +275 s redeploy deadline (5,736 on-chain redeems); haircut 1.07¢/sh costs 5.5× the freed-capital benefit → refuted 08-21 [data h4_report.md].
+- Both-sides deep dip-buying, no sign filter (Candidate A) — 3,787 windows, every rung wins less than its own price (0.35: 22% vs 43% needed), −$1,852 at k[6,25]; the only profitable slice is the projection side → refuted 08-27 [data r4_report.md].
+- Ladder floor need 0.5 — ws1_oos LODO on the re-fit tables: 0.80 rung 84.2% vs 90% bar; a 0.5-only arm swept 4 rungs −$18 → 1.0 stands 08-27 [data r1_report.md].
+- k_place_max 15 / 20 — lose the second OOS half at need 1.0 and 0.5 → 25 stands 08-27 [data r23_tables.md].
+- Mid-window touch-bid wall ($11.9k/day) — shared-price queues of 2.3–8.3k shares; 78% held by five wallets → not occupiable 08-21 [data h1_report.md]; live probe of the same mechanism post-close: 0/102 fills at 0.99 behind a ~290k-share wall, 08-13 [REFUTATIONS.md entry; artifact not retained].
+- Terminal lottery counterflow ($854/day, final 6 s) — 98.9% is the 0.99 wall matched cross-book via minting → refuted 08-21 [data h1_report.md].
+- Underdog-ask longshot tax (+$14.1k/day mean) — sign-flips daily (−$32k on 08-17) → not systematic 08-21 [data h1_report.md].
+- k > 25 sign-gated placement — 60 s-era kinematics 08-18: sweeps traverse the ladder inside ~1 s; flip-race fill rates exceed every rung's margin (0.80: 90% vs 80% allowed); [6,58] never beats [6,25] → refuted 08-18 [REFUTATIONS.md entry; artifact not retained].
+- deep_proj regime gate — engine-true replay of 991 windows 08-14..17: zero chop-regime full-sweep losses at any floor with k ≤ 25 → alert-only 08-18 [REFUTATIONS.md entry; artifact not retained].
+- Hairline-underdog inverse — 14,897 windows: −2.2¢/sh conditioned on the tradable trigger → refuted 08-13 [REFUTATIONS.md entry; 30 s era].
+- Continuous P(win) body trading — calibration excellent OOS yet the book wins log score in 100% of splits → refuted 08-10 [REFUTATIONS.md entry; 30 s era].
+- Vol-conditional margins — 739 windows: 6 losing-side breaches vs 0 under frozen tables → refuted 08-10 [REFUTATIONS.md entry; 30 s era].
+- Latency race / oracle-lag head start — 464 sharp-move races, book wins 97–100% → refuted 08-10 [REFUTATIONS.md entry; 30 s era].
+- Open head-start leg — 749 windows, decision rule anti-predictive, Gamma never serves the strike first (0/757) → refuted 08-10 [REFUTATIONS.md entry; 30 s era].
+- Burst sniper — −17.5¢/sh under TWAP scoring → ripped out 08-07 [REFUTATIONS.md entry; 30 s era].
+- Multi-market expansion (btc-15m, eth/xrp/sol-5m) — post-close volume 0.0–7.3 sh/window vs btc-5m 151.5; combined ceiling ~$16/day → refuted 08-12 [REFUTATIONS.md entry; 30 s era].
+- Symmetric market-making — 1-tick spread, 4,416-share touch = 5× bankroll → refuted 08-11 [REFUTATIONS.md entry].
+- Strike-ladder / negRisk basket arbitrage — zero fee-clearing arbs → refuted 07-02 [REFUTATIONS.md entry].
+- Entry-side feature/ML prediction — six lenses, all dead; filled-outcome records poisoned for entry research → removed 06-09..07-16 (code deleted 08-07, commit ca5ed7ed) [REFUTATIONS.md entry].
+- Exit engines (passive exit −2.1¢/sh; night-one scalp sold a winner at 0.05) → sell path removed 07-01/07-08 [REFUTATIONS.md entry]; no production caller exists today [code docs/audit/01b §6.4].
+- Post-close 0.99/0.999 camping — 102 live placements, 0 fills, 08-13 → refuted [REFUTATIONS.md entry; 30 s era].
+- 30 s-TWAP-era calibrations (564-window tables, "2× floor" doctrine, 08-17 grid) — superseded by the 08-14 rule change; the breach-mechanism lessons carry, the numbers do not [REFUTATIONS.md "Superseded eras"].
