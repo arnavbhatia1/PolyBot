@@ -95,10 +95,14 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    every rung stamps `gtc_place_ms`/`gtc_cancel_ms` into the booked
    snapshot, `smoke_gtc_test.py --samples` persists too, and the nightly
    ops watch validates paper's 56ms table against measured p50 (±25%, dark
-   until n ≥ 10). Still open until real samples exist: run
-   `smoke_gtc_test.py --confirm --samples 12` on the box, or wait for the
-   first live ladder. Until then the ≥20-fill bar is measured against an
-   unvalidated fill clock.
+   until n ≥ 10). **MEASURED 08-28 13:50Z** (`smoke_gtc_test.py --confirm
+   --samples 12` on the box, idle path): place p50 57.0 / p90 64.1 / max
+   173.8 ms (the max is the cold first call), cancel p50 55.2 / p90 62.8 /
+   max 78.0 ms, n=12 each. Paper's table (p50 56 / p90 60 / max 170) is
+   inside the ±25% band — the ~500 ms tape reconstruction of fill 334 is
+   contradicted for the POST itself. Still open: the in-anger case (five
+   sequential POSTs while a sweep prints, event loop busy) — the per-rung
+   `gtc_place_ms` stamps on the first live ladder fills answer it.
 3. **Lock-dip taker: DORMANT-pending-regime** (`taker_enabled: false`,
    staged 08-18). The 60s rule killed its supply: 4 winner-side max-lock
    dips / 1 FOK-reachable over 1,184 windows (bar: ≥1 reachable per 3
@@ -395,7 +399,7 @@ floor; further latency engineering buys nothing measurable — stop here.
 | RAW_GAP_MAX_S | 10s | 08-18 (re-derived) | conditional p99.5 err $0.79 at gap≤10; cliff ≥15-30s | 60s-era hole population change |
 | twap_k_min_s | 6.0 | 08-12 scar (30s era) | k=1.1 realized max-tier breach | queue #6 above |
 | bz relay lag | p50 0.421s | 08-18 | 74,184 bz records rx−ts | new relay behavior |
-| GTC/taker latency tables | paper_trader | 08-07..08 | box-measured; nightly ops watch alarms at ±25% POST p50 drift | REOPENED 08-27: taker hold 250→50ms on 08-17 (changelog) — re-derive the POST table from smoke_order_test samples; GTC table still unmeasured |
+| GTC/taker latency tables | paper_trader | GTC re-measured 08-28 (n=12 idle: place p50 57 / cancel p50 55 ms — paper's 56 ms table validated); POST table = 07-08 ledger (n=20), no re-derivation code | nightly ops watch: POST p50 ±25%, GTC p50 ±25% + KS D ≤ 0.30 | POST table reopened 08-27 (taker hold 250→50 ms on 08-17) — only live taker POSTs add samples; GTC in-anger stamps from the first live ladder |
 | kelly_fraction 0.08, maker_bankroll_frac 0.15 | settings | pre-era | post-gate playbook | after a §2 bar pass |
 | fee model 0.07 / 0.0175 | base.py | 07-22, re-verified 08-18 post-rule | 1,751 live fills + 600 post-rule USDC deltas vs documented curve | Polymarket fee change |
 

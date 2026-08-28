@@ -116,7 +116,7 @@ discord_bot/bot.py:57-265].
 | taker (dormant) | max tier only (0.999), ask ≤ prob − 0.04, edge cap 0.50, FOK pad 0.01, Kelly `(b'p−q)/b'`, `b' = b(1−0.07)`, `p = ask+0.04`, × 0.08 | [cfg late_window.*, math.kelly_fraction; code signal_engine.py:84-160] |
 | circuit breaker | tiers 100/150/200/300/400/600…; floor = tier × 0.85; multiplier 1.0 → 0.40 (√) between tier and floor; ratchets up only | [code circuit_breaker.py:17-98; cfg circuit_breaker.*]; locked $400 → floor $340 [data polybot.log 08-27] |
 | position caps | 2 concurrent (open only); one ladder; deployed ≤ 0.80 × equity; ≤ 50% of side depth (taker); $1 min | [cfg execution.*; code base.py:316-326, 399-410] |
-| paper realism | POST RTT quantiles p50 436 ms × 0.95, floor 0.32 s; fail rate 0.5–3%; GTC 56 ms/rung; at-price queue 135 sh | [code paper_trader.py:284-299; cfg execution.paper_*]; POST table = the 07-08 live ledger (n=20; later ledgers p50 312–432 ms, last 302.9 ms n=2 on 08-13) and **expired** by the 08-17 taker-hold cut 250→50 ms [data git history of latency_stats.json; r5_report.md]; GTC table = 12-sample idle smoke test, live in-anger samples 0 [data latency_stats.json] |
+| paper realism | POST RTT quantiles p50 436 ms × 0.95, floor 0.32 s; fail rate 0.5–3%; GTC 56 ms/rung; at-price queue 135 sh | [code paper_trader.py:284-299; cfg execution.paper_*]; POST table = the 07-08 live ledger (n=20; later ledgers p50 312–432 ms, last 302.9 ms n=2 on 08-13) and **expired** by the 08-17 taker-hold cut 250→50 ms [data git history of latency_stats.json; r5_report.md]; GTC table **validated idle** 08-28: live place p50 57 / p90 64 / max 174 ms, cancel p50 55 ms, n=12 (paper 56/60/170) [data latency_stats.json gtc]; in-anger stamps pending the first live ladder |
 | fees | taker `0.07·sh·p·(1−p)`; spread gate flat 0.0175; maker 0; rebate not modeled | [code base.py:140-173]; venue schedule unchanged 08-27 [data r5_report.md] |
 | feed constants | trust gap 0.5 s; spot stale 3 s; raw hole 10 s; horizon 60 s; bridge anchor 2 s / 1%; stall 20 s / $2 / $0.005 | [code chainlink_feed.py:33-57] |
 | kill rule (alert-only) | any `lock_dip` loss; or trailing-4-calendar-day mean $ < 0 with ≥ 4 days and ≥ 5 fills, per leg | [code scripts/analyze_late_window.py:146-177; test test_live_health_read.py] |
@@ -179,12 +179,12 @@ What is unmeasured or expired, the N that exists, and what resolves it.
    The deployment bar (≥6 clean ET days, ≥20 filled windows, EW ≥ +5¢/sh,
    $/day > 0) is operator policy — not computed in code; three code texts
    state three different bars [code sniper_shadow_status.py:11-14; main.py:2838-2846; settings.yaml:5-6].
-2. **GTC round trip (paper's fill clock).** Live samples: 0. Paper charges
-   56 ms/rung from a 12-sample smoke-test measurement (08-07, not persisted)
-   [code paper_trader.py:293-299; data latency_stats.json]; live in-anger
-   samples: 0. Resolves with `scripts/smoke_gtc_test.py --confirm
-   --samples 12` on the box; the nightly watch lights at n ≥ 10 (p50 ±25%,
-   KS D ≤ 0.30) [code main.py:502-576].
+2. **GTC round trip (paper's fill clock).** Idle path measured 08-28 on the
+   box: place p50 57.0 / p90 64.1 / max 173.8 ms, cancel p50 55.2 ms, n=12 —
+   paper's 56 ms table holds [data latency_stats.json gtc]. Open: the in-anger
+   case (five sequential POSTs during a sweep) — read from `gtc_place_ms` /
+   `gtc_cancel_ms` on the first live ladder fills; the nightly watch (p50
+   ±25%, KS D ≤ 0.30) now has a baseline [code main.py:502-576].
 3. **Paper fill rule vs live.** Strictly-below full fill and the 135-share
    at-price credit have no live ladder pairs to check against (0 live fills
    post-era). At-price depth re-measured med 29 / p75 77 on 56,523 sweeps
