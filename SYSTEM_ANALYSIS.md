@@ -200,7 +200,7 @@ the 30 s stream is a claim about a market that no longer exists.
 | Rung set / weights | 0.80/0.65/0.50/0.35/0.20 × 20% | **UNDECIDABLE** at honest tables | 4/1/1/1/1 fills per rung in 14 days; the frozen-table row shows 0.65 and 0.50 rungs ran 53%/36% win against 65%/50% break-evens [data r23_tables.md] | accrues at ~0.3 fills/day; ~74 days to 20 fills at current rates |
 | Extended 0.85–0.95 rungs | not in config | **REFUTED** | each rung wins less than its price on ≥17 fills; one 95¢ loss erases 19 wins [data h1b_extended_rungs.md] | — |
 | `AT_PRICE_QUEUE_SH` (paper at-price credit) | 135 sh | **CONSERVATIVE, unchanged** | sweep-consumed depth med 29 / p75 77 on 56,523 sweeps, 08-14..21; nightly watch alarms if p75 > 135 [data 08-21 re-measurement; code main.py ops watch] | live fill pairs: **none** (0 live ladder fills post-era) |
-| Paper GTC round-trip table | p50 56 ms | **UNVALIDATED against live** — the binding gap | 12-sample smoke-test measurement 08-07 (not persisted) [code paper_trader.py:293-299]; live in-anger `gtc` samples = 0 [data latency_stats.json]; the ~500 ms reconstruction is prose only | run `scripts/smoke_gtc_test.py --confirm --samples 12` on the box (persists; nightly KS/p50 watch lights at n ≥ 10) |
+| Paper GTC round-trip table | p50 56 ms | **VALIDATED (idle path)** 08-28; in-anger open | live place p50 57.0 / p90 64.1 / max 173.8 ms, cancel p50 55.2 / max 78.0 ms, n=12 idle smoke on the box [data latency_stats.json gtc, 2026-08-28]; the ~500 ms prose reconstruction is contradicted for the POST itself; in-anger (five sequential POSTs during a sweep) awaits the first live ladder's per-rung stamps | run `scripts/smoke_gtc_test.py --confirm --samples 12` on the box (persists; nightly KS/p50 watch lights at n ≥ 10) |
 | Paper POST-RTT table + `paper_latency_scale` 0.95 | quantiles p50 436 ms | **EXPIRED** by route change | the table is a literal equal to the 07-08 live ledger (n=20); the 19 later nightly ledgers read p50 312–432 ms and the last (08-13, n=2) 302.9 ms [data git history of memory/state/latency_stats.json]; the 250 ms taker hold embedded in it became 50 ms on 08-17 [data r5_report.md] | no re-derivation code exists (`smoke_order_test.py` bypasses `_record_submit_latency` and writes nothing [code scripts/smoke_order_test.py:115]); only live taker POSTs add samples; taker is dormant so no live exposure |
 | `twap_k_min_s` | 6.0 | **CARRIED** from a 30 s-era realized breach (k=1.1 fire bought a $0 token, 08-12) | pre-era scar; 60s-era k∈[2,6) knots now $2.5–4.0 p99.5 / $18–19 MAX [data r1_tables.json] | same corpus; not re-decided |
 | `RAW_GAP_MAX_S` | 10 s | **VALID** — re-derived 08-18 on 60s-era data | conditional p99.5 reconstruction error $0.79 at gap ≤ 10 s [RESEARCH.md register — artifact not located in the data dir; treat the number as **unverified**, the constant as code-verified] | micro-tape holes |
@@ -248,12 +248,14 @@ shipped) [code main.py:528, 1340-1355; data polybot.log]. The venue-side
 floors moved under the table: the paper latency table still embeds the
 250 ms hold (§3).
 
-**Maker leg timing** (the live leg): five sequential GTC POSTs per ladder, each
-paying a real round trip that is **unmeasured in anger** — paper pays 56 ms/rung
-from a 12-sample idle smoke test (08-07); the live recorder that would answer it has zero samples
-[code execution/paper_trader.py:297-299; data latency_stats.json]. Cancel
-speed is the ladder's risk control (a flip-cancel racing an avalanche) and is
-equally unmeasured. Both stamp into every booked fill since 08-22
+**Maker leg timing** (the live leg): five sequential GTC POSTs per ladder.
+Measured on the box 08-28 (idle, n=12): place p50 57.0 / p90 64.1 / max
+173.8 ms (cold first call), cancel p50 55.2 / max 78.0 ms — paper's 56 ms/rung
+table is right for the idle path [data latency_stats.json gtc]. A full
+ladder therefore rests in ~0.3 s and cancels in ~0.3 s; the in-anger case
+(event loop busy with a print burst) is unmeasured until the first live
+ladder stamps `gtc_place_ms`/`gtc_cancel_ms`. Cancel speed is the ladder's
+risk control (a flip-cancel racing an avalanche). Both stamp into every booked fill since 08-22
 (`gtc_place_ms`, `gtc_cancel_ms`) [code execution/maker_bid.py:163-172,
 304-312, 345-347]; the 16 paper fills since carry only the simulated values.
 
@@ -358,7 +360,7 @@ Materiality of what differs:
 |---|---|---|
 | Live `place_gtc_bid` can return None (exchange rejection → `MAKER BID REJECTED`); paper never rejects | **decision** — the resting rung set can differ | Real but unobserved: 0 rejections in the logs; the parity mock always returns an id, so the suite cannot see it |
 | GTC fill observation: live polls `size_matched` at 1 Hz (+ a final poll at retire); paper credits prints strictly below a rung in full and at-price volume beyond 135 shares | fill semantics | The whole paper record rests on this rule. Live pairs to check it against: **none**. Complement-cross fills that print on the other token are invisible to paper — bounded at ≤14–17% of deep flow, conservative direction, unconfirmed [data h3_report.md] |
-| GTC latency: paper 56 ms/rung sim vs real (unmeasured) | timing → fill semantics | Rungs become matchable ~9× sooner in paper if live is ~500 ms; direction of the P&L bias unknown (flatters wins, punishes losses) |
+| GTC latency: paper 56 ms/rung sim vs live | timing → fill semantics | Live idle p50 57 ms (n=12, 08-28) — parity holds for the POST itself; the residual question is in-anger latency during sweeps, answered by the first live ladder's stamps |
 | FOK latency/fail sims (`_LATENCY_QUANTILES` × 0.95, fail rate 0.5–3%) | timing/fill | dormant leg; table expired (§3) |
 | Fill price: live WS VWAP → balance delta → `associate_trades` → limit; paper book walk | fill/booking | dormant leg |
 | `_resolve_bankroll`: live reads the wallet and waits for on-chain redeem (PAYOUT STUCK after 600 s); paper adds arithmetic | booking/timing | Live wins settle p50 ~100 s after close [data h4_report.md, 5,736 redeems]; one `WINNING REDEEM STUCK` 07-30 |
@@ -467,11 +469,10 @@ price-ascending on both sides; `[0]` indexing) — 539,734 of 568,609 rows
    validation period ($24, $17.8, $13.7 reversals) sat inside the honest
    band. Fixed 08-27. The prior paper record (36 fills, +$3.17) is a record of
    the wrong floor [data r1_report.md; polybot_paper_audit.db].
-2. **The paper fill clock is unvalidated.** Live GTC round trips: 0 samples;
-   paper charges 56 ms/rung from a 12-sample idle smoke test. The binding gate is
-   measured against a fill rule whose timing has never been checked against
-   the exchange [data latency_stats.json; code paper_trader.py:297-299].
-   One command resolves it (§3).
+2. **The paper fill clock is now validated for the idle path** (08-28: live
+   place p50 57 ms, cancel 55 ms, n=12 — paper's 56 ms table holds). What
+   remains is in-anger timing during a sweep, which only the first live
+   ladder's per-rung stamps can show [data latency_stats.json gtc].
 3. **Live GTC rejection is a decision-level paper/live divergence the parity
    suite cannot observe** (mock always returns an id) [code paper_trader.py:63-73;
    live_trader.py:643-667; test_decision_parity.py:215-222].
