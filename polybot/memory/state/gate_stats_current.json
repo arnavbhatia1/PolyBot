@@ -1,11 +1,6 @@
 {
-  "timestamp": "2026-08-26T21:32:20.610486+00:00",
-  "et_date": "20260826",
-  "counts": {
-    "book_freshness_skew": 102015,
-    "stale_prices": 2560,
-    "stale_feed": 178,
-    "twap_frozen": 1
-  },
-  "total_skips": 104754
+  "timestamp": "2026-08-31T04:01:18.514986+00:00",
+  "et_date": "20260831",
+  "counts": {},
+  "total_skips": 0
 }
