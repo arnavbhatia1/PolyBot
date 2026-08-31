@@ -557,7 +557,9 @@ def _ops_watch_line(lat: dict | None, lat_dark: str | None, qd: dict | None,
                f"{'over' if drift > 0 else 'under'}-credits at-price fills, "
                f"re-measure" if abs(drift) > 0.25 else ""))
     if gtc:
-        drift = (gtc["p50"] - 56.0) / 56.0   # paper's _GTC_LATENCY_QUANTILES p50
+        from polybot.execution.paper_trader import PaperTrader as _PT
+        _table_p50 = dict(_PT._GTC_LATENCY_QUANTILES)[0.50] * 1000.0
+        drift = (gtc["p50"] - _table_p50) / _table_p50
         ks = gtc.get("ks")
         # Two tolerances, both stated: p50 band ±25%, distribution KS D ≤ 0.30.
         off = (abs(drift) > 0.25) or (ks is not None and ks > 0.30)
@@ -566,7 +568,7 @@ def _ops_watch_line(lat: dict | None, lat_dark: str | None, qd: dict | None,
             + (f", KS {ks:.2f}" if ks is not None else "")
             + (f", cancel {gtc['cancel_p50']:.0f}ms" if gtc.get("cancel_p50") else "")
             + ")"
-            + (f" ⚠️ off paper's 56ms table (p50 {drift:+.0%}) — re-derive "
+            + (f" ⚠️ off paper's {_table_p50:.0f}ms table (p50 {drift:+.0%}) — re-derive "
                f"_GTC_LATENCY_QUANTILES" if off else ""))
     elif gtc_dark:
         parts.append(f"GTC RTT unmeasured — {gtc_dark}")

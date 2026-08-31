@@ -399,7 +399,7 @@ floor; further latency engineering buys nothing measurable — stop here.
 | RAW_GAP_MAX_S | 10s | 08-18 (re-derived) | conditional p99.5 err $0.79 at gap≤10; cliff ≥15-30s | 60s-era hole population change |
 | twap_k_min_s | 6.0 | 08-12 scar (30s era) | k=1.1 realized max-tier breach | queue #6 above |
 | bz relay lag | p50 0.421s | 08-18 | 74,184 bz records rx−ts | new relay behavior |
-| GTC/taker latency tables | paper_trader | GTC re-measured 08-28 (n=12 idle: place p50 57 / cancel p50 55 ms — paper's 56 ms table validated); POST table = 07-08 ledger (n=20), no re-derivation code | nightly ops watch: POST p50 ±25%, GTC p50 ±25% + KS D ≤ 0.30 | POST table reopened 08-27 (taker hold 250→50 ms on 08-17) — only live taker POSTs add samples; GTC in-anger stamps from the first live ladder |
+| GTC/taker latency tables | paper_trader | GTC re-measured 08-28 (n=12 idle: place p50 57 / cancel p50 55 ms) and the paper table re-derived from those samples 08-31 (the old 08-07 table tripped the KS watch on a ~1 ms shift); POST table = 07-08 ledger (n=20), no re-derivation code | nightly ops watch: POST p50 ±25%, GTC p50 ±25% + KS D ≤ 0.30 | POST table reopened 08-27 (taker hold 250→50 ms on 08-17) — only live taker POSTs add samples; GTC in-anger stamps from the first live ladder |
 | kelly_fraction 0.08, maker_bankroll_frac 0.15 | settings | pre-era | post-gate playbook | after a §2 bar pass |
 | fee model 0.07 / 0.0175 | base.py | 07-22, re-verified 08-18 post-rule | 1,751 live fills + 600 post-rule USDC deltas vs documented curve | Polymarket fee change |
 

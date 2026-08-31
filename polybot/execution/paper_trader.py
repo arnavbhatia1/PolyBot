@@ -290,12 +290,14 @@ class PaperTrader(BaseTrader):
         (0.75, 0.679), (0.99, 1.646), (1.00, 2.222),
     )
 
-    # Resting-bid RTT, measured on the box by smoke_gtc_test.py --samples 12.
+    # Resting-bid RTT, re-derived 08-31 from the 08-28 live smoke run
+    # (n=12, latency_stats.json gtc; the 08-07 run's table tripped the KS
+    # watch on a ~1ms shift between two 12-sample draws).
     # NOT the taker table: a taker pays Polymarket's 250ms itode hold and a
     # resting bid never crosses, so it never pays it. Box-native, so
     # latency_scale does not apply.
     _GTC_LATENCY_QUANTILES: tuple[tuple[float, float], ...] = (
-        (0.00, 0.049), (0.50, 0.056), (0.90, 0.060), (1.00, 0.170),
+        (0.00, 0.056), (0.50, 0.057), (0.90, 0.064), (1.00, 0.174),
     )
 
     async def _simulate_gtc_latency(self) -> None:
