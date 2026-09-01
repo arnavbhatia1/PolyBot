@@ -31,15 +31,6 @@ class PaperTrader(BaseTrader):
         # Fallback fail rate when the book is unavailable; the i.i.d. baseline
         # otherwise — _compute_fail_rate adds state-dependent terms on top.
         self.network_fail_rate: float = kwargs.get("paper_network_fail_rate", 0.03)
-        # Warm-SELL bookkeeping — mirrors LiveTrader's _sell_warmups (same TTL +
-        # drift thresholds), so paper applies the warm-SELL latency discount iff
-        # live would have found a presigned order, not at a hardcoded probability.
-        self._sell_warmups: dict[str, dict[str, float]] = {}
-
-    # Mirrors LiveTrader exactly (TTL + drift acceptance). The speedup is only
-    # the ~5ms sign work a presigned order skips — not a full sign-and-post.
-    _SELL_WARMUP_TTL_S: float = 5.0
-    _SELL_WARMUP_SPEEDUP_S: float = 0.005
 
     async def _execute_buy(
         self, token_id: str, price: float, size: float,
@@ -82,70 +73,6 @@ class PaperTrader(BaseTrader):
 
     async def poll_gtc_fill(self, order_id: str) -> float | None:
         return None
-
-    async def _execute_sell(
-        self, token_id: str, shares: float, price: float,
-        fee_rate: float = DEFAULT_FEE_RATE,
-    ) -> FillResult:
-        """Simulate a FOK market sell for `shares` shares at realistic VWAP."""
-        del fee_rate
-        size_usd = shares * price
-        if self._precheck_rejects(token_id, side="sell", requested_price=price, size_usd=size_usd):
-            self._record_stats(filled=False, side="sell", reason="not enough shares (pre-check)")
-            return FillResult(filled=False, reason="not enough shares on the book at our price — skipped before sending (matches live pre-check)")
-        # Consume a valid warm-SELL signature (floor-bounded latency discount);
-        # otherwise pay full simulated latency just as live would.
-        warmup_speedup = self._SELL_WARMUP_SPEEDUP_S if self._take_sell_warmup(
-            token_id, shares, price
-        ) else 0.0
-        await self._simulate_latency(speedup_s=warmup_speedup)
-        if random.random() < self._compute_fail_rate(token_id, side="sell"):
-            self._record_stats(filled=False, side="sell", reason="simulated network error")
-            return FillResult(filled=False, reason="simulated network error")
-        return await self._retry_walk(token_id, side="sell", requested_price=price, size_usd=size_usd)
-
-    async def warm_sell_signature(self, token_id: str, shares: float,
-                                  expected_price: float,
-                                  fee_rate: float = DEFAULT_FEE_RATE) -> None:
-        """Paper analogue of LiveTrader.warm_sell_signature — bookkeeping only.
-
-        Records (shares, expected_price, ts); a valid warmup lets _execute_sell
-        apply the floor-bounded warm-SELL latency discount (the sign work live
-        skips). Idempotent within 1.5s when params haven't drifted — matches live.
-        """
-        del fee_rate  # paper has no signing work; param kept for API parity
-        if not token_id or shares <= 0 or expected_price <= 0:
-            return
-        existing = self._sell_warmups.get(token_id)
-        if existing is not None:
-            age = time.time() - existing["ts"]
-            price_drift = abs(existing["price"] - expected_price)
-            size_drift = abs(existing["amount"] - shares) / max(shares, 1e-6)
-            if age < 1.5 and price_drift < 0.005 and size_drift < 0.02:
-                return  # still good — don't reset the clock
-        self._sell_warmups[token_id] = {
-            "amount": shares,
-            "price": expected_price,
-            "ts": time.time(),
-        }
-
-    def _take_sell_warmup(self, token_id: str, shares: float,
-                          expected_price: float) -> bool:
-        """True iff a valid warmup exists for these SELL params. Mirrors live's
-        acceptance criteria (TTL <= 5s, price drift < 1¢, size drift < 5%);
-        always pops the entry to prevent stale reuse — main.py re-arms next tick.
-        """
-        entry = self._sell_warmups.pop(token_id, None)
-        if entry is None:
-            return False
-        age = time.time() - entry["ts"]
-        if age > self._SELL_WARMUP_TTL_S:
-            return False
-        if abs(entry["price"] - expected_price) > 0.01:
-            return False
-        if abs(entry["amount"] - shares) / max(shares, 1e-6) > 0.05:
-            return False
-        return True
 
     # State-dependent FOK fail rate — live rejects cluster around thin
     # top-of-book + wide spread. Coefficients are estimates; safety holds anyway:
@@ -259,14 +186,6 @@ class PaperTrader(BaseTrader):
     @staticmethod
     def _record_stats(filled: bool, side: str, reason: str = "") -> None:
         _update_fill_stats(FILL_STATS_PAPER_PATH, filled, side, reason)
-
-    def _scalp_residual_credit(self, residual_shares: float, fill_price: float,
-                               fee_rate: float) -> float:
-        """Simulated residual sweep: the held-back shares sell at the same fill
-        price (live's sweep fills within seconds of the main leg), net of fee."""
-        if residual_shares <= 0 or fill_price <= 0:
-            return 0.0
-        return residual_shares * fill_price - exit_fee_usdc(residual_shares, fill_price, fee_rate)
 
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float:
         shares = position.get("shares_held") or position["size"] / position["entry_price"]

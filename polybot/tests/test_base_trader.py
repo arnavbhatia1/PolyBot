@@ -25,14 +25,13 @@ from polybot.execution.base import (
 class StubTrader(BaseTrader):
     """Concrete BaseTrader that fills at the requested price (paper-like).
 
-    Control fill behavior via `buy_fill` and `sell_fill` overrides.
+    Control fill behavior via the `buy_fill` override.
     """
 
     def __init__(self, db, **kwargs):
         super().__init__(db, **kwargs)
-        # Override these to simulate fill failures, slippage, etc.
+        # Override this to simulate fill failures, slippage, etc.
         self.buy_fill: FillResult | None = None
-        self.sell_fill: FillResult | None = None
 
     async def _execute_buy(
         self, token_id: str, price: float, size: float,
@@ -42,14 +41,6 @@ class StubTrader(BaseTrader):
             return self.buy_fill
         # Default: instant fill at requested price and size
         return FillResult(filled=True, fill_price=price, fill_size=size)
-
-    async def _execute_sell(
-        self, token_id: str, shares: float, price: float,
-        fee_rate: float = DEFAULT_FEE_RATE,
-    ) -> FillResult:
-        if self.sell_fill is not None:
-            return self.sell_fill
-        return FillResult(filled=True, fill_price=price, fill_size=shares * price)
 
     async def _resolve_bankroll(self, position: dict, exit_price: float) -> float:
         """Paper-style resolution: revenue = shares * exit_price - exit_fee."""
@@ -248,104 +239,6 @@ class TestOpenTrade:
         await trader.open_trade(**_trade_params(indicator_snapshot='{"rsi": 55}'))
         positions = await db.get_open_positions()
         assert positions[0]["indicator_snapshot"] == '{"rsi": 55}'
-
-
-# ---------------------------------------------------------------------------
-# close_trade
-# ---------------------------------------------------------------------------
-
-class TestCloseTrade:
-    @pytest.mark.asyncio
-    async def test_success(self, trader):
-        open_res = await trader.open_trade(**_trade_params())
-        result = await trader.close_trade(open_res.position_id, exit_price=0.68)
-        assert result.success is True
-        assert result.position_id == open_res.position_id
-        assert result.log_return is not None
-
-    @pytest.mark.asyncio
-    async def test_bankroll_increases_on_win(self, trader, db):
-        open_res = await trader.open_trade(**_trade_params(price=0.50, size=10.0))
-        await trader.close_trade(open_res.position_id, exit_price=0.70)
-        bankroll = await db.get_bankroll()
-        # Bankroll should be > initial 100 (90 after open + revenue from close)
-        assert bankroll > 90.0
-
-    @pytest.mark.asyncio
-    async def test_position_closed_in_db(self, trader, db):
-        open_res = await trader.open_trade(**_trade_params())
-        await trader.close_trade(open_res.position_id, exit_price=0.68)
-        open_positions = await db.get_open_positions()
-        assert len(open_positions) == 0
-
-    @pytest.mark.asyncio
-    async def test_not_found_returns_failure(self, trader):
-        result = await trader.close_trade(position_id=9999, exit_price=0.50)
-        assert result.success is False
-        assert "not found" in result.reason.lower()
-
-    @pytest.mark.asyncio
-    async def test_sell_not_filled_returns_failure(self, trader):
-        open_res = await trader.open_trade(**_trade_params())
-        trader.sell_fill = FillResult(filled=False, reason="Rejected by exchange")
-        result = await trader.close_trade(open_res.position_id, exit_price=0.68)
-        assert result.success is False
-        assert "rejected" in result.reason.lower()
-
-    @pytest.mark.asyncio
-    async def test_sell_not_filled_position_stays_open(self, trader, db):
-        open_res = await trader.open_trade(**_trade_params())
-        trader.sell_fill = FillResult(filled=False, reason="Nope")
-        await trader.close_trade(open_res.position_id, exit_price=0.68)
-        positions = await db.get_open_positions()
-        assert len(positions) == 1
-
-    @pytest.mark.asyncio
-    async def test_uses_fill_price_for_revenue(self, trader, db):
-        """If _execute_sell fills at a different price, revenue uses fill price."""
-        open_res = await trader.open_trade(**_trade_params(price=0.50, size=10.0))
-        # Sell fills at 0.60 instead of requested 0.68
-        trader.sell_fill = FillResult(filled=True, fill_price=0.60, fill_size=12.0)
-        await trader.close_trade(open_res.position_id, exit_price=0.68)
-        # Revenue should be based on fill_price=0.60
-        positions_data = await db.get_trade_history()
-        assert positions_data[0]["exit_price"] == pytest.approx(0.60, abs=0.001)
-
-    @pytest.mark.asyncio
-    async def test_exit_fee_deducted(self, trader, db):
-        """Exit fee in USDC is subtracted from revenue."""
-        open_res = await trader.open_trade(**_trade_params(price=0.50, size=50.0, fee_rate=0.072))
-        bankroll_after_open = await db.get_bankroll()
-
-        await trader.close_trade(open_res.position_id, exit_price=0.60)
-        bankroll_after_close = await db.get_bankroll()
-
-        # Manually compute expected revenue.
-        # close_trade reserves a small share buffer (max(fee_rate*0.25, 0)+0.002,
-        # floored at 0.005) to avoid Polymarket fee-math FOK rejections — so the
-        # sold-share count is shaved relative to held shares.
-        shares_ordered = 50.0 / 0.50
-        fee_sh = entry_fee_shares(shares_ordered, 0.50, 0.072)
-        shares_held = shares_ordered - fee_sh
-        headroom = max(max(0.072 * 0.25, 0.0) + 0.002, 0.005)
-        shares_sold = shares_held * (1.0 - headroom)
-        fee_usdc = exit_fee_usdc(shares_sold, 0.60, 0.072)
-        revenue = shares_sold * 0.60 - fee_usdc
-        assert bankroll_after_close == pytest.approx(bankroll_after_open + revenue, abs=0.01)
-
-    @pytest.mark.asyncio
-    async def test_fallback_shares_from_size(self, trader, db):
-        """When shares_held is not set, falls back to size/entry_price."""
-        # Open a trade normally, then manually null out shares_held in DB
-        open_res = await trader.open_trade(**_trade_params(price=0.50, size=10.0))
-        await db.conn.execute(
-            "UPDATE positions SET shares_held = NULL WHERE id = ?",
-            (open_res.position_id,),
-        )
-        await db.conn.commit()
-
-        result = await trader.close_trade(open_res.position_id, exit_price=0.60)
-        assert result.success is True
 
 
 # ---------------------------------------------------------------------------

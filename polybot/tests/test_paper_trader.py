@@ -1,6 +1,6 @@
 import pytest
 import pytest_asyncio
-from polybot.execution.base import entry_fee_shares, exit_fee_usdc
+from polybot.execution.base import entry_fee_shares
 from polybot.execution.paper_trader import PaperTrader
 from polybot.db.models import Database
 
@@ -87,43 +87,6 @@ async def test_rejects_when_bankroll_exceeded(trader, db):
     )
     assert result.success is False
     assert "bankroll" in result.reason.lower()
-
-
-@pytest.mark.asyncio
-async def test_close_trade_updates_bankroll(trader, db):
-    result = await trader.open_trade(
-        market_id="market_123", question="Q?", side="YES", price=0.55,
-        size=10.0, signal_score=0.72,
-    )
-    close_result = await trader.close_trade(position_id=result.position_id, exit_price=0.68)
-    assert close_result.success is True
-    bankroll = await db.get_bankroll()
-    assert bankroll > 100.0
-
-
-@pytest.mark.asyncio
-async def test_scalp_residual_credited_to_bankroll_not_pnl(trader, db):
-    """The fee-headroom shares held back from the FOK credit the bankroll (the
-    simulated sweep, mirroring live's on-chain recovery) but stay out of pnl
-    (live's recorded pnl excludes the swept residual too)."""
-    result = await trader.open_trade(
-        market_id="m_dust", question="Q?", side="YES", price=0.50,
-        size=50.0, signal_score=0.72, fee_rate=0.072,
-    )
-    bankroll_after_open = await db.get_bankroll()
-    close_result = await trader.close_trade(position_id=result.position_id, exit_price=0.60)
-
-    shares_ordered = 50.0 / 0.50
-    shares_held = shares_ordered - entry_fee_shares(shares_ordered, 0.50, 0.072)
-    headroom = max(max(0.072 * 0.25, 0.0) + 0.002, 0.005)
-    shares_sold = shares_held * (1.0 - headroom)
-    residual = shares_held - shares_sold
-    revenue = shares_sold * 0.60 - exit_fee_usdc(shares_sold, 0.60, 0.072)
-    sweep = residual * 0.60 - exit_fee_usdc(residual, 0.60, 0.072)
-
-    bankroll = await db.get_bankroll()
-    assert bankroll == pytest.approx(bankroll_after_open + revenue + sweep, abs=0.01)
-    assert close_result.pnl == pytest.approx(revenue - 50.0, abs=0.01)
 
 
 # --- Fee accounting through PaperTrader (module-level fee math lives in test_base_trader) ---

@@ -79,7 +79,6 @@ _ANSI_DIM = "\033[2m"
 _ANSI_RED = "\033[91m"
 _ANSI_RESET = "\033[0m"
 _FILL_AUDIT_DELAY_S = 8.0     # let the indexer see the fill before auditing the entry price
-_SELL_AUDIT_ATTEMPTS = 4      # sell-audit lookups, _FILL_AUDIT_DELAY_S apart (~8-32s)
 _BALANCE_SETTLE_FLOOR = 0.03  # min chain-settle wait even if WS fires immediately
 _BALANCE_SETTLE_DELAY = 0.15  # max wait — WS-wait ceiling, and the fixed delay when no WS is attached
 # WS trade events land ~50-150ms after match confirmation; the floor absorbs
@@ -372,17 +371,6 @@ class LiveTrader(BaseTrader):
             max_workers=2, thread_name_prefix="clob-sign"
         )
         self._latched_auth_error: str | None = None
-        # Post-BUY chain-balance cache: token_id → (ts, shares). Primed after
-        # each FOK BUY so _sellable_shares skips a ~300ms REST call on the SELL.
-        # Safe only because nothing else touches the wallet between our BUY and
-        # SELL; the TTL bounds staleness.
-        self._balance_cache: dict[str, tuple[float, float]] = {}
-        self._BALANCE_CACHE_TTL_S: float = 300.0
-        # Pre-signed SELL warm-ups, armed when main.py sees holding_edge in the
-        # danger zone — keeps the EIP-712 sign + first-call jitter off the scalp
-        # hot path. token_id → {"order", "amount", "price", "ts"}.
-        self._sell_warmups: dict[str, dict] = {}
-        self._SELL_WARMUP_TTL_S: float = 5.0
         self._buy_warmups: dict[str, dict] = {}
         self._BUY_WARMUP_TTL_S: float = 5.0
         # In-flight BUY warmup signs: token_id → {"amount", "price", "event"}.
@@ -403,9 +391,6 @@ class LiveTrader(BaseTrader):
         # fallback ("provisional"). main.py prints the OPEN banner from it —
         # log-only plumbing; the trade engine never waits on this.
         self.on_entry_settled = None
-        # Fired when the post-close SELL audit corrects a limit-booked exit:
-        # cb(position_id, side, old_price, new_price, delta_usd). Log-only.
-        self.on_exit_corrected = None
         logger.info("LiveTrader authenticated with Polymarket CLOB")
 
     async def prewarm_http(self) -> None:
@@ -597,24 +582,16 @@ class LiveTrader(BaseTrader):
             fill_price = await self._get_fill_price(order_id, 0.0)
             if fill_price > 0:
                 _update_fill_stats(filled=True, side=side)
-                if side == BUY:
-                    asyncio.create_task(self._cache_post_buy_balance(token_id))
-                else:
-                    self._invalidate_balance_cache(token_id)
-                    asyncio.create_task(self._sweep_residual(token_id, fill_price))
                 notional = amount if side == BUY else amount * fill_price
                 return FillResult(filled=True, fill_price=fill_price, fill_size=notional,
                                   order_id=order_id, price_from_trades=True)
             # No confirmed cancel and no trades in the REST record — check the
-            # WS tape like the ambiguous-POST path before giving up (BUY only;
-            # a phantom-filled SELL reconciles via _sellable_shares + the
-            # resolution balance sync).
+            # WS tape like the ambiguous-POST path before giving up (BUY only).
             if side == BUY:
                 await self._await_buy_settle(ws_settle_event)
                 vwap = self._ws_vwap_since(token_id, submit_ts, expected_price, amount)
                 if vwap is not None:
                     _update_fill_stats(filled=True, side=side)
-                    asyncio.create_task(self._cache_post_buy_balance(token_id))
                     return FillResult(filled=True, fill_price=vwap, fill_size=amount)
             reason = (f"unmatched status {status!r} — cancel unconfirmed, "
                       "outcome unknown; not retried to avoid double fill")
@@ -628,13 +605,6 @@ class LiveTrader(BaseTrader):
         reason = f"unmatched status {status!r} — no order id, no fill"
         _update_fill_stats(filled=False, side=side, reason=reason)
         return FillResult(filled=False, reason=reason)
-
-    async def _execute_sell(
-        self, token_id: str, shares: float, price: float,
-        fee_rate: float = DEFAULT_FEE_RATE,
-    ) -> FillResult:
-        """FOK market sell for `shares` shares."""
-        return await self._submit_fok_order(token_id, SELL, shares, price, fee_rate=fee_rate)
 
     # -- maker resting bid (execution.maker_bid) ---------------------------
     # All three run off the fire path (placement happens ~20s before close,
@@ -802,60 +772,6 @@ class LiveTrader(BaseTrader):
                 return float(p.get("size") or 0.0)
         return 0.0
 
-    def _schedule_sell_audit(self, position_id: int, order_id: str, booked_price: float,
-                             shares: float, fee_rate: float, side: str = "") -> None:
-        """Fire-and-forget audit of a fallback-booked SELL (called by
-        base.close_trade after the DB write; paper books exact fills)."""
-        try:
-            asyncio.create_task(self._audit_sell_fill(
-                position_id, order_id, booked_price, shares, fee_rate, side))
-        except RuntimeError:
-            pass  # no running loop (tests constructing outside asyncio)
-
-    async def _audit_sell_fill(self, position_id: int, order_id: str,
-                               booked_price: float, shares: float,
-                               fee_rate: float, side: str) -> None:
-        """Sync a limit-booked SELL to the exchange's trade record.
-
-        A FOK SELL fills at limit-or-BETTER; when the trade indexer loses the
-        race the books hold the padded limit — worst case, several ¢/sh
-        pessimistic (a real +$0.15 scalp once pinged as a −$0.08 loss). Re-read
-        until the record appears, then correct trade_history + bankroll to
-        chain truth (the SELL twin of the +8s entry audit). Never raises.
-        """
-        try:
-            true_vwap = 0.0
-            for _ in range(_SELL_AUDIT_ATTEMPTS):
-                await asyncio.sleep(_FILL_AUDIT_DELAY_S)
-                px, from_trades = await self._get_fill_price_ex(order_id, 0.0)
-                if from_trades and px > 0:
-                    true_vwap = px
-                    break
-            if true_vwap <= 0:
-                logger.warning("SELL audit: no trade record for order %.8s… — "
-                               "exit stays booked at the limit %.3f", order_id, booked_price)
-                return
-            if abs(true_vwap - booked_price) < 0.0005:
-                return
-            delta = (shares * true_vwap - exit_fee_usdc(shares, true_vwap, fee_rate)) \
-                - (shares * booked_price - exit_fee_usdc(shares, booked_price, fee_rate))
-            fee_delta = exit_fee_usdc(shares, true_vwap, fee_rate) \
-                - exit_fee_usdc(shares, booked_price, fee_rate)
-            ok = await self.db.correct_sell_fill(
-                position_id, round(true_vwap, 4), delta, fee_delta)
-            if not ok:
-                return
-            logger.info("EXIT CORRECTED %s %.3f → %.3f (%+.2f$) — books now match the chain",
-                        side, booked_price, true_vwap, delta)
-            cb = self.on_exit_corrected
-            if cb is not None:
-                try:
-                    cb(position_id, side, booked_price, true_vwap, delta)
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning("SELL audit failed for position %d: %s", position_id, e)
-
     def _schedule_fill_audit(self, pos_id: int, token_id: str, recorded_price: float,
                              size_usdc: float, fee_rate: float) -> None:
         """Fire-and-forget audit of a booked BUY entry price (called by
@@ -1022,108 +938,6 @@ class LiveTrader(BaseTrader):
             logger.warning("Token balance query failed for %s: %s", token_id[:12], e)
             return 0.0
 
-    async def _sellable_shares(self, token_id: str, fallback_shares: float) -> float:
-        """Query on-chain balance so close_trade sells what we really own.
-
-        Hot path: a within-TTL post-BUY cached balance skips the ~300ms REST
-        round-trip on the SELL. Falls back to fallback_shares if (a) no
-        token_id, (b) the API query failed (returned 0), or (c) the chain
-        balance is implausibly far from the DB value (>3x or <0.3x).
-        """
-        if not token_id:
-            return fallback_shares
-
-        # Cache hit — skip the REST call.
-        cached = self._balance_cache.get(token_id)
-        if cached is not None:
-            cache_ts, cache_bal = cached
-            age = time.time() - cache_ts
-            if age <= self._BALANCE_CACHE_TTL_S and cache_bal > 0:
-                if fallback_shares > 0 and (
-                    cache_bal > 3 * fallback_shares or cache_bal < 0.3 * fallback_shares
-                ):
-                    logger.warning(
-                        "Cached chain balance %.4f diverges from DB shares %.4f for %s "
-                        "(age %.1fs) — re-querying",
-                        cache_bal, fallback_shares, token_id[:12], age,
-                    )
-                else:
-                    logger.debug(
-                        "Sell uses cached chain balance %.4f (age %.1fs) — saved REST roundtrip",
-                        cache_bal, age,
-                    )
-                    return cache_bal
-            # Stale or zero cache → fall through to live query.
-
-        chain_bal = await self._get_token_balance(token_id)
-        if chain_bal <= 0:
-            return fallback_shares
-        if fallback_shares > 0 and (chain_bal > 3 * fallback_shares or chain_bal < 0.3 * fallback_shares):
-            logger.warning(
-                "Chain balance %.4f diverges sharply from DB shares %.4f for %s — using DB value",
-                chain_bal, fallback_shares, token_id[:12],
-            )
-            return fallback_shares
-        if abs(chain_bal - fallback_shares) > 0.01:
-            logger.info(
-                "Selling the wallet's actual %.2f shares (DB expected %.2f) — "
-                "difference from an earlier untracked fill or partial settle",
-                chain_bal, fallback_shares,
-            )
-        return chain_bal
-
-    async def _cache_post_buy_balance(self, token_id: str) -> None:
-        """Background task: cache the post-BUY chain balance for _sellable_shares.
-        Fire-and-forget; on failure the SELL just falls back to a live query."""
-        if not token_id:
-            return
-        try:
-            bal = await self._get_token_balance(token_id)
-            if bal > 0:
-                self._balance_cache[token_id] = (time.time(), bal)
-        except Exception:
-            pass  # best-effort: missing cache just falls back to live query
-
-    def _invalidate_balance_cache(self, token_id: str) -> None:
-        """Drop the cached balance for token_id (call after SELL completes)."""
-        self._balance_cache.pop(token_id, None)
-
-    async def warm_sell_signature(self, token_id: str, shares: float,
-                                  expected_price: float, fee_rate: float = DEFAULT_FEE_RATE) -> None:
-        """Pre-sign a SELL FOK in the background (main.py calls this on HOLD
-        ticks near the scalp threshold). When PRE-SCALP fires, _submit_fok_order
-        finds the pre-signed order and only POSTs — the EIP-712 sign (~3-5ms
-        warm, plus first-call jitter) stays off the hot path.
-        Re-running re-signs only when the warmup is stale or params drifted.
-        """
-        if not token_id or shares <= 0 or expected_price <= 0:
-            return
-        existing = self._sell_warmups.get(token_id)
-        if existing is not None:
-            age = time.time() - existing["ts"]
-            price_drift = abs(existing["price"] - expected_price)
-            size_drift = abs(existing["amount"] - shares) / max(shares, 1e-6)
-            if age < 1.5 and price_drift < 0.005 and size_drift < 0.02:
-                return  # still good
-        try:
-            mo = MarketOrderArgs(
-                token_id=token_id, amount=shares, side=SELL, price=expected_price,
-            )
-            loop = asyncio.get_running_loop()
-            signed = await loop.run_in_executor(
-                self._sign_executor, self.client.create_market_order, mo
-            )
-            self._sell_warmups[token_id] = {
-                "order": signed,
-                "amount": shares,
-                "price": expected_price,
-                "ts": time.time(),
-            }
-        except Exception as e:
-            # Pre-signing is best-effort: failure just means PRE-SCALP will
-            # pay the normal sign cost. Don't propagate.
-            logger.debug("warm_sell_signature failed: %s", e)
-
     async def warm_buy_signature(self, token_id: str, size_usdc: float,
                                  expected_price: float, fee_rate: float = DEFAULT_FEE_RATE) -> None:
         if not token_id or size_usdc <= 0 or expected_price <= 0:
@@ -1191,26 +1005,6 @@ class LiveTrader(BaseTrader):
         if abs(entry["price"] - expected_price) > 0.01:
             return None
         if abs(entry["amount"] - size_usdc) / max(size_usdc, 1e-6) > 0.05:
-            return None
-        return entry["order"]
-
-    def _take_sell_warmup(self, token_id: str, shares: float,
-                          expected_price: float) -> dict | None:
-        """Consume a pre-signed SELL order if it matches current parameters,
-        else None. Always pops the entry to prevent stale reuse — the next tick
-        re-arms via warm_sell_signature if needed.
-        """
-        entry = self._sell_warmups.pop(token_id, None)
-        if entry is None:
-            return None
-        age = time.time() - entry["ts"]
-        if age > self._SELL_WARMUP_TTL_S:
-            return None
-        # Price drift > 1¢ or size drift > 5% means the signature references the
-        # wrong amount — re-sign rather than risk a bad fill.
-        if abs(entry["price"] - expected_price) > 0.01:
-            return None
-        if abs(entry["amount"] - shares) / max(shares, 1e-6) > 0.05:
             return None
         return entry["order"]
 
@@ -1586,7 +1380,7 @@ class LiveTrader(BaseTrader):
             recovery_label = "gamma_win" if gamma_exit >= 0.5 else "gamma_loss"
         else:
             exit_price, recovery_label = self._infer_recovery_exit_price(token_id, entry_price)
-        # --- Replicate base.close_trade PnL math against the reconstructed price ---
+        # --- Exit PnL math against the reconstructed price ---
         lr = log_return(entry_price, exit_price)
         fee_usdc = exit_fee_usdc(db_shares, exit_price, fee_rate)
         revenue = db_shares * exit_price - fee_usdc
@@ -1784,11 +1578,8 @@ class LiveTrader(BaseTrader):
 
         last_error = ""
         loop = asyncio.get_running_loop()
-        if side == SELL:
-            presigned = self._take_sell_warmup(token_id, amount, expected_price)
-        else:
-            await self._await_buy_warmup_inflight(token_id, amount, expected_price)
-            presigned = self._take_buy_warmup(token_id, amount, expected_price)
+        await self._await_buy_warmup_inflight(token_id, amount, expected_price)
+        presigned = self._take_buy_warmup(token_id, amount, expected_price)
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
                 if attempt == 1 and presigned is not None:
@@ -1912,15 +1703,6 @@ class LiveTrader(BaseTrader):
                     # Fire-and-forget — the allowance recheck isn't worth
                     # blocking the FOK return path 30-100ms every 10th submit.
                     asyncio.create_task(self._maybe_recheck_allowance())
-                    if side == BUY:
-                        # Prefetch post-BUY chain balance so the eventual SELL's
-                        # _sellable_shares skips a ~300ms REST roundtrip.
-                        asyncio.create_task(self._cache_post_buy_balance(token_id))
-                    else:
-                        # Sell just succeeded — cached balance is now stale.
-                        self._invalidate_balance_cache(token_id)
-                    if side == SELL:
-                        asyncio.create_task(self._sweep_residual(token_id, fill_price))
                     notional_usdc = amount if side == BUY else amount * fill_price
                     return FillResult(
                         filled=True,
@@ -1963,14 +1745,11 @@ class LiveTrader(BaseTrader):
                 if side == BUY:
                     # The POST may have reached the exchange — check the WS trade
                     # feed before declaring a miss, so a real fill can't leave
-                    # on-chain shares the DB doesn't know about. (SELL has no such
-                    # check; a phantom-filled sell reconciles via _sellable_shares
-                    # and the resolution balance sync.)
+                    # on-chain shares the DB doesn't know about.
                     await self._await_buy_settle(ws_settle_event)
                     vwap = self._ws_vwap_since(token_id, submit_ts, expected_price, amount)
                     if vwap is not None:
                         _update_fill_stats(filled=True, side=side)
-                        asyncio.create_task(self._cache_post_buy_balance(token_id))
                         return FillResult(filled=True, fill_price=vwap, fill_size=amount)
                 reason = "POST outcome unknown — not retried to avoid double fill"
                 logger.warning(

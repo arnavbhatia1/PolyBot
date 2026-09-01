@@ -228,7 +228,6 @@ class BaseTrader(ABC):
 
     Subclasses implement only:
       _execute_buy  — how to fill a buy (mock vs CLOB order)
-      _execute_sell — how to fill a sell
       _resolve_bankroll — how to compute new bankroll on resolution
     """
 
@@ -259,31 +258,8 @@ class BaseTrader(ABC):
         into the net-shares-based fill_price; paper ignores it."""
 
     @abstractmethod
-    async def _execute_sell(
-        self, token_id: str, shares: float, price: float,
-        fee_rate: float = DEFAULT_FEE_RATE,
-    ) -> FillResult:
-        """Execute a sell order. Returns FillResult with actual fill details."""
-
-    async def _sellable_shares(self, token_id: str, fallback_shares: float) -> float:
-        """Shares actually available to sell. LiveTrader overrides to query the
-        on-chain balance (avoids DB-vs-chain drift); paper keeps DB authoritative."""
-        return fallback_shares
-
-    def _scalp_residual_credit(self, residual_shares: float, fill_price: float,
-                               fee_rate: float) -> float:
-        """USDC credited for the fee-headroom shares held back from a scalp's FOK.
-
-        Live returns 0 — its residual is swept on-chain and lands in the next
-        absolute balance sync. Paper must credit the simulated sweep: its
-        bankroll is delta-only and would otherwise leak ~2% of exit notional
-        per scalp."""
-        return 0.0
-
-    @abstractmethod
     async def _resolve_bankroll(self, position: dict[str, Any], exit_price: float) -> float | None:
-        """New bankroll after resolution (does NOT route through _execute_sell/
-        close_trade, so handles fees itself). Paper: bankroll + revenue net of fee.
+        """New bankroll after resolution (handles fees itself). Paper: bankroll + revenue net of fee.
         Live: real Polymarket USDC balance. Returns None when the credit hasn't
         settled — resolve_position reports pending and the caller retries next tick.
         """
@@ -436,82 +412,6 @@ class BaseTrader(ABC):
                          "failed: %s — reconcile manually before next trade.", e)
             return False
         return True
-
-    # -- close_trade -----------------------------------------------------
-
-    async def close_trade(
-        self,
-        position_id: int,
-        exit_price: float,
-        token_id: str = "",
-        position: dict[str, Any] | None = None,
-        exit_reason: str = "scalp",
-    ) -> TradeResult:
-        # --- Lookup position ---
-        if position is None:
-            positions = await self.db.get_open_positions()
-            position = next((p for p in positions if p["id"] == position_id), None)
-        if not position:
-            return TradeResult(
-                success=False,
-                reason=f"Position {position_id} not found or already closed",
-            )
-
-        # --- Shares and fee rate from position ---
-        fallback_shares = position.get("shares_held") or position["size"] / position["entry_price"]
-        # _sellable_shares sells what we really own (on-chain), not what the DB
-        # thinks — eliminates dust from drift.
-        sellable_shares = await self._sellable_shares(token_id, fallback_shares)
-        fee_rate = position.get("fee_rate") or DEFAULT_FEE_RATE
-
-        # Hold back headroom so Polymarket's per-share fee deduction can't push
-        # the FOK above available balance; the 0.005 floor covers 1-tick
-        # mismatches at zero fee_rate.
-        sell_fee_headroom = max(fee_rate * 0.25, 0.0) + 0.002
-        sell_fee_headroom = max(sell_fee_headroom, 0.005)
-        shares = sellable_shares * (1.0 - sell_fee_headroom)
-
-        # --- Execute sell ---
-        fill = await self._execute_sell(token_id, shares, exit_price, fee_rate=fee_rate)
-        if not fill.filled:
-            return TradeResult(success=False, reason=fill.reason or "Sell not filled")
-        fill_price = fill.fill_price
-
-        # --- Fee math and revenue ---
-        lr = log_return(position["entry_price"], fill_price)
-        fee_usdc = exit_fee_usdc(shares, fill_price, fee_rate)
-        revenue = shares * fill_price - fee_usdc
-        # Entry fee derives from the entry-held shares (fallback_shares), never
-        # the headroom-reduced sell qty — else held-back headroom (credited via
-        # _scalp_residual_credit) gets booked as fee. Mirrors resolve_position.
-        entry_fee_usd = _entry_fee_usd_from_position(position, fallback_shares)
-        pnl = revenue - position["size"]
-        gain_pct = pnl / position["size"] if position["size"] > 0 else 0.0
-
-        # --- Persist to DB (atomic: close + bankroll credit in one transaction) ---
-        # Held-back headroom is credited via _scalp_residual_credit but stays
-        # OUT of pnl — live's pnl excludes the swept residual too, so paper/live
-        # trade records stay comparable.
-        residual_credit = self._scalp_residual_credit(
-            sellable_shares - shares, fill_price, fee_rate)
-        total_fees = entry_fee_usd + fee_usdc
-        await self.db.close_position(
-            position_id, exit_price=fill_price,
-            bankroll_delta=revenue + residual_credit, pnl=pnl,
-            fees=total_fees, exit_reason=exit_reason,
-        )
-
-        # Live audits a limit-booked SELL against the exchange's trade record
-        # once the indexer catches up — a FOK SELL fills at limit-or-BETTER, so
-        # the fallback price is worst-case (paper books exact fills, no hook).
-        audit = getattr(self, "_schedule_sell_audit", None)
-        if audit is not None and fill.order_id and not fill.price_from_trades:
-            audit(position_id, fill.order_id, fill_price, shares, fee_rate,
-                  position.get("side", ""))
-
-        return TradeResult(success=True, position_id=position_id, log_return=lr,
-                           pnl=pnl, entry_fee_usd=entry_fee_usd, exit_fee_usd=fee_usdc,
-                           gain_pct=gain_pct, shares=shares, fill_price=fill_price)
 
     # -- resolve_position ------------------------------------------------
 

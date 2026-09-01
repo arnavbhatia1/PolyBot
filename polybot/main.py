@@ -2481,17 +2481,6 @@ async def main() -> None:
         # The +8s chain audit reports the settled entry here → the OPEN banner
         # prints once, with the real fill (see _log_open_banner).
         trader.on_entry_settled = _on_entry_settled
-
-        def _on_exit_corrected(pos_id: int, side: str, old_px: float,
-                               new_px: float, delta: float) -> None:
-            # The close banner already printed with the limit-booked exit — one
-            # follow-up line keeps Discord agreeing with the wallet.
-            if alert_manager:
-                _spawn_bg(alert_manager.send_health(
-                    f"CORRECTED {side.upper()} exit {old_px:.3f} → {new_px:.3f} "
-                    f"({delta:+.2f}$) — earlier close line was the order's limit; "
-                    f"books now match your wallet."))
-        trader.on_exit_corrected = _on_exit_corrected
     else:
         # Fallbacks match settings.yaml's calibrated values (one source of truth
         # for the realism constants; the fallbacks only fire if settings omit keys).
