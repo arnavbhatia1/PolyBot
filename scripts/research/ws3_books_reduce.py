@@ -12,7 +12,7 @@ SP = Path(__file__).parent
 DATA = SP / "data"
 REC = Path(__file__).resolve().parents[2] / "polybot" / "memory" / "recordings"
 RULE_TS = 1786665600
-DAYS = ["2026-08-14", "2026-08-15", "2026-08-16", "2026-08-17", "2026-08-18"]
+DAYS = [f"2026-08-{d:02d}" for d in range(14, 31)]
 
 
 def main():

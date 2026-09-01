@@ -114,6 +114,38 @@ maker notional ≈ a tenth of its P&L) says informational. Do not build.
 - Coverage caveat: 142/159 windows hit the 3,500-row cap (oldest surviving
   row k≈218s) — whole-window makers under-counted, late window complete.
 
+## 08-31 weekly census (08-28..31, 87 sampled windows, r6_census_0831.json)
+
+- **Leaderboard**: 0x0cb03848 still #1 (+$5,864 sample, two-sided whole-window
+  MM); new whole-window names AdanaKebab / x-MoneyForWhiskas / 1000monkeys /
+  trinity42; Bonereaper and antsaslyku persist; BoneOhio +$1,549, positive
+  every day; 1723 negative (−$414); gesinimen small (+$382, 9 windows);
+  0xAAAAA/JetFadil still zero rows since 08-20 15:43Z.
+- **Our seat ran hot for its occupants**: 0x44832d0d (EZTRADENL4) 47 pocket
+  fills at 98% win, 0x239e726f 34 at 97%, LuiaLeQuartier (a loser last week)
+  9 at 84% — the pocket paid this week, on very few sweeps.
+- **The deep supply is a persistent six-pseudonym cluster + churn**: seabears,
+  pinkypanda, porkypie12, grumbong, wundawally, spork30 sell the winner token
+  at px 0.55–0.67, k∈[11,24], in BOTH weekly samples — ≈40% of deep sell
+  volume, each ≈ break-even overall (inventory flattening, not panic); their
+  deep sells are maker-side asks, which still cross any higher resting bid.
+  Top-5 seller concentration rose 48% → 76% as supply fell — single-operator
+  risk on the supply side is now material [data r6_census_{0821,0831}.json].
+- **Deep supply fell ~2.9×**: winner-side deep sell value in the resting span
+  $2,651/day (08-21..27, sweep-day outlier included) → $923/day (08-28..30);
+  tape coverage complete on those days [data r7_supply_by_day.json].
+- **Displacement read (r11)**: 0% of sampled deep sell volume arrives at
+  ≥1.0× the re-fit p99.5 — median sell at 0.02–0.03 margin multiples; in
+  08-28..31, 68% of ceded value was anti-side (reversal windows). The
+  lock-gated ladder is structurally outside ~98% of this flow.
+- 09-01 re-check: the rewards program RENEWED into September ($10k/day on the
+  live window; the rate sits under `rewards_config[].rate_per_day` — a `rates`
+  key on the same record reads null, a new endpoint trap). All whole-window
+  MMs present on 09-01; the 0.99 wall builds on the 08-13 pattern (1.7k → 44k
+  sh by the close, 135k post-close; r14b probe); deep supply fell again —
+  158 sh / $44 ceded across 48 sampled windows (~$176/day pace, ~7% of
+  08-21..27) [data RESEARCH.md 09-01 note; r12_pm_trades].
+
 ## Standing discipline
 
 Re-run the census after every regime shift and at least weekly during any

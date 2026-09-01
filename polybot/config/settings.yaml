@@ -76,7 +76,7 @@ late_window:
                                # still evaluates and logs would-be fires; re-arm by
                                # flipping this once the nightly dip count says the
                                # whipsaw supply returned (RESEARCH.md).
-  validation_epoch: "2026-08-27T19:28:00+00:00"  # deep_proj PAPER validation
+  validation_epoch: "2026-09-01T19:30:00+00:00"  # deep_proj PAPER validation
                                # on the 08-27 re-fit margin tables (every
                                # knot 2-4x wider — the 08-18 freeze was one
                                # calm week) at the $400 go-live bankroll.
@@ -149,21 +149,19 @@ maker:
   # p99.5 PROJECTION ERROR at the current k the displacement must clear — for
   # placement AND survival (maintain cancels the ladder the moment the floor
   # breaks). The floor's job is only to refuse photo-finishes; the rung PRICE
-  # carries the risk (break-even win rate equals the price paid). need 1.0 is
-  # the INTERIM floor from the 08-18 walk-forward audit: the in-sample grid's
-  # 0.5 could not be validated out-of-fit (17 OOS fills; the 0.80 rung ran
-  # 6/7 vs a 90% bar and the single adverse event — a $20 reversal that
-  # cleared 1.147x — decides every clause), so the pre-registered fallback
-  # stages the conservative floor until >=14 real-final days re-decide
-  # (RESEARCH.md #1). OOS evidence FOR 0.5 is recorded there too: its 4
-  # marginal fills were all wins, and the one loss cleared 1.0 anyway.
-  # ANTI-side control at both floors: ~0/400 wins, -39c/sh.
+  # carries the risk (break-even win rate equals the price paid). need 0.6:
+  # the engine-true frontier on 18 real-final 60s days (r19, 09-01) — 15/15
+  # wins, 0 flip-fills, invariant to 56/300/500 ms GTC latency, 3.75x the
+  # fill rate of 1.0; 0.5 costs two flip-fills, <=0.35 goes negative. The
+  # 0.15 rung buys 85c/sh of certainty on full sweeps (r22: 2/2 fills, both
+  # halves positive). ANTI-side control at 0.5/0.25: -39c/sh.
   maker_ladder:
-    - [0.80, 0.20, 1.0]
-    - [0.65, 0.20, 1.0]
-    - [0.50, 0.20, 1.0]
-    - [0.35, 0.20, 1.0]
-    - [0.20, 0.20, 1.0]
+    - [0.80, 0.17, 0.6]
+    - [0.65, 0.17, 0.6]
+    - [0.50, 0.17, 0.6]
+    - [0.35, 0.17, 0.6]
+    - [0.20, 0.16, 0.6]
+    - [0.15, 0.16, 0.6]
   maker_k_place_max: 25.0       # rest from k=25 only: the 08-18 grid's ONLY
                                 # losses came from k>25 arms (early moves that
                                 # revert before the close); 79% of deep winner
@@ -175,8 +173,11 @@ maker:
                                 # verified-winner hold
   # Deep bids are NOT a Kelly bet on a certainty claim — the budget is a flat
   # bankroll fraction split across rungs. One ladder at a time, capital back
-  # in ~2 min at resolution.
-  maker_bankroll_frac: 0.15
+  # in ~2 min at resolution. 0.25: fills are supply-bound and capital idles
+  # 99% of the time, so $/fill is the linear lever (r22: $100 ladder +$621 vs
+  # $60 +$373 on identical fills); a worst-case full-ladder loss (-25%) lands
+  # under the breaker floor ($340) and self-throttles the next ladder to 0.4x.
+  maker_bankroll_frac: 0.25
   # After the close, keep resting ONLY while the boundary-verified winner
   # equals our side (fails closed on delivery holes) — 23% of the reference
   # wallet's pnl lands in this tail at deep prices where no queue walls exist.
@@ -202,6 +203,11 @@ agents:
 #  DO NOT TOUCH - infrastructure settings
 # =============================================================================
 market:
+  # Rule tripwire: the resolution stream Polymarket names on each market. The
+  # 08-14 30s->60s switch flipped this field at the exact boundary window while
+  # the description text stayed identical; a served value that differs halts
+  # trading in-process (same path as the SOURCE gate). Re-point after autopsy.
+  expected_resolution_source: "https://data.chain.link/streams/btc-usd-twap-60s-streams"
   entry_window_seconds: 300
   min_time_remaining_seconds: 0
   scan_cache_seconds: 5

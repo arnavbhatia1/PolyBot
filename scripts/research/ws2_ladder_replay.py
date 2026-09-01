@@ -47,7 +47,7 @@ SPOT_STALE_S = 3.0
 RAW_GAP_MAX = 10.0
 FROZEN_S = 20.0
 FROZEN_RAW_MOVE = 2.0
-DAYS = [f"2026-08-{d:02d}" for d in range(14, 28)]
+DAYS = [f"2026-08-{d:02d}" for d in range(14, 31)]
 EXT_RUNGS = [0.95, 0.90, 0.85, 0.80, 0.65, 0.50, 0.35, 0.20]
 
 

@@ -33,6 +33,15 @@ survives its own pre-registered bar. Dates are 2026.
   book is spot-synchronised — reprices +0.33s after Binance, 2.5s BEFORE our
   oracle receipt, wins 97-100% of races. We are structurally not the fast
   participant; the edge is settled-outcome computation, not speed.
+  **RE-MEASURED 09-01 on Binance TICK data (r21, 6.5M ticks, 5 era days,
+  2,878 jump events in the final 90 s): the book now reprices 79 ms after a
+  Binance jump (q25/50/75 29/79/166 ms) and competing takers hit surviving
+  stale asks at 42 ms median; Polymarket's own 50 ms taker hold exceeds the
+  window before any network hop. Mark-to-market EV of buying a surviving
+  stale ask is negative at every achievable latency (−0.4 to −1.0¢/sh);
+  outcome EW is negative at every L ≥ 0.15 s. A direct Binance feed + us-east
+  VPS does not reach the front of this race — dead by physics, not by our
+  infra.** [docs/research/exploit_pass_2026-09-01.md]
 - **Multi-market expansion** (08-12, 24 windows/family): btc-15m 7.3
   post-close sh/window, eth-5m 1.8, xrp-5m 0.6, sol-5m 0.0 vs btc-5m's 151.5.
   All four siblings combined ceiling ~$16/day at impossible 100% capture.
@@ -46,7 +55,15 @@ survives its own pre-registered bar. Dates are 2026.
   Hard Rule 1): all six lenses dead, G-M re-derives everywhere;
   filled-outcome records are poisoned for entry research. The census (see
   WALLETS.md Candidate B) shows wallets that DO have mid-window information —
-  observed, out of mandate, not a license.
+  observed, out of mandate, not a license. **RE-AFFIRMED 09-01 under an
+  explicit operator override, from scratch on the 60s era with NEW external
+  data** (spot 1s taker-flow imbalance, perp basis, OI deltas, CLOB print
+  flow): walk-forward OOS over 19 days, 17,269 rows — the book beats both
+  models on log score at all five horizons (k 30..240s) with one-sided
+  bootstrap mass, and the taker sim runs −2.3..−3.2¢/sh with the k=30
+  "positive" cell failing monotonicity (control bucket second-best).
+  Pre-registered bars in docs/research/info_program_2026-09-01.md.
+  Next reopen requires a new DATA CLASS, not new models.
 - **Exit engines** (07-01 passive exit −2.1¢/sh t −2.03; night-one scalp sold
   a winner at 0.05 seconds before it paid $1.00): every leg's edge was
   measured hold-to-resolution; there is deliberately NO sell path in the
@@ -62,6 +79,16 @@ survives its own pre-registered bar. Dates are 2026.
   Queue seniority buys nothing against sweeps that traverse the whole ladder
   inside one second. The 79%-of-volume-at-k>25 pool is adverse-selection
   candy, not opportunity.
+- **btc-15m in-window deep ladder** (08-31): the projection transfers
+  unchanged (the 15m family resolves on the SAME 60s Chainlink stream since
+  08-14, resolutionSource-verified), but the counterparty flow does not
+  exist — 282 sampled windows 08-23..31 (1-in-3 stride, data-api both
+  counterparties): deep winner-side sell flow in the final 25 s + post-close
+  totals $1,558, of which $1,176 is ONE wallet's dump in ONE window; ex-outlier
+  ≈ $1.4/window ≈ $137/day TOTAL pie across all participants at impossible
+  100% capture, 7 of 10 sampled days ≈ zero. The lock-gated slice of that is
+  pennies. Confirms and supersedes the 08-12 volume read with 60s-era,
+  in-window evidence [data r10_15m_supply.json].
 - **deep_proj regime gate** (08-18, this session): the gate's target
   population is EMPTY under the corrected 60s-rule engine — engine-true
   replay of 08-14..17 (991 windows; the exact tape that motivated the gate)

@@ -1033,7 +1033,7 @@ async def _evaluate_signal_and_enter(
             # taker capital deploys; the ladder path reads the same SKIP it
             # would on a dipless lock.
             if (_snipe.action != "SKIP"
-                    and not lw_cfg.get("taker_enabled", True)):
+                    and not lw_cfg.get("taker_enabled", False)):
                 _emit_gate_skip(cid, "taker_dormant",
                                 f"taker dormant: would have fired {_snipe.action} "
                                 f"({_snipe.reason})")
@@ -2698,6 +2698,28 @@ async def main() -> None:
                 f"again. The bot stands down until the feed is re-pointed "
                 f"and it is restarted."))
     window_recorder.on_source_mismatch = _on_source_mismatch
+
+    def _on_rule_surface_change(slug: str, field: str, served: str,
+                                expected: str) -> None:
+        """Polymarket named a different resolution stream on a new market —
+        the 08-14 rule change showed up in exactly this field at the boundary
+        window while every other surface stayed silent. Halt before the first
+        trade on the new rule, not four days after."""
+        config.get("late_window", {})["trading_enabled"] = False
+        logger.critical(
+            "RESOLUTION RULE CHANGED on %s: %s served %r, expected %r — trading "
+            "HALTED in-process. Run scripts/research/ws1_boundary_autopsy.py, "
+            "re-point the feed, update market.expected_resolution_source, restart.",
+            slug, field, served, expected)
+        if alert_manager:
+            asyncio.create_task(alert_manager.send_health(
+                f"🚨 **TRADING HALTED — resolution rule changed** on {slug}: "
+                f"{field} now `{served}` (expected `{expected}`). Polymarket "
+                f"moved the resolution rule; the bot stands down until the "
+                f"feed is re-pointed and it is restarted."))
+    market_scanner.expected_resolution_source = (
+        config.get("market", {}).get("expected_resolution_source") or "")
+    market_scanner.on_rule_surface_change = _on_rule_surface_change
 
     # Nightly jobs: window-path retention sweep + price-sum retention + the
     # sniper-edge health report (runs at 23:45 ET, during the wind-down).

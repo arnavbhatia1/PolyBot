@@ -64,6 +64,10 @@ class BTCMarketScanner:
         self._prewarm_tasks: set[asyncio.Task[Any]] = set()  # strong refs so GC doesn't kill them
         self._gamma_events_gone: bool = False  # latched once GET /events is enforced-dead
         self._contract_refresh_inflight: bool = False  # one background SWR refresh at a time
+        # Rule tripwire: main sets the expected stream + a halt handler; fires once.
+        self.expected_resolution_source: str = ""
+        self.on_rule_surface_change: Any = None
+        self._rule_surface_fired: bool = False
 
     def _current_window_ts(self) -> int:
         return int(time.time() // self.WINDOW_SECONDS) * self.WINDOW_SECONDS
@@ -97,6 +101,25 @@ class BTCMarketScanner:
             resp.raise_for_status()
         data = resp.json()
         return data if isinstance(data, list) else ([data] if data else [])
+
+    def _check_rule_surface(self, slug: str, resolution_source: str) -> None:
+        """Halt once if a market names a resolution stream other than the one
+        we subscribe to. A missing field is logged, never a halt (Gamma has
+        dropped fields before; a dropped field is not a rule change)."""
+        expected = self.expected_resolution_source
+        if not expected or self._rule_surface_fired or self.on_rule_surface_change is None:
+            return
+        if not resolution_source:
+            logger.warning(f"Gamma market '{slug}' carries no resolutionSource — "
+                           f"rule tripwire cannot check this window")
+            return
+        if resolution_source.strip().rstrip("/") == expected.strip().rstrip("/"):
+            return
+        self._rule_surface_fired = True
+        try:
+            self.on_rule_surface_change(slug, "resolutionSource", resolution_source, expected)
+        except Exception:
+            logger.exception("rule-surface handler failed (change stands)")
 
     def parse_contract(self, event: dict[str, Any]) -> dict[str, Any] | None:
         markets = event.get("markets", [])
@@ -150,6 +173,9 @@ class BTCMarketScanner:
 
         condition_id = market.get("conditionId", "")
         neg_risk = market.get("negRisk", False)
+        resolution_source = str(market.get("resolutionSource") or "")
+        self._check_rule_surface(market.get("slug") or event.get("slug") or "",
+                                 resolution_source)
 
         # price_to_beat is set at window open; final_price only after resolution.
         raw_meta = event.get("eventMetadata")

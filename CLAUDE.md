@@ -13,15 +13,16 @@ A maker bot for Polymarket's 5-minute BTC Up/Down markets. Each window
 resolves on Chainlink's 60-second BTC/USD TWAP (final ≥ strike → Up, tie →
 Up) [code main.py:1692; feeds/chainlink_feed.py:522-543]. In the final 25 s
 the bot reconstructs the mostly-written average from the raw Chainlink stream,
-and when its projection clears a calibrated error margin it rests five GTC
-bids (0.80/0.65/0.50/0.35/0.20) on the projected winner, filled by sellers
+and when its projection clears a calibrated error margin it rests six GTC
+bids (0.80/0.65/0.50/0.35/0.20/0.15) on the projected winner, filled by sellers
 panicking through the book, held to resolution [code execution/maker_bid.py;
 main.py:1050-1096]. No sell path is wired (the sell code exists with zero production callers) and there is no entry-side model. Mode:
-**paper** [cfg mode]; paper bankroll $396 (set to $400 on 08-25, the planned
-go-live size) [data polybot_paper_audit.db 08-27]; live wallet $123, idle
-since 08-15 [data polybot_live_audit.db]. The edge is small and not yet
-established: 0 fills since the current epoch, and makers as a class lose in
-this market [data r1_report.md; h1_report.md] — see §5.
+**paper** [cfg mode]; paper bankroll $405.57 (set to $400 on 08-25, the
+planned go-live size; first epoch fill +$9.20 on 08-31) [data paper DB 08-31];
+live wallet $123, idle since 08-15 [data polybot_live_audit.db]. The edge is
+small and not yet established: 1 fill since the current epoch (0.26/day, on
+the replay rate), and makers as a class lose in this market
+[data r1_report.md; h1_report.md] — see §5.
 
 ## 2. ARCHITECTURE AS-BUILT
 
@@ -57,9 +58,9 @@ book gates (freshness ≤ 10 s, price sum ∈ [0.98, 1.02], depth ≥ $50, sprea
 within 0.5 s of the boundary; untrusted → no capital) → feed guards (raw
 > 60 s stale; official value frozen 20 s while raw moved ≥ $2; spot > 3 s;
 raw hole > 10 s) → taker signal (dormant, §3) → **ladder placement**: at the
-first tick with 6 ≤ k ≤ 25 where `|proj_bridged − strike| ≥ 1.0 × p99.5(k)`
-and no position in the window, rest `budget = bankroll × 0.15 × breaker_mult`
-split 20% per rung, each rung ≥ 5 shares or skipped. `maintain()` every tick
+first tick with 6 ≤ k ≤ 25 where `|proj_bridged − strike| ≥ 0.6 × p99.5(k)`
+and no position in the window, rest `budget = bankroll × 0.25 × breaker_mult`
+split ~1/6 per rung, each rung ≥ 5 shares or skipped. `maintain()` every tick
 cancels all rungs when the signed displacement drops below the floor
 ("flipped"/"inside noise") or the projection goes cold; after the close it
 keeps resting ≤ 60 s only while both boundary captures are trusted and name
@@ -108,9 +109,10 @@ discord_bot/bot.py:57-265].
 | item | value | provenance |
 |---|---|---|
 | mode / brake / taker | `paper` / `trading_enabled: true` / `taker_enabled: false` | [cfg]; if `taker_enabled` is absent the code default is **True** [code main.py:1034] |
-| validation_epoch | 2026-08-27T19:28:00Z | [cfg late_window.validation_epoch] |
+| validation_epoch | 2026-09-01T19:30:00Z | [cfg late_window.validation_epoch] |
 | zone / k floor / placement | 58 s / 6 s / k ∈ [6, 25] | [cfg twap_zone_s, twap_k_min_s, maker_k_place_min/max] |
-| ladder | 0.80/0.65/0.50/0.35/0.20 × 20%, need 1.0 each; budget 15% of bankroll × breaker | [cfg maker.maker_ladder, maker_bankroll_frac] |
+| ladder | 0.80/0.65/0.50/0.35/0.20/0.15 × ~1/6, need 0.6 each; budget 25% of bankroll × breaker | [cfg maker.maker_ladder, maker_bankroll_frac]; operator-directed 09-01 on the r19/r22 frontier (15/15 wins, latency-invariant) [data docs/research/exploit_pass_2026-09-01.md] |
+| rule tripwire | Gamma `resolutionSource` per market vs `market.expected_resolution_source`; mismatch → `trading_enabled=False` in-process + CRITICAL + Discord, latched per process | [code feeds/market_scanner.py `_check_rule_surface`; main.py `_on_rule_surface_change`; test test_rule_tripwire.py] |
 | post-close hold | 60 s, `certain_winner` gated | [cfg maker.post_close_hold_s] |
 | margin tables | p99.5: $4.0@6 · 7.5@10 · 12.5@15 · 20.0@20 · 28.5@25 · 107.5@58; MAX: $19@6 · 100@25 · 371@58 | [code core/signal_engine.py:34-45]; re-fit 08-27, 3,695 real-final windows, 15 ET days [data r1_report.md] |
 | taker (dormant) | max tier only (0.999), ask ≤ prob − 0.04, edge cap 0.50, FOK pad 0.01, Kelly `(b'p−q)/b'`, `b' = b(1−0.07)`, `p = ask+0.04`, × 0.08 | [cfg late_window.*, math.kelly_fraction; code signal_engine.py:84-160] |
@@ -170,11 +172,13 @@ Properties of the running system, each verified in code or data.
 
 What is unmeasured or expired, the N that exists, and what resolves it.
 
-1. **The edge itself.** Realized on the current tables: 0 fills since
-   2026-08-27 19:28Z. On the era replay the honest floor fills ~0.3
-   windows/day (4 fills / 14 days, 4/4 wins, +$100.75 at $60 budget); the
-   ≥20-fill paper bar needs ~74 days at that rate [data r23_report.md,
-   2,066 windows]. Prior paper epochs (thin tables): 36 fills, +$3.17 since
+1. **The edge itself.** Realized on the current tables: 1 fill since
+   2026-08-27 19:28Z (+$9.20, 08-31 10:51Z, 0.26/day). On the era replay the
+   honest floor fills 0.22 windows/day (4 fills / 18 days, 4/4 wins, +$100.75
+   at $60 budget); the ≥20-fill paper bar needs ~90 days at that rate — and
+   the deep-sell supply fell ~2.9× in 08-28..30 vs the prior week, with the
+   lock structurally excluding ~98% of the pie [data r8_replay_out.txt;
+   docs/research/ceiling_2026-08-31.md]. Prior paper epochs (thin tables): 36 fills, +$3.17 since
    08-19; 16 fills, +$21.12, −0.9¢/sh since 08-24 [data polybot_paper_audit.db].
    The deployment bar (≥6 clean ET days, ≥20 filled windows, EW ≥ +5¢/sh,
    $/day > 0) is operator policy — not computed in code; three code texts
@@ -222,9 +226,13 @@ What is unmeasured or expired, the N that exists, and what resolves it.
    1 FOK-reachable in 1,184 windows (08-14..18) — artifact not in the data
    set; re-run `scripts/research/ws3_dips.py` on the 14-day corpus before any
    re-arm.
-10. **Census cadence**: weekly. Last run 08-21..27 (159 windows): two of the
-    three largest whole-window makers stopped at the identical minute on
-    08-20; no new occupant in our seat [data r5_report.md].
+10. **Census cadence**: weekly. Last run 08-28..31 (87 windows): deep-sell
+    supply −2.9×, seller concentration top-5 76%, the six-pseudonym
+    inventory-flattening cluster is ~40% of it and stationary. 09-01 check:
+    rewards RENEWED into September ($10k/day live), all MMs present, 0.99
+    wall builds on the 08-13 pattern (44k sh at close / 135k post-close),
+    deep supply at ~$176/day pace — beneath the $450 trailing-7d kill-line
+    pace [data WALLETS.md; RESEARCH.md 09-01 note].
 
 ## 6. APPENDIX: DEAD ENDS
 

@@ -104,7 +104,20 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    sequential POSTs while a sweep prints, event loop busy) — the per-rung
    `gtc_place_ms` stamps on the first live ladder fills answer it.
 3. **Lock-dip taker: DORMANT-pending-regime** (`taker_enabled: false`,
-   staged 08-18). The 60s rule killed its supply: 4 winner-side max-lock
+   staged 08-18). **Re-run 08-31 on 17 days of winner books (ws3_dips,
+   deployed re-fit MAX tables): headline 58 events / 38 FOK-reachable is an
+   ARTIFACT — 29 of the 38 sit exactly inside the CLOB maintenance/outage/
+   reconnect windows (08-26 04:05-07:35Z, 08-30 18:05-18:15Z, 08-19
+   04:15-09:50Z; all printless in the tape-coverage table), entry pinned at
+   0.50/0.51 with durations of exactly ~9 s / ~30 s = a frozen or empty book
+   scanned to the end of the zone while Chainlink stayed up. The deployed
+   book gates (freshness, price-sum, depth) refuse those moments, and during
+   cancel-only mode an FOK cannot be placed. Genuine events: the 08-24
+   14:20/14:25 avalanche windows (entries 0.83-0.96, sub-second to 4.7 s)
+   plus 0.94-0.96 flickers — ~1 reachable WINDOW per 1-2 weeks, far below
+   the ≥1-per-3-days bar. Dormancy STANDS. Scanner debt: ws3_dips needs a
+   book-freshness + price-sum gate replica before its counts are trusted
+   again; its RTT constant 0.436 also predates the 08-17 50 ms hold cut.** The 60s rule killed its supply: 4 winner-side max-lock
    dips / 1 FOK-reachable over 1,184 windows (bar: ≥1 reachable per 3
    days); production max-tier fired zero times; the p99.5-tier sim showed
    the tier's known fragility (one −95.3¢ breach vs thirteen +5¢ wins).
@@ -130,6 +143,9 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    ≥14 real days, measure k ∈ [2,6) knots on the 60s rule (08-18 read:
    p99.5 ≈ $0.7-0.9, max ≈ $1.5-1.6 gated — pinnable-looking but the 30s era
    taught exactly this overconfidence at low k). Proposal-only either way.
+   08-31 replay evidence (r9): k_place [2,25] arms cleanly (sign 4,187/4,187)
+   but adds exactly ONE fill per need in 18 days, both from the era's
+   pathological first hour on 08-13 — no economic case to revisit the scar.
 7. **Queue-constant estimator discrepancy** — sweep-consumed depth at deep
    levels is stable (med 19-46 sh, p75 62-120, pooled med 31, NO trend across
    11 days) while the book-resting watch grew 55→135. Re-measured 08-21 on
@@ -149,14 +165,119 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    sweep losses). Status: observed in three wallets through both eras; not
    implemented.
 9. **Maker rebates at scale** — proven real (~0.4%/day of maker notional on
-   1723's ledger). An adder after a bar passes, never a strategy.
+   1723's ledger). An adder after a bar passes, never a strategy. 08-31
+   arithmetic (venue_truth doc): the liquidity-rewards program pays the
+   ladder pattern exactly $0 on three independent clauses (one-sided ≡ 0 at
+   mid>0.90; min_size 50 sh; max_spread 1.5-4.5¢ vs our 10-70¢ distances),
+   maker rebate per full sweep ≈ $0.52 < the $1 daily payout floor, and the
+   program's published window ends 08-31. Rebates flip none of the symmetric
+   MM / touch-bid / post-close refutations.
 10. **Census cadence** — re-run WALLETS.md census weekly during validation
     and after any regime break; the 08-14 leaderboard reshuffle was visible
     in one day of counterparty data.
-11. **Sibling markets' in-window deep flow** — unmeasured, low priority.
-    What IS refuted is post-close camping on the siblings (30s era). A
-    measurement would mirror ws2_supply over sibling tapes; nothing licenses
-    it before btc-5m's own paper bar passes.
+11. **Sibling markets' in-window deep flow** — **CLOSED 08-31**: measured on
+    btc-15m (the only credible sibling), $137/day total pie ex-outlier over
+    282 sampled windows → REFUTATIONS.md entry. Reopen only on a liquidity
+    regime change in the 15m family (volume24hr sustained > ~$5M/day).
+
+## 08-31 charter — verdicts (docs/research/{venue_truth,ceiling}_2026-08-31.md)
+
+Corpus: 60s era extended to 08-30 (win_streams 6,427 windows; tape complete
+every day incl. the re-pulled full 08-27). Scripts r6-r11 in scripts/research/,
+outputs in data/vps-0831/. Headlines, each detailed in the docs:
+
+- **Venue truth**: 60s rule stable (tripwire = per-market Gamma
+  `resolutionSource`, flipped bit-exactly at the 08-14 boundary — proposal:
+  compare it at discovery, feed `_on_source_mismatch`); fees/tick/min-size
+  unchanged; rewards pay our pattern exactly $0 (one-sided ≡ 0 at mid>0.90,
+  min_size 50, max_spread 1.5-4.5¢) and the $1M program expires 08-31 —
+  re-census after 09-01; CLOB had 3 order-placement outages 08-30/31 (one
+  4.4h cancel-only) — paper cannot see placement halts.
+- **Ceiling (r7)**: oracle (winner known, k≤25 arm, engine-true fills,
+  volume-conserving) = **$382/day at $60**, decaying ~60% in capture
+  efficiency by $2,000; the paper fill rule overstates capture above ~$150
+  budget (linear forever) — fine at $60 (7% gap).
+- **The lock excludes ~98% of the pie (r11)**: 0% of sampled deep sell volume
+  arrives at ≥1.0× p99.5 (median 0.02-0.03×; 68% anti-side in 08-28..31);
+  engine-true locked-sweep rate 4/4,047 armed. The honest ceiling of the
+  deployed system is the locked slice: $5.6/day era, ~$3/day current supply.
+- **Supply fell ~2.9× (r7)**: deep-sell value $2,651/day (08-21..27) →
+  $923/day (08-28..30); coverage complete; concentration of sellers top-5
+  48% → 76%; the six-pseudonym cluster (seabears/pinkypanda/porkypie12/
+  grumbong/wundawally/spork30 — WALLETS.md) is ~40% of it, break-even
+  inventory-flatteners, stationary across both weeks.
+- **Frontier flat (r8, r9)**: need 1.0 → 4 fills/18d +$100.75 (0 fills
+  08-28..30); 0.75 → 8 fills +$201.50, 100%, 0 flip-fills; 0.5 → 20 fills
+  85% at the 0.80 rung; 1.25 → 4 fills (dollar diffs = sweep lottery);
+  k_place [2,25] adds exactly 1 fill per need, both from the era's first
+  hour on 08-13 — the k≥6 scar stands (#6 evidence updated). ANTI −$153k.
+- **btc-15m in-window ladder REFUTED** (r10 → REFUTATIONS.md): $137/day
+  total pie ex-outlier; #11 below is CLOSED.
+- **One survivor**: the ≥28-day floor re-decision with a 0.75 arm under a
+  bar pre-registered 08-31 — docs/research/proposal_floor_redecision_2026-09-11.md.
+  Kill line pre-registered there: bar-completion > 120 days at trailing rates,
+  or deep-sell value < ~$450/day trailing-7d → escalate as kill-market.
+
+## 09-01 post-expiry check (the census the 08-31 charter scheduled)
+
+- **Rewards did NOT expire**: the live window's `/rewards/markets/{cid}` shows
+  `rewards_config[].rate_per_day: 10000` with `start_date 2026-09-01` — the
+  program renewed/continued past its published "through August" window. (Field
+  trap for the census notebook: the rate is under `rewards_config[].rate_per_day`;
+  a `rates` key reads null on the same record.) No subsidy shakeout to expect.
+- **All whole-window MMs present on 09-01** (48-window stride-4 sample,
+  163,596 rows): 0x0cb, Bonereaper, hot-garbage, wqewqa, antsaslyku,
+  AdanaKebab, x-MoneyForWhiskas, 1000monkeys, hdueilqhsdn, iR5oIct — 35-47 of
+  48 windows each; 0.99-wall flow intact (BoneOhio 64k sh, 0x50f7 53k,
+  ≥0.985 BUY total 504k sh in-sample). The six-pseudonym cluster is active
+  all day (~2k rows each). No structural opening appeared.
+- **Deep supply collapsed further**: winner-side deep sells (k∈[-60,25],
+  px ≤ 0.80) = 158 sh / $43.94 ceded / 2 of 48 windows → **~$176/day pace,
+  ~7% of the 08-21..27 level and beneath the pre-registered $450/day
+  trailing-7d kill line's pace**. Watch the trailing mean this week; if it
+  crosses, the escalation in proposal_floor_redecision_2026-09-11.md fires.
+- **Deeper-rung replay (r13, engine-true, 09-11 evidence only)**: adding a
+  0.15 rung at need 1.0 → +$140.62 vs +$100.75 on the same 4 fills (0.10 too
+  → +$197.67); ANTI clean; ALL added dollars come from the single 08-24
+  full sweep — N=1 sweep, recorded for the re-decision, not adopted.
+- Spot books 13:00-13:30 ET ran thin mid-window (touch 8-520 sh) but a
+  1.5 s-cadence probe through two closes shows the **0.99 wall building
+  exactly on the 08-13 pattern**: stacking from k≈43s, 1.7k → 44k sh by the
+  close, 135k sh post-close. The 0/102 time-priority refutation stands
+  unchanged; the earlier thin snapshot was mid-build on a quiet window
+  [data r14b_wallprobe.txt].
+
+## 09-01 operator-directed exploit pass (docs/research/exploit_pass_2026-09-01.md)
+
+- **Floor frontier (r19), engine-true, 3 latency assumptions**: need 0.60 →
+  15 fills / 18 d, 15/15 wins, +$311.25, 0 flip-fills, halves +293/+18,
+  invariant under 300/500 ms GTC latency; 0.50 → 20 fills 85% at the 0.80
+  rung, 2 flip-fills −$96; **≤ 0.35 negative or half-negative** (flip-race).
+  0.60 is the defensible live floor (3.75× fills, 100% record, ~24-day bar
+  clock). Post-hoc grid caveat recorded; satisfies the 08-31 0.75 bar's
+  clauses. Deployment is an operator decision; not applied.
+- **Stale-quote race on Binance tick data (r21)**: book reprices 79 ms
+  median after a jump, competing takers at 42 ms, MTM EV negative at every
+  achievable L → faster-info REFUTED by physics (REFUTATIONS.md entry
+  updated with the modern numbers; the 0.33 s figure is obsolete).
+- Queue position at $400: negative by arithmetic (+1¢/win vs −99¢/breach at
+  a k≈43 s posting horizon; ~1,700 sh queue ahead, ~200 sh/window fills).
+
+## 09-01 information program (operator-authorized Hard Rule 1 override)
+
+Run from scratch the same day it was authorized: pre-registered design +
+frozen bars in docs/research/info_program_2026-09-01.md, then Phase A
+(window_paths era slice 2.5M rows, spot 1s klines with taker-buy flow,
+perp 1m + OI metrics, CLOB print flow from tape) and Phase B (walk-forward
+logit + GBT vs the book) in one pass. **B1 FAIL at all five horizons —
+the book beats both models on OOS log score with one-sided bootstrap mass;
+B2 FAIL (−2.3..−3.2¢/sh; the one positive cell fails monotonicity via a
+positive control bucket). Program closed by its own kill clause; the
+entry-side closure in REFUTATIONS.md is re-affirmed with 60s-era,
+new-external-data evidence.** Scripts r15-r17; artifacts info_dataset.parquet,
+r17_report.json. Data debt noted: window_paths `binance_cvd_*` are
+NULL-by-design (dead-feed columns) — any future flow features must come
+from external data, as here.
 
 ## 08-27 optimization pass — pre-registered bars (written BEFORE measurement)
 
@@ -390,7 +511,7 @@ floor; further latency engineering buys nothing measurable — stop here.
 | constant | value | frozen | corpus / estimator | reopening condition |
 |---|---|---|---|---|
 | TWAP_MARGIN_P995/_MAX | signal_engine.py | 08-27 (re-fit) | 3,695 real-final windows (08-14..27) + 1,651 synthetic max-union; rx-clock ZOH + 10s coverage guard; MAX = per-tick interval maxima; LODO k=25 $27.5-29.9; freeze-span reproduction 16/16 | ≥28 real-final days, or any resolution-rule change (SOURCE gate red), or a nightly regime line sustaining gaps p50 < $10 for 7 days (the calm regime that fit the 08-18 knots) |
-| ladder need | 1.0 | 08-27 (re-decided) | ws1_oos LODO on the re-fit tables: 0.5 fails clause i (0.80 rung 84.2% vs 90%) and iv (a 0.5-only arm swept 4 rungs, −$18.00); 1.0 OOS 4/4 wins, 0 flips in 3,210 arms | ≥28 real-final days re-run |
+| ladder need | **0.6** (6 rungs incl. 0.15; budget frac 0.25) | 09-01 (operator directive) | r19 frontier on 18 real-final days: 0.6 → 15/15 wins, +$311, 0 flip-fills, invariant under 56/300/500 ms; 0.5 → 2 flip-fills; ≤0.35 negative. r22: +0.15 rung 2/2 (+$61 at $60). Adopted outside the ≥28-day schedule by explicit operator decision; the 08-27 1.0 verdict and its clauses stand on the record | the 09-11 ws1_oos re-run judges 0.6 on the same clauses; any flip-fill loss at 0.6 re-opens the floor immediately |
 | k_place [6,25] | settings | 08-18 | k>25 REFUTED by kinematics (REFUTATIONS.md) | a mechanism that prices avalanche sweeps (Candidate A), never extension of the sign-gated ladder |
 | taker_enabled | false (dormant) | 08-18 | 4 dips / 1 reachable / 1,184 windows vs ≥1-per-3-days bar | queue #3 re-arm condition |
 | HOSTILE thresholds | p50<$6, photo<$1 >15% | 08-18 | percentile-ported from 30s-era positions; 1,186 60s windows | regime distribution shift (nightly line drifting) |
