@@ -80,7 +80,6 @@ def validate_config(config: dict[str, Any]) -> None:
     _check_range("math.kelly_fraction", 0.04, 0.18)
     _check_range("circuit_breaker.floor_pct", 0.50, 0.95)
     _check_range("circuit_breaker.min_multiplier", 0.10, 1.0)
-    _check_range("execution.fok_spread_cross_floor", 0.0, 0.20)
 
     # Sniper knobs — the ONLY capital-deploying strategy, so a typo here deploys.
     # twap_zone_s hard-caps at 60: the projection is undefined before the
@@ -144,7 +143,6 @@ def validate_config(config: dict[str, Any]) -> None:
     _check_range("execution.max_book_fill_pct", 0.0, 1.0)
     _check_positive("execution.initial_bankroll")
     _check_range("execution.slippage_impact_pct", 0.0, 0.20)
-    _check_positive("market.entry_window_seconds")
     _check_range("market.min_time_remaining_seconds", 0, 120)
     _check_range("market.max_spread", 0.0, 1.0)
     for cb_key in ("circuit_breaker.losses_to_reduce", "circuit_breaker.wins_to_restore"):

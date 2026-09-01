@@ -2430,7 +2430,6 @@ async def main() -> None:
 
     market_cfg = config.get("market", {})
     market_scanner = BTCMarketScanner(
-        entry_window_seconds=market_cfg.get("entry_window_seconds", 120),
         min_time_remaining=market_cfg.get("min_time_remaining_seconds", 20),
         cache_seconds=market_cfg.get("scan_cache_seconds", 5),
         min_book_depth_usd=market_cfg.get("min_book_depth_usd", 50.0),

@@ -35,7 +35,6 @@ execution:
   # smoke_order_test.py --confirm to prove order POSTs clear Cloudflare
   # (verify_keys.py covers GETs only).
   slippage_impact_pct: 0.03
-  fok_spread_cross_floor: 0.08     # scalp-exit slippage floor (min assumed FOK spread-cross)
   # Latency is SAMPLED from the LIVE ledger's measured order-path POST-RTT
   # distribution (latency_stats.json, 80 samples over 4 live days: p25 0.410 /
   # p50 0.436 / p75 0.679 / p99 1.65, ZERO <= 0.250) via inverse-CDF — the
@@ -208,7 +207,6 @@ market:
   # the description text stayed identical; a served value that differs halts
   # trading in-process (same path as the SOURCE gate). Re-point after autopsy.
   expected_resolution_source: "https://data.chain.link/streams/btc-usd-twap-60s-streams"
-  entry_window_seconds: 300
   min_time_remaining_seconds: 0
   scan_cache_seconds: 5
   clob_url: https://clob.polymarket.com

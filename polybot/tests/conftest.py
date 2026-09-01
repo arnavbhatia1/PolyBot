@@ -28,7 +28,6 @@ SAMPLE_CONFIG = {
         "max_concurrent_positions": 1,
         "max_book_fill_pct": 0.50,
         "slippage_impact_pct": 0.03,
-        "fok_spread_cross_floor": 0.08,
         "initial_bankroll": 1000.0,
     },
     "agents": {
@@ -41,7 +40,6 @@ SAMPLE_CONFIG = {
     },
     "database": {"path": ":memory:"},
     "market": {
-        "entry_window_seconds": 300,
         "min_time_remaining_seconds": 5,
         "scan_cache_seconds": 5,
         "max_spread": 0.10,

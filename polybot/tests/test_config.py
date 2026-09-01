@@ -76,7 +76,6 @@ class TestValidateConfigPasses:
         _set_nested(cfg, "execution.max_book_fill_pct", 0.0)
         _set_nested(cfg, "execution.initial_bankroll", 0.01)
         _set_nested(cfg, "execution.slippage_impact_pct", 0.0)
-        _set_nested(cfg, "market.entry_window_seconds", 1)
         _set_nested(cfg, "market.min_time_remaining_seconds", 0)
         _set_nested(cfg, "market.max_spread", 0.0)
         _set_nested(cfg, "circuit_breaker.losses_to_reduce", 1)
@@ -165,7 +164,6 @@ class TestValidateConfigOutOfRange:
         ("circuit_breaker.losses_to_reduce", 0),             # positive int
         ("execution.initial_bankroll", -100),                # must be > 0
         ("execution.max_bankroll_deployed", 1.1),            # percent upper
-        ("market.entry_window_seconds", 0),                  # must be > 0 (int)
     ])
     def test_out_of_range(self, key, bad_value):
         cfg = _valid_config()

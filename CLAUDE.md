@@ -126,8 +126,7 @@ discord_bot/bot.py:57-265].
 | secrets | `DISCORD_BOT_TOKEN` (monitoring — without it the bot still trades after a 15 s wait, Discord retries forever); `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER` (live) in `polybot/config/.env` | [code main.py:2966-2984; loader.py:176-180; live_trader.py:261-270] |
 | host | Python 3.12.3, coincurve 21.0.0, orjson; 954 MB RAM / 4 GB swap; service peak 711 MB RSS / 1.6 GB swap | [data latency_report.md; journalctl 08-27] |
 
-Config drift worth knowing: `execution.fok_spread_cross_floor` and
-`market.entry_window_seconds` are validator-required but read by nothing;
+Config drift worth knowing:
 in-code defaults differ from yaml for `post_close_hold_s` (0 vs 60), the
 ladder seed `need` (2.0 vs 1.0), one `twap_zone_s` site (60 vs 58) and one
 `max_concurrent_positions` site (1 vs 2) [docs/audit/01a §3.4].

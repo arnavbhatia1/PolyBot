@@ -41,11 +41,10 @@ class BTCMarketScanner:
     CLOB_API = "https://clob.polymarket.com"
     WINDOW_SECONDS = 300  # 5 minutes
 
-    def __init__(self, entry_window_seconds: int = 120, min_time_remaining: int = 30,
+    def __init__(self, min_time_remaining: int = 30,
                  cache_seconds: int = 5, symbol: str = "btc",
                  min_book_depth_usd: float = 50.0,
                  clob_url: str | None = None) -> None:
-        self.entry_window_seconds: int = entry_window_seconds
         self.min_time_remaining: int = min_time_remaining
         self.cache_seconds: int = cache_seconds
         self.symbol: str = symbol
