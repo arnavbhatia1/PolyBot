@@ -42,7 +42,15 @@ while true; do
         git add polybot/config/settings.yaml polybot/memory polybot/db
         if ! git diff --cached --quiet; then
             if git commit -m "auto: daily pipeline update $(date '+%F')"; then
-                git push origin main && echo "pushed" || { sleep 10; git push origin main && echo "pushed (retry)" || echo "PUSH FAILED twice — records unpushed; check deploy key"; }
+                # origin moves during the day (workstation pushes): rebase our
+                # records onto it first, or the push is rejected non-fast-forward
+                # and the day's DB/state backup never leaves the box.
+                if git pull --rebase --autostash origin main; then
+                    git push origin main && echo "pushed" || { sleep 10; git push origin main && echo "pushed (retry)" || echo "PUSH FAILED twice after rebase — records unpushed; see git errors above"; }
+                else
+                    git rebase --abort 2>/dev/null || true
+                    echo "PUSH SKIPPED — rebase onto origin/main conflicted; records unpushed until resolved by hand"
+                fi
             fi
         else
             echo "no config changes to commit"
