@@ -1,6 +1,6 @@
 import copy
 import pytest
-from polybot.config.loader import load_config, get_config, get_secret, validate_config
+from polybot.config.loader import load_config, get_secret, validate_config
 from polybot.tests.conftest import SAMPLE_CONFIG
 
 
@@ -44,10 +44,6 @@ def test_load_config_returns_dict(sample_config):
 def test_load_config_has_all_sections(loaded_config):
     for section in ["math", "execution", "agents", "discord", "database"]:
         assert section in loaded_config
-
-
-def test_get_config_returns_cached(loaded_config):
-    assert get_config() is loaded_config
 
 
 def test_get_secret_returns_env_var(sample_config):

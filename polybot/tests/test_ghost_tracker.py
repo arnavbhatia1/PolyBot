@@ -54,20 +54,6 @@ def test_rollup_skips_unresolved(tracker, tmp_path):
     assert any("btc-updown-5m-3000" in p.name for p in ghost_dir.glob("*.json"))
 
 
-def test_load_all_reads_individual_and_rollup(tracker, tmp_path):
-    ghost_dir = tmp_path / "ghost_outcomes"
-    yesterday_noon_et = (datetime.now(_ET) - timedelta(days=1)).replace(
-        hour=12, minute=0, second=0, microsecond=0)
-    y_iso = yesterday_noon_et.astimezone(timezone.utc).isoformat()
-    t_iso = datetime.now(timezone.utc).isoformat()
-    _write_ghost(ghost_dir, "btc-updown-5m-1000", y_iso)
-    _write_ghost(ghost_dir, "btc-updown-5m-2000", t_iso)
-    tracker.rollup_old_ghosts()
-
-    records = tracker.load_all()
-    assert {r["market_id"] for r in records} == {"btc-updown-5m-1000", "btc-updown-5m-2000"}
-
-
 def _record(tracker, market_id, gate, secs=200.0):
     tracker.record_rejection(
         gate_name=gate, side="Up", signal_prob=0.7, signal_edge=0.05,

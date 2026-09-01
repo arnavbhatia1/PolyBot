@@ -304,24 +304,6 @@ class TestTwap:
     estimator the frozen margins bind to), the sniper projection, and strict
     topic routing (the TWAP topic owns the strike; raw ticks own the price)."""
 
-    def test_twap_60_time_weighted_step_function(self):
-        f = ChainlinkFeed()
-        end = 1786060000.0
-        # Value 100 holds [end-60, end-40], 200 holds [end-40, end-20], 300 holds [end-20, end]
-        f._reports.extend([
-            (end - 72.0, 100.0),   # anchor at/before window start
-            (end - 40.0, 200.0),
-            (end - 20.0, 300.0),
-        ])
-        assert f.twap_60(end_ts=end) == pytest.approx((100 + 200 + 300) / 3)
-
-    def test_twap_60_none_until_window_fully_covered(self):
-        f = ChainlinkFeed()
-        end = 1786060000.0
-        f._reports.append((end - 12.0, 500.0))   # no anchor near the window start
-        assert f.twap_60(end_ts=end) is None     # partial average must not masquerade
-        assert ChainlinkFeed().twap_60(end_ts=end) is None
-
     def test_running_avg_accepts_anchor_shortly_after_start(self):
         """The margins were measured with a ≤2s post-start anchor allowed — the
         estimator must match its measurement convention exactly."""

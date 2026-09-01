@@ -145,23 +145,6 @@ class GhostTracker:
 
         return resolved
 
-    def load_all(self) -> list[dict[str, Any]]:
-        """Load all resolved ghost records, handling individual and rollup files."""
-        records = []
-        seen: set = set()
-        for fp in self._dir.glob("*.json"):
-            try:
-                raw = json.loads(fp.read_text())
-                items = raw if isinstance(raw, list) else [raw]
-                for item in items:
-                    key = (item.get("market_id", ""), item.get("gate_name", ""), item.get("recorded_at", 0))
-                    if key not in seen:
-                        seen.add(key)
-                        records.append(item)
-            except (json.JSONDecodeError, OSError):
-                pass
-        return sorted(records, key=lambda x: x.get("timestamp", ""))
-
     def rollup_old_ghosts(self) -> int:
         """Roll up previous days' resolved ghost files into one file per day.
 

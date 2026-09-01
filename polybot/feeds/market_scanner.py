@@ -205,11 +205,6 @@ class BTCMarketScanner:
             "event_metadata": event_metadata,
         }
 
-    def in_entry_window(self, seconds_remaining: float) -> bool:
-        seconds_elapsed = self.WINDOW_SECONDS - seconds_remaining
-        return (seconds_elapsed <= self.entry_window_seconds and
-                seconds_remaining >= self.min_time_remaining)
-
     # --- Polymarket CLOB API (real order book, no auth required) ---
 
     async def fetch_clob_book(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> dict[str, Any]:

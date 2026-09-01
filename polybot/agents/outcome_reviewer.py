@@ -78,28 +78,6 @@ class OutcomeReviewer:
         filepath.write_text(json.dumps(record, indent=2))
         logger.debug(f"Recorded outcome for position {position_id}: profitable={profitable}")
 
-    def load_all_outcomes(self) -> list[dict[str, Any]]:
-        """Load all outcomes from individual files and daily rollups.
-
-        Dedup by (position_id, market_id): a partial rollup can leave a trade
-        in both places, and paper/live position_ids collide. Sorted by
-        exit_timestamp so walk-forward folds order correctly.
-        """
-        outcomes = []
-        seen_keys: set = set()
-        for filepath in self.outcomes_dir.glob("*.json"):
-            try:
-                raw = json.loads(filepath.read_text())
-                records = raw if isinstance(raw, list) else [raw]
-                for record in records:
-                    key = _dedup_key(record)
-                    if key not in seen_keys:
-                        seen_keys.add(key)
-                        outcomes.append(record)
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning(f"Failed to load outcome {filepath}: {e}")
-        return sorted(outcomes, key=lambda x: x.get("exit_timestamp", x.get("timestamp", "")))
-
     def rollup_old_outcomes(self) -> int:
         """Roll up previous days' individual outcome files into one file per day.
 

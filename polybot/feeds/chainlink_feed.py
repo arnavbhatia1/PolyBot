@@ -175,15 +175,6 @@ class ChainlinkFeed:
         acc += prev_p * (end - prev_t)
         return acc / (end - start)
 
-    def twap_60(self, end_ts: float | None = None, window_s: float = TWAP_HORIZON_S) -> float | None:
-        """Our reconstruction of the official 60s TWAP over [end−window, end],
-        rx-clock. None until the buffer covers the window. Research/cross-check
-        helper — the live projection path calls running_avg directly."""
-        end = end_ts if end_ts is not None else (self._last_report_rx or 0.0)
-        if end <= 0:
-            return None
-        return self.running_avg(end - window_s, end)
-
     def spot_bridge_delta(self) -> float:
         """Binance movement SINCE the latest raw Chainlink report, on the
         payload clock — the stale 1.6-1.8s tail our receipt hasn't seen yet.

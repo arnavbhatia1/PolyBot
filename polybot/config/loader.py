@@ -168,11 +168,6 @@ def load_config(config_path: str | Path | None = None, env_path: str | Path | No
     validate_config(_config)
     return _config
 
-def get_config() -> dict[str, Any]:
-    if _config is None:
-        return load_config()
-    return _config
-
 def get_secret(key: str) -> str:
     value = os.environ.get(key)
     if value is None:

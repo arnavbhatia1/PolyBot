@@ -47,14 +47,6 @@ def test_losing_trade_marked_incorrect(reviewer, outcomes_dir):
     data = json.loads(list(Path(outcomes_dir).glob("*.json"))[0].read_text())
     assert data["correct"] is False
 
-def test_load_all_outcomes(reviewer, outcomes_dir):
-    for i in range(3):
-        reviewer.record_outcome(position_id=i, market_id=f"market_{i}", question="Q?",
-            side="Up", signal_score=0.7, profitable=True, entry_price=0.55,
-            exit_price=0.68, log_return=0.2)
-    outcomes = reviewer.load_all_outcomes()
-    assert len(outcomes) == 3
-
 def test_exit_reason_recorded(reviewer, outcomes_dir):
     reviewer.record_outcome(position_id=1, market_id="m1", question="Q?",
         side="Up", signal_score=0.7, profitable=True, entry_price=0.50,
@@ -93,17 +85,3 @@ def test_rollup_skips_current_et_day(reviewer, outcomes_dir):
     assert any("m_today" in n for n in names)  # today's file untouched
     assert not any("m_old" in n and not n.startswith("rollup_") for n in names)
 
-def test_load_all_dedups_by_position_and_market(reviewer, outcomes_dir):
-    ts = "2026-06-01T12:00:00+00:00"
-    _write_outcome(outcomes_dir, 1, "m1", ts, name="a.json")
-    _write_outcome(outcomes_dir, 1, "m1", ts, name="b.json")  # duplicate
-    _write_outcome(outcomes_dir, 1, "m2", ts, name="c.json")  # paper/live id collision
-    outcomes = reviewer.load_all_outcomes()
-    assert len(outcomes) == 2
-    assert {o["market_id"] for o in outcomes} == {"m1", "m2"}
-
-def test_load_all_dedups_legacy_records_by_position_id(reviewer, outcomes_dir):
-    ts = "2026-06-01T12:00:00+00:00"
-    _write_outcome(outcomes_dir, 7, None, ts, name="a.json")
-    _write_outcome(outcomes_dir, 7, None, ts, name="b.json")
-    assert len(reviewer.load_all_outcomes()) == 1
