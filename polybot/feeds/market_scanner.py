@@ -284,28 +284,6 @@ class BTCMarketScanner:
         total_depth = sum(float(a["size"]) for a in asks)
         return (best_price, total_depth)
 
-    # --- NegRisk execution prices (accounts for cross-matching) ---
-
-    async def fetch_market_price(self, token_id: str, side: str = "BUY",
-                                  http_client: httpx.AsyncClient | None = None) -> float:
-        """GET /price — execution price including negRisk cross-matching of
-        complementary tokens. The cross-match can report phantom prices near
-        expiry, so this is never a primary price source — consumed only as the
-        SELL-side cross-check against a suspect WS best_bid on exit.
-        Returns the price as a float, or 0.0 on error.
-        """
-        try:
-            url = f"{self.CLOB_API}/price"
-            params = {"token_id": token_id, "side": side}
-            async with _ensure_client(http_client) as client:
-                resp = await client.get(url, params=params)
-                resp.raise_for_status()
-                data = resp.json()
-            return float(data.get("price", 0))
-        except Exception as e:
-            logger.debug(f"Market price fetch failed for {token_id} {side}: {e}")
-            return 0.0
-
     # --- Lightweight HTTP helpers (public, no auth) ---
 
     async def get_spread(self, token_id: str, http_client: httpx.AsyncClient | None = None) -> float:

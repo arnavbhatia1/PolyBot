@@ -138,10 +138,6 @@ def validate_config(config: dict[str, Any]) -> None:
         except ValueError:
             errors.append("late_window.validation_epoch: must be tz-aware ISO with "
                           "+00:00 offset (not 'Z')")
-    scar, found = _get_nested(config, "late_window.scar_enforce")
-    if found and scar is not None and not (
-            isinstance(scar, list) and all(isinstance(x, str) for x in scar)):
-        errors.append("late_window.scar_enforce: must be a list of gate-name strings")
 
     _check_positive("execution.max_concurrent_positions", integer=True)
     _check_range("execution.max_bankroll_deployed", 0.0, 1.0)

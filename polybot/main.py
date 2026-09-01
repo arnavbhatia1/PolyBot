@@ -119,10 +119,6 @@ _CONTRACT_SERVE_MAX_AGE_S = 900.0  # never serve a cache entry older than this
 _loop_marks: dict[str, float] = {}
 _WS_STALE_S = 10.0  # max age for CLOB WS BBA/book before treating as stale
 
-# Aux-signal freshness limit: aux trade_context fields stamp None (never 0.0) when
-# the source is missing/stale, so "feed cold" stays distinguishable from "real zero".
-_AUX_FRESH_S_COINBASE = 10.0
-_AUX_FRESH_S_TRADES = 3.0
 
 def _clob_book_aux(clob_ws: Any, token_up: str, token_down: str,
                    book_up: dict[str, Any], book_down: dict[str, Any]) -> dict[str, Any]:
@@ -155,19 +151,6 @@ def _clob_book_aux(clob_ws: Any, token_up: str, token_down: str,
         "clob_depth_top5_down_usd": None if depth_down is None else round(depth_down, 2),
         "clob_book_age_s": None if age is None else round(age, 3),
     }
-
-
-# ── Regime-Kelly SHADOW stamps ────────────────────────────────────────────────
-# Bucket cuts are FROZEN — never re-fit them during the shadow (re-fitting
-# invalidates the test). Stamps + nightly arithmetic ONLY: nothing here touches
-# sizing, entries, or vetoes; deployment needs the burst SPRT and the
-# counterfactual-D SPRT to both accept.
-_REGIME_CUTS_ATR_REGIME = (0.694, 1.041)   # atr / atr_long_term_mean
-_REGIME_CUTS_ATR_SHORT = (0.789, 1.004)    # atr / atr_rolling_20
-_REGIME_CUTS_FRV = (4.1e-5, 6.9e-5)        # fast_realized_vol_60s
-_REGIME_BURST_HOT_RATIO = 2.0              # n_ticks_1s / (n_ticks_30s/30)
-_REGIME_MULT_TABLE = {"HOT": 1.15, "COLD": 0.80}
-_REGIME_MULT_CLAMP = (0.5, 1.5)
 
 
 # ── Single settled OPEN banner ────────────────────────────────────────────────
@@ -305,7 +288,6 @@ def _log_price_sum_outlier(market_id: str, price_up: float, price_down: float,
 
 
 # Throttled logging for hold evaluations and resolution waiting
-_last_hold_log: dict[str, float] = {}  # market_id -> last log timestamp
 _last_resolve_wait_log: dict[str, float] = {}  # market_id -> last log timestamp
 # TWAP LOCK line once per (window, side) per 10s — the loop re-evaluates on every
 # Chainlink report and book event while a lock holds, which spams the same line.
@@ -359,7 +341,6 @@ def _save_prev_resolution_margin(margin: float) -> None:
         pass
 
 _current_window_id: str = ""
-_last_adverse_skip_log_window: int = 0  # throttle adverse-skip logs to once per 5-min window
 _last_logged_action: str = ""  # suppress repeated EVAL blocks when action hasn't changed
 _gate_skip_counts: dict[str, int] = {}  # gate_name -> skip count for the current ET day
 _gate_stats_day_key: str = ""           # ET date string keyed to _gate_skip_counts

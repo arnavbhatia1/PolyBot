@@ -32,7 +32,6 @@ def write_json_atomic(path: Path, obj, indent: int = 2) -> None:
 
 # ── Rolling single-file state + logs (memory/state/) ──────────────────────────
 STATE_DIR: Path = MEMORY_DIR / "state"
-ADVERSE_STATE_PATH: Path = STATE_DIR / "adverse_state.json"
 FEED_STALENESS_PATH: Path = STATE_DIR / "feed_staleness.json"
 FILL_STATS_PATH: Path = STATE_DIR / "fill_stats.json"
 FILL_STATS_PAPER_PATH: Path = STATE_DIR / "fill_stats_paper.json"  # paper's FOK kill/fill parity ledger
