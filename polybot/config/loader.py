@@ -88,13 +88,13 @@ def validate_config(config: dict[str, Any]) -> None:
     _check_range("late_window.twap_k_min_s", 0.0, 15.0)
     _check_range("late_window.sniper_min_edge", 0.02, 0.10)
     ladder, found = _get_nested(config, "maker.maker_ladder")
-    if not found or not (isinstance(ladder, list) and 1 <= len(ladder) <= 7
+    if not found or not (isinstance(ladder, list) and 1 <= len(ladder) <= 8
                          and all(isinstance(r, list) and len(r) == 3
-                                 and 0.10 <= float(r[0]) <= 0.95
+                                 and 0.05 <= float(r[0]) <= 0.95
                                  and 0.0 < float(r[1]) <= 1.0
                                  and 0.05 <= float(r[2]) <= 3.0 for r in ladder)):
-        errors.append("maker.maker_ladder: must be 1-7 rungs of "
-                      "[price 0.10-0.95, frac 0-1, need 0.05-3]")
+        errors.append("maker.maker_ladder: must be 1-8 rungs of "
+                      "[price 0.05-0.95, frac 0-1, need 0.05-3]")
     # taker_enabled is the dormant taker's arm switch; absent means dormant.
     val, found = _get_nested(config, "late_window.taker_enabled")
     if found and not isinstance(val, bool):

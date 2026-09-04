@@ -274,6 +274,24 @@ outputs in data/vps-0831/. Headlines, each detailed in the docs:
   different population from the observed misses, which no lock-gated k_max
   can reach.
 
+## 09-04 last-lever pass (r26; operator: "act on every data point before live")
+
+Engine-true, 18-day corpus, wide zone k[6,58], $200 ladder (0.50 × $400):
+- deployed 0.6 / 7 rungs: 21/21, +$1,740.67, 0 flip-fills, halves +1573/+168
+- **+0.05 rung (8 rungs): 21/21, +$1,998.10, halves +1851/+147 — ADOPTED**
+  (the 0.05 rung filled 1/1 for +$475; N=1 sweep, recorded as such)
+- floor 0.5 at k58: 36 fills, 32 wins, **+$1,593 < 0.6**, 2 flip-fills, worst
+  −$114 → NEGATIVE relative to 0.6 (more trades, less money) — not adopted
+- floor 0.75 at k58: 11 fills +$964 → worse than 0.6 — not adopted
+- ANTI 0.6 k58 r8: −$679k — sign intact
+Budget 0.40 → **0.50** (validator ceiling): linear; ~full Kelly at the
+pessimistic loss bound (0/21 → ≤14%/fill; EV +$44/fill at the bound).
+Not levers (measured): k floor <6 (+1 first-hour fill/18 d), post-close hold
+>60 s (no supply visible), rung re-weighting (R3 needs ≥15 fills/half per
+rung; deep rungs have 1–3), regime-conditional sizing (day-level regime blind
+to window reversals), taker re-arm (dips were outage artifacts), btc-15m
+(refuted), rebates ($0 on one-sided deep bids), faster info (79 ms book).
+
 ## 09-01 operator-directed exploit pass (docs/research/exploit_pass_2026-09-01.md)
 
 - **Floor frontier (r19), engine-true, 3 latency assumptions**: need 0.60 →
@@ -538,7 +556,7 @@ floor; further latency engineering buys nothing measurable — stop here.
 | constant | value | frozen | corpus / estimator | reopening condition |
 |---|---|---|---|---|
 | TWAP_MARGIN_P995/_MAX | signal_engine.py | 08-27 (re-fit) | 3,695 real-final windows (08-14..27) + 1,651 synthetic max-union; rx-clock ZOH + 10s coverage guard; MAX = per-tick interval maxima; LODO k=25 $27.5-29.9; freeze-span reproduction 16/16 | ≥28 real-final days, or any resolution-rule change (SOURCE gate red), or a nightly regime line sustaining gaps p50 < $10 for 7 days (the calm regime that fit the 08-18 knots) |
-| ladder need | **0.6** (7 rungs incl. 0.15/0.10; budget frac **0.40** since 09-04) | 09-01 / 09-04 (operator directive) | r19 frontier on 18 real-final days: 0.6 → 15/15 wins, +$311, 0 flip-fills, invariant under 56/300/500 ms; 0.5 → 2 flip-fills; ≤0.35 negative. r22: +0.15 rung 2/2 (+$61 at $60). Adopted outside the ≥28-day schedule by explicit operator decision; the 08-27 1.0 verdict and its clauses stand on the record | the 09-11 ws1_oos re-run judges 0.6 on the same clauses; any flip-fill loss at 0.6 re-opens the floor immediately |
+| ladder need | **0.6** (8 rungs 0.80→0.05 at 1/8 each; budget frac **0.50** = validator ceiling, since 09-04) | 09-01 / 09-04 (operator directive) | r19 frontier on 18 real-final days: 0.6 → 15/15 wins, +$311, 0 flip-fills, invariant under 56/300/500 ms; 0.5 → 2 flip-fills; ≤0.35 negative. r22: +0.15 rung 2/2 (+$61 at $60). Adopted outside the ≥28-day schedule by explicit operator decision; the 08-27 1.0 verdict and its clauses stand on the record | the 09-11 ws1_oos re-run judges 0.6 on the same clauses; any flip-fill loss at 0.6 re-opens the floor immediately |
 | k_place **[6,58]** | settings | **09-04 (operator directive)** | r24 on the re-fit tables at need 0.6: k_max 25/30/40/58 → 15/14/17/21 fills, all 100%, **0 flip-fills at every k_max**, ANTI −$300k+; the 08-18 kinematics refutation ran on the thin frozen tables (k=25 $8 vs $28.5 now) — wider margins mean only decided windows arm early | any flip-fill loss at k>25 re-opens the row immediately; 09-11 ws1_oos re-run judges it |
 | taker_enabled | false (dormant) | 08-18 | 4 dips / 1 reachable / 1,184 windows vs ≥1-per-3-days bar | queue #3 re-arm condition |
 | HOSTILE thresholds | p50<$6, photo<$1 >15% | 08-18 | percentile-ported from 30s-era positions; 1,186 60s windows | regime distribution shift (nightly line drifting) |

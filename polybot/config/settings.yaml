@@ -151,17 +151,19 @@ maker:
   # carries the risk (break-even win rate equals the price paid). need 0.6:
   # the engine-true frontier on 18 real-final 60s days (r19, 09-01) — 15/15
   # wins, 0 flip-fills, invariant to 56/300/500 ms GTC latency, 3.75x the
-  # fill rate of 1.0; 0.5 costs two flip-fills, <=0.35 goes negative. The
-  # 0.15 and 0.10 rungs buy 85-90c/sh of certainty on full sweeps (r22: 2/2
-  # fills each, both halves positive). ANTI-side control at 0.5/0.25: -39c/sh.
+  # fill rate of 1.0; 0.5 costs two flip-fills and earns less even at the wide
+  # zone (r26: 36 fills, worst -$114, +$1,593 vs +$1,741). The 0.15/0.10/0.05
+  # rungs buy 85-95c/sh of certainty on full sweeps (r22/r26: 2/2, 2/2, 1/1
+  # fills, every variant up in both halves). ANTI-side control: -39c/sh.
   maker_ladder:
-    - [0.80, 0.14, 0.6]
-    - [0.65, 0.14, 0.6]
-    - [0.50, 0.14, 0.6]
-    - [0.35, 0.14, 0.6]
-    - [0.20, 0.14, 0.6]
-    - [0.15, 0.15, 0.6]
-    - [0.10, 0.15, 0.6]
+    - [0.80, 0.125, 0.6]
+    - [0.65, 0.125, 0.6]
+    - [0.50, 0.125, 0.6]
+    - [0.35, 0.125, 0.6]
+    - [0.20, 0.125, 0.6]
+    - [0.15, 0.125, 0.6]
+    - [0.10, 0.125, 0.6]
+    - [0.05, 0.125, 0.6]
   maker_k_place_max: 58.0       # the whole zone: on the re-fit tables the
                                 # floor at k=58 is 0.6 x $107.5, so only decided
                                 # windows arm early (r24: 21 fills 100%, 0
@@ -171,12 +173,13 @@ maker:
                                 # verified-winner hold
   # Deep bids are NOT a Kelly bet on a certainty claim — the budget is a flat
   # bankroll fraction split across rungs. One ladder at a time, capital back
-  # in ~2 min at resolution. 0.40: fills are supply-bound and capital idles
-  # 99% of the time, so $/fill is the linear lever (r22/r25: $ scales 1:1 with
-  # budget on identical fills); ~half-Kelly at the pessimistic loss bound the
-  # record supports (0 losses / 21 fills -> <=14% per fill); a full-ladder
-  # loss (-40%) lands under the breaker floor and self-throttles to 0.4x.
-  maker_bankroll_frac: 0.40
+  # in ~2 min at resolution. 0.50 (the validator ceiling): fills are
+  # supply-bound and capital idles 99% of the time, so $/fill is the linear
+  # lever (r22/r25/r26: $ scales 1:1 with budget on identical fills); ~full
+  # Kelly at the pessimistic loss bound the record supports (0 losses / 21
+  # fills -> <=14% per fill, EV still +$44/fill at the bound); a full-ladder
+  # loss (-50%) lands under the breaker floor and self-throttles to 0.4x.
+  maker_bankroll_frac: 0.50
   # After the close, keep resting ONLY while the boundary-verified winner
   # equals our side (fails closed on delivery holes) — 23% of the reference
   # wallet's pnl lands in this tail at deep prices where no queue walls exist.
