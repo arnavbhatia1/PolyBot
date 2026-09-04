@@ -13,8 +13,8 @@ A maker bot for Polymarket's 5-minute BTC Up/Down markets. Each window
 resolves on Chainlink's 60-second BTC/USD TWAP (final ≥ strike → Up, tie →
 Up) [code main.py:1692; feeds/chainlink_feed.py:522-543]. In the final 25 s
 the bot reconstructs the mostly-written average from the raw Chainlink stream,
-and when its projection clears a calibrated error margin it rests six GTC
-bids (0.80/0.65/0.50/0.35/0.20/0.15) on the projected winner, filled by sellers
+and when its projection clears a calibrated error margin it rests seven GTC
+bids (0.80/0.65/0.50/0.35/0.20/0.15/0.10) on the projected winner, filled by sellers
 panicking through the book, held to resolution [code execution/maker_bid.py;
 main.py:1050-1096]. No sell path is wired (the sell code exists with zero production callers) and there is no entry-side model. Mode:
 **paper** [cfg mode]; paper bankroll $405.57 (set to $400 on 08-25, the
@@ -58,9 +58,9 @@ book gates (freshness ≤ 10 s, price sum ∈ [0.98, 1.02], depth ≥ $50, sprea
 within 0.5 s of the boundary; untrusted → no capital) → feed guards (raw
 > 60 s stale; official value frozen 20 s while raw moved ≥ $2; spot > 3 s;
 raw hole > 10 s) → taker signal (dormant, §3) → **ladder placement**: at the
-first tick with 6 ≤ k ≤ 25 where `|proj_bridged − strike| ≥ 0.6 × p99.5(k)`
-and no position in the window, rest `budget = bankroll × 0.25 × breaker_mult`
-split ~1/6 per rung, each rung ≥ 5 shares or skipped. `maintain()` every tick
+first tick with 6 ≤ k ≤ 58 where `|proj_bridged − strike| ≥ 0.6 × p99.5(k)`
+and no position in the window, rest `budget = bankroll × 0.40 × breaker_mult`
+split ~1/7 per rung, each rung ≥ 5 shares or skipped. `maintain()` every tick
 cancels all rungs when the signed displacement drops below the floor
 ("flipped"/"inside noise") or the projection goes cold; after the close it
 keeps resting ≤ 60 s only while both boundary captures are trusted and name
@@ -109,9 +109,9 @@ discord_bot/bot.py:57-265].
 | item | value | provenance |
 |---|---|---|
 | mode / brake / taker | `paper` / `trading_enabled: true` / `taker_enabled: false` | [cfg]; if `taker_enabled` is absent the code default is **True** [code main.py:1034] |
-| validation_epoch | 2026-09-01T19:30:00Z | [cfg late_window.validation_epoch] |
-| zone / k floor / placement | 58 s / 6 s / k ∈ [6, 25] | [cfg twap_zone_s, twap_k_min_s, maker_k_place_min/max] |
-| ladder | 0.80/0.65/0.50/0.35/0.20/0.15 × ~1/6, need 0.6 each; budget 25% of bankroll × breaker | [cfg maker.maker_ladder, maker_bankroll_frac]; operator-directed 09-01 on the r19/r22 frontier (15/15 wins, latency-invariant) [data docs/research/exploit_pass_2026-09-01.md] |
+| validation_epoch | 2026-09-04T15:50:00Z | [cfg late_window.validation_epoch] |
+| zone / k floor / placement | 58 s / 6 s / k ∈ [6, 58] | [cfg twap_zone_s, twap_k_min_s, maker_k_place_min/max]; k_max 58 operator-directed 09-04 on r24 (21 fills 100%, 0 flip-fills at every k_max on the re-fit tables) |
+| ladder | 0.80/0.65/0.50/0.35/0.20/0.15/0.10 × ~1/7, need 0.6 each; budget 40% of bankroll × breaker | [cfg maker.maker_ladder, maker_bankroll_frac]; operator-directed 09-01/09-04 on the r19/r22/r24/r25 frontier [data docs/research/exploit_pass_2026-09-01.md; RESEARCH.md 09-04] |
 | rule tripwire | Gamma `resolutionSource` per market vs `market.expected_resolution_source`; mismatch → `trading_enabled=False` in-process + CRITICAL + Discord, latched per process | [code feeds/market_scanner.py `_check_rule_surface`; main.py `_on_rule_surface_change`; test test_rule_tripwire.py] |
 | post-close hold | 60 s, `certain_winner` gated | [cfg maker.post_close_hold_s] |
 | margin tables | p99.5: $4.0@6 · 7.5@10 · 12.5@15 · 20.0@20 · 28.5@25 · 107.5@58; MAX: $19@6 · 100@25 · 371@58 | [code core/signal_engine.py:34-45]; re-fit 08-27, 3,695 real-final windows, 15 ET days [data r1_report.md] |

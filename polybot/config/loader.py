@@ -99,7 +99,7 @@ def validate_config(config: dict[str, Any]) -> None:
     val, found = _get_nested(config, "late_window.taker_enabled")
     if found and not isinstance(val, bool):
         errors.append("late_window.taker_enabled: must be a boolean when present")
-    _check_range("maker.maker_k_place_max", 5.0, 29.0)
+    _check_range("maker.maker_k_place_max", 5.0, 58.0)
     _check_range("maker.maker_k_place_min", 1.0, 15.0)
     _check_range("maker.maker_bankroll_frac", 0.0, 0.50)
     _check_range("maker.post_close_hold_s", 0.0, 120.0)

@@ -247,6 +247,33 @@ outputs in data/vps-0831/. Headlines, each detailed in the docs:
   unchanged; the earlier thin snapshot was mid-build on a quiet window
   [data r14b_wallprobe.txt].
 
+## 09-04 status read (first 2.8 days on floor 0.6 / six rungs / 25%)
+
+- Realized: **0 fills in 781 windows** (616 ladders rested: 558 hold-expiry
+  no-seller, 21 floor cancels "sign inside noise", 21 post-close unverified,
+  16 cold); 0 CRITICAL/tracebacks; nightly push landing (09-02/03/04 auto
+  commits on origin). At the replay rate (0.83/day) P(0 in 2.8 d) ≈ 10%.
+- **Supply rebounded**: deep-sell ceded value 09-01 $1,126 / 09-02 $1,874 /
+  09-03 $748 (coverage 198/287 on 09-03 — reconnect holes); trailing-7d mean
+  **$1,007/day vs the $450 kill line** — not met. [data r23_supply_watch.json]
+- **Why no fills despite supply (the r11 mechanism, now timed)**: 13 windows
+  printed the winner < 0.50 in the resting span; all 13 first deep prints land
+  at k = 14–25 s (i.e. at/before the placement window opens) in windows with
+  |final − strike| $1–5 (two at $9–16). The ladder rested in 3 of them — armed
+  **9–15 s AFTER the deep print** (13:09:43Z ep 1788267900 k=16 vs sweep k=24.8;
+  19:39:51Z ep 1788377700 k=9 vs 23.0; 15:19:52Z ep 1788448500 k=7 vs 21.6).
+  Sub-$5 gaps cannot clear 0.6 × p99.5(25) = $17 at k=25; the lock arrives
+  after the dump by construction. Paper fill path is NOT at fault.
+- **r24 k_max frontier at need 0.6 ($100, six rungs, re-fit tables)**: k_max
+  25 → 15 fills +$621; 30 → 14 +$626; 40 → 17 +$647; 58 → 21 +$715 — all
+  100% wins, **0 flip-fills at every k_max** (the 08-18 kinematics refutation
+  ran on the thin frozen tables; the re-fit margins at k > 25 are 2–4× wider,
+  so only decided windows arm early). Halves at 58: +618/+98. ANTI −$299k/−$323k.
+  Need 1.0: k_max moves 4 → 5 fills. Recorded as evidence for the 09-11
+  re-decision (k_place row); NOT applied — the marginal 6 fills are a
+  different population from the observed misses, which no lock-gated k_max
+  can reach.
+
 ## 09-01 operator-directed exploit pass (docs/research/exploit_pass_2026-09-01.md)
 
 - **Floor frontier (r19), engine-true, 3 latency assumptions**: need 0.60 →
@@ -511,8 +538,8 @@ floor; further latency engineering buys nothing measurable — stop here.
 | constant | value | frozen | corpus / estimator | reopening condition |
 |---|---|---|---|---|
 | TWAP_MARGIN_P995/_MAX | signal_engine.py | 08-27 (re-fit) | 3,695 real-final windows (08-14..27) + 1,651 synthetic max-union; rx-clock ZOH + 10s coverage guard; MAX = per-tick interval maxima; LODO k=25 $27.5-29.9; freeze-span reproduction 16/16 | ≥28 real-final days, or any resolution-rule change (SOURCE gate red), or a nightly regime line sustaining gaps p50 < $10 for 7 days (the calm regime that fit the 08-18 knots) |
-| ladder need | **0.6** (6 rungs incl. 0.15; budget frac 0.25) | 09-01 (operator directive) | r19 frontier on 18 real-final days: 0.6 → 15/15 wins, +$311, 0 flip-fills, invariant under 56/300/500 ms; 0.5 → 2 flip-fills; ≤0.35 negative. r22: +0.15 rung 2/2 (+$61 at $60). Adopted outside the ≥28-day schedule by explicit operator decision; the 08-27 1.0 verdict and its clauses stand on the record | the 09-11 ws1_oos re-run judges 0.6 on the same clauses; any flip-fill loss at 0.6 re-opens the floor immediately |
-| k_place [6,25] | settings | 08-18 | k>25 REFUTED by kinematics (REFUTATIONS.md) | a mechanism that prices avalanche sweeps (Candidate A), never extension of the sign-gated ladder |
+| ladder need | **0.6** (7 rungs incl. 0.15/0.10; budget frac **0.40** since 09-04) | 09-01 / 09-04 (operator directive) | r19 frontier on 18 real-final days: 0.6 → 15/15 wins, +$311, 0 flip-fills, invariant under 56/300/500 ms; 0.5 → 2 flip-fills; ≤0.35 negative. r22: +0.15 rung 2/2 (+$61 at $60). Adopted outside the ≥28-day schedule by explicit operator decision; the 08-27 1.0 verdict and its clauses stand on the record | the 09-11 ws1_oos re-run judges 0.6 on the same clauses; any flip-fill loss at 0.6 re-opens the floor immediately |
+| k_place **[6,58]** | settings | **09-04 (operator directive)** | r24 on the re-fit tables at need 0.6: k_max 25/30/40/58 → 15/14/17/21 fills, all 100%, **0 flip-fills at every k_max**, ANTI −$300k+; the 08-18 kinematics refutation ran on the thin frozen tables (k=25 $8 vs $28.5 now) — wider margins mean only decided windows arm early | any flip-fill loss at k>25 re-opens the row immediately; 09-11 ws1_oos re-run judges it |
 | taker_enabled | false (dormant) | 08-18 | 4 dips / 1 reachable / 1,184 windows vs ≥1-per-3-days bar | queue #3 re-arm condition |
 | HOSTILE thresholds | p50<$6, photo<$1 >15% | 08-18 | percentile-ported from 30s-era positions; 1,186 60s windows | regime distribution shift (nightly line drifting) |
 | kill-rule sparsity guard | ≥5 fills in trailing 4d | 08-18 | measured false-trip on the engine-true series | fills/day regime change making 5 too strict/loose |

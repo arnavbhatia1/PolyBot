@@ -75,7 +75,7 @@ late_window:
                                # still evaluates and logs would-be fires; re-arm by
                                # flipping this once the nightly dip count says the
                                # whipsaw supply returned (RESEARCH.md).
-  validation_epoch: "2026-09-01T19:30:00+00:00"  # deep_proj PAPER validation
+  validation_epoch: "2026-09-04T15:50:00+00:00"  # deep_proj PAPER validation
                                # on the 08-27 re-fit margin tables (every
                                # knot 2-4x wider — the 08-18 freeze was one
                                # calm week) at the $400 go-live bankroll.
@@ -152,31 +152,31 @@ maker:
   # the engine-true frontier on 18 real-final 60s days (r19, 09-01) — 15/15
   # wins, 0 flip-fills, invariant to 56/300/500 ms GTC latency, 3.75x the
   # fill rate of 1.0; 0.5 costs two flip-fills, <=0.35 goes negative. The
-  # 0.15 rung buys 85c/sh of certainty on full sweeps (r22: 2/2 fills, both
-  # halves positive). ANTI-side control at 0.5/0.25: -39c/sh.
+  # 0.15 and 0.10 rungs buy 85-90c/sh of certainty on full sweeps (r22: 2/2
+  # fills each, both halves positive). ANTI-side control at 0.5/0.25: -39c/sh.
   maker_ladder:
-    - [0.80, 0.17, 0.6]
-    - [0.65, 0.17, 0.6]
-    - [0.50, 0.17, 0.6]
-    - [0.35, 0.17, 0.6]
-    - [0.20, 0.16, 0.6]
-    - [0.15, 0.16, 0.6]
-  maker_k_place_max: 25.0       # rest from k=25 only: the 08-18 grid's ONLY
-                                # losses came from k>25 arms (early moves that
-                                # revert before the close); 79% of deep winner
-                                # -side volume prints at k>25 but it is
-                                # contested flow the sign cannot yet call —
-                                # extending k_max buys those losses, not that
-                                # volume.
+    - [0.80, 0.14, 0.6]
+    - [0.65, 0.14, 0.6]
+    - [0.50, 0.14, 0.6]
+    - [0.35, 0.14, 0.6]
+    - [0.20, 0.14, 0.6]
+    - [0.15, 0.15, 0.6]
+    - [0.10, 0.15, 0.6]
+  maker_k_place_max: 58.0       # the whole zone: on the re-fit tables the
+                                # floor at k=58 is 0.6 x $107.5, so only decided
+                                # windows arm early (r24: 21 fills 100%, 0
+                                # flip-fills at every k_max; the 08-18 k>25
+                                # losses were the thin frozen tables).
   maker_k_place_min: 6.0        # placed rungs keep resting to the close +
                                 # verified-winner hold
   # Deep bids are NOT a Kelly bet on a certainty claim — the budget is a flat
   # bankroll fraction split across rungs. One ladder at a time, capital back
-  # in ~2 min at resolution. 0.25: fills are supply-bound and capital idles
-  # 99% of the time, so $/fill is the linear lever (r22: $100 ladder +$621 vs
-  # $60 +$373 on identical fills); a worst-case full-ladder loss (-25%) lands
-  # under the breaker floor ($340) and self-throttles the next ladder to 0.4x.
-  maker_bankroll_frac: 0.25
+  # in ~2 min at resolution. 0.40: fills are supply-bound and capital idles
+  # 99% of the time, so $/fill is the linear lever (r22/r25: $ scales 1:1 with
+  # budget on identical fills); ~half-Kelly at the pessimistic loss bound the
+  # record supports (0 losses / 21 fills -> <=14% per fill); a full-ladder
+  # loss (-40%) lands under the breaker floor and self-throttles to 0.4x.
+  maker_bankroll_frac: 0.40
   # After the close, keep resting ONLY while the boundary-verified winner
   # equals our side (fails closed on delivery holes) — 23% of the reference
   # wallet's pnl lands in this tail at deep prices where no queue walls exist.
