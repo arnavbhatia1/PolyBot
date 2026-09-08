@@ -58,7 +58,7 @@ book gates (freshness ≤ 10 s, price sum ∈ [0.98, 1.02], depth ≥ $50, sprea
 within 0.5 s of the boundary; untrusted → no capital) → feed guards (raw
 > 60 s stale; official value frozen 20 s while raw moved ≥ $2; spot > 3 s;
 raw hole > 10 s) → taker signal (dormant, §3) → **ladder placement**: at the
-first tick with 6 ≤ k ≤ 58 where `|proj_bridged − strike| ≥ 0.6 × p99.5(k)`
+first tick with 6 ≤ k ≤ 25 where `|proj_bridged − strike| ≥ 0.6 × p99.5(k)`
 and no position in the window, rest `budget = bankroll × 0.50 × breaker_mult`
 split 1/8 per rung, each rung ≥ 5 shares or skipped. `maintain()` every tick
 cancels all rungs when the signed displacement drops below the floor
@@ -110,7 +110,7 @@ discord_bot/bot.py:57-265].
 |---|---|---|
 | mode / brake / taker | `paper` / `trading_enabled: true` / `taker_enabled: false` | [cfg]; if `taker_enabled` is absent the code default is **True** [code main.py:1034] |
 | validation_epoch | 2026-09-04T15:50:00Z | [cfg late_window.validation_epoch] |
-| zone / k floor / placement | 58 s / 6 s / k ∈ [6, 58] | [cfg twap_zone_s, twap_k_min_s, maker_k_place_min/max]; k_max 58 operator-directed 09-04 on r24 (21 fills 100%, 0 flip-fills at every k_max on the re-fit tables) |
+| zone / k floor / placement | 58 s / 6 s / k ∈ [6, 25] | [cfg twap_zone_s, twap_k_min_s, maker_k_place_min/max]; k_max 58 ran 09-04..08 (r24: 0 replay flips) and took a k=49 flip-fill loss (−$77, 09-07 01:15Z) → reverted to 25 per the pre-registered clause [data RESEARCH.md 09-08] |
 | ladder | 0.80/0.65/0.50/0.35/0.20/0.15/0.10/0.05 × 1/8, need 0.6 each; budget 50% of bankroll × breaker (validator ceiling) | [cfg maker.maker_ladder, maker_bankroll_frac]; operator-directed 09-01/09-04 on the r19/r22/r24/r25 frontier [data docs/research/exploit_pass_2026-09-01.md; RESEARCH.md 09-04] |
 | rule tripwire | Gamma `resolutionSource` per market vs `market.expected_resolution_source`; mismatch → `trading_enabled=False` in-process + CRITICAL + Discord, latched per process | [code feeds/market_scanner.py `_check_rule_surface`; main.py `_on_rule_surface_change`; test test_rule_tripwire.py] |
 | post-close hold | 60 s, `certain_winner` gated | [cfg maker.post_close_hold_s] |

@@ -21,7 +21,7 @@ from pathlib import Path
 SP = Path(__file__).parent
 REC = Path(__file__).resolve().parents[2] / "polybot" / "memory" / "recordings"
 TWAP_SWITCH = 1786060800
-DAYS = [f"2026-08-{d:02d}" for d in range(7, 31)]
+DAYS = [f"2026-08-{d:02d}" for d in range(7, 32)] + [f"2026-09-{d:02d}" for d in range(1, 8)]
 
 
 def load_label_eps():
