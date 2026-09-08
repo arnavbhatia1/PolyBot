@@ -1,7 +1,7 @@
 {
   "counts": {
-    "book_freshness_skew": 3595584,
-    "stale_prices": 3675632,
+    "book_freshness_skew": 3771617,
+    "stale_prices": 3677720,
     "model:Kelly too small: 1.0% < 1.0%": 84354,
     "model:Kelly too small: 0.9% < 1.0%": 163293,
     "model:Kelly too small: 0.8% < 1.0%": 156796,
@@ -75,7 +75,7 @@
     "sprt_side_mismatch": 1897,
     "regime:quiet": 1216,
     "model:No edge: best=-0.9% < floor=4.": 1388,
-    "stale_feed": 42460,
+    "stale_feed": 42866,
     "pre_submit_edge_drift": 6,
     "model:Kelly too small: 0.5% < 1.0%": 87195,
     "model:Kelly too small: 0.4% < 1.0%": 28956,
@@ -86,13 +86,13 @@
     "thin_book_depth": 220,
     "model:sniper_only: base entry suppre": 412729,
     "model:base entry suppressed \u2014 sniper": 6033424,
-    "twap_frozen": 1839
+    "twap_frozen": 1843
   },
-  "days_accumulated": 93,
+  "days_accumulated": 95,
   "first_day": "20260528",
-  "last_day": "20260831",
-  "total_skips": 36348877,
-  "updated_at": "2026-09-01T04:01:05.900293+00:00",
+  "last_day": "20260907",
+  "total_skips": 36527408,
+  "updated_at": "2026-09-08T04:02:11.617537+00:00",
   "retired_gates": {
     "note": "Frozen pre-2026-06-11-gut residue: these counters accrued before the Phase 0 dead-code purge and have no live writer. Their totals are correct cumulative history (range starts first_day 20260528), NOT active gate behavior.",
     "keys": [
