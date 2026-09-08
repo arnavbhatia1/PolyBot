@@ -274,6 +274,23 @@ outputs in data/vps-0831/. Headlines, each detailed in the docs:
   different population from the observed misses, which no lock-gated k_max
   can reach.
 
+## 09-08 post-loss re-derivation (r27; corpus extended through 09-07, 26 ET days, 7,018 windows)
+
+k_max frontier at need 0.6 / eight rungs / $200, engine-true, now including
+the live loss window (ep 1788743700):
+- **k_max 25: 17 fills, 17 wins, +$1,882.72, 0 losses** — the loss window
+  arms at k=16.3 on **Down** (the right side) and never fills
+- k_max 30: 16/16, +$1,890, 0 losses
+- k_max 40: 20 fills, 19 wins, +$1,897, 1 loss (−$25; September)
+- k_max 50: 25 fills, 23 wins, +$1,886, 2 losses (−$100); loss window armed
+  k=49.7 Up, filled 119.7 sh, floor-cancelled, **−$75.00 (live −$77.22)**
+- k_max 58: 28 fills, 26 wins, +$1,956, 2 losses (−$100); September −$68
+**The replay reproduces the live loss to within the fill rule, and September
+puts the flips exactly where the 08-18 kinematics read predicted: k>40.**
+The r24 "0 flip-fills at every k_max" was an 18-day sample artifact. k_max 25
+stands (deployed 09-08). Live realized at the 09-04 epoch: +$6.34 (09-06,
+k=8) and −$77.22 (09-07, k=49) → −$70.88; bankroll $334.69, breaker at 0.4×.
+
 ## 09-04 last-lever pass (r26; operator: "act on every data point before live")
 
 Engine-true, 18-day corpus, wide zone k[6,58], $200 ladder (0.50 × $400):
