@@ -1,0 +1,5 @@
+k,n_bookp_ok,n_z_ok,n_joint_pre_dropna,n_eval,n_oos_days,days_improved,logloss_book_recal,logloss_Mprime,logloss_iso_recal,mean_diff_M_minus_book,boot_p_M_vs_book,boot_ci_lo,boot_ci_hi,pass_B1_vs_logistic_recal,mean_diff_M_minus_iso,boot_p_M_vs_iso,days_improved_vs_iso,pass_B1_vs_isotonic_recal,mean_diff_iso_minus_book,boot_p_iso_vs_book,median_coef_z,frac_days_coef_z_positive,n_bz_reports_available_at_k
+240.000000,4962,6762,4800,4217,17,8,0.598763,0.599041,0.609374,0.000155,0.682400,-0.000566,0.000882,False,-0.009859,0.002800,12,True,0.010015,0.002000,-0.052839,0.000000,0
+180.000000,4939,6789,4788,4197,17,7,0.494274,0.494368,0.501883,0.000092,0.286000,-0.000079,0.000272,False,-0.006668,0.031600,12,True,0.006760,0.023600,-0.011306,0.058824,0
+120.000000,4533,6771,4384,3823,17,8,0.403066,0.403138,0.413300,0.000076,0.182000,-0.000033,0.000200,False,-0.009586,0.003600,12,True,0.009662,0.003200,-0.005045,0.058824,0
+90.000000,3908,6789,3787,3275,17,10,0.371267,0.371413,0.389071,0.000259,0.760800,-0.001218,0.001838,False,-0.014324,0.021600,12,True,0.014583,0.010800,0.135124,1.000000,0

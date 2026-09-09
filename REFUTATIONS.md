@@ -64,6 +64,29 @@ survives its own pre-registered bar. Dates are 2026.
   "positive" cell failing monotonicity (control bucket second-best).
   Pre-registered bars in docs/research/info_program_2026-09-01.md.
   Next reopen requires a new DATA CLASS, not new models.
+  **RE-AFFIRMED 09-09 across the whole window under a second operator
+  override** [docs/research/engine_restart_2026-09-08.md]: pre-zone
+  [book, spot/vol z] and Binance UM depth imbalance worse than the recalibrated
+  book at k 240..60 (17 OOS days); in-zone book-anchored projection model a
+  sub-cent tail-sharpening confined to decided books (the Phase-1 "beats the
+  book at every k" read was 253 placeholder-book windows).
+- **Wallet-identity flow** (09-09, fresh OOS 09-02..07, 542 windows, classes
+  frozen through 09-01): the in-sample "informed" top-decile one-sided class
+  ran −0.72 pp vs book (t −1.28) while its bottom-decile control ran +0.86 pp
+  (t +2.99); persistence Spearman −0.057 (in-sample +0.37); follower at the
+  ask 2.5 s later net of fee negative at every horizon. The only new data
+  class tested inverted; identity remains out of mandate. Kill is
+  proxy-sensitive (strict two-sided book: +1.31 pp, t 1.75 — no pass either).
+- **Zone taker on a probabilistic model** (09-09, 23 OOS days): buy the model's
+  side when P − ask − fee ≥ 5¢: +3.08¢/sh on 326 trades, ANTI −11.25¢, but
+  monotonicity fails (≥10¢ bucket below [6,10)), day-block p 0.072, and the
+  sign flips to −0.57¢ priced at the decision ask; 48 % of FOKs miss within
+  0.42 s. Real information, not tradable as a taker.
+- **Per-rung need schedules and reprice-cancel for the ladder** (09-09,
+  engine-true with re-arms modeled, r28): S1/S2 (relaxed deep rungs) add 4–7
+  losses and lose money in the first half; the reprice trigger (complement ask
+  +0.05 within 1 s) precedes every known loss but is the sweep itself — removes
+  $100 of losses and $1,070 of wins.
 - **Exit engines** (07-01 passive exit −2.1¢/sh t −2.03; night-one scalp sold
   a winner at 0.05 seconds before it paid $1.00): every leg's edge was
   measured hold-to-resolution; there is deliberately NO sell path in the
@@ -124,6 +147,16 @@ survives its own pre-registered bar. Dates are 2026.
   ¢/sh rising monotonically across model-edge buckets against an edge<0
   control. A candidate whose best cell is the control is anti-predictive no
   matter its aggregate.
+- **Dead books by heuristic** (09-09): excluding "dead" books by a
+  contested-while-|s|≥1 rule mislabeled 28 live windows (2 loser windows, 7 of
+  17 baseline fills) and leaving placeholder books IN manufactured a 19×
+  overstated model-vs-book gain. Exclude by BBO activity only (≤ 2 BBO records
+  or a frozen placeholder state) [docs/research/engine_restart_2026-09-08/T2_dead_confirmed.csv].
+- **Replays that arm once per window** (09-09): production re-arms after a
+  floor cancel; a harness that does not model it cannot claim "0 flip-fills".
+  Use `r28_rearm_replay.py` (rearm=True) for any ladder claim. Taker replays
+  must state the fill-price convention (ask at decision vs at arrival) — it
+  flipped a +3¢ cell negative.
 
 ## Superseded eras (not refuted — replaced by rule changes)
 

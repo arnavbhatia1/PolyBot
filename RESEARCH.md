@@ -137,8 +137,9 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
 5. **Candidate A — cushion dip-buyer** (WALLETS.md): both-sides deep rungs
    0.10-0.35, no sign filter. Bar written in WALLETS.md (win ≥ price+8pp per
    rung ≥10 fills, positive dollars in two disjoint 3-day splits, and the
-   sign-gated variant must not dominate). Status: observed in three wallets
-   through both eras; not implemented.
+   sign-gated variant must not dominate). Status: **REFUTED 08-27** (r4,
+   3,787 windows: every rung wins less than its own price; CLAUDE.md §6) —
+   entry kept so queue numbers stay stable.
 6. **twap_k_min_s 6.0** — carried from the 30s era by charter decision. At
    ≥14 real days, measure k ∈ [2,6) knots on the 60s rule (08-18 read:
    p99.5 ≈ $0.7-0.9, max ≈ $1.5-1.6 gated — pinnable-looking but the 30s era
@@ -162,8 +163,8 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
    0.10-0.35, no sign filter. Bar written in WALLETS.md. NOTE from the WS4
    kinematics: any such leg eats the avalanche sweeps deliberately — its
    economics must price them (the triplet's do; win% ≈ price+12pp INCLUDES
-   sweep losses). Status: observed in three wallets through both eras; not
-   implemented.
+   sweep losses). Status: **REFUTED 08-27** (r4; see #5) — duplicate entry
+   kept so queue numbers stay stable.
 9. **Maker rebates at scale** — proven real (~0.4%/day of maker notional on
    1723's ledger). An adder after a bar passes, never a strategy. 08-31
    arithmetic (venue_truth doc): the liquidity-rewards program pays the
@@ -179,6 +180,51 @@ these numbers, never the in-sample count. ANTI-side controls: −39¢/sh at
     btc-15m (the only credible sibling), $137/day total pie ex-outlier over
     282 sampled windows → REFUTATIONS.md entry. Reopen only on a liquidity
     regime change in the 15m family (volume24hr sustained > ~$5M/day).
+
+## 09-08/09 engine restart (operator-directed; docs/research/engine_restart_2026-09-08.md)
+
+Operator reopened entry-side prediction ("best prediction in the entire window
+— data, other wallets, feeds, anything"). Seven scouts mapped the window, bars
+were frozen, four tests ran, an adversary pre-mortem and a critic audited them.
+Corpus 26 ET days 08-13..09-07 (7,018 windows); fresh wallet pull 09-02..09-07.
+Evidence: docs/research/engine_restart_2026-09-08/ (13 reports + results);
+harness scripts/research/r28_rearm_replay.py.
+
+- **Every candidate engine killed on its pre-registered bar.** Zone taker on a
+  book-anchored [logit(book), projection r] model: +3.08¢/sh on 326 trades but
+  fails monotonicity and day-block significance (p 0.072), sign flips under the
+  ask(t) fill convention. Pre-zone [book, spot/vol z] and Binance UM depth
+  imbalance: worse than the recalibrated book at every k (17 OOS days). Per-rung
+  need schedules S1/S2: 4–6 extra losses, less money. Reprice-cancel: removes
+  $100 of losses and $1,070 of wins (the reprice IS the sweep).
+- **Wallet identity (the new data class) inverted out of sample**: the
+  top-decile one-sided class, frozen through 09-01, ran −0.72 pp vs book on
+  09-02..07 (t −1.28, 542 windows) while its bottom-decile control ran +0.86 pp
+  (t +2.99); persistence Spearman −0.057 (was +0.37 in-sample). Follower net of
+  fee negative at every horizon. Killed; identity stays out of mandate.
+- **Phase-1's headline was an artifact**: the "projection beats the book at
+  every k inside the zone" log-loss gain reproduced only with 253
+  placeholder-book windows included; excluded, it shrinks 19× to a sub-cent
+  tail-sharpening at k 45/30 inside already-decided books, absent in contested
+  books, not significant vs an isotonic recalibration.
+- **Production re-arms after a floor cancel; every replay (ws2/r19/r24/r27)
+  arms once per window.** Confirmed in code and in 134 logged multi-arm windows.
+  Engine-true with re-arms modeled (r28): at need 0.6 / k_max 25 the 5 re-arm
+  fills in 26 days are 4 losses (−$475: ep 1787271900, 1787358600, 1787620800,
+  1787678700) and one +$6.25 win, all 08-20..08-25; second half has no re-arm
+  fill, so the pre-registered "one arm per window" rule fails by the letter.
+  Harness reproduces 34 of 66 logged floor re-arms (production runs at 4 Hz) →
+  lower bound. **Operator decision pending**: align production to one arm per
+  window (the semantics every frontier number assumes) or re-decide when
+  September accumulates re-arm events. ep 1788267900 is NOT a bot-zone loss
+  under the deployed bridged sign.
+- **Whole-window question closed to k ≤ 60 by evidence**; inside the zone the
+  lock-gated ladder remains the only licensed instrument. Open but unmotivated:
+  Chainlink-vs-Binance basis at k > 85 s (relay recorded only in-zone); 5m/15m
+  nested strike (no 15m strikes locally).
+- Doc reconciliation: ranked-queue #5/#8 (Candidate A) now carry the 08-27
+  refutation; REFUTATIONS.md gains the 09-09 entries and two methodology bans
+  (dead books by BBO activity only; replays must model re-arms).
 
 ## 08-31 charter — verdicts (docs/research/{venue_truth,ceiling}_2026-08-31.md)
 

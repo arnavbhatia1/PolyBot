@@ -232,6 +232,15 @@ What is unmeasured or expired, the N that exists, and what resolves it.
     wall builds on the 08-13 pattern (44k sh at close / 135k post-close),
     deep supply at ~$176/day pace — beneath the $450 trailing-7d kill-line
     pace [data WALLETS.md; RESEARCH.md 09-01 note].
+11. **Re-arm semantics.** Production re-arms the ladder after a floor cancel
+    with no fill (`_retire` clears `active`; the hook refuses only on an
+    existing position) [code maker_bid.py:298-331; main.py:1046-1055]; every
+    replay behind the deployed config arms once per window. With re-arms
+    modeled, the 5 re-arm fills in 26 days are 4 losses (−$475) and one +$6.25
+    win, all 08-20..25 [data docs/research/engine_restart_2026-09-08.md T2;
+    scripts/research/r28_rearm_replay.py]. Operator decision pending: align
+    production to one arm per window, or re-decide once September carries
+    re-arm events.
 
 ## 6. APPENDIX: DEAD ENDS
 
@@ -262,4 +271,6 @@ Revisiting any entry requires new evidence exceeding the cited evidence.
 - Entry-side feature/ML prediction — six lenses, all dead; filled-outcome records poisoned for entry research → removed 06-09..07-16 (code deleted 08-07, commit ca5ed7ed) [REFUTATIONS.md entry].
 - Exit engines (passive exit −2.1¢/sh; night-one scalp sold a winner at 0.05) → sell path removed 07-01/07-08 [REFUTATIONS.md entry]; no production caller exists today [code docs/audit/01b §6.4].
 - Post-close 0.99/0.999 camping — 102 live placements, 0 fills, 08-13 → refuted [REFUTATIONS.md entry; 30 s era].
+- Whole-window engine restart (09-08/09, operator-directed) — zone taker on a book-anchored projection model +3.08¢/sh on 326 trades but non-monotone, p 0.072, sign flips under the decision-ask convention; pre-zone [book, z] and Binance depth imbalance worse than the book at every k (17 OOS days); per-rung schedules and reprice-cancel lose money; the Phase-1 "beats the book at every k" read was 253 placeholder-book windows → all killed 09-09 [data docs/research/engine_restart_2026-09-08.md].
+- Wallet-identity flow (the one new data class) — in-sample +2.4..+6.7 pp inverted fresh OOS 09-02..07: top-decile class −0.72 pp (t −1.28), bottom-decile control +0.86 pp (t +2.99), persistence −0.057; follower net negative at every horizon → killed 09-09 [data docs/research/engine_restart_2026-09-08/T3-wallets-oos.md].
 - 30 s-TWAP-era calibrations (564-window tables, "2× floor" doctrine, 08-17 grid) — superseded by the 08-14 rule change; the breach-mechanism lessons carry, the numbers do not [REFUTATIONS.md "Superseded eras"].

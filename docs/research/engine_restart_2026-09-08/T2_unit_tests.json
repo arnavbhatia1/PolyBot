@@ -1,0 +1,20 @@
+{
+ "table_identical": true,
+ "test_zero_fill_rearms": true,
+ "test_off_one_arm": true,
+ "test_partial_fill_blocks": true,
+ "test_flip_same_tick": true,
+ "test_sub_dollar_dropped": true,
+ "regression_k25": {
+  "armed": 6358,
+  "fills": 17,
+  "pnl": 1882.72,
+  "identical": true
+ },
+ "regression_k58": {
+  "armed": 6394,
+  "fills": 28,
+  "pnl": 1956.28,
+  "identical": true
+ }
+}
