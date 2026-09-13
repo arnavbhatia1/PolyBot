@@ -1,6 +1,12 @@
 {
-  "timestamp": "2026-09-11T06:08:40.220666+00:00",
-  "et_date": "20260911",
-  "counts": {},
-  "total_skips": 0
+  "timestamp": "2026-09-12T21:56:16.400716+00:00",
+  "et_date": "20260912",
+  "counts": {
+    "book_freshness_skew": 68480,
+    "stale_prices": 1161,
+    "stale_feed": 46,
+    "spread_too_wide": 1,
+    "twap_frozen": 29
+  },
+  "total_skips": 69717
 }
