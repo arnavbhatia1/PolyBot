@@ -1,7 +1,7 @@
 {
   "counts": {
-    "book_freshness_skew": 4930208,
-    "stale_prices": 3690730,
+    "book_freshness_skew": 5077936,
+    "stale_prices": 3691793,
     "model:Kelly too small: 1.0% < 1.0%": 84354,
     "model:Kelly too small: 0.9% < 1.0%": 163293,
     "model:Kelly too small: 0.8% < 1.0%": 156796,
@@ -75,7 +75,7 @@
     "sprt_side_mismatch": 1897,
     "regime:quiet": 1216,
     "model:No edge: best=-0.9% < floor=4.": 1388,
-    "stale_feed": 43699,
+    "stale_feed": 43813,
     "pre_submit_edge_drift": 6,
     "model:Kelly too small: 0.5% < 1.0%": 87195,
     "model:Kelly too small: 0.4% < 1.0%": 28956,
@@ -88,11 +88,11 @@
     "model:base entry suppressed \u2014 sniper": 6033424,
     "twap_frozen": 1997
   },
-  "days_accumulated": 104,
+  "days_accumulated": 105,
   "first_day": "20260528",
-  "last_day": "20260921",
-  "total_skips": 37700000,
-  "updated_at": "2026-09-22T04:03:08.097000+00:00",
+  "last_day": "20260922",
+  "total_skips": 37848905,
+  "updated_at": "2026-09-23T04:02:20.245466+00:00",
   "retired_gates": {
     "note": "Frozen pre-2026-06-11-gut residue: these counters accrued before the Phase 0 dead-code purge and have no live writer. Their totals are correct cumulative history (range starts first_day 20260528), NOT active gate behavior.",
     "keys": [
