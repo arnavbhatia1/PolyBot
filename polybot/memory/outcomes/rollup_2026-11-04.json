@@ -1,0 +1,173 @@
+[
+  {
+    "position_id": 9635,
+    "market_id": "btc-updown-5m-1793803500",
+    "question": "Bitcoin Up or Down - November 4, 9:45AM-9:50AM ET",
+    "side": "Up",
+    "signal_score": 0.0,
+    "correct": true,
+    "entry_price": 0.8000000000000002,
+    "exit_price": 1.0,
+    "log_return": 0.22314355131420957,
+    "size": 22.352000000000004,
+    "pnl": 5.587999999999997,
+    "fees": -2.8421709430404013e-15,
+    "gain_pct": 0.25,
+    "realized_edge": -0.8,
+    "fill_slippage": 0.0,
+    "indicator_snapshot": {
+      "trade_context": {
+        "signal_leg": "deep_proj",
+        "strike_price": 79346.40853207928,
+        "seconds_remaining": 22.871221,
+        "twap_proj": 79376.66,
+        "twap_proj_plain": 79364.25,
+        "twap_disp": 30.25,
+        "token_id_up": "5875153698791989943329161257144151010673546322646543248798219729460409737197",
+        "token_id_down": "24709941767330305402351054644691664621720467159225803872496660372029285962011",
+        "gtc_place_ms": [
+          56.8,
+          56.7,
+          56.5,
+          56.1,
+          61.4,
+          58.3,
+          57.5,
+          84.5
+        ],
+        "gtc_cancel_ms": [
+          57.1,
+          63.2,
+          56.7,
+          76.8,
+          57.1,
+          61.6,
+          56.8,
+          57.1
+        ],
+        "maker_fill": 1
+      },
+      "strike_price": 79346.40853207928,
+      "print_gap": 0
+    },
+    "exit_reason": "resolution",
+    "seconds_remaining_at_exit": 0.0,
+    "edge_decay": null,
+    "exit_timestamp": "2026-11-04T14:54:11.781205+00:00",
+    "timestamp": "2026-11-04T14:54:11.781205+00:00"
+  },
+  {
+    "position_id": 9636,
+    "market_id": "btc-updown-5m-1793815500",
+    "question": "Bitcoin Up or Down - November 4, 1:05PM-1:10PM ET",
+    "side": "Up",
+    "signal_score": 0.0,
+    "correct": false,
+    "entry_price": 0.5231857764876633,
+    "exit_price": 0.0,
+    "log_return": 0,
+    "size": 93.7235,
+    "pnl": -93.7235,
+    "fees": 0.0,
+    "gain_pct": -1.0,
+    "realized_edge": -0.5232,
+    "fill_slippage": 0.0,
+    "indicator_snapshot": {
+      "trade_context": {
+        "signal_leg": "deep_proj",
+        "strike_price": 80583.16145006045,
+        "seconds_remaining": 23.581799,
+        "twap_proj": 80598.94,
+        "twap_proj_plain": 80598.94,
+        "twap_disp": 15.78,
+        "token_id_up": "44944029503389247430336946555788114926441964742483038196915485966461030141064",
+        "token_id_down": "41281799286076267958670611027259172557323051721274566551315208432911904425863",
+        "gtc_place_ms": [
+          57.0,
+          55.8,
+          57.4,
+          60.3,
+          149.2,
+          56.3,
+          62.0,
+          55.5
+        ],
+        "gtc_cancel_ms": [
+          57.5,
+          56.8,
+          57.6,
+          61.1,
+          57.2,
+          56.9,
+          63.7,
+          58.3
+        ],
+        "maker_fill": 1
+      },
+      "strike_price": 80583.16145006045,
+      "print_gap": 0
+    },
+    "exit_reason": "resolution",
+    "seconds_remaining_at_exit": 0.0,
+    "edge_decay": null,
+    "exit_timestamp": "2026-11-04T18:14:11.903014+00:00",
+    "timestamp": "2026-11-04T18:14:11.903014+00:00"
+  },
+  {
+    "position_id": 9637,
+    "market_id": "btc-updown-5m-1793815800",
+    "question": "Bitcoin Up or Down - November 4, 1:10PM-1:15PM ET",
+    "side": "Down",
+    "signal_score": 0.0,
+    "correct": true,
+    "entry_price": 0.7172363986519018,
+    "exit_price": 1.0,
+    "log_return": 0.332349787490565,
+    "size": 14.897000000000002,
+    "pnl": 5.873000000000001,
+    "fees": 0.0,
+    "gain_pct": 0.39424,
+    "realized_edge": -0.7172,
+    "fill_slippage": 0.0,
+    "indicator_snapshot": {
+      "trade_context": {
+        "signal_leg": "deep_proj",
+        "strike_price": 80575.10976398994,
+        "seconds_remaining": 24.879238,
+        "twap_proj": 80557.11,
+        "twap_proj_plain": 80557.11,
+        "twap_disp": -18.0,
+        "token_id_up": "92308696661729135436794722898704418654953977771340907335698619129275816721091",
+        "token_id_down": "68207996567985929465810766671638837110975328727176238908470075875446012243835",
+        "gtc_place_ms": [
+          60.8,
+          59.6,
+          62.9,
+          57.4,
+          57.4,
+          59.0,
+          61.2,
+          78.5
+        ],
+        "gtc_cancel_ms": [
+          63.1,
+          58.6,
+          58.2,
+          119.4,
+          57.8,
+          56.6,
+          57.3,
+          62.4
+        ],
+        "maker_fill": 1
+      },
+      "strike_price": 80575.10976398994,
+      "print_gap": 0
+    },
+    "exit_reason": "resolution",
+    "seconds_remaining_at_exit": 0.0,
+    "edge_decay": null,
+    "exit_timestamp": "2026-11-04T18:20:09.971275+00:00",
+    "timestamp": "2026-11-04T18:20:09.971275+00:00"
+  }
+]
