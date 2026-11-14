@@ -1,7 +1,7 @@
 {
   "counts": {
-    "book_freshness_skew": 10521186,
-    "stale_prices": 3751804,
+    "book_freshness_skew": 11053774,
+    "stale_prices": 3756003,
     "model:Kelly too small: 1.0% < 1.0%": 84354,
     "model:Kelly too small: 0.9% < 1.0%": 163293,
     "model:Kelly too small: 0.8% < 1.0%": 156796,
@@ -67,7 +67,7 @@
     "model:No edge: best=-0.7% < floor=4.": 1370,
     "model:Kelly too small: 0.0% < 1.0%": 7392,
     "model:No edge: best=-0.6% < floor=4.": 1441,
-    "spread_too_wide": 4492,
+    "spread_too_wide": 4493,
     "model:No edge: best=-1.0% < floor=4.": 689,
     "loss_cut_whipsaw_blocked": 5383111,
     "model:Kelly too small: 0.6% < 1.0%": 126607,
@@ -75,7 +75,7 @@
     "sprt_side_mismatch": 1897,
     "regime:quiet": 1216,
     "model:No edge: best=-0.9% < floor=4.": 1388,
-    "stale_feed": 48372,
+    "stale_feed": 48462,
     "pre_submit_edge_drift": 6,
     "model:Kelly too small: 0.5% < 1.0%": 87195,
     "model:Kelly too small: 0.4% < 1.0%": 28956,
@@ -88,11 +88,11 @@
     "model:base entry suppressed \u2014 sniper": 6033424,
     "twap_frozen": 2539
   },
-  "days_accumulated": 137,
+  "days_accumulated": 138,
   "first_day": "20260528",
-  "last_day": "20261112",
-  "total_skips": 43357275,
-  "updated_at": "2026-11-13T05:01:20.522454+00:00",
+  "last_day": "20261113",
+  "total_skips": 43894153,
+  "updated_at": "2026-11-14T05:01:17.204168+00:00",
   "retired_gates": {
     "note": "Frozen pre-2026-06-11-gut residue: these counters accrued before the Phase 0 dead-code purge and have no live writer. Their totals are correct cumulative history (range starts first_day 20260528), NOT active gate behavior.",
     "keys": [
